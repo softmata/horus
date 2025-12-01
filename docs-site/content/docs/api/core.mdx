@@ -417,7 +417,7 @@ pub struct LinkMetrics {
 
 ## Scheduler
 
-Central orchestrator for node execution with priority-based scheduling.
+Central orchestrator for node execution with priority-based scheduling. **Deterministic by default.**
 
 ```rust
 pub struct Scheduler { /* fields omitted */ }
@@ -431,33 +431,15 @@ pub struct Scheduler { /* fields omitted */ }
 pub fn new() -> Self
 ```
 
-Creates a scheduler with default settings (60 Hz tick rate).
+Creates a **deterministic** scheduler with default settings (~60 Hz tick rate). No learning phase, predictable execution from tick 0.
 
 **Returns:** `Scheduler`
 
----
-
-#### `new_realtime`
-
+**Example:**
 ```rust
-pub fn new_realtime() -> HorusResult<Self>
+// Default: deterministic, no learning phase
+let scheduler = Scheduler::new();
 ```
-
-Creates a hard real-time scheduler with deterministic execution.
-
-**Returns:** `HorusResult<Scheduler>`
-
----
-
-#### `new_deterministic`
-
-```rust
-pub fn new_deterministic() -> Self
-```
-
-Creates a deterministic scheduler for simulation and testing.
-
-**Returns:** `Scheduler`
 
 ---
 
@@ -479,7 +461,7 @@ Sets the scheduler name.
 pub fn with_capacity(self, capacity: usize) -> Self
 ```
 
-Pre-allocates capacity for nodes.
+Pre-allocates capacity for nodes (prevents runtime allocations).
 
 ---
 
@@ -492,8 +474,8 @@ pub fn with_config(self, config: SchedulerConfig) -> Self
 Applies a configuration preset.
 
 **Available Presets:**
-- `SchedulerConfig::standard()` - Balanced performance
-- `SchedulerConfig::hard_realtime()` - Deterministic, &lt;20μs jitter
+- `SchedulerConfig::standard()` - General development
+- `SchedulerConfig::hard_realtime()` - &lt;20μs jitter
 - `SchedulerConfig::safety_critical()` - Redundancy and monitoring
 - `SchedulerConfig::high_performance()` - Maximum throughput
 
@@ -505,7 +487,26 @@ Applies a configuration preset.
 pub fn enable_determinism(self) -> Self
 ```
 
-Enables deterministic execution mode.
+Explicitly enables deterministic execution mode. Same as default, but more explicit for code clarity.
+
+---
+
+#### `enable_learning`
+
+```rust
+pub fn enable_learning(self) -> Self
+```
+
+**WARNING: Makes execution non-deterministic!**
+
+Enables the ~100-tick learning phase for automatic node tier classification. Use only when adaptive optimization is worth the non-determinism.
+
+**Example:**
+```rust
+// Opt-in to non-deterministic learning
+let scheduler = Scheduler::new()
+    .enable_learning();  // WARNING: Non-deterministic!
+```
 
 ---
 
@@ -547,6 +548,47 @@ scheduler
     .add(Box::new(SensorNode::new()?), 0, Some(true))
     .add(Box::new(ControlNode::new()?), 1, Some(true))
     .add(Box::new(LoggerNode::new()?), 100, None);
+```
+
+---
+
+#### `add_with_tier`
+
+```rust
+pub fn add_with_tier(
+    &mut self,
+    node: Box<dyn Node>,
+    priority: u32,
+    tier: NodeTier,
+) -> &mut Self
+```
+
+Adds a node with explicit tier annotation for deterministic optimization. Use this to declare node execution characteristics at compile time.
+
+**Parameters:**
+- `node` - Boxed node instance
+- `priority` - Execution priority (0 = highest)
+- `tier` - Explicit execution tier (see NodeTier enum)
+
+**Returns:** `&mut Self` for chaining
+
+**NodeTier Options:**
+- `NodeTier::Jit` - Ultra-fast (<1μs), JIT compiled
+- `NodeTier::Fast` - Fast (<10μs), inline execution
+- `NodeTier::Normal` - Standard (<100μs)
+- `NodeTier::AsyncIO` - Non-blocking I/O
+- `NodeTier::Background` - Low-priority (>100μs)
+- `NodeTier::Isolated` - Process isolation
+
+**Example:**
+```rust
+use horus::scheduling::NodeTier;
+
+scheduler
+    .add_with_tier(Box::new(pid_controller), 0, NodeTier::Jit)
+    .add_with_tier(Box::new(sensor_reader), 1, NodeTier::Fast)
+    .add_with_tier(Box::new(cloud_sync), 5, NodeTier::AsyncIO)
+    .add_with_tier(Box::new(data_logger), 10, NodeTier::Background);
 ```
 
 ---
@@ -1073,7 +1115,10 @@ pub trait Subscriber<T>: Send + Sync {
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
-| `Hub::send()` | ~200ns | Zero-copy shared memory |
-| `Hub::recv()` | ~85-167ns | Non-blocking |
-| `Link::send()` | ~50ns | Lock-free SPSC |
-| `Link::recv()` | ~30ns | Lock-free SPSC |
+| `Link::send()` | **87ns** | Wait-free SPSC |
+| `Link::recv()` | ~175ns | Wait-free SPSC |
+| `Link::send_recv()` | ~262ns | Round-trip |
+| `Hub::send()` | **313ns** | Lock-free MPMC |
+| `Hub::recv()` | ~313ns | Lock-free MPMC |
+
+**Note:** Link is 72% faster than Hub for single-producer/single-consumer scenarios. Use Link for control loops, Hub for multi-subscriber topics.

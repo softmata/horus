@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/v0.1.5--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.85-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-248ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-6M%2B%20msg%2Fs-green.svg)](#performance)
+[![Version](https://img.shields.io/badge/v0.1.5--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.85-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-87ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-12M%2B%20msg%2Fs-green.svg)](#performance)
 
 **Hybrid Optimized Robotics Unified System**
 
@@ -29,10 +29,10 @@ A production-grade robotics framework built in Rust for **real-time performance*
 
 | Feature | HORUS | ROS2 |
 |---------|-------|------|
-| **Message Latency** | Sub-microsecond (248ns - 437ns) | 50μs - 500μs |
+| **Message Latency** | Sub-microsecond (87ns - 262ns) | 50μs - 500μs |
 | **Memory Safety** | Rust (zero-cost) | C++ (manual) |
 | **Getting Started** | 1 command | 10+ commands + config files |
-| **IPC Mechanism** | Lock-free shared memory | DDS middleware |
+| **IPC Mechanism** | Wait-free & lock-free shared memory | DDS middleware |
 | **Real-time Control** | Native priority scheduling | Executor model |
 | **Learning Curve** | Gentle | Steep |
 
@@ -158,11 +158,11 @@ See [Built-in Nodes Documentation](horus_library/nodes/README.md) for complete c
 ## Key Features
 
 ### Real-Time Performance
-- **Sub-Microsecond Messaging**: Median 248ns (Link/SPSC), 437ns (Hub/MPMC)
+- **Sub-Microsecond Messaging**: Median 87ns (Link/SPSC), 313ns (Hub/MPMC)
 - **High Throughput**: 6+ million messages per second sustained
 - **Enhanced Smart Scheduler**: Automatic optimization with JIT compilation, async I/O, and fault tolerance
 - **Priority-Based Scheduling**: Deterministic execution order with intelligent tier classification
-- **Lock-Free Communication**: Atomic operations with cache-line alignment
+- **Wait-Free & Lock-Free Communication**: Link (87ns, wait-free), Hub (313ns, lock-free)
 - **Zero-Copy IPC**: Direct shared memory access
 
 ### Developer Experience
@@ -454,8 +454,8 @@ if let Some(msg) = hub.recv(None) {
 ```
 
 **Performance (on modern x86_64 systems):**
-- **Link (SPSC)**: Median 248ns, 6M+ msg/s throughput
-- **Hub (MPMC)**: Median 481ns, flexible pub/sub
+- **Link (SPSC)**: Median 87ns send, 12M+ msg/s throughput (wait-free)
+- **Hub (MPMC)**: Median 313ns, flexible pub/sub (lock-free)
 - Production-validated with 6.2M+ test messages
 - Up to 369 MB/s bandwidth for burst messages
 

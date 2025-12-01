@@ -33,13 +33,13 @@ pub struct Hub<T> {
 
 **Atomic operations**: Lock-free operations with appropriate memory ordering
 
-### Lock-Free Operations
+### Wait-Free & Lock-Free Operations
 
-**Compare-and-swap**: Atomic slot claiming without locks
+**Wait-free Link (SPSC)**: 87ns send latency - no CAS loops, bounded constant time
+
+**Lock-free Hub (MPMC)**: 313ns latency - CAS-based for multi-producer coordination
 
 **Per-consumer tracking**: Each subscriber maintains independent position
-
-**Wait-free progress**: Publishers always make progress
 
 ## Benchmark Results
 
@@ -47,9 +47,9 @@ pub struct Hub<T> {
 
 | Message Type | Size | HORUS (Hub) | HORUS (Link) | ROS2 DDS | Speedup |
 |--------------|------|-------------|--------------|----------|---------|
-| CmdVel | 16B | ~437ns | 248ns | 50-100µs | **100-320x** |
-| IMU | 304B | ~940ns | ~400ns | 80-150µs | **85-375x** |
-| LaserScan | 1.5KB | ~2.2µs | ~900ns | 150-300µs | **68-333x** |
+| CmdVel | 16B | ~313ns | 87ns | 50-100µs | **230-575x** |
+| IMU | 304B | ~500ns | ~160ns | 80-150µs | **160-940x** |
+| LaserScan | 1.5KB | ~2.2µs | ~400ns | 150-300µs | **68-750x** |
 | PointCloud | 120KB | ~360µs | ~120µs | 500µs-1ms | **1.4-8x** |
 
 **Key insight**: Latency scales linearly with message size.
@@ -57,7 +57,8 @@ pub struct Hub<T> {
 ### Throughput
 
 HORUS can handle:
-- **10M+ messages/second** for small messages (16B)
+- **12M+ messages/second** for small messages (16B) with Link
+- **3M+ messages/second** for small messages (16B) with Hub
 - **1M+ messages/second** for medium messages (1KB)
 - **100K+ messages/second** for large messages (100KB)
 
@@ -352,7 +353,8 @@ HORUS provides optional kernel bypass networking for sub-microsecond latency req
 
 | Transport | Latency | Throughput | Requirements |
 |-----------|---------|------------|--------------|
-| Shared Memory | ~250ns | 10M+ msg/s | Local only |
+| Shared Memory (Link) | ~87ns | 12M+ msg/s | Local only (wait-free) |
+| Shared Memory (Hub) | ~313ns | 3M+ msg/s | Local only (lock-free) |
 | io_uring | 2-3µs | 500K+ msg/s | Linux 5.1+ |
 | Batch UDP | 3-5µs | 300K+ msg/s | Linux 3.0+ |
 | Standard UDP | 5-10µs | 200K+ msg/s | Cross-platform |

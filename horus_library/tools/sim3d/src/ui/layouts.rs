@@ -761,13 +761,24 @@ pub fn handle_layout_events(
 }
 
 #[cfg(feature = "visual")]
-/// UI panel for layout management
+use crate::ui::dock::DockConfig;
+
+#[cfg(feature = "visual")]
+/// UI panel for layout management - only shown when dock mode is disabled
 pub fn layout_panel_system(
     mut contexts: EguiContexts,
     mut manager: ResMut<LayoutManager>,
     mut events: EventWriter<LayoutEvent>,
     mut save_name: Local<String>,
+    dock_config: Option<Res<DockConfig>>,
 ) {
+    // Skip if dock mode is enabled (dock provides unified UI)
+    if let Some(config) = dock_config {
+        if config.enabled {
+            return;
+        }
+    }
+
     // Safely get context, return early if not initialized
     let Some(ctx) = contexts.try_ctx_mut() else {
         return;

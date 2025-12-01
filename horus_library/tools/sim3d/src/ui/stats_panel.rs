@@ -107,18 +107,20 @@ pub fn collect_stats_system(
 }
 
 #[cfg(feature = "visual")]
-/// Main stats panel system
+use crate::ui::dock::DockConfig;
+
+#[cfg(feature = "visual")]
+/// Main stats panel system - only shown when dock mode is disabled
 pub fn stats_panel_system(
     mut contexts: EguiContexts,
     time: Res<Time>,
     stats: Res<SimulationStats>,
     frame_time: Res<FrameTimeBreakdown>,
     horus_stats: Option<Res<HorusSyncStats>>,
-    #[cfg(feature = "editor")] dock_config: Option<Res<crate::ui::dock::DockConfig>>,
+    dock_config: Option<Res<DockConfig>>,
     mut show_panel: Local<bool>,
 ) {
     // Skip if dock mode is enabled (dock renders its own stats tab)
-    #[cfg(feature = "editor")]
     if let Some(dock) = dock_config {
         if dock.enabled {
             return;

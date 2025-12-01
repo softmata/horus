@@ -118,32 +118,6 @@ enum Commands {
         command: AuthCommands,
     },
 
-    /// Profile a HORUS project for deterministic optimization
-    ///
-    /// Runs the scheduler with profiling enabled to collect node execution
-    /// statistics. The resulting profile can be loaded at runtime for
-    /// deterministic, optimized execution without the learning phase.
-    Profile {
-        /// File to profile (required)
-        file: PathBuf,
-
-        /// Output profile file (default: <file>.profile)
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-
-        /// Number of profiling ticks (default: 1000)
-        #[arg(short = 't', long = "ticks", default_value = "1000")]
-        ticks: usize,
-
-        /// Output format (binary or json)
-        #[arg(short = 'f', long = "format", default_value = "binary")]
-        format: String,
-
-        /// Print detailed profile statistics
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
-
     /// Run 2D simulator
     Sim2d {
         /// Headless mode (no rendering/GUI)
@@ -368,7 +342,6 @@ fn main() {
                 | "pkg"
                 | "env"
                 | "auth"
-                | "profile"
                 | "sim2d"
                 | "sim3d"
                 | "completion"
@@ -2846,86 +2819,6 @@ except ImportError as e:
             AuthCommands::Logout => commands::github_auth::logout(),
             AuthCommands::Whoami => commands::github_auth::whoami(),
         },
-
-        Commands::Profile {
-            file,
-            output,
-            ticks,
-            format,
-            verbose,
-        } => {
-            println!(
-                "{} Profiling {} for {} ticks...\n",
-                "".cyan().bold(),
-                file.display(),
-                ticks
-            );
-
-            // Determine output path
-            let output_path = output.unwrap_or_else(|| {
-                let mut out = file.clone();
-                out.set_extension("profile");
-                out
-            });
-
-            println!("  Source: {}", file.display());
-            println!("  Output: {}", output_path.display());
-            println!("  Ticks:  {}", ticks);
-            println!("  Format: {}", format);
-            println!();
-
-            // For now, we create a placeholder profile
-            // In a full implementation, this would:
-            // 1. Build the project with profiling enabled
-            // 2. Run it for `ticks` iterations
-            // 3. Collect timing data
-            // 4. Save the profile
-
-            use horus_core::scheduling::ProfileData;
-
-            let profile_name = file.file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unnamed".to_string());
-
-            // Create a profile (in real implementation, this would run the scheduler)
-            let mut profile = ProfileData::new(&profile_name);
-            profile.profiling_ticks = ticks;
-
-            // Print instructions for manual profiling
-            println!("{} Profile created: {}", "".green(), output_path.display());
-            println!();
-            println!("To use this profile in your code:");
-            println!();
-            println!("  {}", "// Load profile for deterministic, optimized execution".dimmed());
-            println!("  let scheduler = Scheduler::with_profile(\"{}\")?;", output_path.display());
-            println!();
-            println!("Or use explicit tier annotations:");
-            println!();
-            println!("  {}", "// Add nodes with explicit tiers (no profiling needed)".dimmed());
-            println!("  scheduler.add_with_tier(Box::new(pid_node), 0, NodeTier::Jit);");
-            println!("  scheduler.add_with_tier(Box::new(sensor), 1, NodeTier::Fast);");
-            println!();
-
-            // Save the profile
-            let save_result = if format == "json" {
-                profile.save_json(&output_path)
-            } else {
-                profile.save(&output_path)
-            };
-
-            match save_result {
-                Ok(()) => {
-                    println!("{} Profile saved successfully!", "".green());
-                    if verbose {
-                        profile.print_summary();
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    Err(HorusError::Config(format!("Failed to save profile: {}", e)))
-                }
-            }
-        }
 
         Commands::Sim2d {
             headless,

@@ -85,16 +85,18 @@ impl CameraView {
 }
 
 #[cfg(feature = "visual")]
-/// Main controls panel system
+use crate::ui::dock::DockConfig;
+
+#[cfg(feature = "visual")]
+/// Main controls panel system - only shown when dock mode is disabled
 pub fn controls_panel_system(
     mut contexts: EguiContexts,
     mut controls: ResMut<SimulationControls>,
     mut events: EventWriter<SimulationEvent>,
-    #[cfg(feature = "editor")] dock_config: Option<Res<crate::ui::dock::DockConfig>>,
+    dock_config: Option<Res<DockConfig>>,
     mut show_panel: Local<bool>,
 ) {
     // Skip if dock mode is enabled (dock renders its own controls tab)
-    #[cfg(feature = "editor")]
     if let Some(dock) = dock_config {
         if dock.enabled {
             return;
@@ -105,10 +107,15 @@ pub fn controls_panel_system(
         *show_panel = true; // Default to showing
     }
 
+    // Safely get context
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        return;
+    };
+
     egui::Window::new("Controls")
         .default_width(280.0)
         .default_pos([10.0, 400.0])
-        .show(contexts.ctx_mut(), |ui| {
+        .show(ctx, |ui| {
             ui.heading("Simulation");
             ui.separator();
 

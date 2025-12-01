@@ -689,42 +689,6 @@ See the **[Troubleshooting & Maintenance Guide](/troubleshooting)** for:
 - Platform-specific problems
 - 15+ solved issues with step-by-step solutions
 
-## Optional: Setup Trusted Certificates
-
-**For Dashboard Users (Recommended)**
-
-By default, the HORUS dashboard uses self-signed SSL certificates, which cause browser security warnings. You can eliminate these warnings with a one-time setup using mkcert:
-
-```bash
-# Install mkcert
-# Ubuntu/Debian:
-sudo apt install mkcert
-
-# macOS:
-brew install mkcert
-
-# Setup trusted certificates
-horus init --setup-certs
-```
-
-**What this does:**
-- Installs a local Certificate Authority on your device
-- Generates trusted certificates for localhost and your network IP
-- Eliminates browser security warnings
-- Works with all browsers (Chrome, Firefox, Safari, Edge)
-
-**After this setup:**
-- When you run `horus dashboard`, you'll see: **[OK] Trusted certificate detected - No browser warnings!**
-- You and your team can access the dashboard without accepting security warnings
-- Perfect for development and demonstrations
-
-**Skip this if:**
-- You don't plan to use the web dashboard
-- You're okay clicking through browser warnings
-- You prefer the terminal UI mode (`horus dashboard --tui`)
-
-**Learn more:** See the [Dashboard Guide](/dashboard#trusted-https-certificates) for details.
-
 ## Next Steps
 
 Now that HORUS is installed, let's build something!

@@ -23,7 +23,9 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
 }
 
 // Import intelligence modules
-use super::executors::{AsyncIOExecutor, AsyncResult, ParallelExecutor};
+use super::executors::{
+    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, ParallelExecutor,
+};
 use super::fault_tolerance::CircuitBreaker;
 use super::intelligence::{DependencyGraph, ExecutionTier, RuntimeProfiler, TierClassifier};
 use super::jit::CompiledDataflow;
@@ -64,6 +66,8 @@ pub struct Scheduler {
     async_io_executor: Option<AsyncIOExecutor>,
     async_result_rx: Option<mpsc::UnboundedReceiver<AsyncResult>>,
     async_result_tx: Option<mpsc::UnboundedSender<AsyncResult>>,
+    background_executor: Option<BackgroundExecutor>,
+    isolated_executor: Option<IsolatedExecutor>,
     learning_complete: bool,
 
     // JIT compilation for ultra-fast nodes
@@ -128,6 +132,8 @@ impl Scheduler {
             async_io_executor: None,
             async_result_rx: None,
             async_result_tx: None,
+            background_executor: None,
+            isolated_executor: None,
             learning_complete: true, // CHANGED: Default to deterministic (no learning)
 
             // JIT compilation
@@ -1047,6 +1053,12 @@ impl Scheduler {
                     // (after logging is restored so moved nodes retain their logging settings)
                     self.setup_async_executor().await;
 
+                    // Setup background executor for low-priority nodes
+                    self.setup_background_executor();
+
+                    // Setup isolated executor for fault-tolerant nodes
+                    self.setup_isolated_executor();
+
                     self.learning_complete = true;
                     println!("{}", "=== Optimization Complete ===\n".green());
                 }
@@ -1255,6 +1267,18 @@ impl Scheduler {
             }
 
             // === Shutdown runtime features ===
+
+            // Shutdown background executor
+            if let Some(ref mut executor) = self.background_executor {
+                executor.shutdown();
+                println!("Background executor shutdown complete");
+            }
+
+            // Shutdown isolated executor
+            if let Some(ref mut executor) = self.isolated_executor {
+                executor.shutdown();
+                println!("Isolated executor shutdown complete");
+            }
 
             // Get total tick count from profiler stats
             let total_ticks = self
@@ -1768,6 +1792,17 @@ impl Scheduler {
             executor.tick_all().await;
         }
 
+        // Trigger background nodes (low-priority, non-blocking)
+        if let Some(ref executor) = self.background_executor {
+            executor.tick_all();
+        }
+
+        // Trigger isolated nodes (process-isolated, fault-tolerant)
+        if let Some(ref mut executor) = self.isolated_executor {
+            let _results = executor.tick_all();
+            // Results are handled by the executor itself (restart on failure, etc.)
+        }
+
         // Execute nodes level by level (nodes in same level can run in parallel)
         let levels = self
             .dependency_graph
@@ -1830,6 +1865,9 @@ impl Scheduler {
 
         // Process any async I/O results
         self.process_async_results().await;
+
+        // Process any background executor results (non-blocking)
+        self.process_background_results();
     }
 
     /// Execute a single node by index with RT support
@@ -2199,6 +2237,116 @@ impl Scheduler {
                 if !result.success {
                     if let Some(ref error) = result.error {
                         eprintln!("Async node {} failed: {}", result.node_name, error);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Setup background executor and move background-tier nodes to it
+    fn setup_background_executor(&mut self) {
+        // Create background executor
+        let mut bg_executor = match BackgroundExecutor::new() {
+            Ok(exec) => exec,
+            Err(e) => {
+                eprintln!("[Background] Failed to create executor: {}", e);
+                return;
+            }
+        };
+
+        // Identify background nodes from classifier
+        if let Some(ref classifier) = self.classifier {
+            let mut nodes_to_move = Vec::new();
+
+            // Find indices of background nodes
+            for (idx, registered) in self.nodes.iter().enumerate() {
+                let node_name = registered.node.name();
+
+                // Check if this node is classified as Background tier
+                if let Some(tier) = classifier.get_tier(node_name) {
+                    if tier == ExecutionTier::Background {
+                        nodes_to_move.push(idx);
+                    }
+                }
+            }
+
+            // Move nodes to background executor (in reverse order to maintain indices)
+            for idx in nodes_to_move.into_iter().rev() {
+                // Remove from main scheduler
+                let registered = self.nodes.swap_remove(idx);
+                let node_name = registered.node.name().to_string();
+
+                // Spawn in background executor
+                if let Err(e) = bg_executor.spawn_node(registered.node, registered.context) {
+                    eprintln!("Failed to move {} to background tier: {}", node_name, e);
+                }
+            }
+
+            if bg_executor.node_count() > 0 {
+                println!(
+                    "[Background] Moved {} nodes to low-priority thread",
+                    bg_executor.node_count()
+                );
+            }
+        }
+
+        self.background_executor = Some(bg_executor);
+    }
+
+    /// Setup isolated executor and register isolated-tier nodes
+    fn setup_isolated_executor(&mut self) {
+        // Create isolated executor
+        let mut iso_executor = match IsolatedExecutor::new() {
+            Ok(exec) => exec,
+            Err(e) => {
+                eprintln!("[Isolated] Failed to create executor: {}", e);
+                return;
+            }
+        };
+
+        // Identify isolated nodes from classifier
+        if let Some(ref classifier) = self.classifier {
+            let mut nodes_to_isolate = Vec::new();
+
+            // Find names of isolated nodes
+            for registered in self.nodes.iter() {
+                let node_name = registered.node.name();
+
+                // Check if this node is classified as Isolated tier
+                if let Some(tier) = classifier.get_tier(node_name) {
+                    if tier == ExecutionTier::Isolated {
+                        nodes_to_isolate.push(node_name.to_string());
+                    }
+                }
+            }
+
+            // Register nodes for isolated execution
+            // Note: Isolated nodes stay in main scheduler but are marked for
+            // process-isolated execution via the circuit breaker
+            for node_name in &nodes_to_isolate {
+                if let Err(e) = iso_executor.register_node(node_name) {
+                    eprintln!("Failed to register {} for isolation: {}", node_name, e);
+                }
+            }
+
+            if iso_executor.node_count() > 0 {
+                println!(
+                    "[Isolated] Registered {} nodes for process isolation",
+                    iso_executor.node_count()
+                );
+            }
+        }
+
+        self.isolated_executor = Some(iso_executor);
+    }
+
+    /// Process background executor results (non-blocking)
+    fn process_background_results(&mut self) {
+        if let Some(ref executor) = self.background_executor {
+            for result in executor.poll_results() {
+                if !result.success {
+                    if let Some(ref error) = result.error {
+                        eprintln!("[Background] Node {} failed: {}", result.node_name, error);
                     }
                 }
             }

@@ -98,17 +98,19 @@ impl TFStats {
 }
 
 #[cfg(feature = "visual")]
-/// Main TF panel system
+use crate::ui::dock::DockConfig;
+
+#[cfg(feature = "visual")]
+/// Main TF panel system - only shown when dock mode is disabled
 pub fn tf_panel_system(
     mut contexts: EguiContexts,
     tf_tree: Res<TFTree>,
     mut config: ResMut<TFPanelConfig>,
     publishers: Query<&TFPublisher>,
     time: Res<Time>,
-    #[cfg(feature = "editor")] dock_config: Option<Res<crate::ui::dock::DockConfig>>,
+    dock_config: Option<Res<DockConfig>>,
 ) {
     // Skip if dock mode is enabled (dock renders its own TF tree tab)
-    #[cfg(feature = "editor")]
     if let Some(dock) = dock_config {
         if dock.enabled {
             return;
@@ -119,6 +121,11 @@ pub fn tf_panel_system(
         return;
     }
 
+    // Safely get context
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        return;
+    };
+
     // Collect all publishers
     let all_publishers: Vec<&TFPublisher> = publishers.iter().collect();
     let mut stats = TFStats::new();
@@ -128,7 +135,7 @@ pub fn tf_panel_system(
         .default_width(320.0)
         .default_pos([10.0, 700.0])
         .resizable(true)
-        .show(contexts.ctx_mut(), |ui| {
+        .show(ctx, |ui| {
             ui.heading("Transform Frames");
             ui.separator();
 

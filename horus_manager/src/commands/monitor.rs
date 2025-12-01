@@ -213,17 +213,24 @@ fn discover_nodes_from_heartbeats() -> HorusResult<Vec<NodeStatus>> {
                             // Try to find PID for this node
                             let pid = find_node_pid(node_name).unwrap_or(0);
 
+                            // Get process info for CPU/memory if we have a valid PID
+                            let proc_info = if pid > 0 {
+                                get_process_info(pid).unwrap_or_default()
+                            } else {
+                                ProcessInfo::default()
+                            };
+
                             nodes.push(NodeStatus {
                                 name: node_name.to_string(),
                                 status: status_str.to_string(),
                                 health: heartbeat.health,
                                 priority: 0,
                                 process_id: pid,
-                                command_line: String::new(),
-                                working_dir: String::new(),
-                                cpu_usage: 0.0,
-                                memory_usage: 0,
-                                start_time: String::new(),
+                                command_line: proc_info.cmdline.clone(),
+                                working_dir: proc_info.working_dir.clone(),
+                                cpu_usage: proc_info.cpu_percent,
+                                memory_usage: proc_info.memory_kb,
+                                start_time: proc_info.start_time.clone(),
                                 scheduler_name: "Heartbeat".to_string(),
                                 category: ProcessCategory::Node,
                                 tick_count: heartbeat.tick_count,
@@ -465,9 +472,9 @@ fn discover_nodes_from_registry() -> anyhow::Result<Vec<NodeStatus>> {
                     process_id: scheduler_pid, // Use scheduler PID as approximation
                     command_line: proc_info.cmdline.clone(),
                     working_dir: working_dir.clone(),
-                    cpu_usage: 0.0,
-                    memory_usage: 0,
-                    start_time: String::new(),
+                    cpu_usage: proc_info.cpu_percent,
+                    memory_usage: proc_info.memory_kb,
+                    start_time: proc_info.start_time.clone(),
                     tick_count: 0,
                     error_count: 0,
                     actual_rate_hz: rate_hz,
@@ -1714,74 +1721,119 @@ fn scan_topics_directory(shm_path: &Path) -> HorusResult<Vec<SharedMemoryInfo>> 
 
         // Smart filter for shared memory segments
         if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-            // Only include files (not directories)
             if metadata.is_file() {
-                let size = metadata.len();
-                let modified = metadata.modified().ok();
-
-                // Find processes accessing this segment (optimized)
-                let accessing_procs = find_accessing_processes_fast(&path, name);
-
-                // All files in HORUS directory are valid topics
-                // Extract topic name from filename (remove "horus_" prefix)
-                // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-                let topic_name = if name.starts_with("horus_") {
-                    name.strip_prefix("horus_").unwrap_or(name).to_string()
-                } else {
-                    name.to_string()
-                };
-
-                let is_recent = if let Some(mod_time) = modified {
-                    // Use 30 second threshold to handle slow publishers (e.g., 0.1 Hz = 10 sec between publishes)
-                    mod_time.elapsed().unwrap_or(Duration::from_secs(3600))
-                        < Duration::from_secs(30)
-                } else {
-                    false
-                };
-
-                let has_valid_processes = accessing_procs.iter().any(|pid| process_exists(*pid));
-
-                // Include all topics in HORUS directory
-                // Topics persist for the lifetime of the session - cleanup happens when
-                // the session ends (via Scheduler::cleanup_session), not based on time
-                let active = has_valid_processes || is_recent;
-
-                // Calculate message rate from modification times
-                let message_rate = calculate_topic_rate(&topic_name, modified);
-
-                // Get metadata from registry
-                let (message_type, mut publishers, subscribers) = registry_topics
-                    .get(&topic_name)
-                    .map(|(t, p, s)| (Some(t.clone()), p.clone(), s.clone()))
-                    .unwrap_or((None, Vec::new(), Vec::new()));
-
-                // Fallback: if no registry info and topic is active, infer from active nodes
-                if publishers.is_empty() && active && !active_nodes.is_empty() {
-                    // Assume all active nodes are potential publishers for active topics
-                    // This provides visibility when registry.json is not available
-                    publishers = active_nodes.clone();
+                // Hub topics - files directly in topics directory
+                if let Some(info) = scan_topic_file(&path, name, &registry_topics, &active_nodes) {
+                    topics.push(info);
                 }
-
-                topics.push(SharedMemoryInfo {
-                    topic_name,
-                    size_bytes: size,
-                    active,
-                    accessing_processes: accessing_procs
-                        .iter()
-                        .filter(|pid| process_exists(**pid))
-                        .copied()
-                        .collect(),
-                    last_modified: modified,
-                    message_type,
-                    publishers,
-                    subscribers,
-                    message_rate_hz: message_rate,
-                });
+            } else if metadata.is_dir() && name == "horus_links" {
+                // Link topics - files inside horus_links subdirectory
+                topics.extend(scan_links_directory(&path, &registry_topics, &active_nodes)?);
             }
         }
     }
 
     Ok(topics)
+}
+
+/// Scan the horus_links directory for Link shared memory files
+fn scan_links_directory(
+    links_path: &Path,
+    registry_topics: &StdHashMap<String, (String, Vec<String>, Vec<String>)>,
+    active_nodes: &[String],
+) -> HorusResult<Vec<SharedMemoryInfo>> {
+    let mut topics = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(links_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                        // Link topic name format: links/<topic>
+                        let topic_name = format!("links/{}", name);
+                        if let Some(mut info) = scan_topic_file(&path, name, registry_topics, active_nodes) {
+                            info.topic_name = topic_name;
+                            topics.push(info);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(topics)
+}
+
+/// Scan a single topic file and create SharedMemoryInfo
+fn scan_topic_file(
+    path: &Path,
+    name: &str,
+    registry_topics: &StdHashMap<String, (String, Vec<String>, Vec<String>)>,
+    active_nodes: &[String],
+) -> Option<SharedMemoryInfo> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let size = metadata.len();
+    let modified = metadata.modified().ok();
+
+    // Find processes accessing this segment (optimized)
+    let accessing_procs = find_accessing_processes_fast(path, name);
+
+    // All files in HORUS directory are valid topics
+    // Extract topic name from filename (remove "horus_" prefix)
+    // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
+    let topic_name = if name.starts_with("horus_") {
+        name.strip_prefix("horus_").unwrap_or(name).to_string()
+    } else {
+        name.to_string()
+    };
+
+    let is_recent = if let Some(mod_time) = modified {
+        // Use 30 second threshold to handle slow publishers (e.g., 0.1 Hz = 10 sec between publishes)
+        mod_time.elapsed().unwrap_or(Duration::from_secs(3600))
+            < Duration::from_secs(30)
+    } else {
+        false
+    };
+
+    let has_valid_processes = accessing_procs.iter().any(|pid| process_exists(*pid));
+
+    // Include all topics in HORUS directory
+    // Topics persist for the lifetime of the session - cleanup happens when
+    // the session ends (via Scheduler::cleanup_session), not based on time
+    let active = has_valid_processes || is_recent;
+
+    // Calculate message rate from modification times
+    let message_rate = calculate_topic_rate(&topic_name, modified);
+
+    // Get metadata from registry
+    let (message_type, mut publishers, subscribers) = registry_topics
+        .get(&topic_name)
+        .map(|(t, p, s)| (Some(t.clone()), p.clone(), s.clone()))
+        .unwrap_or((None, Vec::new(), Vec::new()));
+
+    // Fallback: if no registry info and topic is active, infer from active nodes
+    if publishers.is_empty() && active && !active_nodes.is_empty() {
+        // Assume all active nodes are potential publishers for active topics
+        // This provides visibility when registry.json is not available
+        publishers = active_nodes.to_vec();
+    }
+
+    Some(SharedMemoryInfo {
+        topic_name,
+        size_bytes: size,
+        active,
+        accessing_processes: accessing_procs
+            .iter()
+            .filter(|pid| process_exists(**pid))
+            .copied()
+            .collect(),
+        last_modified: modified,
+        message_type,
+        publishers,
+        subscribers,
+        message_rate_hz: message_rate,
+    })
 }
 
 fn calculate_topic_rate(topic_name: &str, modified: Option<std::time::SystemTime>) -> f32 {

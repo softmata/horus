@@ -4,8 +4,29 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 #[cfg(feature = "visual")]
-pub fn debug_panel_system(mut contexts: EguiContexts, time: Res<Time>) {
-    egui::Window::new("Debug Panel").show(contexts.ctx_mut(), |ui| {
+use crate::ui::dock::DockConfig;
+
+/// Debug panel system - only shown when dock mode is disabled
+/// When dock mode is enabled, the docked panels provide all the info
+#[cfg(feature = "visual")]
+pub fn debug_panel_system(
+    mut contexts: EguiContexts,
+    time: Res<Time>,
+    dock_config: Option<Res<DockConfig>>,
+) {
+    // Skip if dock mode is enabled (dock provides unified UI)
+    if let Some(config) = dock_config {
+        if config.enabled {
+            return;
+        }
+    }
+
+    // Safely get context, return early if not initialized
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        return;
+    };
+
+    egui::Window::new("Debug Panel").show(ctx, |ui| {
         ui.heading("sim3d - HORUS 3D Simulator");
         ui.separator();
 
@@ -19,6 +40,8 @@ pub fn debug_panel_system(mut contexts: EguiContexts, time: Res<Time>) {
         ui.label("  Mouse Wheel: Zoom");
         ui.label("  WASD/Arrows: Move camera focus");
         ui.label("  Q/E: Move focus up/down");
+        ui.separator();
+        ui.label("Press F7 to enable dock mode");
     });
 }
 

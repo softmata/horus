@@ -4,26 +4,26 @@
 
 ## Production-Validated IPC Performance
 
-### Link (SPSC) - Cross-Core Latency
+### Link (SPSC) - Cross-Core Latency (Wait-Free)
 
-**Optimized single-producer, single-consumer channel:**
-- **Median latency**: 248ns (496 cycles @ 2GHz)
-- **P95 latency**: 444ns
-- **P99 latency**: 578ns
-- **Burst throughput**: 6.05 MHz (6M+ msg/s)
-- **Bandwidth**: Up to 369 MB/s for burst messages
+**Optimized single-producer, single-consumer channel with wait-free semantics:**
+- **Median send latency**: 87ns (174 cycles @ 2GHz)
+- **Send+Recv round-trip**: 262ns
+- **P95 latency**: ~300ns
+- **Burst throughput**: 12+ MHz (12M+ msg/s)
+- **Bandwidth**: Up to 500+ MB/s for burst messages
 - **Large messages**: 480 msg/s for 16KB, 7.5 MB/s bandwidth
 
-### Hub (MPMC) - Cross-Core Latency
+### Hub (MPMC) - Cross-Core Latency (Lock-Free)
 
 **Flexible multi-producer, multi-consumer pub/sub:**
-- **Median latency**: 481ns (962 cycles @ 2GHz)
-- **P95 latency**: 653ns
+- **Median latency**: 313ns (626 cycles @ 2GHz)
+- **P95 latency**: ~400ns
 - **Flexible architecture**: Multiple publishers and subscribers
 
 ### Key Performance Results
 
-**Link is 48% faster than Hub** in 1P1C scenarios
+**Link is 72% faster than Hub** in 1P1C scenarios (87ns vs 313ns)
 - Best for point-to-point communication
 - Lowest latency for control loops
 
@@ -42,7 +42,7 @@
 
 | Message Type | Size | Avg Latency | Throughput | Use Case |
 |--------------|------|-------------|------------|----------|
-| **CmdVel** | 16 B | **~500 ns** | 2.7M msg/s | Motor control @ 1000Hz |
+| **CmdVel** | 16 B | **~313 ns** | 3.2M msg/s | Motor control @ 1000Hz |
 | **IMU** | 304 B | **~940 ns** | 1.8M msg/s | Sensor fusion @ 100Hz |
 | **Odometry** | 736 B | **~1.1 μs** | 1.3M msg/s | Localization @ 50Hz |
 | **LaserScan** | 1.5 KB | **~2.2 μs** | 633K msg/s | 2D Lidar @ 10Hz |
@@ -71,10 +71,10 @@ See [`latest_run.txt`](latest_run.txt) for most recent benchmark output.
 
 | Framework | Small Msg | Medium Msg | Large Msg | HORUS Speedup |
 |-----------|-----------|------------|-----------|---------------|
-| **HORUS Link (SPSC)** | **248 ns** | **~400 ns** | **~900 ns** | Baseline (Fastest) |
-| **HORUS Hub (MPMC)** | **481 ns** | **~620 ns** | **~1.4 μs** | Flexible pub/sub |
-| ROS2 (DDS) | 50-100 μs | 100-500 μs | 1-10 ms | **80-403x slower** |
-| ROS2 (FastDDS) | 20-50 μs | 50-200 μs | 500 μs-5 ms | **80-202x slower** |
+| **HORUS Link (SPSC)** | **87 ns** | **~160 ns** | **~400 ns** | Baseline (Fastest, Wait-Free) |
+| **HORUS Hub (MPMC)** | **313 ns** | **~500 ns** | **~1.1 μs** | Flexible pub/sub (Lock-Free) |
+| ROS2 (DDS) | 50-100 μs | 100-500 μs | 1-10 ms | **230-575x slower** |
+| ROS2 (FastDDS) | 20-50 μs | 50-200 μs | 500 μs-5 ms | **230-575x slower** |
 
 ## Methodology
 
@@ -160,9 +160,9 @@ See [`../README.md`](../README.md) and [`../SUMMARY.md`](../SUMMARY.md) for:
 **HORUS delivers production-grade, sub-microsecond IPC performance:**
 
 **IPC Mechanisms:**
-- **Link (SPSC)**: 248ns median - Fastest for point-to-point
-- **Hub (MPMC)**: 481ns median - Flexible pub/sub
-- **48% performance advantage** with Link in 1P1C scenarios
+- **Link (SPSC)**: 87ns send (wait-free) - Fastest for point-to-point
+- **Hub (MPMC)**: 313ns median (lock-free) - Flexible pub/sub
+- **72% performance advantage** with Link in 1P1C scenarios
 
 **System Validation:**
 - 6.2M+ test messages with zero corruptions

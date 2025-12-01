@@ -173,12 +173,12 @@ Range:            ~500-1200 ns
 
 | Framework | Small Msg | Medium Msg | Large Msg |
 |-----------|-----------|------------|-----------|
-| **HORUS Link (SPSC)** | **248 ns** | **~400 ns** | **~900 ns** |
-| **HORUS Hub (MPMC)** | **481 ns** | **~620 ns** | **~1.4 μs** |
+| **HORUS Link (SPSC)** | **87 ns** | **~160 ns** | **~400 ns** |
+| **HORUS Hub (MPMC)** | **313 ns** | **~500 ns** | **~1.1 μs** |
 | ROS2 (DDS) | 50-100 μs | 100-500 μs | 1-10 ms |
 | ROS2 (FastDDS) | 20-50 μs | 50-200 μs | 500 μs - 5 ms |
 
-**Performance Advantage**: HORUS is **80-403x faster** than ROS2 for typical message sizes.
+**Performance Advantage**: HORUS is **230-575x faster** than ROS2 for typical message sizes.
 
 ---
 
@@ -186,7 +186,7 @@ Range:            ~500-1200 ns
 
 | Message Size | Message Type | Hub Latency | Link Latency | vs ROS2 |
 |-------------|--------------|-------------|--------------|---------|
-| 16 B | CmdVel | ~500 ns | 248 ns | **160-403x faster** |
+| 16 B | CmdVel | ~313 ns | 87 ns | **230-575x faster** |
 | 104 B | BatteryState | ~600 ns | ~350 ns | **83-286x faster** |
 | 304 B | IMU | ~940 ns | ~400 ns | **53-250x faster** |
 | 736 B | Odometry | ~1.1 μs | ~600 ns | **45-167x faster** |
@@ -476,16 +476,16 @@ scheduler.set_config(SchedulerConfig::safety_critical());
 
 **HORUS provides production-grade performance for real robotics applications:**
 
-**Link (SPSC) - Point-to-Point:**
-- **248 ns** - CmdVel (motor control)
+**Link (SPSC) - Point-to-Point (Wait-Free):**
+- **87 ns** - Send only (ultra-low latency)
+- **161 ns** - CmdVel (motor control)
+- **262 ns** - Send+Recv round-trip
 - **~400 ns** - IMU (sensor fusion)
-- **~900 ns** - LaserScan (2D lidar)
-- **~600 ns** - Odometry (localization)
 - **~120 μs** - PointCloud with 10K points
 
-**Hub (MPMC) - Pub/Sub:**
-- **~500 ns** - CmdVel (motor control)
-- **~940 ns** - IMU (sensor fusion)
+**Hub (MPMC) - Pub/Sub (Lock-Free):**
+- **~313 ns** - CmdVel (motor control)
+- **~500 ns** - IMU (sensor fusion)
 - **~2.2 μs** - LaserScan (2D lidar)
 - **~1.1 μs** - Odometry (localization)
 - **~360 μs** - PointCloud with 10K points

@@ -188,15 +188,28 @@ pub fn follow_mode_update_system(
     }
 }
 
-/// UI panel for view mode selection
+/// UI panel for view mode selection - only shown when dock mode is disabled
 #[cfg(feature = "visual")]
 pub fn view_mode_panel_system(
     mut contexts: EguiContexts,
     mut current_mode: ResMut<CurrentViewMode>,
+    dock_config: Option<Res<crate::ui::dock::DockConfig>>,
 ) {
+    // Skip if dock mode is enabled
+    if let Some(dock) = dock_config {
+        if dock.enabled {
+            return;
+        }
+    }
+
+    // Safely get context
+    let Some(ctx) = contexts.try_ctx_mut() else {
+        return;
+    };
+
     egui::Window::new("View Modes")
         .default_pos([10.0, 300.0])
-        .show(contexts.ctx_mut(), |ui| {
+        .show(ctx, |ui| {
             ui.heading("Camera View Modes");
             ui.separator();
 
