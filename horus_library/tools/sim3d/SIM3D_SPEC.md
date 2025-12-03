@@ -42,7 +42,7 @@ sim3d is a production-grade 3D robotics simulator built with Bevy and Rapier3D, 
 ```toml
 [package]
 name = "sim3d"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "3D robotics simulator with RL support"
 

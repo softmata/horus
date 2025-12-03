@@ -85,7 +85,7 @@ export default function DocsLandingPage() {
                 style={{ animationDelay: '0.1s' }}
               >
                 <span className="w-2 h-2 rounded-full bg-[var(--accent)] animate-pulse" />
-                <span className="text-sm font-medium text-[var(--text-secondary)]">v0.1.5</span>
+                <span className="text-sm font-medium text-[var(--text-secondary)]">v0.1.6</span>
                 <span className="text-[var(--text-tertiary)]">·</span>
                 <span className="text-sm text-[var(--text-tertiary)]">Sub-microsecond IPC</span>
               </div>

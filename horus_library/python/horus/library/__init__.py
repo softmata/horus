@@ -59,7 +59,7 @@ obs, reward, done, truncated, info = env.step([0.1] * 12)
 ```
 """
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 # Submodules
 from . import messages

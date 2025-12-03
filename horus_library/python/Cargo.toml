@@ -1,6 +1,6 @@
 [package]
 name = "horus_library_py"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Python bindings for HORUS Library - Standard robotics messages, nodes, and algorithms"
 authors = ["HORUS Contributors"]

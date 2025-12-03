@@ -200,7 +200,7 @@ sim3d/
 
 ## Version History
 
-- **0.1.5** - Current version
+- **0.1.6** - Current version
   - 16 sensor types
   - Multi-robot communication
   - Domain randomization

@@ -1,5 +1,5 @@
 name: robot_fleet_rust
-version: 0.1.5
+version: 0.1.6
 description: Complete robot fleet management system for dashboard testing
 author: neos-builder
 license: MIT
@@ -7,10 +7,10 @@ language: rust
 horus_id: null  # Auto-generated on first dependency resolution
 
 dependencies:
-  - horus@0.1.5
-  - horus_core@0.1.5
-  - horus_macros@0.1.5
-  - horus_library@0.1.5  # Standard robotics messages (CmdVel, etc.)
+  - horus@0.1.6
+  - horus_core@0.1.6
+  - horus_macros@0.1.6
+  - horus_library@0.1.6  # Standard robotics messages (CmdVel, etc.)
   - 'cargo:serde@1.0:features=derive'  # Explicit cargo dependency with features
   - 'cargo:rand@0.8'
 

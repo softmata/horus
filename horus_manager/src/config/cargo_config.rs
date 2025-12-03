@@ -152,7 +152,7 @@ impl CargoConfig {
         Self {
             package: PackageSection {
                 name: name.to_string(),
-                version: "0.1.5".to_string(),
+                version: "0.1.6".to_string(),
                 edition: Some("2021".to_string()),
                 authors: None,
                 description: Some("HORUS package".to_string()),
@@ -170,7 +170,7 @@ impl CargoConfig {
                     tags: Some(vec!["horus".to_string()]),
                     capabilities: None,
                     hardware: None,
-                    min_horus_version: Some("0.1.5".to_string()),
+                    min_horus_version: Some("0.1.6".to_string()),
                     max_horus_version: None,
                     publishable: true,
                     tier: Some("free".to_string()),

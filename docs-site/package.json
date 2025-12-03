@@ -1,6 +1,6 @@
 {
   "name": "horus-docs",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "scripts": {
     "dev": "node scripts/build-search-index.js && next dev -p 3009 -H 0.0.0.0",

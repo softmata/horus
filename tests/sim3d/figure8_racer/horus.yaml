@@ -1,5 +1,5 @@
 name: figure8_racer
-version: 0.1.5
+version: 0.1.6
 description: Figure-8 racing controller for sim3d - makes robot trace infinity pattern
 author: horus-team
 license: Apache-2.0

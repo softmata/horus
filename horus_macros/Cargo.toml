@@ -1,6 +1,6 @@
 [package]
 name = "horus_macros"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Procedural macros for the HORUS robotics framework"
 

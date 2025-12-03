@@ -18,7 +18,7 @@ Hardware nodes only compile when their required Cargo feature is enabled:
 ```yaml
 # horus.yaml
 dependencies:
-  - horus_library@0.1.5:features=opencv-backend,serial-hardware
+  - horus_library@0.1.6:features=opencv-backend,serial-hardware
 ```
 
 Without the feature? **Compile error** - not a runtime failure. This is intentional.

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/v0.1.5--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.85-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-87ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-12M%2B%20msg%2Fs-green.svg)](#performance)
+[![Version](https://img.shields.io/badge/v0.1.6--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.85-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-87ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-12M%2B%20msg%2Fs-green.svg)](#performance)
 
 **Hybrid Optimized Robotics Unified System**
 
@@ -757,8 +757,8 @@ horus env restore a3f9c2b7
 │  ~/.horus/cache/                                                    │
 │  (Global cache - shared across all projects)                        │
 │                                                                     │
-│  ├── horus_core-0.1.5/         ← Compiled binaries                  │
-│  ├── horus_library-0.1.5/      ← Shared libraries                   │
+│  ├── horus_core-0.1.6/         ← Compiled binaries                  │
+│  ├── horus_library-0.1.6/      ← Shared libraries                   │
 │  └── sensor_fusion-2.1.0/      ← Third-party packages               │
 └─────────────────────────────────────────────────────────────────────┘
                             │
@@ -769,8 +769,8 @@ horus env restore a3f9c2b7
 │  (Local isolated environment)                                       │
 │                                                                     │
 │  Case 1: Version Match (symlink)                                    │
-│  ├── horus_core-0.1.5 → ~/.horus/cache/horus_core-0.1.5             │
-│  └── horus_library-0.1.5 → ~/.horus/cache/horus_library-0.1.5       │
+│  ├── horus_core-0.1.6 → ~/.horus/cache/horus_core-0.1.6             │
+│  └── horus_library-0.1.6 → ~/.horus/cache/horus_library-0.1.6       │
 │      Fast, no duplication                                           │
 │                                                                     │
 │  Case 2: Version Mismatch (local copy on restore)                   │

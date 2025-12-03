@@ -13,7 +13,7 @@ use horus_manager::{commands, dashboard, dashboard_tui, registry, security, work
 #[derive(Parser)]
 #[command(name = "horus")]
 #[command(about = "HORUS - Hybrid Optimized Robotics Unified System")]
-#[command(version = "0.1.5")]
+#[command(version = "0.1.6")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]

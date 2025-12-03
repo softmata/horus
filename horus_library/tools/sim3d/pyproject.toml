@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sim3d-rl"
-version = "0.1.5"
+version = "0.1.6"
 description = "3D robotics simulator with RL support - Python bindings"
 authors = [{name = "HORUS Team", email = "noreply@softmata.com"}]
 license = {text = "MIT OR Apache-2.0"}

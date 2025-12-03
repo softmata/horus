@@ -1,6 +1,6 @@
 [package]
 name = "horus"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["HORUS Team"]
 description = "HORUS - Hybrid Optimized Robotics Unified System framework for Rust"
