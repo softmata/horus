@@ -54,7 +54,7 @@ mod view_modes;
 mod rl;
 
 use cli::{Cli, Command, Mode};
-use hframe::TFTree;
+use hframe::HFrameTree;
 use physics::PhysicsWorld;
 use scene::spawner::SpawnedObjects;
 use systems::sensor_update::{SensorSystemSet, SensorUpdatePlugin};
@@ -81,10 +81,10 @@ use sensors::{
     segmentation::SegmentationCameraPlugin, tactile::TactileSensorPlugin,
     thermal::ThermalCameraPlugin,
 };
-use systems::{horus_sync::HorusSyncPlugin, tf_update::TFUpdatePlugin};
+use systems::{hframe_update::HFrameUpdatePlugin, horus_sync::HorusSyncPlugin};
 use view_modes::{
-    collision_mode::CollisionVisualizationPlugin, physics_mode::PhysicsVisualizationPlugin,
-    tf_mode::TFVisualizationPlugin,
+    collision_mode::CollisionVisualizationPlugin, hframe_mode::HFrameVisualizationPlugin,
+    physics_mode::PhysicsVisualizationPlugin,
 };
 
 /// System sets for organizing update order
@@ -92,8 +92,8 @@ use view_modes::{
 pub enum SimSystemSet {
     /// Physics simulation and force application
     Physics,
-    /// Transform frame updates
-    TF,
+    /// HFrame transform updates
+    HFrame,
 }
 
 fn main() {
@@ -220,7 +220,7 @@ fn run_visual_mode(cli: Cli) {
     app.add_plugins(HorusCorePlugin);
     app.add_plugins(HorusTransportPlugin::default());
     app.add_plugins(HorusSyncPlugin);
-    app.add_plugins(TFUpdatePlugin);
+    app.add_plugins(HFrameUpdatePlugin);
 
     // Physics plugins
     app.add_plugins(SoftBodyPlugin);
@@ -253,7 +253,7 @@ fn run_visual_mode(cli: Cli) {
     // View mode plugins (debug visualization)
     app.add_plugins(CollisionVisualizationPlugin);
     app.add_plugins(PhysicsVisualizationPlugin);
-    app.add_plugins(TFVisualizationPlugin);
+    app.add_plugins(HFrameVisualizationPlugin);
 
     // Utility plugins
     app.add_plugins(ProceduralGenerationPlugin);
@@ -263,7 +263,7 @@ fn run_visual_mode(cli: Cli) {
     app.add_plugins(PluginSystemPlugin);
 
     app.insert_resource(PhysicsWorld::default())
-        .insert_resource(TFTree::with_root("world"))
+        .insert_resource(HFrameTree::with_root("world"))
         .insert_resource(SpawnedObjects::default())
         .insert_resource(cli)
         .init_resource::<systems::physics_step::PhysicsAccumulator>();
@@ -275,7 +275,7 @@ fn run_visual_mode(cli: Cli) {
             SimSystemSet::Physics,
             SensorSystemSet::Update,
             SensorSystemSet::Visualization,
-            SimSystemSet::TF,
+            SimSystemSet::HFrame,
         )
             .chain(),
     );
@@ -300,7 +300,7 @@ fn run_visual_mode(cli: Cli) {
     // TF update systems
     app.add_systems(
         Update,
-        systems::tf_update::tf_update_system.in_set(SimSystemSet::TF),
+        systems::hframe_update::hframe_update_system.in_set(SimSystemSet::HFrame),
     );
 
     #[cfg(feature = "visual")]
@@ -309,7 +309,7 @@ fn run_visual_mode(cli: Cli) {
         app.add_plugins(ui::layouts::LayoutPlugin);
         app.add_plugins(ui::keybindings::KeyBindingsPlugin::default());
         app.add_plugins(ui::view_modes::ViewModePlugin);
-        app.add_plugins(ui::tf_panel::TFPanelPlugin);
+        app.add_plugins(ui::hframe_panel::HFramePanelPlugin);
         app.add_plugins(ui::stats_panel::StatsPanelPlugin);
         app.add_plugins(ui::status_bar::StatusBarPlugin);
         app.add_plugins(ui::controls::ControlsPlugin);
@@ -336,7 +336,7 @@ fn run_visual_mode(cli: Cli) {
             Update,
             (
                 rendering::camera_controller::camera_controller_system,
-                hframe::render_tf_frames,
+                hframe::render_hframe_frames,
             ),
         );
     }
@@ -360,7 +360,7 @@ fn run_headless_mode(cli: Cli) {
 
     // Add essential resources
     app.insert_resource(PhysicsWorld::default())
-        .insert_resource(TFTree::with_root("world"))
+        .insert_resource(HFrameTree::with_root("world"))
         .insert_resource(SpawnedObjects::default())
         .insert_resource(cli)
         .init_resource::<systems::physics_step::PhysicsAccumulator>();
@@ -371,7 +371,7 @@ fn run_headless_mode(cli: Cli) {
         (
             SimSystemSet::Physics,
             SensorSystemSet::Update,
-            SimSystemSet::TF,
+            SimSystemSet::HFrame,
         )
             .chain(),
     );
@@ -386,7 +386,7 @@ fn run_headless_mode(cli: Cli) {
     app.add_plugins(HorusCorePlugin);
     app.add_plugins(HorusTransportPlugin::default());
     app.add_plugins(HorusSyncPlugin);
-    app.add_plugins(TFUpdatePlugin);
+    app.add_plugins(HFrameUpdatePlugin);
 
     // Physics plugins
     app.add_plugins(SoftBodyPlugin);
@@ -429,7 +429,7 @@ fn run_headless_mode(cli: Cli) {
     // TF update systems
     app.add_systems(
         Update,
-        systems::tf_update::tf_update_system.in_set(SimSystemSet::TF),
+        systems::hframe_update::hframe_update_system.in_set(SimSystemSet::HFrame),
     );
 
     #[cfg(feature = "python")]
@@ -459,7 +459,7 @@ fn setup_headless_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut physics_world: ResMut<PhysicsWorld>,
     mut spawned_objects: ResMut<SpawnedObjects>,
-    mut tf_tree: ResMut<TFTree>,
+    mut hframe_tree: ResMut<HFrameTree>,
     cli: Res<Cli>,
 ) {
     info!("Setting up headless scene");
@@ -474,7 +474,7 @@ fn setup_headless_scene(
             &mut meshes,
             &mut materials,
             &mut spawned_objects,
-            &mut tf_tree,
+            &mut hframe_tree,
         ) {
             Ok(loaded_scene) => {
                 info!(

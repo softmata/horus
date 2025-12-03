@@ -6,6 +6,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(feature = "gpio-hardware")]
 use sysfs_gpio::{Direction, Edge, Pin};
 
@@ -24,7 +29,21 @@ pub enum EncoderBackend {
 /// Supported backends:
 /// - GPIO Quadrature (interrupt-based quadrature decoding using sysfs_gpio)
 /// - Simulation mode for testing
-pub struct EncoderNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = EncoderNode::builder()
+///     .with_filter(|odom| {
+///         // Only publish when moving
+///         if odom.twist.linear[0].abs() > 0.01 { Some(odom) } else { None }
+///     })
+///     .build()?;
+/// ```
+pub struct EncoderNode<P = PassThrough<Odometry>>
+where
+    P: Processor<Odometry>,
+{
     publisher: Hub<Odometry>,
 
     // Configuration
@@ -60,6 +79,9 @@ pub struct EncoderNode {
     // Simulation state
     sim_velocity: f64,
     sim_angular_velocity: f64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl EncoderNode {
@@ -100,7 +122,13 @@ impl EncoderNode {
             last_b: false,
             sim_velocity: 0.0,
             sim_angular_velocity: 0.0,
+            processor: PassThrough::new(),
         })
+    }
+
+    /// Create a builder for advanced configuration
+    pub fn builder() -> EncoderNodeBuilder<PassThrough<Odometry>> {
+        EncoderNodeBuilder::new()
     }
 
     /// Set encoder backend
@@ -355,12 +383,16 @@ impl EncoderNode {
     }
 }
 
-impl Node for EncoderNode {
+impl<P> Node for EncoderNode<P>
+where
+    P: Processor<Odometry>,
+{
     fn name(&self) -> &'static str {
         "EncoderNode"
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
         ctx.log_info("Encoder node initialized");
 
         match self.backend {
@@ -384,6 +416,8 @@ impl Node for EncoderNode {
     }
 
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -401,11 +435,38 @@ impl Node for EncoderNode {
         let current_position = self.read_encoder_position();
         let linear_velocity = self.calculate_velocity(current_position, dt);
 
-        // Publish odometry data
-        self.publish_odometry(linear_velocity, self.sim_angular_velocity);
+        // Build odometry message
+        let odom_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let mut odom = Odometry::new();
+        odom.frame_id = self
+            .frame_id
+            .clone()
+            .into_bytes()
+            .try_into()
+            .unwrap_or([0; 32]);
+        odom.child_frame_id = self
+            .child_frame_id
+            .clone()
+            .into_bytes()
+            .try_into()
+            .unwrap_or([0; 32]);
+        odom.twist.linear[0] = linear_velocity;
+        odom.twist.angular[2] = self.sim_angular_velocity;
+        odom.timestamp = odom_time;
+
+        // Process through pipeline and publish
+        if let Some(processed) = self.processor.process(odom) {
+            let _ = self.publisher.send(processed, &mut None);
+        }
     }
 
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+
         #[cfg(feature = "gpio-hardware")]
         {
             if let Some(ref pin_a) = self.pin_a {
@@ -424,4 +485,126 @@ impl Node for EncoderNode {
     }
 }
 
-// Default impl removed - use EncoderNode::new() instead which returns HorusResult
+/// Builder for EncoderNode with fluent API for processor configuration
+pub struct EncoderNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    topic: String,
+    backend: EncoderBackend,
+    processor: P,
+}
+
+impl EncoderNodeBuilder<PassThrough<Odometry>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "odom".to_string(),
+            backend: EncoderBackend::Simulation,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> EncoderNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    /// Set the topic for publishing odometry
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set the encoder backend
+    pub fn backend(mut self, backend: EncoderBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> EncoderNodeBuilder<P2>
+    where
+        P2: Processor<Odometry>,
+    {
+        EncoderNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor,
+        }
+    }
+
+    /// Add a closure processor for transformations
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> EncoderNodeBuilder<ClosureProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Odometry + Send + 'static,
+    {
+        EncoderNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(self, f: F) -> EncoderNodeBuilder<FilterProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Option<Odometry> + Send + 'static,
+    {
+        EncoderNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor in a pipeline
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> EncoderNodeBuilder<Pipeline<Odometry, Odometry, Odometry, P, P2>>
+    where
+        P2: Processor<Odometry, Output = Odometry>,
+        P: Processor<Odometry, Output = Odometry>,
+    {
+        EncoderNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the EncoderNode
+    pub fn build(self) -> Result<EncoderNode<P>> {
+        Ok(EncoderNode {
+            publisher: Hub::new(&self.topic)?,
+            frame_id: "odom".to_string(),
+            child_frame_id: "base_link".to_string(),
+            encoder_resolution: 1024.0,
+            wheel_radius: 0.1,
+            gear_ratio: 1.0,
+            backend: self.backend,
+            gpio_pin_a: 17,
+            gpio_pin_b: 27,
+            last_position: 0.0,
+            last_time: 0,
+            velocity: 0.0,
+            total_distance: 0.0,
+            encoder_count: 0,
+            #[cfg(feature = "gpio-hardware")]
+            pin_a: None,
+            #[cfg(feature = "gpio-hardware")]
+            pin_b: None,
+            #[cfg(feature = "gpio-hardware")]
+            last_a: false,
+            #[cfg(feature = "gpio-hardware")]
+            last_b: false,
+            sim_velocity: 0.0,
+            sim_angular_velocity: 0.0,
+            processor: self.processor,
+        })
+    }
+}

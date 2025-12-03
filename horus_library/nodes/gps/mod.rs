@@ -6,6 +6,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(feature = "nmea-gps")]
 use serialport::SerialPort;
 
@@ -31,7 +36,21 @@ pub enum GpsBackend {
 /// Supported backends:
 /// - NMEA Serial (most GPS modules: u-blox, MTK, etc.)
 /// - Simulation mode for testing
-pub struct GpsNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = GpsNode::builder()
+///     .with_filter(|fix| {
+///         // Only publish high-quality fixes
+///         if fix.hdop < 2.0 { Some(fix) } else { None }
+///     })
+///     .build()?;
+/// ```
+pub struct GpsNode<P = PassThrough<NavSatFix>>
+where
+    P: Processor<NavSatFix>,
+{
     publisher: Hub<NavSatFix>,
 
     // Configuration
@@ -59,12 +78,15 @@ pub struct GpsNode {
     sim_latitude: f64,
     sim_longitude: f64,
     sim_altitude: f64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl GpsNode {
-    /// Create a new GPS node with default topic "gps/fix" in simulation mode
+    /// Create a new GPS node with default topic "gps.fix" in simulation mode
     pub fn new() -> Result<Self> {
-        Self::new_with_backend("gps/fix", GpsBackend::Simulation)
+        Self::new_with_backend("gps.fix", GpsBackend::Simulation)
     }
 
     /// Create a new GPS node with custom topic in simulation mode
@@ -93,7 +115,13 @@ impl GpsNode {
             sim_latitude: 37.7749, // San Francisco (default)
             sim_longitude: -122.4194,
             sim_altitude: 10.0,
+            processor: PassThrough::new(),
         })
+    }
+
+    /// Create a builder for advanced configuration
+    pub fn builder() -> GpsNodeBuilder<PassThrough<NavSatFix>> {
+        GpsNodeBuilder::new()
     }
 
     /// Set GPS backend
@@ -346,12 +374,16 @@ impl GpsNode {
     }
 }
 
-impl Node for GpsNode {
+impl<P> Node for GpsNode<P>
+where
+    P: Processor<NavSatFix>,
+{
     fn name(&self) -> &'static str {
         "GpsNode"
     }
 
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
         ctx.log_info("GpsNode shutting down - closing serial connection");
 
         // Close serial port
@@ -366,6 +398,7 @@ impl Node for GpsNode {
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
         ctx.log_info("GPS node initialized");
 
         match self.backend {
@@ -389,6 +422,8 @@ impl Node for GpsNode {
     }
 
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         // Read GPS data
         if let Some(fix) = self.read_gps(ctx.as_deref_mut()) {
             // Validate fix quality
@@ -396,9 +431,126 @@ impl Node for GpsNode {
                 self.last_fix = fix;
                 self.fix_count += 1;
 
-                // Publish GPS fix
-                let _ = self.publisher.send(fix, &mut None);
+                // Process through pipeline and publish
+                if let Some(processed) = self.processor.process(fix) {
+                    let _ = self.publisher.send(processed, &mut None);
+                }
             }
         }
+    }
+}
+
+/// Builder for GpsNode with fluent API for processor configuration
+pub struct GpsNodeBuilder<P>
+where
+    P: Processor<NavSatFix>,
+{
+    topic: String,
+    backend: GpsBackend,
+    processor: P,
+}
+
+impl GpsNodeBuilder<PassThrough<NavSatFix>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "gps.fix".to_string(),
+            backend: GpsBackend::Simulation,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> GpsNodeBuilder<P>
+where
+    P: Processor<NavSatFix>,
+{
+    /// Set the topic for publishing GPS fixes
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set the GPS backend
+    pub fn backend(mut self, backend: GpsBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> GpsNodeBuilder<P2>
+    where
+        P2: Processor<NavSatFix>,
+    {
+        GpsNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor,
+        }
+    }
+
+    /// Add a closure processor for transformations
+    pub fn with_closure<F>(self, f: F) -> GpsNodeBuilder<ClosureProcessor<NavSatFix, NavSatFix, F>>
+    where
+        F: FnMut(NavSatFix) -> NavSatFix + Send + 'static,
+    {
+        GpsNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(self, f: F) -> GpsNodeBuilder<FilterProcessor<NavSatFix, NavSatFix, F>>
+    where
+        F: FnMut(NavSatFix) -> Option<NavSatFix> + Send + 'static,
+    {
+        GpsNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor in a pipeline
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> GpsNodeBuilder<Pipeline<NavSatFix, NavSatFix, NavSatFix, P, P2>>
+    where
+        P2: Processor<NavSatFix, Output = NavSatFix>,
+        P: Processor<NavSatFix, Output = NavSatFix>,
+    {
+        GpsNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the GpsNode
+    pub fn build(self) -> Result<GpsNode<P>> {
+        Ok(GpsNode {
+            publisher: Hub::new(&self.topic)?,
+            update_rate_hz: 1.0,
+            min_satellites: 4,
+            max_hdop: 20.0,
+            frame_id: "gps".to_string(),
+            backend: self.backend,
+            serial_port: "/dev/ttyUSB0".to_string(),
+            baud_rate: 9600,
+            last_fix: NavSatFix::default(),
+            fix_count: 0,
+            last_update_time: 0,
+            #[cfg(feature = "nmea-gps")]
+            nmea_parser: None,
+            #[cfg(feature = "nmea-gps")]
+            serial: None,
+            sim_latitude: 37.7749,
+            sim_longitude: -122.4194,
+            sim_altitude: 10.0,
+            processor: self.processor,
+        })
     }
 }

@@ -917,7 +917,7 @@ complete_verify_progress
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}                      ${WHITE}VERIFICATION SUMMARY${NC}                   ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}                      ${WHITE}VERIFICATION SUMMARY${NC}                  ${BLUE}║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 

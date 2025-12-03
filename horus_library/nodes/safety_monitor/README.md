@@ -231,10 +231,10 @@ monitor.update_safety_check(
 
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor with default settings
     let mut monitor = SafetyMonitorNode::new()?;
@@ -245,8 +245,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor.set_battery_threshold(15.0);
     monitor.set_communication_timeout(5000);
 
-    runtime.add_node(monitor);
-    runtime.run()?;
+    scheduler.add(Box::new(monitor), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -257,10 +257,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::StatusLevel;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor
     let mut monitor = SafetyMonitorNode::new()?;
@@ -268,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add custom velocity safety check
     monitor.add_safety_check("velocity_limit", 500);  // 500ms timeout
 
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // In your velocity monitoring code:
     let velocity_topic = Hub::<f32>::new("current_velocity")?;
@@ -302,10 +302,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::{StatusLevel, LaserScan};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor
     let mut monitor = SafetyMonitorNode::new()?;
@@ -313,7 +313,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add obstacle detection safety check
     monitor.add_safety_check("obstacle_detection", 1000);
 
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // Monitor laser scan for obstacles
     let laser_topic = Hub::<LaserScan>::new("scan")?;
@@ -359,10 +359,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::{BatteryState, SafetyStatus};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor with battery focus
     let mut monitor = SafetyMonitorNode::new()?;
@@ -373,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add custom battery health check
     monitor.add_safety_check("battery_health", 2000);
 
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // Monitor battery state
     let battery_topic = Hub::<BatteryState>::new("battery_state")?;
@@ -442,10 +442,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::{StatusLevel, SafetyStatus};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create comprehensive safety monitor
     let mut monitor = SafetyMonitorNode::new()?;
@@ -467,8 +467,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor.add_safety_check("navigation_state", 2000);
     monitor.add_safety_check("user_input", 5000);
 
-    runtime.add_node(monitor);
-    runtime.run()?;
+    scheduler.add(Box::new(monitor), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -611,12 +611,12 @@ Custom fault codes can be implemented by extending the safety logic.
 ```rust
 // Ensure emergency stop node is running
 let estop_node = EmergencyStopNode::new()?;
-runtime.add_node(estop_node);
+scheduler.add(Box::new(estop_node), 50, Some(true));
 
 // Or publish periodic heartbeats
 let estop_topic = Hub::<EmergencyStop>::new("emergency_stop")?;
 loop {
-    estop_topic.send(EmergencyStop::release(), None)?;
+    estop_topic.send(EmergencyStop::release(), &mut None)?;
     std::thread::sleep(std::time::Duration::from_millis(1000));
 }
 ```
@@ -707,10 +707,10 @@ The Safety Monitor Node works in close coordination with the Emergency Stop syst
 
 ```rust
 use horus_library::nodes::{SafetyMonitorNode, EmergencyStopNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node
     let estop = EmergencyStopNode::new()?;
@@ -720,9 +720,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor.set_battery_threshold(20.0);
     monitor.set_cpu_threshold(90.0);
 
-    runtime.add_node(estop);
-    runtime.add_node(monitor);
-    runtime.run()?;
+    scheduler.add(Box::new(estop), 50, Some(true));
+    scheduler.add(Box::new(monitor), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -733,14 +733,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::{SafetyStatus, EmergencyStop};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor
     let monitor = SafetyMonitorNode::new()?;
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // Monitor safety status and trigger emergency stop
     let safety_topic = Hub::<SafetyStatus>::new("safety_status")?;
@@ -752,12 +752,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if status.mode == SafetyStatus::MODE_SAFE_STOP {
                 let estop = EmergencyStop::engage("Safety system triggered")
                     .with_source("safety_monitor");
-                estop_topic.send(estop, None)?;
+                estop_topic.send(estop, &mut None)?;
             }
 
             // Release emergency stop when safe
             if status.is_safe() {
-                estop_topic.send(EmergencyStop::release(), None)?;
+                estop_topic.send(EmergencyStop::release(), &mut None)?;
             }
         }
 
@@ -773,18 +773,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::SafetyMonitorNode;
 use horus_library::messages::{SafetyStatus, MotorCommand};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create safety monitor
     let monitor = SafetyMonitorNode::new()?;
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // Motor control with safety override
     let safety_topic = Hub::<SafetyStatus>::new("safety_status")?;
-    let motor_topic = Hub::<MotorCommand>::new("motor_command")?;
+    let motor_topic = Hub::<MotorCommand>::new("motor.command")?;
 
     let mut allowed_to_move = true;
 
@@ -827,10 +827,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::{SafetyMonitorNode, EmergencyStopNode};
 use horus_library::messages::{SafetyStatus, EmergencyStop, StatusLevel};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Layer 1: Emergency Stop Node (hardware integration)
     let estop = EmergencyStopNode::new()?;
@@ -842,8 +842,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor.add_safety_check("hardware_watchdog", 1000);
     monitor.add_safety_check("navigation_health", 2000);
 
-    runtime.add_node(estop);
-    runtime.add_node(monitor);
+    scheduler.add(Box::new(estop), 50, Some(true));
+    scheduler.add(Box::new(monitor), 50, Some(true));
 
     // Layer 3: Application-level safety coordinator
     let safety_topic = Hub::<SafetyStatus>::new("safety_status")?;

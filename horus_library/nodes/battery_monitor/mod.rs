@@ -5,6 +5,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 // I2C hardware support for fuel gauges/power monitors
 #[cfg(feature = "i2c-hardware")]
 use i2cdev::core::I2CDevice;
@@ -40,6 +45,17 @@ use i2cdev::linux::LinuxI2CDevice;
 /// - Charge cycle counting
 /// - Cell balancing status
 ///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = BatteryMonitorNode::builder()
+///     .with_filter(|state| {
+///         // Only publish when battery level changes significantly
+///         Some(state)
+///     })
+///     .build()?;
+/// ```
+///
 /// # Example
 /// ```rust,ignore
 /// use horus_library::nodes::BatteryMonitorNode;
@@ -50,8 +66,14 @@ use i2cdev::linux::LinuxI2CDevice;
 /// battery.set_low_voltage_threshold(10.5); // 3.5V per cell
 /// battery.set_critical_voltage_threshold(9.9); // 3.3V per cell
 /// ```
-pub struct BatteryMonitorNode {
+pub struct BatteryMonitorNode<P = PassThrough<BatteryState>>
+where
+    P: Processor<BatteryState>,
+{
     publisher: Hub<BatteryState>,
+
+    // Processor for hybrid pattern
+    processor: P,
 
     // Configuration
     cell_count: u8,
@@ -170,10 +192,16 @@ impl BatteryMonitorNode {
             i2c_bus: 1,                   // Default I2C bus
             shunt_resistance_mohm: 100.0, // 100mΩ default shunt
             last_log_time: 0,
+            processor: PassThrough::new(),
         };
 
         node.update_voltage_thresholds();
         Ok(node)
+    }
+
+    /// Create a builder for advanced configuration
+    pub fn builder() -> BatteryMonitorNodeBuilder<PassThrough<BatteryState>> {
+        BatteryMonitorNodeBuilder::new()
     }
 
     /// Set number of cells in series
@@ -498,8 +526,11 @@ impl BatteryMonitorNode {
                 .as_nanos() as u64,
         };
 
-        if let Err(e) = self.publisher.send(state, &mut None) {
-            ctx.log_error(&format!("Failed to publish battery state: {:?}", e));
+        // Process through pipeline and publish
+        if let Some(processed) = self.processor.process(state) {
+            if let Err(e) = self.publisher.send(processed, &mut None) {
+                ctx.log_error(&format!("Failed to publish battery state: {:?}", e));
+            }
         }
     }
 
@@ -544,12 +575,28 @@ impl BatteryMonitorNode {
     }
 }
 
-impl Node for BatteryMonitorNode {
+impl<P> Node for BatteryMonitorNode<P>
+where
+    P: Processor<BatteryState>,
+{
     fn name(&self) -> &'static str {
         "BatteryMonitorNode"
     }
 
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        ctx.log_info("BatteryMonitorNode initialized");
+        Ok(())
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        ctx.log_info("BatteryMonitorNode shutting down");
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -700,5 +747,178 @@ impl BatteryMonitorNode {
         self.set_chemistry(BatteryChemistry::LiFePO4);
         self.set_cell_count(cells);
         self.set_capacity(capacity_mah);
+    }
+}
+
+/// Builder for BatteryMonitorNode with fluent API for processor configuration
+pub struct BatteryMonitorNodeBuilder<P>
+where
+    P: Processor<BatteryState>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl BatteryMonitorNodeBuilder<PassThrough<BatteryState>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "battery".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> BatteryMonitorNodeBuilder<P>
+where
+    P: Processor<BatteryState>,
+{
+    /// Set the topic for publishing battery state
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> BatteryMonitorNodeBuilder<P2>
+    where
+        P2: Processor<BatteryState>,
+    {
+        BatteryMonitorNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Add a closure processor for transformations
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> BatteryMonitorNodeBuilder<ClosureProcessor<BatteryState, BatteryState, F>>
+    where
+        F: FnMut(BatteryState) -> BatteryState + Send + 'static,
+    {
+        BatteryMonitorNodeBuilder {
+            topic: self.topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> BatteryMonitorNodeBuilder<FilterProcessor<BatteryState, BatteryState, F>>
+    where
+        F: FnMut(BatteryState) -> Option<BatteryState> + Send + 'static,
+    {
+        BatteryMonitorNodeBuilder {
+            topic: self.topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor in a pipeline
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> BatteryMonitorNodeBuilder<Pipeline<BatteryState, BatteryState, BatteryState, P, P2>>
+    where
+        P2: Processor<BatteryState, Output = BatteryState>,
+        P: Processor<BatteryState, Output = BatteryState>,
+    {
+        BatteryMonitorNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the BatteryMonitorNode
+    #[cfg(feature = "i2c-hardware")]
+    pub fn build(self) -> Result<BatteryMonitorNode<P>> {
+        let mut node = BatteryMonitorNode {
+            publisher: Hub::new(&self.topic)?,
+            processor: self.processor,
+            cell_count: 3,
+            nominal_voltage_per_cell: 3.7,
+            capacity_mah: 5000.0,
+            chemistry: BatteryChemistry::LiPo,
+            monitor_interface: MonitorInterface::Simulated,
+            full_voltage: 12.6,
+            nominal_voltage: 11.1,
+            low_voltage: 10.5,
+            critical_voltage: 9.9,
+            voltage: 11.1,
+            current: 0.0,
+            charge_mah: 5000.0,
+            percentage: 100.0,
+            temperature: 25.0,
+            cell_voltages: [0.0; 16],
+            power_supply_status: BatteryState::STATUS_DISCHARGING,
+            _cycle_count: 0,
+            sampling_rate: 1.0,
+            enable_cell_monitoring: false,
+            last_sample_time: 0,
+            voltage_history: [11.1; 10],
+            history_index: 0,
+            low_battery_warned: false,
+            critical_battery_warned: false,
+            over_current_warned: false,
+            over_temperature_warned: false,
+            max_current: 100.0,
+            max_temperature: 60.0,
+            i2c_device: None,
+            hardware_enabled: false,
+            i2c_address: 0x40,
+            i2c_bus: 1,
+            shunt_resistance_mohm: 100.0,
+            last_log_time: 0,
+        };
+        node.update_voltage_thresholds();
+        Ok(node)
+    }
+
+    /// Build the BatteryMonitorNode (non-i2c version)
+    #[cfg(not(feature = "i2c-hardware"))]
+    pub fn build(self) -> Result<BatteryMonitorNode<P>> {
+        let mut node = BatteryMonitorNode {
+            publisher: Hub::new(&self.topic)?,
+            processor: self.processor,
+            cell_count: 3,
+            nominal_voltage_per_cell: 3.7,
+            capacity_mah: 5000.0,
+            chemistry: BatteryChemistry::LiPo,
+            monitor_interface: MonitorInterface::Simulated,
+            full_voltage: 12.6,
+            nominal_voltage: 11.1,
+            low_voltage: 10.5,
+            critical_voltage: 9.9,
+            voltage: 11.1,
+            current: 0.0,
+            charge_mah: 5000.0,
+            percentage: 100.0,
+            temperature: 25.0,
+            cell_voltages: [0.0; 16],
+            power_supply_status: BatteryState::STATUS_DISCHARGING,
+            _cycle_count: 0,
+            sampling_rate: 1.0,
+            enable_cell_monitoring: false,
+            last_sample_time: 0,
+            voltage_history: [11.1; 10],
+            history_index: 0,
+            low_battery_warned: false,
+            critical_battery_warned: false,
+            over_current_warned: false,
+            over_temperature_warned: false,
+            max_current: 100.0,
+            max_temperature: 60.0,
+            hardware_enabled: false,
+            i2c_address: 0x40,
+            i2c_bus: 1,
+            shunt_resistance_mohm: 100.0,
+            last_log_time: 0,
+        };
+        node.update_voltage_thresholds();
+        Ok(node)
     }
 }

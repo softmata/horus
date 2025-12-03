@@ -116,7 +116,7 @@ impl PyRouterClient {
 
     /// Get router info as a dictionary
     fn info(&self, py: Python) -> PyResult<Py<PyDict>> {
-        let dict = PyDict::new_bound(py);
+        let dict = PyDict::new(py);
         dict.set_item("host", &self.host)?;
         dict.set_item("port", self.port)?;
         dict.set_item("address", self.address())?;

@@ -15,19 +15,43 @@ const TIME_STEP: f32 = 1.0 / 240.0; // 240 Hz
 const TOLERANCE: f32 = 0.02; // 2% error tolerance
 
 /// Test free-fall from rest validates basic gravity
+///
+/// This test validates both analytical solutions and can be extended
+/// to compare against Rapier3D physics simulation results.
 #[test]
 fn test_free_fall_basic() {
-    // This is a placeholder - full physics validation
-    // requires integration with rapier3d physics world
-    
-    // Analytical solution for 1 second fall
+    // Analytical solution for 1 second fall from rest
     let duration = 1.0;
-    let expected_velocity = GRAVITY * duration;
-    let expected_distance = 0.5 * GRAVITY * duration * duration;
-    
+    let initial_velocity = 0.0;
+
+    // v = v0 + g*t
+    let expected_velocity = initial_velocity + GRAVITY * duration;
+
+    // s = v0*t + 0.5*g*t^2
+    let expected_distance = initial_velocity * duration + 0.5 * GRAVITY * duration * duration;
+
+    // Verify analytical calculations
     // Expected: velocity = -9.81 m/s, distance = -4.905 m
     assert_relative_eq!(expected_velocity, -9.81, epsilon = 0.01);
     assert_relative_eq!(expected_distance, -4.905, epsilon = 0.01);
+
+    // Simulate discrete physics steps and compare
+    let num_steps = (duration / TIME_STEP) as usize;
+    let mut sim_velocity = initial_velocity;
+    let mut sim_position = 0.0;
+
+    for _ in 0..num_steps {
+        // Semi-implicit Euler integration (as used by Rapier)
+        sim_velocity += GRAVITY * TIME_STEP;
+        sim_position += sim_velocity * TIME_STEP;
+    }
+
+    // Verify simulation matches analytical within tolerance
+    let velocity_error = (sim_velocity - expected_velocity).abs() / expected_velocity.abs();
+    let position_error = (sim_position - expected_distance).abs() / expected_distance.abs();
+
+    assert!(velocity_error < TOLERANCE, "Velocity error {:.4}% exceeds tolerance", velocity_error * 100.0);
+    assert!(position_error < TOLERANCE, "Position error {:.4}% exceeds tolerance", position_error * 100.0);
 }
 
 /// Validate kinematic equations

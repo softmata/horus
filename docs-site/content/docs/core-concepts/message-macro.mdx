@@ -127,7 +127,7 @@ let link = Link::<YourMessage>::producer("topic")?;  //  Works!
 
 ## Complete Example
 
-Let's build a temperature monitoring system:
+The following example demonstrates a temperature monitoring system:
 
 ```rust
 use horus::prelude::*;
@@ -297,7 +297,7 @@ message!(MyImage = (u32, u32, Vec<u8>));
 // Logs: Debug format (still better than cloning!)
 ```
 
-For **most custom messages**, the auto-generated LogSummary is perfect. Only override if you need special formatting for large data.
+For most custom messages, the auto-generated `LogSummary` is sufficient. Override only when special formatting is needed for large data structures.
 
 ## Best Practices
 

@@ -35,7 +35,7 @@ pub struct Cli {
     pub no_gui: bool,
 
     #[arg(long, default_value_t = false)]
-    pub tf_viz: bool,
+    pub hf_viz: bool,
 
     #[arg(long, default_value_t = 1.0)]
     pub speed: f32,

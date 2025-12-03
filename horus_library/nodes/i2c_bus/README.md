@@ -25,13 +25,13 @@ Key features:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `i2c/request` | `I2cMessage` | I2C transaction requests from client nodes |
+| `i2c.request` | `I2cMessage` | I2C transaction requests from client nodes |
 
 ### Publishers
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `i2c/response` | `I2cMessage` | I2C transaction responses with data and status |
+| `i2c.response` | `I2cMessage` | I2C transaction responses with data and status |
 
 ## Configuration Parameters
 
@@ -105,8 +105,8 @@ let mut i2c = I2cBusNode::new()?;
 // Create with custom bus number and topics
 let mut i2c = I2cBusNode::new_with_config(
     1,                  // Bus number
-    "i2c/request",      // Request topic
-    "i2c/response"      // Response topic
+    "i2c.request",      // Request topic
+    "i2c.response"      // Response topic
 )?;
 ```
 
@@ -201,11 +201,11 @@ fn main() -> Result<()> {
             );
 
             // Send request
-            let req_hub = Hub::<I2cMessage>::new("i2c/request")?;
-            req_hub.send(request, None)?;
+            let req_hub = Hub::<I2cMessage>::new("i2c.request")?;
+            req_hub.send(request, &mut None)?;
 
             // Wait for response
-            let resp_hub = Hub::<I2cMessage>::new("i2c/response")?;
+            let resp_hub = Hub::<I2cMessage>::new("i2c.response")?;
             if let Some(response) = resp_hub.recv(None) {
                 if response.success {
                     let data = response.get_data();
@@ -245,10 +245,10 @@ fn main() -> Result<()> {
             // Wake up MPU6050 by writing 0x00 to PWR_MGMT_1 (register 0x6B)
             let mut request = I2cMessage::write_register(1, 0x68, 0x6B, &[0x00]);
 
-            let req_hub = Hub::<I2cMessage>::new("i2c/request")?;
-            req_hub.send(request, None)?;
+            let req_hub = Hub::<I2cMessage>::new("i2c.request")?;
+            req_hub.send(request, &mut None)?;
 
-            let resp_hub = Hub::<I2cMessage>::new("i2c/response")?;
+            let resp_hub = Hub::<I2cMessage>::new("i2c.response")?;
             if let Some(response) = resp_hub.recv(None) {
                 if response.success {
                     ctx.log_info("MPU6050 configured successfully");
@@ -288,12 +288,12 @@ fn main() -> Result<()> {
     let multi_reader = node! {
         name: "multi_device_reader",
         tick: |ctx| {
-            let req_hub = Hub::<I2cMessage>::new("i2c/request")?;
-            let resp_hub = Hub::<I2cMessage>::new("i2c/response")?;
+            let req_hub = Hub::<I2cMessage>::new("i2c.request")?;
+            let resp_hub = Hub::<I2cMessage>::new("i2c.response")?;
 
             // Read IMU
             let imu_req = I2cMessage::read_register(1, 0x68, 0x3B, 6);
-            req_hub.send(imu_req, None)?;
+            req_hub.send(imu_req, &mut None)?;
             if let Some(resp) = resp_hub.recv(None) {
                 if resp.success {
                     ctx.log_info("IMU data received");
@@ -302,7 +302,7 @@ fn main() -> Result<()> {
 
             // Read power monitor
             let power_req = I2cMessage::read_register(1, 0x40, 0x02, 2);
-            req_hub.send(power_req, None)?;
+            req_hub.send(power_req, &mut None)?;
             if let Some(resp) = resp_hub.recv(None) {
                 if resp.success {
                     let voltage_raw = u16::from_be_bytes([resp.data[0], resp.data[1]]);
@@ -359,25 +359,25 @@ fn main() -> Result<()> {
     let helper = node! {
         name: "i2c_helper",
         tick: |ctx| {
-            let req_hub = Hub::<I2cMessage>::new("i2c/request")?;
-            let resp_hub = Hub::<I2cMessage>::new("i2c/response")?;
+            let req_hub = Hub::<I2cMessage>::new("i2c.request")?;
+            let resp_hub = Hub::<I2cMessage>::new("i2c.response")?;
 
             // Simple read (no register address)
             let read_msg = I2cMessage::read(1, 0x68, 6);
-            req_hub.send(read_msg, None)?;
+            req_hub.send(read_msg, &mut None)?;
 
             // Simple write (no register address)
             let write_data = [0x6B, 0x00];
             let write_msg = I2cMessage::write(1, 0x68, &write_data);
-            req_hub.send(write_msg, None)?;
+            req_hub.send(write_msg, &mut None)?;
 
             // Register read (specify register first)
             let reg_read = I2cMessage::read_register(1, 0x68, 0x75, 1); // WHO_AM_I
-            req_hub.send(reg_read, None)?;
+            req_hub.send(reg_read, &mut None)?;
 
             // Register write (register + data)
             let reg_write = I2cMessage::write_register(1, 0x68, 0x6B, &[0x00]);
-            req_hub.send(reg_write, None)?;
+            req_hub.send(reg_write, &mut None)?;
 
             Ok(())
         }

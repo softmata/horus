@@ -188,10 +188,10 @@ let (obstacle_count, min_distance) = detector.get_detection_stats();
 
 ```rust
 use horus_library::nodes::CollisionDetectorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector with default settings
     let mut detector = CollisionDetectorNode::new()?;
@@ -200,8 +200,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     detector.set_safety_zones(0.3, 0.8, 2.0);
     detector.set_robot_geometry(0.6, 0.8, 0.1);
 
-    runtime.add_node(detector);
-    runtime.run()?;
+    scheduler.add(Box::new(detector), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -211,10 +211,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::CollisionDetectorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector for high-speed AGV
     let mut detector = CollisionDetectorNode::new_with_topics(
@@ -233,8 +233,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     detector.set_robot_geometry(1.2, 1.5, 0.2);
     detector.set_velocity_dependent_zones(true);
 
-    runtime.add_node(detector);
-    runtime.run()?;
+    scheduler.add(Box::new(detector), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -244,10 +244,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::CollisionDetectorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector with multiple safety sensors
     let mut detector = CollisionDetectorNode::new()?;
@@ -263,8 +263,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pin 3: Right proximity sensor
     detector.set_safety_sensor_pins(vec![0, 1, 2, 3]);
 
-    runtime.add_node(detector);
-    runtime.run()?;
+    scheduler.add(Box::new(detector), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -274,23 +274,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::CollisionDetectorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector
     let mut detector = CollisionDetectorNode::new()?;
     detector.set_safety_zones(0.5, 1.2, 3.0);
     detector.set_robot_geometry(0.6, 0.8, 0.1);
 
-    runtime.add_node(detector);
+    scheduler.add(Box::new(detector), 50, Some(true));
 
     // Run in background
     let handle = thread::spawn(move || {
-        runtime.run()
+        scheduler.run()
     });
 
     // Monitor collision status
@@ -318,10 +318,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::CollisionDetectorNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector with fixed safety zones
     let mut detector = CollisionDetectorNode::new()?;
@@ -333,8 +333,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Disable velocity-dependent zones for predictable behavior
     detector.set_velocity_dependent_zones(false);
 
-    runtime.add_node(detector);
-    runtime.run()?;
+    scheduler.add(Box::new(detector), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -705,10 +705,10 @@ if costmap.is_path_blocked(&current_path) {
 
 ```rust
 use horus_library::nodes::{CollisionDetectorNode, DifferentialDriveNode};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create collision detector
     let mut detector = CollisionDetectorNode::new_with_topics(
@@ -730,11 +730,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Add nodes to runtime
-    runtime.add_node(detector);
-    runtime.add_node(drive);
+    scheduler.add(Box::new(detector), 50, Some(true));
+    scheduler.add(Box::new(drive), 50, Some(true));
 
     // Run system
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }

@@ -2,6 +2,9 @@
 // Clippy incorrectly flags this as "useless_conversion" but it's required by PyO3.
 // See: https://github.com/PyO3/pyo3/issues/2092
 #![allow(clippy::useless_conversion)]
+// PyO3 0.27 deprecates PyObject in favor of Py<PyAny> and with_gil in favor of attach.
+// These are still functional but will be fixed in a future update.
+#![allow(deprecated)]
 
 use pyo3::prelude::*;
 
@@ -12,6 +15,7 @@ mod link;
 mod node;
 mod router;
 mod scheduler;
+mod tensor;
 // mod typed_hub;  // Old separate typed hubs - replaced by polymorphic Hub
 mod types;
 
@@ -61,6 +65,9 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sim2d::python_api::Sim2D>()?;
     m.add_class::<sim2d::python_api::RobotConfigPy>()?;
     m.add_class::<sim2d::python_api::WorldConfigPy>()?;
+
+    // Tensor system - zero-copy shared memory tensors
+    tensor::register_tensor_classes(m)?;
 
     // Typed hubs now handled by polymorphic Hub class
     // typed_hub::register_typed_hubs(m)?;  // Old implementation - replaced

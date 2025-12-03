@@ -1,6 +1,6 @@
 use crate::cli::Cli;
 use crate::config::robot::DiffDrivePresets;
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::physics::diff_drive::CmdVel;
 use crate::physics::PhysicsWorld;
 use crate::rendering::camera_controller::OrbitCamera;
@@ -16,7 +16,7 @@ pub fn setup_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut physics_world: ResMut<PhysicsWorld>,
     mut spawned_objects: ResMut<SpawnedObjects>,
-    mut tf_tree: ResMut<TFTree>,
+    mut hframe_tree: ResMut<HFrameTree>,
     cli: Res<Cli>,
 ) {
     // Always spawn camera with orbit controller
@@ -50,7 +50,7 @@ pub fn setup_scene(
             &mut meshes,
             &mut materials,
             &mut spawned_objects,
-            &mut tf_tree,
+            &mut hframe_tree,
         ) {
             Ok(loaded_scene) => {
                 info!(
@@ -113,7 +113,7 @@ pub fn setup_scene(
                     robot_file,
                     &mut commands,
                     &mut physics_world,
-                    &mut tf_tree,
+                    &mut hframe_tree,
                     &mut meshes,
                     &mut materials,
                 ) {

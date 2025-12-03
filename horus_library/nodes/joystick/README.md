@@ -143,10 +143,10 @@ let battery_level = joystick.get_battery_level();
 ```rust
 use horus_library::nodes::JoystickInputNode;
 use horus_library::JoystickInput;
-use horus_core::{Hub, Node, Runtime};
+use horus_core::{Hub, Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create joystick input node
     let joystick = JoystickInputNode::new()?;
@@ -154,9 +154,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a node to process joystick input
     let mut controller = TeleopNode::new()?;
 
-    runtime.add_node(joystick);
-    runtime.add_node(controller);
-    runtime.run()?;
+    scheduler.add(Box::new(joystick), 50, Some(true));
+    scheduler.add(Box::new(controller), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -208,7 +208,7 @@ impl Node for TeleopNode {
 ```rust
 use horus_library::nodes::JoystickInputNode;
 use horus_library::JoystickInput;
-use horus_core::{Hub, Node, Runtime};
+use horus_core::{Hub, Node, Scheduler};
 
 struct DroneController {
     joystick_sub: Hub<JoystickInput>,
@@ -681,8 +681,8 @@ joystick.set_poll_rate(125);  // 125 Hz (8ms)
 // Wired: ~1-2ms latency
 // Wireless: ~4-8ms latency
 
-// Optimize runtime tick rate
-runtime.set_tick_rate(100.0);  // 100 Hz (10ms)
+// Use higher priority for faster tick rate
+scheduler.add(Box::new(joystick), 100, Some(true));  // Higher priority = faster ticks
 ```
 
 **Performance benchmarks:**
@@ -727,7 +727,7 @@ joystick.set_rumble(0.0, 0.0);
 use horus_library::nodes::{JoystickInputNode, DifferentialDriveNode};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Joystick input
     let joystick = JoystickInputNode::new()?;
@@ -743,10 +743,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drive.set_wheel_base(0.5);
     drive.set_velocity_limits(1.0, 2.0);
 
-    runtime.add_node(joystick);
-    runtime.add_node(teleop);
-    runtime.add_node(drive);
-    runtime.run()?;
+    scheduler.add(Box::new(joystick), 50, Some(true));
+    scheduler.add(Box::new(teleop), 50, Some(true));
+    scheduler.add(Box::new(drive), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -758,7 +758,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use horus_library::nodes::{JoystickInputNode, PidControllerNode};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Joystick input
     let joystick = JoystickInputNode::new()?;
@@ -781,10 +781,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     pid.set_gains(2.0, 0.5, 0.1);
 
-    runtime.add_node(joystick);
-    runtime.add_node(setpoint_converter);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(joystick), 50, Some(true));
+    scheduler.add(Box::new(setpoint_converter), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

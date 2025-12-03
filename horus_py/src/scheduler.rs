@@ -318,7 +318,7 @@ impl PyScheduler {
 
         for registered in nodes.iter() {
             if registered.name == node_name {
-                let dict = PyDict::new_bound(py);
+                let dict = PyDict::new(py);
                 dict.set_item("name", &registered.name)?;
                 dict.set_item("priority", registered.priority)?;
                 dict.set_item("rate_hz", registered.rate_hz)?;
@@ -1076,7 +1076,7 @@ impl PyScheduler {
         let mut result = Vec::new();
 
         for registered in nodes.iter() {
-            let dict = PyDict::new_bound(py);
+            let dict = PyDict::new(py);
             dict.set_item("name", &registered.name)?;
             dict.set_item("priority", registered.priority)?;
             dict.set_item("rate_hz", registered.rate_hz)?;
@@ -1561,7 +1561,7 @@ impl PyScheduler {
     fn __getstate__(&self, py: Python) -> PyResult<PyObject> {
         use pyo3::types::PyDict;
 
-        let state = PyDict::new_bound(py);
+        let state = PyDict::new(py);
         state.set_item("tick_rate_hz", self.tick_rate_hz)?;
 
         // Note: Registered nodes cannot be serialized (contain PyObject references)

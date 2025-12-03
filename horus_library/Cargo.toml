@@ -103,6 +103,7 @@ nmea-gps = ["nmea", "serial-hardware"]
 rplidar = ["serial-hardware"]  # Note: rplidar_drv crate disabled due to upstream bug
 linux-embedded-hal = ["dep:linux-embedded-hal"]
 netft = []  # Feature flag (hardware support without crate dependency)
+robotiq-serial = ["serial-hardware"]  # Robotiq FT-300 force/torque sensor
 sysinfo = ["dep:sysinfo"]
 
 # ML/AI features
@@ -132,14 +133,7 @@ all-sensors = [
     "nmea-gps",
     "rplidar",
     "netft",
+    "robotiq-serial",
     "sysinfo",
 ]
 
-# Examples with hardware requirements
-[[example]]
-name = "joystick_advanced_example"
-required-features = ["gilrs"]
-
-[[example]]
-name = "hardware_sensors_demo"
-required-features = ["all-sensors"]

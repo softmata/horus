@@ -79,15 +79,37 @@ ip link show can0
 candump can0  # Monitor CAN traffic
 ```
 
-### Enable in Project
+### Enabling Features
+
+There are three ways to enable the required `can-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `CanBusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: can-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - can-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
 horus_library = { version = "0.1", features = ["can-hardware"] }
-```
-
-```bash
-cargo build --features="can-hardware"
 ```
 
 ## Configuration
@@ -377,7 +399,8 @@ println!("Bus load: {:.1}%", load);
 [WARN]     3. Create interface: sudo ip link add dev can0 type vcan
 [WARN]     4. Bring up interface: sudo ip link set up can0
 [WARN]     5. For real CAN hardware, use socketcan_interface drivers
-[WARN]     6. Rebuild with: cargo build --features="can-hardware"
+[WARN]     6. If using cargo: cargo build --features="can-hardware"
+[WARN]        (horus run auto-detects features)
 ```
 
 **Solutions:**

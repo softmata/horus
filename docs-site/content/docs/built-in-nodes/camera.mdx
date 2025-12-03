@@ -18,69 +18,542 @@ Vision camera node for image capture supporting USB cameras, Raspberry Pi Camera
 - Raspberry Pi Camera Module
 - IP cameras (RTSP/HTTP)
 - Configurable resolution and framerate
-- JPEG/PNG image output
+- Multiple encoding formats (RGB, BGR, Mono, YUV)
+- JPEG/PNG image compression
 - OpenCV integration
+- Camera calibration data
 - Hardware fallback to simulation
 
 ## Quick Start
 
 ```rust
-use horus_library::prelude::*;
+use horus_library::nodes::CameraNode;
+use horus_library::vision::ImageEncoding;
+use horus_core::Scheduler;
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scheduler = Scheduler::new();
 
+    // Basic camera setup
     let mut camera = CameraNode::new()?;
-    camera.set_device_id(0);     // Camera index 0
-    camera.set_resolution(640, 480);
-    camera.set_fps(30.0);
+    camera.set_device_id(0);           // Default camera
+    camera.set_resolution(640, 480);   // VGA resolution
+    camera.set_fps(30.0);              // 30 frames per second
+    camera.set_encoding(ImageEncoding::Bgr8);
 
-    scheduler.add(Box::new(camera), 1, Some(true));
+    scheduler.add(Box::new(camera), 50, Some(true));
     scheduler.run()?;
     Ok(())
 }
 ```
 
+**Publishes to:** `camera.image` (images) and `camera.camera_info` (calibration data).
+
+**Requires:** Camera hardware and the `opencv-backend` feature.
+
+## Hardware Setup
+
+**Hardware-Only**: This node requires actual camera hardware. For testing without hardware, use the `sim2d` or `sim3d` simulation tools instead.
+
+### Enabling Features
+
+There are three ways to enable the required `opencv-backend` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `CameraNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: opencv-backend)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - opencv-backend
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["opencv-backend"] }
+```
+
 ## Configuration
 
+### Construction
+
 ```rust
-// Set camera device ID (0 for default camera)
+use horus_library::nodes::CameraNode;
+
+// Create with default topic "camera.image"
+let mut camera = CameraNode::new()?;
+
+// Create with custom topic prefix
+let mut left_camera = CameraNode::new_with_topic("camera.left")?;
+// Publishes to "camera.left.image" and "camera.left.camera_info"
+```
+
+### Configuration Methods
+
+```rust
+// Set camera device (0 = default, 1+ = additional cameras)
 camera.set_device_id(0);
 
 // Set image resolution
-camera.set_resolution(640, 480);
+camera.set_resolution(1920, 1080);
 
-// Set capture framerate
-camera.set_fps(30.0);
+// Set capture framerate (clamped to 1.0 - 120.0 Hz)
+camera.set_fps(60.0);
 
 // Set image encoding format
-camera.set_encoding(ImageEncoding::Bgr8);
+use horus_library::vision::ImageEncoding;
+camera.set_encoding(ImageEncoding::Rgb8);
 
-// Enable/disable image compression
-camera.set_compression(true, 90);  // enabled, quality (0-100)
+// Enable compression (useful for network transmission)
+camera.set_compression(true, 85);  // 85% quality
+
+// Disable compression (raw images)
+camera.set_compression(false, 90);
 ```
 
-## Usage
-
-The CameraNode publishes to the following topics (configurable via `new_with_topic`):
-- Publishes to `"camera.image"` - captured frames (Image)
-- Publishes to `"camera.camera_info"` - camera calibration info (CameraInfo)
+### Monitoring Methods
 
 ```rust
-let hub = Hub::<Image>::new("camera.image")?;
+// Get current actual framerate
+let fps = camera.get_actual_fps();
+eprintln!("Camera running at {:.1} fps", fps);
 
-if let Some(frame) = hub.recv(&mut None) {
-    println!("Frame: {}x{}, {} bytes",
-        frame.width, frame.height, frame.data.len());
-    // Process image...
+// Get total frames captured since initialization
+let frames = camera.get_frame_count();
+eprintln!("Captured {} frames", frames);
+```
+
+## Configuration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `device_id` | `u32` | `0` | Camera device identifier (0 for default camera) |
+| `width` | `u32` | `640` | Image width in pixels |
+| `height` | `u32` | `480` | Image height in pixels |
+| `fps` | `f32` | `30.0` | Target capture framerate (1.0 - 120.0 Hz) |
+| `encoding` | `ImageEncoding` | `Bgr8` | Pixel encoding format |
+| `compress_images` | `bool` | `false` | Enable JPEG/PNG compression |
+| `quality` | `u8` | `90` | Compression quality (0-100, higher = better) |
+
+## Topics
+
+### Publishers
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `camera.image` | `Image` | Raw image frames from camera |
+| `camera.camera_info` | `CameraInfo` | Camera calibration and intrinsic parameters |
+
+Note: Topic names can be customized using `new_with_topic()` constructor.
+
+## Usage Patterns
+
+### Single Camera Setup
+
+```rust
+use horus_library::nodes::CameraNode;
+use horus_library::vision::ImageEncoding;
+use horus_core::{Node, Scheduler};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create and configure camera
+    let mut camera = CameraNode::new()?;
+    camera.set_device_id(0);
+    camera.set_resolution(640, 480);
+    camera.set_fps(30.0);
+    camera.set_encoding(ImageEncoding::Bgr8);
+
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
+
+    Ok(())
+}
+```
+
+### Stereo Camera Setup
+
+```rust
+use horus_library::nodes::CameraNode;
+use horus_library::vision::ImageEncoding;
+use horus_core::{Node, Scheduler};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Left camera
+    let mut left_camera = CameraNode::new_with_topic("camera.left")?;
+    left_camera.set_device_id(0);
+    left_camera.set_resolution(1280, 720);
+    left_camera.set_fps(30.0);
+    left_camera.set_encoding(ImageEncoding::Mono8);  // Grayscale for stereo
+
+    // Right camera
+    let mut right_camera = CameraNode::new_with_topic("camera.right")?;
+    right_camera.set_device_id(1);
+    right_camera.set_resolution(1280, 720);
+    right_camera.set_fps(30.0);
+    right_camera.set_encoding(ImageEncoding::Mono8);
+
+    scheduler.add(Box::new(left_camera), 50, Some(true));
+    scheduler.add(Box::new(right_camera), 50, Some(true));
+    scheduler.run()?;
+
+    Ok(())
+}
+```
+
+### Low Latency Setup
+
+```rust
+use horus_library::nodes::CameraNode;
+use horus_library::vision::ImageEncoding;
+use horus_core::{Node, Scheduler};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Low resolution, high framerate for real-time control
+    let mut camera = CameraNode::new()?;
+    camera.set_device_id(0);
+    camera.set_resolution(320, 240);    // Small resolution
+    camera.set_fps(120.0);              // High framerate
+    camera.set_encoding(ImageEncoding::Mono8);  // Fastest encoding
+    camera.set_compression(false, 0);   // No compression overhead
+
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
+
+    Ok(())
+}
+```
+
+### Image Processing Pipeline
+
+```rust
+use horus_library::nodes::CameraNode;
+use horus_library::{Image, vision::ImageEncoding};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
+
+// Example image subscriber node
+struct ImageProcessor {
+    subscriber: Hub<Image>,
 }
 
-// Get actual FPS
-let fps = camera.get_actual_fps();
+impl ImageProcessor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            subscriber: Hub::new("camera.image")?,
+        })
+    }
+}
 
-// Get total frames captured
-let count = camera.get_frame_count();
+impl Node for ImageProcessor {
+    fn name(&self) -> &'static str {
+        "ImageProcessor"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Receive images from camera
+        if let Some(image) = self.subscriber.recv_latest() {
+            if let Some(ctx) = ctx.as_mut() {
+                ctx.log_debug(&format!("Received {}x{} image with {} bytes",
+                         image.width, image.height, image.data.len()));
+            }
+
+            // Process image data here
+            // - Apply filters (blur, edge detection)
+            // - Color space conversion
+            // - Feature extraction
+        }
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    let mut camera = CameraNode::new()?;
+    camera.set_resolution(640, 480);
+    camera.set_encoding(ImageEncoding::Bgr8);
+
+    let processor = ImageProcessor::new()?;
+
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.add(Box::new(processor), 50, Some(true));
+    scheduler.run()?;
+
+    Ok(())
+}
 ```
+
+## Message Types
+
+### Image
+
+Raw image data message with metadata:
+
+```rust
+pub struct Image {
+    pub width: u32,              // Image width in pixels
+    pub height: u32,             // Image height in pixels
+    pub encoding: ImageEncoding, // Pixel encoding format
+    pub step: u32,               // Bytes per row (may include padding)
+    pub data: Vec<u8>,           // Image data (row-major order)
+    pub frame_id: [u8; 32],      // Camera identifier
+    pub timestamp: u64,          // Nanoseconds since epoch
+}
+```
+
+### ImageEncoding
+
+Supported pixel formats:
+
+```rust
+pub enum ImageEncoding {
+    Mono8,       // 8-bit grayscale (1 byte/pixel)
+    Mono16,      // 16-bit grayscale (2 bytes/pixel)
+    Rgb8,        // 8-bit RGB (3 bytes/pixel)
+    Bgr8,        // 8-bit BGR - OpenCV format (3 bytes/pixel)
+    Rgba8,       // 8-bit RGBA with alpha (4 bytes/pixel)
+    Bgra8,       // 8-bit BGRA with alpha (4 bytes/pixel)
+    Yuv422,      // YUV 4:2:2 format (2 bytes/pixel)
+    Mono32F,     // 32-bit float grayscale (4 bytes/pixel)
+    Rgb32F,      // 32-bit float RGB (12 bytes/pixel)
+    BayerRggb8,  // Bayer pattern raw sensor data (1 byte/pixel)
+    Depth16,     // 16-bit depth in millimeters (2 bytes/pixel)
+}
+```
+
+### CameraInfo
+
+Camera calibration and intrinsic parameters:
+
+```rust
+pub struct CameraInfo {
+    pub width: u32,                          // Image width
+    pub height: u32,                         // Image height
+    pub distortion_model: [u8; 16],          // "plumb_bob", "rational_polynomial"
+    pub distortion_coefficients: [f64; 8],   // [k1, k2, p1, p2, k3, k4, k5, k6]
+    pub camera_matrix: [f64; 9],             // 3x3 intrinsic matrix [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+    pub rectification_matrix: [f64; 9],      // 3x3 rectification matrix
+    pub projection_matrix: [f64; 12],        // 3x4 projection matrix
+    pub frame_id: [u8; 32],                  // Camera identifier
+    pub timestamp: u64,                      // Nanoseconds since epoch
+}
+```
+
+## Supported Formats and Resolutions
+
+### Common Resolutions
+
+| Resolution | Width x Height | Aspect Ratio | Use Case |
+|------------|----------------|--------------|----------|
+| QVGA | 320 x 240 | 4:3 | Low latency, embedded systems |
+| VGA | 640 x 480 | 4:3 | Standard robotics vision |
+| SVGA | 800 x 600 | 4:3 | Higher detail standard format |
+| HD | 1280 x 720 | 16:9 | HD video, object detection |
+| Full HD | 1920 x 1080 | 16:9 | High detail, surveillance |
+| 4K | 3840 x 2160 | 16:9 | Ultra high detail (requires bandwidth) |
+
+### Encoding Formats
+
+| Encoding | Bytes/Pixel | Color | Use Case |
+|----------|-------------|-------|----------|
+| `Mono8` | 1 | No | Grayscale, stereo vision, fastest |
+| `Mono16` | 2 | No | High-precision grayscale |
+| `Rgb8` | 3 | Yes | Standard color, computer vision |
+| `Bgr8` | 3 | Yes | OpenCV compatibility |
+| `Rgba8` | 4 | Yes | Color with transparency |
+| `Yuv422` | 2 | Yes | Video compression, streaming |
+| `Depth16` | 2 | No | Depth cameras, 3D reconstruction |
+
+### Bandwidth Considerations
+
+| Resolution | Encoding | Uncompressed Size | @ 30 FPS Bandwidth |
+|------------|----------|-------------------|--------------------|
+| 320x240 | Mono8 | 76 KB/frame | 2.3 MB/s |
+| 640x480 | Bgr8 | 900 KB/frame | 27 MB/s |
+| 1280x720 | Rgb8 | 2.7 MB/frame | 81 MB/s |
+| 1920x1080 | Rgb8 | 6.2 MB/frame | 186 MB/s |
+
+**Note**: Enable compression for high-resolution setups to reduce bandwidth by 10-20x.
+
+## Performance Considerations
+
+### Framerate Guidelines
+
+- **High-speed tracking**: 60-120 FPS, low resolution (320x240)
+- **Standard robotics**: 30 FPS, medium resolution (640x480)
+- **Object detection**: 15-30 FPS, high resolution (1920x1080)
+- **Surveillance**: 10-15 FPS, high resolution
+
+### CPU Usage
+
+CPU usage scales with:
+- **Resolution**: Higher resolution = more data to process
+- **Framerate**: Linear scaling with FPS
+- **Encoding conversion**: Color formats require more processing than grayscale
+- **Compression**: JPEG compression adds 5-15% CPU overhead
+
+**Optimization tips**:
+```rust
+// Use grayscale for algorithms that don't need color
+camera.set_encoding(ImageEncoding::Mono8);
+
+// Match resolution to actual needs (don't over-sample)
+camera.set_resolution(640, 480);  // Instead of 1920x1080
+
+// Use compression only when transmitting over network
+camera.set_compression(false, 0);  // Disable for local processing
+```
+
+### Memory Usage
+
+Per-frame memory = `width * height * bytes_per_pixel`
+
+**Examples**:
+- 640x480 Mono8: 307 KB
+- 640x480 Bgr8: 921 KB
+- 1920x1080 Rgb8: 6.2 MB
+
+## Troubleshooting
+
+### Issue: Camera not found
+
+**Symptoms**:
+- Node starts but no frames are published
+- "Failed to initialize camera" messages
+
+**Solutions**:
+```rust
+// Try different device IDs
+camera.set_device_id(0);  // Usually default camera
+camera.set_device_id(1);  // Secondary camera
+```
+
+```bash
+# Check available cameras on Linux
+v4l2-ctl --list-devices
+
+# Kill processes using camera
+lsof /dev/video0
+```
+
+### Issue: Permission denied (Linux)
+
+**Symptoms**:
+- "Permission denied" when opening camera
+- Camera accessible in other applications
+
+**Solution**:
+```bash
+# Add user to video group
+sudo usermod -a -G video $USER
+
+# Or change device permissions (temporary)
+sudo chmod 666 /dev/video0
+
+# Then logout and login again
+```
+
+### Issue: Low framerate
+
+**Symptoms**:
+- `get_actual_fps()` returns lower than configured FPS
+- Choppy video
+
+**Solutions**:
+```rust
+// Reduce resolution
+camera.set_resolution(320, 240);
+
+// Lower framerate
+camera.set_fps(15.0);
+
+// Use grayscale instead of color
+camera.set_encoding(ImageEncoding::Mono8);
+
+// Check actual FPS
+let actual_fps = camera.get_actual_fps();
+eprintln!("Running at {:.1} FPS", actual_fps);
+```
+
+### Issue: Wrong colors / inverted colors
+
+**Symptoms**:
+- Blue appears red, red appears blue
+- Colors look incorrect
+
+**Cause**: Mismatch between RGB and BGR encoding
+
+**Solution**:
+```rust
+// If colors are swapped, change encoding
+camera.set_encoding(ImageEncoding::Bgr8);  // OpenCV default
+// or
+camera.set_encoding(ImageEncoding::Rgb8);  // Standard RGB
+```
+
+### Issue: Unsupported resolution
+
+**Symptoms**:
+- Camera initializes but provides different resolution than requested
+- No frames captured
+
+**Solution**:
+```bash
+# Check supported formats (Linux)
+v4l2-ctl --device=/dev/video0 --list-formats-ext
+```
+
+```rust
+// Use standard resolutions
+camera.set_resolution(640, 480);   // VGA - widely supported
+camera.set_resolution(1280, 720);  // HD - common on webcams
+```
+
+## Camera Calibration
+
+The CameraInfo message provides intrinsic and extrinsic parameters for accurate 3D reconstruction:
+
+```rust
+// CameraInfo is published every 30 frames
+// Contains:
+// - camera_matrix: [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+//   - fx, fy: focal lengths in pixels
+//   - cx, cy: principal point (image center)
+// - distortion_coefficients: [k1, k2, p1, p2, k3, ...]
+//   - Radial and tangential distortion parameters
+// - projection_matrix: For stereo rectification
+
+// Default values (uncalibrated):
+// fx = fy = 800.0
+// cx = width / 2
+// cy = height / 2
+// No distortion
+```
+
+**To calibrate your camera**:
+1. Use a checkerboard calibration pattern
+2. Capture 20-30 images from different angles
+3. Run camera calibration software (e.g., OpenCV calibration)
+4. Update CameraInfo publisher with calibrated parameters
 
 ## See Also
 

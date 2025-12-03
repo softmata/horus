@@ -230,7 +230,7 @@ Creates a Hub with custom buffer capacity.
 
 **Example:**
 ```rust
-let hub: Hub<Image> = Hub::new_with_capacity("camera/image", 16)?;
+let hub: Hub<Image> = Hub::new_with_capacity("camera.image", 16)?;
 ```
 
 ---
@@ -266,7 +266,7 @@ Creates a Hub from configuration file (`horus.toml`).
 **Config Example:**
 ```toml
 [hubs.camera]
-topic = "camera/image"
+topic = "camera.image"
 capacity = 16
 ```
 
@@ -573,11 +573,11 @@ Adds a node with explicit tier annotation for deterministic optimization. Use th
 **Returns:** `&mut Self` for chaining
 
 **NodeTier Options:**
-- `NodeTier::Jit` - Ultra-fast (<1μs), JIT compiled
-- `NodeTier::Fast` - Fast (<10μs), inline execution
-- `NodeTier::Normal` - Standard (<100μs)
+- `NodeTier::Jit` - Ultra-fast (&lt;1μs), JIT compiled
+- `NodeTier::Fast` - Fast (&lt;10μs), inline execution
+- `NodeTier::Normal` - Standard (&lt;100μs)
 - `NodeTier::AsyncIO` - Non-blocking I/O
-- `NodeTier::Background` - Low-priority (>100μs)
+- `NodeTier::Background` - Low-priority (&gt;100μs)
 - `NodeTier::Isolated` - Process isolation
 
 **Example:**

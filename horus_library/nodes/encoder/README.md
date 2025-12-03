@@ -2,6 +2,41 @@
 
 Wheel and joint position feedback for odometry and motor control.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::EncoderNode;
+use horus_library::Odometry;
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create encoder node for differential drive robot
+    let mut encoder = EncoderNode::new()?;
+    encoder.set_ticks_per_revolution(4096);  // Encoder resolution
+    encoder.set_wheel_radius(0.05);          // 5cm wheel radius
+    encoder.set_wheel_base(0.3);             // 30cm between wheels
+
+    // Configure GPIO pins (Raspberry Pi)
+    encoder.set_left_encoder_pins(17, 27);   // A/B channels
+    encoder.set_right_encoder_pins(22, 23);
+
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Subscribe to odometry in another node:
+let odom_hub = Hub::<Odometry>::new("odom")?;
+if let Some(odom) = odom_hub.recv_latest() {
+    println!("Position: ({:.2}, {:.2}), Heading: {:.2}°",
+             odom.pose.x, odom.pose.y, odom.pose.theta.to_degrees());
+}
+```
+
+**Publishes to:** `odom` topic with position, velocity, and heading data.
+
 ## Overview
 
 The Encoder Node reads encoder data from wheels or joints and publishes position, velocity, and odometry information for robot navigation and control feedback. It supports both hardware encoders (in production) and simulation mode (for testing). The node calculates velocity from position changes, tracks total distance traveled, and publishes odometry messages for navigation systems.
@@ -134,10 +169,10 @@ let distance = encoder.get_total_distance();
 
 ```rust
 use horus_library::nodes::EncoderNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create encoder node for motor feedback
     let mut encoder = EncoderNode::new_with_topic("motor_encoder")?;
@@ -151,8 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     encoder.set_frame_ids("odom", "base_link");
 
-    runtime.add_node(encoder);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -162,10 +197,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::EncoderNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Left wheel encoder
     let mut left_encoder = EncoderNode::new_with_topic("left_wheel_odom")?;
@@ -185,9 +220,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     right_encoder.set_frame_ids("odom", "right_wheel");
 
-    runtime.add_node(left_encoder);
-    runtime.add_node(right_encoder);
-    runtime.run()?;
+    scheduler.add(Box::new(left_encoder), 50, Some(true));
+    scheduler.add(Box::new(right_encoder), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -197,10 +232,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::EncoderNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Encoder on motor shaft with 10:1 gearbox
     let mut encoder = EncoderNode::new_with_topic("geared_motor")?;
@@ -213,8 +248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     encoder.set_frame_ids("odom", "base_link");
 
-    runtime.add_node(encoder);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -224,27 +259,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::{EncoderNode, PidControllerNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Encoder provides feedback
-    let mut encoder = EncoderNode::new_with_topic("encoder_velocity")?;
+    let mut encoder = EncoderNode::new_with_topic("encoder.velocity")?;
     encoder.set_encoder_config(1024.0, 0.05, 1.0);
 
     // PID controller uses encoder feedback
     let mut pid = PidControllerNode::new_with_topics(
-        "target_velocity",
-        "encoder_velocity",  // Subscribe to encoder output
-        "motor_command",
+        "target.velocity",
+        "encoder.velocity",  // Subscribe to encoder output
+        "motor.command",
         "pid_config"
     )?;
     pid.set_gains(1.5, 0.2, 0.05);
 
-    runtime.add_node(encoder);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -254,10 +289,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::EncoderNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create encoder for simulation
     let mut encoder = EncoderNode::new()?;
@@ -269,8 +304,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         0.0    // 0 rad/s angular
     );
 
-    runtime.add_node(encoder);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -499,28 +534,28 @@ encoder.reset();
 
 ```rust
 use horus_library::nodes::{EncoderNode, PidControllerNode};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn setup_velocity_control() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Encoder measures actual velocity
-    let mut encoder = EncoderNode::new_with_topic("measured_velocity")?;
+    let mut encoder = EncoderNode::new_with_topic("measured.velocity")?;
     encoder.set_encoder_config(1024.0, 0.05, 1.0);
 
     // PID controls motor to match target velocity
     let mut pid = PidControllerNode::new_with_topics(
-        "target_velocity",
-        "measured_velocity",
-        "motor_pwm",
+        "target.velocity",
+        "measured.velocity",
+        "motor.pwm",
         "pid_config"
     )?;
     pid.set_gains(1.5, 0.2, 0.05);
     pid.set_output_limits(-255.0, 255.0);
 
-    runtime.add_node(encoder);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -530,28 +565,28 @@ fn setup_velocity_control() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::{EncoderNode, PidControllerNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn setup_position_control() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Encoder measures position
-    let mut encoder = EncoderNode::new_with_topic("current_position")?;
+    let mut encoder = EncoderNode::new_with_topic("current.position")?;
     encoder.set_encoder_config(2048.0, 0.05, 1.0);
 
     // PID controls to reach target position
     let mut pid = PidControllerNode::new_with_topics(
-        "target_position",
-        "current_position",
-        "motor_command",
+        "target.position",
+        "current.position",
+        "motor.command",
         "pid_config"
     )?;
     pid.set_gains(2.0, 0.1, 0.3);
     pid.set_output_limits(-100.0, 100.0);
 
-    runtime.add_node(encoder);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(encoder), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -561,25 +596,25 @@ fn setup_position_control() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::EncoderNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn setup_differential_odometry() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Left wheel encoder
-    let mut left_encoder = EncoderNode::new_with_topic("left_odom")?;
+    let mut left_encoder = EncoderNode::new_with_topic("left.odom")?;
     left_encoder.set_encoder_config(1024.0, 0.05, 1.0);
 
     // Right wheel encoder
-    let mut right_encoder = EncoderNode::new_with_topic("right_odom")?;
+    let mut right_encoder = EncoderNode::new_with_topic("right.odom")?;
     right_encoder.set_encoder_config(1024.0, 0.05, 1.0);
 
     // DifferentialDriveNode can consume these odometry messages
     // to calculate robot pose and publish combined odometry
 
-    runtime.add_node(left_encoder);
-    runtime.add_node(right_encoder);
-    runtime.run()?;
+    scheduler.add(Box::new(left_encoder), 50, Some(true));
+    scheduler.add(Box::new(right_encoder), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

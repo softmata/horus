@@ -29,12 +29,34 @@ pub enum RecentFileType {
     Scene,
     /// URDF robot description file
     Urdf,
-    /// SDF simulation description format file
+    /// Xacro macro file for URDF (.xacro)
+    Xacro,
+    /// SDF simulation description format file (.sdf, .world)
     Sdf,
+    /// MJCF MuJoCo XML format (.xml with mujoco root)
+    Mjcf,
+    /// SRDF semantic robot description (.srdf)
+    Srdf,
+    /// USD/USDA/USDC/USDZ scene files
+    Usd,
+    /// OpenDRIVE road network (.xodr)
+    OpenDrive,
+    /// OpenSCENARIO scenario files (.xosc)
+    OpenScenario,
     /// Configuration file (.toml, .yaml)
     Config,
     /// GLTF/GLB 3D model file
-    Model,
+    Gltf,
+    /// FBX 3D model file
+    Fbx,
+    /// OBJ 3D model file
+    Obj,
+    /// STL 3D model file
+    Stl,
+    /// Collada DAE 3D model file
+    Dae,
+    /// Heightmap/terrain file (.png, .tiff for heightmaps)
+    Heightmap,
     /// Other/unknown file type
     Other,
 }
@@ -45,9 +67,20 @@ impl RecentFileType {
         match self {
             RecentFileType::Scene => "[S]",
             RecentFileType::Urdf => "[U]",
+            RecentFileType::Xacro => "[X]",
             RecentFileType::Sdf => "[D]",
+            RecentFileType::Mjcf => "[M]",
+            RecentFileType::Srdf => "[R]",
+            RecentFileType::Usd => "[P]", // Pixar USD
+            RecentFileType::OpenDrive => "[O]",
+            RecentFileType::OpenScenario => "[N]",
             RecentFileType::Config => "[C]",
-            RecentFileType::Model => "[M]",
+            RecentFileType::Gltf => "[G]",
+            RecentFileType::Fbx => "[F]",
+            RecentFileType::Obj => "[B]",
+            RecentFileType::Stl => "[T]",
+            RecentFileType::Dae => "[A]",
+            RecentFileType::Heightmap => "[H]",
             RecentFileType::Other => "[?]",
         }
     }
@@ -57,9 +90,20 @@ impl RecentFileType {
         match self {
             RecentFileType::Scene => "Scene",
             RecentFileType::Urdf => "URDF",
+            RecentFileType::Xacro => "Xacro",
             RecentFileType::Sdf => "SDF",
+            RecentFileType::Mjcf => "MJCF",
+            RecentFileType::Srdf => "SRDF",
+            RecentFileType::Usd => "USD",
+            RecentFileType::OpenDrive => "OpenDRIVE",
+            RecentFileType::OpenScenario => "OpenSCENARIO",
             RecentFileType::Config => "Config",
-            RecentFileType::Model => "Model",
+            RecentFileType::Gltf => "GLTF",
+            RecentFileType::Fbx => "FBX",
+            RecentFileType::Obj => "OBJ",
+            RecentFileType::Stl => "STL",
+            RecentFileType::Dae => "DAE",
+            RecentFileType::Heightmap => "Heightmap",
             RecentFileType::Other => "Other",
         }
     }
@@ -72,11 +116,55 @@ impl RecentFileType {
             .map(|e| e.to_lowercase())
         {
             Some(ext) => match ext.as_str() {
+                // Scene formats
                 "scene" | "scn" => RecentFileType::Scene,
+
+                // Robot description formats
                 "urdf" => RecentFileType::Urdf,
+                "xacro" => RecentFileType::Xacro,
                 "sdf" | "world" => RecentFileType::Sdf,
+                "srdf" => RecentFileType::Srdf,
+
+                // USD formats (Pixar Universal Scene Description)
+                "usd" | "usda" | "usdc" | "usdz" => RecentFileType::Usd,
+
+                // Automotive simulation formats
+                "xodr" => RecentFileType::OpenDrive,
+                "xosc" => RecentFileType::OpenScenario,
+
+                // 3D model formats
+                "gltf" | "glb" => RecentFileType::Gltf,
+                "fbx" => RecentFileType::Fbx,
+                "obj" => RecentFileType::Obj,
+                "stl" => RecentFileType::Stl,
+                "dae" => RecentFileType::Dae,
+
+                // Configuration formats
                 "toml" | "yaml" | "yml" | "cfg" => RecentFileType::Config,
-                "gltf" | "glb" | "obj" | "stl" | "dae" => RecentFileType::Model,
+
+                // Heightmap/terrain (image-based)
+                "tiff" | "tif" => RecentFileType::Heightmap,
+
+                // Ambiguous formats that need content inspection
+                "xml" => {
+                    // XML could be MJCF, URDF, SDF, etc. - check filename hints
+                    let filename = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.to_lowercase())
+                        .unwrap_or_default();
+
+                    if filename.contains("mujoco") || filename.contains("mjcf") {
+                        RecentFileType::Mjcf
+                    } else if filename.contains("urdf") {
+                        RecentFileType::Urdf
+                    } else if filename.contains("sdf") || filename.contains("world") {
+                        RecentFileType::Sdf
+                    } else {
+                        // Default to MJCF for .xml in robotics context
+                        RecentFileType::Mjcf
+                    }
+                }
                 "json" => {
                     // Check if it's a scene JSON
                     if path
@@ -90,6 +178,24 @@ impl RecentFileType {
                         RecentFileType::Config
                     }
                 }
+                "png" => {
+                    // PNG could be heightmap or texture - check filename hints
+                    let filename = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.to_lowercase())
+                        .unwrap_or_default();
+
+                    if filename.contains("height")
+                        || filename.contains("terrain")
+                        || filename.contains("elevation")
+                        || filename.contains("dem")
+                    {
+                        RecentFileType::Heightmap
+                    } else {
+                        RecentFileType::Other
+                    }
+                }
                 _ => RecentFileType::Other,
             },
             None => RecentFileType::Other,
@@ -101,11 +207,81 @@ impl RecentFileType {
         &[
             RecentFileType::Scene,
             RecentFileType::Urdf,
+            RecentFileType::Xacro,
             RecentFileType::Sdf,
+            RecentFileType::Mjcf,
+            RecentFileType::Srdf,
+            RecentFileType::Usd,
+            RecentFileType::OpenDrive,
+            RecentFileType::OpenScenario,
             RecentFileType::Config,
-            RecentFileType::Model,
+            RecentFileType::Gltf,
+            RecentFileType::Fbx,
+            RecentFileType::Obj,
+            RecentFileType::Stl,
+            RecentFileType::Dae,
+            RecentFileType::Heightmap,
             RecentFileType::Other,
         ]
+    }
+
+    /// Returns file extensions associated with this type
+    pub fn extensions(&self) -> &'static [&'static str] {
+        match self {
+            RecentFileType::Scene => &["scene", "scn"],
+            RecentFileType::Urdf => &["urdf"],
+            RecentFileType::Xacro => &["xacro"],
+            RecentFileType::Sdf => &["sdf", "world"],
+            RecentFileType::Mjcf => &["xml"],
+            RecentFileType::Srdf => &["srdf"],
+            RecentFileType::Usd => &["usd", "usda", "usdc", "usdz"],
+            RecentFileType::OpenDrive => &["xodr"],
+            RecentFileType::OpenScenario => &["xosc"],
+            RecentFileType::Config => &["toml", "yaml", "yml", "cfg", "json"],
+            RecentFileType::Gltf => &["gltf", "glb"],
+            RecentFileType::Fbx => &["fbx"],
+            RecentFileType::Obj => &["obj"],
+            RecentFileType::Stl => &["stl"],
+            RecentFileType::Dae => &["dae"],
+            RecentFileType::Heightmap => &["png", "tiff", "tif"],
+            RecentFileType::Other => &[],
+        }
+    }
+
+    /// Returns whether this file type represents a robot description
+    pub fn is_robot_description(&self) -> bool {
+        matches!(
+            self,
+            RecentFileType::Urdf
+                | RecentFileType::Xacro
+                | RecentFileType::Sdf
+                | RecentFileType::Mjcf
+                | RecentFileType::Srdf
+        )
+    }
+
+    /// Returns whether this file type represents a 3D model
+    pub fn is_3d_model(&self) -> bool {
+        matches!(
+            self,
+            RecentFileType::Gltf
+                | RecentFileType::Fbx
+                | RecentFileType::Obj
+                | RecentFileType::Stl
+                | RecentFileType::Dae
+        )
+    }
+
+    /// Returns whether this file type represents a world/scene
+    pub fn is_world(&self) -> bool {
+        matches!(
+            self,
+            RecentFileType::Scene
+                | RecentFileType::Sdf
+                | RecentFileType::Usd
+                | RecentFileType::OpenDrive
+                | RecentFileType::OpenScenario
+        )
     }
 }
 
@@ -919,9 +1095,20 @@ mod tests {
             match file_type {
                 RecentFileType::Scene => "scene",
                 RecentFileType::Urdf => "urdf",
+                RecentFileType::Xacro => "xacro",
                 RecentFileType::Sdf => "sdf",
+                RecentFileType::Mjcf => "xml",
+                RecentFileType::Srdf => "srdf",
+                RecentFileType::Usd => "usd",
+                RecentFileType::OpenDrive => "xodr",
+                RecentFileType::OpenScenario => "xosc",
                 RecentFileType::Config => "toml",
-                RecentFileType::Model => "gltf",
+                RecentFileType::Gltf => "gltf",
+                RecentFileType::Fbx => "fbx",
+                RecentFileType::Obj => "obj",
+                RecentFileType::Stl => "stl",
+                RecentFileType::Dae => "dae",
+                RecentFileType::Heightmap => "tiff",
                 RecentFileType::Other => "txt",
             }
         ));
@@ -941,11 +1128,37 @@ mod tests {
     #[test]
     fn test_recent_file_type_inference() {
         let cases = vec![
+            // Scene formats
             ("test.scene", RecentFileType::Scene),
+            ("level.scn", RecentFileType::Scene),
+            // Robot description formats
             ("robot.urdf", RecentFileType::Urdf),
+            ("robot.xacro", RecentFileType::Xacro),
             ("world.sdf", RecentFileType::Sdf),
+            ("environment.world", RecentFileType::Sdf),
+            ("semantic.srdf", RecentFileType::Srdf),
+            // USD formats
+            ("stage.usd", RecentFileType::Usd),
+            ("stage.usda", RecentFileType::Usd),
+            ("stage.usdc", RecentFileType::Usd),
+            ("archive.usdz", RecentFileType::Usd),
+            // Automotive formats
+            ("road_network.xodr", RecentFileType::OpenDrive),
+            ("scenario.xosc", RecentFileType::OpenScenario),
+            // 3D model formats
+            ("model.gltf", RecentFileType::Gltf),
+            ("model.glb", RecentFileType::Gltf),
+            ("mesh.fbx", RecentFileType::Fbx),
+            ("mesh.obj", RecentFileType::Obj),
+            ("part.stl", RecentFileType::Stl),
+            ("collada.dae", RecentFileType::Dae),
+            // Config formats
             ("config.toml", RecentFileType::Config),
-            ("model.gltf", RecentFileType::Model),
+            ("settings.yaml", RecentFileType::Config),
+            // Heightmap formats
+            ("terrain.tiff", RecentFileType::Heightmap),
+            ("heightmap_data.png", RecentFileType::Heightmap),
+            // Unknown
             ("unknown.xyz", RecentFileType::Other),
         ];
 
@@ -1248,9 +1461,16 @@ mod tests {
     fn test_file_type_icons() {
         assert_eq!(RecentFileType::Scene.icon(), "[S]");
         assert_eq!(RecentFileType::Urdf.icon(), "[U]");
+        assert_eq!(RecentFileType::Xacro.icon(), "[X]");
         assert_eq!(RecentFileType::Sdf.icon(), "[D]");
+        assert_eq!(RecentFileType::Mjcf.icon(), "[M]");
+        assert_eq!(RecentFileType::Srdf.icon(), "[R]");
+        assert_eq!(RecentFileType::Usd.icon(), "[P]");
+        assert_eq!(RecentFileType::OpenDrive.icon(), "[O]");
+        assert_eq!(RecentFileType::OpenScenario.icon(), "[N]");
         assert_eq!(RecentFileType::Config.icon(), "[C]");
-        assert_eq!(RecentFileType::Model.icon(), "[M]");
+        assert_eq!(RecentFileType::Gltf.icon(), "[G]");
+        assert_eq!(RecentFileType::Fbx.icon(), "[F]");
         assert_eq!(RecentFileType::Other.icon(), "[?]");
     }
 
@@ -1258,7 +1478,34 @@ mod tests {
     fn test_file_type_labels() {
         assert_eq!(RecentFileType::Scene.label(), "Scene");
         assert_eq!(RecentFileType::Urdf.label(), "URDF");
+        assert_eq!(RecentFileType::Xacro.label(), "Xacro");
         assert_eq!(RecentFileType::Sdf.label(), "SDF");
+        assert_eq!(RecentFileType::Mjcf.label(), "MJCF");
+        assert_eq!(RecentFileType::Usd.label(), "USD");
+        assert_eq!(RecentFileType::OpenDrive.label(), "OpenDRIVE");
+        assert_eq!(RecentFileType::OpenScenario.label(), "OpenSCENARIO");
+        assert_eq!(RecentFileType::Gltf.label(), "GLTF");
+    }
+
+    #[test]
+    fn test_file_type_category_helpers() {
+        // Robot descriptions
+        assert!(RecentFileType::Urdf.is_robot_description());
+        assert!(RecentFileType::Xacro.is_robot_description());
+        assert!(RecentFileType::Mjcf.is_robot_description());
+        assert!(!RecentFileType::Gltf.is_robot_description());
+
+        // 3D models
+        assert!(RecentFileType::Gltf.is_3d_model());
+        assert!(RecentFileType::Fbx.is_3d_model());
+        assert!(RecentFileType::Obj.is_3d_model());
+        assert!(!RecentFileType::Urdf.is_3d_model());
+
+        // World/scene formats
+        assert!(RecentFileType::Scene.is_world());
+        assert!(RecentFileType::Usd.is_world());
+        assert!(RecentFileType::OpenDrive.is_world());
+        assert!(!RecentFileType::Gltf.is_world());
     }
 
     #[test]

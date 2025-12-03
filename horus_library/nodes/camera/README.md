@@ -2,6 +2,33 @@
 
 Generic camera interface for vision input with support for multiple backends.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::CameraNode;
+use horus_library::vision::ImageEncoding;
+use horus_core::Scheduler;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Basic camera setup
+    let mut camera = CameraNode::new()?;
+    camera.set_device_id(0);           // Default camera
+    camera.set_resolution(640, 480);   // VGA resolution
+    camera.set_fps(30.0);              // 30 frames per second
+    camera.set_encoding(ImageEncoding::Bgr8);
+
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Publishes to:** `camera.image` (images) and `camera.camera_info` (calibration data).
+
+**Requires:** Enable a camera backend in Cargo.toml: `features = ["opencv-backend"]`
+
 ## Overview
 
 The Camera Node provides a unified interface for capturing images from various camera sources. It supports multiple backends (OpenCV, V4L2) and publishes both raw image data and camera calibration information. The node handles camera initialization, frame capture, and configurable image parameters including resolution, framerate, and encoding format.
@@ -14,8 +41,8 @@ The Camera Node provides a unified interface for capturing images from various c
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `camera/image` | `Image` | Raw image frames from camera |
-| `camera/camera_info` | `CameraInfo` | Camera calibration and intrinsic parameters |
+| `camera.image` | `Image` | Raw image frames from camera |
+| `camera.camera_info` | `CameraInfo` | Camera calibration and intrinsic parameters |
 
 Note: Topic names can be customized using `new_with_topic()` constructor.
 
@@ -94,12 +121,12 @@ pub struct CameraInfo {
 ```rust
 use horus_library::nodes::CameraNode;
 
-// Create with default topic "camera/image"
+// Create with default topic "camera.image"
 let mut camera = CameraNode::new()?;
 
 // Create with custom topic prefix
-let mut left_camera = CameraNode::new_with_topic("camera/left")?;
-// Publishes to "camera/left/image" and "camera/left/camera_info"
+let mut left_camera = CameraNode::new_with_topic("camera.left")?;
+// Publishes to "camera.left.image" and "camera.left.camera_info"
 ```
 
 ### Configuration Methods
@@ -144,10 +171,10 @@ eprintln!("Captured {} frames", frames);
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create and configure camera
     let mut camera = CameraNode::new()?;
@@ -156,8 +183,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     camera.set_fps(30.0);
     camera.set_encoding(ImageEncoding::Bgr8);
 
-    runtime.add_node(camera);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -168,28 +195,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Left camera
-    let mut left_camera = CameraNode::new_with_topic("camera/left")?;
+    let mut left_camera = CameraNode::new_with_topic("camera.left")?;
     left_camera.set_device_id(0);
     left_camera.set_resolution(1280, 720);
     left_camera.set_fps(30.0);
     left_camera.set_encoding(ImageEncoding::Mono8);  // Grayscale for stereo
 
     // Right camera
-    let mut right_camera = CameraNode::new_with_topic("camera/right")?;
+    let mut right_camera = CameraNode::new_with_topic("camera.right")?;
     right_camera.set_device_id(1);
     right_camera.set_resolution(1280, 720);
     right_camera.set_fps(30.0);
     right_camera.set_encoding(ImageEncoding::Mono8);
 
-    runtime.add_node(left_camera);
-    runtime.add_node(right_camera);
-    runtime.run()?;
+    scheduler.add(Box::new(left_camera), 50, Some(true));
+    scheduler.add(Box::new(right_camera), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -200,10 +227,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // High-resolution camera for detailed capture
     let mut camera = CameraNode::new()?;
@@ -215,8 +242,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable compression to reduce bandwidth
     camera.set_compression(true, 90);
 
-    runtime.add_node(camera);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -227,10 +254,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Low resolution, high framerate for real-time control
     let mut camera = CameraNode::new()?;
@@ -240,8 +267,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     camera.set_encoding(ImageEncoding::Mono8);  // Fastest encoding
     camera.set_compression(false, 0);   // No compression overhead
 
-    runtime.add_node(camera);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -252,26 +279,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // RGB camera
-    let mut rgb_camera = CameraNode::new_with_topic("camera/rgb")?;
+    let mut rgb_camera = CameraNode::new_with_topic("camera.rgb")?;
     rgb_camera.set_device_id(0);
     rgb_camera.set_resolution(640, 480);
     rgb_camera.set_encoding(ImageEncoding::Rgb8);
 
     // Depth camera
-    let mut depth_camera = CameraNode::new_with_topic("camera/depth")?;
+    let mut depth_camera = CameraNode::new_with_topic("camera.depth")?;
     depth_camera.set_device_id(1);
     depth_camera.set_resolution(640, 480);
     depth_camera.set_encoding(ImageEncoding::Depth16);  // 16-bit depth data
 
-    runtime.add_node(rgb_camera);
-    runtime.add_node(depth_camera);
-    runtime.run()?;
+    scheduler.add(Box::new(rgb_camera), 50, Some(true));
+    scheduler.add(Box::new(depth_camera), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -513,22 +540,22 @@ camera.set_encoding(ImageEncoding::Mono8);
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Camera captures images
     let mut camera = CameraNode::new()?;
     camera.set_resolution(640, 480);
     camera.set_encoding(ImageEncoding::Bgr8);
 
-    // Image processing node subscribes to "camera/image"
+    // Image processing node subscribes to "camera.image"
     // Detection results published to "detections"
 
-    runtime.add_node(camera);
-    // runtime.add_node(object_detector);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    // scheduler.add(Box::new(object_detector), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -539,19 +566,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
-    // Left camera publishes to "camera/left/image" and "camera/left/camera_info"
-    let mut left_camera = CameraNode::new_with_topic("camera/left")?;
+    // Left camera publishes to "camera.left.image" and "camera.left.camera_info"
+    let mut left_camera = CameraNode::new_with_topic("camera.left")?;
     left_camera.set_device_id(0);
     left_camera.set_resolution(1280, 720);
     left_camera.set_encoding(ImageEncoding::Mono8);
 
-    // Right camera publishes to "camera/right/image" and "camera/right/camera_info"
-    let mut right_camera = CameraNode::new_with_topic("camera/right")?;
+    // Right camera publishes to "camera.right.image" and "camera.right.camera_info"
+    let mut right_camera = CameraNode::new_with_topic("camera.right")?;
     right_camera.set_device_id(1);
     right_camera.set_resolution(1280, 720);
     right_camera.set_encoding(ImageEncoding::Mono8);
@@ -559,10 +586,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Stereo processing node uses camera_info for rectification
     // Subscribes to both image topics and camera_info topics
 
-    runtime.add_node(left_camera);
-    runtime.add_node(right_camera);
-    // runtime.add_node(stereo_processor);
-    runtime.run()?;
+    scheduler.add(Box::new(left_camera), 50, Some(true));
+    scheduler.add(Box::new(right_camera), 50, Some(true));
+    // scheduler.add(Box::new(stereo_processor), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -573,7 +600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::{Image, vision::ImageEncoding};
-use horus_core::{Node, Runtime, Hub, NodeInfo};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
 // Example image subscriber node
 struct ImageProcessor {
@@ -583,7 +610,7 @@ struct ImageProcessor {
 impl ImageProcessor {
     fn new() -> horus_core::error::HorusResult<Self> {
         Ok(Self {
-            subscriber: Hub::new("camera/image")?,
+            subscriber: Hub::new("camera.image")?,
         })
     }
 }
@@ -610,7 +637,7 @@ impl Node for ImageProcessor {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     let mut camera = CameraNode::new()?;
     camera.set_resolution(640, 480);
@@ -618,9 +645,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let processor = ImageProcessor::new()?;
 
-    runtime.add_node(camera);
-    runtime.add_node(processor);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    scheduler.add(Box::new(processor), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -631,10 +658,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::CameraNode;
 use horus_library::vision::ImageEncoding;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Camera with compression enabled for recording
     let mut camera = CameraNode::new()?;
@@ -646,9 +673,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Logger node subscribes to compressed images
     // Writes to disk without additional processing
 
-    runtime.add_node(camera);
-    // runtime.add_node(image_logger);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, Some(true));
+    // scheduler.add(Box::new(image_logger), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

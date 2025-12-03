@@ -8,9 +8,10 @@ name = "horus_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39", "num-bigint", "num-complex"] }
-numpy = "0.22"  # Zero-copy NumPy array support
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py39", "num-bigint", "num-complex"] }
+numpy = "0.27"  # Zero-copy NumPy array support (compatible with NumPy 2.x)
 horus = { path = "../horus" }
+horus_core = { path = "../horus_core" }  # Direct access for cuda features
 horus_library = { path = "../horus_library" }
 sim2d = { path = "../horus_library/tools/sim2d", features = ["python"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
@@ -22,12 +23,17 @@ crossbeam-channel = "0.5"
 uuid = { version = "1.4", features = ["v4"] }
 chrono = "0.4"
 anyhow = "1.0"
-pythonize = "0.22"
+pythonize = "0.27"
 ctrlc = "3.4"
 colored = "2.0"
 crossterm = "0.27"  # Terminal styling
 parking_lot = "0.12"  # Faster mutexes for buffer pool
 dirs = "5.0"  # Cross-platform directory paths
+lazy_static = "1.4"  # For global pool registry
 
 [build-dependencies]
-pyo3-build-config = "0.22"
+pyo3-build-config = "0.27"
+
+[features]
+default = []
+cuda = ["horus_core/cuda"]  # Enable CUDA support for GPU tensor transfers

@@ -6,7 +6,7 @@ order: 3
 
 # Quick Start
 
-Let's build a simple temperature monitoring system to see HORUS in action. This will take about 10 minutes.
+This tutorial demonstrates building a temperature monitoring system with HORUS. Estimated time: 10 minutes.
 
 ## What We're Building
 
@@ -178,7 +178,7 @@ publisher: Hub::new("temperature")?
 subscriber: Hub::new("temperature")?
 ```
 
-Both use the same topic name (`"temperature"`). The `Hub` handles all the shared memory magic automatically!
+Both use the same topic name (`"temperature"`). The `Hub` manages all shared memory operations automatically.
 
 ### The Node Trait - Component Lifecycle
 
@@ -278,7 +278,7 @@ impl Node for TemperatureMonitor {
             if let Some(ref mut c) = ctx {
                 c.log_info(&format!("Temperature: {:.1}°C", temp));
 
-                // Alert if too hot!
+                // Alert if temperature exceeds threshold
                 if temp > 25.0 {
                     c.log_warning("Temperature too high!");
                 }
@@ -421,6 +421,4 @@ Your next steps:
 2. **[Run the examples](/basic-examples)** to see real applications
 3. **[Open the dashboard](/development/dashboard)** to monitor your system
 
-**Having issues?** See the **[Troubleshooting Guide](/troubleshooting)** for help with common problems.
-
-**Keep building!** 
+For issues, see the **[Troubleshooting Guide](/troubleshooting)**.

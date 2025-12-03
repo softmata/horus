@@ -77,15 +77,37 @@ GND       ---   GND (common ground REQUIRED)
 - Use separate power supply for motors (not Pi's 5V)
 - Calibrate ESCs before first use
 
-### Enable in Project
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `BldcMotorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
 horus_library = { version = "0.1", features = ["gpio-hardware"] }
-```
-
-```bash
-cargo build --features="gpio-hardware"
 ```
 
 ## Supported Protocols

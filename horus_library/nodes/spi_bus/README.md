@@ -258,7 +258,7 @@ fn main() -> Result<()> {
             let mut msg = SpiMessage::new(0, 0, &[0x01, 0x80, 0x00]);
 
             let req_hub = Hub::<SpiMessage>::new("spi0/request")?;
-            req_hub.send(msg, None)?;
+            req_hub.send(msg, &mut None)?;
 
             let resp_hub = Hub::<SpiMessage>::new("spi0/response")?;
             if let Some(resp) = resp_hub.recv(None) {
@@ -310,11 +310,11 @@ fn main() -> Result<()> {
 
             // Read from ADXL345 (CS 0)
             let msg_accel = SpiMessage::new(0, 0, &[0x80 | 0x00, 0x00]);
-            req_hub.send(msg_accel, None)?;
+            req_hub.send(msg_accel, &mut None)?;
 
             // Read from BME280 (CS 1)
             let msg_bme = SpiMessage::new(0, 1, &[0xD0, 0x00]);
-            req_hub.send(msg_bme, None)?;
+            req_hub.send(msg_bme, &mut None)?;
 
             // Process responses
             while let Some(resp) = resp_hub.recv(None) {
@@ -357,7 +357,7 @@ fn main() -> Result<()> {
 
             // Read DEVID register (should return 0xE5)
             let mut msg = SpiMessage::new(0, 0, &[0x80 | 0x00, 0x00]);
-            req_hub.send(msg, None)?;
+            req_hub.send(msg, &mut None)?;
 
             if let Some(resp) = resp_hub.recv(None) {
                 if resp.success && resp.rx_data[1] == 0xE5 {
@@ -365,14 +365,14 @@ fn main() -> Result<()> {
 
                     // Put in measurement mode
                     let power_msg = SpiMessage::new(0, 0, &[0x2D, 0x08]);
-                    req_hub.send(power_msg, None)?;
+                    req_hub.send(power_msg, &mut None)?;
 
                     // Read acceleration data (6 bytes from register 0x32)
                     let data_msg = SpiMessage::new(0, 0, &[
                         0x80 | 0x40 | 0x32,  // Read, multi-byte, register 0x32
                         0, 0, 0, 0, 0, 0
                     ]);
-                    req_hub.send(data_msg, None)?;
+                    req_hub.send(data_msg, &mut None)?;
 
                     if let Some(data_resp) = resp_hub.recv(None) {
                         if data_resp.success {
@@ -425,7 +425,7 @@ fn main() -> Result<()> {
 
             // Read CONFIG register
             let msg = SpiMessage::new(0, 0, &[0x00, 0x00]);  // R_REGISTER | 0x00
-            req_hub.send(msg, None)?;
+            req_hub.send(msg, &mut None)?;
 
             if let Some(resp) = resp_hub.recv(None) {
                 if resp.success {
@@ -433,7 +433,7 @@ fn main() -> Result<()> {
 
                     // Write to CONFIG register (power up, enable RX)
                     let write_msg = SpiMessage::new(0, 0, &[0x20, 0x0F]);
-                    req_hub.send(write_msg, None)?;
+                    req_hub.send(write_msg, &mut None)?;
 
                     ctx.log_info("nRF24L01+ configured");
                 }
@@ -469,7 +469,7 @@ fn main() -> Result<()> {
 
             // Read JEDEC ID (0x9F command)
             let msg = SpiMessage::new(0, 0, &[0x9F, 0x00, 0x00, 0x00]);
-            req_hub.send(msg, None)?;
+            req_hub.send(msg, &mut None)?;
 
             if let Some(resp) = resp_hub.recv(None) {
                 if resp.success {
@@ -489,7 +489,7 @@ fn main() -> Result<()> {
                         0, 0, 0, 0, 0, 0, 0, 0,  // 16 dummy bytes
                         0, 0, 0, 0, 0, 0, 0, 0
                     ]);
-                    req_hub.send(read_msg, None)?;
+                    req_hub.send(read_msg, &mut None)?;
 
                     if let Some(data_resp) = resp_hub.recv(None) {
                         if data_resp.success {

@@ -18,54 +18,91 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
   if (!doc) {
     return {
-      title: 'Page Not Found',
-      description: 'The requested page could not be found.',
+      title: 'Page Not Found | HORUS - World\'s Fastest Robotics Framework',
+      description: 'The requested page could not be found. Explore HORUS documentation to build revolutionary robots 575x faster than ROS2.',
     };
   }
 
-  const title = doc.frontmatter.title || 'HORUS Documentation';
-  const description = doc.frontmatter.description || 'Official documentation for HORUS distributed computing framework. 29ns latency, real-time control, production-ready.';
-  const url = `https://docs.horus.dev/${slug.join('/')}`;
+  const baseTitle = doc.frontmatter.title || 'HORUS Documentation';
+  const title = `${baseTitle} | HORUS - 575x Faster Than ROS2`;
+  const description = doc.frontmatter.description || 'Learn to build production robots with HORUS - the world\'s fastest robotics framework. 87ns latency, 575x faster than ROS2. Rust & Python. FREE & open source.';
+  const url = `https://docs.horus-registry.dev/${slug.join('/')}`;
 
   return {
-    title: `${title} | HORUS Docs`,
+    title,
     description,
     keywords: [
+      // Primary keywords
       'HORUS',
-      'robotics framework',
-      'low latency IPC',
-      'real-time control',
-      'distributed computing',
-      'Rust robotics',
-      'shared memory',
-      'pub-sub messaging',
-      'robot middleware',
+      'fastest robotics framework',
+      '575x faster than ROS2',
+      '87ns latency',
+      'revolutionary robotics',
+
+      // Technical keywords
+      'real-time robotics',
+      'zero-copy IPC',
+      'shared memory robotics',
+      'Rust robotics framework',
+      'Python robotics',
+
+      // Use case keywords
+      'autonomous robot',
+      'humanoid robot',
+      'drone control',
+      'industrial automation',
+
+      // Comparison keywords
       'ROS alternative',
+      'ROS2 alternative',
+      'best robotics framework',
+      'modern robotics',
+
+      // Intent keywords
+      'learn robotics',
+      'robot programming tutorial',
+      'build robots fast',
     ],
-    authors: [{ name: 'HORUS Team' }],
+    authors: [{ name: 'HORUS Robotics Team' }],
+    creator: 'HORUS Robotics',
+    publisher: 'HORUS Robotics',
     openGraph: {
-      title,
-      description,
+      title: `${baseTitle} | HORUS - Revolutionary Robotics Framework`,
+      description: `${description} Build your first robot in 5 minutes.`,
       url,
-      siteName: 'HORUS Documentation',
+      siteName: 'HORUS - World\'s Fastest Robotics Framework',
       type: 'article',
+      locale: 'en_US',
       images: [
         {
-          url: 'https://docs.horus.dev/og-image.png',
+          url: 'https://docs.horus-registry.dev/og-image.png',
           width: 1200,
           height: 630,
-          alt: 'HORUS - Ultra-Low Latency IPC for Robotics',
+          alt: `${baseTitle} - HORUS Documentation | 575x Faster Than ROS2`,
         },
       ],
     },
     twitter: {
       card: 'summary_large_image',
-      title,
-      description,
-      images: ['https://docs.horus.dev/og-image.png'],
+      title: `${baseTitle} | HORUS - 575x Faster`,
+      description: `${description.substring(0, 200)}...`,
+      images: ['https://docs.horus-registry.dev/og-image.png'],
+      creator: '@horus_robotics',
+      site: '@horus_robotics',
     },
     alternates: {
       canonical: url,
+    },
+    robots: {
+      index: true,
+      follow: true,
+      googleBot: {
+        index: true,
+        follow: true,
+        'max-video-preview': -1,
+        'max-image-preview': 'large',
+        'max-snippet': -1,
+      },
     },
   };
 }

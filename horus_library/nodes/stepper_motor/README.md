@@ -121,7 +121,7 @@ use horus_library::nodes::StepperMotorNode;
 let mut stepper = StepperMotorNode::new()?;
 
 // Create with custom topic
-let mut stepper = StepperMotorNode::new_with_topic("robot/steppers")?;
+let mut stepper = StepperMotorNode::new_with_topic("robot.steppers")?;
 ```
 
 ### Configuration Methods
@@ -253,13 +253,13 @@ fn main() -> Result<()> {
 
             // Move 1000 steps forward
             let cmd = StepperCommand::steps(0, 1000);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             std::thread::sleep(std::time::Duration::from_secs(2));
 
             // Move 1000 steps backward
             let cmd = StepperCommand::steps(0, -1000);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -296,13 +296,13 @@ fn main() -> Result<()> {
 
             // Move to 5 revolutions (10*PI radians)
             let cmd = StepperCommand::position(0, 5.0 * TAU, 2000.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             std::thread::sleep(std::time::Duration::from_secs(3));
 
             // Return to zero position
             let cmd = StepperCommand::position(0, 0.0, 2000.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -338,19 +338,19 @@ fn main() -> Result<()> {
 
             // Spin at 1000 steps/sec
             let cmd = StepperCommand::velocity(0, 1000.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             std::thread::sleep(std::time::Duration::from_secs(5));
 
             // Reverse at 500 steps/sec
             let cmd = StepperCommand::velocity(0, -500.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             std::thread::sleep(std::time::Duration::from_secs(5));
 
             // Stop
             let cmd = StepperCommand::velocity(0, 0.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -386,7 +386,7 @@ fn main() -> Result<()> {
 
             // Start homing (move backward at 500 steps/sec until limit switch)
             let cmd = StepperCommand::home(0, -500.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             ctx.log_info("Homing motor 0...");
 
@@ -762,7 +762,7 @@ Configure via UART or hardwired pins for advanced microstepping.
    ```rust
    // Find reference position using limit switch
    let cmd = StepperCommand::home(0, -500.0);
-   hub.send(cmd, None)?;
+   hub.send(cmd, &mut None)?;
    ```
 
 5. **Set current limits to prevent overheating**:
@@ -864,7 +864,7 @@ Configure via UART or hardwired pins for advanced microstepping.
 2. Disable motor when not in use:
    ```rust
    let cmd = StepperCommand::disable(0);
-   hub.send(cmd, None)?;
+   hub.send(cmd, &mut None)?;
    ```
 3. Add heatsinks to drivers and motors
 4. Improve airflow around motors
@@ -919,7 +919,7 @@ Configure via UART or hardwired pins for advanced microstepping.
    ```rust
    for motor_id in 0..num_motors {
        let cmd = StepperCommand::disable(motor_id);
-       hub.send(cmd, None)?;
+       hub.send(cmd, &mut None)?;
    }
    ```
 3. Implement hardware E-STOP switch that cuts motor power

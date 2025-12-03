@@ -21,10 +21,10 @@ pub mod bevy_wrapper;
 pub mod urdf_parser;
 
 // Re-export wrapper types for convenience
-pub use bevy_wrapper::render_tf_frames;
+pub use bevy_wrapper::render_hframe_frames;
 
-// Backwards-compatible type aliases (for migration from tf/)
-pub use bevy_wrapper::TFTree;
+// Primary type alias
+pub use bevy_wrapper::HFrameTree;
 
 // Re-export URDF parser
 

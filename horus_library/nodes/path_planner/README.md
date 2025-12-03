@@ -176,10 +176,10 @@ if planner.is_path_valid() {
 
 ```rust
 use horus_library::nodes::PathPlannerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create path planner with A* algorithm
     let mut planner = PathPlannerNode::new_with_topics(
@@ -194,8 +194,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     planner.set_robot_radius(0.25);            // 25cm robot
     planner.set_algorithm(false);              // Use A*
 
-    runtime.add_node(planner);
-    runtime.run()?;
+    scheduler.add(Box::new(planner), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -205,10 +205,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PathPlannerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create path planner with RRT algorithm
     let mut planner = PathPlannerNode::new_with_topics(
@@ -223,8 +223,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     planner.set_robot_radius(0.30);
     planner.set_algorithm(true);  // Use RRT for complex spaces
 
-    runtime.add_node(planner);
-    runtime.run()?;
+    scheduler.add(Box::new(planner), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -234,10 +234,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PathPlannerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create path planner with dynamic replanning
     let mut planner = PathPlannerNode::new()?;
@@ -252,8 +252,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - Robot deviates > 0.5m from path
     // - No valid path exists
 
-    runtime.add_node(planner);
-    runtime.run()?;
+    scheduler.add(Box::new(planner), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -263,10 +263,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PathPlannerNode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // High-resolution planner for warehouse aisles
     let mut planner = PathPlannerNode::new_with_topics(
@@ -281,8 +281,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     planner.set_robot_radius(0.40);            // 40cm safety margin
     planner.set_algorithm(false);              // A* for structured space
 
-    runtime.add_node(planner);
-    runtime.run()?;
+    scheduler.add(Box::new(planner), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -573,10 +573,10 @@ The Path Planner integrates with other nodes to form a complete navigation stack
 
 ```rust
 use horus_library::nodes::{PathPlannerNode, DifferentialDriveNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Global path planner
     let mut global_planner = PathPlannerNode::new_with_topics(
@@ -596,9 +596,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "global_path"
     )?;
 
-    runtime.add_node(global_planner);
-    runtime.add_node(local_controller);
-    runtime.run()?;
+    scheduler.add(Box::new(global_planner), 50, Some(true));
+    scheduler.add(Box::new(local_controller), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

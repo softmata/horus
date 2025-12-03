@@ -1,0 +1,972 @@
+//! Shared memory tensor pool for zero-copy tensor communication
+//!
+//! This module provides a high-performance memory pool for allocating tensors
+//! that can be shared across processes with zero-copy semantics.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌────────────────────────────────────────────────────────────┐
+//! │                    TensorPool Layout                        │
+//! ├────────────────────────────────────────────────────────────┤
+//! │  PoolHeader (64 bytes)                                     │
+//! │  ├── magic: u64                                            │
+//! │  ├── version: u32                                          │
+//! │  ├── pool_id: u32                                          │
+//! │  ├── pool_size: u64                                        │
+//! │  ├── max_slots: u32                                        │
+//! │  ├── slot_alignment: u32                                   │
+//! │  └── next_alloc_offset: AtomicU64                          │
+//! ├────────────────────────────────────────────────────────────┤
+//! │  SlotHeaders[max_slots] (32 bytes each)                    │
+//! │  ├── refcount: AtomicU32                                   │
+//! │  ├── generation: AtomicU32                                 │
+//! │  ├── offset: u64                                           │
+//! │  ├── size: u64                                             │
+//! │  └── flags: AtomicU32                                      │
+//! ├────────────────────────────────────────────────────────────┤
+//! │  Free Stack (lock-free)                                    │
+//! │  └── free_stack_head: AtomicU64                            │
+//! ├────────────────────────────────────────────────────────────┤
+//! │                                                            │
+//! │  Data Region (remaining space)                             │
+//! │  └── Tensor data aligned to slot_alignment                 │
+//! │                                                            │
+//! └────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use horus_core::memory::TensorPool;
+//!
+//! // Create or open a tensor pool
+//! let pool = TensorPool::new(1, TensorPoolConfig::default())?;
+//!
+//! // Allocate a tensor
+//! let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::U8)?;
+//!
+//! // Get data pointer for writing
+//! let data = pool.data_slice_mut(&tensor);
+//! // ... write tensor data ...
+//!
+//! // Send tensor through Hub (only descriptor is copied)
+//! hub.send(tensor)?;
+//!
+//! // Reference counting handles cleanup automatically
+//! ```
+
+use crate::error::{HorusError, HorusResult};
+use crate::memory::platform::shm_global_dir;
+use memmap2::{MmapMut, MmapOptions};
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+/// Magic number for pool validation
+const POOL_MAGIC: u64 = 0x484F5255535F5450; // "HORUS_TP" in hex
+
+/// Current pool version
+const POOL_VERSION: u32 = 1;
+
+/// Slot flags
+const SLOT_FREE: u32 = 0;
+const SLOT_ALLOCATED: u32 = 1;
+const SLOT_CUDA: u32 = 2;
+
+/// Invalid slot index (sentinel for free list)
+const INVALID_SLOT: u32 = u32::MAX;
+
+/// Pool header stored at the start of shared memory
+#[repr(C)]
+struct PoolHeader {
+    magic: u64,
+    version: u32,
+    pool_id: u32,
+    pool_size: u64,
+    max_slots: u32,
+    slot_alignment: u32,
+    next_alloc_offset: AtomicU64,
+    free_stack_head: AtomicU64,
+    _padding: [u8; 16],
+}
+
+/// Slot metadata stored in shared memory
+#[repr(C)]
+struct SlotHeader {
+    refcount: AtomicU32,
+    generation: AtomicU32,
+    offset: u64,
+    size: u64,
+    flags: AtomicU32,
+    next_free: AtomicU32,
+    _padding: [u8; 4],
+}
+
+/// Configuration for tensor pool
+#[derive(Clone, Debug)]
+pub struct TensorPoolConfig {
+    /// Total pool size in bytes (default: 1GB)
+    pub pool_size: usize,
+    /// Maximum number of concurrent tensors (default: 1024)
+    pub max_slots: usize,
+    /// Memory alignment for tensor data (default: 64 bytes, cache-line)
+    pub slot_alignment: usize,
+}
+
+impl Default for TensorPoolConfig {
+    fn default() -> Self {
+        Self {
+            pool_size: 1024 * 1024 * 1024, // 1GB
+            max_slots: 1024,
+            slot_alignment: 64,
+        }
+    }
+}
+
+impl TensorPoolConfig {
+    /// Create a smaller pool for testing
+    pub fn small() -> Self {
+        Self {
+            pool_size: 64 * 1024 * 1024, // 64MB
+            max_slots: 256,
+            slot_alignment: 64,
+        }
+    }
+
+    /// Create a larger pool for production ML workloads
+    pub fn large() -> Self {
+        Self {
+            pool_size: 4 * 1024 * 1024 * 1024, // 4GB
+            max_slots: 4096,
+            slot_alignment: 64,
+        }
+    }
+}
+
+/// Shared memory tensor pool
+///
+/// Manages a region of shared memory for tensor allocation with reference counting.
+/// Multiple processes can attach to the same pool and share tensors with zero-copy.
+pub struct TensorPool {
+    config: TensorPoolConfig,
+    pool_id: u32,
+    shm_path: PathBuf,
+    mmap: MmapMut,
+    _file: File,
+    is_owner: bool,
+    #[allow(dead_code)]
+    header_size: usize,
+    slots_offset: usize,
+    data_offset: usize,
+}
+
+impl TensorPool {
+    /// Create or open a tensor pool
+    ///
+    /// If the pool already exists, it will be opened. Otherwise, a new pool is created.
+    pub fn new(pool_id: u32, config: TensorPoolConfig) -> HorusResult<Self> {
+        let shm_dir = shm_global_dir();
+        std::fs::create_dir_all(&shm_dir)?;
+
+        let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
+
+        // Calculate layout
+        let header_size = std::mem::size_of::<PoolHeader>();
+        let slots_size = config.max_slots * std::mem::size_of::<SlotHeader>();
+        let metadata_size = header_size + slots_size;
+        let data_offset = Self::align_up(metadata_size, config.slot_alignment);
+        let total_size = data_offset + config.pool_size;
+
+        // Try to open existing or create new
+        let (file, is_owner) = if shm_path.exists() {
+            let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+            (file, false)
+        } else {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&shm_path)?;
+            file.set_len(total_size as u64)?;
+            (file, true)
+        };
+
+        let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
+
+        let mut pool = Self {
+            config: config.clone(),
+            pool_id,
+            shm_path,
+            mmap,
+            _file: file,
+            is_owner,
+            header_size,
+            slots_offset: header_size,
+            data_offset,
+        };
+
+        if is_owner {
+            pool.initialize()?;
+        } else {
+            pool.validate()?;
+        }
+
+        Ok(pool)
+    }
+
+    /// Open an existing tensor pool (fails if pool doesn't exist)
+    pub fn open(pool_id: u32) -> HorusResult<Self> {
+        let shm_dir = shm_global_dir();
+        let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
+
+        if !shm_path.exists() {
+            return Err(HorusError::Config(format!(
+                "Tensor pool {} does not exist",
+                pool_id
+            )));
+        }
+
+        let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+
+        let metadata = file.metadata()?;
+        let total_size = metadata.len() as usize;
+
+        let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
+
+        // Read header to get config
+        let header = unsafe { &*(mmap.as_ptr() as *const PoolHeader) };
+
+        if header.magic != POOL_MAGIC {
+            return Err(HorusError::Config("Invalid tensor pool magic".to_string()));
+        }
+
+        let config = TensorPoolConfig {
+            pool_size: header.pool_size as usize,
+            max_slots: header.max_slots as usize,
+            slot_alignment: header.slot_alignment as usize,
+        };
+
+        let header_size = std::mem::size_of::<PoolHeader>();
+        let slots_size = config.max_slots * std::mem::size_of::<SlotHeader>();
+        let metadata_size = header_size + slots_size;
+        let data_offset = Self::align_up(metadata_size, config.slot_alignment);
+
+        Ok(Self {
+            config,
+            pool_id,
+            shm_path,
+            mmap,
+            _file: file,
+            is_owner: false,
+            header_size,
+            slots_offset: header_size,
+            data_offset,
+        })
+    }
+
+    /// Initialize a newly created pool
+    fn initialize(&mut self) -> HorusResult<()> {
+        // Zero the entire region
+        self.mmap.fill(0);
+
+        // Copy config values to avoid borrow issues
+        let pool_id = self.pool_id;
+        let pool_size = self.config.pool_size as u64;
+        let max_slots = self.config.max_slots as u32;
+        let slot_alignment = self.config.slot_alignment as u32;
+
+        // Initialize header
+        let header = self.header_mut();
+        header.magic = POOL_MAGIC;
+        header.version = POOL_VERSION;
+        header.pool_id = pool_id;
+        header.pool_size = pool_size;
+        header.max_slots = max_slots;
+        header.slot_alignment = slot_alignment;
+        header.next_alloc_offset.store(0, Ordering::Release);
+        header
+            .free_stack_head
+            .store(INVALID_SLOT as u64, Ordering::Release);
+
+        // Initialize all slots as free
+        let max_slots_usize = self.config.max_slots;
+        for i in 0..max_slots_usize {
+            let slot = self.slot_mut(i as u32);
+            slot.refcount.store(0, Ordering::Release);
+            slot.generation.store(0, Ordering::Release);
+            slot.offset = 0;
+            slot.size = 0;
+            slot.flags.store(SLOT_FREE, Ordering::Release);
+            slot.next_free.store(INVALID_SLOT, Ordering::Release);
+        }
+
+        // Flush to ensure visibility
+        self.mmap.flush()?;
+
+        Ok(())
+    }
+
+    /// Validate an existing pool
+    fn validate(&self) -> HorusResult<()> {
+        let header = self.header();
+
+        if header.magic != POOL_MAGIC {
+            return Err(HorusError::Config("Invalid tensor pool magic".to_string()));
+        }
+
+        if header.version != POOL_VERSION {
+            return Err(HorusError::Config(format!(
+                "Tensor pool version mismatch: expected {}, got {}",
+                POOL_VERSION, header.version
+            )));
+        }
+
+        if header.pool_id != self.pool_id {
+            return Err(HorusError::Config(format!(
+                "Tensor pool ID mismatch: expected {}, got {}",
+                self.pool_id, header.pool_id
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Allocate a tensor slot
+    ///
+    /// Returns a HorusTensor descriptor pointing to the allocated memory.
+    pub fn alloc(
+        &self,
+        shape: &[u64],
+        dtype: TensorDtype,
+        device: TensorDevice,
+    ) -> HorusResult<HorusTensor> {
+        // Calculate required size
+        let num_elements: u64 = shape.iter().product();
+        let element_size = dtype.element_size() as u64;
+        let size = num_elements * element_size;
+        let aligned_size = Self::align_up(size as usize, self.config.slot_alignment);
+
+        // Find a free slot
+        let slot_id = self.find_free_slot()?;
+        let slot = self.slot_mut(slot_id);
+
+        // Allocate from data region
+        let offset = self.allocate_data(aligned_size)?;
+
+        // Initialize slot
+        let generation = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        slot.offset = offset as u64;
+        slot.size = size;
+        slot.refcount.store(1, Ordering::Release);
+        slot.flags.store(
+            if device.is_cuda() {
+                SLOT_CUDA
+            } else {
+                SLOT_ALLOCATED
+            },
+            Ordering::Release,
+        );
+
+        // Create tensor descriptor
+        Ok(HorusTensor::new(
+            self.pool_id,
+            slot_id,
+            generation,
+            offset as u64,
+            shape,
+            dtype,
+            device,
+        ))
+    }
+
+    /// Increment reference count for a tensor
+    #[inline]
+    pub fn retain(&self, tensor: &HorusTensor) {
+        if tensor.pool_id != self.pool_id {
+            return;
+        }
+
+        let slot = self.slot(tensor.slot_id);
+
+        // Verify generation matches (ABA prevention)
+        if slot.generation.load(Ordering::Acquire) != tensor.generation {
+            return;
+        }
+
+        slot.refcount.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Decrement reference count for a tensor
+    ///
+    /// If the count reaches zero, the slot is returned to the free list.
+    #[inline]
+    pub fn release(&self, tensor: &HorusTensor) {
+        if tensor.pool_id != self.pool_id {
+            return;
+        }
+
+        let slot = self.slot_mut(tensor.slot_id);
+
+        // Verify generation matches
+        if slot.generation.load(Ordering::Acquire) != tensor.generation {
+            return;
+        }
+
+        let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            // Last reference, return slot to free list
+            self.return_slot(tensor.slot_id);
+        }
+    }
+
+    /// Get raw pointer to tensor data
+    #[inline]
+    pub fn data_ptr(&self, tensor: &HorusTensor) -> *mut u8 {
+        if tensor.pool_id != self.pool_id {
+            return std::ptr::null_mut();
+        }
+
+        unsafe {
+            self.mmap
+                .as_ptr()
+                .add(self.data_offset + tensor.offset as usize) as *mut u8
+        }
+    }
+
+    /// Get data as slice
+    pub fn data_slice(&self, tensor: &HorusTensor) -> &[u8] {
+        if tensor.pool_id != self.pool_id {
+            return &[];
+        }
+
+        unsafe {
+            let ptr = self
+                .mmap
+                .as_ptr()
+                .add(self.data_offset + tensor.offset as usize);
+            std::slice::from_raw_parts(ptr, tensor.size as usize)
+        }
+    }
+
+    /// Get data as mutable slice
+    #[allow(clippy::mut_from_ref)]
+    pub fn data_slice_mut(&self, tensor: &HorusTensor) -> &mut [u8] {
+        if tensor.pool_id != self.pool_id {
+            return &mut [];
+        }
+
+        unsafe {
+            let ptr = self
+                .mmap
+                .as_ptr()
+                .add(self.data_offset + tensor.offset as usize) as *mut u8;
+            std::slice::from_raw_parts_mut(ptr, tensor.size as usize)
+        }
+    }
+
+    /// Get reference count for a tensor
+    pub fn refcount(&self, tensor: &HorusTensor) -> u32 {
+        if tensor.pool_id != self.pool_id {
+            return 0;
+        }
+
+        let slot = self.slot(tensor.slot_id);
+        if slot.generation.load(Ordering::Acquire) != tensor.generation {
+            return 0;
+        }
+
+        slot.refcount.load(Ordering::Acquire)
+    }
+
+    /// Get pool statistics
+    pub fn stats(&self) -> TensorPoolStats {
+        let header = self.header();
+        let mut allocated_slots = 0;
+        let mut total_refcount = 0;
+
+        for i in 0..self.config.max_slots {
+            let slot = self.slot(i as u32);
+            let flags = slot.flags.load(Ordering::Relaxed);
+            if flags != SLOT_FREE {
+                allocated_slots += 1;
+                total_refcount += slot.refcount.load(Ordering::Relaxed);
+            }
+        }
+
+        let used_bytes = header.next_alloc_offset.load(Ordering::Relaxed) as usize;
+
+        TensorPoolStats {
+            pool_id: self.pool_id,
+            pool_size: self.config.pool_size,
+            max_slots: self.config.max_slots,
+            allocated_slots,
+            total_refcount,
+            used_bytes,
+            free_bytes: self.config.pool_size.saturating_sub(used_bytes),
+        }
+    }
+
+    /// Get pool ID
+    #[inline]
+    pub fn pool_id(&self) -> u32 {
+        self.pool_id
+    }
+
+    /// Get path to the shared memory file
+    pub fn shm_path(&self) -> &std::path::Path {
+        &self.shm_path
+    }
+
+    /// Check if this instance created the pool
+    pub fn is_owner(&self) -> bool {
+        self.is_owner
+    }
+
+    // === Private helpers ===
+
+    fn header(&self) -> &PoolHeader {
+        unsafe { &*(self.mmap.as_ptr() as *const PoolHeader) }
+    }
+
+    fn header_mut(&mut self) -> &mut PoolHeader {
+        unsafe { &mut *(self.mmap.as_mut_ptr() as *mut PoolHeader) }
+    }
+
+    fn slot(&self, index: u32) -> &SlotHeader {
+        let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
+        unsafe { &*(self.mmap.as_ptr().add(offset) as *const SlotHeader) }
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    fn slot_mut(&self, index: u32) -> &mut SlotHeader {
+        let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
+        unsafe { &mut *(self.mmap.as_ptr().add(offset) as *mut SlotHeader) }
+    }
+
+    fn find_free_slot(&self) -> HorusResult<u32> {
+        // Try to pop from free stack first
+        let header = self.header();
+
+        loop {
+            let head = header.free_stack_head.load(Ordering::Acquire);
+            if head != INVALID_SLOT as u64 {
+                let slot = self.slot(head as u32);
+                let next = slot.next_free.load(Ordering::Acquire);
+
+                if header
+                    .free_stack_head
+                    .compare_exchange_weak(head, next as u64, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return Ok(head as u32);
+                }
+                continue;
+            }
+            break;
+        }
+
+        // No free slots in stack, search linearly
+        for i in 0..self.config.max_slots {
+            let slot = self.slot(i as u32);
+            let flags = slot.flags.load(Ordering::Acquire);
+
+            if flags == SLOT_FREE {
+                // Try to claim this slot
+                if slot
+                    .flags
+                    .compare_exchange(
+                        SLOT_FREE,
+                        SLOT_ALLOCATED,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return Ok(i as u32);
+                }
+            }
+        }
+
+        Err(HorusError::Memory(
+            "No free tensor slots available".to_string(),
+        ))
+    }
+
+    fn return_slot(&self, slot_id: u32) {
+        let header = self.header();
+        let slot = self.slot_mut(slot_id);
+
+        // Mark as free
+        slot.flags.store(SLOT_FREE, Ordering::Release);
+
+        // Push to free stack
+        loop {
+            let head = header.free_stack_head.load(Ordering::Acquire);
+            slot.next_free.store(head as u32, Ordering::Release);
+
+            if header
+                .free_stack_head
+                .compare_exchange_weak(head, slot_id as u64, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
+    fn allocate_data(&self, size: usize) -> HorusResult<usize> {
+        let header = self.header();
+
+        loop {
+            let current = header.next_alloc_offset.load(Ordering::Acquire) as usize;
+            let aligned_current = Self::align_up(current, self.config.slot_alignment);
+            let new_offset = aligned_current + size;
+
+            if new_offset > self.config.pool_size {
+                return Err(HorusError::Memory(format!(
+                    "Tensor pool out of memory: need {} bytes, only {} available",
+                    size,
+                    self.config.pool_size - current
+                )));
+            }
+
+            if header
+                .next_alloc_offset
+                .compare_exchange_weak(
+                    current as u64,
+                    new_offset as u64,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return Ok(aligned_current);
+            }
+        }
+    }
+
+    #[inline]
+    fn align_up(value: usize, alignment: usize) -> usize {
+        (value + alignment - 1) & !(alignment - 1)
+    }
+}
+
+impl Drop for TensorPool {
+    fn drop(&mut self) {
+        // Don't delete the file - other processes may still be using it
+        // The file can be cleaned up manually or by a cleanup routine
+    }
+}
+
+// Thread safety
+unsafe impl Send for TensorPool {}
+unsafe impl Sync for TensorPool {}
+
+/// Statistics for a tensor pool
+#[derive(Clone, Debug)]
+pub struct TensorPoolStats {
+    pub pool_id: u32,
+    pub pool_size: usize,
+    pub max_slots: usize,
+    pub allocated_slots: usize,
+    pub total_refcount: u32,
+    pub used_bytes: usize,
+    pub free_bytes: usize,
+}
+
+// Re-export tensor types for public API
+pub use messages_compat::{HorusTensor, TensorDevice, TensorDtype, MAX_TENSOR_DIMS};
+
+/// Compatibility module for tensor types
+/// These are duplicated here to avoid circular dependencies
+/// The authoritative types are in horus_library::messages::tensor
+mod messages_compat {
+    use bytemuck::{Pod, Zeroable};
+
+    pub const MAX_TENSOR_DIMS: usize = 8;
+
+    #[repr(u8)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum TensorDtype {
+        #[default]
+        F32 = 0,
+        F64 = 1,
+        F16 = 2,
+        BF16 = 3,
+        I8 = 4,
+        I16 = 5,
+        I32 = 6,
+        I64 = 7,
+        U8 = 8,
+        U16 = 9,
+        U32 = 10,
+        U64 = 11,
+        Bool = 12,
+    }
+
+    impl TensorDtype {
+        #[inline]
+        pub const fn element_size(&self) -> usize {
+            match self {
+                TensorDtype::F32 | TensorDtype::I32 | TensorDtype::U32 => 4,
+                TensorDtype::F64 | TensorDtype::I64 | TensorDtype::U64 => 8,
+                TensorDtype::F16 | TensorDtype::BF16 | TensorDtype::I16 | TensorDtype::U16 => 2,
+                TensorDtype::I8 | TensorDtype::U8 | TensorDtype::Bool => 1,
+            }
+        }
+    }
+
+    unsafe impl Pod for TensorDtype {}
+    unsafe impl Zeroable for TensorDtype {}
+
+    #[repr(u8)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+    pub enum TensorDevice {
+        #[default]
+        Cpu = 0,
+        Cuda0 = 1,
+        Cuda1 = 2,
+        Cuda2 = 3,
+        Cuda3 = 4,
+    }
+
+    impl TensorDevice {
+        #[inline]
+        pub const fn is_cuda(&self) -> bool {
+            !matches!(self, TensorDevice::Cpu)
+        }
+    }
+
+    unsafe impl Pod for TensorDevice {}
+    unsafe impl Zeroable for TensorDevice {}
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct HorusTensor {
+        pub pool_id: u32,
+        pub slot_id: u32,
+        pub generation: u32,
+        pub _pad0: u32,
+        pub offset: u64,
+        pub size: u64,
+        pub dtype: TensorDtype,
+        pub ndim: u8,
+        pub device: TensorDevice,
+        pub _pad1: [u8; 5],
+        pub shape: [u64; MAX_TENSOR_DIMS],
+        pub strides: [u64; MAX_TENSOR_DIMS],
+        /// CUDA IPC handle for cross-process GPU memory sharing.
+        /// When device is CUDA*, this contains the 64-byte cudaIpcMemHandle_t
+        /// that other processes can use to access the same GPU memory.
+        pub cuda_ipc_handle: [u8; 64],
+    }
+
+    impl HorusTensor {
+        pub fn new(
+            pool_id: u32,
+            slot_id: u32,
+            generation: u32,
+            offset: u64,
+            shape: &[u64],
+            dtype: TensorDtype,
+            device: TensorDevice,
+        ) -> Self {
+            let ndim = shape.len().min(MAX_TENSOR_DIMS) as u8;
+            let num_elements: u64 = shape.iter().product();
+            let size = num_elements * dtype.element_size() as u64;
+
+            let mut strides = [0u64; MAX_TENSOR_DIMS];
+            if ndim > 0 {
+                strides[(ndim - 1) as usize] = dtype.element_size() as u64;
+                for i in (0..(ndim - 1) as usize).rev() {
+                    strides[i] = strides[i + 1] * shape[i + 1];
+                }
+            }
+
+            let mut shape_arr = [0u64; MAX_TENSOR_DIMS];
+            for (i, &dim) in shape.iter().take(MAX_TENSOR_DIMS).enumerate() {
+                shape_arr[i] = dim;
+            }
+
+            Self {
+                pool_id,
+                slot_id,
+                generation,
+                _pad0: 0,
+                offset,
+                size,
+                dtype,
+                ndim,
+                device,
+                _pad1: [0; 5],
+                shape: shape_arr,
+                strides,
+                cuda_ipc_handle: [0; 64],
+            }
+        }
+
+        /// Check if tensor is contiguous (row-major)
+        pub fn is_contiguous(&self) -> bool {
+            if self.ndim == 0 {
+                return true;
+            }
+
+            let mut expected_stride = self.dtype.element_size() as u64;
+            for i in (0..self.ndim as usize).rev() {
+                if self.strides[i] != expected_stride {
+                    return false;
+                }
+                expected_stride *= self.shape[i];
+            }
+            true
+        }
+
+        /// Create a view of this tensor with different shape
+        pub fn view(&self, new_shape: &[u64]) -> Option<Self> {
+            let old_numel: u64 = self.shape[..self.ndim as usize].iter().product();
+            let new_numel: u64 = new_shape.iter().product();
+            if old_numel != new_numel || !self.is_contiguous() {
+                return None;
+            }
+
+            Some(Self::new(
+                self.pool_id,
+                self.slot_id,
+                self.generation,
+                self.offset,
+                new_shape,
+                self.dtype,
+                self.device,
+            ))
+        }
+
+        /// Create a slice/view of this tensor (first dimension only)
+        pub fn slice_first_dim(&self, start: u64, end: u64) -> Option<Self> {
+            if self.ndim == 0 || start >= end || end > self.shape[0] {
+                return None;
+            }
+
+            let mut new_tensor = *self;
+            new_tensor.shape[0] = end - start;
+            new_tensor.offset += start * self.strides[0];
+            let new_numel: u64 = new_tensor.shape[..new_tensor.ndim as usize]
+                .iter()
+                .product();
+            new_tensor.size = new_numel * self.dtype.element_size() as u64;
+
+            Some(new_tensor)
+        }
+    }
+
+    impl Default for HorusTensor {
+        fn default() -> Self {
+            Self {
+                pool_id: 0,
+                slot_id: 0,
+                generation: 0,
+                _pad0: 0,
+                offset: 0,
+                size: 0,
+                dtype: TensorDtype::F32,
+                ndim: 0,
+                device: TensorDevice::Cpu,
+                _pad1: [0; 5],
+                shape: [0; MAX_TENSOR_DIMS],
+                strides: [0; MAX_TENSOR_DIMS],
+                cuda_ipc_handle: [0; 64],
+            }
+        }
+    }
+
+    unsafe impl Pod for HorusTensor {}
+    unsafe impl Zeroable for HorusTensor {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pool_creation() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024, // 1MB for testing
+            max_slots: 16,
+            slot_alignment: 64,
+        };
+
+        let pool = TensorPool::new(9999, config).expect("Failed to create pool");
+        assert_eq!(pool.pool_id(), 9999);
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 0);
+        assert_eq!(stats.max_slots, 16);
+
+        // Clean up
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_alloc_and_release() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 16,
+            slot_alignment: 64,
+        };
+
+        let pool = TensorPool::new(9998, config).expect("Failed to create pool");
+
+        // Allocate a tensor
+        let tensor = pool
+            .alloc(&[100, 100], TensorDtype::F32, TensorDevice::Cpu)
+            .expect("Failed to allocate tensor");
+
+        assert_eq!(tensor.pool_id, 9998);
+        assert_eq!(pool.refcount(&tensor), 1);
+
+        // Retain
+        pool.retain(&tensor);
+        assert_eq!(pool.refcount(&tensor), 2);
+
+        // Release
+        pool.release(&tensor);
+        assert_eq!(pool.refcount(&tensor), 1);
+
+        pool.release(&tensor);
+        assert_eq!(pool.refcount(&tensor), 0);
+
+        // Clean up
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    #[test]
+    fn test_data_access() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 16,
+            slot_alignment: 64,
+        };
+
+        let pool = TensorPool::new(9997, config).expect("Failed to create pool");
+
+        let tensor = pool
+            .alloc(&[10], TensorDtype::U8, TensorDevice::Cpu)
+            .expect("Failed to allocate tensor");
+
+        // Write data
+        let data = pool.data_slice_mut(&tensor);
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+
+        // Read data
+        let data = pool.data_slice(&tensor);
+        for (i, &byte) in data.iter().enumerate() {
+            assert_eq!(byte, i as u8);
+        }
+
+        pool.release(&tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+}

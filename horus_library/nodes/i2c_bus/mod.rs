@@ -47,7 +47,7 @@ pub struct I2cBusNode {
 impl I2cBusNode {
     /// Create a new I2C bus node with default configuration
     pub fn new() -> Result<Self> {
-        Self::new_with_config(1, "i2c/request", "i2c/response")
+        Self::new_with_config(1, "i2c.request", "i2c.response")
     }
 
     /// Create with custom bus number and topics

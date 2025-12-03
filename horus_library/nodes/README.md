@@ -270,16 +270,16 @@ let (sp, fb, err, int) = pid.get_state();
 
 ```rust
 use horus_library::nodes::PidControllerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create PID controller for motor position control
     let mut pid = PidControllerNode::new_with_topics(
-        "target_position",
+        "target.position",
         "encoder_position",
-        "motor_command",
+        "motor.command",
         "pid_config"
     )?;
 
@@ -288,8 +288,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pid.set_output_limits(-100.0, 100.0);
     pid.set_motor_id(0);
 
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(pid), 50, None);
+    scheduler.run()?;
 
     Ok(())
 }
@@ -379,10 +379,10 @@ pub struct Odometry {
 
 ```rust
 use horus_library::nodes::DifferentialDriveNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create differential drive controller
     let mut drive = DifferentialDriveNode::new()?;
@@ -392,8 +392,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drive.set_wheel_radius(0.075);   // 7.5cm wheels
     drive.set_velocity_limits(1.0, 2.0);
 
-    runtime.add_node(drive);
-    runtime.run()?;
+    scheduler.add(Box::new(drive), 50, None);
+    scheduler.run()?;
 
     Ok(())
 }
@@ -427,7 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 let mut camera = CameraNode::new()?;
 
 // Create with custom topic
-let mut camera = CameraNode::new_with_topic("camera/image")?;
+let mut camera = CameraNode::new_with_topic("camera.image")?;
 
 // Configure camera
 camera.set_device(0);
@@ -443,18 +443,18 @@ let (w, h, fps) = camera.get_info();
 
 ```rust
 use horus_library::nodes::CameraNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create camera node for 720p @ 30fps
-    let mut camera = CameraNode::new_with_topic("front_camera/image")?;
+    let mut camera = CameraNode::new_with_topic("front_camera.image")?;
     camera.set_resolution(1280, 720);
     camera.set_fps(30);
 
-    runtime.add_node(camera);
-    runtime.run()?;
+    scheduler.add(Box::new(camera), 50, None);
+    scheduler.run()?;
 
     Ok(())
 }
@@ -487,7 +487,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 let mut imu = ImuNode::new()?;
 
 // Create with custom topic
-let mut imu = ImuNode::new_with_topic("imu/raw")?;
+let mut imu = ImuNode::new_with_topic("imu.raw")?;
 
 // Configure IMU
 imu.set_device("/dev/i2c-1");
@@ -540,7 +540,7 @@ pub struct ImuData {
 let mut lidar = LidarNode::new()?;
 
 // Create with custom topic
-let mut lidar = LidarNode::new_with_topic("front_scan")?;
+let mut lidar = LidarNode::new_with_topic("front.scan")?;
 
 // Configure lidar
 lidar.set_port("/dev/ttyUSB0");
@@ -635,8 +635,8 @@ let mut keyboard = KeyboardInputNode::new()?;
 
 // Create with custom topics
 let mut keyboard = KeyboardInputNode::new_with_topics(
-    "teleop/cmd_vel",
-    "teleop/keys"
+    "teleop.cmd_vel",
+    "teleop.keys"
 )?;
 
 // Configure speeds
@@ -843,7 +843,7 @@ io.set_debounce(50);  // 50ms
 All nodes follow the same lifecycle:
 
 ```rust
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 // 1. Create node
 let mut node = SomeNode::new()?;
@@ -852,22 +852,22 @@ let mut node = SomeNode::new()?;
 node.set_some_parameter(value);
 
 // 3. Add to runtime
-runtime.add_node(node);
+scheduler.add(Box::new(node), 50, None);
 
 // 4. Run (tick() called automatically)
-runtime.run()?;
+scheduler.run()?;
 ```
 
 ### Topic Naming Conventions
 
 - Use lowercase with underscores: `cmd_vel`, `sensor_data`
-- Use namespaces for organization: `camera/image_raw`, `lidar/front/scan`
+- Use `.` (dot) for namespaces: `camera.image_raw`, `lidar.front.scan`
 - Suffix raw sensor data with `_raw`: `imu_raw`, `encoder_raw`
 - Use standard names for common topics:
   - `cmd_vel` - Velocity commands
   - `odom` - Odometry
   - `scan` - Laser scan data
-  - `image` - Camera images
+  - `camera.image` - Camera images
 
 ### Error Handling
 

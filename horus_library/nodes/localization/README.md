@@ -201,10 +201,10 @@ let is_converged = localizer.is_converged();  // true if uncertainty < 0.3m
 
 ```rust
 use horus_library::nodes::LocalizationNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create localization node with default EKF configuration
     let mut localizer = LocalizationNode::new()?;
@@ -215,8 +215,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure frames
     localizer.set_frame_ids("map", "base_link");
 
-    runtime.add_node(localizer);
-    runtime.run()?;
+    scheduler.add(Box::new(localizer), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -226,10 +226,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LocalizationNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create localization node
     let mut localizer = LocalizationNode::new_with_topics(
@@ -249,8 +249,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     localizer.add_landmark(0.0, 15.0);     // Northwest corner
     localizer.add_landmark(10.0, 7.5);     // Central pillar
 
-    runtime.add_node(localizer);
-    runtime.run()?;
+    scheduler.add(Box::new(localizer), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -260,16 +260,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LocalizationNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create localization node with all sensors
     let mut localizer = LocalizationNode::new_with_topics(
         "fused_pose",
         "odom",
-        "imu/data",
+        "imu.data",
         "scan"
     )?;
 
@@ -279,8 +279,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configure for indoor navigation
     localizer.set_frame_ids("map", "base_footprint");
 
-    runtime.add_node(localizer);
-    runtime.run()?;
+    scheduler.add(Box::new(localizer), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -290,10 +290,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LocalizationNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // EKF localizer for smooth pose estimation
     let mut localizer = LocalizationNode::new()?;
@@ -307,8 +307,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         localizer.add_landmark(landmark.0, landmark.1);
     }
 
-    runtime.add_node(localizer);
-    runtime.run()?;
+    scheduler.add(Box::new(localizer), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -323,12 +323,12 @@ fn load_map_landmarks() -> Result<Vec<(f64, f64)>, Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LocalizationNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     let mut localizer = LocalizationNode::new()?;
     localizer.set_initial_pose(0.0, 0.0, 0.0);
@@ -355,7 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -687,9 +687,9 @@ let mut controller = TrajectoryControllerNode::new_with_topics(
     "cmd_vel"
 )?;
 
-runtime.add_node(localizer);
-runtime.add_node(planner);
-runtime.add_node(controller);
+scheduler.add(Box::new(localizer), 50, Some(true));
+scheduler.add(Box::new(planner), 50, Some(true));
+scheduler.add(Box::new(controller), 50, Some(true));
 ```
 
 ### Map Server Integration
@@ -708,7 +708,7 @@ for (x, y) in landmarks {
 
 // Publish map for visualization and planning
 let map_publisher = Hub::new("map")?;
-map_publisher.send(map, None)?;
+map_publisher.send(map, &mut None)?;
 ```
 
 ### AMCL Hybrid Approach

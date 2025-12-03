@@ -101,8 +101,9 @@ robots:
     # - Joint origin for wheels: Y=0.04 from base_link (after coord conversion)
     # - Wheel radius: 0.04m
     # - So wheels touch ground when base_link.y + 0.04 - 0.04 = base_link.y = 0
-    # Start at Y=0 so wheels sit exactly on ground (no hopping from collision overlap)
-    position: [0.0, 0.0, 0.0]
+    # Start just slightly above ground (Y is up in Bevy after coord conversion)
+    # Wheel radius is 0.04m, so base_link at Y=0.04 puts wheels on ground
+    position: [0.0, 0.05, 0.0]
     rotation_euler: [0.0, 0.0, 0.0]
 
 lighting:

@@ -65,15 +65,19 @@ impl SharedLogBuffer {
         // Calculate total size: header + ring buffer
         let total_size = HEADER_SIZE + (MAX_LOG_ENTRIES * LOG_ENTRY_SIZE);
 
-        // Create or open memory-mapped file
+        // Create or open memory-mapped file (don't truncate to preserve existing logs)
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&path)?;
 
-        file.set_len(total_size as u64)?;
+        // Only set length if file is new/empty (avoids corrupting existing logs)
+        let metadata = file.metadata()?;
+        if metadata.len() == 0 {
+            file.set_len(total_size as u64)?;
+        }
 
         let mmap = unsafe {
             MmapMut::map_mut(&file)

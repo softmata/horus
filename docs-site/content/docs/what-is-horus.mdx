@@ -6,13 +6,11 @@ order: 1
 
 # What is HORUS?
 
-HORUS is a **framework for building applications with multiple independent components** that need to communicate efficiently. Each component handles one responsibility, and they communicate through ultra-low-latency shared memory.
-
-Think of it like building with LEGO blocks - each piece (Node) does one thing well, and you connect them together to build complex systems.
+HORUS is a framework for building applications with multiple independent components that communicate through ultra-low-latency shared memory. Each component handles one responsibility, and they connect together to form complex systems.
 
 ## The Core Idea
 
-Instead of writing one big monolithic program, you build:
+Instead of writing one monolithic program, you build:
 
 - **Independent Nodes** - Each component is self-contained
 - **Connected by Topics** - Nodes communicate through named channels
@@ -24,48 +22,47 @@ Instead of writing one big monolithic program, you build:
 - ControlNode (moves motors)
 - SafetyNode (prevents collisions)
 
-Each node runs independently, sharing data through topics like `"camera/image"`, `"detected/objects"`, `"motor/commands"`.
+Each node runs independently, sharing data through topics like `"camera.image"`, `"detected.objects"`, `"motor.commands"`.
 
-## Why Use HORUS?
+## Key Features
 
-### 1. Blazingly Fast Communication
+### 1. Low-Latency Communication
 
-**HORUS**: Messages arrive in **248-481 nanoseconds**
-**Other frameworks**: Messages take **40,000-100,000 nanoseconds**
+HORUS achieves sub-microsecond message latency through shared memory:
 
-That's **83-403x faster** than traditional approaches.
+| Metric | Value |
+|--------|-------|
+| Minimum latency | 248 ns |
+| Median latency | 400 ns |
+| p99 latency | 450 ns |
 
-**What this means for you:**
-- Real-time control systems stay responsive
-- High-frequency data processing without lag
-- Multi-sensor fusion at full speed
-- Tight control loops that actually work
+This performance enables tight control loops and high-frequency data processing without introducing significant delay.
 
-**The secret?** Shared memory instead of network sockets. No serialization, no copying, no network overhead.
+**How it works:** Shared memory instead of network sockets. No serialization, no copying, no network overhead.
 
-### 2. Ergonomic Rust APIs
+### 2. Clean APIs
 
-HORUS provides clean, idiomatic Rust APIs that feel natural:
+HORUS provides idiomatic Rust APIs:
 
 ```rust
 use horus::prelude::*;
 
-// Create a publisher - sends temperature readings
+// Create a publisher
 let publisher: Hub<f32> = Hub::new("temperature")?;
 
-// Create a subscriber - receives temperature readings
+// Create a subscriber
 let subscriber: Hub<f32> = Hub::new("temperature")?;
 
-// Send data (that simple!)
+// Send data
 publisher.send(25.0, &mut ctx).ok();
 
 // Receive data
 if let Some(temp) = subscriber.recv(&mut ctx) {
-    println!("Temperature: {:.1}°C", temp);
+    println!("Temperature: {:.1}C", temp);
 }
 ```
 
-**Even simpler with macros:**
+**With the node macro:**
 
 ```rust
 node! {
@@ -80,8 +77,6 @@ node! {
 
 ### 3. Built-in Developer Tools
 
-HORUS includes everything you need out of the box:
-
 ```bash
 # Create a new project
 horus new my_project
@@ -89,23 +84,19 @@ horus new my_project
 # Run your application
 horus run
 
-# Monitor in real-time (separate terminal)
+# Monitor in real-time
 horus dashboard
 ```
 
-**The dashboard shows:**
-- All running nodes
+The dashboard displays:
+- Running nodes
 - Message flow between components
 - Performance metrics (latency, throughput)
-- Real-time debugging information
-
-No XML launch files or ROS-style configuration - just run `horus dashboard` and it works.
+- Debugging information
 
 ### 4. Multi-Language Support
 
-Don't know Rust? Use what you know:
-
-**Python** - Simple functional API:
+**Python:**
 ```python
 import horus
 
@@ -116,28 +107,28 @@ sensor = horus.Node(
     name="sensor",
     pubs=["temperature"],
     tick=sensor_tick,
-    rate=10  # 10 Hz
+    rate=10
 )
 
 horus.run(sensor)
 ```
 
-**Rust** - Full framework power for performance-critical code.
+**Rust:** Full framework capabilities for performance-critical code.
 
-Mix Python and Rust in the same application!
+Python and Rust nodes can communicate in the same application.
 
 ## Core Concepts
 
 ### Nodes
 
-A **Node** is a component that does one thing. Examples:
+A **Node** is a component that performs a specific task. Examples:
 - Read data from a sensor
 - Process information
 - Control a motor
 - Display data on screen
 - Monitor system health
 
-**Nodes have a simple lifecycle:**
+**Node lifecycle:**
 
 1. **init()** - Start up (optional, run once)
 2. **tick()** - Do work (runs repeatedly)
@@ -165,17 +156,11 @@ impl Node for MySensor {
 
 ### Topics
 
-A **Topic** is a named channel for sending messages. Think of it like a radio frequency - anyone can broadcast on it, anyone can listen.
+A **Topic** is a named channel for sending messages. Multiple publishers can send to a topic, and multiple subscribers can receive from it.
 
 **Topic naming conventions:**
-- Use descriptive names: `"temperature"`, `"camera/image"`, `"motor/speed"`
-- Use slashes for hierarchy: `"sensors/imu/accel"`, `"actuators/left_wheel"`
-- Keep them simple: avoid spaces, special characters
-
-**Multiple publishers/subscribers:**
-- Many nodes can publish to the same topic
-- Many nodes can subscribe to the same topic
-- HORUS handles all the synchronization
+- Use descriptive names: `"temperature"`, `"camera.image"`, `"motor.speed"`
+- Use dots for hierarchy: `"sensors.imu.accel"`, `"actuators.left_wheel"`
 
 ```rust
 // Node A publishes temperature
@@ -189,13 +174,13 @@ pub_b.send(30.0, &mut ctx);
 // Node C receives from both
 let sub: Hub<f32> = Hub::new("temperature")?;
 if let Some(temp) = sub.recv(&mut ctx) {
-    println!("Got: {}", temp); // Receives from both publishers
+    println!("Got: {}", temp);
 }
 ```
 
 ### Hub
 
-A **Hub** is your interface to topics. It handles all the shared memory complexity:
+A **Hub** is the interface to topics. It handles all shared memory operations:
 
 ```rust
 // Create a publisher
@@ -205,15 +190,13 @@ let publisher: Hub<f32> = Hub::new("temperature")?;
 let subscriber: Hub<f32> = Hub::new("temperature")?;
 ```
 
-**Type safety:** The type parameter (`<f32>`) ensures publishers and subscribers agree on the message type. Rust's compiler prevents type mismatches at compile time.
+**Type safety:** The type parameter (`<f32>`) ensures publishers and subscribers use the same message type. The compiler prevents type mismatches at compile time.
 
-**Zero-copy:** Data is shared directly in memory - no serialization, no copying.
-
-**Important:** HORUS supports both **typed messages** (Pose2D, CmdVel, etc.) and **generic messages** (dicts/JSON). Typed messages are 10-20x faster and provide better logging/type safety. Generic messages offer flexibility for prototyping. See **[Message Types](/core-concepts/message-types#typed-messages-vs-generic-messages)** for the detailed comparison.
+**Note:** HORUS supports both **typed messages** (Pose2D, CmdVel, etc.) and **generic messages** (dicts/JSON). Typed messages provide better performance and type safety. See [Message Types](/core-concepts/message-types) for details.
 
 ### Scheduler
 
-The **Scheduler** runs your nodes in priority order:
+The **Scheduler** runs nodes in priority order:
 
 ```rust
 let mut scheduler = Scheduler::new();
@@ -223,26 +206,26 @@ scheduler.add(Box::new(SensorNode::new()?), 0, Some(true));  // Priority 0 (high
 scheduler.add(Box::new(ProcessNode::new()?), 1, Some(true)); // Priority 1
 scheduler.add(Box::new(DisplayNode::new()?), 2, Some(true)); // Priority 2
 
-// Run forever (Ctrl+C to stop)
+// Run (Ctrl+C to stop)
 scheduler.run()?;
 ```
 
-**How it works:**
+**Execution order:**
 1. All priority 0 nodes tick
 2. Then all priority 1 nodes tick
 3. Then all priority 2 nodes tick
-4. Repeat forever
+4. Repeat
 
-**Use priorities to control execution order:**
+**Use priorities to control data flow:**
 - Sensors should run before processors
 - Processors should run before actuators
 - Safety checks should run last
 
 ## When to Use HORUS
 
-### Great For
+### Suitable Applications
 
-**Multi-component applications** - When you need isolated components that communicate:
+**Multi-component applications** - Isolated components that communicate:
 - Robot control systems
 - Real-time data processing pipelines
 - Multi-sensor fusion systems
@@ -250,43 +233,29 @@ scheduler.run()?;
 
 **Real-time systems** - When latency matters:
 - Control loops (motor control, flight control)
-- High-frequency trading systems
+- High-frequency data processing
 - Live audio/video processing
-- Game engines
 
 **Single-machine distributed systems** - Multiple processes on one machine:
-- Embedded Linux systems (Raspberry Pi, Jetson Nano)
+- Embedded Linux systems (Raspberry Pi, Jetson)
 - Edge computing devices
 - Multi-core applications
-- Development/testing of distributed architectures
 
 **Hardware integration** - Combining multiple devices/languages:
 - Mix Rust (performance) + Python (ease of use)
 - Integrate Python prototypes with production Rust
-- Rapid prototyping with Python, production with Rust
 
-### Not Ideal For
+### Less Suitable Applications
 
-**Simple single-script programs** - If your whole program fits in 100 lines:
-- Use plain Rust, Python, or your favorite language
-- HORUS adds unnecessary complexity
+**Simple single-script programs** - If your program fits in 100 lines, HORUS adds unnecessary complexity.
 
-**Internet-scale distributed systems** - HORUS supports LAN/WiFi networks:
-- Multi-robot systems on same LAN (5-50µs latency)
-- Edge computing clusters on WiFi/Ethernet
-- Distributed sensing networks on local network
-- For WAN/internet communication, use gRPC, HTTP, or message queues (RabbitMQ, Kafka)
-- HORUS network communication requires reliable LAN connectivity (not internet-scale)
+**Internet-scale distributed systems** - HORUS supports LAN/WiFi networks for multi-robot systems. For WAN/internet communication, use gRPC, HTTP, or message queues.
 
-**CRUD web applications** - Standard database-backed web apps:
-- Use web frameworks (Axum, Actix, Django, Flask)
-- HORUS is designed for real-time systems, not request/response
+**CRUD web applications** - Use web frameworks (Axum, Actix, Django, Flask) instead.
 
-**Tiny embedded systems** - Microcontrollers without an OS:
-- HORUS requires shared memory (Linux `/dev/shm`, macOS/Windows use temp directories)
-- For bare-metal embedded, use RTIC or Embassy
+**Bare-metal embedded systems** - HORUS requires an operating system with shared memory support. For microcontrollers, use RTIC or Embassy.
 
-## How HORUS is Different
+## Comparison with Other Frameworks
 
 ### vs Monolithic Programs
 
@@ -301,10 +270,10 @@ fn main() {
 }
 ```
 
-**Problems:**
-- Hard to test individual parts
-- Changes break everything
-- Can't reuse components
+**Issues:**
+- Difficult to test individual parts
+- Changes can break everything
+- Components cannot be reused
 - No parallelization
 
 **HORUS approach:**
@@ -323,79 +292,71 @@ struct DisplayNode { data_sub: Hub<f32> }
 - Test each node independently
 - Change one node without affecting others
 - Reuse nodes across projects
-- Nodes can run in parallel (if priorities allow)
+- Nodes can run in parallel
 
 ### vs ROS (Robot Operating System)
 
-**ROS:**
-- 50-100μs typical latency (intra-machine DDS)
-- XML configuration files
-- Designed for multi-machine robotics
-- Large ecosystem of packages
+| Aspect | HORUS | ROS |
+|--------|-------|-----|
+| Typical latency | 0.248-0.481 us | 50-100 us (intra-machine DDS) |
+| Configuration | Code-based | XML files |
+| Target use case | Single-machine performance | Multi-machine robotics |
+| Ecosystem | Growing | Large |
 
-**HORUS:**
-- 0.248-0.481μs latency (sub-microsecond)
-- Pure code configuration (no XML)
-- Designed for single-machine performance
-- Growing ecosystem, modern Rust
+**Use ROS when:** You need cross-machine communication or extensive robotics libraries.
 
-**Use ROS when:** You need cross-machine communication, extensive robotics libraries
-**Use HORUS when:** You need extreme performance on a single machine
+**Use HORUS when:** You need high performance on a single machine.
 
 ### vs Message Queues (RabbitMQ, Kafka)
 
-**Message Queues:**
-- 1-10ms latency
-- Network-based (can span machines)
-- Complex setup and configuration
-- Persistence and replay
+| Aspect | HORUS | Message Queues |
+|--------|-------|----------------|
+| Latency | 0.248-0.481 us | 1-10 ms |
+| Scope | Single machine | Multi-machine |
+| Configuration | Minimal | Complex |
+| Persistence | No | Yes |
 
-**HORUS:**
-- 0.000248-0.000481ms latency
-- Shared memory (single machine)
-- Minimal configuration
-- Ephemeral (no persistence)
+**Use message queues when:** You need multi-machine communication, persistence, or reliability guarantees.
 
-**Use message queues when:** You need multi-machine, persistence, reliability guarantees
-**Use HORUS when:** You need extreme speed on a single machine
+**Use HORUS when:** You need high speed on a single machine.
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────┐
-│         Your Application                │
-├─────────────────────────────────────────┤
-│                                         │
-│  ┌──────────┐  ┌──────────┐  ┌───────┐ │
-│  │  Sensor  │  │ Process  │  │Display│ │
-│  │   Node   │  │   Node   │  │ Node  │ │
-│  └─────┬────┘  └────┬─────┘  └───┬───┘ │
-│        │pub          │sub/pub     │sub  │
-│        ▼             ▼            ▼     │
-├─────────────────────────────────────────┤
-│         Shared Memory Topics            │
-│     "sensor/temp"  "filtered/temp"      │
-├─────────────────────────────────────────┤
-│         HORUS Framework                 │
-│  • Hub (Pub/Sub Communication)          │
-│  • Scheduler (Priority Execution)       │
-│  • Logging (Debugging & Metrics)        │
-│  • Dashboard (Real-time Monitoring)     │
-└─────────────────────────────────────────┘
-         ▲
-         │ Uses platform shared memory
-         ▼
-┌─────────────────────────────────────────┐
-│         Operating System                │
-│  (Linux/macOS/Windows supported)        │
-└─────────────────────────────────────────┘
++-------------------------------------------+
+|         Your Application                  |
++-------------------------------------------+
+|                                           |
+|  +--------+  +--------+  +--------+       |
+|  | Sensor |  | Process|  |Display |       |
+|  |  Node  |  |  Node  |  |  Node  |       |
+|  +---+----+  +---+----+  +---+----+       |
+|      |pub        |sub/pub    |sub         |
+|      v           v           v            |
++-------------------------------------------+
+|         Shared Memory Topics              |
+|     "sensor.temp"  "filtered.temp"        |
++-------------------------------------------+
+|         HORUS Framework                   |
+|  - Hub (Pub/Sub Communication)            |
+|  - Scheduler (Priority Execution)         |
+|  - Logging (Debugging & Metrics)          |
+|  - Dashboard (Real-time Monitoring)       |
++-------------------------------------------+
+         ^
+         | Uses platform shared memory
+         v
++-------------------------------------------+
+|         Operating System                  |
+|  (Linux/macOS/Windows supported)          |
++-------------------------------------------+
 ```
 
 **Data flow:**
 1. Nodes communicate via Hubs
 2. Hubs write/read from shared memory topics
 3. Scheduler orchestrates node execution
-4. Dashboard monitors everything in real-time
+4. Dashboard monitors the system in real-time
 
 ## Technical Details
 
@@ -405,15 +366,11 @@ HORUS uses platform-specific shared memory for inter-process communication:
 
 | Platform | Location | Notes |
 |----------|----------|-------|
-| Linux | `/dev/shm/horus/` | Native POSIX shm, fastest |
+| Linux | `/dev/shm/horus/` | Native POSIX shm |
 | macOS | `/tmp/horus/` | Uses temp directory |
 | Windows | `%TEMP%\horus\` | Uses temp directory |
 
-- **Format:** Memory-mapped files
-- **Speed:** Direct memory access (no kernel copies)
-- **Size:** Configurable per topic
-
-**Check your shared memory (Linux):**
+**Check shared memory (Linux):**
 ```bash
 df -h /dev/shm           # Available space
 ls -lh /dev/shm/horus/   # Active topics
@@ -421,7 +378,7 @@ ls -lh /dev/shm/horus/   # Active topics
 
 ### Performance Characteristics
 
-**IPC Latency Benchmarks:**
+**IPC Latency:**
 - Min: 248ns
 - Median: 400ns
 - Max: 437ns
@@ -434,7 +391,7 @@ ls -lh /dev/shm/horus/   # Active topics
 **Memory Usage:**
 - Framework overhead: ~2MB
 - Per topic: Configurable (default 1MB)
-- Per node: Depends on your implementation
+- Per node: Depends on implementation
 
 ### Built in Rust
 
@@ -458,8 +415,8 @@ HORUS leverages Rust for:
 
 **Start here:**
 1. [Installation](/getting-started/installation) - Get HORUS installed
-2. [Quick Start](/getting-started/quick-start) - Build your first app in 10 minutes
-3. [Basic Examples](/basic-examples) - More working examples
+2. [Quick Start](/getting-started/quick-start) - Build your first app
+3. [Basic Examples](/basic-examples) - Working examples
 
 **Core concepts:**
 4. [Nodes](/core-concepts/core-concepts-nodes) - Build components
@@ -473,22 +430,13 @@ HORUS leverages Rust for:
 
 **Advanced:**
 10. [Multi-Language](/multi-language/multi-language) - Python integration
-11. [Performance](/performance/performance) - Optimize for speed
+11. [Performance](/performance/performance) - Optimization
 12. [Examples](/basic-examples) - Real projects
 
 ## Next Steps
 
-Ready to start building with HORUS?
+1. **[Install HORUS](/getting-started/installation)** - Get up and running
+2. **[Quick Start Tutorial](/getting-started/quick-start)** - Build your first application
+3. **[See Examples](/basic-examples)** - Learn from real projects
 
-1. **[Install HORUS](/getting-started/installation)**
-   Get up and running in 5 minutes
-
-2. **[Quick Start Tutorial](/getting-started/quick-start)**
-   Build your first HORUS application
-
-3. **[See Examples](/basic-examples)**
-   Learn from real projects
-
-**Questions?** Check out [CLI Reference](/development/cli-reference) or [Architecture](/architecture).
-
-Let's build something fast!
+For command reference, see [CLI Reference](/development/cli-reference). For architecture details, see [Architecture](/architecture).

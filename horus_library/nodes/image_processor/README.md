@@ -24,13 +24,13 @@ Key features:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `camera/image` | `Image` | Input images from camera or other sources |
+| `camera.image` | `Image` | Input images from camera or other sources |
 
 ### Publishers
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `camera/processed` | `Image` | Processed images after applying filters and transformations |
+| `camera.processed` | `Image` | Processed images after applying filters and transformations |
 
 ## Configuration Parameters
 
@@ -130,13 +130,13 @@ if encoding.is_color() {
 ```rust
 use horus_library::nodes::ImageProcessorNode;
 
-// Create with default topics "camera/image" -> "camera/processed"
+// Create with default topics "camera.image" -> "camera.processed"
 let mut processor = ImageProcessorNode::new()?;
 
 // Create with custom input/output topics
 let mut processor = ImageProcessorNode::new_with_topics(
-    "camera/raw",
-    "vision/processed"
+    "camera.raw",
+    "vision.processed"
 )?;
 ```
 
@@ -227,8 +227,8 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     let mut processor = ImageProcessorNode::new_with_topics(
-        "camera/image",
-        "vision/edges"
+        "camera.image",
+        "vision.edges"
     )?;
 
     // Prepare for edge detection
@@ -295,8 +295,8 @@ fn main() -> Result<()> {
 
     // Preprocess images for object detection
     let mut preprocessor = ImageProcessorNode::new_with_topics(
-        "camera/raw",
-        "vision/preprocessed"
+        "camera.raw",
+        "vision.preprocessed"
     )?;
 
     preprocessor.enable_resize(416, 416);  // YOLO input size
@@ -309,7 +309,7 @@ fn main() -> Result<()> {
     let detector = node! {
         name: "object_detector",
         tick: |ctx| {
-            let hub = Hub::<Image>::new("vision/preprocessed")?;
+            let hub = Hub::<Image>::new("vision.preprocessed")?;
 
             while let Some(image) = hub.recv(None) {
                 ctx.log_info(&format!(
@@ -347,7 +347,7 @@ fn main() -> Result<()> {
     let monitor = node! {
         name: "performance_monitor",
         tick: |ctx| {
-            let hub = Hub::<Image>::new("camera/processed")?;
+            let hub = Hub::<Image>::new("camera.processed")?;
 
             while let Some(image) = hub.recv(None) {
                 if !image.is_valid() {
@@ -387,7 +387,7 @@ fn main() -> Result<()> {
     let roi_extractor = node! {
         name: "roi_extractor",
         tick: |ctx| {
-            let hub = Hub::<Image>::new("camera/processed")?;
+            let hub = Hub::<Image>::new("camera.processed")?;
 
             while let Some(image) = hub.recv(None) {
                 // Extract center region
@@ -592,7 +592,7 @@ Typical processing times (640x480 image on Raspberry Pi 4):
 1. Validate image before sending:
    ```rust
    if image.is_valid() {
-       publisher.send(image, None)?;
+       publisher.send(image, &mut None)?;
    }
    ```
 2. Check encoding matches actual data
@@ -769,8 +769,8 @@ fn main() -> Result<()> {
 
     // Preprocess for object detection
     let mut preprocessor = ImageProcessorNode::new_with_topics(
-        "camera/raw",
-        "vision/preprocessed"
+        "camera.raw",
+        "vision.preprocessed"
     )?;
     preprocessor.enable_resize(416, 416);  // YOLO size
     preprocessor.enable_grayscale();
@@ -780,7 +780,7 @@ fn main() -> Result<()> {
     let detector = node! {
         name: "yolo_detector",
         tick: |ctx| {
-            let hub = Hub::<Image>::new("vision/preprocessed")?;
+            let hub = Hub::<Image>::new("vision.preprocessed")?;
             while let Some(image) = hub.recv(None) {
                 // Run YOLO inference
                 ctx.log_info("Running object detection...");
@@ -805,8 +805,8 @@ fn main() -> Result<()> {
 
     // Edge detection preprocessing
     let mut edge_processor = ImageProcessorNode::new_with_topics(
-        "camera/image",
-        "vision/edges"
+        "camera.image",
+        "vision.edges"
     )?;
     edge_processor.enable_grayscale();
     edge_processor.enable_gaussian_blur(5);
@@ -817,7 +817,7 @@ fn main() -> Result<()> {
     let analyzer = node! {
         name: "edge_analyzer",
         tick: |ctx| {
-            let hub = Hub::<Image>::new("vision/edges")?;
+            let hub = Hub::<Image>::new("vision.edges")?;
             while let Some(edges) = hub.recv(None) {
                 // Count edge pixels or analyze contours
                 ctx.log_info("Analyzing edge image...");

@@ -138,7 +138,7 @@ use horus_library::nodes::BatteryMonitorNode;
 let mut battery = BatteryMonitorNode::new()?;
 
 // Create with custom topic
-let mut battery = BatteryMonitorNode::new_with_topic("power/battery")?;
+let mut battery = BatteryMonitorNode::new_with_topic("power.battery")?;
 ```
 
 ### Configuration Methods

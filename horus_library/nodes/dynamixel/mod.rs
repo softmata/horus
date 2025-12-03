@@ -6,6 +6,11 @@ use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 // Serial hardware support
 #[cfg(feature = "serial-hardware")]
 use serialport::SerialPort;
@@ -62,7 +67,27 @@ use std::time::Duration;
 /// // Send position command
 /// let cmd = ServoCommand::new(1, 1.57); // 90 degrees in radians
 /// ```
-pub struct DynamixelNode {
+///
+/// # Hybrid Pattern
+///
+/// This node supports the hybrid pattern for custom processing of feedback:
+///
+/// ```rust,ignore
+/// let node = DynamixelNode::builder("/dev/ttyUSB0", DynamixelProtocol::Protocol2)
+///     .with_filter(|feedback| {
+///         // Only publish feedback for moving servos
+///         if feedback.speed.abs() > 0.01 {
+///             Some(feedback)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct DynamixelNode<P = PassThrough<ServoCommand>>
+where
+    P: Processor<ServoCommand>,
+{
     command_subscriber: Hub<ServoCommand>,
     joint_subscriber: Hub<JointCommand>,
     feedback_publisher: Hub<ServoCommand>,
@@ -87,6 +112,9 @@ pub struct DynamixelNode {
     // Timing state (moved from static mut for thread safety)
     last_read_time: u64,
     last_log_time: u64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 /// Dynamixel protocol version
@@ -268,9 +296,23 @@ impl DynamixelNode {
             successful_packets: 0,
             last_read_time: 0,
             last_log_time: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for custom configuration
+    pub fn builder(
+        port: &str,
+        protocol: DynamixelProtocol,
+    ) -> DynamixelNodeBuilder<PassThrough<ServoCommand>> {
+        DynamixelNodeBuilder::new(port, protocol)
+    }
+}
+
+impl<P> DynamixelNode<P>
+where
+    P: Processor<ServoCommand>,
+{
     /// Set baud rate (9600 to 4500000 bps)
     pub fn set_baud_rate(&mut self, baud_rate: u32) {
         self.baud_rate = baud_rate;
@@ -504,7 +546,7 @@ impl DynamixelNode {
         ctx.log_debug(&format!("Bulk read from {} servos", self.servos.len()));
     }
 
-    /// Publish feedback for all servos
+    /// Publish feedback for all servos (through processor pipeline)
     fn publish_feedback(&mut self) {
         for servo in self.servos.values() {
             let feedback = ServoCommand {
@@ -515,7 +557,10 @@ impl DynamixelNode {
                 timestamp: servo.last_update,
             };
 
-            let _ = self.feedback_publisher.send(feedback, &mut None);
+            // Process through pipeline (filter/transform)
+            if let Some(processed) = self.processor.process(feedback) {
+                let _ = self.feedback_publisher.send(processed, &mut None);
+            }
         }
     }
 
@@ -702,12 +747,23 @@ impl DynamixelNode {
     }
 }
 
-impl Node for DynamixelNode {
+impl<P> Node for DynamixelNode<P>
+where
+    P: Processor<ServoCommand>,
+{
     fn name(&self) -> &'static str {
         "DynamixelNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
+        self.processor.on_tick();
+
         // Process servo commands
         while let Some(cmd) = self.command_subscriber.recv(&mut None) {
             self.send_position_command(cmd.servo_id, cmd.position, ctx.as_deref_mut());
@@ -751,7 +807,7 @@ impl Node for DynamixelNode {
             self.last_read_time = current_time;
         }
 
-        // Publish feedback
+        // Publish feedback (through processor pipeline)
         self.publish_feedback();
 
         // Periodic status logging
@@ -792,6 +848,9 @@ impl Node for DynamixelNode {
 
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
         ctx.log_info("DynamixelNode shutting down - disabling torque on all servos");
+
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
 
         // Disable torque on all servos for safety
         for servo in self.servos.values_mut() {
@@ -837,5 +896,123 @@ impl DynamixelNode {
         self.add_servo(1, DynamixelModel::XL430W250); // Pan
         self.add_servo(2, DynamixelModel::XL430W250); // Tilt
         self.enable_all_torque(false);
+    }
+}
+
+/// Builder for DynamixelNode with custom processor
+pub struct DynamixelNodeBuilder<P>
+where
+    P: Processor<ServoCommand>,
+{
+    port: String,
+    protocol: DynamixelProtocol,
+    baud_rate: u32,
+    processor: P,
+}
+
+impl DynamixelNodeBuilder<PassThrough<ServoCommand>> {
+    /// Create a new builder with default configuration
+    pub fn new(port: &str, protocol: DynamixelProtocol) -> Self {
+        Self {
+            port: port.to_string(),
+            protocol,
+            baud_rate: 1_000_000,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> DynamixelNodeBuilder<P>
+where
+    P: Processor<ServoCommand>,
+{
+    /// Set baud rate
+    pub fn with_baud_rate(mut self, baud_rate: u32) -> Self {
+        self.baud_rate = baud_rate;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> DynamixelNodeBuilder<P2>
+    where
+        P2: Processor<ServoCommand>,
+    {
+        DynamixelNodeBuilder {
+            port: self.port,
+            protocol: self.protocol,
+            baud_rate: self.baud_rate,
+            processor,
+        }
+    }
+
+    /// Add a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> DynamixelNodeBuilder<ClosureProcessor<ServoCommand, ServoCommand, F>>
+    where
+        F: FnMut(ServoCommand) -> ServoCommand + Send + 'static,
+    {
+        DynamixelNodeBuilder {
+            port: self.port,
+            protocol: self.protocol,
+            baud_rate: self.baud_rate,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> DynamixelNodeBuilder<FilterProcessor<ServoCommand, ServoCommand, F>>
+    where
+        F: FnMut(ServoCommand) -> Option<ServoCommand> + Send + 'static,
+    {
+        DynamixelNodeBuilder {
+            port: self.port,
+            protocol: self.protocol,
+            baud_rate: self.baud_rate,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (same output type constraint)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> DynamixelNodeBuilder<Pipeline<ServoCommand, ServoCommand, ServoCommand, P, P2>>
+    where
+        P2: Processor<ServoCommand, ServoCommand>,
+    {
+        DynamixelNodeBuilder {
+            port: self.port,
+            protocol: self.protocol,
+            baud_rate: self.baud_rate,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<DynamixelNode<P>> {
+        Ok(DynamixelNode {
+            command_subscriber: Hub::new("dynamixel.servo_cmd")?,
+            joint_subscriber: Hub::new("dynamixel.joint_cmd")?,
+            feedback_publisher: Hub::new("dynamixel.feedback")?,
+            #[cfg(feature = "serial-hardware")]
+            serial_port: None,
+            hardware_enabled: false,
+            port: self.port,
+            protocol: self.protocol,
+            baud_rate: self.baud_rate,
+            servos: HashMap::new(),
+            enable_bulk_operations: true,
+            _last_packet_time: 0,
+            packet_errors: 0,
+            successful_packets: 0,
+            last_read_time: 0,
+            last_log_time: 0,
+            processor: self.processor,
+        })
     }
 }

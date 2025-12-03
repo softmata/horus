@@ -97,9 +97,9 @@ let mut servo_ctrl = ServoControllerNode::new()?;
 
 // Create with custom topics
 let mut servo_ctrl = ServoControllerNode::new_with_topics(
-    "robot/servo_cmd",     // servo command topic
-    "robot/joint_cmd",     // joint command topic
-    "robot/joint_states"   // joint states topic
+    "robot.servo_cmd",     // servo command topic
+    "robot.joint_cmd",     // joint command topic
+    "robot.joint_states"   // joint states topic
 )?;
 ```
 
@@ -142,17 +142,17 @@ servo_ctrl.stop_all();
 
 ```rust
 use horus_library::nodes::ServoControllerNode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use horus_library::JointCommand;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create 6-DOF robot arm controller
     let mut arm = ServoControllerNode::new_with_topics(
-        "arm/servo_cmd",
-        "arm/joint_cmd",
-        "arm/joint_states"
+        "arm.servo_cmd",
+        "arm.joint_cmd",
+        "arm.joint_states"
     )?;
 
     // Configure 6-DOF arm
@@ -181,8 +181,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable smooth interpolation for fluid motion
     arm.set_interpolation(true);
 
-    runtime.add_node(arm);
-    runtime.run()?;
+    scheduler.add(Box::new(arm), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -193,16 +193,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ServoControllerNode;
 use horus_library::ServoCommand;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create pan-tilt controller
     let mut camera = ServoControllerNode::new_with_topics(
-        "camera/servo_cmd",
-        "camera/joint_cmd",
-        "camera/joint_states"
+        "camera.servo_cmd",
+        "camera.joint_cmd",
+        "camera.joint_states"
     )?;
 
     // Configure 2-DOF pan-tilt
@@ -219,20 +219,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Enable smooth tracking
     camera.set_interpolation(true);
 
-    runtime.add_node(camera);
+    scheduler.add(Box::new(camera), 50, Some(true));
 
     // Example: Send pan-tilt commands
-    let servo_pub = Hub::<ServoCommand>::new("camera/servo_cmd")?;
+    let servo_pub = Hub::<ServoCommand>::new("camera.servo_cmd")?;
 
     // Pan to 45 degrees
     let pan_cmd = ServoCommand::from_degrees(0, 45.0);
-    servo_pub.send(pan_cmd, None)?;
+    servo_pub.send(pan_cmd, &mut None)?;
 
     // Tilt to 30 degrees with slow speed
     let tilt_cmd = ServoCommand::with_speed(1, 0.523, 0.3);
-    servo_pub.send(tilt_cmd, None)?;
+    servo_pub.send(tilt_cmd, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -243,10 +243,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ServoControllerNode;
 use horus_library::JointCommand;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create multi-servo controller
     let mut servos = ServoControllerNode::new()?;
@@ -258,7 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         servos.set_velocity_limit(i, 2.5);
     }
 
-    runtime.add_node(servos);
+    scheduler.add(Box::new(servos), 50, Some(true));
 
     // Coordinated joint command publisher
     let joint_pub = Hub::<JointCommand>::new("joint_command")?;
@@ -271,9 +271,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cmd.add_position("joint_3", -0.3)?;
 
     // All servos move simultaneously
-    joint_pub.send(cmd, None)?;
+    joint_pub.send(cmd, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -284,16 +284,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ServoControllerNode;
 use horus_library::ServoCommand;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create gripper controller
     let mut gripper = ServoControllerNode::new_with_topics(
-        "gripper/servo_cmd",
-        "gripper/joint_cmd",
-        "gripper/joint_states"
+        "gripper.servo_cmd",
+        "gripper.joint_cmd",
+        "gripper.joint_states"
     )?;
 
     // Single servo gripper
@@ -302,19 +302,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     gripper.set_velocity_limit(0, 2.0);
     gripper.set_torque_limit(0, 8.0);  // Strong grip
 
-    runtime.add_node(gripper);
+    scheduler.add(Box::new(gripper), 50, Some(true));
 
-    let servo_pub = Hub::<ServoCommand>::new("gripper/servo_cmd")?;
+    let servo_pub = Hub::<ServoCommand>::new("gripper.servo_cmd")?;
 
     // Open gripper
     let open_cmd = ServoCommand::new(0, 1.57);
-    servo_pub.send(open_cmd, None)?;
+    servo_pub.send(open_cmd, &mut None)?;
 
     // Close gripper with moderate speed
     let close_cmd = ServoCommand::with_speed(0, 0.0, 0.5);
-    servo_pub.send(close_cmd, None)?;
+    servo_pub.send(close_cmd, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -333,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
    ```rust
    // Move servo to center
    let center_cmd = ServoCommand::new(servo_id, 0.0);
-   servo_pub.send(center_cmd, None)?;
+   servo_pub.send(center_cmd, &mut None)?;
 
    // Verify actual position matches expected
    if let Some(actual_pos) = servo_ctrl.get_position(servo_id) {
@@ -347,7 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
    for pos in (0..157).step_by(10) {
        let angle = (pos as f32) / 100.0;
        let cmd = ServoCommand::with_speed(servo_id, angle, 0.2);
-       servo_pub.send(cmd, None)?;
+       servo_pub.send(cmd, &mut None)?;
        std::thread::sleep(std::time::Duration::from_millis(500));
    }
 
@@ -362,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
    let test_positions = [-1.0, 0.0, 1.0, 0.0];
    for pos in test_positions {
        let cmd = ServoCommand::with_speed(servo_id, pos, 0.3);
-       servo_pub.send(cmd, None)?;
+       servo_pub.send(cmd, &mut None)?;
        std::thread::sleep(std::time::Duration::from_secs(2));
    }
    ```
@@ -379,7 +379,7 @@ fn calibrate_servo(
 
     // Move to center
     let center = ServoCommand::new(servo_id, 0.0);
-    servo_pub.send(center, None)?;
+    servo_pub.send(center, &mut None)?;
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Find positive limit
@@ -387,7 +387,7 @@ fn calibrate_servo(
     for i in 0..100 {
         let angle = (i as f32) * 0.05;  // 0.05 rad steps
         let cmd = ServoCommand::with_speed(servo_id, angle, 0.1);
-        servo_pub.send(cmd, None)?;
+        servo_pub.send(cmd, &mut None)?;
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // Check if servo reached target
@@ -401,7 +401,7 @@ fn calibrate_servo(
     }
 
     // Return to center
-    servo_pub.send(center, None)?;
+    servo_pub.send(center, &mut None)?;
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Find negative limit (similar process)
@@ -409,7 +409,7 @@ fn calibrate_servo(
     for i in 0..100 {
         let angle = -(i as f32) * 0.05;
         let cmd = ServoCommand::with_speed(servo_id, angle, 0.1);
-        servo_pub.send(cmd, None)?;
+        servo_pub.send(cmd, &mut None)?;
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         if let Some(actual) = servo_ctrl.get_position(servo_id) {
@@ -421,7 +421,7 @@ fn calibrate_servo(
     }
 
     // Return to center
-    servo_pub.send(center, None)?;
+    servo_pub.send(center, &mut None)?;
 
     eprintln!("Servo {} limits: ({}, {})", servo_id, neg_limit, pos_limit);
     Ok((neg_limit, pos_limit))
@@ -438,7 +438,7 @@ fn calibrate_servo(
 servo_ctrl.set_interpolation(false);
 
 let cmd = ServoCommand::new(0, 1.57);
-servo_pub.send(cmd, None)?;
+servo_pub.send(cmd, &mut None)?;
 // Servo moves at maximum speed to target
 ```
 
@@ -449,7 +449,7 @@ servo_ctrl.set_interpolation(true);
 servo_ctrl.set_velocity_limit(0, 1.0);  // 1 rad/s max
 
 let cmd = ServoCommand::new(0, 1.57);
-servo_pub.send(cmd, None)?;
+servo_pub.send(cmd, &mut None)?;
 // Servo takes ~1.57 seconds to reach target
 ```
 
@@ -482,7 +482,7 @@ fn execute_trajectory(
     for waypoint in waypoints {
         // Calculate speed based on distance and time
         let cmd = ServoCommand::new(servo_id, *waypoint);
-        servo_pub.send(cmd, None)?;
+        servo_pub.send(cmd, &mut None)?;
 
         let sleep_time = std::time::Duration::from_secs_f32(duration_per_segment);
         std::thread::sleep(sleep_time);
@@ -501,10 +501,10 @@ execute_trajectory(0, &trajectory, 1.0, &servo_pub)?;
 
 ```rust
 use horus_library::nodes::{ServoControllerNode, PidControllerNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Servo controller provides position feedback
     let mut servos = ServoControllerNode::new_with_topics(
@@ -516,7 +516,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // PID controller for higher-level control
     let mut pid = PidControllerNode::new_with_topics(
-        "target_position",      // Setpoint
+        "target.position",      // Setpoint
         "joint_states",         // Feedback from servo controller
         "servo_cmd",            // Output to servo controller
         "pid_config"
@@ -525,9 +525,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pid.set_gains(5.0, 0.5, 0.1);
     pid.set_output_limits(-3.14, 3.14);
 
-    runtime.add_node(servos);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(servos), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -537,7 +537,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::{ServoControllerNode, JointCommand};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 // Simple 2-DOF planar arm inverse kinematics
 fn inverse_kinematics_2dof(
@@ -569,12 +569,12 @@ fn inverse_kinematics_2dof(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     let mut arm = ServoControllerNode::new()?;
     arm.set_servo_count(2);
 
-    runtime.add_node(arm);
+    scheduler.add(Box::new(arm), 50, Some(true));
 
     let joint_pub = Hub::<JointCommand>::new("joint_command")?;
 
@@ -583,10 +583,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut cmd = JointCommand::new();
         cmd.add_position("shoulder", j1)?;
         cmd.add_position("elbow", j2)?;
-        joint_pub.send(cmd, None)?;
+        joint_pub.send(cmd, &mut None)?;
     }
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -596,7 +596,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::{ServoControllerNode, JointCommand};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn interpolate_path(
     start: &[f64],
@@ -618,13 +618,13 @@ fn interpolate_path(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     let mut arm = ServoControllerNode::new()?;
     arm.set_servo_count(6);
     arm.set_interpolation(true);
 
-    runtime.add_node(arm);
+    scheduler.add(Box::new(arm), 50, Some(true));
 
     let joint_pub = Hub::<JointCommand>::new("joint_command")?;
 
@@ -641,11 +641,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (i, pos) in waypoint.iter().enumerate() {
             cmd.add_position(&format!("joint_{}", i), *pos)?;
         }
-        joint_pub.send(cmd, None)?;
+        joint_pub.send(cmd, &mut None)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -675,14 +675,14 @@ servo_ctrl.set_velocity_limit(servo_id, 0.5);  // Slower motion
 
 // Disable servo when at target to prevent hunting
 let cmd = ServoCommand::disable(servo_id);
-servo_pub.send(cmd, None)?;
+servo_pub.send(cmd, &mut None)?;
 
 // Add deadband by checking if close enough
 if let Some(current) = servo_ctrl.get_position(servo_id) {
     if (current - target).abs() < 0.05 {
         // Close enough, disable servo
         let disable = ServoCommand::disable(servo_id);
-        servo_pub.send(disable, None)?;
+        servo_pub.send(disable, &mut None)?;
     }
 }
 ```
@@ -747,7 +747,7 @@ use std::time::Duration;
 
 loop {
     let cmd = calculate_next_position();
-    servo_pub.send(cmd, None)?;
+    servo_pub.send(cmd, &mut None)?;
     thread::sleep(Duration::from_millis(20));  // 50 Hz update rate
 }
 
@@ -816,12 +816,12 @@ let mut last_send = Instant::now();
 let min_interval = Duration::from_millis(50);
 
 if last_send.elapsed() >= min_interval {
-    servo_pub.send(cmd, None)?;
+    servo_pub.send(cmd, &mut None)?;
     last_send = Instant::now();
 }
 
 // Check node is added to runtime
-runtime.add_node(servo_ctrl);
+scheduler.add(Box::new(servo_ctrl), 50, Some(true));
 
 // Verify hub creation
 let servo_pub = Hub::<ServoCommand>::new("servo_cmd")?;
@@ -850,7 +850,7 @@ let mut joint_cmd = JointCommand::new();
 for i in 0..6 {
     joint_cmd.add_position(&format!("joint_{}", i), targets[i])?;
 }
-joint_pub.send(joint_cmd, None)?;
+joint_pub.send(joint_cmd, &mut None)?;
 
 // Calculate time-synchronized velocities
 fn calculate_synchronized_velocities(

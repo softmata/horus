@@ -5,8 +5,10 @@
 //! - STL (ASCII and binary)
 //! - COLLADA (.dae)
 //! - glTF/GLB
+//! - FBX (Filmbox - ASCII and binary)
 
 mod collada_loader;
+mod fbx_loader;
 mod gltf_loader;
 mod obj_loader;
 mod optimization;
@@ -15,6 +17,7 @@ mod stl_loader;
 mod validation;
 
 pub use collada_loader::load_collada;
+pub use fbx_loader::load_fbx;
 pub use gltf_loader::load_gltf;
 pub use obj_loader::load_obj;
 pub use stl_loader::load_stl;
@@ -212,6 +215,7 @@ impl MeshLoader {
             "stl" => load_stl(&resolved_path, &options)?,
             "dae" => load_collada(&resolved_path, &options)?,
             "gltf" | "glb" => load_gltf(&resolved_path, &options)?,
+            "fbx" => load_fbx(&resolved_path, &options)?,
             ext => anyhow::bail!("Unsupported mesh format: {}", ext),
         };
 

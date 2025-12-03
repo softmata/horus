@@ -78,7 +78,7 @@ pub fn horus_sync_system(
         config.update_time(current_time);
 
         // Actual publishing is done by the individual publish systems
-        // in horus_bridge/publisher.rs (publish_tf_system, publish_lidar3d_system, etc.)
+        // in horus_bridge/publisher.rs (publish_hframe_system, publish_lidar3d_system, etc.)
         // This system just coordinates timing and configuration
     }
 }

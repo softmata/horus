@@ -272,7 +272,7 @@ fn main() -> Result<()> {
     let detector = node! {
         name: "contact_detector",
         tick: |ctx| {
-            let hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
+            let hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
 
             while let Some(wrench) = hub.recv(None) {
                 let force_mag = wrench.force_magnitude();
@@ -344,7 +344,7 @@ fn main() -> Result<()> {
     let insertion = node! {
         name: "insertion_controller",
         tick: |ctx| {
-            let hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
+            let hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
 
             while let Some(wrench) = hub.recv(None) {
                 let z_force = wrench.force.z;
@@ -395,8 +395,8 @@ fn main() -> Result<()> {
     let safety = node! {
         name: "safety_monitor",
         tick: |ctx| {
-            let wrench_hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
-            let status_hub = Hub::<CalibrationStatus>::new("force_torque/calibration")?;
+            let wrench_hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
+            let status_hub = Hub::<CalibrationStatus>::new("force_torque.calibration")?;
 
             // Check wrench data
             while let Some(wrench) = wrench_hub.recv(None) {
@@ -460,7 +460,7 @@ fn main() -> Result<()> {
     let controller = node! {
         name: "surface_follower",
         tick: |ctx| {
-            let hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
+            let hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
 
             while let Some(wrench) = hub.recv(None) {
                 let normal_force = wrench.force.z;  // Assuming Z is surface normal
@@ -712,7 +712,7 @@ if ft_sensor.is_overloaded() {
 ### Monitoring Overload Events
 
 ```rust
-let status_hub = Hub::<CalibrationStatus>::new("force_torque/calibration")?;
+let status_hub = Hub::<CalibrationStatus>::new("force_torque.calibration")?;
 
 while let Some(status) = status_hub.recv(None) {
     if status.overload_detected {
@@ -726,7 +726,7 @@ while let Some(status) = status_hub.recv(None) {
 
 ```rust
 // Check against absolute limits
-let wrench_hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
+let wrench_hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
 
 while let Some(wrench) = wrench_hub.recv(None) {
     if wrench.exceeds_limits(100.0, 10.0) {  // 100N force, 10Nm torque
@@ -762,7 +762,7 @@ while let Some(wrench) = wrench_hub.recv(None) {
 5. **Monitor calibration status**:
    ```rust
    // Subscribe to calibration topic for continuous monitoring
-   let status_hub = Hub::<CalibrationStatus>::new("force_torque/calibration")?;
+   let status_hub = Hub::<CalibrationStatus>::new("force_torque.calibration")?;
    ```
 
 6. **Handle sensor failures gracefully**:
@@ -994,7 +994,7 @@ gripper_ft.set_frame_id("gripper_ft");
 
 // Different topics automatically via frame_id
 // Subscribe to specific sensors:
-let wrist_hub = Hub::<WrenchStamped>::new("force_torque/wrench")?;
+let wrist_hub = Hub::<WrenchStamped>::new("force_torque.wrench")?;
 // Filter by frame_id in your node
 ```
 

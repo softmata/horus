@@ -5,6 +5,11 @@ use horus_core::error::HorusResult;
 type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(feature = "opencv")]
 use opencv::{
     core::{Mat, Size},
@@ -28,7 +33,21 @@ pub enum ImageBackend {
 /// Supported backends:
 /// - OpenCV (cv::imgproc for actual image processing)
 /// - Simulation mode for testing
-pub struct ImageProcessorNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = ImageProcessorNode::builder()
+///     .with_closure(|img| {
+///         // Add custom post-processing
+///         img
+///     })
+///     .build()?;
+/// ```
+pub struct ImageProcessorNode<P = PassThrough<Image>>
+where
+    P: Processor<Image>,
+{
     subscriber: Hub<Image>,
     publisher: Hub<Image>,
 
@@ -50,12 +69,15 @@ pub struct ImageProcessorNode {
     // Statistics
     images_processed: u64,
     processing_time_us: u64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl ImageProcessorNode {
     /// Create a new image processor node in simulation mode
     pub fn new() -> Result<Self> {
-        Self::new_with_backend("camera/image", "camera/processed", ImageBackend::Simulation)
+        Self::new_with_backend("camera.image", "camera.processed", ImageBackend::Simulation)
     }
 
     /// Create with custom input/output topics
@@ -85,9 +107,20 @@ impl ImageProcessorNode {
             _opencv_mat: None,
             images_processed: 0,
             processing_time_us: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> ImageProcessorNodeBuilder<PassThrough<Image>> {
+        ImageProcessorNodeBuilder::new()
+    }
+}
+
+impl<P> ImageProcessorNode<P>
+where
+    P: Processor<Image>,
+{
     /// Set image processing backend
     pub fn set_backend(&mut self, backend: ImageBackend) {
         self.backend = backend;
@@ -407,12 +440,16 @@ impl ImageProcessorNode {
     }
 }
 
-impl Node for ImageProcessorNode {
+impl<P> Node for ImageProcessorNode<P>
+where
+    P: Processor<Image>,
+{
     fn name(&self) -> &'static str {
         "ImageProcessorNode"
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
         ctx.log_info("Image processor node initialized");
 
         match self.backend {
@@ -434,12 +471,154 @@ impl Node for ImageProcessorNode {
         Ok(())
     }
 
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         // Process all available images
         while let Some(image) = self.subscriber.recv(&mut None) {
             if let Some(processed) = self.process_image(image, ctx.as_deref_mut()) {
-                let _ = self.publisher.send(processed, &mut None);
+                // Process through pipeline
+                if let Some(final_output) = self.processor.process(processed) {
+                    let _ = self.publisher.send(final_output, &mut None);
+                }
             }
         }
+    }
+}
+
+/// Builder for ImageProcessorNode with processor configuration
+pub struct ImageProcessorNodeBuilder<P>
+where
+    P: Processor<Image>,
+{
+    input_topic: String,
+    output_topic: String,
+    backend: ImageBackend,
+    processor: P,
+}
+
+impl ImageProcessorNodeBuilder<PassThrough<Image>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            input_topic: "camera.image".to_string(),
+            output_topic: "camera.processed".to_string(),
+            backend: ImageBackend::Simulation,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for ImageProcessorNodeBuilder<PassThrough<Image>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> ImageProcessorNodeBuilder<P>
+where
+    P: Processor<Image>,
+{
+    /// Set input topic
+    pub fn input_topic(mut self, topic: &str) -> Self {
+        self.input_topic = topic.to_string();
+        self
+    }
+
+    /// Set output topic
+    pub fn output_topic(mut self, topic: &str) -> Self {
+        self.output_topic = topic.to_string();
+        self
+    }
+
+    /// Set image processing backend
+    pub fn backend(mut self, backend: ImageBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> ImageProcessorNodeBuilder<P2>
+    where
+        P2: Processor<Image>,
+    {
+        ImageProcessorNodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            backend: self.backend,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> ImageProcessorNodeBuilder<ClosureProcessor<Image, Image, F>>
+    where
+        F: FnMut(Image) -> Image + Send + 'static,
+    {
+        ImageProcessorNodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            backend: self.backend,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(self, f: F) -> ImageProcessorNodeBuilder<FilterProcessor<Image, Image, F>>
+    where
+        F: FnMut(Image) -> Option<Image> + Send + 'static,
+    {
+        ImageProcessorNodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            backend: self.backend,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> ImageProcessorNodeBuilder<Pipeline<Image, Image, Image, P, P2>>
+    where
+        P2: Processor<Image, Image>,
+    {
+        ImageProcessorNodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            backend: self.backend,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<ImageProcessorNode<P>> {
+        Ok(ImageProcessorNode {
+            subscriber: Hub::new(&self.input_topic)?,
+            publisher: Hub::new(&self.output_topic)?,
+            target_width: 640,
+            target_height: 480,
+            resize_enabled: false,
+            grayscale_enabled: false,
+            gaussian_blur_size: 0,
+            edge_detection_enabled: false,
+            brightness_adjustment: 0.0,
+            contrast_adjustment: 1.0,
+            backend: self.backend,
+            #[cfg(feature = "opencv")]
+            _opencv_mat: None,
+            images_processed: 0,
+            processing_time_us: 0,
+            processor: self.processor,
+        })
     }
 }

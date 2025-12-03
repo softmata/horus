@@ -146,7 +146,7 @@ impl HFrameResource {
     }
 
     /// Backwards-compatible frames accessor
-    /// Allows code like tf_tree.frames.contains_key() and tf_tree.frames.len()
+    /// Allows code like hframe_tree.frames.contains_key() and hframe_tree.frames.len()
     pub fn frames(&self) -> FramesAccessor<'_> {
         FramesAccessor { inner: self }
     }
@@ -228,11 +228,11 @@ pub struct FrameInfo {
     pub transform: Isometry3<f32>,
 }
 
-// Type alias for backwards compatibility
+// Type alias for convenience
 pub type BevyHFrame = HFrameResource;
 
-// Also alias as TFTree for easier migration
-pub type TFTree = HFrameResource;
+// Primary type alias
+pub type HFrameTree = HFrameResource;
 
 /// Wrapper for HFrame Transform with Bevy compatibility
 #[derive(Clone, Copy, Debug)]
@@ -404,10 +404,6 @@ pub enum HFrameFilter {
     Custom(Vec<String>),
 }
 
-/// Type alias for backwards compatibility
-pub type TFVisualizer = HFrameVisualizerConfig;
-pub type TFFilter = HFrameFilter;
-
 /// HFrame visualizer system
 pub struct HFrameVisualizer;
 
@@ -478,8 +474,8 @@ impl HFrameVisualizer {
     }
 }
 
-/// Render function for backwards compatibility
-pub fn render_tf_frames(
+/// Render function for HFrame visualization
+pub fn render_hframe_frames(
     gizmos: Gizmos,
     hframe: Res<HFrameResource>,
     config: Option<Res<HFrameVisualizerConfig>>,

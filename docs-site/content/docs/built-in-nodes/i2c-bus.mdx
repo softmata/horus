@@ -62,16 +62,37 @@ sudo usermod -a -G i2c $USER
 # Log out and back in for group to take effect
 ```
 
-### Enable in Project
+### Enabling Features
+
+There are three ways to enable the required `i2c-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `I2cBusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: i2c-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - i2c-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
 horus_library = { version = "0.1", features = ["i2c-hardware"] }
-```
-
-```bash
-# Build with hardware support
-cargo build --features="i2c-hardware"
 ```
 
 ### Verify Hardware
@@ -267,7 +288,8 @@ hub.send(request, &mut None).ok();
 [WARN]     2. Enable I2C: sudo raspi-config -> Interface Options -> I2C
 [WARN]     3. Add user to group: sudo usermod -a -G i2c $USER
 [WARN]     4. Reboot or re-login
-[WARN]     5. Rebuild with: cargo build --features="i2c-hardware"
+[WARN]     5. If using cargo: cargo build --features="i2c-hardware"
+[WARN]        (horus run auto-detects features)
 ```
 
 **Solutions:**

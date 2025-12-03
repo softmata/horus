@@ -2,6 +2,40 @@
 
 Mobile robot base controller that converts Twist velocity commands to differential drive motor commands and publishes odometry.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::DifferentialDriveNode;
+use horus_library::Twist;
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create differential drive controller
+    let mut drive = DifferentialDriveNode::new(
+        "cmd_vel",              // Subscribe to velocity commands
+        "drive.wheel_speeds",   // Publish wheel speeds
+        "odom",                 // Publish odometry
+        0.1,                    // Wheel radius (meters)
+        0.5,                    // Wheel base (meters)
+        1.5,                    // Max linear velocity (m/s)
+        2.0,                    // Max angular velocity (rad/s)
+    )?;
+
+    scheduler.add(Box::new(drive), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Send velocity commands from another node (e.g., joystick, navigation):
+let cmd_hub = Hub::<Twist>::new("cmd_vel")?;
+cmd_hub.send(Twist::new(0.5, 0.0, 0.0, 0.0, 0.0, 0.2), None);  // Forward 0.5 m/s, turn 0.2 rad/s
+```
+
+**Subscribes to:** `cmd_vel` (Twist velocity commands)
+**Publishes to:** `drive.wheel_speeds` (left/right motor speeds), `odom` (robot pose)
+
 ## Overview
 
 The Differential Drive Node is designed for mobile robots with differential drive kinematics (two independently driven wheels). It converts high-level Twist velocity commands (linear and angular) into left/right wheel speeds and maintains odometry by integrating wheel movements.
@@ -143,10 +177,10 @@ let (x, y, theta) = drive.get_position();
 
 ```rust
 use horus_library::nodes::DifferentialDriveNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create differential drive controller
     let mut drive = DifferentialDriveNode::new()?;
@@ -156,8 +190,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drive.set_wheel_radius(0.075);   // 7.5cm wheels
     drive.set_velocity_limits(1.0, 2.0);
 
-    runtime.add_node(drive);
-    runtime.run()?;
+    scheduler.add(Box::new(drive), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -167,10 +201,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::{DifferentialDriveNode, KeyboardInputNode};
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create keyboard teleop node
     let mut keyboard = KeyboardInputNode::new()?;
@@ -182,9 +216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drive.set_wheel_base(0.5);
     drive.set_wheel_radius(0.1);
 
-    runtime.add_node(keyboard);
-    runtime.add_node(drive);
-    runtime.run()?;
+    scheduler.add(Box::new(keyboard), 50, Some(true));
+    scheduler.add(Box::new(drive), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -194,16 +228,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DifferentialDriveNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create drive controller with custom topics
     let mut drive = DifferentialDriveNode::new_with_topics(
-        "robot/cmd_vel",
-        "motors/wheel_speeds",
-        "robot/odometry"
+        "robot.cmd_vel",
+        "motors.wheel_speeds",
+        "robot.odometry"
     )?;
 
     // Configure robot parameters
@@ -211,8 +245,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drive.set_wheel_radius(0.08);
     drive.set_velocity_limits(2.0, 3.0);
 
-    runtime.add_node(drive);
-    runtime.run()?;
+    scheduler.add(Box::new(drive), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -222,10 +256,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DifferentialDriveNode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create drive controller
     let mut drive = DifferentialDriveNode::new()?;
@@ -235,7 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to odometry in another node
     let odom_sub = Hub::new("odom")?;
 
-    runtime.add_node(drive);
+    scheduler.add(Box::new(drive), 50, Some(true));
 
     // In your application loop
     if let Some(odom) = odom_sub.recv(None) {
@@ -463,8 +497,9 @@ if let Some(cmd) = drive_sub.recv(None) {
 drive.set_wheel_base(measured_wheel_base);
 drive.set_wheel_radius(measured_wheel_radius);
 
-// Increase update rate (in Runtime config)
-runtime.set_tick_rate(50.0);  // 50 Hz
+// For higher update rates, add the node with higher priority
+// Priority determines tick frequency (higher = more frequent)
+scheduler.add(Box::new(drive), 100, Some(true));  // Higher priority
 
 // For critical applications, use sensor fusion
 // (combine odometry with IMU, visual odometry, etc.)
@@ -490,8 +525,8 @@ drive.set_velocity_limits(1.0, 3.0);  // Allow faster rotation
 let mut planner = PathPlannerNode::new()?;
 let mut drive = DifferentialDriveNode::new()?;
 
-runtime.add_node(planner);
-runtime.add_node(drive);
+scheduler.add(Box::new(planner), 50, Some(true));
+scheduler.add(Box::new(drive), 50, Some(true));
 ```
 
 ### With Localization
@@ -502,8 +537,8 @@ let mut drive = DifferentialDriveNode::new()?;
 let mut localization = LocalizationNode::new()?;
 
 // Localization subscribes to "odom"
-runtime.add_node(drive);
-runtime.add_node(localization);
+scheduler.add(Box::new(drive), 50, Some(true));
+scheduler.add(Box::new(localization), 50, Some(true));
 ```
 
 ### With Safety Monitor
@@ -513,8 +548,8 @@ runtime.add_node(localization);
 let mut drive = DifferentialDriveNode::new()?;
 let mut safety = SafetyMonitorNode::new()?;
 
-runtime.add_node(drive);
-runtime.add_node(safety);
+scheduler.add(Box::new(drive), 50, Some(true));
+scheduler.add(Box::new(safety), 50, Some(true));
 ```
 
 ## Advanced Topics

@@ -176,21 +176,21 @@ keycodes::KEY_NUMPAD_DIVIDE      // 111
 ```rust
 use horus_library::nodes::KeyboardInputNode;
 use horus_library::KeyboardInput;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create keyboard input node
     let keyboard = KeyboardInputNode::new()?;
 
     // Create a subscriber to receive keyboard events
-    let mut subscriber = Hub::<KeyboardInput>::subscriber("keyboard_input")?;
+    let subscriber = Hub::<KeyboardInput>::new("keyboard_input")?;
 
-    runtime.add_node(keyboard);
+    scheduler.add(Box::new(keyboard), 50, Some(true));
 
     // In your control loop or separate node
-    while let Ok(key_event) = subscriber.recv() {
+    while let Some(key_event) = subscriber.recv(&mut None) {
         match key_event.get_key_name().as_str() {
             "ArrowUp" | "W" => eprintln!("Move forward"),
             "ArrowDown" | "S" => eprintln!("Move backward"),
@@ -211,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::KeyboardInputNode;
 use horus_library::KeyboardInput;
-use horus_core::{Node, Runtime, Hub, NodeInfo};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
 struct TeleopNode {
     keyboard_sub: Hub<KeyboardInput>,
@@ -223,7 +223,7 @@ struct TeleopNode {
 impl TeleopNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            keyboard_sub: Hub::<KeyboardInput>::subscriber("keyboard_input")?,
+            keyboard_sub: Hub::<KeyboardInput>::new("keyboard_input")?,
             velocity_pub: Hub::new("velocity_command")?,
             linear_vel: 0.0,
             angular_vel: 0.0,
@@ -236,9 +236,9 @@ impl Node for TeleopNode {
         "TeleopNode"
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
         // Process all keyboard events
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             if !key_event.pressed {
                 continue;  // Only handle key press events
             }
@@ -265,17 +265,17 @@ impl Node for TeleopNode {
         }
 
         // Publish velocity command
-        let _ = self.velocity_pub.send((self.linear_vel, self.angular_vel), ctx);
+        let _ = self.velocity_pub.send((self.linear_vel, self.angular_vel), &mut ctx);
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
-    runtime.add_node(KeyboardInputNode::new()?);
-    runtime.add_node(TeleopNode::new()?);
+    scheduler.add(Box::new(KeyboardInputNode::new()?), 50, Some(true));
+    scheduler.add(Box::new(TeleopNode::new()?), 50, Some(true));
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -316,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::KeyboardInputNode;
 use horus_library::KeyboardInput;
-use horus_core::{Node, Runtime, Hub, NodeInfo};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
 struct DroneControlNode {
     keyboard_sub: Hub<KeyboardInput>,
@@ -332,8 +332,8 @@ impl Node for DroneControlNode {
         "DroneControlNode"
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             if !key_event.pressed {
                 continue;
             }
@@ -376,7 +376,7 @@ impl Node for DroneControlNode {
         // Publish control command
         let _ = self.control_pub.send(
             (self.pitch, self.roll, self.yaw, self.throttle),
-            ctx
+            &mut ctx
         );
     }
 }
@@ -391,9 +391,9 @@ use horus_core::Hub;
 
 fn setup_command_handler() -> Result<(), Box<dyn std::error::Error>> {
     let keyboard = KeyboardInputNode::new()?;
-    let mut subscriber = Hub::<KeyboardInput>::subscriber("keyboard_input")?;
+    let subscriber = Hub::<KeyboardInput>::new("keyboard_input")?;
 
-    while let Ok(key_event) = subscriber.recv() {
+    while let Some(key_event) = subscriber.recv(&mut None) {
         if !key_event.pressed {
             continue;
         }
@@ -630,7 +630,7 @@ keyboard.set_key_mapping(
 // Set mappings BEFORE adding node to runtime
 let mut keyboard = KeyboardInputNode::new()?;
 keyboard.set_key_mapping(...);  // Configure first
-runtime.add_node(keyboard);      // Then add to runtime
+scheduler.add(Box::new(keyboard), 50, Some(true));      // Then add to runtime
 ```
 
 ### Issue: Ctrl+C doesn't exit
@@ -641,7 +641,7 @@ runtime.add_node(keyboard);      // Then add to runtime
 ```rust
 // The node handles Ctrl+C by default and exits
 // If you need custom Ctrl+C handling:
-while let Ok(key_event) = subscriber.recv() {
+while let Some(key_event) = subscriber.recv(&mut None) {
     if key_event.has_modifier("Ctrl") &&
        key_event.get_key_name() == "C" {
         eprintln!("Custom cleanup...");
@@ -663,7 +663,7 @@ while let Ok(key_event) = subscriber.recv() {
 // If experiencing high CPU, check your subscriber loop:
 
 // Bad - tight loop
-while let Ok(key_event) = subscriber.recv() {
+while let Some(key_event) = subscriber.recv(&mut None) {
     // Process
 }
 
@@ -705,7 +705,7 @@ if key_event.is_ctrl() && key_event.get_key_name() == "S" {
 ```rust
 use horus_library::nodes::{KeyboardInputNode, MotorControllerNode};
 use horus_library::KeyboardInput;
-use horus_core::{Node, Runtime, Hub, NodeInfo};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
 struct KeyboardMotorBridge {
     keyboard_sub: Hub<KeyboardInput>,
@@ -717,8 +717,8 @@ impl Node for KeyboardMotorBridge {
         "KeyboardMotorBridge"
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             if !key_event.pressed {
                 continue;
             }
@@ -767,8 +767,8 @@ impl Node for StateMachineNode {
         "StateMachineNode"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             if !key_event.pressed {
                 continue;
             }
@@ -815,7 +815,7 @@ struct DiffDriveKeyboardNode {
 impl DiffDriveKeyboardNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            keyboard_sub: Hub::<KeyboardInput>::subscriber("keyboard_input")?,
+            keyboard_sub: Hub::<KeyboardInput>::new("keyboard_input")?,
             left_motor_pub: Hub::new("left_motor_speed")?,
             right_motor_pub: Hub::new("right_motor_speed")?,
             max_speed: 100.0,
@@ -829,8 +829,8 @@ impl Node for DiffDriveKeyboardNode {
         "DiffDriveKeyboardNode"
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             if !key_event.pressed {
                 continue;
             }
@@ -884,8 +884,8 @@ impl Node for DebugNode {
         "DebugNode"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
-        while let Ok(key_event) = self.keyboard_sub.try_recv() {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        while let Some(key_event) = self.keyboard_sub.recv(&mut ctx) {
             // Log all key events in verbose mode
             if self.verbose {
                 eprintln!(
@@ -960,10 +960,10 @@ The keyboard input node processes events on every tick:
 // Good - configure before adding to runtime
 let mut keyboard = KeyboardInputNode::new()?;
 keyboard.set_key_mapping(...);
-runtime.add_node(keyboard);
+scheduler.add(Box::new(keyboard), 50, Some(true));
 
 // Bad - cannot configure after adding to runtime
-runtime.add_node(KeyboardInputNode::new()?);
+scheduler.add(Box::new(KeyboardInputNode::new()?);
 // keyboard.set_key_mapping(...);  // Cannot access anymore
 ```
 
@@ -971,12 +971,12 @@ runtime.add_node(KeyboardInputNode::new()?);
 
 ```rust
 // Good - non-blocking, processes all available events
-while let Ok(key_event) = subscriber.try_recv() {
+while let Some(key_event) = subscriber.recv(&mut None) {
     // Process event
 }
 
 // Bad - blocking, may miss events
-let key_event = subscriber.recv()?;  // Blocks until event
+let key_event = subscriber.recv(&mut None);  // Blocks until event
 ```
 
 ### 3. Check Key Press State
@@ -1003,8 +1003,8 @@ match key_event.get_key_name().as_str() {
 // Good - let Drop handle cleanup
 {
     let keyboard = KeyboardInputNode::new()?;
-    runtime.add_node(keyboard);
-    runtime.run()?;
+    scheduler.add(Box::new(keyboard), 50, Some(true));
+    scheduler.run()?;
 }  // Raw mode automatically disabled
 
 // Good - use ESC or Ctrl+C for exit

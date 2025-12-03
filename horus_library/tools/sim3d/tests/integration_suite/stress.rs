@@ -839,9 +839,49 @@ pub fn run_long_running_test(config: LongRunningConfig) -> Result<LongRunningRes
 
 /// Get current memory usage estimate in MB
 pub fn get_memory_usage_mb() -> f64 {
-    // In a real implementation, this would use system APIs
-    // For now, return a placeholder
-    0.0
+    #[cfg(target_os = "linux")]
+    {
+        // Read from /proc/self/statm for memory info
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            let parts: Vec<&str> = statm.split_whitespace().collect();
+            if parts.len() >= 2 {
+                // Second field is RSS (resident set size) in pages
+                if let Ok(rss_pages) = parts[1].parse::<u64>() {
+                    // Page size is typically 4KB
+                    let page_size = 4096u64;
+                    return (rss_pages * page_size) as f64 / (1024.0 * 1024.0);
+                }
+            }
+        }
+        0.0
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Use mach APIs via rusage
+        use std::mem::MaybeUninit;
+        let mut rusage = MaybeUninit::<libc::rusage>::uninit();
+        unsafe {
+            if libc::getrusage(libc::RUSAGE_SELF, rusage.as_mut_ptr()) == 0 {
+                let rusage = rusage.assume_init();
+                // ru_maxrss is in bytes on macOS
+                return rusage.ru_maxrss as f64 / (1024.0 * 1024.0);
+            }
+        }
+        0.0
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows implementation using GetProcessMemoryInfo would require winapi
+        // Return 0.0 as fallback - proper implementation needs winapi crate
+        0.0
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        0.0
+    }
 }
 
 /// Track FPS over simulation run

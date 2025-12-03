@@ -8,7 +8,7 @@ use urdf_rs::{Geometry, Joint, Link, Robot as URDFRobot, Visual};
 
 use crate::assets::mesh::{MeshLoadOptions, MeshLoader};
 use crate::assets::resolver::PathResolver;
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::physics::collider::{ColliderBuilder, ColliderShape};
 use crate::physics::joints::{
     create_fixed_joint, create_prismatic_joint, create_prismatic_joint_with_limits,
@@ -98,7 +98,7 @@ impl URDFLoader {
         urdf_path: impl AsRef<Path>,
         commands: &mut Commands,
         physics_world: &mut PhysicsWorld,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Result<Entity> {
@@ -108,7 +108,7 @@ impl URDFLoader {
             Quat::IDENTITY,
             commands,
             physics_world,
-            tf_tree,
+            hframe_tree,
             meshes,
             materials,
         )
@@ -122,7 +122,7 @@ impl URDFLoader {
         rotation: Quat,
         commands: &mut Commands,
         physics_world: &mut PhysicsWorld,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Result<Entity> {
@@ -139,7 +139,7 @@ impl URDFLoader {
             rotation,
             commands,
             physics_world,
-            tf_tree,
+            hframe_tree,
             meshes,
             materials,
         )
@@ -150,7 +150,7 @@ impl URDFLoader {
         urdf: URDFRobot,
         commands: &mut Commands,
         physics_world: &mut PhysicsWorld,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Result<Entity> {
@@ -160,7 +160,7 @@ impl URDFLoader {
             Quat::IDENTITY,
             commands,
             physics_world,
-            tf_tree,
+            hframe_tree,
             meshes,
             materials,
         )
@@ -173,7 +173,7 @@ impl URDFLoader {
         initial_rotation: Quat,
         commands: &mut Commands,
         physics_world: &mut PhysicsWorld,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Result<Entity> {
@@ -249,8 +249,8 @@ impl URDFLoader {
             }
         }
 
-        // Build TF tree from URDF
-        *tf_tree = TFTree::from_urdf(&urdf);
+        // Build HFrame tree from URDF
+        *hframe_tree = HFrameTree::from_urdf(&urdf);
 
         // Create physics joints to connect links
         for joint in &urdf.joints {

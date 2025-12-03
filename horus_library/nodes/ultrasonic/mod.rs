@@ -5,6 +5,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 // GPIO hardware support
 #[cfg(feature = "gpio-hardware")]
 use std::thread;
@@ -40,6 +45,17 @@ use sysfs_gpio::{Direction, Pin};
 /// - Out-of-range detection
 /// - Sensor health monitoring
 ///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = UltrasonicNode::builder()
+///     .with_filter(|range| {
+///         // Only publish valid ranges
+///         if range.range > 0.0 && range.range < 4.0 { Some(range) } else { None }
+///     })
+///     .build()?;
+/// ```
+///
 /// # Example
 /// ```rust,ignore
 /// use horus_library::nodes::UltrasonicNode;
@@ -50,8 +66,14 @@ use sysfs_gpio::{Direction, Pin};
 /// ultrasonic.set_temperature(25.0); // 25°C
 /// ultrasonic.enable_median_filter(true);
 /// ```
-pub struct UltrasonicNode {
+pub struct UltrasonicNode<P = PassThrough<Range>>
+where
+    P: Processor<Range>,
+{
     publisher: Hub<Range>,
+
+    // Processor for hybrid pattern
+    processor: P,
 
     // Configuration
     num_sensors: u8,
@@ -136,6 +158,7 @@ impl UltrasonicNode {
             hardware_enabled: false,
             gpio_pin_numbers: [(0, 0); 16],
             last_health_check: 0,
+            processor: PassThrough::new(),
         };
 
         // Set default sensor names
@@ -144,6 +167,11 @@ impl UltrasonicNode {
         node.update_speed_of_sound();
 
         Ok(node)
+    }
+
+    /// Create a builder for advanced configuration
+    pub fn builder() -> UltrasonicNodeBuilder<PassThrough<Range>> {
+        UltrasonicNodeBuilder::new()
     }
 
     /// Set the number of ultrasonic sensors (1-16)
@@ -524,9 +552,11 @@ impl UltrasonicNode {
                 .as_nanos() as u64,
         };
 
-        // Publish the measurement
-        if let Err(e) = self.publisher.send(range_msg, &mut None) {
-            ctx.log_error(&format!("Failed to publish range: {:?}", e));
+        // Process through pipeline and publish
+        if let Some(processed) = self.processor.process(range_msg) {
+            if let Err(e) = self.publisher.send(processed, &mut None) {
+                ctx.log_error(&format!("Failed to publish range: {:?}", e));
+            }
         } else {
             ctx.log_debug(&format!(
                 "Sensor {}: {:.3}m (raw: {:.3}m)",
@@ -554,12 +584,22 @@ impl UltrasonicNode {
     }
 }
 
-impl Node for UltrasonicNode {
+impl<P> Node for UltrasonicNode<P>
+where
+    P: Processor<Range>,
+{
     fn name(&self) -> &'static str {
         "UltrasonicNode"
     }
 
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        ctx.log_info("UltrasonicNode initialized");
+        Ok(())
+    }
+
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
         ctx.log_info("UltrasonicNode shutting down - releasing GPIO resources");
 
         // Release GPIO pins
@@ -585,6 +625,8 @@ impl Node for UltrasonicNode {
     }
 
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -620,6 +662,162 @@ impl Node for UltrasonicNode {
             }
             self.last_health_check = current_time;
         }
+    }
+}
+
+/// Builder for UltrasonicNode with fluent API for processor configuration
+pub struct UltrasonicNodeBuilder<P>
+where
+    P: Processor<Range>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl UltrasonicNodeBuilder<PassThrough<Range>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "ultrasonic.range".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> UltrasonicNodeBuilder<P>
+where
+    P: Processor<Range>,
+{
+    /// Set the topic for publishing range measurements
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> UltrasonicNodeBuilder<P2>
+    where
+        P2: Processor<Range>,
+    {
+        UltrasonicNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Add a closure processor for transformations
+    pub fn with_closure<F>(self, f: F) -> UltrasonicNodeBuilder<ClosureProcessor<Range, Range, F>>
+    where
+        F: FnMut(Range) -> Range + Send + 'static,
+    {
+        UltrasonicNodeBuilder {
+            topic: self.topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(self, f: F) -> UltrasonicNodeBuilder<FilterProcessor<Range, Range, F>>
+    where
+        F: FnMut(Range) -> Option<Range> + Send + 'static,
+    {
+        UltrasonicNodeBuilder {
+            topic: self.topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor in a pipeline
+    pub fn pipe<P2>(self, next: P2) -> UltrasonicNodeBuilder<Pipeline<Range, Range, Range, P, P2>>
+    where
+        P2: Processor<Range, Output = Range>,
+        P: Processor<Range, Output = Range>,
+    {
+        UltrasonicNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the UltrasonicNode
+    #[cfg(feature = "gpio-hardware")]
+    pub fn build(self) -> Result<UltrasonicNode<P>> {
+        const NONE_PIN: Option<Pin> = None;
+        let mut node = UltrasonicNode {
+            publisher: Hub::new(&self.topic)?,
+            processor: self.processor,
+            num_sensors: 1,
+            sensor_names: [[0; 32]; 16],
+            measurement_rate: 10.0,
+            speed_of_sound: 343.0,
+            temperature_celsius: 20.0,
+            min_range: [0.02; 16],
+            max_range: [4.0; 16],
+            field_of_view: [0.26; 16],
+            enable_median_filter: true,
+            median_filter_size: 5,
+            last_measurement_time: [0; 16],
+            current_range: [0.0; 16],
+            raw_range_history: [[0.0; 5]; 16],
+            history_index: [0; 16],
+            measurement_count: [0; 16],
+            error_count: [0; 16],
+            trigger_sent: [false; 16],
+            echo_start_time: [0; 16],
+            echo_end_time: [0; 16],
+            trigger_duration_ns: 10_000,
+            max_echo_time_ns: 38_000_000,
+            measurement_interval_ns: 100_000_000,
+            last_trigger_time: 0,
+            trigger_pins: [NONE_PIN; 16],
+            echo_pins: [NONE_PIN; 16],
+            hardware_enabled: false,
+            gpio_pin_numbers: [(0, 0); 16],
+            last_health_check: 0,
+        };
+        node.set_sensor_name(0, "ultrasonic_0");
+        node.update_measurement_interval();
+        node.update_speed_of_sound();
+        Ok(node)
+    }
+
+    /// Build the UltrasonicNode (non-gpio version)
+    #[cfg(not(feature = "gpio-hardware"))]
+    pub fn build(self) -> Result<UltrasonicNode<P>> {
+        let mut node = UltrasonicNode {
+            publisher: Hub::new(&self.topic)?,
+            processor: self.processor,
+            num_sensors: 1,
+            sensor_names: [[0; 32]; 16],
+            measurement_rate: 10.0,
+            speed_of_sound: 343.0,
+            temperature_celsius: 20.0,
+            min_range: [0.02; 16],
+            max_range: [4.0; 16],
+            field_of_view: [0.26; 16],
+            enable_median_filter: true,
+            median_filter_size: 5,
+            last_measurement_time: [0; 16],
+            current_range: [0.0; 16],
+            raw_range_history: [[0.0; 5]; 16],
+            history_index: [0; 16],
+            measurement_count: [0; 16],
+            error_count: [0; 16],
+            trigger_sent: [false; 16],
+            echo_start_time: [0; 16],
+            echo_end_time: [0; 16],
+            trigger_duration_ns: 10_000,
+            max_echo_time_ns: 38_000_000,
+            measurement_interval_ns: 100_000_000,
+            last_trigger_time: 0,
+            hardware_enabled: false,
+            gpio_pin_numbers: [(0, 0); 16],
+            last_health_check: 0,
+        };
+        node.set_sensor_name(0, "ultrasonic_0");
+        node.update_measurement_interval();
+        node.update_speed_of_sound();
+        Ok(node)
     }
 }
 

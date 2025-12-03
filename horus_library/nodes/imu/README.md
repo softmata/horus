@@ -2,6 +2,32 @@
 
 Inertial Measurement Unit for orientation sensing and motion tracking.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::{ImuNode, ImuBackend};
+use horus_core::Scheduler;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Option 1: Simulation mode (no hardware needed)
+    let imu = ImuNode::new()?;
+
+    // Option 2: With real hardware (MPU6050)
+    let imu = ImuNode::builder()
+        .with_backend(ImuBackend::Mpu6050)
+        .with_i2c("/dev/i2c-1", 0x68)
+        .build()?;
+
+    scheduler.add(Box::new(imu), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Publishes to:** `imu` topic with orientation, angular velocity, and linear acceleration data.
+
 ## Overview
 
 The IMU Node reads accelerometer, gyroscope, and magnetometer data from IMU sensors and publishes Imu messages with orientation and motion information. It provides essential data for robot localization, orientation tracking, and sensor fusion applications. The node supports configurable sample rates and frame IDs for integration with coordinate frame systems.
@@ -14,6 +40,22 @@ The IMU Node reads accelerometer, gyroscope, and magnetometer data from IMU sens
 |-------|------|-------------|
 | `imu` | `Imu` | IMU sensor data including orientation, angular velocity, and linear acceleration |
 
+## Supported Hardware
+
+| IMU Sensor | Type | Features | I2C Address |
+|------------|------|----------|-------------|
+| **MPU6050** | 6-axis | Accel + Gyro | 0x68 (0x69 alt) |
+| **BNO055** | 9-axis | Accel + Gyro + Mag + Fusion | 0x28 (0x29 alt) |
+| **ICM20948** | 9-axis | Accel + Gyro + Mag | 0x68 (0x69 alt) |
+
+Enable hardware support with Cargo features:
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["mpu6050-imu"] }
+# or
+horus_library = { version = "0.1", features = ["bno055-imu"] }
+```
+
 ## Configuration Parameters
 
 | Parameter | Type | Default | Description |
@@ -21,6 +63,9 @@ The IMU Node reads accelerometer, gyroscope, and magnetometer data from IMU sens
 | `frame_id` | `String` | `"imu_link"` | Coordinate frame identifier for the IMU |
 | `sample_rate` | `f32` | `100.0` | Target sample rate in Hz (clamped 1.0-1000.0) |
 | `topic` | `String` | `"imu"` | Topic name for publishing IMU data |
+| `backend` | `ImuBackend` | `Simulation` | Hardware backend (Simulation, Mpu6050, Bno055, Icm20948) |
+| `i2c_bus` | `String` | `"/dev/i2c-1"` | I2C bus device path |
+| `i2c_address` | `u8` | `0x68` | I2C address of the IMU |
 
 ## Message Types
 
@@ -82,18 +127,67 @@ impl Imu {
 ### Construction
 
 ```rust
-use horus_library::nodes::ImuNode;
+use horus_library::nodes::{ImuNode, ImuBackend};
 
-// Create with default topic "imu"
+// Create with default topic "imu" in simulation mode
 let mut imu = ImuNode::new()?;
 
 // Create with custom topic
-let mut imu = ImuNode::new_with_topic("sensors/imu")?;
+let mut imu = ImuNode::new_with_topic("sensors.imu")?;
+
+// Create with specific hardware backend
+let mut imu = ImuNode::new_with_backend("imu", ImuBackend::Mpu6050)?;
+```
+
+### Builder Pattern (Recommended)
+
+The builder pattern provides a fluent API for configuration:
+
+```rust
+use horus_library::nodes::{ImuNode, ImuBackend};
+
+// Simple builder usage
+let imu = ImuNode::builder()
+    .with_topic("robot.imu")
+    .with_backend(ImuBackend::Mpu6050)
+    .with_i2c("/dev/i2c-1", 0x68)
+    .build()?;
+
+// Builder with data processing closure
+let imu = ImuNode::builder()
+    .with_topic("imu")
+    .with_backend(ImuBackend::Bno055)
+    .with_closure(|mut imu_data| {
+        // Apply calibration offset
+        imu_data.angular_velocity[0] -= 0.01;  // Remove gyro bias
+        imu_data.angular_velocity[1] -= 0.005;
+        imu_data
+    })
+    .build()?;
+
+// Builder with filter (only publish valid data)
+let imu = ImuNode::builder()
+    .with_filter(|imu_data| {
+        // Filter out invalid readings
+        if imu_data.is_valid() {
+            Some(imu_data)
+        } else {
+            None  // Don't publish invalid data
+        }
+    })
+    .build()?;
 ```
 
 ### Configuration Methods
 
 ```rust
+// Set hardware backend
+use horus_library::nodes::ImuBackend;
+imu.set_backend(ImuBackend::Mpu6050);
+
+// Set I2C bus and address
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+
 // Set coordinate frame ID
 imu.set_frame_id("base_imu");
 
@@ -104,6 +198,27 @@ imu.set_sample_rate(200.0);
 let actual_rate = imu.get_actual_sample_rate();
 ```
 
+### Hardware Backend Options
+
+```rust
+use horus_library::nodes::ImuBackend;
+
+// Simulation mode (no hardware required, generates synthetic data)
+imu.set_backend(ImuBackend::Simulation);
+
+// MPU6050 (6-axis: accelerometer + gyroscope)
+imu.set_backend(ImuBackend::Mpu6050);
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+
+// BNO055 (9-axis with built-in sensor fusion)
+imu.set_backend(ImuBackend::Bno055);
+imu.set_i2c_config("/dev/i2c-1", 0x28);
+
+// ICM20948 (9-axis)
+imu.set_backend(ImuBackend::Icm20948);
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+```
+
 ## Usage Examples
 
 ### Basic Orientation Tracking
@@ -111,10 +226,10 @@ let actual_rate = imu.get_actual_sample_rate();
 ```rust
 use horus_library::nodes::ImuNode;
 use horus_library::Imu;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create IMU node
     let mut imu_node = ImuNode::new()?;
@@ -122,10 +237,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     imu_node.set_sample_rate(100.0);  // 100 Hz
 
     // Subscribe to IMU data
-    let imu_sub = Hub::<Imu>::subscribe("imu")?;
+    let imu_sub = Hub::<Imu>::new("imu")?;
 
-    runtime.add_node(imu_node);
-    runtime.run()?;
+    scheduler.add(Box::new(imu_node), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -136,21 +251,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ImuNode;
 use horus_library::{Imu, Quaternion};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 use std::f64::consts::PI;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+/// Custom node that subscribes to IMU data and displays Euler angles
+struct OrientationMonitor {
+    imu_sub: Hub<Imu>,
+}
 
-    // Create IMU node with high sample rate
-    let mut imu_node = ImuNode::new()?;
-    imu_node.set_sample_rate(200.0);
+impl OrientationMonitor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            imu_sub: Hub::new("imu")?,
+        })
+    }
+}
 
-    // Subscribe and process IMU data
-    let imu_sub = Hub::<Imu>::subscribe("imu")?;
+impl Node for OrientationMonitor {
+    fn name(&self) -> &'static str {
+        "OrientationMonitor"
+    }
 
-    runtime.add_node_fn(move || {
-        if let Ok(imu_data) = imu_sub.try_recv() {
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(imu_data) = self.imu_sub.recv_latest() {
             if imu_data.has_orientation() {
                 // Convert quaternion to Euler angles
                 let q = Quaternion::new(
@@ -161,17 +284,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 let (roll, pitch, yaw) = q.to_euler();
 
-                eprintln!("Orientation - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
-                    roll * 180.0 / PI,
-                    pitch * 180.0 / PI,
-                    yaw * 180.0 / PI
-                );
+                if let Some(ctx) = ctx {
+                    ctx.log_info(&format!(
+                        "Orientation - Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
+                        roll * 180.0 / PI,
+                        pitch * 180.0 / PI,
+                        yaw * 180.0 / PI
+                    ));
+                }
             }
         }
-    });
+    }
+}
 
-    runtime.add_node(imu_node);
-    runtime.run()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create IMU node with high sample rate
+    let mut imu_node = ImuNode::new()?;
+    imu_node.set_sample_rate(200.0);
+
+    // Create orientation monitor node
+    let monitor = OrientationMonitor::new()?;
+
+    scheduler.add(Box::new(imu_node), 50, Some(true));
+    scheduler.add(Box::new(monitor), 51, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -182,20 +320,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ImuNode;
 use horus_library::Imu;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+/// Custom node that detects significant motion from IMU data
+struct MotionDetector {
+    imu_sub: Hub<Imu>,
+    angular_threshold: f64,
+    accel_threshold: f64,
+}
 
-    // Create IMU node
-    let mut imu_node = ImuNode::new()?;
-    imu_node.set_sample_rate(100.0);
+impl MotionDetector {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            imu_sub: Hub::new("imu")?,
+            angular_threshold: 0.5, // rad/s
+            accel_threshold: 2.0,   // m/s²
+        })
+    }
+}
 
-    // Motion detection subscriber
-    let imu_sub = Hub::<Imu>::subscribe("imu")?;
+impl Node for MotionDetector {
+    fn name(&self) -> &'static str {
+        "MotionDetector"
+    }
 
-    runtime.add_node_fn(move || {
-        if let Ok(imu_data) = imu_sub.try_recv() {
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(imu_data) = self.imu_sub.recv_latest() {
             // Calculate angular velocity magnitude
             let angular_mag = (
                 imu_data.angular_velocity[0].powi(2) +
@@ -211,15 +361,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ).sqrt();
 
             // Detect significant motion
-            if angular_mag > 0.5 || accel_mag > 2.0 {
-                eprintln!("Motion detected! Angular: {:.2} rad/s, Accel: {:.2} m/s²",
-                    angular_mag, accel_mag);
+            if angular_mag > self.angular_threshold || accel_mag > self.accel_threshold {
+                if let Some(ctx) = ctx {
+                    ctx.log_warning(&format!(
+                        "Motion detected! Angular: {:.2} rad/s, Accel: {:.2} m/s²",
+                        angular_mag, accel_mag
+                    ));
+                }
             }
         }
-    });
+    }
+}
 
-    runtime.add_node(imu_node);
-    runtime.run()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create IMU node
+    let mut imu_node = ImuNode::new()?;
+    imu_node.set_sample_rate(100.0);
+
+    // Create motion detector
+    let detector = MotionDetector::new()?;
+
+    scheduler.add(Box::new(imu_node), 50, Some(true));
+    scheduler.add(Box::new(detector), 51, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -230,42 +396,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ImuNode;
 use horus_library::{Imu, Odometry};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
+
+/// Custom node that fuses IMU orientation with wheel odometry
+struct SensorFusion {
+    imu_sub: Hub<Imu>,
+    odom_sub: Hub<Odometry>,
+    fused_pub: Hub<Odometry>,
+}
+
+impl SensorFusion {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            imu_sub: Hub::new("imu")?,
+            odom_sub: Hub::new("odom")?,
+            fused_pub: Hub::new("fused_odom")?,
+        })
+    }
+}
+
+impl Node for SensorFusion {
+    fn name(&self) -> &'static str {
+        "SensorFusion"
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Get latest from both sensors
+        let imu_data = self.imu_sub.recv_latest();
+        let odom_data = self.odom_sub.recv_latest();
+
+        if let (Some(imu), Some(mut odom)) = (imu_data, odom_data) {
+            // Use IMU orientation for more accurate heading
+            if imu.has_orientation() {
+                // Extract yaw from quaternion
+                let q = imu.orientation;
+                let yaw = (2.0 * (q[3] * q[2] + q[0] * q[1]))
+                    .atan2(1.0 - 2.0 * (q[1].powi(2) + q[2].powi(2)));
+
+                // Update odometry with IMU yaw
+                odom.pose.theta = yaw;
+
+                let _ = self.fused_pub.send(odom, None);
+
+                if let Some(ctx) = ctx {
+                    ctx.log_debug(&format!("Fused pose: ({:.2}, {:.2}, {:.2}°)",
+                        odom.pose.x, odom.pose.y, yaw.to_degrees()));
+                }
+            }
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create IMU node
     let mut imu_node = ImuNode::new()?;
     imu_node.set_sample_rate(100.0);
 
-    // Subscribe to both IMU and odometry
-    let imu_sub = Hub::<Imu>::subscribe("imu")?;
-    let odom_sub = Hub::<Odometry>::subscribe("odom")?;
-    let fused_pub = Hub::<Odometry>::new("fused_odom")?;
+    // Create sensor fusion node
+    let fusion = SensorFusion::new()?;
 
-    runtime.add_node_fn(move || {
-        // Simple complementary filter
-        if let (Ok(imu_data), Ok(mut odom_data)) =
-            (imu_sub.try_recv(), odom_sub.try_recv()) {
-
-            // Use IMU orientation for more accurate heading
-            if imu_data.has_orientation() {
-                // Extract yaw from quaternion
-                let q = imu_data.orientation;
-                let yaw = (2.0 * (q[3] * q[2] + q[0] * q[1]))
-                    .atan2(1.0 - 2.0 * (q[1].powi(2) + q[2].powi(2)));
-
-                // Update odometry with IMU yaw
-                odom_data.pose.theta = yaw;
-
-                let _ = fused_pub.send(odom_data, None);
-            }
-        }
-    });
-
-    runtime.add_node(imu_node);
-    runtime.run()?;
+    scheduler.add(Box::new(imu_node), 50, Some(true));
+    scheduler.add(Box::new(fusion), 51, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -275,24 +469,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::ImuNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Primary IMU for robot base
-    let mut base_imu = ImuNode::new_with_topic("imu/base")?;
+    let mut base_imu = ImuNode::new_with_topic("imu.base")?;
     base_imu.set_frame_id("base_imu");
     base_imu.set_sample_rate(100.0);
 
     // Secondary IMU for arm or turret
-    let mut arm_imu = ImuNode::new_with_topic("imu/arm")?;
+    let mut arm_imu = ImuNode::new_with_topic("imu.arm")?;
     arm_imu.set_frame_id("arm_imu");
     arm_imu.set_sample_rate(50.0);
 
-    runtime.add_node(base_imu);
-    runtime.add_node(arm_imu);
-    runtime.run()?;
+    scheduler.add(Box::new(base_imu), 50, Some(true));
+    scheduler.add(Box::new(arm_imu), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -312,7 +506,7 @@ The accelerometer measures linear acceleration including gravity. Proper calibra
    // Collect 100 samples per orientation
    let mut samples = Vec::new();
    for _ in 0..100 {
-       let imu_data = imu_sub.recv()?;
+       let imu_data = imu_sub.recv(&mut None);
        samples.push(imu_data.linear_acceleration);
    }
    ```
@@ -343,7 +537,7 @@ The gyroscope measures angular velocity. It typically needs bias (zero-offset) c
    // Collect 1000 samples while IMU is perfectly still
    let mut gyro_samples = Vec::new();
    for _ in 0..1000 {
-       let imu_data = imu_sub.recv()?;
+       let imu_data = imu_sub.recv(&mut None);
        gyro_samples.push(imu_data.angular_velocity);
    }
    ```
@@ -922,8 +1116,8 @@ struct SensorFusionNode {
 impl SensorFusionNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            imu_sub: Hub::subscribe("imu")?,
-            odom_sub: Hub::subscribe("odom")?,
+            imu_sub: Hub::new("imu")?,
+            odom_sub: Hub::new("odom")?,
             pose_pub: Hub::new("fused_pose")?,
             complementary_filter: ComplementaryFilter {
                 alpha: 0.98,

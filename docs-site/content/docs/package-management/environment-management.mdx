@@ -93,7 +93,7 @@ When you run `horus run`:
 # Team member clones your project
 git clone your-repo
 cd your-repo
-horus run  # Auto-installs everything, just works!
+horus run  # Auto-installs dependencies and runs
 ```
 
 **Lightweight**: Projects stay small
@@ -114,10 +114,10 @@ project3/.horus/packages/  # Symlinks only (a few KB)
 
 **Isolated**: Projects don't interfere
 ```bash
-# Different versions, no problem
+# Different versions supported
 project_a/horus.yaml:  serde@1.0.228
 project_b/horus.yaml:  serde@1.0.150
-# Both work perfectly - isolated environments
+# Both work - isolated environments
 ```
 
 ### Solving Dependency Hell

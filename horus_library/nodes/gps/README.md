@@ -2,6 +2,31 @@
 
 GPS/GNSS satellite navigation receiver for positioning, navigation, and time synchronization with multi-constellation support.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::{GpsNode, GpsBackend};
+use horus_core::Scheduler;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Option 1: Simulation mode (no hardware needed)
+    let gps = GpsNode::new()?;
+
+    // Option 2: With real GPS hardware
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
+    gps.set_serial_config("/dev/ttyUSB0", 9600);
+    gps.set_update_rate(1.0);  // 1 Hz
+
+    scheduler.add(Box::new(gps), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Publishes to:** `gps.fix` topic with latitude, longitude, altitude, and accuracy data.
+
 ## Overview
 
 The GPS Node provides position, velocity, and time data from GPS/GNSS satellite receivers via NMEA 0183 serial protocol. It supports GPS, GLONASS, Galileo, and BeiDou constellations for global positioning with automatic hardware/simulation fallback.
@@ -24,7 +49,7 @@ Key features:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `gps/fix` | `NavSatFix` | GPS position, velocity, and accuracy data |
+| `gps.fix` | `NavSatFix` | GPS position, velocity, and accuracy data |
 
 ## Configuration Parameters
 
@@ -111,14 +136,14 @@ fix.distance_to(&other_fix) -> f64
 ```rust
 use horus_library::nodes::GpsNode;
 
-// Create with default topic "gps/fix" in simulation mode
+// Create with default topic "gps.fix" in simulation mode
 let mut gps = GpsNode::new()?;
 
 // Create with custom topic in simulation mode
-let mut gps = GpsNode::new_with_topic("navigation/gps")?;
+let mut gps = GpsNode::new_with_topic("navigation.gps")?;
 
 // Create with specific backend
-let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
 ```
 
 ### Configuration Methods
@@ -181,7 +206,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // Create GPS node with NMEA serial backend
-    let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
     gps.set_serial_config("/dev/ttyUSB0", 9600);
     gps.set_update_rate(1.0);  // 1 Hz standard update rate
     gps.set_min_satellites(4);
@@ -202,7 +227,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // GPS node
-    let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
     gps.set_serial_config("/dev/ttyUSB0", 9600);
     gps.set_update_rate(1.0);
 
@@ -212,7 +237,7 @@ fn main() -> Result<()> {
     let monitor = node! {
         name: "position_monitor",
         tick: |ctx| {
-            let hub = Hub::<NavSatFix>::new("gps/fix")?;
+            let hub = Hub::<NavSatFix>::new("gps.fix")?;
 
             while let Some(fix) = hub.recv(None) {
                 if fix.has_fix() && fix.is_valid() {
@@ -251,7 +276,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // GPS node
-    let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
     gps.set_serial_config("/dev/ttyUSB0", 9600);
     gps.set_update_rate(1.0);
 
@@ -261,7 +286,7 @@ fn main() -> Result<()> {
     let monitor = node! {
         name: "geofence_monitor",
         tick: |ctx| {
-            let hub = Hub::<NavSatFix>::new("gps/fix")?;
+            let hub = Hub::<NavSatFix>::new("gps.fix")?;
 
             // Define geo-fence center (home position)
             let home_lat = 37.7749;
@@ -306,7 +331,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // GPS node
-    let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
     gps.set_serial_config("/dev/ttyUSB0", 9600);
     gps.set_update_rate(1.0);
     gps.set_min_satellites(6);  // Higher accuracy for navigation
@@ -318,7 +343,7 @@ fn main() -> Result<()> {
     let navigator = node! {
         name: "waypoint_navigator",
         tick: |ctx| {
-            let hub = Hub::<NavSatFix>::new("gps/fix")?;
+            let hub = Hub::<NavSatFix>::new("gps.fix")?;
 
             // Define waypoint
             let waypoint_lat = 37.7750;
@@ -359,7 +384,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // GPS node
-    let mut gps = GpsNode::new_with_backend("gps/fix", GpsBackend::NmeaSerial)?;
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
     gps.set_serial_config("/dev/ttyUSB0", 9600);
     gps.set_update_rate(5.0);  // 5 Hz for better speed/heading updates
 
@@ -369,7 +394,7 @@ fn main() -> Result<()> {
     let tracker = node! {
         name: "velocity_tracker",
         tick: |ctx| {
-            let hub = Hub::<NavSatFix>::new("gps/fix")?;
+            let hub = Hub::<NavSatFix>::new("gps.fix")?;
 
             while let Some(fix) = hub.recv(None) {
                 if fix.has_fix() && fix.is_valid() {
@@ -422,7 +447,7 @@ fn main() -> Result<()> {
     let consumer = node! {
         name: "gps_consumer",
         tick: |ctx| {
-            let hub = Hub::<NavSatFix>::new("gps/fix")?;
+            let hub = Hub::<NavSatFix>::new("gps.fix")?;
 
             while let Some(fix) = hub.recv(None) {
                 ctx.log_info(&format!(

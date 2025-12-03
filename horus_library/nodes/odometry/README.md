@@ -24,8 +24,8 @@ Key features:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `encoder/left` | `i64` | Left wheel encoder tick count |
-| `encoder/right` | `i64` | Right wheel encoder tick count |
+| `encoder.left` | `i64` | Left wheel encoder tick count |
+| `encoder.right` | `i64` | Right wheel encoder tick count |
 | `cmd_vel` | `Twist` | Velocity commands for dead reckoning fallback |
 
 ### Publishers
@@ -259,8 +259,8 @@ fn main() -> Result<()> {
     let encoder_sim = node! {
         name: "encoder_simulator",
         tick: |ctx| {
-            let left_hub = Hub::<i64>::new("encoder/left")?;
-            let right_hub = Hub::<i64>::new("encoder/right")?;
+            let left_hub = Hub::<i64>::new("encoder.left")?;
+            let right_hub = Hub::<i64>::new("encoder.right")?;
 
             static mut LEFT_COUNT: i64 = 0;
             static mut RIGHT_COUNT: i64 = 0;
@@ -270,8 +270,8 @@ fn main() -> Result<()> {
                 LEFT_COUNT += 10;
                 RIGHT_COUNT += 10;
 
-                left_hub.send(LEFT_COUNT, None)?;
-                right_hub.send(RIGHT_COUNT, None)?;
+                left_hub.send(LEFT_COUNT, &mut None)?;
+                right_hub.send(RIGHT_COUNT, &mut None)?;
             }
 
             Ok(())
@@ -307,7 +307,7 @@ fn main() -> Result<()> {
 
             // Send forward velocity command: 0.5 m/s, 0.1 rad/s
             let twist = Twist::new_2d(0.5, 0.1);
-            cmd_hub.send(twist, None)?;
+            cmd_hub.send(twist, &mut None)?;
 
             Ok(())
         }
@@ -391,12 +391,12 @@ fn main() -> Result<()> {
                     let angular_vel = 1.0 * theta_error;  // Proportional to error
 
                     let twist = Twist::new_2d(linear_vel, angular_vel);
-                    cmd_hub.send(twist, None)?;
+                    cmd_hub.send(twist, &mut None)?;
 
                     ctx.log_info(&format!("Distance to goal: {:.2}m", distance));
                 } else {
                     // Stop at goal
-                    cmd_hub.send(Twist::stop(), None)?;
+                    cmd_hub.send(Twist::stop(), &mut None)?;
                     ctx.log_info("Goal reached!");
                 }
             }
@@ -738,8 +738,8 @@ odom.set_frames("robot2/odom", "robot2/base_link");
 2. Check topic names match:
    ```rust
    // Ensure encoder publishers use correct topics
-   let left_pub = Hub::<i64>::new("encoder/left")?;
-   let right_pub = Hub::<i64>::new("encoder/right")?;
+   let left_pub = Hub::<i64>::new("encoder.left")?;
+   let right_pub = Hub::<i64>::new("encoder.right")?;
    ```
 3. Enable velocity input as fallback:
    ```rust
@@ -789,9 +789,9 @@ use horus_library::prelude::*;
 
 let mut scheduler = Scheduler::new();
 
-// Encoder nodes publish to encoder/left and encoder/right
-let left_encoder = EncoderNode::new("encoder/left", 23, 24)?;
-let right_encoder = EncoderNode::new("encoder/right", 25, 26)?;
+// Encoder nodes publish to encoder.left and encoder.right
+let left_encoder = EncoderNode::new("encoder.left", 23, 24)?;
+let right_encoder = EncoderNode::new("encoder.right", 25, 26)?;
 
 scheduler.add(Box::new(left_encoder), 1, Some(true));
 scheduler.add(Box::new(right_encoder), 1, Some(true));

@@ -2,6 +2,32 @@
 
 Generic LiDAR interface for obstacle detection and mapping with support for multiple sensor backends.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::{LidarNode, LidarBackend};
+use horus_core::Scheduler;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Option 1: Simulation mode (no hardware needed)
+    let lidar = LidarNode::new()?;
+
+    // Option 2: With real LiDAR hardware
+    let mut lidar = LidarNode::new_with_backend("scan", LidarBackend::RpLidar)?;
+    lidar.set_serial_port("/dev/ttyUSB0");
+    lidar.set_scan_frequency(10.0);     // 10 Hz
+    lidar.set_range_limits(0.15, 12.0); // 15cm to 12m
+
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Publishes to:** `scan` topic with 360-degree laser scan data.
+
 ## Overview
 
 The LiDAR Node provides a unified interface for capturing laser scan data from various LiDAR sensors. It publishes LaserScan messages containing distance measurements in a 360-degree field of view, enabling obstacle detection, mapping, and navigation applications. The node supports configurable scan parameters, multiple sensor backends (RPLidar, YDLIDAR, etc.), and integration with SLAM and path planning systems.
@@ -122,34 +148,57 @@ eprintln!("Actual scan rate: {} Hz", actual_rate);
 ```rust
 use horus_library::nodes::LidarNode;
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime, Receiver};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
+
+/// Custom node that detects obstacles from LiDAR scans
+struct ObstacleDetector {
+    scan_sub: Hub<LaserScan>,
+    warning_distance: f32,
+}
+
+impl ObstacleDetector {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            scan_sub: Hub::new("scan")?,
+            warning_distance: 0.5, // meters
+        })
+    }
+}
+
+impl Node for ObstacleDetector {
+    fn name(&self) -> &'static str {
+        "ObstacleDetector"
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv_latest() {
+            // Find closest obstacle
+            if let Some(min_dist) = scan.min_range() {
+                if min_dist < self.warning_distance {
+                    if let Some(ctx) = ctx {
+                        ctx.log_warning(&format!("Obstacle at {:.2} meters!", min_dist));
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create LiDAR node
     let mut lidar = LidarNode::new()?;
     lidar.set_scan_frequency(10.0);
     lidar.set_range_limits(0.1, 30.0);
 
-    // Create subscriber to process scan data
-    let scan_sub = Receiver::<LaserScan>::new("scan")?;
+    // Create obstacle detector
+    let detector = ObstacleDetector::new()?;
 
-    runtime.add_node(lidar);
-    runtime.spawn(move || {
-        loop {
-            if let Ok(scan) = scan_sub.recv() {
-                // Find closest obstacle
-                if let Some(min_dist) = scan.min_range() {
-                    if min_dist < 0.5 {
-                        eprintln!("Warning: Obstacle at {} meters!", min_dist);
-                    }
-                }
-            }
-        }
-    });
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.add(Box::new(detector), 51, Some(true));
+    scheduler.run()?;
 
-    runtime.run()?;
     Ok(())
 }
 ```
@@ -158,10 +207,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LidarNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Configure for RPLidar A1 specifications
     let mut lidar = LidarNode::new_with_topic("rplidar_scan")?;
@@ -170,8 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lidar.set_range_limits(0.15, 12.0);   // 15cm - 12m range
     lidar.set_angle_increment(std::f32::consts::PI / 180.0);  // 1 degree
 
-    runtime.add_node(lidar);
-    runtime.run()?;
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -180,10 +229,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::LidarNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Configure for YDLIDAR X4 specifications
     let mut lidar = LidarNode::new_with_topic("ydlidar_scan")?;
@@ -192,8 +241,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lidar.set_range_limits(0.12, 10.0);   // 12cm - 10m range
     lidar.set_angle_increment(std::f32::consts::PI / 180.0);
 
-    runtime.add_node(lidar);
-    runtime.run()?;
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -203,49 +252,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::LidarNode;
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime, Receiver};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
+
+/// Monitors multiple LiDAR sensors
+struct MultiLidarMonitor {
+    front_sub: Hub<LaserScan>,
+    rear_sub: Hub<LaserScan>,
+}
+
+impl MultiLidarMonitor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            front_sub: Hub::new("front.scan")?,
+            rear_sub: Hub::new("rear.scan")?,
+        })
+    }
+}
+
+impl Node for MultiLidarMonitor {
+    fn name(&self) -> &'static str {
+        "MultiLidarMonitor"
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Process front scan
+        if let Some(scan) = self.front_sub.recv_latest() {
+            if let Some(ctx) = ctx {
+                ctx.log_info(&format!("Front LiDAR: {} valid points", scan.valid_count()));
+            }
+        }
+
+        // Process rear scan
+        if let Some(scan) = self.rear_sub.recv_latest() {
+            if let Some(ctx) = ctx {
+                ctx.log_info(&format!("Rear LiDAR: {} valid points", scan.valid_count()));
+            }
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Front LiDAR
-    let mut front_lidar = LidarNode::new_with_topic("front_scan")?;
+    let mut front_lidar = LidarNode::new_with_topic("front.scan")?;
     front_lidar.set_frame_id("front_laser");
     front_lidar.set_scan_frequency(10.0);
     front_lidar.set_range_limits(0.15, 12.0);
 
     // Rear LiDAR
-    let mut rear_lidar = LidarNode::new_with_topic("rear_scan")?;
+    let mut rear_lidar = LidarNode::new_with_topic("rear.scan")?;
     rear_lidar.set_frame_id("rear_laser");
     rear_lidar.set_scan_frequency(10.0);
     rear_lidar.set_range_limits(0.15, 12.0);
 
-    // Subscribe to both lidars
-    let front_sub = Receiver::<LaserScan>::new("front_scan")?;
-    let rear_sub = Receiver::<LaserScan>::new("rear_scan")?;
+    // Create monitor node
+    let monitor = MultiLidarMonitor::new()?;
 
-    runtime.add_node(front_lidar);
-    runtime.add_node(rear_lidar);
+    scheduler.add(Box::new(front_lidar), 50, Some(true));
+    scheduler.add(Box::new(rear_lidar), 50, Some(true));
+    scheduler.add(Box::new(monitor), 51, Some(true));
+    scheduler.run()?;
 
-    // Process front scan
-    runtime.spawn(move || {
-        loop {
-            if let Ok(scan) = front_sub.recv() {
-                eprintln!("Front LiDAR: {} valid points", scan.valid_count());
-            }
-        }
-    });
-
-    // Process rear scan
-    runtime.spawn(move || {
-        loop {
-            if let Ok(scan) = rear_sub.recv() {
-                eprintln!("Rear LiDAR: {} valid points", scan.valid_count());
-            }
-        }
-    });
-
-    runtime.run()?;
     Ok(())
 }
 ```
@@ -255,51 +323,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::LidarNode;
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime, Receiver};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
 
-fn check_collision_zones(scan: &LaserScan) {
-    let num_zones = 8;
-    let zone_angle = 2.0 * std::f32::consts::PI / num_zones as f32;
+/// Node that monitors collision zones around robot
+struct CollisionZoneMonitor {
+    scan_sub: Hub<LaserScan>,
+    num_zones: usize,
+    danger_distance: f32,
+}
 
-    for zone in 0..num_zones {
-        let mut min_dist_in_zone = f32::MAX;
-        let zone_start = zone as f32 * zone_angle;
-        let zone_end = (zone + 1) as f32 * zone_angle;
+impl CollisionZoneMonitor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            scan_sub: Hub::new("scan")?,
+            num_zones: 8,
+            danger_distance: 0.5,
+        })
+    }
 
-        // Check all points in this zone
-        for i in 0..360 {
-            if !scan.is_range_valid(i) {
-                continue;
+    fn check_collision_zones(&self, scan: &LaserScan, ctx: Option<&mut NodeInfo>) {
+        let zone_angle = 2.0 * std::f32::consts::PI / self.num_zones as f32;
+
+        for zone in 0..self.num_zones {
+            let mut min_dist_in_zone = f32::MAX;
+            let zone_start = zone as f32 * zone_angle;
+            let zone_end = (zone + 1) as f32 * zone_angle;
+
+            // Check all points in this zone
+            for i in 0..360 {
+                if !scan.is_range_valid(i) {
+                    continue;
+                }
+
+                let angle = scan.angle_at(i);
+                if angle >= zone_start && angle < zone_end {
+                    min_dist_in_zone = min_dist_in_zone.min(scan.ranges[i]);
+                }
             }
 
-            let angle = scan.angle_at(i);
-            if angle >= zone_start && angle < zone_end {
-                min_dist_in_zone = min_dist_in_zone.min(scan.ranges[i]);
+            // Alert if obstacle too close in this zone
+            if min_dist_in_zone < self.danger_distance {
+                if let Some(ctx) = ctx {
+                    ctx.log_warning(&format!(
+                        "Zone {}: COLLISION RISK at {:.2}m", zone, min_dist_in_zone
+                    ));
+                }
             }
         }
+    }
+}
 
-        // Alert if obstacle too close in this zone
-        if min_dist_in_zone < 0.5 {
-            eprintln!("Zone {}: COLLISION RISK at {:.2}m", zone, min_dist_in_zone);
+impl Node for CollisionZoneMonitor {
+    fn name(&self) -> &'static str {
+        "CollisionZoneMonitor"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv_latest() {
+            self.check_collision_zones(&scan, ctx.as_deref_mut());
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
+
     let mut lidar = LidarNode::new()?;
-    let scan_sub = Receiver::<LaserScan>::new("scan")?;
+    let monitor = CollisionZoneMonitor::new()?;
 
-    runtime.add_node(lidar);
-    runtime.spawn(move || {
-        loop {
-            if let Ok(scan) = scan_sub.recv() {
-                check_collision_zones(&scan);
-            }
-        }
-    });
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.add(Box::new(monitor), 51, Some(true));
+    scheduler.run()?;
 
-    runtime.run()?;
     Ok(())
 }
 ```
@@ -454,7 +549,7 @@ The `ranges` array contains 360 distance measurements:
 
 ```rust
 // Get scan data
-let scan = scan_sub.recv()?;
+let scan = scan_sub.recv(&mut None);
 
 // Iterate through all measurements
 for i in 0..360 {
@@ -525,10 +620,52 @@ if let Some(dist) = check_direction(&scan, 0.0, 10.0) {
 ```rust
 use horus_library::nodes::LidarNode;
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime, Receiver};
+use horus_core::{Node, Scheduler, Hub, NodeInfo};
+
+/// Node that processes LiDAR scans for SLAM
+struct SlamProcessor {
+    scan_sub: Hub<LaserScan>,
+    min_valid_ratio: f32,
+}
+
+impl SlamProcessor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            scan_sub: Hub::new("scan")?,
+            min_valid_ratio: 0.8, // At least 80% valid points
+        })
+    }
+
+    fn process_slam(&self, scan: &LaserScan) {
+        // SLAM processing implementation
+        // - Extract features
+        // - Match against map
+        // - Update pose estimate
+    }
+}
+
+impl Node for SlamProcessor {
+    fn name(&self) -> &'static str {
+        "SlamProcessor"
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv_latest() {
+            // Filter out invalid readings for better SLAM results
+            let valid_ratio = scan.valid_count() as f32 / 360.0;
+            if valid_ratio > self.min_valid_ratio {
+                self.process_slam(&scan);
+                if let Some(ctx) = ctx {
+                    ctx.log_debug(&format!("SLAM: processed scan with {:.0}% valid points",
+                        valid_ratio * 100.0));
+                }
+            }
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Configure LiDAR for SLAM
     let mut lidar = LidarNode::new()?;
@@ -537,29 +674,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lidar.set_range_limits(0.15, 12.0);
     lidar.set_angle_increment(std::f32::consts::PI / 180.0);
 
-    // Subscribe to scans for SLAM processing
-    let scan_sub = Receiver::<LaserScan>::new("scan")?;
+    // Create SLAM processor node
+    let slam = SlamProcessor::new()?;
 
-    runtime.add_node(lidar);
-    runtime.spawn(move || {
-        loop {
-            if let Ok(scan) = scan_sub.recv() {
-                // Filter out invalid readings for better SLAM results
-                let valid_ratio = scan.valid_count() as f32 / 360.0;
-                if valid_ratio > 0.8 {  // At least 80% valid points
-                    // Pass to SLAM system
-                    process_slam(&scan);
-                }
-            }
-        }
-    });
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.add(Box::new(slam), 51, Some(true));
+    scheduler.run()?;
 
-    runtime.run()?;
     Ok(())
-}
-
-fn process_slam(scan: &LaserScan) {
-    // SLAM processing implementation
 }
 ```
 
@@ -568,10 +690,10 @@ fn process_slam(scan: &LaserScan) {
 ```rust
 use horus_library::nodes::{LidarNode, PathPlannerNode, CollisionDetectorNode};
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // LiDAR provides scan data
     let mut lidar = LidarNode::new()?;
@@ -592,10 +714,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "path",
     )?;
 
-    runtime.add_node(lidar);
-    runtime.add_node(collision_detector);
-    runtime.add_node(path_planner);
-    runtime.run()?;
+    scheduler.add(Box::new(lidar), 50, Some(true));
+    scheduler.add(Box::new(collision_detector), 50, Some(true));
+    scheduler.add(Box::new(path_planner), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -652,7 +774,7 @@ fn generate_costmap(scan: &LaserScan) -> [[u8; GRID_SIZE]; GRID_SIZE] {
 ```rust
 use horus_library::nodes::LidarNode;
 use horus_library::LaserScan;
-use horus_core::{Node, Runtime, Receiver};
+use horus_core::{Node, Scheduler, Receiver};
 
 struct Particle {
     x: f32,
@@ -709,14 +831,14 @@ fn match_scan_to_map(scan: &LaserScan, particle: &Particle, map: &[u8]) -> f32 {
 2. **Node not added to runtime**
    ```rust
    // Make sure node is added
-   runtime.add_node(lidar);
+   scheduler.add(Box::new(lidar), 50, Some(true));
    ```
 
 3. **Wrong topic name**
    ```rust
    // Verify topic names match
    let lidar = LidarNode::new_with_topic("scan")?;
-   let sub = Receiver::<LaserScan>::new("scan")?;  // Must match
+   let sub = Hub::<LaserScan>::new("scan")?;  // Must match
    ```
 
 ### Issue: Serial port permission denied
@@ -885,16 +1007,13 @@ eprintln!("Target: {} Hz, Actual: {} Hz", scan_frequency, actual_rate);
 
 **Solutions:**
 
-1. **Distribute processing**
+1. **Use priority-based scheduling**
    ```rust
-   // Use separate threads for each LiDAR
-   runtime.spawn(move || {
-       // Process front_lidar in dedicated thread
-   });
+   // High priority for navigation-critical front LiDAR
+   scheduler.add(Box::new(front_lidar), 10, Some(true));
 
-   runtime.spawn(move || {
-       // Process rear_lidar in dedicated thread
-   });
+   // Lower priority for monitoring rear LiDAR
+   scheduler.add(Box::new(rear_lidar), 50, Some(true));
    ```
 
 2. **Reduce scan frequency**

@@ -10,6 +10,11 @@ use std::time::Duration;
 #[cfg(not(feature = "crossterm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(feature = "crossterm")]
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -139,14 +144,40 @@ pub mod keycodes {
 ///
 /// This node captures keyboard events and publishes them to the horus system.
 /// It supports custom key mappings that can be overridden by users.
-pub struct KeyboardInputNode {
+///
+/// # Hybrid Pattern
+///
+/// This node supports the hybrid pattern for custom processing:
+///
+/// ```rust,ignore
+/// // Default mode - just captures keyboard input
+/// let node = KeyboardInputNode::new()?;
+///
+/// // With custom processing - filter specific keys
+/// let node = KeyboardInputNode::builder()
+///     .with_topic("custom_keyboard")
+///     .with_filter(|input| {
+///         // Only pass through arrow keys
+///         if input.code >= 37 && input.code <= 40 {
+///             Some(input)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct KeyboardInputNode<P = PassThrough<KeyboardInput>>
+where
+    P: Processor<KeyboardInput>,
+{
     publisher: Hub<KeyboardInput>,
     /// Custom key mapping: maps from input string/char to (key_name, keycode)
     custom_mapping: Arc<Mutex<HashMap<String, (String, u32)>>>,
-    /// For demo/testing: current key index
     /// Flag to indicate if terminal mode is enabled
     #[cfg(feature = "crossterm")]
     terminal_enabled: bool,
+    /// Processor for hybrid pattern
+    processor: P,
 }
 
 impl KeyboardInputNode {
@@ -162,6 +193,7 @@ impl KeyboardInputNode {
             custom_mapping: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "crossterm")]
             terminal_enabled: false,
+            processor: PassThrough::new(),
         };
 
         // Initialize with default mappings
@@ -179,6 +211,16 @@ impl KeyboardInputNode {
         Ok(node)
     }
 
+    /// Create a builder for configuring the node with custom processing
+    pub fn builder() -> KeyboardInputNodeBuilder<PassThrough<KeyboardInput>> {
+        KeyboardInputNodeBuilder::new()
+    }
+}
+
+impl<P> KeyboardInputNode<P>
+where
+    P: Processor<KeyboardInput>,
+{
     /// Initialize default key mappings
     fn init_default_mappings(&mut self) {
         let mut mappings = self.custom_mapping.lock().unwrap();
@@ -420,13 +462,26 @@ impl KeyboardInputNode {
     }
 }
 
-impl Node for KeyboardInputNode {
+impl<P> Node for KeyboardInputNode<P>
+where
+    P: Processor<KeyboardInput>,
+{
     fn name(&self) -> &'static str {
         "KeyboardInputNode"
     }
 
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Call processor hook
+        self.processor.on_start();
+        ctx.log_info("KeyboardInputNode initialized with hybrid processor pattern");
+        Ok(())
+    }
+
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
         ctx.log_info("KeyboardInputNode shutting down - restoring terminal mode");
+
+        // Call processor hook
+        self.processor.on_shutdown();
 
         // Restore terminal mode if raw mode was enabled
         #[cfg(feature = "crossterm")]
@@ -442,6 +497,9 @@ impl Node for KeyboardInputNode {
     }
 
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
+        self.processor.on_tick();
+
         // Try to capture real keyboard events if crossterm is enabled
         #[cfg(feature = "crossterm")]
         {
@@ -465,44 +523,161 @@ impl Node for KeyboardInputNode {
                         return;
                     }
 
-                    // Publish the keyboard event via horus Hub
-                    let _ = self.publisher.send(key_input, &mut ctx);
-                } // Skip demo mode when real input is available
-            }
-        }
-
-        // Fallback: Demo mode for when crossterm is not available or terminal mode is disabled
-        #[cfg(not(feature = "crossterm"))]
-        {
-            let current_time = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-
-            // Simulate arrow key presses for snake game testing
-            // Change direction every 2 seconds for demo
-            if current_time - self.last_key_time > 2000 {
-                let test_keys = ["up", "right", "down", "left"];
-                self.demo_key_index = (self.demo_key_index + 1) % test_keys.len();
-
-                if let Some(key_input) = self.process_input(test_keys[self.demo_key_index]) {
-                    // Use horus Hub to publish the keyboard event
-                    let _ = self.publisher.send(key_input, &mut ctx);
-                    self.last_key_time = current_time;
+                    // Publish the keyboard event via horus Hub (through processor pipeline)
+                    if let Some(processed) = self.processor.process(key_input) {
+                        let _ = self.publisher.send(processed, &mut ctx);
+                    }
                 }
             }
         }
+
+        // Note: Non-crossterm fallback removed since struct lacks demo_key_index/last_key_time fields
     }
 }
 
 // Default impl removed - use Node::new() instead which returns HorusResult
 
 #[cfg(feature = "crossterm")]
-impl Drop for KeyboardInputNode {
+impl<P> Drop for KeyboardInputNode<P>
+where
+    P: Processor<KeyboardInput>,
+{
     fn drop(&mut self) {
         // Clean up terminal mode on drop
         if self.terminal_enabled {
             let _ = disable_raw_mode();
         }
+    }
+}
+
+/// Builder for KeyboardInputNode with custom processor
+pub struct KeyboardInputNodeBuilder<P>
+where
+    P: Processor<KeyboardInput>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl KeyboardInputNodeBuilder<PassThrough<KeyboardInput>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "keyboard_input".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for KeyboardInputNodeBuilder<PassThrough<KeyboardInput>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> KeyboardInputNodeBuilder<P>
+where
+    P: Processor<KeyboardInput>,
+{
+    /// Set the topic for publishing keyboard input
+    pub fn with_topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> KeyboardInputNodeBuilder<P2>
+    where
+        P2: Processor<KeyboardInput>,
+    {
+        KeyboardInputNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Add a closure-based processor
+    #[allow(clippy::type_complexity)]
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> KeyboardInputNodeBuilder<
+        Pipeline<
+            KeyboardInput,
+            KeyboardInput,
+            KeyboardInput,
+            P,
+            ClosureProcessor<KeyboardInput, KeyboardInput, F>,
+        >,
+    >
+    where
+        F: FnMut(KeyboardInput) -> KeyboardInput + Send + 'static,
+    {
+        KeyboardInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, ClosureProcessor::new(f)),
+        }
+    }
+
+    /// Add a filter processor
+    #[allow(clippy::type_complexity)]
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> KeyboardInputNodeBuilder<
+        Pipeline<
+            KeyboardInput,
+            KeyboardInput,
+            KeyboardInput,
+            P,
+            FilterProcessor<KeyboardInput, KeyboardInput, F>,
+        >,
+    >
+    where
+        F: FnMut(KeyboardInput) -> Option<KeyboardInput> + Send + 'static,
+    {
+        KeyboardInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, FilterProcessor::new(f)),
+        }
+    }
+
+    /// Pipe to another processor (output must remain KeyboardInput)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> KeyboardInputNodeBuilder<Pipeline<KeyboardInput, KeyboardInput, KeyboardInput, P, P2>>
+    where
+        P2: Processor<KeyboardInput, KeyboardInput>,
+    {
+        KeyboardInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<KeyboardInputNode<P>> {
+        let mut node = KeyboardInputNode {
+            publisher: Hub::new(&self.topic)?,
+            custom_mapping: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "crossterm")]
+            terminal_enabled: false,
+            processor: self.processor,
+        };
+
+        // Initialize with default mappings
+        node.init_default_mappings();
+
+        // Enable raw terminal mode for capturing keyboard input
+        #[cfg(feature = "crossterm")]
+        {
+            if enable_raw_mode().is_ok() {
+                node.terminal_enabled = true;
+                println!(" Terminal keyboard input enabled. Press arrow keys to control, ESC or Ctrl+C to quit.");
+            }
+        }
+
+        Ok(node)
     }
 }

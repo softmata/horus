@@ -2,6 +2,39 @@
 
 PWM-based DC motor control for brushed DC motors with multi-channel support and comprehensive speed/direction control.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::{DcMotorNode, MotorDriver};
+use horus_library::PwmCommand;
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create DC motor controller
+    let mut motor = DcMotorNode::new()?;
+    motor.set_driver(MotorDriver::L298N);
+    motor.set_num_channels(2);
+    motor.set_gpio_pins(0, 18, 23, 24);  // Motor A: PWM=GPIO18, DIR1=GPIO23, DIR2=GPIO24
+    motor.set_gpio_pins(1, 13, 25, 8);   // Motor B: PWM=GPIO13, DIR1=GPIO25, DIR2=GPIO8
+    motor.set_pwm_frequency(20000);      // 20kHz (silent)
+
+    scheduler.add(Box::new(motor), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Send motor commands from another node:
+let cmd_hub = Hub::<PwmCommand>::new("motor_cmd")?;
+cmd_hub.send(PwmCommand::forward(0, 0.5), None);  // Motor 0 at 50% forward
+cmd_hub.send(PwmCommand::reverse(1, 0.3), None);  // Motor 1 at 30% reverse
+cmd_hub.send(PwmCommand::brake(0), None);         // Stop motor 0
+```
+
+**Subscribes to:** `motor_cmd` topic for motor speed commands.
+**Publishes to:** `motor_cmd_feedback` for command confirmation.
+
 ## Overview
 
 The DC Motor Node provides PWM-based speed control and direction switching for brushed DC motors using common H-bridge drivers. It supports up to 8 independent motor channels with configurable duty cycle limits, channel inversion, command timeout safety, and motor feedback publishing.
@@ -40,7 +73,7 @@ Key features:
 | `num_channels` | `u8` | `2` | Number of motor channels (1-8) |
 | `max_duty_cycle` | `f32` | `1.0` | Maximum duty cycle limit (0.0-1.0) |
 | `min_duty_cycle` | `f32` | `0.0` | Minimum duty cycle / dead zone compensation (0.0-1.0) |
-| `pwm_frequency` | `u32` | `10000` | PWM frequency in Hz (1000-20000) |
+| `pwm_frequency` | `u32` | `20000` | PWM frequency in Hz (1000-20000) |
 | `invert_channels` | `u8` | `0` | Bitfield for channel direction inversion |
 | `enable_feedback` | `bool` | `true` | Enable motor command feedback publishing |
 | `command_timeout_ms` | `u64` | `1000` | Command timeout in milliseconds (0=disable) |
@@ -131,7 +164,7 @@ use horus_library::nodes::DcMotorNode;
 let mut dc_motor = DcMotorNode::new()?;
 
 // Create with custom topic
-let mut dc_motor = DcMotorNode::new_with_topic("robot/motors")?;
+let mut dc_motor = DcMotorNode::new_with_topic("robot.motors")?;
 ```
 
 ### Configuration Methods
@@ -210,7 +243,7 @@ fn main() -> Result<()> {
 
             // Brake stop
             ctx.log_info("Brake");
-            hub.send(PwmCommand::brake(0), None)?;
+            hub.send(PwmCommand::brake(0), &mut None)?;
 
             Ok(())
         }
@@ -267,8 +300,8 @@ fn main() -> Result<()> {
 
             // Stop with brake
             ctx.log_info("Stop");
-            hub.send(PwmCommand::brake(0), None)?;
-            hub.send(PwmCommand::brake(1), None)?;
+            hub.send(PwmCommand::brake(0), &mut None)?;
+            hub.send(PwmCommand::brake(1), &mut None)?;
 
             Ok(())
         }
@@ -332,7 +365,7 @@ fn main() -> Result<()> {
             // Stop all
             ctx.log_info("Stop");
             for motor in 0..4 {
-                hub.send(PwmCommand::brake(motor), None)?;
+                hub.send(PwmCommand::brake(motor), &mut None)?;
             }
 
             Ok(())
@@ -385,7 +418,7 @@ fn main() -> Result<()> {
                 std::thread::sleep(Duration::from_millis(200));
             }
 
-            hub.send(PwmCommand::coast(0), None)?;
+            hub.send(PwmCommand::coast(0), &mut None)?;
 
             Ok(())
         }
@@ -464,8 +497,8 @@ fn main() -> Result<()> {
 
             std::thread::sleep(Duration::from_secs(2));
 
-            hub.send(PwmCommand::brake(0), None)?;
-            hub.send(PwmCommand::brake(1), None)?;
+            hub.send(PwmCommand::brake(0), &mut None)?;
+            hub.send(PwmCommand::brake(1), &mut None)?;
 
             Ok(())
         }
@@ -658,14 +691,14 @@ dc_motor.set_pwm_frequency(1000);
 ```rust
 // Active braking - both motor leads shorted
 // Motor stops quickly with regenerative braking
-hub.send(PwmCommand::brake(0), None)?;
+hub.send(PwmCommand::brake(0), &mut None)?;
 ```
 
 **Coast Mode:**
 ```rust
 // Free-spinning - motor leads disconnected
 // Motor coasts to a stop naturally
-hub.send(PwmCommand::coast(0), None)?;
+hub.send(PwmCommand::coast(0), &mut None)?;
 ```
 
 **When to Use:**
@@ -760,7 +793,7 @@ dc_motor.emergency_stop();
 
 4. **Use brake mode for precision stops:**
    ```rust
-   hub.send(PwmCommand::brake(0), None)?;  // Active braking
+   hub.send(PwmCommand::brake(0), &mut None)?;  // Active braking
    ```
 
 5. **Invert channels instead of rewiring:**

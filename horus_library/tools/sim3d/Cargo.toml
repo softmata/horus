@@ -23,6 +23,7 @@ visual = [
     "bevy/default",
     "bevy_egui",
     "egui_dock",
+    "rfd",
 ]
 
 # Headless mode - no rendering
@@ -84,6 +85,7 @@ bevy = { version = "0.15", default-features = false, features = [
 bevy_egui = { version = "0.31", optional = true }
 bevy_editor_pls = { version = "0.9", optional = true }
 egui_dock = { version = "0.14", optional = true }
+rfd = { version = "0.15", optional = true }  # Native file dialogs
 
 # URDF Support
 urdf-rs = "0.8"
@@ -92,11 +94,17 @@ roxmltree = "0.20"  # XML parsing
 # Asset Loading
 gltf = { version = "1.4", features = ["extras", "names"] }
 image = { version = "0.25", features = ["png", "jpeg", "dds", "tga"] }
+png = "0.17"              # PNG heightmap loading
 
 # Mesh Loading
 tobj = "4.0"              # OBJ loader
 stl_io = "0.7"            # STL loader
 collada = "0.15"          # COLLADA loader
+zip = "2.1"               # USDZ archive support
+
+# Additional Format Support
+regex = "1.10"            # Xacro macro processing
+tempfile = "3.10"         # Temporary file for xacro output
 
 # Validation
 jsonschema = "0.18"       # JSON Schema validation
@@ -129,8 +137,8 @@ glob = "0.3"              # File pattern matching
 rayon = "1.10"
 
 # Python Bindings (for RL)
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
-numpy = { version = "0.22", optional = true }
+pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
+numpy = { version = "0.27", optional = true }
 
 # Logging
 tracing = "0.1"

@@ -42,6 +42,41 @@ fn main() -> Result<()> {
 }
 ```
 
+**Requires:** USB game controller and the `gilrs` feature.
+
+### Enabling Features
+
+There are three ways to enable the required `gilrs` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `JoystickNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gilrs)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gilrs
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gilrs"] }
+```
+
 ## Configuration
 
 ```rust

@@ -6,6 +6,11 @@ use std::collections::HashMap;
 type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(feature = "gilrs")]
 use gilrs::{Axis, Button, Event, EventType, Gilrs};
 
@@ -42,7 +47,32 @@ impl Default for AxisCalibration {
 ///
 /// Captures real joystick/gamepad input using the gilrs library.
 /// Publishes button presses and axis movements to the Hub.
-pub struct JoystickInputNode {
+///
+/// # Hybrid Pattern
+///
+/// This node supports the hybrid pattern for custom processing:
+///
+/// ```rust,ignore
+/// // Default mode - just captures joystick input
+/// let node = JoystickInputNode::new()?;
+///
+/// // With custom processing - filter and transform
+/// let node = JoystickInputNode::builder()
+///     .with_topic("custom_joystick")
+///     .with_filter(|input| {
+///         // Only pass through significant axis movements
+///         if input.axis_value.abs() > 0.5 {
+///             Some(input)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct JoystickInputNode<P = PassThrough<JoystickInput>>
+where
+    P: Processor<JoystickInput>,
+{
     publisher: Hub<JoystickInput>,
     #[cfg(feature = "gilrs")]
     gilrs: Gilrs,
@@ -67,6 +97,9 @@ pub struct JoystickInputNode {
 
     // Per-axis deadzones
     per_axis_deadzones: HashMap<u32, f32>,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl JoystickInputNode {
@@ -100,6 +133,7 @@ impl JoystickInputNode {
                 custom_axis_names: HashMap::new(),
                 axis_calibrations: HashMap::new(),
                 per_axis_deadzones: HashMap::new(),
+                processor: PassThrough::new(),
             })
         }
 
@@ -119,10 +153,21 @@ impl JoystickInputNode {
                 custom_axis_names: HashMap::new(),
                 axis_calibrations: HashMap::new(),
                 per_axis_deadzones: HashMap::new(),
+                processor: PassThrough::new(),
             })
         }
     }
 
+    /// Create a builder for configuring the node with custom processing
+    pub fn builder() -> JoystickInputNodeBuilder<PassThrough<JoystickInput>> {
+        JoystickInputNodeBuilder::new()
+    }
+}
+
+impl<P> JoystickInputNode<P>
+where
+    P: Processor<JoystickInput>,
+{
     /// Set the device ID for multi-controller setups
     pub fn set_device_id(&mut self, device_id: u32) {
         self.device_id = device_id;
@@ -353,12 +398,18 @@ impl JoystickInputNode {
     }
 }
 
-impl Node for JoystickInputNode {
+impl<P> Node for JoystickInputNode<P>
+where
+    P: Processor<JoystickInput>,
+{
     fn name(&self) -> &'static str {
         "JoystickInputNode"
     }
 
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Call processor hook
+        self.processor.on_start();
+
         #[cfg(feature = "gilrs")]
         {
             let connected = self.gilrs.gamepads().count();
@@ -376,7 +427,16 @@ impl Node for JoystickInputNode {
         Ok(())
     }
 
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("JoystickInputNode shutting down");
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
+        self.processor.on_tick();
+
         #[cfg(feature = "gilrs")]
         {
             // Poll for gamepad events
@@ -395,7 +455,10 @@ impl Node for JoystickInputNode {
                             true,
                         );
 
-                        self.publisher.send(joystick_input, &mut ctx).ok();
+                        // Process through processor pipeline
+                        if let Some(processed) = self.processor.process(joystick_input) {
+                            self.publisher.send(processed, &mut ctx).ok();
+                        }
                         ctx.log_debug(&format!(
                             "Button pressed: {} (gamepad {})",
                             button_name, gamepad_id
@@ -408,7 +471,10 @@ impl Node for JoystickInputNode {
                         let joystick_input =
                             JoystickInput::new_button(gamepad_id, button_id, button_name, false);
 
-                        self.publisher.send(joystick_input, &mut ctx).ok();
+                        // Process through processor pipeline
+                        if let Some(processed) = self.processor.process(joystick_input) {
+                            self.publisher.send(processed, &mut ctx).ok();
+                        }
                     }
                     EventType::AxisChanged(axis, value, _) => {
                         let axis_id = axis_to_id(axis);
@@ -424,7 +490,10 @@ impl Node for JoystickInputNode {
                             processed_value,
                         );
 
-                        self.publisher.send(joystick_input, &mut ctx).ok();
+                        // Process through processor pipeline
+                        if let Some(processed) = self.processor.process(joystick_input) {
+                            self.publisher.send(processed, &mut ctx).ok();
+                        }
 
                         // Only log significant axis movements to avoid spam
                         if processed_value.abs() > 0.5 {
@@ -439,14 +508,18 @@ impl Node for JoystickInputNode {
 
                         // Publish connection event
                         let connection_event = JoystickInput::new_connection(gamepad_id, true);
-                        self.publisher.send(connection_event, &mut ctx).ok();
+                        if let Some(processed) = self.processor.process(connection_event) {
+                            self.publisher.send(processed, &mut ctx).ok();
+                        }
                     }
                     EventType::Disconnected => {
                         ctx.log_info(&format!("Gamepad {} disconnected", gamepad_id));
 
                         // Publish disconnection event
                         let disconnection_event = JoystickInput::new_connection(gamepad_id, false);
-                        self.publisher.send(disconnection_event, &mut ctx).ok();
+                        if let Some(processed) = self.processor.process(disconnection_event) {
+                            self.publisher.send(processed, &mut ctx).ok();
+                        }
                     }
                     _ => {}
                 }
@@ -464,7 +537,10 @@ impl Node for JoystickInputNode {
             if current_time - self.last_input_time > 3000 {
                 let joystick_input =
                     JoystickInput::new_button(1, 0, "ButtonA (placeholder)".to_string(), true);
-                self.publisher.send(joystick_input, &mut ctx).ok();
+                // Process through processor pipeline
+                if let Some(processed) = self.processor.process(joystick_input) {
+                    self.publisher.send(processed, &mut ctx).ok();
+                }
                 ctx.log_debug("Published placeholder joystick input");
                 self.last_input_time = current_time;
             }
@@ -508,5 +584,162 @@ fn axis_to_id(axis: Axis) -> u32 {
         Axis::DPadX => 6,
         Axis::DPadY => 7,
         _ => 255,
+    }
+}
+
+/// Builder for JoystickInputNode with custom processor
+pub struct JoystickInputNodeBuilder<P>
+where
+    P: Processor<JoystickInput>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl JoystickInputNodeBuilder<PassThrough<JoystickInput>> {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self {
+            topic: "joystick_input".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for JoystickInputNodeBuilder<PassThrough<JoystickInput>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> JoystickInputNodeBuilder<P>
+where
+    P: Processor<JoystickInput>,
+{
+    /// Set the topic for publishing joystick input
+    pub fn with_topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> JoystickInputNodeBuilder<P2>
+    where
+        P2: Processor<JoystickInput>,
+    {
+        JoystickInputNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Add a closure-based processor
+    #[allow(clippy::type_complexity)]
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> JoystickInputNodeBuilder<
+        Pipeline<
+            JoystickInput,
+            JoystickInput,
+            JoystickInput,
+            P,
+            ClosureProcessor<JoystickInput, JoystickInput, F>,
+        >,
+    >
+    where
+        F: FnMut(JoystickInput) -> JoystickInput + Send + 'static,
+    {
+        JoystickInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, ClosureProcessor::new(f)),
+        }
+    }
+
+    /// Add a filter processor
+    #[allow(clippy::type_complexity)]
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> JoystickInputNodeBuilder<
+        Pipeline<
+            JoystickInput,
+            JoystickInput,
+            JoystickInput,
+            P,
+            FilterProcessor<JoystickInput, JoystickInput, F>,
+        >,
+    >
+    where
+        F: FnMut(JoystickInput) -> Option<JoystickInput> + Send + 'static,
+    {
+        JoystickInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, FilterProcessor::new(f)),
+        }
+    }
+
+    /// Pipe to another processor (output must remain JoystickInput)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> JoystickInputNodeBuilder<Pipeline<JoystickInput, JoystickInput, JoystickInput, P, P2>>
+    where
+        P2: Processor<JoystickInput, JoystickInput>,
+    {
+        JoystickInputNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<JoystickInputNode<P>> {
+        #[cfg(feature = "gilrs")]
+        {
+            let gilrs = Gilrs::new().map_err(|e| {
+                horus_core::error::HorusError::InitializationFailed(format!(
+                    "Failed to initialize gilrs: {}",
+                    e
+                ))
+            })?;
+
+            Ok(JoystickInputNode {
+                publisher: Hub::new(&self.topic)?,
+                gilrs,
+                device_id: 0,
+                deadzone: 0.1,
+                axis_invert_x: false,
+                axis_invert_y: false,
+                axis_invert_rx: false,
+                axis_invert_ry: false,
+                button_mapping: ButtonMapping::Generic,
+                custom_button_names: HashMap::new(),
+                custom_axis_names: HashMap::new(),
+                axis_calibrations: HashMap::new(),
+                per_axis_deadzones: HashMap::new(),
+                processor: self.processor,
+            })
+        }
+
+        #[cfg(not(feature = "gilrs"))]
+        {
+            Ok(JoystickInputNode {
+                publisher: Hub::new(&self.topic)?,
+                last_input_time: 0,
+                device_id: 0,
+                deadzone: 0.1,
+                axis_invert_x: false,
+                axis_invert_y: false,
+                axis_invert_rx: false,
+                axis_invert_ry: false,
+                button_mapping: ButtonMapping::Generic,
+                custom_button_names: HashMap::new(),
+                custom_axis_names: HashMap::new(),
+                axis_calibrations: HashMap::new(),
+                per_axis_deadzones: HashMap::new(),
+                processor: self.processor,
+            })
+        }
     }
 }

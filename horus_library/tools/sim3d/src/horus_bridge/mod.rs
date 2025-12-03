@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 pub use messages::*;
 pub use publisher::{
-    publish_lidar2d_system, publish_lidar3d_system, publish_tf_system, HorusPublisher,
+    publish_hframe_system, publish_lidar2d_system, publish_lidar3d_system, HorusPublisher,
 };
 pub use subscriber::{apply_cmd_vel_system, handle_robot_commands_system, HorusSubscriber};
 
@@ -18,8 +18,8 @@ pub use subscriber::{apply_cmd_vel_system, handle_robot_commands_system, HorusSu
 pub struct HorusBridgeConfig {
     /// Enable/disable the entire bridge
     pub enabled: bool,
-    /// Enable TF publishing
-    pub publish_tf: bool,
+    /// Enable HFrame publishing
+    pub publish_hframe: bool,
     /// Enable sensor data publishing (lidar, cameras, etc.)
     pub publish_sensors: bool,
     /// Enable command velocity subscription
@@ -36,7 +36,7 @@ impl Default for HorusBridgeConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            publish_tf: true,
+            publish_hframe: true,
             publish_sensors: true,
             subscribe_cmd_vel: true,
             publish_odometry: true,
@@ -63,7 +63,7 @@ impl HorusBridgeConfig {
     /// Enable all bridge features
     pub fn enable_all(&mut self) {
         self.enabled = true;
-        self.publish_tf = true;
+        self.publish_hframe = true;
         self.publish_sensors = true;
         self.subscribe_cmd_vel = true;
         self.publish_odometry = true;
@@ -73,7 +73,7 @@ impl HorusBridgeConfig {
     /// Disable all bridge features
     pub fn disable_all(&mut self) {
         self.enabled = false;
-        self.publish_tf = false;
+        self.publish_hframe = false;
         self.publish_sensors = false;
         self.subscribe_cmd_vel = false;
         self.publish_odometry = false;
@@ -360,8 +360,8 @@ impl Plugin for HorusBridgePlugin {
             .init_resource::<HorusBridge>();
 
         // Add publishing systems if enabled
-        if self.config.publish_tf {
-            app.add_systems(Update, publish_tf_system);
+        if self.config.publish_hframe {
+            app.add_systems(Update, publish_hframe_system);
         }
 
         if self.config.publish_sensors {
@@ -386,11 +386,11 @@ mod tests {
     fn test_bridge_config() {
         let mut config = HorusBridgeConfig::new();
         assert!(config.is_active());
-        assert!(config.publish_tf);
+        assert!(config.publish_hframe);
 
         config.disable_all();
         assert!(!config.is_active());
-        assert!(!config.publish_tf);
+        assert!(!config.publish_hframe);
 
         config.enable_all();
         assert!(config.is_active());

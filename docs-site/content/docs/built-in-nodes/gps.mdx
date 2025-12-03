@@ -5,7 +5,7 @@ description: GPS/GNSS receiver for positioning and navigation
 
 # GpsNode
 
-GPS/GNSS receiver node supporting NMEA protocol for position, velocity, and time data. Compatible with u-blox, MediaTek, and other NMEA-compatible GPS modules for outdoor navigation and geo-fencing.
+GPS/GNSS satellite navigation receiver for positioning, navigation, and time synchronization with multi-constellation support. Compatible with u-blox, MediaTek, GlobalSat, Adafruit, SparkFun, and any NMEA-compatible GPS receiver.
 
 ## Source Code
 
@@ -15,74 +15,255 @@ GPS/GNSS receiver node supporting NMEA protocol for position, velocity, and time
 ## Features
 
 - NMEA 0183 protocol support
-- GPS, GLONASS, Galileo, BeiDou
-- Position (lat/lon), altitude, speed
-- Course/heading, satellite count
-- HDOP/VDOP (accuracy metrics)
-- Fix quality indication
-- Configurable baud rates
-- Hardware fallback to simulation
+- Multi-constellation (GPS, GLONASS, Galileo, BeiDou)
+- Position (latitude/longitude), altitude, speed
+- Course/heading, satellite count, DOP metrics
+- Fix quality validation (satellite count, HDOP)
+- Configurable baud rates (4800-115200)
+- Simulation fallback when hardware unavailable
+- Serial port auto-detection
 
 ## Quick Start
 
 ```rust
-use horus_library::prelude::*;
+use horus_library::nodes::{GpsNode, GpsBackend};
+use horus_core::Scheduler;
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scheduler = Scheduler::new();
 
-    // Create GPS node
-    let mut gps = GpsNode::new("/dev/ttyUSB0")?;
-    gps.set_baud_rate(9600);  // Standard GPS baud rate
+    // Option 1: Simulation mode (no hardware needed)
+    let gps = GpsNode::new()?;
 
-    scheduler.add(Box::new(gps), 1, Some(true));
+    // Option 2: With real GPS hardware
+    let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
+    gps.set_serial_config("/dev/ttyUSB0", 9600);
+    gps.set_update_rate(1.0);  // 1 Hz
+
+    scheduler.add(Box::new(gps), 50, Some(true));
     scheduler.run()?;
     Ok(())
 }
 ```
 
+**Publishes to:** `gps.fix` topic with latitude, longitude, altitude, and accuracy data.
+
 ## Hardware Setup
 
-### Wiring
+### Wiring Diagram
 
 ```
-Raspberry Pi    GPS Module
-GPIO TX   -->   RX
-GPIO RX   <--   TX
-3.3V/5V   -->   VCC
-GND       ---   GND
+Raspberry Pi          GPS Module
+GPIO TX (14)    --->  RX
+GPIO RX (15)    <---  TX
+3.3V or 5V      --->  VCC
+GND             ---   GND
 ```
 
-### Enable in Project
+### USB GPS Modules
+
+USB GPS modules appear as `/dev/ttyUSB0` or `/dev/ttyACM0`:
+
+```bash
+# List USB serial devices
+ls -l /dev/ttyUSB* /dev/ttyACM*
+
+# Check dmesg for connection
+dmesg | grep tty
+```
+
+### Raspberry Pi UART
+
+For hardware UART on Raspberry Pi:
+
+1. Disable serial console:
+```bash
+sudo raspi-config
+# Interface Options -> Serial Port
+# "Would you like a login shell accessible over serial?" -> No
+# "Would you like serial port hardware enabled?" -> Yes
+```
+
+2. Edit `/boot/config.txt`:
+```
+# Disable Bluetooth to free up UART
+dtoverlay=disable-bt
+```
+
+3. Reboot and use `/dev/ttyAMA0` or `/dev/serial0`
+
+### Enabling Features
+
+There are three ways to enable the required `nmea-gps` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `GpsNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: nmea-gps)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - nmea-gps
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
-horus_library = { version = "0.1", features = ["serial-hardware"] }
+horus_library = { version = "0.1", features = ["nmea-gps"] }
 ```
 
 ## Configuration
 
+### Construction
+
 ```rust
-let mut gps = GpsNode::new("/dev/ttyUSB0")?;
-gps.set_baud_rate(9600);
-gps.set_update_rate(1);  // 1 Hz (default for most modules)
+use horus_library::nodes::GpsNode;
+
+// Create with default topic "gps.fix" in simulation mode
+let mut gps = GpsNode::new()?;
+
+// Create with custom topic in simulation mode
+let mut gps = GpsNode::new_with_topic("navigation.gps")?;
+
+// Create with specific backend
+let mut gps = GpsNode::new_with_backend("gps.fix", GpsBackend::NmeaSerial)?;
 ```
+
+### Configuration Methods
+
+```rust
+// Set GPS backend (Simulation or NmeaSerial)
+gps.set_backend(GpsBackend::NmeaSerial);
+
+// Configure serial port and baud rate
+gps.set_serial_config("/dev/ttyUSB0", 9600);
+
+// Set update rate in Hz (0.1-20 Hz, typical 1-10 Hz)
+gps.set_update_rate(1.0);  // 1 Hz (standard)
+gps.set_update_rate(5.0);  // 5 Hz (high performance)
+gps.set_update_rate(10.0); // 10 Hz (maximum for most modules)
+
+// Set minimum satellites required for valid fix
+gps.set_min_satellites(4);  // Minimum for 3D fix
+gps.set_min_satellites(6);  // Better accuracy
+
+// Set maximum acceptable HDOP
+gps.set_max_hdop(5.0);   // Excellent to good accuracy
+gps.set_max_hdop(10.0);  // Moderate accuracy
+gps.set_max_hdop(20.0);  // Poor accuracy (default)
+
+// Set coordinate frame ID
+gps.set_frame_id("gps_link");
+
+// Set simulation position (simulation mode only)
+gps.set_simulation_position(37.7749, -122.4194, 10.0);  // San Francisco
+```
+
+### Query Methods
+
+```rust
+// Get last GPS fix
+let fix = gps.get_last_fix();
+println!("Position: {:.6}, {:.6}", fix.latitude, fix.longitude);
+
+// Get total number of fixes received
+let count = gps.get_fix_count();
+println!("Fixes received: {}", count);
+
+// Check if we have a valid GPS fix
+if gps.has_valid_fix() {
+    println!("GPS fix valid");
+} else {
+    println!("Waiting for GPS fix...");
+}
+```
+
+## Configuration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `backend` | `GpsBackend` | `Simulation` | GPS backend (Simulation, NmeaSerial) |
+| `update_rate_hz` | `f32` | `1.0` | Update frequency in Hz (0.1-20 Hz, typical 1-10) |
+| `min_satellites` | `u16` | `4` | Minimum satellites required for valid fix |
+| `max_hdop` | `f32` | `20.0` | Maximum acceptable HDOP for valid fix |
+| `frame_id` | `String` | `"gps"` | Coordinate frame identifier |
+| `serial_port` | `String` | `"/dev/ttyUSB0"` | Serial port device path |
+| `baud_rate` | `u32` | `9600` | Serial communication baud rate |
+
+### Serial Port Configuration
+
+Common serial ports:
+- `/dev/ttyUSB0` - USB GPS modules
+- `/dev/ttyAMA0` - Raspberry Pi hardware UART
+- `/dev/ttyS0` - Standard serial port
+- `/dev/serial0` - Raspberry Pi primary UART symlink
+
+Common baud rates:
+- 4800 - Older GPS modules
+- 9600 - Standard GPS baud rate (most common)
+- 19200 - Some high-performance modules
+- 38400 - u-blox high-speed mode
+- 115200 - Maximum speed for some modules
+
+## Topics
+
+### Publishers
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `gps.fix` | `NavSatFix` | GPS position, velocity, and accuracy data |
 
 ## Usage Patterns
 
-### Reading GPS Data
+### Position Monitoring
 
 ```rust
-let hub = Hub::<GpsData>::new("gps.data")?;
+use horus_library::prelude::*;
+use horus_library::NavSatFix;
 
-if let Some(data) = hub.recv(&mut None) {
-    if data.fix_quality > 0 {
-        println!("Lat: {:.6}°, Lon: {:.6}°, Alt: {:.1}m",
-            data.latitude, data.longitude, data.altitude);
-        println!("Speed: {:.2} km/h, Satellites: {}",
-            data.speed_kmh, data.satellites);
-    } else {
-        println!("No GPS fix");
+struct PositionMonitor {
+    gps_sub: Hub<NavSatFix>,
+}
+
+impl PositionMonitor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            gps_sub: Hub::new("gps.fix")?,
+        })
+    }
+}
+
+impl Node for PositionMonitor {
+    fn name(&self) -> &'static str { "PositionMonitor" }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(fix) = self.gps_sub.recv_latest() {
+            if fix.has_fix() && fix.is_valid() {
+                if let Some(ctx) = ctx {
+                    ctx.log_info(&format!(
+                        "Position: {:.6}°, {:.6}°, Alt: {:.1}m",
+                        fix.latitude, fix.longitude, fix.altitude
+                    ));
+                    ctx.log_info(&format!(
+                        "Satellites: {}, HDOP: {:.1}, Accuracy: {:.1}m",
+                        fix.satellites_visible, fix.hdop, fix.horizontal_accuracy()
+                    ));
+                }
+            }
+        }
     }
 }
 ```
@@ -90,48 +271,304 @@ if let Some(data) = hub.recv(&mut None) {
 ### Geo-Fencing
 
 ```rust
-// Check if position is within boundary
-let home_lat = 37.7749;
-let home_lon = -122.4194;
-let radius_m = 100.0;
+use horus_library::prelude::*;
+use horus_library::NavSatFix;
 
-if let Some(data) = hub.recv(&mut None) {
-    let distance = calculate_distance(
-        data.latitude, data.longitude,
-        home_lat, home_lon
-    );
+struct GeofenceMonitor {
+    gps_sub: Hub<NavSatFix>,
+    home_lat: f64,
+    home_lon: f64,
+    radius_meters: f64,
+}
 
-    if distance > radius_m {
-        println!("Outside geo-fence!");
+impl GeofenceMonitor {
+    fn new(home_lat: f64, home_lon: f64, radius_meters: f64) -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            gps_sub: Hub::new("gps.fix")?,
+            home_lat,
+            home_lon,
+            radius_meters,
+        })
+    }
+}
+
+impl Node for GeofenceMonitor {
+    fn name(&self) -> &'static str { "GeofenceMonitor" }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(fix) = self.gps_sub.recv_latest() {
+            if fix.has_fix() && fix.is_valid() {
+                // Create home position fix for distance calculation
+                let home = NavSatFix::from_coordinates(self.home_lat, self.home_lon, 0.0);
+                let distance = fix.distance_to(&home);
+
+                if let Some(ctx) = ctx {
+                    if distance > self.radius_meters {
+                        ctx.log_warning(&format!(
+                            "OUTSIDE GEO-FENCE! Distance: {:.1}m from home",
+                            distance
+                        ));
+                    } else {
+                        ctx.log_info(&format!(
+                            "Inside geo-fence: {:.1}m from home",
+                            distance
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 ```
 
-## Message Format
+### Speed and Heading Tracking
 
 ```rust
-pub struct GpsData {
-    pub latitude: f64,      // Decimal degrees
-    pub longitude: f64,
-    pub altitude: f32,      // Meters above sea level
-    pub speed_kmh: f32,
-    pub course: f32,        // Degrees (0-360)
-    pub satellites: u8,
-    pub fix_quality: u8,    // 0=no fix, 1=GPS, 2=DGPS
-    pub hdop: f32,          // Horizontal dilution of precision
-    pub timestamp: u64,
+use horus_library::prelude::*;
+use horus_library::NavSatFix;
+
+struct VelocityTracker {
+    gps_sub: Hub<NavSatFix>,
+}
+
+impl Node for VelocityTracker {
+    fn name(&self) -> &'static str { "VelocityTracker" }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(fix) = self.gps_sub.recv_latest() {
+            if fix.has_fix() && fix.is_valid() {
+                // Convert m/s to km/h
+                let speed_kmh = fix.speed * 3.6;
+
+                if let Some(ctx) = ctx {
+                    if fix.speed > 0.5 {  // Moving (threshold to avoid noise)
+                        ctx.log_info(&format!(
+                            "Moving: {:.1} km/h, Heading: {:.0}°",
+                            speed_kmh, fix.heading
+                        ));
+                    } else {
+                        ctx.log_info("Stationary");
+                    }
+                }
+            }
+        }
+    }
 }
 ```
 
+## Message Types
+
+### NavSatFix
+
+GPS/GNSS position fix message:
+
+```rust
+pub struct NavSatFix {
+    pub latitude: f64,              // Degrees (positive=North, negative=South)
+    pub longitude: f64,             // Degrees (positive=East, negative=West)
+    pub altitude: f64,              // Meters above WGS84 ellipsoid
+    pub position_covariance: [f64; 9],  // 3x3 covariance matrix [lat, lon, alt]
+    pub position_covariance_type: u8,   // Covariance type (0-3)
+    pub status: u8,                 // Fix status (0=no_fix, 1=fix, 2=sbas_fix, 3=gbas_fix)
+    pub satellites_visible: u16,    // Number of satellites in view
+    pub hdop: f32,                  // Horizontal dilution of precision
+    pub vdop: f32,                  // Vertical dilution of precision
+    pub speed: f32,                 // Ground speed in m/s
+    pub heading: f32,               // Course/heading in degrees (0-360)
+    pub timestamp: u64,             // Time in nanoseconds since epoch
+}
+```
+
+**Status Constants**:
+- `NavSatFix::STATUS_NO_FIX = 0` - No GPS fix
+- `NavSatFix::STATUS_FIX = 1` - Standard GPS fix
+- `NavSatFix::STATUS_SBAS_FIX = 2` - SBAS augmented fix (WAAS/EGNOS/MSAS)
+- `NavSatFix::STATUS_GBAS_FIX = 3` - GBAS augmented fix
+
+**Helper Methods**:
+```rust
+// Check if we have a valid GPS fix
+fix.has_fix() -> bool
+
+// Check if coordinates are valid
+fix.is_valid() -> bool
+
+// Get horizontal accuracy estimate in meters
+fix.horizontal_accuracy() -> f32
+
+// Calculate distance to another GPS position (Haversine formula)
+fix.distance_to(&other_fix) -> f64
+```
+
+## GPS Accuracy and HDOP
+
+### HDOP Values
+
+HDOP (Horizontal Dilution of Precision) indicates GPS accuracy:
+
+| HDOP | Rating | Accuracy | Use Case |
+|------|--------|----------|----------|
+| &lt;1 | Ideal | &lt;5m | Surveying, high-precision |
+| 1-2 | Excellent | 5-10m | Navigation, autonomous vehicles |
+| 2-5 | Good | 10-25m | General robotics, waypoint following |
+| 5-10 | Moderate | 25-50m | Coarse positioning |
+| 10-20 | Fair | 50-100m | Poor satellite geometry |
+| &gt;20 | Poor | &gt;100m | Unreliable, should reject |
+
+### Satellite Count
+
+Minimum satellites for position fix:
+- 3 satellites: 2D fix (lat/lon only, no altitude)
+- 4 satellites: 3D fix (lat/lon/alt)
+- 6+ satellites: Better accuracy and reliability
+- 8+ satellites: Optimal accuracy
+
+### Typical Accuracy
+
+- Consumer GPS: 3-10 meters horizontal
+- SBAS (WAAS/EGNOS): 1-3 meters horizontal
+- DGPS: &lt;1 meter horizontal
+- RTK GPS: 1-2 cm horizontal (requires base station)
+
+## Common GPS Modules
+
+### u-blox NEO-6M/NEO-7M/NEO-8M
+
+- Baud rate: 9600 (default), configurable up to 115200
+- Update rate: 1-10 Hz
+- Accuracy: 2.5m CEP
+- Cold start: 29s, Hot start: 1s
+
+### u-blox ZED-F9P (RTK)
+
+- Baud rate: 38400 (default)
+- Update rate: 1-20 Hz
+- Accuracy: 0.01m (RTK), 1.5m (standalone)
+- Multi-band GNSS
+
+### Adafruit Ultimate GPS (MTK3339)
+
+- Baud rate: 9600 (default)
+- Update rate: 1-10 Hz
+- Patch antenna or external
+- SBAS support (WAAS/EGNOS)
+
+### GlobalSat BU-353
+
+- Baud rate: 4800 (default)
+- Update rate: 1 Hz
+- USB interface
+- SiRF Star III chipset
+
 ## Best Practices
 
-1. **Wait for fix before navigation**
-2. **Check HDOP for accuracy (< 2.0 is good)**
-3. **Use outdoor with clear sky view**
-4. **Allow 30-60 seconds for cold start**
+1. **Wait for valid fix before navigation**:
+   ```rust
+   if gps.has_valid_fix() {
+       // Safe to navigate
+   }
+   ```
+
+2. **Check HDOP for accuracy requirements**:
+   ```rust
+   if fix.hdop <= 2.0 {
+       // Excellent accuracy for precise navigation
+   } else if fix.hdop <= 5.0 {
+       // Good accuracy for general robotics
+   } else {
+       // Poor accuracy, use with caution
+   }
+   ```
+
+3. **Use outdoor with clear sky view**:
+   - GPS requires line-of-sight to satellites
+   - Avoid indoor use, dense tree cover, urban canyons
+   - Best performance in open areas
+
+4. **Allow time for initial fix (cold start)**:
+   - 30-60 seconds for cold start (no almanac data)
+   - 1-5 seconds for hot start (recent almanac)
+   - Warm start: 10-30 seconds
+
+5. **Handle moving vs stationary**:
+   ```rust
+   if fix.speed > 0.5 {  // Threshold to filter GPS noise
+       // Vehicle is moving
+   } else {
+       // Vehicle is stationary
+   }
+   ```
+
+## Troubleshooting
+
+### Issue: No GPS fix / "Waiting for GPS fix"
+
+**Symptoms**:
+- `satellites_visible` is low
+- `has_fix()` returns false
+
+**Solutions**:
+1. Move to outdoor location with clear sky view
+2. Wait 30-60 seconds for cold start
+3. Check GPS antenna connection
+4. Verify module LED blinks (indicates satellite search)
+5. Lower minimum satellites temporarily: `gps.set_min_satellites(3)`
+6. Check baud rate matches module: Try 4800, 9600, 115200
+
+### Issue: "Failed to open GPS serial port"
+
+**Solutions**:
+1. Check device exists: `ls -l /dev/ttyUSB*`
+2. Add user to dialout group: `sudo usermod -a -G dialout $USER`
+3. Logout and login again
+4. Check permissions: `sudo chmod 666 /dev/ttyUSB0` (temporary)
+5. Verify GPS module is connected and powered
+
+### Issue: Poor accuracy / High HDOP
+
+**Solutions**:
+1. Move away from tall buildings (urban canyon effect)
+2. Avoid tree canopy, tunnels, parking garages
+3. Wait for more satellites to be visible
+4. Check for electronic interference sources
+5. Increase `max_hdop` threshold if needed
+6. Use external active GPS antenna
+
+### Issue: Stationary drift
+
+GPS position slowly drifts when stationary:
+
+**Solutions**:
+1. This is normal GPS behavior (multipath, atmospheric effects)
+2. Implement stationary detection using speed threshold
+3. Average multiple fixes when stationary
+4. Use Kalman filter for sensor fusion with IMU
+
+## Simulation Mode
+
+When hardware is unavailable, the node operates in simulation mode:
+
+```
+[INFO] GPS simulation mode enabled
+[DEBUG] GPS: 37.774900, -122.419400, alt=10.0m, sats=8
+```
+
+Simulated behavior:
+- Returns fixed position (configurable with `set_simulation_position()`)
+- Realistic GPS characteristics (8 satellites, HDOP 1.2)
+- Position covariance ~3m (typical consumer GPS)
+- Zero velocity (stationary)
+- Useful for testing navigation logic without hardware
+
+Configure simulation position:
+```rust
+gps.set_simulation_position(37.7749, -122.4194, 10.0);  // San Francisco
+gps.set_simulation_position(51.5074, -0.1278, 50.0);    // London
+gps.set_simulation_position(35.6762, 139.6503, 40.0);   // Tokyo
+```
 
 ## See Also
 
-- [ImuNode](./imu) - Inertial measurement
-- [OdometryNode](./odometry) - Dead reckoning
-- [LocalizationNode](./localization) - Sensor fusion
+- [ImuNode](./imu) - Inertial measurement for sensor fusion
+- [OdometryNode](./odometry) - Dead reckoning navigation
+- [LocalizationNode](./localization) - Multi-sensor fusion

@@ -10,11 +10,31 @@ use std::sync::{
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Emergency Stop Node - Hardware emergency stop handler for industrial safety
 ///
 /// Monitors emergency stop buttons, software triggers, and system conditions.
 /// Publishes EmergencyStop messages when triggered and maintains safety state.
-pub struct EmergencyStopNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = EmergencyStopNode::builder()
+///     .with_closure(|estop| {
+///         // Log all emergency stops
+///         println!("E-Stop: {}", estop.engaged);
+///         estop
+///     })
+///     .build()?;
+/// ```
+pub struct EmergencyStopNode<P = PassThrough<EmergencyStop>>
+where
+    P: Processor<EmergencyStop>,
+{
     publisher: Hub<EmergencyStop>,
     safety_publisher: Hub<SafetyStatus>,
     is_stopped: Arc<AtomicBool>,
@@ -25,6 +45,7 @@ pub struct EmergencyStopNode {
     auto_reset: bool,
     stop_timeout_ms: u64,
     last_stop_time: u64,
+    processor: P,
 }
 
 impl EmergencyStopNode {
@@ -46,9 +67,20 @@ impl EmergencyStopNode {
             auto_reset: false,
             stop_timeout_ms: 5000, // 5 second timeout for auto-reset
             last_stop_time: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> EmergencyStopNodeBuilder<PassThrough<EmergencyStop>> {
+        EmergencyStopNodeBuilder::new()
+    }
+}
+
+impl<P> EmergencyStopNode<P>
+where
+    P: Processor<EmergencyStop>,
+{
     /// Set GPIO pin for hardware emergency stop button (Raspberry Pi)
     pub fn set_gpio_pin(&mut self, pin: u8) {
         self.gpio_pin = Some(pin);
@@ -138,13 +170,16 @@ impl EmergencyStopNode {
         }
     }
 
-    fn publish_emergency_stop(&self, is_emergency: bool, reason: &str) {
+    fn publish_emergency_stop(&mut self, is_emergency: bool, reason: &str) {
         let emergency_stop = if is_emergency {
             EmergencyStop::engage(reason)
         } else {
             EmergencyStop::release()
         };
-        let _ = self.publisher.send(emergency_stop, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(emergency_stop) {
+            let _ = self.publisher.send(processed, &mut None);
+        }
     }
 
     fn publish_safety_status(&self) {
@@ -163,12 +198,27 @@ impl EmergencyStopNode {
     }
 }
 
-impl Node for EmergencyStopNode {
+impl<P> Node for EmergencyStopNode<P>
+where
+    P: Processor<EmergencyStop>,
+{
     fn name(&self) -> &'static str {
         "EmergencyStopNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         // Check GPIO pin for hardware button
         if self.check_gpio_pin() {
             self.trigger_stop("Hardware emergency stop button pressed");
@@ -183,3 +233,109 @@ impl Node for EmergencyStopNode {
 }
 
 // Default impl removed - use Node::new() instead which returns HorusResult
+
+/// Builder for EmergencyStopNode with processor configuration
+pub struct EmergencyStopNodeBuilder<P>
+where
+    P: Processor<EmergencyStop>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl EmergencyStopNodeBuilder<PassThrough<EmergencyStop>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            topic: "emergency_stop".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for EmergencyStopNodeBuilder<PassThrough<EmergencyStop>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> EmergencyStopNodeBuilder<P>
+where
+    P: Processor<EmergencyStop>,
+{
+    /// Set output topic
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> EmergencyStopNodeBuilder<P2>
+    where
+        P2: Processor<EmergencyStop>,
+    {
+        EmergencyStopNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> EmergencyStopNodeBuilder<ClosureProcessor<EmergencyStop, EmergencyStop, F>>
+    where
+        F: FnMut(EmergencyStop) -> EmergencyStop + Send + 'static,
+    {
+        EmergencyStopNodeBuilder {
+            topic: self.topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> EmergencyStopNodeBuilder<FilterProcessor<EmergencyStop, EmergencyStop, F>>
+    where
+        F: FnMut(EmergencyStop) -> Option<EmergencyStop> + Send + 'static,
+    {
+        EmergencyStopNodeBuilder {
+            topic: self.topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> EmergencyStopNodeBuilder<Pipeline<EmergencyStop, EmergencyStop, EmergencyStop, P, P2>>
+    where
+        P2: Processor<EmergencyStop, EmergencyStop>,
+    {
+        EmergencyStopNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<EmergencyStopNode<P>> {
+        let safety_topic = format!("{}_safety", self.topic);
+        Ok(EmergencyStopNode {
+            publisher: Hub::new(&self.topic)?,
+            safety_publisher: Hub::new(&safety_topic)?,
+            is_stopped: Arc::new(AtomicBool::new(false)),
+            stop_reason: String::new(),
+            gpio_pin: None,
+            last_gpio_state: true,
+            auto_reset: false,
+            stop_timeout_ms: 5000,
+            last_stop_time: 0,
+            processor: self.processor,
+        })
+    }
+}

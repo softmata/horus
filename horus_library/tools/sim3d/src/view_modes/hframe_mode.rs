@@ -1,12 +1,12 @@
 use bevy::prelude::*;
 
-use crate::systems::tf_update::TFPublisher;
+use crate::systems::hframe_update::HFramePublisher;
 use crate::ui::controls::SimulationControls;
-use crate::ui::tf_panel::TFPanelConfig;
+use crate::ui::hframe_panel::HFramePanelConfig;
 
-/// Resource to control TF frame visualization
+/// Resource to control HFrame visualization
 #[derive(Resource, Clone)]
-pub struct TFVisualization {
+pub struct HFrameVisualization {
     pub enabled: bool,
     pub show_frame_axes: bool,
     pub show_frame_labels: bool,
@@ -17,7 +17,7 @@ pub struct TFVisualization {
     pub highlight_selected: bool,
 }
 
-impl Default for TFVisualization {
+impl Default for HFrameVisualization {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -32,7 +32,7 @@ impl Default for TFVisualization {
     }
 }
 
-impl TFVisualization {
+impl HFrameVisualization {
     pub fn new() -> Self {
         Self::default()
     }
@@ -55,21 +55,21 @@ impl TFVisualization {
     }
 }
 
-/// System to visualize TF frames
-pub fn tf_frame_visualization_system(
+/// System to visualize HFrame frames
+pub fn hframe_visualization_system(
     mut gizmos: Gizmos,
-    tf_viz: Res<TFVisualization>,
+    hframe_viz: Res<HFrameVisualization>,
     controls: Res<SimulationControls>,
-    tf_panel: Option<Res<TFPanelConfig>>,
-    publishers: Query<(&TFPublisher, &Transform)>,
+    hframe_panel: Option<Res<HFramePanelConfig>>,
+    publishers: Query<(&HFramePublisher, &Transform)>,
 ) {
-    if !tf_viz.enabled && !controls.show_tf_frames {
+    if !hframe_viz.enabled && !controls.show_tf_frames {
         return;
     }
 
     // Draw world frame
-    if tf_viz.show_world_frame {
-        let world_axis_length = tf_viz.axis_length * 2.0; // Larger for world frame
+    if hframe_viz.show_world_frame {
+        let world_axis_length = hframe_viz.axis_length * 2.0; // Larger for world frame
 
         // X axis - Red
         gizmos.arrow(
@@ -93,28 +93,28 @@ pub fn tf_frame_visualization_system(
         );
     }
 
-    // Draw each TF frame
+    // Draw each HFrame frame
     for (publisher, transform) in publishers.iter() {
         let position = transform.translation;
 
         // Check if this frame is selected
-        let is_selected = if let Some(panel) = &tf_panel {
-            tf_viz.highlight_selected && panel.is_selected(&publisher.frame_name)
+        let is_selected = if let Some(panel) = &hframe_panel {
+            hframe_viz.highlight_selected && panel.is_selected(&publisher.frame_name)
         } else {
             false
         };
 
         // Scale and brighten axes if selected
         let axis_length = if is_selected {
-            tf_viz.axis_length * 1.5
+            hframe_viz.axis_length * 1.5
         } else {
-            tf_viz.axis_length
+            hframe_viz.axis_length
         };
 
         let alpha = if is_selected { 1.0 } else { 0.8 };
 
         // Draw frame axes
-        if tf_viz.show_frame_axes {
+        if hframe_viz.show_frame_axes {
             // X axis - Red
             let x_axis = transform.rotation * Vec3::X * axis_length;
             gizmos.arrow(
@@ -145,20 +145,20 @@ pub fn tf_frame_visualization_system(
             // Draw a sphere at the frame origin
             gizmos.sphere(
                 Isometry3d::new(position, Quat::IDENTITY),
-                tf_viz.axis_length * 0.3,
+                hframe_viz.axis_length * 0.3,
                 Color::srgb(1.0, 1.0, 0.0), // Yellow
             );
         }
     }
 }
 
-/// System to visualize parent-child links in TF tree
-pub fn tf_links_visualization_system(
+/// System to visualize parent-child links in HFrame tree
+pub fn hframe_links_visualization_system(
     mut gizmos: Gizmos,
-    tf_viz: Res<TFVisualization>,
-    publishers: Query<(&TFPublisher, &Transform)>,
+    hframe_viz: Res<HFrameVisualization>,
+    publishers: Query<(&HFramePublisher, &Transform)>,
 ) {
-    if !tf_viz.enabled || !tf_viz.show_parent_links {
+    if !hframe_viz.enabled || !hframe_viz.show_parent_links {
         return;
     }
 
@@ -174,7 +174,7 @@ pub fn tf_links_visualization_system(
     for (publisher, transform) in publishers.iter() {
         if publisher.parent_frame.is_empty() || publisher.parent_frame == "world" {
             // Link to world origin
-            if tf_viz.show_world_frame {
+            if hframe_viz.show_world_frame {
                 gizmos.line(
                     Vec3::ZERO,
                     transform.translation,
@@ -192,16 +192,16 @@ pub fn tf_links_visualization_system(
     }
 }
 
-/// System to visualize TF frame trails (history of positions)
+/// System to visualize HFrame frame trails (history of positions)
 #[derive(Component)]
-pub struct TFTrail {
+pub struct HFrameTrail {
     pub frame_name: String,
     pub positions: Vec<Vec3>,
     pub max_length: usize,
     pub color: Color,
 }
 
-impl TFTrail {
+impl HFrameTrail {
     pub fn new(frame_name: impl Into<String>, max_length: usize) -> Self {
         Self {
             frame_name: frame_name.into(),
@@ -219,14 +219,14 @@ impl TFTrail {
     }
 }
 
-/// System to update and visualize TF trails
-pub fn tf_trail_system(
+/// System to update and visualize HFrame trails
+pub fn hframe_trail_system(
     mut gizmos: Gizmos,
-    tf_viz: Res<TFVisualization>,
-    mut trails: Query<&mut TFTrail>,
-    publishers: Query<(&TFPublisher, &Transform)>,
+    hframe_viz: Res<HFrameVisualization>,
+    mut trails: Query<&mut HFrameTrail>,
+    publishers: Query<(&HFramePublisher, &Transform)>,
 ) {
-    if !tf_viz.enabled {
+    if !hframe_viz.enabled {
         return;
     }
 
@@ -254,19 +254,19 @@ pub fn tf_trail_system(
     }
 }
 
-/// System to visualize TF transform chains
-pub fn tf_chain_visualization_system(
+/// System to visualize HFrame transform chains
+pub fn hframe_chain_visualization_system(
     mut gizmos: Gizmos,
-    tf_viz: Res<TFVisualization>,
-    tf_panel: Option<Res<TFPanelConfig>>,
-    publishers: Query<(&TFPublisher, &Transform)>,
+    hframe_viz: Res<HFrameVisualization>,
+    hframe_panel: Option<Res<HFramePanelConfig>>,
+    publishers: Query<(&HFramePublisher, &Transform)>,
 ) {
-    if !tf_viz.enabled {
+    if !hframe_viz.enabled {
         return;
     }
 
     // If a frame is selected, highlight its entire chain to root
-    if let Some(panel) = tf_panel {
+    if let Some(panel) = hframe_panel {
         if let Some(selected_frame) = &panel.selected_frame {
             // Build parent chain
             let mut current_frame = selected_frame.clone();
@@ -316,45 +316,45 @@ pub fn tf_chain_visualization_system(
     }
 }
 
-/// Keyboard shortcuts for TF visualization
-pub fn tf_viz_keyboard_system(
+/// Keyboard shortcuts for HFrame visualization
+pub fn hframe_viz_keyboard_system(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut tf_viz: ResMut<TFVisualization>,
+    mut hframe_viz: ResMut<HFrameVisualization>,
 ) {
-    // T: Toggle TF visualization
+    // T: Toggle HFrame visualization
     if keyboard.just_pressed(KeyCode::KeyT) && keyboard.pressed(KeyCode::ControlLeft) {
-        tf_viz.toggle();
+        hframe_viz.toggle();
     }
 
     // Shift+T: Toggle frame axes
     if keyboard.just_pressed(KeyCode::KeyT) && keyboard.pressed(KeyCode::ShiftLeft) {
-        tf_viz.show_frame_axes = !tf_viz.show_frame_axes;
+        hframe_viz.show_frame_axes = !hframe_viz.show_frame_axes;
     }
 
     // Shift+L: Toggle parent links
     if keyboard.just_pressed(KeyCode::KeyL) && keyboard.pressed(KeyCode::ControlLeft) {
-        tf_viz.show_parent_links = !tf_viz.show_parent_links;
+        hframe_viz.show_parent_links = !hframe_viz.show_parent_links;
     }
 
     // Shift+W: Toggle world frame
     if keyboard.just_pressed(KeyCode::KeyW) && keyboard.pressed(KeyCode::ControlLeft) {
-        tf_viz.show_world_frame = !tf_viz.show_world_frame;
+        hframe_viz.show_world_frame = !hframe_viz.show_world_frame;
     }
 }
 
-/// Plugin to register TF visualization systems
-pub struct TFVisualizationPlugin;
+/// Plugin to register HFrame visualization systems
+pub struct HFrameVisualizationPlugin;
 
-impl Plugin for TFVisualizationPlugin {
+impl Plugin for HFrameVisualizationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TFVisualization>().add_systems(
+        app.init_resource::<HFrameVisualization>().add_systems(
             Update,
             (
-                tf_frame_visualization_system,
-                tf_links_visualization_system,
-                tf_trail_system,
-                tf_chain_visualization_system,
-                tf_viz_keyboard_system,
+                hframe_visualization_system,
+                hframe_links_visualization_system,
+                hframe_trail_system,
+                hframe_chain_visualization_system,
+                hframe_viz_keyboard_system,
             )
                 .chain(),
         );
@@ -366,8 +366,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tf_visualization() {
-        let mut viz = TFVisualization::new();
+    fn test_hframe_visualization() {
+        let mut viz = HFrameVisualization::new();
         assert!(viz.enabled);
 
         viz.toggle();
@@ -381,8 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tf_trail() {
-        let mut trail = TFTrail::new("test_frame", 10);
+    fn test_hframe_trail() {
+        let mut trail = HFrameTrail::new("test_frame", 10);
         assert_eq!(trail.positions.len(), 0);
 
         for i in 0..15 {
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_default_settings() {
-        let viz = TFVisualization::default();
+        let viz = HFrameVisualization::default();
         assert!(viz.show_frame_axes);
         assert!(viz.show_parent_links);
         assert!(viz.show_world_frame);

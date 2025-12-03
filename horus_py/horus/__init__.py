@@ -36,6 +36,11 @@ try:
         Sim2D,
         RobotConfigPy,
         WorldConfigPy,
+        # Tensor system for zero-copy ML/AI
+        TensorPool,
+        TensorHandle,
+        cuda_is_available,
+        cuda_device_count,
     )
 except ImportError:
     # Fallback for testing without Rust bindings
@@ -81,6 +86,18 @@ except ImportError:
             pass
 
     def get_version(): return "0.1.0-mock"
+
+    # Mock TensorPool and TensorHandle for testing
+    class TensorPool:
+        def __init__(self, pool_id=1, size_mb=1024, max_slots=1024):
+            self.pool_id = pool_id
+        def alloc(self, shape, dtype="float32", device="cpu"):
+            return TensorHandle()
+        def stats(self):
+            return {}
+
+    class TensorHandle:
+        pass
 
 __version__ = "0.1.5"
 
@@ -1141,6 +1158,9 @@ __all__ = [
     "default_router_endpoint",  # Helper: "topic@router"
     "router_endpoint",  # Helper: "topic@host:port"
     "run",
+    # Tensor system for zero-copy ML/AI
+    "TensorPool",
+    "TensorHandle",
     # Simple async API
     "AsyncNode",
     "AsyncHub",

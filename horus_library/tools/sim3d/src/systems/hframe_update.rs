@@ -1,14 +1,14 @@
 use bevy::prelude::*;
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::physics::rigid_body::RigidBodyComponent;
 use crate::physics::world::PhysicsWorld;
 use crate::robot::state::{ArticulatedRobot, JointLink, RobotJointStates};
 
-/// Component to mark an entity that should publish its transform to the TF tree
+/// Component to mark an entity that should publish its transform to the HFrame tree
 #[derive(Component, Clone)]
-pub struct TFPublisher {
+pub struct HFramePublisher {
     /// Frame name for this entity
     pub frame_name: String,
     /// Parent frame name
@@ -19,7 +19,7 @@ pub struct TFPublisher {
     pub last_update: f32,
 }
 
-impl TFPublisher {
+impl HFramePublisher {
     pub fn new(frame_name: impl Into<String>, parent_frame: impl Into<String>) -> Self {
         Self {
             frame_name: frame_name.into(),
@@ -46,11 +46,11 @@ impl TFPublisher {
     }
 }
 
-/// System to update TF tree from Bevy transforms
-pub fn tf_update_system(
+/// System to update HFrame tree from Bevy transforms
+pub fn hframe_update_system(
     time: Res<Time>,
-    mut tf_tree: ResMut<TFTree>,
-    mut query: Query<(&mut TFPublisher, &GlobalTransform)>,
+    mut hframe_tree: ResMut<HFrameTree>,
+    mut query: Query<(&mut HFramePublisher, &GlobalTransform)>,
 ) {
     let current_time = time.elapsed_secs();
 
@@ -71,23 +71,25 @@ pub fn tf_update_system(
         ));
         let isometry = Isometry3::from_parts(nalgebra_translation, nalgebra_rotation);
 
-        // Update or add frame to TF tree
-        if tf_tree.has_frame(&publisher.frame_name) {
-            tf_tree.update_frame(&publisher.frame_name, isometry).ok();
+        // Update or add frame to HFrame tree
+        if hframe_tree.has_frame(&publisher.frame_name) {
+            hframe_tree
+                .update_frame(&publisher.frame_name, isometry)
+                .ok();
         } else {
-            tf_tree
+            hframe_tree
                 .add_frame(&publisher.frame_name, &publisher.parent_frame, isometry)
                 .ok();
         }
     }
 }
 
-/// System to update TF tree from physics rigid bodies
-pub fn tf_update_from_physics_system(
+/// System to update HFrame tree from physics rigid bodies
+pub fn hframe_update_from_physics_system(
     time: Res<Time>,
     physics_world: Res<PhysicsWorld>,
-    mut tf_tree: ResMut<TFTree>,
-    query: Query<(&RigidBodyComponent, &TFPublisher)>,
+    mut hframe_tree: ResMut<HFrameTree>,
+    query: Query<(&RigidBodyComponent, &HFramePublisher)>,
 ) {
     let current_time = time.elapsed_secs();
 
@@ -115,11 +117,13 @@ pub fn tf_update_from_physics_system(
                 )),
             );
 
-            // Update TF tree
-            if tf_tree.has_frame(&publisher.frame_name) {
-                tf_tree.update_frame(&publisher.frame_name, isometry).ok();
+            // Update HFrame tree
+            if hframe_tree.has_frame(&publisher.frame_name) {
+                hframe_tree
+                    .update_frame(&publisher.frame_name, isometry)
+                    .ok();
             } else {
-                tf_tree
+                hframe_tree
                     .add_frame(&publisher.frame_name, &publisher.parent_frame, isometry)
                     .ok();
             }
@@ -127,9 +131,9 @@ pub fn tf_update_from_physics_system(
     }
 }
 
-/// System to update TF tree for articulated robots (joint frames)
-pub fn tf_update_robot_joints_system(
-    mut tf_tree: ResMut<TFTree>,
+/// System to update HFrame tree for articulated robots (joint frames)
+pub fn hframe_update_robot_joints_system(
+    mut hframe_tree: ResMut<HFrameTree>,
     robot_query: Query<(&ArticulatedRobot, &RobotJointStates)>,
     joint_query: Query<&JointLink>,
 ) {
@@ -157,16 +161,16 @@ pub fn tf_update_robot_joints_system(
                     _ => Isometry3::identity(),
                 };
 
-                // Update TF tree with joint transform
+                // Update HFrame tree with joint transform
                 // Frame name would be the child link name
                 let child_frame = format!("{}_frame", joint_link.joint_name);
 
-                if tf_tree.has_frame(&child_frame) {
-                    tf_tree.update_frame(&child_frame, isometry).ok();
+                if hframe_tree.has_frame(&child_frame) {
+                    hframe_tree.update_frame(&child_frame, isometry).ok();
                 } else {
                     // Parent frame would be the parent link
                     let parent_frame = format!("link_{}", joint_link.parent_entity.index());
-                    tf_tree
+                    hframe_tree
                         .add_frame(&child_frame, &parent_frame, isometry)
                         .ok();
                 }
@@ -175,10 +179,10 @@ pub fn tf_update_robot_joints_system(
     }
 }
 
-/// Resource to configure TF update behavior
+/// Resource to configure HFrame update behavior
 #[derive(Resource, Clone)]
-pub struct TFUpdateConfig {
-    /// Enable TF updates
+pub struct HFrameUpdateConfig {
+    /// Enable HFrame updates
     pub enabled: bool,
     /// Update from physics rigid bodies
     pub update_from_physics: bool,
@@ -188,18 +192,18 @@ pub struct TFUpdateConfig {
     pub default_rate: f32,
 }
 
-impl Default for TFUpdateConfig {
+impl Default for HFrameUpdateConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             update_from_physics: true,
             update_robot_joints: true,
-            default_rate: 100.0, // 100 Hz default for TF
+            default_rate: 100.0, // 100 Hz default for HFrame
         }
     }
 }
 
-impl TFUpdateConfig {
+impl HFrameUpdateConfig {
     pub fn new() -> Self {
         Self::default()
     }
@@ -217,35 +221,35 @@ impl TFUpdateConfig {
     }
 }
 
-/// Event fired when TF tree is updated
+/// Event fired when HFrame tree is updated
 #[derive(Event)]
-pub struct TFTreeUpdatedEvent {
+pub struct HFrameTreeUpdatedEvent {
     pub frame_count: usize,
     pub update_time: f32,
 }
 
-/// System to emit TF update events
-pub fn emit_tf_updated_event(
+/// System to emit HFrame update events
+pub fn emit_hframe_updated_event(
     time: Res<Time>,
-    tf_tree: Res<TFTree>,
-    mut events: EventWriter<TFTreeUpdatedEvent>,
+    hframe_tree: Res<HFrameTree>,
+    mut events: EventWriter<HFrameTreeUpdatedEvent>,
 ) {
-    events.send(TFTreeUpdatedEvent {
-        frame_count: tf_tree.frame_count(),
+    events.send(HFrameTreeUpdatedEvent {
+        frame_count: hframe_tree.frame_count(),
         update_time: time.elapsed_secs(),
     });
 }
 
-/// Resource to track TF update statistics
+/// Resource to track HFrame update statistics
 #[derive(Resource, Default)]
-pub struct TFUpdateStats {
+pub struct HFrameUpdateStats {
     pub frame_count: usize,
     pub update_count: u64,
     pub last_update_time: f32,
     pub frames_updated: u64,
 }
 
-impl TFUpdateStats {
+impl HFrameUpdateStats {
     pub fn new() -> Self {
         Self::default()
     }
@@ -263,41 +267,45 @@ impl TFUpdateStats {
     }
 }
 
-/// System to track TF update statistics
-pub fn track_tf_stats_system(
+/// System to track HFrame update statistics
+pub fn track_hframe_stats_system(
     time: Res<Time>,
-    tf_tree: Res<TFTree>,
-    mut stats: ResMut<TFUpdateStats>,
-    query: Query<&TFPublisher>,
+    hframe_tree: Res<HFrameTree>,
+    mut stats: ResMut<HFrameUpdateStats>,
+    query: Query<&HFramePublisher>,
 ) {
     let frames_updated = query.iter().count() as u64;
-    stats.update(tf_tree.frame_count(), frames_updated, time.elapsed_secs());
+    stats.update(
+        hframe_tree.frame_count(),
+        frames_updated,
+        time.elapsed_secs(),
+    );
 }
 
-/// Plugin to register all TF update systems
-pub struct TFUpdatePlugin;
+/// Plugin to register all HFrame update systems
+pub struct HFrameUpdatePlugin;
 
-impl Plugin for TFUpdatePlugin {
+impl Plugin for HFrameUpdatePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TFUpdateConfig>()
-            .init_resource::<TFUpdateStats>()
-            .add_event::<TFTreeUpdatedEvent>()
+        app.init_resource::<HFrameUpdateConfig>()
+            .init_resource::<HFrameUpdateStats>()
+            .add_event::<HFrameTreeUpdatedEvent>()
             .add_systems(
                 Update,
                 (
-                    tf_update_system,
-                    tf_update_from_physics_system,
-                    tf_update_robot_joints_system,
-                    emit_tf_updated_event,
-                    track_tf_stats_system,
+                    hframe_update_system,
+                    hframe_update_from_physics_system,
+                    hframe_update_robot_joints_system,
+                    emit_hframe_updated_event,
+                    track_hframe_stats_system,
                 )
                     .chain(),
             );
     }
 }
 
-/// Helper function to create a TF publisher for an entity
-pub fn add_tf_publisher(
+/// Helper function to create a HFrame publisher for an entity
+pub fn add_hframe_publisher(
     commands: &mut Commands,
     entity: Entity,
     frame_name: impl Into<String>,
@@ -305,11 +313,11 @@ pub fn add_tf_publisher(
 ) {
     commands
         .entity(entity)
-        .insert(TFPublisher::new(frame_name, parent_frame));
+        .insert(HFramePublisher::new(frame_name, parent_frame));
 }
 
-/// Helper function to create a TF publisher with custom rate
-pub fn add_tf_publisher_with_rate(
+/// Helper function to create a HFrame publisher with custom rate
+pub fn add_hframe_publisher_with_rate(
     commands: &mut Commands,
     entity: Entity,
     frame_name: impl Into<String>,
@@ -318,7 +326,7 @@ pub fn add_tf_publisher_with_rate(
 ) {
     commands
         .entity(entity)
-        .insert(TFPublisher::new(frame_name, parent_frame).with_rate(rate_hz));
+        .insert(HFramePublisher::new(frame_name, parent_frame).with_rate(rate_hz));
 }
 
 #[cfg(test)]
@@ -326,8 +334,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tf_publisher() {
-        let mut publisher = TFPublisher::new("test_frame", "world");
+    fn test_hframe_publisher() {
+        let mut publisher = HFramePublisher::new("test_frame", "world");
         assert_eq!(publisher.frame_name, "test_frame");
         assert_eq!(publisher.parent_frame, "world");
         assert_eq!(publisher.rate_hz, 0.0);
@@ -337,8 +345,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tf_publisher_rate_limiting() {
-        let mut publisher = TFPublisher::new("test", "world").with_rate(10.0);
+    fn test_hframe_publisher_rate_limiting() {
+        let mut publisher = HFramePublisher::new("test", "world").with_rate(10.0);
 
         assert!(publisher.should_update(0.0));
         publisher.update_time(0.0);
@@ -348,18 +356,18 @@ mod tests {
     }
 
     #[test]
-    fn test_tf_update_config() {
-        let config = TFUpdateConfig::new().with_rate(200.0);
+    fn test_hframe_update_config() {
+        let config = HFrameUpdateConfig::new().with_rate(200.0);
         assert_eq!(config.default_rate, 200.0);
         assert!(config.enabled);
 
-        let disabled = TFUpdateConfig::disabled();
+        let disabled = HFrameUpdateConfig::disabled();
         assert!(!disabled.enabled);
     }
 
     #[test]
-    fn test_tf_update_stats() {
-        let mut stats = TFUpdateStats::new();
+    fn test_hframe_update_stats() {
+        let mut stats = HFrameUpdateStats::new();
         assert_eq!(stats.update_count, 0);
 
         stats.update(10, 5, 1.0);

@@ -2,6 +2,45 @@
 
 Generic PID controller for position, velocity, or any feedback control application.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::PidControllerNode;
+use horus_library::{SetpointCommand, FeedbackValue};
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create PID controller
+    let mut pid = PidControllerNode::new(
+        "pid.setpoint",  // Subscribe to setpoint commands
+        "pid.feedback",  // Subscribe to feedback values
+        "motor_cmd",     // Publish motor commands
+    )?;
+
+    // Configure PID gains
+    pid.set_gains(1.0, 0.1, 0.05);  // Kp=1.0, Ki=0.1, Kd=0.05
+    pid.set_output_limits(-1.0, 1.0);  // Output range
+    pid.set_integral_limits(-0.5, 0.5);  // Anti-windup
+
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Send setpoint from another node:
+let setpoint_hub = Hub::<SetpointCommand>::new("pid.setpoint")?;
+setpoint_hub.send(SetpointCommand::new(0, 100.0), None);  // Target: 100.0
+
+// Send feedback from sensor:
+let feedback_hub = Hub::<FeedbackValue>::new("pid.feedback")?;
+feedback_hub.send(FeedbackValue::new(0, 95.0), None);  // Current: 95.0
+```
+
+**Subscribes to:** `pid.setpoint` and `pid.feedback`
+**Publishes to:** `motor_cmd` (PwmCommand with calculated control output)
+
 ## Overview
 
 The PID Controller Node implements a standard PID (Proportional-Integral-Derivative) control algorithm. It subscribes to setpoint and feedback values, calculates the control output, and publishes motor commands.
@@ -96,9 +135,9 @@ let mut pid = PidControllerNode::new()?;
 
 // Create with custom topics
 let mut pid = PidControllerNode::new_with_topics(
-    "target_position",      // setpoint topic
+    "target.position",      // setpoint topic
     "encoder_position",     // feedback topic
-    "motor_command",        // output topic
+    "motor.command",        // output topic
     "pid_params"            // config topic
 )?;
 ```
@@ -134,16 +173,16 @@ let (setpoint, feedback, error, integral) = pid.get_state();
 
 ```rust
 use horus_library::nodes::PidControllerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create PID controller for motor position control
     let mut pid = PidControllerNode::new_with_topics(
-        "target_position",
+        "target.position",
         "encoder_position",
-        "motor_command",
+        "motor.command",
         "pid_config"
     )?;
 
@@ -152,8 +191,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pid.set_output_limits(-100.0, 100.0);
     pid.set_motor_id(0);
 
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -163,16 +202,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PidControllerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create PID controller for velocity control
     let mut pid = PidControllerNode::new_with_topics(
-        "target_velocity",
-        "measured_velocity",
-        "motor_pwm",
+        "target.velocity",
+        "measured.velocity",
+        "motor.pwm",
         "pid_config"
     )?;
 
@@ -182,8 +221,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pid.set_integral_limits(-50.0, 50.0);
     pid.set_motor_id(0);
 
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -193,10 +232,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PidControllerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create PID controller for temperature control
     let mut pid = PidControllerNode::new_with_topics(
@@ -212,8 +251,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pid.set_integral_limits(-20.0, 20.0);
     pid.set_deadband(0.5);  // 0.5 degree deadband
 
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -223,10 +262,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::PidControllerNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Left wheel velocity controller
     let mut left_pid = PidControllerNode::new_with_topics(
@@ -248,9 +287,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     right_pid.set_gains(1.5, 0.2, 0.05);
     right_pid.set_motor_id(1);
 
-    runtime.add_node(left_pid);
-    runtime.add_node(right_pid);
-    runtime.run()?;
+    scheduler.add(Box::new(left_pid), 50, Some(true));
+    scheduler.add(Box::new(right_pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

@@ -1,12 +1,12 @@
 ---
 title: Installation
-description: Get HORUS installed in 5 minutes
+description: Install HORUS on Linux, macOS, or Windows
 order: 2
 ---
 
 # Installing HORUS
 
-Get HORUS up and running in 5 minutes. We'll install Rust, build HORUS, and verify everything works.
+This guide covers installing Rust, building HORUS, and verifying the installation. The process takes approximately 10-15 minutes.
 
 ## Platform Support
 
@@ -66,10 +66,10 @@ HORUS has **native cross-platform support**:
 - **Graphics/GUI**: X11, Wayland libraries (required for sim2d and dashboard)
 - **Optional**: `libv4l-dev` (camera support), fontconfig (improved text rendering)
 
-**Don't worry if you don't have:**
-- Rust (we'll install it)
-- Git (we'll install it)
-- Experience with systems programming (not needed!)
+**Not required:**
+- Rust (installed in Step 1)
+- Git (installed in Step 2)
+- Systems programming experience
 
 ## Quick Install (Recommended)
 
@@ -94,7 +94,7 @@ horus --help
 ./verify.sh
 ```
 
-If the help command works and verify.sh shows green checkmarks, you're all set! Skip to [Next Steps](#next-steps).
+If the help command displays available commands and verify.sh shows green checkmarks, installation is complete. Skip to [Next Steps](#next-steps).
 
 **What the installer does:**
 - Builds the `horus` CLI tool
@@ -111,7 +111,7 @@ If the help command works and verify.sh shows green checkmarks, you're all set! 
 
 ### Step 1: Install Rust
 
-HORUS is built with Rust. Don't worry if you've never used it - you don't need to know Rust to use HORUS (Python works too!).
+HORUS is built with Rust. No prior Rust experience is required; HORUS also supports Python for application development.
 
 **On Linux (or WSL/Docker):**
 ```bash
@@ -178,7 +178,7 @@ This script:
 4. Saves version information for updates
 5. Runs verification tests
 
-You'll see colored output showing progress - green checkmarks mean success!
+The output displays progress with colored indicators. Green checkmarks indicate successful steps.
 
 ### Step 5: Verify Installation
 
@@ -233,8 +233,8 @@ Functionality Tests:
    Binary: Debug build functional
 
 Summary:
-   Perfect! Everything looks good.
-  HORUS is properly installed and ready to use.
+   All checks passed.
+   HORUS is properly installed and ready to use.
 ```
 
 **If there are issues:**
@@ -253,7 +253,7 @@ Python bindings are **automatically installed** by `./install.sh` if Python 3.9+
 
 **To verify Python bindings work:**
 ```bash
-python3 -c "import horus; print('Python bindings work!')"
+python3 -c "import horus; print('Python bindings installed successfully')"
 ```
 
 **Manual installation** (if automatic installation was skipped):
@@ -274,7 +274,7 @@ See [Python Bindings](/multi-language/python-bindings) for complete API document
 
 ### Linux (Ubuntu/Debian)
 
-Most things "just work" on Linux. If you hit build errors, install all required packages:
+Linux installation is straightforward. If build errors occur, install all required packages:
 
 ```bash
 sudo apt update
@@ -691,15 +691,10 @@ See the **[Troubleshooting & Maintenance Guide](/troubleshooting)** for:
 
 ## Next Steps
 
-Now that HORUS is installed, let's build something!
+With HORUS installed, proceed to one of the following:
 
-1. **[Quick Start Tutorial ](/getting-started/quick-start)**
-   Build your first HORUS application in 10 minutes
+1. **[Quick Start Tutorial](/getting-started/quick-start)** - Build your first HORUS application
+2. **[CLI Reference](/development/cli-reference)** - Complete command documentation
+3. **[Examples](/basic-examples)** - Sample HORUS applications
 
-2. **[CLI Reference ](/development/cli-reference)**
-   Learn all the `horus` commands
-
-3. **[Examples ](/basic-examples)**
-   See real HORUS applications
-
-**Ready to start?** Head to the [Quick Start ](/getting-started/quick-start)
+Recommended: Start with the [Quick Start Tutorial](/getting-started/quick-start).

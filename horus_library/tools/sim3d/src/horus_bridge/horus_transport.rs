@@ -31,7 +31,7 @@ impl LogSummary for Twist {
 impl LogSummary for TransformStamped {
     fn log_summary(&self) -> String {
         format!(
-            "TF({}->{} t:{:.3})",
+            "HFrame({}->{} t:{:.3})",
             self.header.frame_id, self.child_frame_id, self.header.stamp
         )
     }
@@ -131,8 +131,8 @@ impl Default for HorusTransportConfig {
 pub struct HorusTransport {
     /// Hub for Twist/cmd_vel messages (subscriber)
     cmd_vel_hub: Option<Arc<Mutex<Hub<Twist>>>>,
-    /// Hub for TransformStamped messages (publisher)
-    tf_hub: Option<Arc<Mutex<Hub<TransformStamped>>>>,
+    /// Hub for HFrame (transform) messages (publisher)
+    hf_hub: Option<Arc<Mutex<Hub<TransformStamped>>>>,
     /// Hub for PointCloud2 messages (publisher)
     pointcloud_hub: Option<Arc<Mutex<Hub<PointCloud2>>>>,
     /// Hub for LaserScan messages (publisher)
@@ -158,7 +158,7 @@ impl HorusTransport {
     pub fn new(robot_name: &str) -> Self {
         let mut transport = Self {
             cmd_vel_hub: None,
-            tf_hub: None,
+            hf_hub: None,
             pointcloud_hub: None,
             laserscan_hub: None,
             odom_hub: None,
@@ -176,7 +176,7 @@ impl HorusTransport {
     pub fn with_network(robot_name: &str, endpoint: &str) -> Self {
         let mut transport = Self {
             cmd_vel_hub: None,
-            tf_hub: None,
+            hf_hub: None,
             pointcloud_hub: None,
             laserscan_hub: None,
             odom_hub: None,
@@ -192,7 +192,7 @@ impl HorusTransport {
     fn init_hubs(&mut self) {
         // Create local shared memory hubs
         let cmd_vel_topic = format!("{}.cmd_vel", self.robot_name);
-        let tf_topic = format!("{}.tf", self.robot_name);
+        let hf_topic = format!("{}.hf", self.robot_name);
         let pointcloud_topic = format!("{}.pointcloud", self.robot_name);
         let laserscan_topic = format!("{}.scan", self.robot_name);
         let odom_topic = format!("{}.odom", self.robot_name);
@@ -201,8 +201,8 @@ impl HorusTransport {
         if let Ok(hub) = Hub::<Twist>::new(&cmd_vel_topic) {
             self.cmd_vel_hub = Some(Arc::new(Mutex::new(hub)));
         }
-        if let Ok(hub) = Hub::<TransformStamped>::new(&tf_topic) {
-            self.tf_hub = Some(Arc::new(Mutex::new(hub)));
+        if let Ok(hub) = Hub::<TransformStamped>::new(&hf_topic) {
+            self.hf_hub = Some(Arc::new(Mutex::new(hub)));
         }
         if let Ok(hub) = Hub::<PointCloud2>::new(&pointcloud_topic) {
             self.pointcloud_hub = Some(Arc::new(Mutex::new(hub)));
@@ -221,7 +221,7 @@ impl HorusTransport {
     fn init_network_hubs(&mut self, endpoint: &str) {
         // Create network hubs with endpoint
         let cmd_vel_topic = format!("{}.cmd_vel@{}", self.robot_name, endpoint);
-        let tf_topic = format!("{}.tf@{}", self.robot_name, endpoint);
+        let hf_topic = format!("{}.hf@{}", self.robot_name, endpoint);
         let pointcloud_topic = format!("{}.pointcloud@{}", self.robot_name, endpoint);
         let laserscan_topic = format!("{}.scan@{}", self.robot_name, endpoint);
         let odom_topic = format!("{}.odom@{}", self.robot_name, endpoint);
@@ -230,8 +230,8 @@ impl HorusTransport {
         if let Ok(hub) = Hub::<Twist>::new(&cmd_vel_topic) {
             self.cmd_vel_hub = Some(Arc::new(Mutex::new(hub)));
         }
-        if let Ok(hub) = Hub::<TransformStamped>::new(&tf_topic) {
-            self.tf_hub = Some(Arc::new(Mutex::new(hub)));
+        if let Ok(hub) = Hub::<TransformStamped>::new(&hf_topic) {
+            self.hf_hub = Some(Arc::new(Mutex::new(hub)));
         }
         if let Ok(hub) = Hub::<PointCloud2>::new(&pointcloud_topic) {
             self.pointcloud_hub = Some(Arc::new(Mutex::new(hub)));
@@ -271,12 +271,12 @@ impl HorusTransport {
     // Publishing Methods
     // ========================================================================
 
-    /// Publish a TransformStamped message
-    pub fn publish_tf(&self, msg: TransformStamped) -> bool {
+    /// Publish a HFrame (transform) message
+    pub fn publish_hf(&self, msg: TransformStamped) -> bool {
         if !self.enabled {
             return false;
         }
-        if let Some(ref hub) = self.tf_hub {
+        if let Some(ref hub) = self.hf_hub {
             if let Ok(hub_guard) = hub.lock() {
                 return hub_guard.send(msg, &mut None).is_ok();
             }

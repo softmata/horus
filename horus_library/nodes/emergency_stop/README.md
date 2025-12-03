@@ -160,10 +160,10 @@ let is_stopped = estop.is_emergency_stopped();
 
 ```rust
 use horus_library::nodes::EmergencyStopNode;
-use horus_core::{Node, Runtime};
+use horus_core::{Node, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node with hardware button
     let mut estop = EmergencyStopNode::new()?;
@@ -175,8 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // No auto-reset - requires manual intervention
     estop.set_auto_reset(false);
 
-    runtime.add_node(estop);
-    runtime.run()?;
+    scheduler.add(Box::new(estop), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -186,19 +186,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::EmergencyStopNode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node
     let mut estop = EmergencyStopNode::new_with_topic("system_estop")?;
     estop.set_auto_reset(false);
 
     // Subscribe to emergency stop messages for monitoring
-    let estop_sub = Hub::<EmergencyStop>::subscribe("system_estop")?;
+    let estop_sub = Hub::<EmergencyStop>::new("system_estop")?;
 
-    runtime.add_node(estop);
+    scheduler.add(Box::new(estop), 50, Some(true));
 
     // Spawn monitoring thread
     std::thread::spawn(move || {
@@ -217,7 +217,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -227,10 +227,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::EmergencyStopNode;
 use horus_library::{EmergencyStop, SafetyStatus};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node with auto-reset for testing
     let mut estop = EmergencyStopNode::new()?;
@@ -239,9 +239,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     estop.set_reset_timeout(3000);  // 3 second timeout
 
     // Subscribe to safety status for detailed monitoring
-    let safety_sub = Hub::<SafetyStatus>::subscribe("emergency_stop_safety")?;
+    let safety_sub = Hub::<SafetyStatus>::new("emergency_stop_safety")?;
 
-    runtime.add_node(estop);
+    scheduler.add(Box::new(estop), 50, Some(true));
 
     // Monitor safety status in separate thread
     std::thread::spawn(move || {
@@ -266,7 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -276,7 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::EmergencyStopNode;
 use horus_library::EmergencyStop;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 // Motor controller node that respects emergency stops
 struct SafeMotorController {
@@ -287,7 +287,7 @@ struct SafeMotorController {
 impl SafeMotorController {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            estop_sub: Hub::subscribe("emergency_stop")?,
+            estop_sub: Hub::new("emergency_stop")?,
             is_stopped: false,
         })
     }
@@ -321,7 +321,7 @@ impl Node for SafeMotorController {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node
     let mut estop = EmergencyStopNode::new()?;
@@ -330,9 +330,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create motor controller that subscribes to emergency stop
     let motor_controller = SafeMotorController::new()?;
 
-    runtime.add_node(estop);
-    runtime.add_node(motor_controller);
-    runtime.run()?;
+    scheduler.add(Box::new(estop), 50, Some(true));
+    scheduler.add(Box::new(motor_controller), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -343,7 +343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::EmergencyStopNode;
 use horus_library::SafetyStatus;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use std::time::{Duration, Instant};
 
 // Watchdog node that triggers emergency stop on timeout
@@ -361,7 +361,7 @@ impl WatchdogNode {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             estop_trigger: estop,
-            heartbeat_sub: Hub::subscribe("system_heartbeat")?,
+            heartbeat_sub: Hub::new("system_heartbeat")?,
             last_heartbeat: Instant::now(),
             timeout: Duration::from_millis(timeout_ms),
         })
@@ -391,7 +391,7 @@ impl Node for WatchdogNode {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create emergency stop node
     let estop = Arc::new(Mutex::new(EmergencyStopNode::new()?));
@@ -399,8 +399,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create watchdog that monitors heartbeat
     let watchdog = WatchdogNode::new(estop.clone(), 1000)?; // 1 second timeout
 
-    runtime.add_node(watchdog);
-    runtime.run()?;
+    scheduler.add(Box::new(watchdog), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -555,7 +555,7 @@ if !estop.is_emergency_stopped() {
 **Solution**:
 ```rust
 // Ensure all safety-critical nodes subscribe to the correct topic
-let estop_sub = Hub::<EmergencyStop>::subscribe("emergency_stop")?;
+let estop_sub = Hub::<EmergencyStop>::new("emergency_stop")?;
 
 // In motor controller or other critical nodes:
 impl Node for YourNode {
@@ -663,7 +663,7 @@ All motor control nodes should subscribe to emergency stop:
 
 ```rust
 // In any motor controller
-let estop_sub = Hub::<EmergencyStop>::subscribe("emergency_stop")?;
+let estop_sub = Hub::<EmergencyStop>::new("emergency_stop")?;
 
 // First action in tick():
 if let Ok(msg) = self.estop_sub.receive(0) {
@@ -689,7 +689,7 @@ let mut drive = DifferentialDriveNode::new()?;
 
 ```rust
 // Create a comprehensive safety monitoring system
-let safety_sub = Hub::<SafetyStatus>::subscribe("emergency_stop_safety")?;
+let safety_sub = Hub::<SafetyStatus>::new("emergency_stop_safety")?;
 
 // Monitor all safety parameters
 if status.estop_engaged {

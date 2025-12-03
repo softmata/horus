@@ -2,6 +2,43 @@
 
 HC-SR04 ultrasonic distance sensor for obstacle detection, proximity sensing, and rangefinding with multi-sensor support.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::UltrasonicNode;
+use horus_library::Range;
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create ultrasonic sensor node
+    let mut ultrasonic = UltrasonicNode::new()?;
+    ultrasonic.set_num_sensors(1);
+    ultrasonic.set_gpio_pins(0, 23, 24);     // Sensor 0: Trigger=GPIO23, Echo=GPIO24
+    ultrasonic.set_measurement_rate(10.0);   // 10 Hz
+    ultrasonic.enable_median_filter(true);   // Reduce noise
+
+    scheduler.add(Box::new(ultrasonic), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Subscribe to range data in another node:
+let range_hub = Hub::<Range>::new("ultrasonic.range")?;
+if let Some(range) = range_hub.recv_latest() {
+    if range.range > 0.0 && range.range < range.max_range {
+        println!("Distance: {:.2} m", range.range);
+    } else {
+        println!("Out of range");
+    }
+}
+```
+
+**Publishes to:** `ultrasonic.range` topic with distance measurements.
+
+**Hardware Note:** HC-SR04 Echo outputs 5V - use a voltage divider for 3.3V GPIO!
+
 ## Overview
 
 The Ultrasonic Node provides distance measurements using ultrasonic sensors via echo/trigger interface. It supports multiple sensors simultaneously for 360-degree coverage or sensor arrays, with median filtering, temperature compensation, and automatic hardware/simulation fallback.
@@ -23,7 +60,7 @@ Key features:
 
 | Topic | Type | Description |
 |-------|------|-------------|
-| `ultrasonic/range` | `Range` | Distance measurements from ultrasonic sensors |
+| `ultrasonic.range` | `Range` | Distance measurements from ultrasonic sensors |
 
 ## Configuration Parameters
 
@@ -92,11 +129,11 @@ pub struct Range {
 ```rust
 use horus_library::nodes::UltrasonicNode;
 
-// Create with default topic "ultrasonic/range"
+// Create with default topic "ultrasonic.range"
 let mut ultrasonic = UltrasonicNode::new()?;
 
 // Create with custom topic
-let mut ultrasonic = UltrasonicNode::new_with_topic("sensors/distance")?;
+let mut ultrasonic = UltrasonicNode::new_with_topic("sensors.distance")?;
 ```
 
 ### Configuration Methods
@@ -222,7 +259,7 @@ fn main() -> Result<()> {
     let detector = node! {
         name: "obstacle_detector",
         tick: |ctx| {
-            let hub = Hub::<Range>::new("ultrasonic/range")?;
+            let hub = Hub::<Range>::new("ultrasonic.range")?;
 
             while let Some(range) = hub.recv(None) {
                 if range.range >= range.min_range && range.range <= range.max_range {

@@ -13,13 +13,36 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "sysinfo")]
 use sysinfo::System;
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Safety Monitor Node - Monitors critical safety systems and conditions
 ///
 /// Watches system resources, emergency stops, battery levels, communication health,
 /// and other safety-critical parameters. Triggers safety responses when limits exceeded.
 ///
 /// This node is a thin wrapper around the pure algorithms in horus_library/algorithms.
-pub struct SafetyMonitorNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = SafetyMonitorNode::builder()
+///     .with_filter(|status| {
+///         // Only publish on status changes
+///         if status.mode != SafetyStatus::MODE_NORMAL {
+///             Some(status)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct SafetyMonitorNode<P = PassThrough<SafetyStatus>>
+where
+    P: Processor<SafetyStatus>,
+{
     publisher: Hub<SafetyStatus>,
     emergency_subscriber: Hub<EmergencyStop>,
     battery_subscriber: Hub<BatteryState>,
@@ -47,6 +70,9 @@ pub struct SafetyMonitorNode {
     last_battery_time: u64,
     last_resource_time: u64,
     current_safety_level: StatusLevel,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 #[derive(Clone)]
@@ -101,9 +127,20 @@ impl SafetyMonitorNode {
             last_battery_time: 0,
             last_resource_time: 0,
             current_safety_level: StatusLevel::Ok,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> SafetyMonitorNodeBuilder<PassThrough<SafetyStatus>> {
+        SafetyMonitorNodeBuilder::new()
+    }
+}
+
+impl<P> SafetyMonitorNode<P>
+where
+    P: Processor<SafetyStatus>,
+{
     /// Set CPU usage threshold (0-100%)
     pub fn set_cpu_threshold(&mut self, threshold: f32) {
         self.cpu_threshold = threshold.clamp(0.0, 100.0);
@@ -271,7 +308,7 @@ impl SafetyMonitorNode {
             .max(safety_status)
     }
 
-    fn publish_safety_status(&self) {
+    fn publish_safety_status(&mut self) {
         let mut status = SafetyStatus::new();
 
         match self.current_safety_level {
@@ -293,16 +330,33 @@ impl SafetyMonitorNode {
             }
         }
 
-        let _ = self.publisher.send(status, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(status) {
+            let _ = self.publisher.send(processed, &mut None);
+        }
     }
 }
 
-impl Node for SafetyMonitorNode {
+impl<P> Node for SafetyMonitorNode<P>
+where
+    P: Processor<SafetyStatus>,
+{
     fn name(&self) -> &'static str {
         "SafetyMonitorNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -341,3 +395,130 @@ impl Node for SafetyMonitorNode {
 }
 
 // Default impl removed - use SafetyMonitorNode::new() instead which returns HorusResult
+
+/// Builder for SafetyMonitorNode with processor configuration
+pub struct SafetyMonitorNodeBuilder<P>
+where
+    P: Processor<SafetyStatus>,
+{
+    topic: String,
+    processor: P,
+}
+
+impl SafetyMonitorNodeBuilder<PassThrough<SafetyStatus>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            topic: "safety_status".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for SafetyMonitorNodeBuilder<PassThrough<SafetyStatus>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> SafetyMonitorNodeBuilder<P>
+where
+    P: Processor<SafetyStatus>,
+{
+    /// Set output topic
+    pub fn topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> SafetyMonitorNodeBuilder<P2>
+    where
+        P2: Processor<SafetyStatus>,
+    {
+        SafetyMonitorNodeBuilder {
+            topic: self.topic,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> SafetyMonitorNodeBuilder<ClosureProcessor<SafetyStatus, SafetyStatus, F>>
+    where
+        F: FnMut(SafetyStatus) -> SafetyStatus + Send + 'static,
+    {
+        SafetyMonitorNodeBuilder {
+            topic: self.topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> SafetyMonitorNodeBuilder<FilterProcessor<SafetyStatus, SafetyStatus, F>>
+    where
+        F: FnMut(SafetyStatus) -> Option<SafetyStatus> + Send + 'static,
+    {
+        SafetyMonitorNodeBuilder {
+            topic: self.topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> SafetyMonitorNodeBuilder<Pipeline<SafetyStatus, SafetyStatus, SafetyStatus, P, P2>>
+    where
+        P2: Processor<SafetyStatus, SafetyStatus>,
+    {
+        SafetyMonitorNodeBuilder {
+            topic: self.topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<SafetyMonitorNode<P>> {
+        // Create safety layer with default limits
+        let mut safety_layer = SafetyLayer::new();
+        safety_layer.set_max_velocity(2.0);
+        safety_layer.set_min_obstacle_distance(0.3);
+        safety_layer.set_min_battery(15.0);
+        safety_layer.set_max_temperature(80.0);
+
+        Ok(SafetyMonitorNode {
+            publisher: Hub::new(&self.topic)?,
+            emergency_subscriber: Hub::new("emergency_stop")?,
+            battery_subscriber: Hub::new("battery_state")?,
+            resource_subscriber: Hub::new("resource_usage")?,
+
+            safety_layer,
+
+            #[cfg(feature = "sysinfo")]
+            system: System::new_all(),
+            safety_checks: Arc::new(Mutex::new(HashMap::new())),
+
+            cpu_threshold: 90.0,
+            memory_threshold: 85.0,
+            disk_threshold: 95.0,
+            communication_timeout_ms: 5000,
+
+            current_velocity: 0.0,
+            obstacle_distance: 100.0,
+            battery_percent: 100.0,
+            temperature: 25.0,
+            last_emergency_time: 0,
+            last_battery_time: 0,
+            last_resource_time: 0,
+            current_safety_level: StatusLevel::Ok,
+            processor: self.processor,
+        })
+    }
+}

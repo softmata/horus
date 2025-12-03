@@ -91,15 +91,37 @@ sudo apt install libraspberrypi-dev
 sudo raspi-config  # Interface Options
 ```
 
-### Enable in Project
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `UltrasonicNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
 horus_library = { version = "0.1", features = ["gpio-hardware"] }
-```
-
-```bash
-cargo build --features="gpio-hardware"
 ```
 
 ## Configuration
@@ -371,7 +393,8 @@ Safe timeout = 38ms (allows margin)
 [WARN]     1. Install: sudo apt install libraspberrypi-dev
 [WARN]     2. Enable GPIO: sudo raspi-config -> Interface Options
 [WARN]     3. Check wiring: Verify GPIO pin connections
-[WARN]     4. Rebuild with: cargo build --features="gpio-hardware"
+[WARN]     4. If using cargo: cargo build --features="gpio-hardware"
+[WARN]        (horus run auto-detects features)
 ```
 
 **Solutions:**

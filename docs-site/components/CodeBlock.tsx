@@ -68,8 +68,9 @@ export default function CodeBlock({ children, className = '' }: CodeBlockProps) 
         else if (language === 'markdown' || language === 'md') await import('prismjs/components/prism-markdown' as any);
 
         if (codeRef.current) {
-          // Remove existing highlighting classes
-          codeRef.current.innerHTML = children;
+          // Use textContent to preserve angle brackets (Hub<f32>, Vec<T>, etc.)
+          // This prevents <f32> from being parsed as an HTML tag
+          codeRef.current.textContent = children;
 
           // Re-highlight with Prism
           Prism.highlightElement(codeRef.current);

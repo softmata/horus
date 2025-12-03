@@ -296,11 +296,11 @@ fn main() -> Result<()> {
     let controller = node! {
         name: "servo_controller",
         tick: |ctx| {
-            let hub = Hub::<ServoCommand>::new("dynamixel/servo_cmd")?;
+            let hub = Hub::<ServoCommand>::new("dynamixel.servo_cmd")?;
 
             // Move to 90 degrees
             let cmd = ServoCommand::from_degrees(1, 90.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -332,18 +332,18 @@ fn main() -> Result<()> {
     let arm_control = node! {
         name: "arm_control",
         tick: |ctx| {
-            let hub = Hub::<ServoCommand>::new("dynamixel/servo_cmd")?;
+            let hub = Hub::<ServoCommand>::new("dynamixel.servo_cmd")?;
 
             // Move to home position
             let home_angles = [0.0, -30.0, 60.0, 0.0, -30.0, 0.0]; // degrees
 
             for (servo_id, &angle) in home_angles.iter().enumerate() {
                 let cmd = ServoCommand::from_degrees((servo_id + 1) as u8, angle);
-                hub.send(cmd, None)?;
+                hub.send(cmd, &mut None)?;
             }
 
             // Monitor feedback
-            let feedback_hub = Hub::<ServoCommand>::new("dynamixel/feedback")?;
+            let feedback_hub = Hub::<ServoCommand>::new("dynamixel.feedback")?;
             while let Some(feedback) = feedback_hub.recv(None) {
                 ctx.log_debug(&format!(
                     "Servo {}: pos={:.2}rad vel={:.2}rad/s enabled={}",
@@ -384,7 +384,7 @@ fn main() -> Result<()> {
     let coordinator = node! {
         name: "joint_coordinator",
         tick: |ctx| {
-            let hub = Hub::<JointCommand>::new("dynamixel/joint_cmd")?;
+            let hub = Hub::<JointCommand>::new("dynamixel.joint_cmd")?;
 
             // Create synchronized joint command
             let mut joint_cmd = JointCommand::new();
@@ -394,7 +394,7 @@ fn main() -> Result<()> {
             joint_cmd.add_position("joint_4", 0.0)?;
             joint_cmd.add_position("joint_5", -0.523)?;
 
-            hub.send(joint_cmd, None)?;
+            hub.send(joint_cmd, &mut None)?;
 
             Ok(())
         }
@@ -426,7 +426,7 @@ fn main() -> Result<()> {
     let tracker = node! {
         name: "camera_tracker",
         tick: |ctx| {
-            let hub = Hub::<ServoCommand>::new("dynamixel/servo_cmd")?;
+            let hub = Hub::<ServoCommand>::new("dynamixel.servo_cmd")?;
 
             // Smooth pan sweep (-45 to +45 degrees)
             let time = std::time::SystemTime::now()
@@ -470,13 +470,13 @@ fn main() -> Result<()> {
     let controller = node! {
         name: "mixed_control",
         tick: |ctx| {
-            let hub = Hub::<JointCommand>::new("dynamixel/joint_cmd")?;
+            let hub = Hub::<JointCommand>::new("dynamixel.joint_cmd")?;
 
             let mut cmd = JointCommand::new();
             cmd.add_position("joint_1", 1.57)?;      // 90 degrees position
             cmd.add_velocity("joint_2", 2.0)?;       // 2 rad/s velocity
 
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }

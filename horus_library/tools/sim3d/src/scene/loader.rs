@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::error::{EnhancedError, ErrorCategory, Result};
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::physics::world::PhysicsWorld;
 use crate::robot::urdf_loader::URDFLoader;
 use crate::scene::spawner::{ObjectSpawnConfig, ObjectSpawner, SpawnShape, SpawnedObjects};
@@ -666,7 +666,7 @@ impl SceneLoader {
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
         spawned_objects: &mut SpawnedObjects,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
     ) -> Result<LoadedScene> {
         // Determine file format from extension
         let path_ref = path.as_ref();
@@ -703,7 +703,7 @@ impl SceneLoader {
             meshes,
             materials,
             spawned_objects,
-            tf_tree,
+            hframe_tree,
         )
     }
 
@@ -716,7 +716,7 @@ impl SceneLoader {
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
         spawned_objects: &mut SpawnedObjects,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
     ) -> Result<LoadedScene> {
         let mut loaded_scene = LoadedScene::new(definition.clone());
 
@@ -764,7 +764,7 @@ impl SceneLoader {
                 rotation,
                 commands,
                 physics_world,
-                tf_tree,
+                hframe_tree,
                 meshes,
                 materials,
             ) {
@@ -808,7 +808,7 @@ impl SceneLoader {
         meshes: &mut Assets<Mesh>,
         materials: &mut Assets<StandardMaterial>,
         spawned_objects: &mut SpawnedObjects,
-        tf_tree: &mut TFTree,
+        hframe_tree: &mut HFrameTree,
     ) -> Result<LoadedScene> {
         Self::clear_scene(commands, spawned_objects);
         Self::spawn_scene(
@@ -819,7 +819,7 @@ impl SceneLoader {
             meshes,
             materials,
             spawned_objects,
-            tf_tree,
+            hframe_tree,
         )
     }
 }

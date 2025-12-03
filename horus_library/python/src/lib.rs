@@ -637,7 +637,7 @@ impl PyLaserScan {
     /// Get ranges as NumPy array (zero-copy view)
     #[getter]
     fn ranges<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        PyArray1::from_slice_bound(py, &self.inner.ranges)
+        PyArray1::from_slice(py, &self.inner.ranges)
     }
 
     /// Set ranges from Python list or NumPy array
@@ -756,12 +756,12 @@ impl PyLaserScan {
     /// Pickle support: Return empty args since LaserScan() has no constructor args,
     /// but we preserve state via __getstate__/__setstate__ pattern
     fn __getnewargs__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
-        PyTuple::empty_bound(py)
+        PyTuple::empty(py)
     }
 
     /// Pickle support: Return the full state for unpickling
     fn __getstate__(&self, py: Python) -> PyResult<PyObject> {
-        let state = PyDict::new_bound(py);
+        let state = PyDict::new(py);
         state.set_item("ranges", self.inner.ranges.to_vec())?;
         state.set_item("angle_min", self.inner.angle_min)?;
         state.set_item("angle_max", self.inner.angle_max)?;
@@ -1334,7 +1334,7 @@ impl PyRange {
 fn register_sim2d(py: Python, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     use sim2d::python_api::{RobotConfigPy, Sim2D, WorldConfigPy};
 
-    let sim2d_module = PyModule::new_bound(py, "sim2d")?;
+    let sim2d_module = PyModule::new(py, "sim2d")?;
     sim2d_module.add_class::<Sim2D>()?;
     sim2d_module.add_class::<RobotConfigPy>()?;
     sim2d_module.add_class::<WorldConfigPy>()?;
@@ -1347,7 +1347,7 @@ fn register_sim2d(py: Python, parent: &Bound<'_, PyModule>) -> PyResult<()> {
 fn register_sim3d(py: Python, parent: &Bound<'_, PyModule>) -> PyResult<()> {
     use sim3d::rl::python::{make_env, make_vec_env, PySim3DEnv, PyVecSim3DEnv};
 
-    let sim3d_module = PyModule::new_bound(py, "sim3d")?;
+    let sim3d_module = PyModule::new(py, "sim3d")?;
     sim3d_module.add_class::<PySim3DEnv>()?;
     sim3d_module.add_class::<PyVecSim3DEnv>()?;
     sim3d_module.add_function(wrap_pyfunction!(make_env, &sim3d_module)?)?;

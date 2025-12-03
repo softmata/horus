@@ -143,10 +143,10 @@ io_node.set_output(1, false);  // Turn off LED
 
 ```rust
 use horus_library::nodes::DigitalIONode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create digital I/O node
     let mut io_node = DigitalIONode::new()?;
@@ -160,8 +160,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     io_node.set_output_pin_name(0, "led_green");
     io_node.set_output_pin_name(1, "led_red");
 
-    runtime.add_node(io_node);
-    runtime.run()?;
+    scheduler.add(Box::new(io_node), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -171,11 +171,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DigitalIONode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use crate::DigitalIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create I/O node for relay control
     let mut relay_controller = DigitalIONode::new_with_topics(
@@ -198,8 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     relay_controller.set_output_pin_name(6, "alarm");
     relay_controller.set_output_pin_name(7, "status_light");
 
-    runtime.add_node(relay_controller);
-    runtime.run()?;
+    scheduler.add(Box::new(relay_controller), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -209,11 +209,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DigitalIONode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use crate::DigitalIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create I/O node for CNC machine limit switches
     let mut limit_switches = DigitalIONode::new_with_topics(
@@ -237,8 +237,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to limit switch status
     let mut status_sub = Hub::<DigitalIO>::new("limit_status")?;
 
-    runtime.add_node(limit_switches);
-    runtime.run()?;
+    scheduler.add(Box::new(limit_switches), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -248,11 +248,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DigitalIONode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use crate::DigitalIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Safety monitoring node
     let mut safety_io = DigitalIONode::new_with_topics(
@@ -277,8 +277,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     safety_io.set_output_pin_name(2, "alarm_horn");
     safety_io.set_output_pin_name(3, "warning_light");
 
-    runtime.add_node(safety_io);
-    runtime.run()?;
+    scheduler.add(Box::new(safety_io), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }
@@ -288,11 +288,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use horus_library::nodes::DigitalIONode;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use crate::DigitalIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create I/O node
     let mut io = DigitalIONode::new()?;
@@ -316,12 +316,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input_sub = Hub::<DigitalIO>::new("digital_input")?;
     let mut output_pub = Hub::<DigitalIO>::new("digital_output")?;
 
-    runtime.add_node(io);
+    scheduler.add(Box::new(io), 50, Some(true));
 
     // State machine logic would go here
     // Read inputs, make decisions, publish output commands
 
-    runtime.run()?;
+    scheduler.run()?;
 
     Ok(())
 }
@@ -663,7 +663,7 @@ if let Some(inputs) = input_sub.recv(None) {
     let mut output = DigitalIO::default();
     output.pin_count = 1;
     output.pins[0] = safe_to_run;
-    output_pub.send(output, None)?;
+    output_pub.send(output, &mut None)?;
 }
 ```
 
@@ -723,11 +723,11 @@ fn set_indicator_lights(state: SystemState, io: &mut DigitalIONode) {
 
 ```rust
 use horus_library::nodes::{DigitalIONode, PidControllerNode};
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use crate::DigitalIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Digital I/O for limit switches
     let mut io = DigitalIONode::new()?;
@@ -747,9 +747,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - Disable PID when limit hit
     // - Initiate homing sequence on home switch
 
-    runtime.add_node(io);
-    runtime.add_node(pid);
-    runtime.run()?;
+    scheduler.add(Box::new(io), 50, Some(true));
+    scheduler.add(Box::new(pid), 50, Some(true));
+    scheduler.run()?;
 
     Ok(())
 }

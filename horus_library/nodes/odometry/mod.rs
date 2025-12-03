@@ -6,6 +6,11 @@ use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::f64::consts::PI;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Odometry Calculation Node
 ///
 /// Computes robot pose (position and orientation) from wheel encoder feedback.
@@ -33,7 +38,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// odom.set_encoder_resolution(4096); // Ticks per revolution
 /// odom.set_update_rate(50.0); // 50 Hz
 /// ```
-pub struct OdometryNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = OdometryNode::builder()
+///     .wheel_base(0.5)
+///     .wheel_radius(0.05)
+///     .with_closure(|mut odom| {
+///         // Apply coordinate transform
+///         odom.pose.x += 1.0; // Offset origin
+///         odom
+///     })
+///     .build()?;
+/// ```
+pub struct OdometryNode<P = PassThrough<Odometry>>
+where
+    P: Processor<Odometry>,
+{
     // Input subscribers
     encoder_left_sub: Hub<i64>,
     encoder_right_sub: Hub<i64>,
@@ -76,6 +98,9 @@ pub struct OdometryNode {
     // Timing state (moved from static mut for thread safety)
     last_publish_time: u64,
     log_counter: u32,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 /// Kinematic model type
@@ -121,7 +146,13 @@ impl OdometryNode {
             child_frame_id: "base_link".to_string(),
             last_publish_time: 0,
             log_counter: 0,
+            processor: PassThrough::new(),
         })
+    }
+
+    /// Create a builder for advanced configuration
+    pub fn builder() -> OdometryNodeBuilder<PassThrough<Odometry>> {
+        OdometryNodeBuilder::new()
     }
 
     /// Create odometry node for mecanum drive robot
@@ -139,7 +170,12 @@ impl OdometryNode {
         node.track_width = track_width;
         Ok(node)
     }
+}
 
+impl<P> OdometryNode<P>
+where
+    P: Processor<Odometry>,
+{
     /// Set encoder resolution (ticks per revolution)
     pub fn set_encoder_resolution(&mut self, resolution: u32) {
         self.encoder_resolution = resolution;
@@ -369,19 +405,35 @@ impl OdometryNode {
         // Set frame IDs
         odom.set_frames(&self.frame_id, &self.child_frame_id);
 
-        // Publish
-        if let Err(e) = self.odom_publisher.send(odom, &mut None) {
-            ctx.log_error(&format!("Failed to publish odometry: {:?}", e));
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(odom) {
+            if let Err(e) = self.odom_publisher.send(processed, &mut None) {
+                ctx.log_error(&format!("Failed to publish odometry: {:?}", e));
+            }
         }
     }
 }
 
-impl Node for OdometryNode {
+impl<P> Node for OdometryNode<P>
+where
+    P: Processor<Odometry>,
+{
     fn name(&self) -> &'static str {
         "OdometryNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -426,5 +478,188 @@ impl Node for OdometryNode {
                 ));
             }
         }
+    }
+}
+
+/// Builder for OdometryNode with processor configuration
+pub struct OdometryNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    kinematic_model: KinematicModel,
+    wheel_base: f64,
+    wheel_radius: f64,
+    track_width: f64,
+    encoder_resolution: u32,
+    update_rate: f64,
+    processor: P,
+}
+
+impl OdometryNodeBuilder<PassThrough<Odometry>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            kinematic_model: KinematicModel::DifferentialDrive,
+            wheel_base: 0.5,
+            wheel_radius: 0.05,
+            track_width: 0.5,
+            encoder_resolution: 4096,
+            update_rate: 50.0,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for OdometryNodeBuilder<PassThrough<Odometry>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> OdometryNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    /// Set kinematic model
+    pub fn kinematic_model(mut self, model: KinematicModel) -> Self {
+        self.kinematic_model = model;
+        self
+    }
+
+    /// Set wheel base (distance between wheels)
+    pub fn wheel_base(mut self, base: f64) -> Self {
+        self.wheel_base = base;
+        self
+    }
+
+    /// Set wheel radius
+    pub fn wheel_radius(mut self, radius: f64) -> Self {
+        self.wheel_radius = radius;
+        self
+    }
+
+    /// Set track width
+    pub fn track_width(mut self, width: f64) -> Self {
+        self.track_width = width;
+        self
+    }
+
+    /// Set encoder resolution (ticks per revolution)
+    pub fn encoder_resolution(mut self, resolution: u32) -> Self {
+        self.encoder_resolution = resolution;
+        self
+    }
+
+    /// Set update rate in Hz
+    pub fn update_rate(mut self, rate: f64) -> Self {
+        self.update_rate = rate.max(0.1);
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> OdometryNodeBuilder<P2>
+    where
+        P2: Processor<Odometry>,
+    {
+        OdometryNodeBuilder {
+            kinematic_model: self.kinematic_model,
+            wheel_base: self.wheel_base,
+            wheel_radius: self.wheel_radius,
+            track_width: self.track_width,
+            encoder_resolution: self.encoder_resolution,
+            update_rate: self.update_rate,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> OdometryNodeBuilder<ClosureProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Odometry + Send + 'static,
+    {
+        OdometryNodeBuilder {
+            kinematic_model: self.kinematic_model,
+            wheel_base: self.wheel_base,
+            wheel_radius: self.wheel_radius,
+            track_width: self.track_width,
+            encoder_resolution: self.encoder_resolution,
+            update_rate: self.update_rate,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(self, f: F) -> OdometryNodeBuilder<FilterProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Option<Odometry> + Send + 'static,
+    {
+        OdometryNodeBuilder {
+            kinematic_model: self.kinematic_model,
+            wheel_base: self.wheel_base,
+            wheel_radius: self.wheel_radius,
+            track_width: self.track_width,
+            encoder_resolution: self.encoder_resolution,
+            update_rate: self.update_rate,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> OdometryNodeBuilder<Pipeline<Odometry, Odometry, Odometry, P, P2>>
+    where
+        P2: Processor<Odometry, Odometry>,
+    {
+        OdometryNodeBuilder {
+            kinematic_model: self.kinematic_model,
+            wheel_base: self.wheel_base,
+            wheel_radius: self.wheel_radius,
+            track_width: self.track_width,
+            encoder_resolution: self.encoder_resolution,
+            update_rate: self.update_rate,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<OdometryNode<P>> {
+        Ok(OdometryNode {
+            encoder_left_sub: Hub::new("encoder.left")?,
+            encoder_right_sub: Hub::new("encoder.right")?,
+            velocity_sub: Hub::new("cmd_vel")?,
+            odom_publisher: Hub::new("odom")?,
+            kinematic_model: self.kinematic_model,
+            wheel_base: self.wheel_base,
+            wheel_radius: self.wheel_radius,
+            track_width: self.track_width,
+            encoder_resolution: self.encoder_resolution,
+            x: 0.0,
+            y: 0.0,
+            theta: 0.0,
+            vx: 0.0,
+            vy: 0.0,
+            vtheta: 0.0,
+            prev_left_ticks: 0,
+            prev_right_ticks: 0,
+            prev_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64,
+            position_variance: 0.01,
+            orientation_variance: 0.001,
+            update_rate: self.update_rate,
+            use_encoder_input: true,
+            use_velocity_input: false,
+            frame_id: "odom".to_string(),
+            child_frame_id: "base_link".to_string(),
+            last_publish_time: 0,
+            log_counter: 0,
+            processor: self.processor,
+        })
     }
 }

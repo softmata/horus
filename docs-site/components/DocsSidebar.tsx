@@ -64,6 +64,7 @@ const sections: SidebarSection[] = [
       { title: "message! Macro", href: "/core-concepts/message-macro", order: 7 },
       { title: "Message Types", href: "/core-concepts/message-types", order: 8 },
       { title: "Real-Time Nodes", href: "/core-concepts/realtime-nodes", order: 9 },
+      { title: "Hybrid Nodes & Processors", href: "/core-concepts/hybrid-nodes", order: 10 },
     ],
   },
   {
@@ -75,6 +76,17 @@ const sections: SidebarSection[] = [
       { title: "Testing", href: "/development/testing", order: 4 },
       { title: "Parameters", href: "/development/parameters", order: 5 },
       { title: "Library Reference", href: "/development/library-reference", order: 6 },
+    ],
+  },
+  {
+    title: "Sim3D Simulator",
+    links: [
+      { title: "Overview", href: "/sim3d", order: 0 },
+      { title: "Installation", href: "/sim3d/getting-started/installation", order: 1 },
+      { title: "Quick Start", href: "/sim3d/getting-started/quick-start", order: 2 },
+      { title: "Sensors", href: "/sim3d/sensors/overview", order: 3 },
+      { title: "Physics", href: "/sim3d/physics/overview", order: 4 },
+      { title: "Reinforcement Learning", href: "/sim3d/rl/overview", order: 5 },
     ],
   },
   {
@@ -163,6 +175,9 @@ const sections: SidebarSection[] = [
           { title: "YOLO Detector", href: "/built-in-nodes/yolo-detector", order: 1 },
           { title: "Pose Estimation", href: "/built-in-nodes/pose-estimation", order: 2 },
           { title: "Segmentation", href: "/built-in-nodes/semantic-segmentation", order: 3 },
+          { title: "Visual Odometry", href: "/built-in-nodes/visual-odometry", order: 4 },
+          { title: "Depth Estimation", href: "/built-in-nodes/depth-estimation", order: 5 },
+          { title: "Embedding", href: "/built-in-nodes/embedding", order: 6 },
         ]
       },
       {
@@ -171,8 +186,9 @@ const sections: SidebarSection[] = [
         order: 8,
         children: [
           { title: "ONNX Inference", href: "/built-in-nodes/onnx-inference", order: 1 },
-          { title: "TFLite Inference", href: "/built-in-nodes/tflite-inference", order: 2 },
-          { title: "Cloud LLM", href: "/built-in-nodes/cloud-llm", order: 3 },
+          { title: "TensorRT Inference", href: "/built-in-nodes/tensorrt-inference", order: 2 },
+          { title: "TFLite Inference", href: "/built-in-nodes/tflite-inference", order: 3 },
+          { title: "Cloud LLM", href: "/built-in-nodes/cloud-llm", order: 4 },
         ]
       },
     ],
@@ -211,6 +227,7 @@ const sections: SidebarSection[] = [
       { title: "Deterministic Execution", href: "/advanced/deterministic-execution", order: 3 },
       { title: "Robot Presets", href: "/advanced/robot-presets", order: 4 },
       { title: "RTOS Integration", href: "/advanced/rtos-integration", order: 5 },
+      { title: "GPU Tensor Sharing", href: "/advanced/gpu-tensor-sharing", order: 6 },
     ],
   },
   {
@@ -220,6 +237,7 @@ const sections: SidebarSection[] = [
       { title: "horus_core", href: "/api/core", order: 1 },
       { title: "horus_messages", href: "/api/messages", order: 2 },
       { title: "horus_macros", href: "/api/macros", order: 3 },
+      { title: "TensorPool", href: "/api/tensor-pool", order: 4 },
     ],
   },
 ];
@@ -235,6 +253,7 @@ export function DocsSidebar({ isOpen = true, onClose }: DocsSidebarProps) {
     "Getting Started": true,
     "Core Concepts": true,
     "Development": true,
+    "Sim3D Simulator": true,
     "Built-in Nodes/Drivers": true,
     "Package Management": true,
     "Multi-Language": true,

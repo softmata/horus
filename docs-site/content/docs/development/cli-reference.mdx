@@ -77,7 +77,7 @@ This is useful when you have existing code and want to add HORUS support, or whe
 
 **What it does**: Creates a new HORUS project with all the boilerplate set up for you.
 
-**Why it's useful**: No need to remember dependencies or configuration - just pick a language and start coding.
+**Why it's useful**: Minimal configuration required. Select a language and begin development.
 
 ### Basic Usage
 
@@ -85,7 +85,7 @@ This is useful when you have existing code and want to add HORUS support, or whe
 # Interactive mode (asks you questions)
 horus new my_project
 
-# Rust with helpful macros (recommended!)
+# Rust with node! macro (recommended for reduced boilerplate)
 horus new my_project --macro
 
 # Python project
@@ -142,7 +142,7 @@ horus run
 # Run specific file
 horus run src/controller.rs
 
-# Run optimized (100x faster!)
+# Run optimized (release mode)
 horus run --release
 ```
 
@@ -152,8 +152,8 @@ horus run --release
 horus run [FILE] [OPTIONS] [-- ARGS]
 
 Options:
-  -r, --release            Optimize for speed (use for real testing!)
-  -b, --build-only         Just compile, don't run
+  -r, --release            Optimize for speed (recommended for benchmarks)
+  -b, --build-only         Compile without running
   -c, --clean              Remove cached build artifacts and dependencies
                            (Use after updating HORUS or when compilation fails)
   -- <ARGS>                Arguments for your program
@@ -161,16 +161,16 @@ Options:
 
 ### Why --release Matters
 
-**IMPORTANT: Debug builds are 20-100x slower than release builds!**
+Debug builds have significantly higher overhead than release builds due to runtime checks and lack of optimizations.
 
-**Debug mode** (default): Fast to compile, slow to run
-- Good for: Quick iteration during development
-- Tick time: 60-200μs (way too slow for production!)
-- Adds overflow checks, bounds checking, assertions, no optimizations
+**Debug mode** (default): Fast compilation, slower execution
+- Use case: Development iteration
+- Typical tick time: 60-200μs
+- Includes overflow checks, bounds checking, assertions
 
-**Release mode** (`--release`): Slow to compile, fast to run
-- Good for: Performance testing, benchmarks, production, real robot testing
-- Tick time: 1-3μs (20-100x faster!)
+**Release mode** (`--release`): Slower compilation, optimized execution
+- Use case: Performance testing, benchmarks, production deployment
+- Typical tick time: 1-3μs
 - Full compiler optimizations enabled
 
 **Common Mistake:**

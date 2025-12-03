@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FiGithub, FiMenu, FiSearch, FiMessageCircle } from "react-icons/fi";
+import { FiGithub, FiMenu, FiSearch, FiX } from "react-icons/fi";
 import { ThemeToggle } from "./ThemeToggle";
 import { SearchModal } from "./SearchModal";
 import { useState, useEffect } from "react";
@@ -12,6 +12,7 @@ interface DocsNavProps {
 
 export function DocsNav({ onMenuClick }: DocsNavProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Keyboard shortcut for search (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -26,99 +27,138 @@ export function DocsNav({ onMenuClick }: DocsNavProps) {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  return (
-    <nav className="sticky top-0 z-50 w-full border-b border-[var(--border)] bg-[var(--card-bg)] bg-opacity-95 backdrop-blur-lg">
-      <div className="w-full px-4 sm:px-6 lg:px-8">
-        <div className="flex h-16 items-center justify-between relative">
-          <div className="flex items-center gap-3 sm:gap-6">
-            {/* Hamburger menu for mobile */}
-            {onMenuClick && (
-              <button
-                onClick={onMenuClick}
-                className="lg:hidden p-2 hover:bg-[var(--surface)] rounded-md transition-colors touch-manipulation"
-                aria-label="Open menu"
-              >
-                <FiMenu className="w-5 h-5" />
-              </button>
-            )}
+  const navLinks = [
+    { href: "/getting-started/installation", label: "Get Started" },
+    { href: "/architecture", label: "Architecture" },
+    { href: "/built-in-nodes", label: "Nodes" },
+    { href: "/performance/benchmarks", label: "Benchmarks" },
+  ];
 
-            <Link
-              href="/"
-              className="flex items-center gap-2 font-bold text-lg sm:text-xl bg-gradient-to-r from-[var(--accent)] to-[var(--success)] bg-clip-text text-transparent hover:opacity-80 transition-opacity"
-            >
-              HORUS <span className="text-xs sm:text-sm font-normal text-[var(--text-secondary)]">/ docs</span>
-            </Link>
-            <div className="hidden md:flex items-center gap-6 ml-8">
-              <Link
-                href="/goals"
-                className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors"
+  return (
+    <>
+      <nav className="sticky top-0 z-50 w-full border-b border-[var(--border)] bg-[var(--bg-primary)]/95 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex h-14 items-center justify-between">
+            {/* Left: Logo + Nav Links */}
+            <div className="flex items-center gap-8">
+              <div className="flex items-center gap-3">
+                {/* Hamburger menu for mobile */}
+                {onMenuClick ? (
+                  <button
+                    onClick={onMenuClick}
+                    className="lg:hidden p-2 -ml-2 hover:bg-[var(--surface)] rounded-md transition-colors"
+                    aria-label="Open sidebar"
+                  >
+                    <FiMenu className="w-5 h-5 text-[var(--text-secondary)]" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                    className="md:hidden p-2 -ml-2 hover:bg-[var(--surface)] rounded-md transition-colors"
+                    aria-label="Toggle menu"
+                  >
+                    {isMobileMenuOpen ? (
+                      <FiX className="w-5 h-5 text-[var(--text-secondary)]" />
+                    ) : (
+                      <FiMenu className="w-5 h-5 text-[var(--text-secondary)]" />
+                    )}
+                  </button>
+                )}
+
+                <Link
+                  href="/"
+                  className="flex items-center gap-2 font-bold text-lg text-[var(--text-primary)] hover:text-[var(--accent)] transition-colors"
+                >
+                  <span className="text-[var(--accent)]">HORUS</span>
+                  <span className="text-[var(--text-tertiary)] font-normal text-sm">Docs</span>
+                </Link>
+              </div>
+
+              {/* Desktop Nav Links */}
+              <div className="hidden md:flex items-center gap-1">
+                {navLinks.map((link) => (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)] rounded-md transition-colors"
+                  >
+                    {link.label}
+                  </Link>
+                ))}
+              </div>
+            </div>
+
+            {/* Right: Search + Actions */}
+            <div className="flex items-center gap-2">
+              {/* Search Button */}
+              <button
+                onClick={() => setIsSearchOpen(true)}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[var(--surface)] border border-[var(--border)] rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:border-[var(--border-hover)] transition-colors"
+                aria-label="Search documentation"
               >
-                Goals & Vision
-              </Link>
-              <Link
-                href="/getting-started/installation"
-                className="text-sm text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors"
+                <FiSearch className="w-4 h-4" />
+                <span className="hidden sm:inline">Search</span>
+                <kbd className="hidden lg:inline-flex items-center gap-0.5 ml-2 px-1.5 py-0.5 text-[10px] font-medium bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-tertiary)]">
+                  <span>⌘</span>K
+                </kbd>
+              </button>
+
+              {/* Marketplace - gradient button */}
+              <a
+                href="https://marketplace.horus-registry.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hidden sm:inline-flex items-center px-3 py-1.5 text-sm font-medium bg-gradient-to-r from-[var(--accent)] to-[var(--success)] text-white rounded-md hover:opacity-90 transition-opacity"
               >
-                Getting Started
-              </Link>
+                Marketplace
+              </a>
+
+              <div className="flex items-center gap-1 ml-1">
+                <ThemeToggle />
+                <a
+                  href="https://github.com/softmata/horus"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)] rounded-md transition-colors"
+                  title="GitHub"
+                  aria-label="GitHub Repository"
+                >
+                  <FiGithub className="w-5 h-5" />
+                </a>
+              </div>
             </div>
           </div>
-
-          <div className="flex items-center gap-2 sm:gap-4">
-            {/* Search Button */}
-            <button
-              onClick={() => setIsSearchOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[var(--surface)] border border-[var(--border)] rounded-md text-[var(--text-secondary)] hover:border-[var(--accent)] transition-colors touch-manipulation"
-              aria-label="Search documentation"
-            >
-              <FiSearch className="w-4 h-4" />
-              <span className="hidden sm:inline">Search</span>
-              <kbd className="hidden lg:inline-block ml-2 px-1.5 py-0.5 text-xs bg-[var(--card-bg)] border border-[var(--border)] rounded">
-                ⌘K
-              </kbd>
-            </button>
-
-            <a
-              href="https://marketplace.horus-registry.dev/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden sm:block text-sm px-3 py-1.5 bg-gradient-to-r from-[var(--accent)] to-[var(--success)] text-white font-medium rounded-md hover:opacity-90 transition-opacity touch-manipulation"
-            >
-              Marketplace
-            </a>
-            <Link
-              href="/performance/benchmarks"
-              className="hidden md:block text-sm px-3 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded-md text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors touch-manipulation"
-            >
-              Benchmarks
-            </Link>
-            <ThemeToggle />
-            <a
-              href="https://discord.gg/hEZC3ev2Nf"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors touch-manipulation"
-              title="Join Discord Community"
-              aria-label="Discord Community"
-            >
-              <FiMessageCircle className="w-5 h-5" />
-            </a>
-            <a
-              href="https://github.com/softmata/horus"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors touch-manipulation"
-              title="GitHub Repository"
-              aria-label="GitHub Repository"
-            >
-              <FiGithub className="w-5 h-5" />
-            </a>
-          </div>
         </div>
-      </div>
+
+        {/* Mobile Menu Dropdown */}
+        {isMobileMenuOpen && !onMenuClick && (
+          <div className="md:hidden border-t border-[var(--border)] bg-[var(--bg-primary)]">
+            <div className="px-4 py-3 space-y-1">
+              {navLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="block px-3 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)] rounded-md transition-colors"
+                >
+                  {link.label}
+                </Link>
+              ))}
+              <a
+                href="https://marketplace.horus-registry.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block px-3 py-2 text-sm text-[var(--accent)] hover:bg-[var(--surface)] rounded-md transition-colors"
+              >
+                Marketplace
+              </a>
+            </div>
+          </div>
+        )}
+      </nav>
 
       {/* Search Modal */}
       <SearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
-    </nav>
+    </>
   );
 }

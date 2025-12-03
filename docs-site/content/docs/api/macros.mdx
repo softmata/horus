@@ -43,9 +43,9 @@ Define topics this node publishes to.
 ```rust
 pub {
     // Syntax: name: Type -> "topic_name"
-    velocity: f32 -> "robot/velocity",
-    status: String -> "robot/status",
-    pose: Pose2D -> "robot/pose"
+    velocity: f32 -> "robot.velocity",
+    status: String -> "robot.status",
+    pose: Pose2D -> "robot.pose"
 }
 ```
 
@@ -60,8 +60,8 @@ Define topics this node subscribes to.
 ```rust
 sub {
     // Syntax: name: Type <- "topic_name"
-    commands: String <- "user/commands",
-    sensors: f32 <- "sensors/temperature"
+    commands: String <- "user.commands",
+    sensors: f32 <- "sensors.temperature"
 }
 ```
 
@@ -210,7 +210,7 @@ node! {
 ```rust
 node! {
     HeartbeatNode {
-        pub { alive: bool -> "system/heartbeat" }
+        pub { alive: bool -> "system.heartbeat" }
         data { count: u64 = 0 }
 
         tick(ctx) {
@@ -430,7 +430,7 @@ tick(ctx) {
 
 ```rust
 // Good
-pub { motor_velocity: f32 -> "motors/velocity" }
+pub { motor_velocity: f32 -> "motors.velocity" }
 
 // Bad
 pub { x: f32 -> "data" }

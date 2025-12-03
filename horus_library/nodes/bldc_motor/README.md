@@ -160,7 +160,7 @@ use horus_library::nodes::BldcMotorNode;
 let mut bldc = BldcMotorNode::new()?;
 
 // Create with custom topic
-let mut bldc = BldcMotorNode::new_with_topic("motors/quadcopter")?;
+let mut bldc = BldcMotorNode::new_with_topic("motors.quadcopter")?;
 ```
 
 ### Configuration Methods
@@ -272,7 +272,7 @@ fn main() -> Result<()> {
 
             // Send velocity command: 2000 RPM
             let cmd = MotorCommand::velocity(0, 2000.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -330,7 +330,7 @@ fn main() -> Result<()> {
 
             for motor_id in 0..4 {
                 let cmd = MotorCommand::velocity(motor_id, hover_rpm);
-                hub.send(cmd, None)?;
+                hub.send(cmd, &mut None)?;
             }
 
             Ok(())
@@ -441,7 +441,7 @@ fn main() -> Result<()> {
 
             // Command 3000 RPM - will ramp up smoothly
             let cmd = MotorCommand::velocity(0, 3000.0);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             ctx.log_info("Ramping motor to 3000 RPM (1000 RPM/s)");
             Ok(())
@@ -493,8 +493,8 @@ fn main() -> Result<()> {
             let cmd0 = MotorCommand::velocity(0, 2000.0);
             let cmd1 = MotorCommand::velocity(1, 2000.0);
 
-            hub.send(cmd0, None)?;
-            hub.send(cmd1, None)?;
+            hub.send(cmd0, &mut None)?;
+            hub.send(cmd1, &mut None)?;
 
             // Motor 0 spins forward, Motor 1 spins backward
             // (due to direction inversion)
@@ -707,14 +707,14 @@ DShot does NOT require calibration. For PWM and OneShot protocols:
 2. Send maximum throttle (2000 μs):
    ```rust
    let cmd = MotorCommand::velocity(0, 10000.0);  // Max velocity
-   hub.send(cmd, None)?;
+   hub.send(cmd, &mut None)?;
    ```
 3. Connect motor power (battery) - ESC will beep
 4. Wait for confirmation beeps (2-3 seconds)
 5. Send minimum throttle (1000 μs):
    ```rust
    let cmd = MotorCommand::velocity(0, 0.0);  // Min velocity
-   hub.send(cmd, None)?;
+   hub.send(cmd, &mut None)?;
    ```
 6. ESC will beep to confirm calibration complete
 7. Repeat for all motors

@@ -50,8 +50,8 @@ All built-in nodes are **production-grade drivers** with real hardware support, 
 
 HORUS built-in nodes follow a consistent API pattern:
 
-1. **Simple construction** - `NodeType::new()?` with intelligent defaults
-2. **Clear configuration** - `set_*()` methods with named parameters (no magic numbers)
+1. **Simple construction** - `NodeType::new()?` with sensible defaults
+2. **Explicit configuration** - `set_*()` methods with named parameters
 3. **Runtime access** - `get_state()` methods to read current values
 4. **Pub/sub communication** - Standard Hub/Link messaging
 5. **Lifecycle hooks** - `init()`, `tick()`, `shutdown()` automatically called
@@ -141,12 +141,12 @@ sensor.configure_mode(3);          // Magic numbers
 
 HORUS approach (plug-and-play nodes):
 ```rust
-// HORUS: Pre-configured, high-level node with clear API
+// HORUS: Pre-configured, high-level node with explicit API
 let mut sensor = SensorXNode::new()?;
-sensor.set_sample_rate(100);      // Clear, intuitive configuration
+sensor.set_sample_rate(100);      // Explicit configuration
 sensor.set_filter_mode(FilterMode::Median);
 sensor.calibrate()?;
-// Ready to use with intelligent defaults
+// Ready to use with sensible defaults
 ```
 
 ### Customization with Freedom
@@ -154,8 +154,8 @@ sensor.calibrate()?;
 Every built-in node is **fully customizable** while maintaining simplicity:
 
 - **Flexible configuration**: Map pins, addresses, parameters to your specific setup
-- **Intelligent defaults**: Works immediately, tune as needed
-- **Clear abstractions**: No magic numbers or register manipulation
+- **Sensible defaults**: Works immediately, tune as needed
+- **Explicit abstractions**: Named methods instead of register manipulation
 - **Hardware/simulation fallback**: Test without physical hardware
 - **Message-based interface**: Standard pub/sub communication across all nodes
 
@@ -317,17 +317,36 @@ sudo apt install libraspberrypi-dev i2c-tools can-utils
 sudo raspi-config  # Interface Options -> I2C, SPI, etc.
 ```
 
-**2. Enable cargo features in your project:**
+**2. Enable features (choose one method):**
+
+**Option A: Automatic detection (recommended)**
+
+`horus run` automatically detects which hardware nodes you're using and enables the required features:
+
+```bash
+horus run main.rs --release
+# Output: Auto-detected hardware nodes (features: i2c-hardware, gpio-hardware)
+```
+
+**Option B: Explicit in horus.yaml**
+
+Add features to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - i2c-hardware
+      - gpio-hardware
+```
+
+**Option C: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
 
 ```toml
 [dependencies]
 horus_library = { version = "0.1", features = ["i2c-hardware", "gpio-hardware"] }
-```
-
-**3. Build with hardware support:**
-
-```bash
-cargo build --release --features="i2c-hardware,gpio-hardware"
 ```
 
 See **[Installation Guide](/getting-started/installation#hardware-driver-support)** for platform-specific instructions.

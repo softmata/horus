@@ -2,6 +2,44 @@
 
 UART/RS232/RS485 serial communication for sensors, GPS modules, motor controllers, and serial peripherals with configurable baud rates and data formats.
 
+## Quick Start
+
+```rust
+use horus_library::nodes::{SerialNode, SerialBackend};
+use horus_library::SerialData;
+use horus_core::{Scheduler, Hub};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Create serial node
+    let serial = SerialNode::new_with_backend(
+        "/dev/ttyUSB0",  // Serial port
+        9600,            // Baud rate
+        "serial.rx",     // Receive topic
+        "serial.tx",     // Transmit topic
+        SerialBackend::Hardware,
+    )?;
+
+    scheduler.add(Box::new(serial), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Send data from another node:
+let tx_hub = Hub::<SerialData>::new("serial.tx")?;
+tx_hub.send(SerialData::from_bytes(b"Hello Arduino!"), None);
+
+// Receive data in your node:
+let rx_hub = Hub::<SerialData>::new("serial.rx")?;
+if let Some(data) = rx_hub.recv_latest() {
+    println!("Received: {:?}", data.as_bytes());
+}
+```
+
+**Subscribes to:** `serial.tx` (data to send)
+**Publishes to:** `serial.rx` (received data)
+
 ## Overview
 
 The Serial Node provides UART communication with serial devices via standard serial ports. It supports various baud rates, data formats, and flow control options for interfacing with GPS modules, Arduino boards, telemetry radios, Modbus devices, and other serial peripherals.
@@ -117,8 +155,8 @@ let mut serial = SerialNode::new()?;
 let mut serial = SerialNode::new_with_config(
     "/dev/ttyUSB0",  // port
     115200,          // baud_rate
-    "serial/rx",     // rx_topic
-    "serial/tx"      // tx_topic
+    "serial.rx",     // rx_topic
+    "serial.tx"      // tx_topic
 )?;
 ```
 
@@ -245,8 +283,8 @@ fn main() -> Result<()> {
     let mut serial = SerialNode::new_with_config(
         "/dev/ttyUSB0",
         57600,
-        "arduino/rx",
-        "arduino/tx"
+        "arduino.rx",
+        "arduino.tx"
     )?;
 
     scheduler.add(Box::new(serial), 1, Some(true));
@@ -255,13 +293,13 @@ fn main() -> Result<()> {
     let controller = node! {
         name: "arduino_controller",
         tick: |ctx| {
-            let tx_hub = Hub::<SerialData>::new("arduino/tx")?;
-            let rx_hub = Hub::<SerialData>::new("arduino/rx")?;
+            let tx_hub = Hub::<SerialData>::new("arduino.tx")?;
+            let rx_hub = Hub::<SerialData>::new("arduino.rx")?;
 
             // Send digital write command (Firmata protocol)
             let mut msg = SerialData::new("/dev/ttyUSB0");
             msg.set_data(&[0xF5, 0x01, 0x00])?;  // Digital write pin 1 LOW
-            tx_hub.send(msg, None)?;
+            tx_hub.send(msg, &mut None)?;
 
             // Process responses
             while let Some(response) = rx_hub.recv(None) {
@@ -290,8 +328,8 @@ fn main() -> Result<()> {
     let mut serial = SerialNode::new_with_config(
         "/dev/ttyUSB0",
         19200,
-        "modbus/rx",
-        "modbus/tx"
+        "modbus.rx",
+        "modbus.tx"
     )?;
     serial.set_format(8, 1, SerialData::PARITY_EVEN);  // 8E1
 
@@ -301,8 +339,8 @@ fn main() -> Result<()> {
     let modbus = node! {
         name: "modbus_master",
         tick: |ctx| {
-            let tx_hub = Hub::<SerialData>::new("modbus/tx")?;
-            let rx_hub = Hub::<SerialData>::new("modbus/rx")?;
+            let tx_hub = Hub::<SerialData>::new("modbus.tx")?;
+            let rx_hub = Hub::<SerialData>::new("modbus.rx")?;
 
             // Read holding registers (function code 0x03)
             let mut msg = SerialData::new("/dev/ttyUSB0");
@@ -314,7 +352,7 @@ fn main() -> Result<()> {
                 0xC5, 0xCD  // CRC16
             ];
             msg.set_data(&modbus_request)?;
-            tx_hub.send(msg, None)?;
+            tx_hub.send(msg, &mut None)?;
 
             // Process response
             if let Some(response) = rx_hub.recv(None) {
@@ -346,8 +384,8 @@ fn main() -> Result<()> {
     let mut serial = SerialNode::new_with_config(
         "/dev/ttyUSB0",
         57600,
-        "telemetry/rx",
-        "telemetry/tx"
+        "telemetry.rx",
+        "telemetry.tx"
     )?;
 
     scheduler.add(Box::new(serial), 1, Some(true));
@@ -356,8 +394,8 @@ fn main() -> Result<()> {
     let telemetry = node! {
         name: "telemetry",
         tick: |ctx| {
-            let tx_hub = Hub::<SerialData>::new("telemetry/tx")?;
-            let rx_hub = Hub::<SerialData>::new("telemetry/rx")?;
+            let tx_hub = Hub::<SerialData>::new("telemetry.tx")?;
+            let rx_hub = Hub::<SerialData>::new("telemetry.rx")?;
 
             // Send MAVLink heartbeat
             let mut msg = SerialData::new("/dev/ttyUSB0");
@@ -371,7 +409,7 @@ fn main() -> Result<()> {
                 // ... payload and checksum
             ];
             msg.set_data(&heartbeat)?;
-            tx_hub.send(msg, None)?;
+            tx_hub.send(msg, &mut None)?;
 
             // Receive telemetry
             while let Some(data) = rx_hub.recv(None) {
@@ -405,13 +443,13 @@ fn main() -> Result<()> {
     let comm = node! {
         name: "serial_comm",
         tick: |ctx| {
-            let tx_hub = Hub::<SerialData>::new("serial/tx")?;
-            let rx_hub = Hub::<SerialData>::new("serial/rx")?;
+            let tx_hub = Hub::<SerialData>::new("serial.tx")?;
+            let rx_hub = Hub::<SerialData>::new("serial.rx")?;
 
             // Send command
             let mut cmd = SerialData::new("/dev/ttyUSB0");
             cmd.set_string("AT+VERSION\r\n")?;
-            tx_hub.send(cmd, None)?;
+            tx_hub.send(cmd, &mut None)?;
 
             // Receive response
             while let Some(response) = rx_hub.recv(None) {
@@ -422,7 +460,7 @@ fn main() -> Result<()> {
                     if text.contains("OK") {
                         let mut reply = SerialData::new("/dev/ttyUSB0");
                         reply.set_string("AT+STATUS\r\n")?;
-                        tx_hub.send(reply, None)?;
+                        tx_hub.send(reply, &mut None)?;
                     }
                 }
             }
@@ -448,8 +486,8 @@ fn main() -> Result<()> {
     let mut serial = SerialNode::new_with_config(
         "/dev/ttyUSB0",
         115200,
-        "binary/rx",
-        "binary/tx"
+        "binary.rx",
+        "binary.tx"
     )?;
 
     scheduler.add(Box::new(serial), 1, Some(true));
@@ -458,8 +496,8 @@ fn main() -> Result<()> {
     let binary = node! {
         name: "binary_protocol",
         tick: |ctx| {
-            let tx_hub = Hub::<SerialData>::new("binary/tx")?;
-            let rx_hub = Hub::<SerialData>::new("binary/rx")?;
+            let tx_hub = Hub::<SerialData>::new("binary.tx")?;
+            let rx_hub = Hub::<SerialData>::new("binary.rx")?;
 
             // Send binary packet (custom protocol)
             let mut msg = SerialData::new("/dev/ttyUSB0");
@@ -471,7 +509,7 @@ fn main() -> Result<()> {
                 0x00            // Checksum
             ];
             msg.set_data(&packet)?;
-            tx_hub.send(msg, None)?;
+            tx_hub.send(msg, &mut None)?;
 
             // Process binary responses
             while let Some(response) = rx_hub.recv(None) {
@@ -771,7 +809,7 @@ serial.set_baud_rate(115200);
 // Send test data
 let mut msg = SerialData::new("/dev/ttyUSB0");
 msg.set_string("LOOPBACK_TEST\n")?;
-tx_hub.send(msg, None)?;
+tx_hub.send(msg, &mut None)?;
 
 // Should receive same data back
 if let Some(response) = rx_hub.recv(None) {

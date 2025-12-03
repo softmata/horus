@@ -61,8 +61,8 @@ impl SerialNode {
         Self::new_with_backend(
             "/dev/ttyUSB0",
             9600,
-            "serial/rx",
-            "serial/tx",
+            "serial.rx",
+            "serial.tx",
             SerialBackend::Simulation,
         )
     }

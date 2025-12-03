@@ -3,6 +3,8 @@ pub mod crash_recovery;
 pub mod debug_panel;
 #[cfg(feature = "visual")]
 pub mod dock;
+pub mod file_dialog;
+pub mod hframe_panel;
 pub mod keybindings;
 pub mod layouts;
 pub mod notifications;
@@ -10,7 +12,6 @@ pub mod plugin_panel;
 pub mod recent_files;
 pub mod stats_panel;
 pub mod status_bar;
-pub mod tf_panel;
 pub mod theme;
 pub mod tooltips;
 pub mod view_modes;

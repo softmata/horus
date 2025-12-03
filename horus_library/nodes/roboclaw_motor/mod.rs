@@ -6,6 +6,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 // Serial hardware support
 #[cfg(feature = "serial-hardware")]
 use serialport::SerialPort;
@@ -57,7 +62,27 @@ use std::time::Duration;
 /// roboclaw.set_velocity_pid(1, 1.0, 0.5, 0.25, 44000); // Motor 1 PID tuning
 /// roboclaw.set_max_current(30.0); // 30A current limit
 /// ```
-pub struct RoboclawMotorNode {
+///
+/// # Hybrid Pattern
+///
+/// This node supports the hybrid pattern for custom processing of feedback:
+///
+/// ```rust,ignore
+/// let node = RoboclawMotorNode::builder("/dev/ttyUSB0", 0x80)
+///     .with_filter(|feedback| {
+///         // Only publish feedback when motor is moving
+///         if feedback.velocity != 0 {
+///             Some(feedback)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct RoboclawMotorNode<P = PassThrough<RoboclawFeedback>>
+where
+    P: Processor<RoboclawFeedback>,
+{
     // Motor command subscribers
     motor1_cmd_sub: Hub<MotorCommand>,
     motor2_cmd_sub: Hub<MotorCommand>,
@@ -109,6 +134,9 @@ pub struct RoboclawMotorNode {
 
     // Timing state (moved from static mut for thread safety)
     feedback_counter: u32,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 /// Motor state tracker
@@ -254,9 +282,23 @@ impl RoboclawMotorNode {
             command_count: 0,
             last_feedback_time: [0, 0],
             feedback_counter: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for custom configuration
+    pub fn builder(
+        serial_port: &str,
+        address: u8,
+    ) -> RoboclawMotorNodeBuilder<PassThrough<RoboclawFeedback>> {
+        RoboclawMotorNodeBuilder::new(serial_port, address)
+    }
+}
+
+impl<P> RoboclawMotorNode<P>
+where
+    P: Processor<RoboclawFeedback>,
+{
     /// Set baud rate for serial communication
     pub fn set_baud_rate(&mut self, baud: u32) {
         self.baud_rate = baud;
@@ -614,7 +656,7 @@ impl RoboclawMotorNode {
         self.main_current = self.motor_currents[0] + self.motor_currents[1];
     }
 
-    /// Publish motor feedback
+    /// Publish motor feedback (through processor pipeline)
     fn publish_feedback(&mut self, motor_id: u8, mut ctx: Option<&mut NodeInfo>) {
         let idx = (motor_id - 1) as usize;
         let state = &self.motor_states[idx];
@@ -633,20 +675,23 @@ impl RoboclawMotorNode {
                 .as_nanos() as u64,
         };
 
-        let publisher = if motor_id == 1 {
-            &mut self.motor1_feedback_pub
-        } else {
-            &mut self.motor2_feedback_pub
-        };
+        // Process through pipeline (filter/transform)
+        if let Some(processed) = self.processor.process(feedback) {
+            let publisher = if motor_id == 1 {
+                &mut self.motor1_feedback_pub
+            } else {
+                &mut self.motor2_feedback_pub
+            };
 
-        if let Err(e) = publisher.send(feedback, &mut None) {
-            ctx.log_error(&format!(
-                "Failed to publish motor {} feedback: {:?}",
-                motor_id, e
-            ));
+            if let Err(e) = publisher.send(processed, &mut None) {
+                ctx.log_error(&format!(
+                    "Failed to publish motor {} feedback: {:?}",
+                    motor_id, e
+                ));
+            }
+
+            self.last_feedback_time[idx] = feedback.timestamp;
         }
-
-        self.last_feedback_time[idx] = feedback.timestamp;
     }
 
     /// Publish diagnostics
@@ -808,12 +853,23 @@ impl RoboclawMotorNode {
     }
 }
 
-impl Node for RoboclawMotorNode {
+impl<P> Node for RoboclawMotorNode<P>
+where
+    P: Processor<RoboclawFeedback>,
+{
     fn name(&self) -> &'static str {
         "RoboclawMotorNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
     fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
+        self.processor.on_tick();
+
         let dt = 0.02; // Assume 50Hz tick rate
 
         // Process motor 1 commands
@@ -830,7 +886,7 @@ impl Node for RoboclawMotorNode {
         self.update_encoders(dt);
         self.simulate_battery(dt);
 
-        // Publish feedback at 50Hz
+        // Publish feedback at 50Hz (through processor pipeline)
         self.feedback_counter += 1;
         // Publish motor feedback every tick
         self.publish_feedback(1, ctx.as_deref_mut());
@@ -857,6 +913,9 @@ impl Node for RoboclawMotorNode {
 
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
         ctx.log_info("RoboclawMotorNode shutting down - stopping all motors");
+
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
 
         // Stop both motors by setting velocity to 0
         self.motor_states[0].velocity = 0;
@@ -949,5 +1008,146 @@ impl LogSummary for RoboclawDiagnostics {
             self.temperature2,
             self.error_status
         )
+    }
+}
+
+/// Builder for RoboclawMotorNode with custom processor
+pub struct RoboclawMotorNodeBuilder<P>
+where
+    P: Processor<RoboclawFeedback>,
+{
+    serial_port: String,
+    device_address: u8,
+    baud_rate: u32,
+    processor: P,
+}
+
+impl RoboclawMotorNodeBuilder<PassThrough<RoboclawFeedback>> {
+    /// Create a new builder with default configuration
+    pub fn new(serial_port: &str, address: u8) -> Self {
+        Self {
+            serial_port: serial_port.to_string(),
+            device_address: address,
+            baud_rate: 38400,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> RoboclawMotorNodeBuilder<P>
+where
+    P: Processor<RoboclawFeedback>,
+{
+    /// Set baud rate
+    pub fn with_baud_rate(mut self, baud_rate: u32) -> Self {
+        self.baud_rate = baud_rate;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> RoboclawMotorNodeBuilder<P2>
+    where
+        P2: Processor<RoboclawFeedback>,
+    {
+        RoboclawMotorNodeBuilder {
+            serial_port: self.serial_port,
+            device_address: self.device_address,
+            baud_rate: self.baud_rate,
+            processor,
+        }
+    }
+
+    /// Add a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> RoboclawMotorNodeBuilder<ClosureProcessor<RoboclawFeedback, RoboclawFeedback, F>>
+    where
+        F: FnMut(RoboclawFeedback) -> RoboclawFeedback + Send + 'static,
+    {
+        RoboclawMotorNodeBuilder {
+            serial_port: self.serial_port,
+            device_address: self.device_address,
+            baud_rate: self.baud_rate,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> RoboclawMotorNodeBuilder<FilterProcessor<RoboclawFeedback, RoboclawFeedback, F>>
+    where
+        F: FnMut(RoboclawFeedback) -> Option<RoboclawFeedback> + Send + 'static,
+    {
+        RoboclawMotorNodeBuilder {
+            serial_port: self.serial_port,
+            device_address: self.device_address,
+            baud_rate: self.baud_rate,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (same output type constraint)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> RoboclawMotorNodeBuilder<
+        Pipeline<RoboclawFeedback, RoboclawFeedback, RoboclawFeedback, P, P2>,
+    >
+    where
+        P2: Processor<RoboclawFeedback, RoboclawFeedback>,
+    {
+        RoboclawMotorNodeBuilder {
+            serial_port: self.serial_port,
+            device_address: self.device_address,
+            baud_rate: self.baud_rate,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<RoboclawMotorNode<P>> {
+        if !(0x80..=0x87).contains(&self.device_address) {
+            return Err(horus_core::error::HorusError::config(format!(
+                "Invalid Roboclaw address: 0x{:02X}. Must be 0x80-0x87",
+                self.device_address
+            )));
+        }
+
+        Ok(RoboclawMotorNode {
+            motor1_cmd_sub: Hub::new("roboclaw.motor1.cmd")?,
+            motor2_cmd_sub: Hub::new("roboclaw.motor2.cmd")?,
+            motor1_feedback_pub: Hub::new("roboclaw.motor1.feedback")?,
+            motor2_feedback_pub: Hub::new("roboclaw.motor2.feedback")?,
+            diagnostic_pub: Hub::new("roboclaw.diagnostics")?,
+            device_address: self.device_address,
+            baud_rate: self.baud_rate,
+            serial_port: self.serial_port,
+            timeout_ms: 100,
+            #[cfg(feature = "serial-hardware")]
+            hardware_port: None,
+            hardware_enabled: false,
+            motor_states: [MotorState::default(); 2],
+            velocity_pid: [PidParams::default(); 2],
+            position_pid: [PidParams::default(); 2],
+            encoder_resolution: [1024, 1024],
+            gear_ratio: [1.0, 1.0],
+            wheel_radius: [0.05, 0.05],
+            max_current: 30.0,
+            max_velocity: [44000, 44000],
+            max_acceleration: [10000, 10000],
+            battery_voltage: 0.0,
+            main_current: 0.0,
+            motor_currents: [0.0, 0.0],
+            temperatures: [25.0, 25.0],
+            error_status: 0,
+            last_command_time: 0,
+            command_count: 0,
+            last_feedback_time: [0, 0],
+            feedback_counter: 0,
+            processor: self.processor,
+        })
     }
 }

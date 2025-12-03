@@ -10,11 +10,34 @@ use horus_core::{Hub, Node, NodeInfo};
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Collision Detector Node - Safety system for obstacle avoidance and collision prevention
 ///
 /// Monitors lidar and other sensors to detect potential collisions and trigger
 /// emergency stops or evasive actions to ensure robot and operator safety.
-pub struct CollisionDetectorNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = CollisionDetectorNode::builder()
+///     .with_filter(|estop| {
+///         // Only forward actual emergency stops
+///         if estop.engaged {
+///             Some(estop)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct CollisionDetectorNode<P = PassThrough<EmergencyStop>>
+where
+    P: Processor<EmergencyStop>,
+{
     emergency_publisher: Hub<EmergencyStop>,
     lidar_subscriber: Hub<LaserScan>,
     odometry_subscriber: Hub<Odometry>,
@@ -56,6 +79,9 @@ pub struct CollisionDetectorNode {
     last_lidar_time: u64,
     emergency_cooldown: u64,
     last_emergency_time: u64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl CollisionDetectorNode {
@@ -107,9 +133,20 @@ impl CollisionDetectorNode {
             last_lidar_time: 0,
             emergency_cooldown: 500, // 500ms cooldown between emergency stops
             last_emergency_time: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> CollisionDetectorNodeBuilder<PassThrough<EmergencyStop>> {
+        CollisionDetectorNodeBuilder::new()
+    }
+}
+
+impl<P> CollisionDetectorNode<P>
+where
+    P: Processor<EmergencyStop>,
+{
     /// Configure safety zones
     pub fn set_safety_zones(&mut self, critical: f64, warning: f64, monitoring: f64) {
         self.critical_zone = critical;
@@ -306,7 +343,10 @@ impl CollisionDetectorNode {
         }
 
         let emergency_msg = EmergencyStop::engage(reason);
-        let _ = self.emergency_publisher.send(emergency_msg, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(emergency_msg) {
+            let _ = self.emergency_publisher.send(processed, &mut None);
+        }
 
         self.last_emergency_time = current_time;
     }
@@ -374,12 +414,27 @@ impl CollisionDetectorNode {
     }
 }
 
-impl Node for CollisionDetectorNode {
+impl<P> Node for CollisionDetectorNode<P>
+where
+    P: Processor<EmergencyStop>,
+{
     fn name(&self) -> &'static str {
         "CollisionDetectorNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         // Update current pose and velocity
         if let Some(odom) = self.odometry_subscriber.recv(&mut None) {
             self.current_pose = (odom.pose.x, odom.pose.y, odom.pose.theta);
@@ -421,3 +476,170 @@ impl Node for CollisionDetectorNode {
 
 // Default impl removed - use CollisionDetectorNode::new() instead which returns HorusResult
 // The default configuration is already built into new()
+
+/// Builder for CollisionDetectorNode with processor configuration
+pub struct CollisionDetectorNodeBuilder<P>
+where
+    P: Processor<EmergencyStop>,
+{
+    emergency_topic: String,
+    lidar_topic: String,
+    odom_topic: String,
+    io_topic: String,
+    processor: P,
+}
+
+impl CollisionDetectorNodeBuilder<PassThrough<EmergencyStop>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            emergency_topic: "emergency_stop".to_string(),
+            lidar_topic: "lidar_scan".to_string(),
+            odom_topic: "odom".to_string(),
+            io_topic: "digital_input".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for CollisionDetectorNodeBuilder<PassThrough<EmergencyStop>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> CollisionDetectorNodeBuilder<P>
+where
+    P: Processor<EmergencyStop>,
+{
+    /// Set emergency output topic
+    pub fn emergency_topic(mut self, topic: &str) -> Self {
+        self.emergency_topic = topic.to_string();
+        self
+    }
+
+    /// Set lidar input topic
+    pub fn lidar_topic(mut self, topic: &str) -> Self {
+        self.lidar_topic = topic.to_string();
+        self
+    }
+
+    /// Set odometry input topic
+    pub fn odom_topic(mut self, topic: &str) -> Self {
+        self.odom_topic = topic.to_string();
+        self
+    }
+
+    /// Set digital IO input topic
+    pub fn io_topic(mut self, topic: &str) -> Self {
+        self.io_topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> CollisionDetectorNodeBuilder<P2>
+    where
+        P2: Processor<EmergencyStop>,
+    {
+        CollisionDetectorNodeBuilder {
+            emergency_topic: self.emergency_topic,
+            lidar_topic: self.lidar_topic,
+            odom_topic: self.odom_topic,
+            io_topic: self.io_topic,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> CollisionDetectorNodeBuilder<ClosureProcessor<EmergencyStop, EmergencyStop, F>>
+    where
+        F: FnMut(EmergencyStop) -> EmergencyStop + Send + 'static,
+    {
+        CollisionDetectorNodeBuilder {
+            emergency_topic: self.emergency_topic,
+            lidar_topic: self.lidar_topic,
+            odom_topic: self.odom_topic,
+            io_topic: self.io_topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> CollisionDetectorNodeBuilder<FilterProcessor<EmergencyStop, EmergencyStop, F>>
+    where
+        F: FnMut(EmergencyStop) -> Option<EmergencyStop> + Send + 'static,
+    {
+        CollisionDetectorNodeBuilder {
+            emergency_topic: self.emergency_topic,
+            lidar_topic: self.lidar_topic,
+            odom_topic: self.odom_topic,
+            io_topic: self.io_topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> CollisionDetectorNodeBuilder<Pipeline<EmergencyStop, EmergencyStop, EmergencyStop, P, P2>>
+    where
+        P2: Processor<EmergencyStop, EmergencyStop>,
+    {
+        CollisionDetectorNodeBuilder {
+            emergency_topic: self.emergency_topic,
+            lidar_topic: self.lidar_topic,
+            odom_topic: self.odom_topic,
+            io_topic: self.io_topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<CollisionDetectorNode<P>> {
+        Ok(CollisionDetectorNode {
+            emergency_publisher: Hub::new(&self.emergency_topic)?,
+            lidar_subscriber: Hub::new(&self.lidar_topic)?,
+            odometry_subscriber: Hub::new(&self.odom_topic)?,
+            digital_io_subscriber: Hub::new(&self.io_topic)?,
+
+            // Default safety zones
+            critical_zone: 0.3,
+            warning_zone: 0.8,
+            monitoring_zone: 2.0,
+
+            // Default robot geometry
+            robot_width: 0.6,
+            robot_length: 0.8,
+            safety_margin: 0.1,
+
+            current_velocity: (0.0, 0.0, 0.0),
+            current_pose: (0.0, 0.0, 0.0),
+
+            collision_imminent: false,
+            warning_active: false,
+            obstacles_detected: Vec::new(),
+            safety_sensors_active: false,
+
+            velocity_dependent_zones: true,
+            min_stopping_distance: 0.2,
+            max_deceleration: 2.0,
+
+            collision_history: VecDeque::new(),
+            history_length: 5,
+
+            safety_sensor_pins: vec![0, 1, 2, 3],
+
+            last_lidar_time: 0,
+            emergency_cooldown: 500,
+            last_emergency_time: 0,
+            processor: self.processor,
+        })
+    }
+}

@@ -123,17 +123,17 @@ eprintln!("Cached registers: {}", cache_size);
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create Modbus TCP node
     let mut modbus = ModbusNode::new()?;
     modbus.set_connection("192.168.1.10", 502, 1);
     modbus.set_timeout(5000);
 
-    runtime.add_node(modbus);
+    scheduler.add(Box::new(modbus), 50, Some(true));
 
     // Create request publisher
     let request_hub = Hub::new("modbus_request")?;
@@ -146,9 +146,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     request.quantity = 10;
     request.is_request = true;
 
-    request_hub.send(request, None)?;
+    request_hub.send(request, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -158,10 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create Modbus node for temperature controller
     let mut modbus = ModbusNode::new_with_topics(
@@ -171,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     modbus.set_connection("192.168.1.20", 502, 1);
 
-    runtime.add_node(modbus);
+    scheduler.add(Box::new(modbus), 50, Some(true));
 
     // Read temperature from input register 0
     let request_hub = Hub::new("temp_request")?;
@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     request.quantity = 1;
     request.is_request = true;
 
-    request_hub.send(request, None)?;
+    request_hub.send(request, &mut None)?;
 
     // Receive response
     if let Some(response) = response_hub.recv(None) {
@@ -202,10 +202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create Modbus node for actuator control
     let mut modbus = ModbusNode::new_with_topics(
@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     modbus.set_connection("192.168.1.30", 502, 1);
 
-    runtime.add_node(modbus);
+    scheduler.add(Box::new(modbus), 50, Some(true));
 
     let command_hub = Hub::new("actuator_cmd")?;
 
@@ -228,7 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_request.data_length = 1;
     write_request.is_request = true;
 
-    command_hub.send(write_request, None)?;
+    command_hub.send(write_request, &mut None)?;
 
     Ok(())
 }
@@ -239,10 +239,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create Modbus RTU node (serial communication)
     let mut modbus = ModbusNode::new()?;
@@ -254,7 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // RTU-specific configuration would be:
     // modbus.set_serial_config(9600, Parity::Even, 1);
 
-    runtime.add_node(modbus);
+    scheduler.add(Box::new(modbus), 50, Some(true));
 
     let request_hub = Hub::new("modbus_request")?;
 
@@ -266,9 +266,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     request.quantity = 8;
     request.is_request = true;
 
-    request_hub.send(request, None)?;
+    request_hub.send(request, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```
@@ -278,18 +278,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 use std::time::Duration;
 use std::thread;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Single Modbus node can handle multiple slave devices
     let mut modbus = ModbusNode::new()?;
     modbus.set_connection("192.168.1.10", 502, 1);
 
-    runtime.add_node(modbus);
+    scheduler.add(Box::new(modbus), 50, Some(true));
 
     let request_hub = Hub::new("modbus_request")?;
     let response_hub = Hub::new("modbus_response")?;
@@ -303,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         request.quantity = 10;
         request.is_request = true;
 
-        request_hub.send(request, None)?;
+        request_hub.send(request, &mut None)?;
         thread::sleep(Duration::from_millis(100));  // Delay between polls
     }
 
@@ -321,10 +321,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use horus_library::nodes::ModbusNode;
 use horus_library::ModbusMessage;
-use horus_core::{Node, Runtime, Hub};
+use horus_core::{Node, Scheduler, Hub};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::new()?;
+    let mut scheduler = Scheduler::new();
 
     // Create Modbus node for PLC communication
     let mut plc_modbus = ModbusNode::new_with_topics(
@@ -342,8 +342,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     sensor_modbus.set_connection("192.168.0.200", 502, 1);
 
-    runtime.add_node(plc_modbus);
-    runtime.add_node(sensor_modbus);
+    scheduler.add(Box::new(plc_modbus), 50, Some(true));
+    scheduler.add(Box::new(sensor_modbus), 50, Some(true));
 
     let plc_hub = Hub::new("plc_request")?;
     let sensor_hub = Hub::new("sensor_request")?;
@@ -355,7 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     plc_request.start_address = 1000;  // Process data area
     plc_request.quantity = 20;
     plc_request.is_request = true;
-    plc_hub.send(plc_request, None)?;
+    plc_hub.send(plc_request, &mut None)?;
 
     // Read sensor data
     let mut sensor_request = ModbusMessage::default();
@@ -364,9 +364,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     sensor_request.start_address = 0;
     sensor_request.quantity = 5;
     sensor_request.is_request = true;
-    sensor_hub.send(sensor_request, None)?;
+    sensor_hub.send(sensor_request, &mut None)?;
 
-    runtime.run()?;
+    scheduler.run()?;
     Ok(())
 }
 ```

@@ -7,12 +7,35 @@ use horus_core::{Hub, Node, NodeInfo};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Digital I/O Node - Basic digital input/output for industrial sensors and actuators
 ///
 /// Manages digital I/O pins for reading sensors (limit switches, proximity sensors)
 /// and controlling actuators (relays, solenoids, LEDs). Supports both GPIO and
 /// industrial I/O modules.
-pub struct DigitalIONode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = DigitalIONode::builder()
+///     .with_filter(|io| {
+///         // Only forward on state changes
+///         if io.pin_count > 0 {
+///             Some(io)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct DigitalIONode<P = PassThrough<DigitalIO>>
+where
+    P: Processor<DigitalIO>,
+{
     input_publisher: Hub<DigitalIO>,
     output_subscriber: Hub<DigitalIO>,
     status_publisher: Hub<DigitalIO>,
@@ -36,6 +59,9 @@ pub struct DigitalIONode {
     // Simulation
     simulate_inputs: bool,
     sim_input_pattern: u8,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl DigitalIONode {
@@ -70,9 +96,20 @@ impl DigitalIONode {
 
             simulate_inputs: true,
             sim_input_pattern: 0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> DigitalIONodeBuilder<PassThrough<DigitalIO>> {
+        DigitalIONodeBuilder::new()
+    }
+}
+
+impl<P> DigitalIONode<P>
+where
+    P: Processor<DigitalIO>,
+{
     /// Set number of I/O pins
     pub fn set_pin_counts(&mut self, input_count: u8, output_count: u8) {
         self.input_pin_count = input_count;
@@ -207,7 +244,7 @@ impl DigitalIONode {
         }
     }
 
-    fn publish_input_states(&self) {
+    fn publish_input_states(&mut self) {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -240,10 +277,13 @@ impl DigitalIONode {
             ..Default::default()
         };
 
-        let _ = self.input_publisher.send(digital_input, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(digital_input) {
+            let _ = self.input_publisher.send(processed, &mut None);
+        }
     }
 
-    fn publish_status(&self) {
+    fn publish_status(&mut self) {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -289,7 +329,10 @@ impl DigitalIONode {
             ..Default::default()
         };
 
-        let _ = self.status_publisher.send(status, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(status) {
+            let _ = self.status_publisher.send(processed, &mut None);
+        }
     }
 
     fn detect_input_changes(&mut self) -> bool {
@@ -309,12 +352,21 @@ impl DigitalIONode {
     }
 }
 
-impl Node for DigitalIONode {
+impl<P> Node for DigitalIONode<P>
+where
+    P: Processor<DigitalIO>,
+{
     fn name(&self) -> &'static str {
         "DigitalIONode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
         ctx.log_info("DigitalIONode shutting down - setting all outputs to LOW");
 
         // Set all outputs to LOW for safety
@@ -328,6 +380,8 @@ impl Node for DigitalIONode {
     }
 
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
+
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -357,3 +411,142 @@ impl Node for DigitalIONode {
 }
 
 // Default impl removed - use Node::new() instead which returns HorusResult
+
+/// Builder for DigitalIONode with processor configuration
+pub struct DigitalIONodeBuilder<P>
+where
+    P: Processor<DigitalIO>,
+{
+    input_topic: String,
+    output_topic: String,
+    status_topic: String,
+    processor: P,
+}
+
+impl DigitalIONodeBuilder<PassThrough<DigitalIO>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            input_topic: "digital_input".to_string(),
+            output_topic: "digital_output".to_string(),
+            status_topic: "io_status".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for DigitalIONodeBuilder<PassThrough<DigitalIO>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> DigitalIONodeBuilder<P>
+where
+    P: Processor<DigitalIO>,
+{
+    /// Set input topic
+    pub fn input_topic(mut self, topic: &str) -> Self {
+        self.input_topic = topic.to_string();
+        self
+    }
+
+    /// Set output topic
+    pub fn output_topic(mut self, topic: &str) -> Self {
+        self.output_topic = topic.to_string();
+        self
+    }
+
+    /// Set status topic
+    pub fn status_topic(mut self, topic: &str) -> Self {
+        self.status_topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> DigitalIONodeBuilder<P2>
+    where
+        P2: Processor<DigitalIO>,
+    {
+        DigitalIONodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            status_topic: self.status_topic,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> DigitalIONodeBuilder<ClosureProcessor<DigitalIO, DigitalIO, F>>
+    where
+        F: FnMut(DigitalIO) -> DigitalIO + Send + 'static,
+    {
+        DigitalIONodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            status_topic: self.status_topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> DigitalIONodeBuilder<FilterProcessor<DigitalIO, DigitalIO, F>>
+    where
+        F: FnMut(DigitalIO) -> Option<DigitalIO> + Send + 'static,
+    {
+        DigitalIONodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            status_topic: self.status_topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> DigitalIONodeBuilder<Pipeline<DigitalIO, DigitalIO, DigitalIO, P, P2>>
+    where
+        P2: Processor<DigitalIO, DigitalIO>,
+    {
+        DigitalIONodeBuilder {
+            input_topic: self.input_topic,
+            output_topic: self.output_topic,
+            status_topic: self.status_topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<DigitalIONode<P>> {
+        Ok(DigitalIONode {
+            input_publisher: Hub::new(&self.input_topic)?,
+            output_subscriber: Hub::new(&self.output_topic)?,
+            status_publisher: Hub::new(&self.status_topic)?,
+
+            input_pin_count: 8,
+            output_pin_count: 8,
+            update_rate: 10.0,
+
+            input_states: HashMap::new(),
+            output_states: HashMap::new(),
+            last_input_states: HashMap::new(),
+            input_pin_names: HashMap::new(),
+            output_pin_names: HashMap::new(),
+
+            last_update_time: 0,
+            publish_interval: 100,
+
+            simulate_inputs: true,
+            sim_input_pattern: 0,
+            processor: self.processor,
+        })
+    }
+}

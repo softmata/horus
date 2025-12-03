@@ -311,8 +311,8 @@ pub struct LayoutConfig {
     pub stats: PanelConfig,
     /// Controls panel configuration
     pub controls: PanelConfig,
-    /// TF panel configuration
-    pub tf_panel: PanelConfig,
+    /// HFrame panel configuration
+    pub hframe_panel: PanelConfig,
     /// View modes panel configuration
     pub view_modes: PanelConfig,
     /// Viewport configuration
@@ -342,7 +342,7 @@ impl LayoutConfig {
             console: PanelConfig::default(),
             stats: PanelConfig::default(),
             controls: PanelConfig::default(),
-            tf_panel: PanelConfig::default(),
+            hframe_panel: PanelConfig::default(),
             view_modes: PanelConfig::default(),
             viewport: ViewportConfig::default(),
             show_debug_overlays: false,
@@ -374,7 +374,7 @@ impl LayoutConfig {
                 .with_anchor(PanelAnchor::TopRight)
                 .with_offset(0.0, 400.0)
                 .with_width(280.0),
-            tf_panel: PanelConfig::new(true)
+            hframe_panel: PanelConfig::new(true)
                 .with_anchor(PanelAnchor::BottomRight)
                 .with_width(300.0),
             view_modes: PanelConfig::new(true)
@@ -413,7 +413,7 @@ impl LayoutConfig {
             controls: PanelConfig::new(true)
                 .with_anchor(PanelAnchor::BottomRight)
                 .with_width(280.0),
-            tf_panel: PanelConfig::new(true)
+            hframe_panel: PanelConfig::new(true)
                 .with_anchor(PanelAnchor::RightCenter)
                 .with_width(320.0),
             view_modes: PanelConfig::new(false),
@@ -442,7 +442,7 @@ impl LayoutConfig {
                 .with_width(200.0)
                 .with_opacity(0.7)
                 .with_collapsed(true),
-            tf_panel: PanelConfig::new(false),
+            hframe_panel: PanelConfig::new(false),
             view_modes: PanelConfig::new(false),
             viewport: ViewportConfig {
                 position: [0.0, 0.0],
@@ -472,7 +472,7 @@ impl LayoutConfig {
                 .with_anchor(PanelAnchor::BottomRight)
                 .with_width(200.0)
                 .with_opacity(0.8),
-            tf_panel: PanelConfig::new(false),
+            hframe_panel: PanelConfig::new(false),
             view_modes: PanelConfig::new(false),
             viewport: ViewportConfig {
                 position: [0.0, 0.0],
@@ -512,7 +512,7 @@ impl LayoutConfig {
             "console" => self.console.visible,
             "stats" => self.stats.visible,
             "controls" => self.controls.visible,
-            "tf_panel" => self.tf_panel.visible,
+            "hframe_panel" => self.hframe_panel.visible,
             "view_modes" => self.view_modes.visible,
             _ => false,
         }
@@ -526,7 +526,7 @@ impl LayoutConfig {
             "console" => self.console.visible = !self.console.visible,
             "stats" => self.stats.visible = !self.stats.visible,
             "controls" => self.controls.visible = !self.controls.visible,
-            "tf_panel" => self.tf_panel.visible = !self.tf_panel.visible,
+            "hframe_panel" => self.hframe_panel.visible = !self.hframe_panel.visible,
             "view_modes" => self.view_modes.visible = !self.view_modes.visible,
             _ => {}
         }
@@ -846,7 +846,7 @@ pub fn layout_panel_system(
             ui.checkbox(&mut layout.console.visible, "Console");
             ui.checkbox(&mut layout.stats.visible, "Stats");
             ui.checkbox(&mut layout.controls.visible, "Controls");
-            ui.checkbox(&mut layout.tf_panel.visible, "TF Panel");
+            ui.checkbox(&mut layout.hframe_panel.visible, "HFrame Panel");
             ui.checkbox(&mut layout.view_modes.visible, "View Modes");
 
             ui.separator();

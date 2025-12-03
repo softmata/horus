@@ -6,6 +6,11 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 #[cfg(any(feature = "mpu6050-imu", feature = "bno055-imu"))]
 use linux_embedded_hal::{Delay, I2cdev};
 
@@ -34,7 +39,27 @@ pub enum ImuBackend {
 /// - BNO055 (9-axis: accel + gyro + mag with sensor fusion)
 /// - ICM20948 (9-axis: accel + gyro + mag)
 /// - Simulation mode for testing
-pub struct ImuNode {
+///
+/// # Hybrid Pattern
+///
+/// This node supports the hybrid pattern for custom processing:
+///
+/// ```rust,ignore
+/// let node = ImuNode::builder()
+///     .with_filter(|imu| {
+///         // Filter out noisy readings
+///         if imu.linear_acceleration[2].abs() > 0.5 {
+///             Some(imu)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct ImuNode<P = PassThrough<Imu>>
+where
+    P: Processor<Imu>,
+{
     publisher: Hub<Imu>,
 
     // Configuration
@@ -58,6 +83,9 @@ pub struct ImuNode {
 
     // Simulation state for synthetic data
     sim_angle: f32,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl ImuNode {
@@ -88,9 +116,20 @@ impl ImuNode {
             #[cfg(feature = "bno055-imu")]
             bno055: None,
             sim_angle: 0.0,
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for custom configuration
+    pub fn builder() -> ImuNodeBuilder<PassThrough<Imu>> {
+        ImuNodeBuilder::new()
+    }
+}
+
+impl<P> ImuNode<P>
+where
+    P: Processor<Imu>,
+{
     /// Set hardware backend
     pub fn set_backend(&mut self, backend: ImuBackend) {
         self.backend = backend;
@@ -308,13 +347,24 @@ impl ImuNode {
     }
 }
 
-impl Node for ImuNode {
+impl<P> Node for ImuNode<P>
+where
+    P: Processor<Imu>,
+{
     fn name(&self) -> &'static str {
         "ImuNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
         ctx.log_info("ImuNode shutting down - releasing IMU resources");
+
+        // Call processor shutdown hook
+        self.processor.on_shutdown();
 
         // Release hardware IMU resources
         #[cfg(feature = "mpu6050-imu")]
@@ -333,12 +383,15 @@ impl Node for ImuNode {
     }
 
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        // Call processor tick hook
+        self.processor.on_tick();
+
         // Initialize IMU on first tick
         if !self.is_initialized && !self.initialize_imu() {
             return;
         }
 
-        // Read and publish IMU data
+        // Read and publish IMU data (through processor pipeline)
         if let Some(imu_data) = self.read_imu_data() {
             self.sample_count += 1;
             self.last_sample_time = SystemTime::now()
@@ -346,9 +399,136 @@ impl Node for ImuNode {
                 .unwrap()
                 .as_millis() as u64;
 
-            let _ = self.publisher.send(imu_data, &mut None);
+            // Process through pipeline (filter/transform)
+            if let Some(processed) = self.processor.process(imu_data) {
+                let _ = self.publisher.send(processed, &mut None);
+            }
         }
     }
 }
 
-// Default impl removed - use Node::new() instead which returns HorusResult
+/// Builder for ImuNode with custom processor
+pub struct ImuNodeBuilder<P>
+where
+    P: Processor<Imu>,
+{
+    topic: String,
+    backend: ImuBackend,
+    i2c_bus: String,
+    i2c_address: u8,
+    processor: P,
+}
+
+impl ImuNodeBuilder<PassThrough<Imu>> {
+    /// Create a new builder with default configuration
+    pub fn new() -> Self {
+        Self {
+            topic: "imu".to_string(),
+            backend: ImuBackend::Simulation,
+            i2c_bus: "/dev/i2c-1".to_string(),
+            i2c_address: 0x68,
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl<P> ImuNodeBuilder<P>
+where
+    P: Processor<Imu>,
+{
+    /// Set topic name
+    pub fn with_topic(mut self, topic: &str) -> Self {
+        self.topic = topic.to_string();
+        self
+    }
+
+    /// Set backend
+    pub fn with_backend(mut self, backend: ImuBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Set I2C configuration
+    pub fn with_i2c(mut self, bus: &str, address: u8) -> Self {
+        self.i2c_bus = bus.to_string();
+        self.i2c_address = address;
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> ImuNodeBuilder<P2>
+    where
+        P2: Processor<Imu>,
+    {
+        ImuNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            i2c_bus: self.i2c_bus,
+            i2c_address: self.i2c_address,
+            processor,
+        }
+    }
+
+    /// Add a closure-based processor
+    pub fn with_closure<F>(self, f: F) -> ImuNodeBuilder<ClosureProcessor<Imu, Imu, F>>
+    where
+        F: FnMut(Imu) -> Imu + Send + 'static,
+    {
+        ImuNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            i2c_bus: self.i2c_bus,
+            i2c_address: self.i2c_address,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Add a filter processor
+    pub fn with_filter<F>(self, f: F) -> ImuNodeBuilder<FilterProcessor<Imu, Imu, F>>
+    where
+        F: FnMut(Imu) -> Option<Imu> + Send + 'static,
+    {
+        ImuNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            i2c_bus: self.i2c_bus,
+            i2c_address: self.i2c_address,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor
+    pub fn pipe<P2>(self, next: P2) -> ImuNodeBuilder<Pipeline<Imu, Imu, Imu, P, P2>>
+    where
+        P2: Processor<Imu, Imu>,
+    {
+        ImuNodeBuilder {
+            topic: self.topic,
+            backend: self.backend,
+            i2c_bus: self.i2c_bus,
+            i2c_address: self.i2c_address,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<ImuNode<P>> {
+        Ok(ImuNode {
+            publisher: Hub::new(&self.topic)?,
+            frame_id: "imu_link".to_string(),
+            sample_rate: 100.0,
+            backend: self.backend,
+            i2c_bus: self.i2c_bus,
+            i2c_address: self.i2c_address,
+            is_initialized: false,
+            sample_count: 0,
+            last_sample_time: 0,
+            #[cfg(feature = "mpu6050-imu")]
+            mpu6050: None,
+            #[cfg(feature = "bno055-imu")]
+            bno055: None,
+            sim_angle: 0.0,
+            processor: self.processor,
+        })
+    }
+}

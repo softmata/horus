@@ -279,7 +279,7 @@ fn main() -> Result<()> {
                 enable: true,
                 ..Default::default()
             };
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             Ok(())
         }
@@ -317,7 +317,7 @@ fn main() -> Result<()> {
 
             // Command 0.5 m/s forward
             let cmd = MotorCommand::velocity(1, 0.5);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             // Monitor feedback
             let feedback_hub = Hub::<RoboclawFeedback>::new("roboclaw/motor1/feedback")?;
@@ -372,7 +372,7 @@ fn main() -> Result<()> {
             motor2_hub.send(MotorCommand::velocity(2, 0.5), None)?;
 
             // Monitor diagnostics
-            let diag_hub = Hub::<RoboclawDiagnostics>::new("roboclaw/diagnostics")?;
+            let diag_hub = Hub::<RoboclawDiagnostics>::new("roboclaw.diagnostics")?;
             if let Some(diag) = diag_hub.recv(None) {
                 ctx.log_info(&format!(
                     "Battery: {:.1}V, M1: {:.2}A, M2: {:.2}A, Temp: {:.1}C",
@@ -429,7 +429,7 @@ fn main() -> Result<()> {
 
             // Move to 1.0 meter position at 0.2 m/s max
             let cmd = MotorCommand::position(1, 1.0, 0.2);
-            hub.send(cmd, None)?;
+            hub.send(cmd, &mut None)?;
 
             // Monitor position
             let feedback_hub = Hub::<RoboclawFeedback>::new("roboclaw/motor1/feedback")?;
@@ -499,7 +499,7 @@ fn main() -> Result<()> {
     let safety_monitor = node! {
         name: "safety_monitor",
         tick: |ctx| {
-            let diag_hub = Hub::<RoboclawDiagnostics>::new("roboclaw/diagnostics")?;
+            let diag_hub = Hub::<RoboclawDiagnostics>::new("roboclaw.diagnostics")?;
 
             if let Some(diag) = diag_hub.recv(None) {
                 // Check error status
@@ -512,8 +512,8 @@ fn main() -> Result<()> {
                     // Send stop commands on error
                     let motor1_hub = Hub::<MotorCommand>::new("roboclaw/motor1/cmd")?;
                     let motor2_hub = Hub::<MotorCommand>::new("roboclaw/motor2/cmd")?;
-                    motor1_hub.send(MotorCommand::stop(1), None)?;
-                    motor2_hub.send(MotorCommand::stop(2), None)?;
+                    motor1_hub.send(MotorCommand::stop(1), &mut None)?;
+                    motor2_hub.send(MotorCommand::stop(2), &mut None)?;
                 }
 
                 // Battery check
@@ -788,7 +788,7 @@ Download from: `www.basicmicro.com`
    ```rust
    if diag.battery_voltage < 11.0 {
        // Stop or slow down
-       motor_hub.send(MotorCommand::stop(1), None)?;
+       motor_hub.send(MotorCommand::stop(1), &mut None)?;
    }
    ```
 
@@ -801,7 +801,7 @@ Download from: `www.basicmicro.com`
    ```rust
    // If no commands received for 1 second, stop motors
    if last_command_age > 1.0 {
-       motor_hub.send(MotorCommand::stop(1), None)?;
+       motor_hub.send(MotorCommand::stop(1), &mut None)?;
    }
    ```
 
@@ -1053,7 +1053,7 @@ Set maximum acceleration to smooth motion:
 ```rust
 let mut cmd = MotorCommand::velocity(1, 1.0);
 cmd.max_acceleration = 0.5;  // 0.5 m/s² max acceleration
-motor_hub.send(cmd, None)?;
+motor_hub.send(cmd, &mut None)?;
 ```
 
 ### Feed-Forward Control
@@ -1063,7 +1063,7 @@ Improve tracking with feed-forward term:
 ```rust
 let mut cmd = MotorCommand::velocity(1, 0.5);
 cmd.feed_forward = 0.1;  // Add 10% feed-forward
-motor_hub.send(cmd, None)?;
+motor_hub.send(cmd, &mut None)?;
 ```
 
 ## See Also

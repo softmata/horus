@@ -12,13 +12,36 @@ type Result<T> = HorusResult<T>;
 use horus_core::{Hub, Node, NodeInfo};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Processor imports for hybrid pattern
+use crate::nodes::processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor,
+};
+
 /// Localization Node - Robot position estimation using sensor fusion
 ///
 /// Fuses odometry, IMU, and lidar data to estimate robot pose using
 /// Extended Kalman Filter (EKF) for accurate localization.
 ///
 /// This node is a thin wrapper around the pure algorithms in horus_library/algorithms.
-pub struct LocalizationNode {
+///
+/// # Hybrid Pattern
+///
+/// ```rust,ignore
+/// let node = LocalizationNode::builder()
+///     .with_filter(|odom| {
+///         // Only publish when uncertainty is below threshold
+///         if odom.pose_covariance[0] < 0.1 {
+///             Some(odom)
+///         } else {
+///             None
+///         }
+///     })
+///     .build()?;
+/// ```
+pub struct LocalizationNode<P = PassThrough<Odometry>>
+where
+    P: Processor<Odometry>,
+{
     pose_publisher: Hub<Odometry>,
     odometry_subscriber: Hub<Odometry>,
     imu_subscriber: Hub<Imu>,
@@ -41,6 +64,9 @@ pub struct LocalizationNode {
     // Reference landmarks for correction (simplified SLAM)
     landmarks: Vec<(f64, f64)>, // Known landmark positions
     landmark_detection_range: f64,
+
+    // Processor for hybrid pattern
+    processor: P,
 }
 
 impl LocalizationNode {
@@ -98,9 +124,20 @@ impl LocalizationNode {
 
             landmarks: Vec::new(),
             landmark_detection_range: 10.0, // 10m detection range
+            processor: PassThrough::new(),
         })
     }
 
+    /// Create a builder for advanced configuration
+    pub fn builder() -> LocalizationNodeBuilder<PassThrough<Odometry>> {
+        LocalizationNodeBuilder::new()
+    }
+}
+
+impl<P> LocalizationNode<P>
+where
+    P: Processor<Odometry>,
+{
     /// Set initial pose estimate
     pub fn set_initial_pose(&mut self, x: f64, y: f64, theta: f64) {
         let initial_state = [x, y, theta, 0.0, 0.0, 0.0];
@@ -292,7 +329,7 @@ impl LocalizationNode {
         normalized
     }
 
-    fn publish_pose(&self) {
+    fn publish_pose(&mut self) {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -335,7 +372,10 @@ impl LocalizationNode {
 
         localized_pose.timestamp = current_time;
 
-        let _ = self.pose_publisher.send(localized_pose, &mut None);
+        // Process through pipeline
+        if let Some(processed) = self.processor.process(localized_pose) {
+            let _ = self.pose_publisher.send(processed, &mut None);
+        }
     }
 
     /// Reset localization (useful for relocalization)
@@ -359,12 +399,26 @@ impl LocalizationNode {
     }
 }
 
-impl Node for LocalizationNode {
+impl<P> Node for LocalizationNode<P>
+where
+    P: Processor<Odometry>,
+{
     fn name(&self) -> &'static str {
         "LocalizationNode"
     }
 
+    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_start();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+        self.processor.on_shutdown();
+        Ok(())
+    }
+
     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        self.processor.on_tick();
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -413,3 +467,176 @@ impl Node for LocalizationNode {
 }
 
 // Default impl removed - use Node::new() instead which returns HorusResult
+
+/// Builder for LocalizationNode with processor configuration
+pub struct LocalizationNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    pose_topic: String,
+    odom_topic: String,
+    imu_topic: String,
+    lidar_topic: String,
+    processor: P,
+}
+
+impl LocalizationNodeBuilder<PassThrough<Odometry>> {
+    /// Create a new builder with default PassThrough processor
+    pub fn new() -> Self {
+        Self {
+            pose_topic: "pose".to_string(),
+            odom_topic: "odom".to_string(),
+            imu_topic: "imu".to_string(),
+            lidar_topic: "lidar_scan".to_string(),
+            processor: PassThrough::new(),
+        }
+    }
+}
+
+impl Default for LocalizationNodeBuilder<PassThrough<Odometry>> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<P> LocalizationNodeBuilder<P>
+where
+    P: Processor<Odometry>,
+{
+    /// Set pose output topic
+    pub fn pose_topic(mut self, topic: &str) -> Self {
+        self.pose_topic = topic.to_string();
+        self
+    }
+
+    /// Set odometry input topic
+    pub fn odom_topic(mut self, topic: &str) -> Self {
+        self.odom_topic = topic.to_string();
+        self
+    }
+
+    /// Set IMU input topic
+    pub fn imu_topic(mut self, topic: &str) -> Self {
+        self.imu_topic = topic.to_string();
+        self
+    }
+
+    /// Set lidar input topic
+    pub fn lidar_topic(mut self, topic: &str) -> Self {
+        self.lidar_topic = topic.to_string();
+        self
+    }
+
+    /// Set a custom processor
+    pub fn with_processor<P2>(self, processor: P2) -> LocalizationNodeBuilder<P2>
+    where
+        P2: Processor<Odometry>,
+    {
+        LocalizationNodeBuilder {
+            pose_topic: self.pose_topic,
+            odom_topic: self.odom_topic,
+            imu_topic: self.imu_topic,
+            lidar_topic: self.lidar_topic,
+            processor,
+        }
+    }
+
+    /// Set a closure-based processor
+    pub fn with_closure<F>(
+        self,
+        f: F,
+    ) -> LocalizationNodeBuilder<ClosureProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Odometry + Send + 'static,
+    {
+        LocalizationNodeBuilder {
+            pose_topic: self.pose_topic,
+            odom_topic: self.odom_topic,
+            imu_topic: self.imu_topic,
+            lidar_topic: self.lidar_topic,
+            processor: ClosureProcessor::new(f),
+        }
+    }
+
+    /// Set a filter-based processor
+    pub fn with_filter<F>(
+        self,
+        f: F,
+    ) -> LocalizationNodeBuilder<FilterProcessor<Odometry, Odometry, F>>
+    where
+        F: FnMut(Odometry) -> Option<Odometry> + Send + 'static,
+    {
+        LocalizationNodeBuilder {
+            pose_topic: self.pose_topic,
+            odom_topic: self.odom_topic,
+            imu_topic: self.imu_topic,
+            lidar_topic: self.lidar_topic,
+            processor: FilterProcessor::new(f),
+        }
+    }
+
+    /// Chain another processor (pipe)
+    pub fn pipe<P2>(
+        self,
+        next: P2,
+    ) -> LocalizationNodeBuilder<Pipeline<Odometry, Odometry, Odometry, P, P2>>
+    where
+        P2: Processor<Odometry, Odometry>,
+    {
+        LocalizationNodeBuilder {
+            pose_topic: self.pose_topic,
+            odom_topic: self.odom_topic,
+            imu_topic: self.imu_topic,
+            lidar_topic: self.lidar_topic,
+            processor: Pipeline::new(self.processor, next),
+        }
+    }
+
+    /// Build the node
+    pub fn build(self) -> Result<LocalizationNode<P>> {
+        // Create EKF instance with default noise parameters
+        let mut ekf = EKF::new();
+
+        // Configure process noise (motion model uncertainty)
+        let mut process_noise = [[0.0; 6]; 6];
+        process_noise[0][0] = 0.1; // x position
+        process_noise[1][1] = 0.1; // y position
+        process_noise[2][2] = 0.05; // theta
+        process_noise[3][3] = 0.2; // vx
+        process_noise[4][4] = 0.2; // vy
+        process_noise[5][5] = 0.1; // omega
+        ekf.set_process_noise(process_noise);
+
+        // Configure odometry measurement noise
+        let mut odometry_noise = [[0.0; 3]; 3];
+        odometry_noise[0][0] = 0.05; // x measurement noise
+        odometry_noise[1][1] = 0.05; // y measurement noise
+        odometry_noise[2][2] = 0.02; // theta measurement noise
+        ekf.set_odometry_noise(odometry_noise);
+
+        // Create sensor fusion for angular velocity (odometry + IMU)
+        let angular_velocity_fusion = SensorFusion::new();
+
+        Ok(LocalizationNode {
+            pose_publisher: Hub::new(&self.pose_topic)?,
+            odometry_subscriber: Hub::new(&self.odom_topic)?,
+            imu_subscriber: Hub::new(&self.imu_topic)?,
+            lidar_subscriber: Hub::new(&self.lidar_topic)?,
+
+            ekf,
+            angular_velocity_fusion,
+
+            frame_id: "map".to_string(),
+            child_frame_id: "base_link".to_string(),
+            initial_pose_set: false,
+
+            last_update_time: 0,
+            last_odometry_time: 0,
+            last_imu_time: 0,
+
+            landmarks: Vec::new(),
+            landmark_detection_range: 10.0,
+            processor: self.processor,
+        })
+    }
+}

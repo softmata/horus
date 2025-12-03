@@ -56,7 +56,7 @@
 //! use horus_library::nodes::*;
 //!
 //! // Create nodes with simple constructors
-//! let camera = CameraNode::new();                    // Uses "camera/image" topic
+//! let camera = CameraNode::new();                    // Uses "camera.image" topic
 //! let lidar = LidarNode::new();                      // Uses "scan" topic
 //! let drive = DifferentialDriveNode::new();          // Subscribes to "cmd_vel"
 //! let pid = PidControllerNode::new();                // Generic PID control
@@ -84,6 +84,9 @@
 // try to use hardware without proper drivers installed.
 //
 // For simulation/testing, use the sim2d or sim3d tools instead.
+
+// Processor trait and utilities for hybrid node pattern
+pub mod processor;
 
 // Hardware-independent nodes (always available)
 pub mod collision_detector;
@@ -299,3 +302,8 @@ pub use llm::{CloudLLMNode, LLMConfig, LLMProvider};
 
 // Re-export core HORUS types for convenience
 pub use horus_core::{Hub, Node, NodeInfo};
+
+// Re-export processor types for hybrid pattern
+pub use processor::{
+    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor, ProcessorExt,
+};

@@ -171,8 +171,8 @@ use horus_library::nodes::CanBusNode;
 let mut can = CanBusNode::new("can0")?;
 
 // Interface name determines topic namespace:
-// - Subscribes to: "can/can0/tx"
-// - Publishes to: "can/can0/rx" and "can/can0/error"
+// - Subscribes to: "can.can0.tx"
+// - Publishes to: "can.can0.rx" and "can.can0.error"
 ```
 
 ### Configuration Methods
@@ -268,8 +268,8 @@ fn main() -> Result<()> {
             let frame = CanFrame::new(0x123, &[0x01, 0x02, 0x03, 0x04]);
 
             // Send to CAN bus
-            let hub = Hub::<CanFrame>::new("can/can0/tx")?;
-            hub.send(frame, None)?;
+            let hub = Hub::<CanFrame>::new("can.can0.tx")?;
+            hub.send(frame, &mut None)?;
 
             ctx.log_info("Sent CAN frame ID 0x123");
             Ok(())
@@ -297,7 +297,7 @@ fn main() -> Result<()> {
     let rx_node = node! {
         name: "can_receiver",
         tick: |ctx| {
-            let hub = Hub::<CanFrame>::new("can/can0/rx")?;
+            let hub = Hub::<CanFrame>::new("can.can0.rx")?;
 
             // Process all received frames
             while let Some(frame) = hub.recv(None) {
@@ -349,8 +349,8 @@ fn main() -> Result<()> {
             let data = [0xAA; 16];
             let frame = CanFrame::new_fd(0x456, &data, true);  // ID, data, BRS
 
-            let hub = Hub::<CanFrame>::new("can/can0/tx")?;
-            hub.send(frame, None)?;
+            let hub = Hub::<CanFrame>::new("can.can0.tx")?;
+            hub.send(frame, &mut None)?;
 
             ctx.log_info("Sent CAN-FD frame with 16 bytes");
             Ok(())
@@ -383,7 +383,7 @@ fn main() -> Result<()> {
     let rx_node = node! {
         name: "filtered_receiver",
         tick: |ctx| {
-            let hub = Hub::<CanFrame>::new("can/can0/rx")?;
+            let hub = Hub::<CanFrame>::new("can.can0.rx")?;
 
             // Only receive frames matching filters
             while let Some(frame) = hub.recv(None) {
@@ -427,8 +427,8 @@ fn main() -> Result<()> {
             let rpm_raw = (engine_rpm as f32 / 0.125) as u16;
             frame.pack_u16(3, rpm_raw);
 
-            let hub = Hub::<CanFrame>::new("can/can0/tx")?;
-            hub.send(frame, None)?;
+            let hub = Hub::<CanFrame>::new("can.can0.tx")?;
+            hub.send(frame, &mut None)?;
 
             ctx.log_info(&format!("Sent J1939 engine RPM: {}", engine_rpm));
             Ok(())
@@ -469,9 +469,9 @@ fn main() -> Result<()> {
             pdo_frame.pack_u32(0, velocity_setpoint as u32);
             pdo_frame.dlc = 4;
 
-            let hub = Hub::<CanFrame>::new("can/can0/tx")?;
-            hub.send(nmt_frame, None)?;
-            hub.send(pdo_frame, None)?;
+            let hub = Hub::<CanFrame>::new("can.can0.tx")?;
+            hub.send(nmt_frame, &mut None)?;
+            hub.send(pdo_frame, &mut None)?;
 
             ctx.log_info("Sent CANopen velocity command");
             Ok(())
@@ -501,7 +501,7 @@ fn main() -> Result<()> {
         name: "can_monitor",
         tick: |ctx| {
             // Monitor error frames
-            let error_hub = Hub::<CanFrame>::new("can/can0/error")?;
+            let error_hub = Hub::<CanFrame>::new("can.can0.error")?;
             while let Some(error_frame) = error_hub.recv(None) {
                 ctx.log_error(&format!(
                     "CAN error on {}: {:?}",
@@ -545,23 +545,23 @@ fn main() -> Result<()> {
         name: "can_gateway",
         tick: |ctx| {
             // Forward CAN0 -> CAN1
-            let can0_rx = Hub::<CanFrame>::new("can/can0/rx")?;
-            let can1_tx = Hub::<CanFrame>::new("can/can1/tx")?;
+            let can0_rx = Hub::<CanFrame>::new("can.can0.rx")?;
+            let can1_tx = Hub::<CanFrame>::new("can.can1.tx")?;
 
             while let Some(frame) = can0_rx.recv(None) {
                 if frame.id >= 0x200 && frame.id <= 0x2FF {
-                    can1_tx.send(frame, None)?;
+                    can1_tx.send(frame, &mut None)?;
                     ctx.log_debug(&format!("Forwarded 0x{:03X} to CAN1", frame.id));
                 }
             }
 
             // Forward CAN1 -> CAN0
-            let can1_rx = Hub::<CanFrame>::new("can/can1/rx")?;
-            let can0_tx = Hub::<CanFrame>::new("can/can0/tx")?;
+            let can1_rx = Hub::<CanFrame>::new("can.can1.rx")?;
+            let can0_tx = Hub::<CanFrame>::new("can.can0.tx")?;
 
             while let Some(frame) = can1_rx.recv(None) {
                 if frame.id >= 0x300 && frame.id <= 0x3FF {
-                    can0_tx.send(frame, None)?;
+                    can0_tx.send(frame, &mut None)?;
                     ctx.log_debug(&format!("Forwarded 0x{:03X} to CAN0", frame.id));
                 }
             }
@@ -592,7 +592,7 @@ fn main() -> Result<()> {
     let logger_node = node! {
         name: "can_logger",
         tick: |ctx| {
-            let hub = Hub::<CanFrame>::new("can/can0/rx")?;
+            let hub = Hub::<CanFrame>::new("can.can0.rx")?;
 
             while let Some(frame) = hub.recv(None) {
                 // Log all CAN traffic without affecting the bus
@@ -766,7 +766,7 @@ println!("Bus load: {:.1}%", bus_load);
 6. **Validate frames before sending**:
    ```rust
    if frame.is_valid() {
-       hub.send(frame, None)?;
+       hub.send(frame, &mut None)?;
    } else {
        ctx.log_error("Invalid CAN frame");
    }

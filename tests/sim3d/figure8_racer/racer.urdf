@@ -127,6 +127,8 @@
   </joint>
 
   <!-- Caster wheel joint (fixed for simplicity, slides on ground) -->
+  <!-- Caster at Z=0.02 (its center) with radius 0.02 touches ground at Z=0 -->
+  <!-- Drive wheels at Z=0.04 with radius 0.04 also touch ground at Z=0 -->
   <joint name="caster_joint" type="fixed">
     <parent link="base_link"/>
     <child link="caster_wheel"/>
@@ -161,9 +163,9 @@
 
   <gazebo reference="caster_wheel">
     <material>Gazebo/Grey</material>
-    <!-- Increased friction to prevent unwanted rolling on startup -->
-    <mu1>0.5</mu1>
-    <mu2>0.5</mu2>
+    <!-- Low friction for caster to allow it to slide/roll freely -->
+    <mu1>0.1</mu1>
+    <mu2>0.1</mu2>
   </gazebo>
 
   <!-- Differential drive plugin configuration -->

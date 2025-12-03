@@ -864,15 +864,34 @@ echo ""
 # Clean target directory (compiled artifacts)
 if [ -d "target" ]; then
     echo -e "${CYAN}  ${NC} Removing target/ directory..."
-    rm -rf target/
-    echo -e "${GREEN}  ${NC} Removed target/"
+    # Use || true to prevent script exit if some files are locked
+    # This can happen if cargo/rustc is running or an IDE has files open
+    if rm -rf target/ 2>/dev/null; then
+        echo -e "${GREEN}  ${NC} Removed target/"
+    else
+        # Try harder: kill any cargo/rustc processes that might be holding locks
+        echo -e "${YELLOW}  ${NC} Some files in use, attempting cleanup..."
+        pkill -9 -f "cargo|rustc|rust-analyzer" 2>/dev/null || true
+        sleep 1
+        rm -rf target/ 2>/dev/null || true
+        if [ -d "target" ]; then
+            echo -e "${YELLOW}  ${NC} Could not fully remove target/ (some files in use)"
+            echo -e "${CYAN}     ${NC} Build will continue with existing artifacts"
+        else
+            echo -e "${GREEN}  ${NC} Removed target/"
+        fi
+    fi
 fi
 
 # Clean HORUS cache directory
 if [ -d "$HOME/.horus/cache" ]; then
     echo -e "${CYAN}  ${NC} Removing ~/.horus/cache/..."
-    rm -rf "$HOME/.horus/cache"
-    echo -e "${GREEN}  ${NC} Removed ~/.horus/cache/"
+    rm -rf "$HOME/.horus/cache" 2>/dev/null || true
+    if [ ! -d "$HOME/.horus/cache" ]; then
+        echo -e "${GREEN}  ${NC} Removed ~/.horus/cache/"
+    else
+        echo -e "${YELLOW}  ${NC} Could not fully remove ~/.horus/cache/"
+    fi
 fi
 
 # Clean installed binaries
@@ -880,21 +899,33 @@ BINARIES_TO_CLEAN=("horus" "sim2d" "sim3d" "horus_router")
 for binary in "${BINARIES_TO_CLEAN[@]}"; do
     if [ -f "$HOME/.cargo/bin/$binary" ]; then
         echo -e "${CYAN}  ${NC} Removing ~/.cargo/bin/$binary..."
-        rm -f "$HOME/.cargo/bin/$binary"
-        echo -e "${GREEN}  ${NC} Removed $binary"
+        rm -f "$HOME/.cargo/bin/$binary" 2>/dev/null || true
+        if [ ! -f "$HOME/.cargo/bin/$binary" ]; then
+            echo -e "${GREEN}  ${NC} Removed $binary"
+        else
+            echo -e "${YELLOW}  ${NC} Could not remove $binary (in use?)"
+        fi
     fi
 done
 
 # Clean stale shared memory sessions
 if [ -d "/dev/shm/horus" ]; then
     echo -e "${CYAN}  ${NC} Removing stale shared memory sessions..."
-    rm -rf /dev/shm/horus/
-    echo -e "${GREEN}  ${NC} Removed /dev/shm/horus/"
+    rm -rf /dev/shm/horus/ 2>/dev/null || true
+    if [ ! -d "/dev/shm/horus" ]; then
+        echo -e "${GREEN}  ${NC} Removed /dev/shm/horus/"
+    else
+        echo -e "${YELLOW}  ${NC} Could not fully remove /dev/shm/horus/"
+    fi
 elif [ -d "/tmp/horus" ]; then
     # macOS
     echo -e "${CYAN}  ${NC} Removing stale shared memory sessions..."
-    rm -rf /tmp/horus/
-    echo -e "${GREEN}  ${NC} Removed /tmp/horus/"
+    rm -rf /tmp/horus/ 2>/dev/null || true
+    if [ ! -d "/tmp/horus" ]; then
+        echo -e "${GREEN}  ${NC} Removed /tmp/horus/"
+    else
+        echo -e "${YELLOW}  ${NC} Could not fully remove /tmp/horus/"
+    fi
 fi
 
 # Clean Cargo incremental build cache (can cause issues)

@@ -7,13 +7,13 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::physics::PhysicsWorld;
+use crate::systems::hframe_update::HFramePublisher;
 use crate::systems::horus_sync::HorusSyncStats;
-use crate::systems::tf_update::TFPublisher;
 use crate::ui::controls::{render_controls_ui, SimulationControls, SimulationEvent};
+use crate::ui::hframe_panel::{render_hframe_ui, HFramePanelConfig};
 use crate::ui::stats_panel::{render_stats_ui, FrameTimeBreakdown, SimulationStats};
-use crate::ui::tf_panel::{render_tf_ui, TFPanelConfig};
 use crate::ui::view_modes::{render_view_modes_ui, CurrentViewMode};
 
 /// Tab identifiers for the dock system
@@ -25,8 +25,8 @@ pub enum DockTab {
     Stats,
     /// Console/Log output
     Console,
-    /// TF (Transform Frame) tree
-    TfTree,
+    /// HFrame (Transform Frame) tree
+    HFrameTree,
     /// Camera view modes
     ViewModes,
     /// Custom plugin tab
@@ -39,7 +39,7 @@ impl DockTab {
             DockTab::Controls => "Controls",
             DockTab::Stats => "Statistics",
             DockTab::Console => "Console",
-            DockTab::TfTree => "TF Tree",
+            DockTab::HFrameTree => "HFrame Tree",
             DockTab::ViewModes => "View Modes",
             DockTab::Plugin(name) => name.as_str(),
         }
@@ -74,11 +74,11 @@ pub struct DockRenderContext<'a> {
     pub stats: &'a SimulationStats,
     pub frame_time: &'a FrameTimeBreakdown,
     pub controls: &'a mut SimulationControls,
-    pub tf_tree: &'a TFTree,
+    pub hframe_tree: &'a HFrameTree,
     pub physics_world: Option<&'a PhysicsWorld>,
     pub horus_stats: Option<&'a HorusSyncStats>,
-    pub tf_publishers: Vec<&'a TFPublisher>,
-    pub tf_panel_config: &'a mut TFPanelConfig,
+    pub hframe_publishers: Vec<&'a HFramePublisher>,
+    pub hframe_panel_config: &'a mut HFramePanelConfig,
     pub view_mode: &'a mut CurrentViewMode,
     pub current_time: f32,
 }
@@ -119,13 +119,13 @@ impl TabViewer for SimDockViewer<'_> {
             DockTab::Console => {
                 render_console_content(ui, self.console_messages);
             }
-            DockTab::TfTree => {
-                // Use the full TF tree UI from tf_panel.rs
-                render_tf_ui(
+            DockTab::HFrameTree => {
+                // Use the full HFrame tree UI from hframe_panel.rs
+                render_hframe_ui(
                     ui,
-                    self.ctx.tf_tree,
-                    self.ctx.tf_panel_config,
-                    &self.ctx.tf_publishers,
+                    self.ctx.hframe_tree,
+                    self.ctx.hframe_panel_config,
+                    &self.ctx.hframe_publishers,
                     self.ctx.current_time,
                 );
             }
@@ -254,7 +254,7 @@ impl DockWorkspace {
         let [_main, _bottom] = tree.split_below(
             NodeIndex::root(),
             0.65,
-            vec![DockTab::Console, DockTab::TfTree],
+            vec![DockTab::Console, DockTab::HFrameTree],
         );
 
         Self {
@@ -280,7 +280,7 @@ impl DockWorkspace {
         let tree = state.main_surface_mut();
 
         // Right: TF Tree
-        let [_left, _right] = tree.split_right(NodeIndex::root(), 0.65, vec![DockTab::TfTree]);
+        let [_left, _right] = tree.split_right(NodeIndex::root(), 0.65, vec![DockTab::HFrameTree]);
 
         // Bottom: Console
         let [_main, _bottom] = tree.split_below(NodeIndex::root(), 0.7, vec![DockTab::Console]);
@@ -459,11 +459,11 @@ pub fn dock_ui_system(
     stats: Res<SimulationStats>,
     frame_time: Res<FrameTimeBreakdown>,
     mut controls: ResMut<SimulationControls>,
-    tf_tree: Res<TFTree>,
+    hframe_tree: Res<HFrameTree>,
     physics_world: Option<Res<PhysicsWorld>>,
     horus_stats: Option<Res<HorusSyncStats>>,
-    tf_publishers: Query<&TFPublisher>,
-    mut tf_panel_config: ResMut<TFPanelConfig>,
+    hframe_publishers: Query<&HFramePublisher>,
+    mut hframe_panel_config: ResMut<HFramePanelConfig>,
     mut view_mode: ResMut<CurrentViewMode>,
     mut layout_events: EventWriter<ChangeDockLayoutEvent>,
     mut sim_events: EventWriter<SimulationEvent>,
@@ -523,11 +523,11 @@ pub fn dock_ui_system(
                             .push_to_focused_leaf(DockTab::Console);
                         ui.close_menu();
                     }
-                    if ui.button("Add TF Tree").clicked() {
+                    if ui.button("Add HFrame Tree").clicked() {
                         workspace
                             .state
                             .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::TfTree);
+                            .push_to_focused_leaf(DockTab::HFrameTree);
                         ui.close_menu();
                     }
                     if ui.button("Add View Modes").clicked() {
@@ -546,8 +546,8 @@ pub fn dock_ui_system(
         });
     }
 
-    // Collect TF publishers
-    let tf_pubs: Vec<&TFPublisher> = tf_publishers.iter().collect();
+    // Collect HFrame publishers
+    let hframe_pubs: Vec<&HFramePublisher> = hframe_publishers.iter().collect();
 
     // Build render context
     let render_ctx = DockRenderContext {
@@ -555,11 +555,11 @@ pub fn dock_ui_system(
         stats: &stats,
         frame_time: &frame_time,
         controls: &mut controls,
-        tf_tree: &tf_tree,
+        hframe_tree: &hframe_tree,
         physics_world: physics_world.as_deref(),
         horus_stats: horus_stats.as_deref(),
-        tf_publishers: tf_pubs,
-        tf_panel_config: &mut tf_panel_config,
+        hframe_publishers: hframe_pubs,
+        hframe_panel_config: &mut hframe_panel_config,
         view_mode: &mut view_mode,
         current_time: time.elapsed_secs(),
     };

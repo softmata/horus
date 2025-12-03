@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::messages::*;
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 use crate::sensors::lidar3d::{LaserScan, Lidar2D, Lidar3D, PointCloud};
 
 #[derive(Resource)]
@@ -261,9 +261,9 @@ fn convert_pointcloud_to_msg(
     }
 }
 
-pub fn publish_tf_system(
+pub fn publish_hframe_system(
     time: Res<Time>,
-    _tf_tree: Res<TFTree>,
+    _hframe_tree: Res<HFrameTree>,
     publisher: Res<HorusPublisher>,
     query: Query<(&GlobalTransform, &Name)>,
 ) {

@@ -4,13 +4,13 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 #[cfg(feature = "visual")]
-use crate::hframe::TFTree;
+use crate::hframe::HFrameTree;
 #[cfg(feature = "visual")]
-use crate::systems::tf_update::TFPublisher;
+use crate::systems::hframe_update::HFramePublisher;
 
-/// Resource to control TF panel display options
+/// Resource to control HFrame panel display options
 #[derive(Resource, Clone)]
-pub struct TFPanelConfig {
+pub struct HFramePanelConfig {
     pub show_panel: bool,
     pub show_world_frame: bool,
     pub show_robot_frames: bool,
@@ -20,7 +20,7 @@ pub struct TFPanelConfig {
     pub selected_frame: Option<String>,
 }
 
-impl Default for TFPanelConfig {
+impl Default for HFramePanelConfig {
     fn default() -> Self {
         Self {
             show_panel: true,
@@ -34,7 +34,7 @@ impl Default for TFPanelConfig {
     }
 }
 
-impl TFPanelConfig {
+impl HFramePanelConfig {
     pub fn new() -> Self {
         Self::default()
     }
@@ -54,9 +54,9 @@ impl TFPanelConfig {
     }
 }
 
-/// Statistics about TF frames
+/// Statistics about HFrame frames
 #[derive(Default)]
-pub struct TFStats {
+pub struct HFrameStats {
     pub total_frames: usize,
     pub world_frames: usize,
     pub robot_frames: usize,
@@ -64,12 +64,12 @@ pub struct TFStats {
     pub link_frames: usize,
 }
 
-impl TFStats {
+impl HFrameStats {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn update(&mut self, publishers: &Vec<&TFPublisher>) {
+    pub fn update(&mut self, publishers: &Vec<&HFramePublisher>) {
         self.total_frames = publishers.len();
         self.world_frames = 0;
         self.robot_frames = 0;
@@ -101,19 +101,19 @@ impl TFStats {
 use crate::ui::dock::DockConfig;
 
 #[cfg(feature = "visual")]
-/// Render the TF tree UI content (reusable in both floating window and dock tab)
-pub fn render_tf_ui(
+/// Render the HFrame tree UI content (reusable in both floating window and dock tab)
+pub fn render_hframe_ui(
     ui: &mut egui::Ui,
-    tf_tree: &TFTree,
-    config: &mut TFPanelConfig,
-    publishers: &[&TFPublisher],
+    hframe_tree: &HFrameTree,
+    config: &mut HFramePanelConfig,
+    publishers: &[&HFramePublisher],
     current_time: f32,
 ) {
     // Calculate stats
-    let mut stats = TFStats::new();
+    let mut stats = HFrameStats::new();
     stats.update(&publishers.to_vec());
 
-    ui.heading("Transform Frames");
+    ui.heading("HFrame - Transform Frames");
     ui.separator();
 
     // Statistics
@@ -172,7 +172,7 @@ pub fn render_tf_ui(
             if config.show_world_frame && !world_frames.is_empty() {
                 ui.collapsing("World Frames", |ui| {
                     for publisher in world_frames {
-                        display_frame_item(ui, publisher, config, tf_tree, current_time);
+                        display_frame_item(ui, publisher, config, hframe_tree, current_time);
                     }
                 });
             }
@@ -181,7 +181,7 @@ pub fn render_tf_ui(
             if config.show_robot_frames && !robot_frames.is_empty() {
                 ui.collapsing("Robot Frames", |ui| {
                     for publisher in robot_frames {
-                        display_frame_item(ui, publisher, config, tf_tree, current_time);
+                        display_frame_item(ui, publisher, config, hframe_tree, current_time);
                     }
                 });
             }
@@ -190,7 +190,7 @@ pub fn render_tf_ui(
             if config.show_sensor_frames && !sensor_frames.is_empty() {
                 ui.collapsing("Sensor Frames", |ui| {
                     for publisher in sensor_frames {
-                        display_frame_item(ui, publisher, config, tf_tree, current_time);
+                        display_frame_item(ui, publisher, config, hframe_tree, current_time);
                     }
                 });
             }
@@ -199,7 +199,7 @@ pub fn render_tf_ui(
             if config.show_link_frames && !link_frames.is_empty() {
                 ui.collapsing("Link Frames", |ui| {
                     for publisher in link_frames {
-                        display_frame_item(ui, publisher, config, tf_tree, current_time);
+                        display_frame_item(ui, publisher, config, hframe_tree, current_time);
                     }
                 });
             }
@@ -208,7 +208,7 @@ pub fn render_tf_ui(
             if !other_frames.is_empty() {
                 ui.collapsing("Other Frames", |ui| {
                     for publisher in other_frames {
-                        display_frame_item(ui, publisher, config, tf_tree, current_time);
+                        display_frame_item(ui, publisher, config, hframe_tree, current_time);
                     }
                 });
             }
@@ -223,8 +223,8 @@ pub fn render_tf_ui(
 
         ui.label(format!("Frame: {}", selected));
 
-        // Try to get transform from TF tree
-        if let Ok(transform) = tf_tree.lookup_transform("world", &selected) {
+        // Try to get transform from HFrame tree
+        if let Ok(transform) = hframe_tree.lookup_transform("world", &selected) {
             ui.label(format!(
                 "Position: ({:.3}, {:.3}, {:.3})",
                 transform.translation.x, transform.translation.y, transform.translation.z
@@ -248,16 +248,16 @@ pub fn render_tf_ui(
 }
 
 #[cfg(feature = "visual")]
-/// Main TF panel system - only shown when dock mode is disabled
-pub fn tf_panel_system(
+/// Main HFrame panel system - only shown when dock mode is disabled
+pub fn hframe_panel_system(
     mut contexts: EguiContexts,
-    tf_tree: Res<TFTree>,
-    mut config: ResMut<TFPanelConfig>,
-    publishers: Query<&TFPublisher>,
+    hframe_tree: Res<HFrameTree>,
+    mut config: ResMut<HFramePanelConfig>,
+    publishers: Query<&HFramePublisher>,
     time: Res<Time>,
     dock_config: Option<Res<DockConfig>>,
 ) {
-    // Skip if dock mode is enabled (dock renders its own TF tree tab)
+    // Skip if dock mode is enabled (dock renders its own HFrame tree tab)
     if let Some(dock) = dock_config {
         if dock.enabled {
             return;
@@ -274,16 +274,16 @@ pub fn tf_panel_system(
     };
 
     // Collect all publishers
-    let all_publishers: Vec<&TFPublisher> = publishers.iter().collect();
+    let all_publishers: Vec<&HFramePublisher> = publishers.iter().collect();
 
-    egui::Window::new("TF Tree")
+    egui::Window::new("HFrame Tree")
         .default_width(320.0)
         .default_pos([10.0, 700.0])
         .resizable(true)
         .show(ctx, |ui| {
-            render_tf_ui(
+            render_hframe_ui(
                 ui,
-                &tf_tree,
+                &hframe_tree,
                 &mut config,
                 &all_publishers,
                 time.elapsed_secs(),
@@ -295,9 +295,9 @@ pub fn tf_panel_system(
 /// Helper function to display a single frame item
 fn display_frame_item(
     ui: &mut egui::Ui,
-    publisher: &TFPublisher,
-    config: &TFPanelConfig,
-    tf_tree: &TFTree,
+    publisher: &HFramePublisher,
+    config: &HFramePanelConfig,
+    hframe_tree: &HFrameTree,
     current_time: f32,
 ) {
     let is_selected = config.is_selected(&publisher.frame_name);
@@ -337,7 +337,7 @@ fn display_frame_item(
 
     // Show transform info on hover
     ui.horizontal(|ui| {
-        if let Ok(transform) = tf_tree.lookup_transform("world", &publisher.frame_name) {
+        if let Ok(transform) = hframe_tree.lookup_transform("world", &publisher.frame_name) {
             ui.small(format!(
                 "  pos: ({:.2}, {:.2}, {:.2})",
                 transform.translation.x, transform.translation.y, transform.translation.z
@@ -347,30 +347,30 @@ fn display_frame_item(
 }
 
 #[cfg(not(feature = "visual"))]
-pub fn tf_panel_system() {}
+pub fn hframe_panel_system() {}
 
-/// Event for TF frame selection
+/// Event for HFrame frame selection
 #[derive(Event, Clone, Debug)]
-pub struct TFFrameSelectEvent {
+pub struct HFrameSelectEvent {
     pub frame_name: String,
 }
 
-/// System to handle TF frame selection events
-pub fn handle_tf_select_events(
-    mut events: EventReader<TFFrameSelectEvent>,
-    mut config: ResMut<TFPanelConfig>,
+/// System to handle HFrame frame selection events
+pub fn handle_hframe_select_events(
+    mut events: EventReader<HFrameSelectEvent>,
+    mut config: ResMut<HFramePanelConfig>,
 ) {
     for event in events.read() {
         config.select_frame(event.frame_name.clone());
     }
 }
 
-/// Keyboard shortcuts for TF panel
-pub fn tf_panel_keyboard_system(
+/// Keyboard shortcuts for HFrame panel
+pub fn hframe_panel_keyboard_system(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut config: ResMut<TFPanelConfig>,
+    mut config: ResMut<HFramePanelConfig>,
 ) {
-    // T: Toggle TF panel
+    // T: Toggle HFrame panel
     if keyboard.just_pressed(KeyCode::KeyT) {
         config.show_panel = !config.show_panel;
     }
@@ -381,27 +381,27 @@ pub fn tf_panel_keyboard_system(
     }
 }
 
-/// Plugin to register TF panel systems
-pub struct TFPanelPlugin;
+/// Plugin to register HFrame panel systems
+pub struct HFramePanelPlugin;
 
-impl Plugin for TFPanelPlugin {
+impl Plugin for HFramePanelPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TFPanelConfig>()
-            .add_event::<TFFrameSelectEvent>()
+        app.init_resource::<HFramePanelConfig>()
+            .add_event::<HFrameSelectEvent>()
             .add_systems(
                 Update,
-                (tf_panel_keyboard_system, handle_tf_select_events).chain(),
+                (hframe_panel_keyboard_system, handle_hframe_select_events).chain(),
             );
 
         #[cfg(feature = "visual")]
         {
             use bevy_egui::EguiSet;
-            app.add_systems(Update, tf_panel_system.after(EguiSet::InitContexts));
+            app.add_systems(Update, hframe_panel_system.after(EguiSet::InitContexts));
         }
 
         #[cfg(not(feature = "visual"))]
         {
-            app.add_systems(Update, tf_panel_system);
+            app.add_systems(Update, hframe_panel_system);
         }
     }
 }
@@ -411,8 +411,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tf_panel_config() {
-        let mut config = TFPanelConfig::new();
+    fn test_hframe_panel_config() {
+        let mut config = HFramePanelConfig::new();
         assert!(config.show_panel);
         assert!(config.show_world_frame);
         assert!(config.selected_frame.is_none());
@@ -427,19 +427,19 @@ mod tests {
     }
 
     #[test]
-    fn test_tf_stats() {
-        let mut stats = TFStats::new();
+    fn test_hframe_stats() {
+        let mut stats = HFrameStats::new();
         assert_eq!(stats.total_frames, 0);
 
         // Create some mock publishers
         let publishers = vec![
-            TFPublisher::new("world", ""),
-            TFPublisher::new("robot_base", "world"),
-            TFPublisher::new("sensor_lidar", "robot_base"),
-            TFPublisher::new("link_1", "robot_base"),
+            HFramePublisher::new("world", ""),
+            HFramePublisher::new("robot_base", "world"),
+            HFramePublisher::new("sensor_lidar", "robot_base"),
+            HFramePublisher::new("link_1", "robot_base"),
         ];
 
-        let refs: Vec<&TFPublisher> = publishers.iter().collect();
+        let refs: Vec<&HFramePublisher> = publishers.iter().collect();
         stats.update(&refs);
 
         assert_eq!(stats.total_frames, 4);

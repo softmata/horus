@@ -336,7 +336,7 @@ impl PyHub {
                     }
 
                     // Create Python CmdVel object
-                    let horus_module = py.import_bound("horus")?;
+                    let horus_module = py.import("horus")?;
                     let cmdvel_class = horus_module.getattr("CmdVel")?;
                     let py_cmd = cmdvel_class.call1((cmd.linear, cmd.angular, cmd.stamp_nanos))?;
                     Ok(Some(py_cmd.into()))
@@ -371,7 +371,7 @@ impl PyHub {
                     }
 
                     // Create Python Pose2D object
-                    let horus_module = py.import_bound("horus")?;
+                    let horus_module = py.import("horus")?;
                     let pose2d_class = horus_module.getattr("Pose2D")?;
                     let py_pose =
                         pose2d_class.call1((pose.x, pose.y, pose.theta, pose.timestamp))?;
@@ -630,7 +630,7 @@ impl PyHub {
 
                     // Convert Vec<u8> to Python bytes object
                     let data = msg.data();
-                    let py_bytes = pyo3::types::PyBytes::new_bound(py, &data).into();
+                    let py_bytes = pyo3::types::PyBytes::new(py, &data).into();
 
                     Ok(Some((py_bytes, metadata, timestamp)))
                 } else {
@@ -727,7 +727,7 @@ impl PyHub {
     ///     print(f"Sent: {stats['messages_sent']}, Received: {stats['messages_received']}")
     fn stats(&self) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
         Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
+            let dict = pyo3::types::PyDict::new(py);
 
             // Get metrics from the underlying hub using get_metrics()
             let (sent, received, send_failures, recv_failures) = match &self.hub_type {

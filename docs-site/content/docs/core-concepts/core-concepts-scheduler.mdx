@@ -134,7 +134,7 @@ struct RegisteredNode {
 
 **Implications for your nodes:**
 ```rust
-//  Works perfectly - 10 Hz sensor
+// 10 Hz sensor - supported
 // Executes once every 6 ticks (~100ms)
 impl Node for SlowSensor {
     fn tick(&mut self, ctx) {

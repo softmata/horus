@@ -298,7 +298,7 @@ pub struct LaserScan {
 ### 6. **Multi-Language Bindings**
 
 #### **horus_py** (Python Support)
-Python bindings using PyO3 for seamless Rust-Python interop.
+Python bindings using PyO3 for Rust-Python interoperability.
 
 ```python
 from horus import Node, Hub
@@ -430,9 +430,9 @@ scheduler.add(motor_driver, 10, Some(true));   // Actuates
 - If your nodes' combined execution time exceeds 16ms, ticks will slow down accordingly
 
 **Implications:**
-- For 60 Hz control loops:  Works perfectly
-- For 100 Hz+ control loops:  Currently not achievable (coming in future release)
-- For sensor fusion (10-30 Hz):  More than sufficient
+- For 60 Hz control loops: Supported
+- For 100 Hz+ control loops: Currently not achievable (planned for future release)
+- For sensor fusion (10-30 Hz): More than sufficient
 
 **Workaround for higher frequencies:**
 If you need &gt;60 Hz for specific nodes, run them in separate processes with their own schedulers. Each process can achieve ~60 Hz independently.
@@ -464,8 +464,8 @@ const MAX_LOG_ENTRIES: usize = 5000;  // Ring buffer capacity
 
 **Log Format:**
 ```
-[12:39:28.039] [IPC: 1112ns | Tick: 218μs] MotorController --PUB--> 'actuators/motors'
-[12:39:28.040] [IPC: 718ns  | Tick: 89μs]  SensorNode --SUB<-- 'sensors/imu'
+[12:39:28.039] [IPC: 1112ns | Tick: 218μs] MotorController --PUB--> 'actuators.motors'
+[12:39:28.040] [IPC: 718ns  | Tick: 89μs]  SensorNode --SUB<-- 'sensors.imu'
 ```
 
 **Performance:**

@@ -352,8 +352,17 @@ pub fn discover_all_workspaces(current_workspace: &Option<PathBuf>) -> Vec<Disco
         }
     }
 
-    // 2. If we have a current workspace, scan for nested .horus/ directories
+    // 2. If we have a current workspace, add it and scan for nested .horus/ directories
     if let Some(current_path) = current_workspace {
+        // Add the current workspace itself
+        let workspace_name = current_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+        add_workspace(current_path.clone(), workspace_name, true);
+
+        // Then scan for nested workspaces
         scan_for_nested_workspaces(current_path, &mut add_workspace, current_path);
     }
 

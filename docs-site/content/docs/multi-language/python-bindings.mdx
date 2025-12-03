@@ -67,7 +67,7 @@ node = horus.Node(pubs="output", tick=process, rate=1)
 horus.run(node, duration=3)
 ```
 
-**That's it!** No classes, no boilerplate, just pure logic.
+This minimal example demonstrates functional-style node creation without class boilerplate.
 
 ---
 
@@ -434,7 +434,7 @@ horus run sensor_node.py controller_node.py
 
 **Benefits:**
 - **Process isolation**: One crash doesn't kill everything
-- **Multi-language**: Mix Python and Rust nodes seamlessly
+- **Multi-language**: Mix Python and Rust nodes in the same application
 - **Parallel execution**: True multicore utilization
 - **Zero configuration**: Shared memory IPC automatically set up
 
@@ -948,9 +948,9 @@ pip install pytest
 pytest tests/
 
 # Run specific feature tests
-python3 tests/test_rate_control.py    # Phase 1: Per-node rates
-python3 tests/test_timestamps.py      # Phase 2: Timestamps
-python3 tests/test_typed_messages.py  # Phase 3: Typed messages
+horus run tests/test_rate_control.py    # Phase 1: Per-node rates
+horus run tests/test_timestamps.py      # Phase 2: Timestamps
+horus run tests/test_typed_messages.py  # Phase 3: Typed messages
 
 # With coverage
 pytest --cov=horus tests/
@@ -1143,10 +1143,10 @@ hub.recv(&mut None)       #  No context = no logging
 ```
 
 **What this means:**
-- -Python nodes work perfectly and communicate via shared memory
-- -All message passing functionality works
--  Pub/sub events don't appear in dashboard logs
--  Cannot monitor Python node messages in real-time via dashboard
+- Python nodes communicate via shared memory
+- All message passing functionality works
+- Pub/sub events don't appear in dashboard logs
+- Cannot monitor Python node messages in real-time via dashboard
 
 ### Scheduler Logging Flag
 

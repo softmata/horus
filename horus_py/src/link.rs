@@ -196,7 +196,7 @@ impl PyLink {
             LinkType::CmdVelConsumer(link) => {
                 let link = link.lock().unwrap();
                 if let Some(cmd) = link.recv(&mut None) {
-                    let horus_module = py.import_bound("horus")?;
+                    let horus_module = py.import("horus")?;
                     let cmdvel_class = horus_module.getattr("CmdVel")?;
                     let py_cmd = cmdvel_class.call1((cmd.linear, cmd.angular, cmd.stamp_nanos))?;
                     Ok(Some(py_cmd.into()))
@@ -207,7 +207,7 @@ impl PyLink {
             LinkType::Pose2DConsumer(link) => {
                 let link = link.lock().unwrap();
                 if let Some(pose) = link.recv(&mut None) {
-                    let horus_module = py.import_bound("horus")?;
+                    let horus_module = py.import("horus")?;
                     let pose2d_class = horus_module.getattr("Pose2D")?;
                     let py_pose =
                         pose2d_class.call1((pose.x, pose.y, pose.theta, pose.timestamp))?;
