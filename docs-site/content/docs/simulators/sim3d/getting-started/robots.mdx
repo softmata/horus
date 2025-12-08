@@ -1,0 +1,228 @@
+---
+title: "Loading Robots"
+description: "Loading URDF robots into Sim3D"
+---
+
+# Loading Robots in Sim3D
+
+Sim3D supports loading robots from URDF (Unified Robot Description Format) files, the standard format used in robotics.
+
+## Quick Start
+
+```bash
+# Load a robot from URDF
+horus sim3d --robot my_robot.urdf
+
+# Load with custom world
+horus sim3d --robot my_robot.urdf --world warehouse.yaml
+```
+
+## URDF Support
+
+Sim3D supports standard URDF features:
+
+| Feature | Support |
+|---------|---------|
+| Visual meshes | STL, OBJ, DAE |
+| Collision meshes | STL, OBJ, primitives |
+| Joint types | revolute, prismatic, fixed, continuous |
+| Materials | Colors, textures |
+| Inertia | Full inertia tensors |
+| Limits | Position, velocity, effort |
+
+## Example URDF
+
+```xml
+<?xml version="1.0"?>
+<robot name="simple_arm">
+  <!-- Base link (fixed to world) -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.2 0.2 0.1"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.2 0.2 0.1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="2.0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0"
+               iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+  </link>
+
+  <!-- First link -->
+  <link name="link1">
+    <visual>
+      <origin xyz="0 0 0.25"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.5"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.2 0.2 0.8 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.25"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.5"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 0.25"/>
+      <inertia ixx="0.02" ixy="0" ixz="0"
+               iyy="0.02" iyz="0" izz="0.005"/>
+    </inertial>
+  </link>
+
+  <!-- Joint connecting base to link1 -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0.05"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14"
+           velocity="2.0" effort="100"/>
+  </joint>
+</robot>
+```
+
+## Built-in Robot Presets
+
+```bash
+# TurtleBot3 Burger
+horus sim3d --preset turtlebot3_burger
+
+# TurtleBot3 Waffle
+horus sim3d --preset turtlebot3_waffle
+
+# Simple differential drive
+horus sim3d --preset diff_drive
+
+# 6-DOF arm
+horus sim3d --preset arm_6dof
+
+# Quadruped
+horus sim3d --preset quadruped
+```
+
+## Loading from Code
+
+### Rust API
+
+```rust
+use sim3d::{Sim3DBuilder, RobotConfig};
+
+let sim = Sim3DBuilder::new()
+    .with_robot(RobotConfig::from_urdf("robot.urdf")?)
+    .build()?;
+```
+
+### Python API
+
+```python
+from horus.sim3d import Sim3D
+
+sim = Sim3D(robot="robot.urdf")
+```
+
+## Spawn Position
+
+Control where the robot appears:
+
+```bash
+# Spawn at specific position
+horus sim3d --robot robot.urdf --spawn-position 1.0,2.0,0.5
+
+# Spawn with rotation (yaw in radians)
+horus sim3d --robot robot.urdf --spawn-rotation 1.57
+```
+
+In YAML:
+
+```yaml
+# world.yaml
+robots:
+  - urdf: "robot.urdf"
+    position: [1.0, 2.0, 0.5]
+    rotation: [0.0, 0.0, 1.57]  # Roll, pitch, yaw
+```
+
+## Multi-Robot Setup
+
+Load multiple robots:
+
+```yaml
+# multi_robot.yaml
+robots:
+  - urdf: "turtlebot.urdf"
+    name: "robot1"
+    position: [-2.0, 0.0, 0.0]
+    topic_prefix: "robot1"
+
+  - urdf: "turtlebot.urdf"
+    name: "robot2"
+    position: [2.0, 0.0, 0.0]
+    topic_prefix: "robot2"
+```
+
+```bash
+horus sim3d --world multi_robot.yaml
+```
+
+## Mesh Files
+
+Place mesh files relative to the URDF:
+
+```
+my_robot/
+├── robot.urdf
+├── meshes/
+│   ├── base.stl
+│   ├── link1.stl
+│   └── link2.stl
+└── textures/
+    └── metal.png
+```
+
+Reference in URDF:
+
+```xml
+<visual>
+  <geometry>
+    <mesh filename="meshes/base.stl" scale="1 1 1"/>
+  </geometry>
+</visual>
+```
+
+## Troubleshooting
+
+### Robot doesn't appear
+
+- Check URDF path is correct
+- Verify mesh files exist
+- Check console for parsing errors
+
+### Robot falls through ground
+
+- Add a collision geometry to base link
+- Ensure ground plane exists in world
+
+### Joints don't move
+
+- Check joint type is `revolute` or `prismatic` (not `fixed`)
+- Verify joint limits allow movement
+- Check topic names for joint commands
+
+## See Also
+
+- [Installation](/simulators/sim3d/getting-started/installation) - Setup guide
+- [Quick Start](/simulators/sim3d/getting-started/quick-start) - First simulation
+- [Sensors Overview](/simulators/sim3d/sensors/overview) - Adding sensors to robots

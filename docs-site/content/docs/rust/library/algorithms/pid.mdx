@@ -1,0 +1,328 @@
+---
+title: PID Controller
+description: Classic feedback control algorithm with anti-windup protection
+---
+
+# PID Controller
+
+Classic Proportional-Integral-Derivative feedback control algorithm for position, velocity, and process control.
+
+## Source Code
+
+- [PID Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/pid)
+
+## Features
+
+- Proportional, integral, and derivative terms
+- Anti-windup protection for integral term
+- Output limiting
+- Error deadband for noise rejection
+- Configurable gains at runtime
+
+## Quick Start
+
+```rust
+use horus::prelude::*; // Includes PID
+
+fn main() {
+    // Create PID controller with gains
+    let mut pid = PID::new(2.0, 0.5, 0.1);  // Kp, Ki, Kd
+
+    // Set output limits (e.g., motor PWM range)
+    pid.set_output_limits(-255.0, 255.0);
+
+    // Control loop
+    let setpoint = 100.0;  // Target value
+    let dt = 0.01;         // 10ms control period
+
+    // Simulate control loop
+    let mut feedback = 0.0;
+    for _ in 0..100 {
+        let output = pid.compute(setpoint, feedback, dt);
+        println!("Output: {:.2}, Error: {:.2}", output, pid.get_error());
+
+        // Simulate plant response (simplified)
+        feedback += output * 0.01;
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let pid = PID::new(kp: f64, ki: f64, kd: f64);
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `kp` | Proportional gain - response to current error |
+| `ki` | Integral gain - response to accumulated error |
+| `kd` | Derivative gain - response to rate of change |
+
+### Configuration Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_gains(kp, ki, kd)` | Update PID gains |
+| `set_output_limits(min, max)` | Clamp output range |
+| `set_integral_limits(min, max)` | Anti-windup bounds |
+| `set_deadband(threshold)` | Ignore small errors |
+| `reset()` | Clear integral and derivative state |
+
+### Compute
+
+```rust
+let output = pid.compute(setpoint: f64, feedback: f64, dt: f64) -> f64;
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `setpoint` | Desired target value |
+| `feedback` | Current measured value |
+| `dt` | Time step in seconds |
+
+Returns the control output, clamped to output limits.
+
+### State Inspection
+
+| Method | Returns |
+|--------|---------|
+| `get_error()` | Current error (setpoint - feedback) |
+| `get_integral()` | Accumulated integral term |
+| `get_derivative()` | Last derivative value |
+| `get_gains()` | (Kp, Ki, Kd) tuple |
+| `get_state()` | (last_error, integral) tuple |
+
+## PID Tuning Guide
+
+### Understanding the Terms
+
+**Proportional (P)**: Responds to current error
+- Higher Kp → Faster response, more overshoot
+- Too high → Oscillation
+- Too low → Slow, steady-state error
+
+**Integral (I)**: Eliminates steady-state error
+- Accumulates error over time
+- Higher Ki → Faster error elimination
+- Too high → Overshoot, oscillation
+- Anti-windup prevents runaway accumulation
+
+**Derivative (D)**: Dampens oscillations
+- Responds to rate of change
+- Higher Kd → More damping, noise sensitivity
+- Too high → Sluggish response, noise amplification
+
+### Tuning Methods
+
+**Ziegler-Nichols Method:**
+1. Set Ki = 0, Kd = 0
+2. Increase Kp until sustained oscillation (Ku)
+3. Measure oscillation period (Tu)
+4. Calculate: Kp = 0.6×Ku, Ki = 2×Kp/Tu, Kd = Kp×Tu/8
+
+**Manual Tuning:**
+1. Start with small Kp, Ki = 0, Kd = 0
+2. Increase Kp until acceptable response
+3. Add Ki to eliminate steady-state error
+4. Add Kd to reduce overshoot
+
+### Typical Gain Values
+
+| Application | Kp | Ki | Kd |
+|------------|----|----|-----|
+| Motor velocity | 1-5 | 0.1-1 | 0.01-0.1 |
+| Position control | 5-20 | 0.5-5 | 0.1-1 |
+| Temperature | 2-10 | 0.01-0.1 | 1-10 |
+
+## Anti-Windup
+
+Prevent integral term from growing unbounded when output is saturated:
+
+```rust
+let mut pid = PID::new(2.0, 0.5, 0.1);
+
+// Method 1: Limit output (also prevents windup indirectly)
+pid.set_output_limits(-100.0, 100.0);
+
+// Method 2: Directly limit integral accumulation
+pid.set_integral_limits(-50.0, 50.0);
+```
+
+When to use integral limits:
+- System has hard actuator limits
+- Large sustained errors expected (e.g., startup)
+- Preventing dangerous overshoot
+
+## Error Deadband
+
+Ignore small errors to prevent jitter around setpoint:
+
+```rust
+let mut pid = PID::new(2.0, 0.5, 0.1);
+
+// Ignore errors smaller than 1.0
+pid.set_deadband(1.0);
+
+// Error within deadband → treated as zero
+pid.compute(100.0, 99.5, 0.01);  // Returns 0
+pid.compute(100.0, 95.0, 0.01);  // Returns non-zero
+```
+
+Use cases:
+- Noisy sensor feedback
+- Preventing motor chattering
+- Temperature control dead zones
+
+## Example: Motor Velocity Control
+
+```rust
+use horus::prelude::*; // Includes PID
+
+struct MotorController {
+    pid: PID,
+    target_rpm: f64,
+}
+
+impl MotorController {
+    fn new(target_rpm: f64) -> Self {
+        let mut pid = PID::new(1.5, 0.2, 0.05);
+        pid.set_output_limits(-255.0, 255.0);  // PWM range
+        pid.set_integral_limits(-100.0, 100.0);
+
+        Self { pid, target_rpm }
+    }
+
+    fn update(&mut self, current_rpm: f64, dt: f64) -> i32 {
+        let pwm = self.pid.compute(self.target_rpm, current_rpm, dt);
+        pwm as i32
+    }
+
+    fn set_target(&mut self, rpm: f64) {
+        self.target_rpm = rpm;
+        // Optionally reset integral when target changes significantly
+        // self.pid.reset();
+    }
+}
+```
+
+## Example: Position Control
+
+```rust
+use horus::prelude::*; // Includes PID
+
+struct PositionController {
+    pid: PID,
+}
+
+impl PositionController {
+    fn new() -> Self {
+        let mut pid = PID::new(10.0, 1.0, 0.5);
+        pid.set_output_limits(-1.0, 1.0);  // Velocity limits
+        pid.set_deadband(0.01);  // 1cm deadband
+
+        Self { pid }
+    }
+
+    fn compute_velocity(&mut self, target_pos: f64, current_pos: f64, dt: f64) -> f64 {
+        self.pid.compute(target_pos, current_pos, dt)
+    }
+
+    fn is_at_target(&self) -> bool {
+        self.pid.get_error().abs() < 0.01
+    }
+}
+```
+
+## Example: Cascaded PID
+
+Use nested PIDs for position → velocity → torque control:
+
+```rust
+use horus::prelude::*; // Includes PID
+
+struct CascadedController {
+    position_pid: PID,
+    velocity_pid: PID,
+}
+
+impl CascadedController {
+    fn new() -> Self {
+        let mut position_pid = PID::new(5.0, 0.0, 0.0);
+        position_pid.set_output_limits(-10.0, 10.0);  // Max velocity
+
+        let mut velocity_pid = PID::new(2.0, 0.5, 0.1);
+        velocity_pid.set_output_limits(-255.0, 255.0);  // PWM
+
+        Self { position_pid, velocity_pid }
+    }
+
+    fn compute(
+        &mut self,
+        target_pos: f64,
+        current_pos: f64,
+        current_vel: f64,
+        dt: f64,
+    ) -> f64 {
+        // Outer loop: position → velocity setpoint
+        let velocity_setpoint = self.position_pid.compute(target_pos, current_pos, dt);
+
+        // Inner loop: velocity → torque/PWM
+        self.velocity_pid.compute(velocity_setpoint, current_vel, dt)
+    }
+}
+```
+
+## Integration with HORUS Nodes
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Includes PID
+use horus::prelude::*; // Provides {MotorCommand, Odometry};
+
+node! {
+    name: "VelocityController",
+    state: {
+        pid: PID,
+        target_velocity: f64,
+    },
+    publishers: {
+        cmd_pub: Hub<MotorCommand> = "motor.cmd",
+    },
+    subscribers: {
+        odom_sub: Hub<Odometry> = "odom",
+    },
+    init: |_params| {
+        let mut pid = PID::new(2.0, 0.5, 0.1);
+        pid.set_output_limits(-1.0, 1.0);
+        Ok(Self {
+            pid,
+            target_velocity: 0.5,
+            cmd_pub,
+            odom_sub,
+        })
+    },
+    tick: |self, ctx| {
+        if let Some(odom) = self.odom_sub.recv(ctx) {
+            let current = odom.twist.linear[0];
+            let output = self.pid.compute(self.target_velocity, current, 0.01);
+
+            let cmd = MotorCommand {
+                motor_id: 0,
+                value: output as f32,
+                mode: 1,
+                timestamp: 0,
+            };
+            self.cmd_pub.send(cmd, ctx).ok();
+        }
+    },
+}
+```
+
+## See Also
+
+- [PID Controller Node](/rust/library/built-in-nodes/pid-controller) - Ready-to-use PID node
+- [Differential Drive](/rust/library/algorithms/differential-drive) - Mobile robot kinematics
+- [EKF](/rust/library/algorithms/ekf) - State estimation for feedback

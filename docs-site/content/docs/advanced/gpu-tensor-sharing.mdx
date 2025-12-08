@@ -1,0 +1,322 @@
+---
+title: "GPU Tensor Sharing"
+description: "Zero-copy GPU memory sharing across processes using CUDA IPC for high-performance AI/ML robotics"
+weight: 45
+---
+
+# GPU Tensor Sharing
+
+HORUS provides native CUDA IPC (Inter-Process Communication) support for sharing GPU tensors between processes with zero-copy semantics. This enables high-performance AI/ML robotics pipelines where perception, planning, and control can share GPU data without expensive CPU roundtrips.
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- How CUDA IPC enables zero-copy GPU memory sharing
+- When to use GPU tensor sharing vs CPU tensors
+- How to implement cross-process GPU pipelines
+- Performance characteristics and limitations
+
+## Why GPU Tensor Sharing?
+
+### The Problem
+
+Traditional robotics frameworks copy data through CPU memory:
+
+```
+Process A (Perception)     Process B (Planning)
+┌─────────────────┐       ┌─────────────────┐
+│ GPU: Run YOLO   │       │ GPU: Path Plan  │
+│       ↓         │       │       ↑         │
+│ GPU → CPU copy  │──────→│ CPU → GPU copy  │
+└─────────────────┘ IPC   └─────────────────┘
+        ~2ms                      ~2ms
+```
+
+This adds **4ms+ latency** per frame for a 1080p image.
+
+### The Solution
+
+HORUS uses CUDA IPC to share GPU memory directly:
+
+```
+Process A (Perception)     Process B (Planning)
+┌─────────────────┐       ┌─────────────────┐
+│ GPU: Run YOLO   │       │ GPU: Path Plan  │
+│       ↓         │       │       ↑         │
+│ IPC Handle (64B)│──────→│ Open IPC Handle │
+└─────────────────┘       └─────────────────┘
+        ~1μs                      ~1μs
+```
+
+Only a 64-byte handle is transferred. Both processes access the **same physical GPU memory**.
+
+## Enabling CUDA Support
+
+### Build Configuration
+
+Enable the `cuda` feature in your `Cargo.toml`:
+
+```toml
+[dependencies]
+horus_core = { version = "0.1", features = ["cuda"] }
+```
+
+### Runtime Requirements
+
+- NVIDIA GPU with compute capability 3.0+
+- CUDA 11.0+ runtime installed
+- Linux (CUDA IPC not supported on Windows/macOS)
+
+Check availability at runtime:
+
+```rust
+use horus::memory::{cuda_available, cuda_device_count};
+
+if cuda_available() {
+    println!("CUDA available with {} devices", cuda_device_count());
+}
+```
+
+## Basic Usage
+
+### Rust API
+
+```rust
+use horus::memory::{CudaTensorPool, CudaTensorPoolConfig, TensorDtype};
+
+// Process A: Create pool and allocate tensor
+let pool = CudaTensorPool::new(1, 0, CudaTensorPoolConfig::default())?;
+let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::F32)?;
+
+// Get IPC handle to share (64 bytes)
+let ipc_handle = tensor.ipc_handle_bytes();
+
+// Send ipc_handle through Hub/Link/socket to Process B...
+
+// Process B: Open shared GPU memory
+let pool = CudaTensorPool::open(1, 0)?;
+let (gpu_ptr, tensor) = pool.import_ipc(ipc_handle, &[1080, 1920, 3], TensorDtype::F32)?;
+
+// gpu_ptr points to the SAME GPU memory as Process A
+// No data was copied!
+```
+
+### Python API
+
+```python
+import horus
+
+# Check CUDA availability
+if horus.cuda_is_available():
+    print(f"CUDA devices: {horus.cuda_device_count()}")
+
+# Create tensor pool
+pool = horus.TensorPool(pool_id=1, size_mb=1024)
+
+# Allocate CPU tensor and transfer to GPU
+cpu_tensor = pool.alloc(shape=(1080, 1920, 3), dtype="float32")
+gpu_tensor = cpu_tensor.cuda("cuda:0")
+
+# Get IPC handle for sharing
+ipc_handle = gpu_tensor.get_cuda_ipc_handle()
+
+# Zero-copy PyTorch integration
+import torch
+torch_tensor = torch.as_tensor(gpu_tensor)  # Uses __cuda_array_interface__
+```
+
+## Architecture
+
+### CudaTensorPool
+
+The `CudaTensorPool` manages GPU memory with IPC support:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CudaTensorPool Design                     │
+├─────────────────────────────────────────────────────────────┤
+│  Process A (Owner)              Process B (Consumer)         │
+│  ┌─────────────────┐            ┌─────────────────┐         │
+│  │ cudaMalloc      │            │                 │         │
+│  │    ↓            │            │                 │         │
+│  │ GPU Memory      │════════════│ GPU Memory      │         │
+│  │ (same physical) │ IPC Handle │ (same physical) │         │
+│  │    ↓            │  64 bytes  │    ↓            │         │
+│  │ IpcGetHandle    │───────────→│ IpcOpenHandle   │         │
+│  └─────────────────┘            └─────────────────┘         │
+│                                                              │
+│  Shared Memory (CPU): Stores metadata + IPC handles          │
+│  /dev/shm/horus/cuda_pool_{id}_{device}                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Memory Layout
+
+Each tensor slot stores:
+- 64-byte CUDA IPC handle
+- Shape, dtype, size metadata
+- Atomic reference count
+- Generation counter (ABA prevention)
+
+## Integration with Hub/Link
+
+### Sending GPU Tensors
+
+GPU tensors integrate with HORUS Hub and Link communication:
+
+```rust
+use horus::prelude::*;
+use horus::memory::{TensorHandle, TensorDevice};
+
+// Allocate GPU tensor
+let handle = TensorHandle::alloc(pool, &[640, 480, 3], TensorDtype::F32, TensorDevice::Cuda0)?;
+
+// Fill with data (e.g., from camera)
+// ...
+
+// Send through Hub - only 64-byte handle is copied!
+hub.send(handle.tensor().clone())?;
+```
+
+### Receiving GPU Tensors
+
+```rust
+// Receiver gets tensor descriptor
+let tensor = hub.recv()?;
+
+// Wrap in handle - this opens the IPC handle if from another process
+let handle = TensorHandle::from_ipc(tensor, pool)?;
+
+// Access GPU memory directly
+let gpu_ptr = handle.data_ptr();  // Points to shared GPU memory
+```
+
+## Performance Characteristics
+
+### Latency Comparison
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| IPC handle transfer | ~1μs | 64 bytes through shared memory |
+| cudaIpcOpenMemHandle | ~10μs | One-time per handle |
+| GPU memory access | 0 | Same physical memory |
+| CPU→GPU copy (1080p) | ~2ms | Traditional approach |
+| GPU→CPU copy (1080p) | ~2ms | Traditional approach |
+
+### Best Use Cases
+
+**Good for:**
+- Multi-process ML inference pipelines
+- Camera → Detection → Planning chains
+- GPU-accelerated sensor fusion
+- Real-time neural network inference
+
+**Not ideal for:**
+- Single-process applications (use TensorHandle directly)
+- Small tensors (&lt;1KB) - IPC overhead dominates
+- Non-Linux platforms
+
+## Limitations
+
+### Platform Support
+
+| Platform | Support |
+|----------|---------|
+| Linux | Full support |
+| Windows | Limited (significant performance penalty) |
+| macOS | Not supported (no CUDA) |
+
+### CUDA IPC Constraints
+
+- Both processes must have same CUDA driver version
+- Memory must be allocated with `cudaMalloc` (not unified memory)
+- Maximum ~64 concurrent IPC handles per process (driver limit)
+- Consumer must close handle before producer frees memory
+
+## Troubleshooting
+
+### "CUDA not available"
+
+```bash
+# Check NVIDIA driver
+nvidia-smi
+
+# Check CUDA toolkit
+nvcc --version
+
+# Ensure libcudart is installed
+ls /usr/lib/x86_64-linux-gnu/libcudart*
+```
+
+### "Failed to open IPC handle"
+
+- Verify both processes use same GPU
+- Check CUDA driver versions match
+- Ensure producer hasn't freed the memory
+
+### Memory Leaks
+
+Always close imported IPC handles:
+
+```rust
+// When done with imported tensor
+pool.close_ipc(gpu_ptr)?;
+```
+
+## Example: ML Inference Pipeline
+
+Complete example of zero-copy GPU sharing between perception and planning:
+
+```rust
+// perception_node.rs
+use horus::prelude::*;
+use horus::memory::{CudaTensorPool, TensorDtype};
+
+struct PerceptionNode {
+    pool: CudaTensorPool,
+    output: Hub<HorusTensor>,
+}
+
+impl Node for PerceptionNode {
+    fn tick(&mut self, _ctx: &mut NodeInfo) {
+        // Allocate GPU tensor for inference output
+        let tensor = self.pool.alloc(&[100, 7], TensorDtype::F32).unwrap();
+
+        // Run YOLO inference (fills tensor on GPU)
+        self.run_inference(&tensor);
+
+        // Send IPC handle - receiver gets same GPU memory!
+        self.output.send(tensor).unwrap();
+    }
+}
+```
+
+```rust
+// planning_node.rs
+struct PlanningNode {
+    pool: CudaTensorPool,
+    input: Hub<HorusTensor>,
+}
+
+impl Node for PlanningNode {
+    fn tick(&mut self, _ctx: &mut NodeInfo) {
+        if let Some(tensor) = self.input.recv() {
+            // Import GPU tensor - zero copy!
+            let (gpu_ptr, _) = self.pool.import_ipc(
+                &tensor.ipc_handle,
+                &[100, 7],
+                TensorDtype::F32
+            ).unwrap();
+
+            // Use GPU pointer directly for planning
+            self.plan_path(gpu_ptr);
+        }
+    }
+}
+```
+
+## See Also
+
+- [TensorPool API](/rust/api/tensor-pool) - CPU tensor management
+- [Performance Benchmarks](/performance/benchmarks) - Latency measurements
+- [Python Bindings](/python/api/python-bindings) - Python bindings

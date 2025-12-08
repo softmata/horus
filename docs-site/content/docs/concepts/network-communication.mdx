@@ -1,0 +1,705 @@
+---
+title: Network Communication
+description: Building distributed multi-machine systems with HORUS
+order: 22
+---
+
+# Network Communication
+
+HORUS supports network communication for building distributed systems across multiple machines. Both Hub and Link work transparently over the network with only a syntax change.
+
+## Quick Start
+
+### Link Network Example
+
+```rust
+// === MACHINE 1 (Producer @ 192.168.1.10) ===
+use horus::prelude::*;
+
+// Connect to consumer at 192.168.1.20:9000
+let output: Link<SensorData> = Link::producer("sensors@192.168.1.20:9000")?;
+output.send(data, &mut ctx)?;
+
+// === MACHINE 2 (Consumer @ 192.168.1.20) ===
+use horus::prelude::*;
+
+// Listen for producer on port 9000
+let input: Link<SensorData> = Link::consumer("sensors@0.0.0.0:9000")?;
+if let Some(data) = input.recv(&mut ctx) {
+    process(data);
+}
+```
+
+### Hub Network Example
+
+```rust
+// === MACHINE 1 (Publisher @ 192.168.1.10) ===
+use horus::prelude::*;
+
+// Publish to network
+let pub_hub: Hub<Status> = Hub::new("status@192.168.1.20")?;
+pub_hub.send(status, &mut ctx)?;
+
+// === MACHINE 2 (Subscriber @ 192.168.1.20) ===
+use horus::prelude::*;
+
+// Subscribe from network
+let sub_hub: Hub<Status> = Hub::new("status@192.168.1.20")?;
+if let Some(status) = sub_hub.recv(&mut ctx) {
+    process(status);
+}
+```
+
+### Python Examples
+
+The same endpoint syntax works in Python:
+
+**Link (Python):**
+```python
+from horus import Link, SensorData
+
+# === MACHINE 1 (Producer) ===
+output = Link.producer(SensorData, "sensors@192.168.1.20:9000")
+output.send(data)
+
+# === MACHINE 2 (Consumer) ===
+input_link = Link.consumer(SensorData, "sensors@0.0.0.0:9000")
+if msg := input_link.recv():
+    process(msg)
+```
+
+**Hub (Python):**
+```python
+from horus import Hub, Status
+
+# Network hub with endpoint parameter
+hub = Hub(Status, endpoint="status@192.168.1.20:8000")
+hub.send(status)
+
+# Receive
+if msg := hub.recv():
+    process(msg)
+```
+
+**Router (Python):**
+```python
+from horus import Hub, RouterClient, CmdVel
+
+# Method 1: Implicit router endpoint
+router_hub = Hub(CmdVel, endpoint="cmdvel@router")
+
+# Method 2: Explicit RouterClient
+router = RouterClient("192.168.1.100", 7777)
+hub = Hub(CmdVel, endpoint=router.endpoint("cmdvel"))
+```
+
+See [Python Bindings - Network Communication](/python/api/python-bindings#network-communication) for full Python documentation.
+
+## Endpoint Syntax
+
+HORUS uses a simple `topic@address` syntax to specify network endpoints:
+
+### Link Endpoints (TCP)
+
+**Producer (connects to consumer)**:
+```rust
+Link::producer("topic@192.168.1.20:9000")?     // Connect to specific IP:port
+Link::producer("topic@hostname:9000")?         // Connect to hostname
+Link::producer("topic@drone.local:9000")?      // mDNS/Avahi hostname
+```
+
+**Consumer (listens for producer)**:
+```rust
+Link::consumer("topic@0.0.0.0:9000")?          // Listen on port 9000 (all interfaces)
+Link::consumer("topic@192.168.1.20:9000")?     // Listen on specific interface
+```
+
+### Hub Endpoints (UDP)
+
+```rust
+Hub::new("topic@192.168.1.20")?                // Direct UDP (default port)
+Hub::new("topic@192.168.1.20:8000")?           // Direct UDP (custom port)
+Hub::new("topic@localhost")?                    // Unix socket (localhost optimization)
+Hub::new("topic@router")?                       // Router backend (WAN/NAT traversal)
+```
+
+### Local Endpoints (Shared Memory)
+
+```rust
+// No '@' symbol = local shared memory
+Hub::new("topic")?
+Link::producer("topic")?
+Link::consumer("topic")?
+```
+
+## Network Backends
+
+### Link: DirectBackend (TCP)
+
+**Technology**: TCP with `TCP_NODELAY`
+**Latency**: 5-15µs
+**Pattern**: Point-to-point (1 producer → 1 consumer)
+
+**Architecture**:
+- Async Tokio I/O (event-driven, non-blocking)
+- Lock-free crossbeam channels (send/recv queues)
+- Buffer pooling (zero-allocation sends)
+- Binary serialization (bincode)
+
+**When to use**:
+- Point-to-point communication between exactly 2 machines
+- Control loops where 5-15µs latency is acceptable
+- Latest-value semantics (sensor data, state updates)
+- Guaranteed delivery and ordering (TCP reliability)
+
+**Example**:
+```rust
+// Robot sends IMU data to ground station
+// Robot (192.168.1.50)
+let imu_output: Link<ImuData> = Link::producer("imu@192.168.1.100:9000")?;
+
+// Ground station (192.168.1.100)
+let imu_input: Link<ImuData> = Link::consumer("imu@0.0.0.0:9000")?;
+```
+
+### Hub: UdpDirectBackend (UDP)
+
+**Technology**: UDP with packet fragmentation
+**Latency**: &lt;50µs
+**Pattern**: Many-to-many pub/sub
+
+**Architecture**:
+- UDP sockets (connectionless)
+- Mutex-protected receive queues
+- Packet fragmentation for large messages
+- Polling with 100µs sleep
+
+**When to use**:
+- Broadcasting to multiple subscribers over network
+- Pub/sub patterns (many publishers, many subscribers)
+- Occasional packet loss acceptable
+- Lower overhead than TCP
+
+**Example**:
+```rust
+// Multiple robots publish position, central server aggregates
+// Robot 1
+let pos_pub: Hub<Position> = Hub::new("positions@192.168.1.100")?;
+
+// Robot 2
+let pos_pub: Hub<Position> = Hub::new("positions@192.168.1.100")?;
+
+// Central server
+let positions: Hub<Position> = Hub::new("positions@0.0.0.0:8000")?;
+```
+
+## Performance Characteristics
+
+### Latency Comparison
+
+| Transport | Link (SPSC) | Hub (MPMC) | Speedup |
+|-----------|-------------|------------|---------|
+| **Local SHM** | 248ns | 481ns | Baseline |
+| **Network** | 5-15µs | &lt;50µs | **Link 3-10x faster** |
+
+**Why Link is faster on network**:
+1. **Lock-free channels** (no mutex contention) vs mutex-protected queues
+2. **Event-driven I/O** (async Tokio) vs polling with 100µs sleep
+3. **TCP_NODELAY** (sends immediately) vs UDP overhead
+4. **Buffer pooling** (zero allocations) vs standard allocations
+
+### Message Size Impact
+
+| Message Size | Link Latency | Hub Latency |
+|--------------|-------------|-------------|
+| 16 bytes | 5µs | 10µs |
+| 256 bytes | 8µs | 15µs |
+| 1KB | 12µs | 25µs |
+| 10KB | 50µs | 100µs |
+| 100KB | 500µs | 1ms |
+
+**Note**: Network latency dominated by RTT for small messages, bandwidth for large messages.
+
+### Frequency Guidelines
+
+**Link Network** (5-15us latency):
+- 1kHz (1ms period): Possible with headroom
+- 500Hz (2ms period): Comfortable
+- 100Hz (10ms period): Plenty of headroom
+
+**Hub Network** (&lt;50us latency):
+- 100Hz (10ms period): Comfortable
+- 50Hz (20ms period): Safe
+- 30Hz (33ms period): Typical for camera streams
+
+## Multi-Machine Topologies
+
+### 1. Robot Fleet Coordination
+
+```rust
+// === ROBOT 1 (192.168.1.10) ===
+struct Robot1 {
+    // Publish own position
+    position_pub: Hub<Position>,
+
+    // Subscribe to fleet positions
+    fleet_positions: Hub<Position>,
+
+    // Local control loop (ultra-fast)
+    imu_link: Link<ImuData>,
+    motors_link: Link<MotorCmd>,
+}
+
+impl Robot1 {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            position_pub: Hub::new("fleet.positions@router")?,
+            fleet_positions: Hub::new("fleet.positions@router")?,
+            imu_link: Link::consumer("imu")?,      // Local
+            motors_link: Link::producer("motors")?, // Local
+        })
+    }
+}
+
+// === ROBOT 2 (192.168.1.20) ===
+// Same structure, different IP
+```
+
+### 2. Edge Computing Pipeline
+
+```rust
+// === EDGE DEVICE (192.168.1.50) - Raspberry Pi ===
+struct EdgeSensor {
+    // Capture camera locally
+    camera: Hub<RawImage>,
+
+    // Send to processing server
+    image_output: Link<RawImage>,
+}
+
+impl EdgeSensor {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            camera: Hub::new("camera")?,  // Local
+            image_output: Link::producer("images@192.168.1.100:9000")?, // Network
+        })
+    }
+}
+
+// === PROCESSING SERVER (192.168.1.100) - Powerful GPU ===
+struct ProcessingServer {
+    // Receive from edge device
+    image_input: Link<RawImage>,
+
+    // Process and send results back
+    detections_output: Link<Detections>,
+}
+
+impl ProcessingServer {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            image_input: Link::consumer("images@0.0.0.0:9000")?,          // Network listen
+            detections_output: Link::producer("detect@192.168.1.50:9001")?, // Send back
+        })
+    }
+}
+```
+
+### 3. Distributed Sensing Network
+
+```rust
+// === SENSOR NODE 1 (192.168.1.51) ===
+let temp1: Hub<Temperature> = Hub::new("temps@192.168.1.100")?;
+
+// === SENSOR NODE 2 (192.168.1.52) ===
+let temp2: Hub<Temperature> = Hub::new("temps@192.168.1.100")?;
+
+// === SENSOR NODE 3 (192.168.1.53) ===
+let temp3: Hub<Temperature> = Hub::new("temps@192.168.1.100")?;
+
+// === AGGREGATOR (192.168.1.100) ===
+let temps: Hub<Temperature> = Hub::new("temps@0.0.0.0:8000")?;
+// Receives from all sensor nodes
+```
+
+### 4. Drone with Ground Control Station
+
+```rust
+// === DRONE (192.168.1.50) ===
+struct Drone {
+    // Local: Critical flight control (ultra-fast)
+    imu: Link<ImuData>,
+    motors: Link<MotorCmd>,
+
+    // Network: Telemetry to GCS
+    telemetry: Hub<DroneStatus>,
+
+    // Network: Commands from GCS
+    commands: Hub<Command>,
+}
+
+impl Drone {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            imu: Link::consumer("imu")?,          // Local: 248ns
+            motors: Link::producer("motors")?,     // Local: 248ns
+            telemetry: Hub::new("telem@192.168.1.100")?,   // Network: &lt;50µs
+            commands: Hub::new("cmd@0.0.0.0:8001")?,       // Network listen
+        })
+    }
+}
+
+// === GROUND CONTROL STATION (192.168.1.100) ===
+struct GroundStation {
+    telemetry_sub: Hub<DroneStatus>,
+    command_pub: Hub<Command>,
+}
+
+impl GroundStation {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            telemetry_sub: Hub::new("telem@0.0.0.0:8000")?,  // Listen for drone
+            command_pub: Hub::new("cmd@192.168.1.50:8001")?, // Send to drone
+        })
+    }
+}
+```
+
+## Network Configuration
+
+### Using Configuration Files
+
+Instead of hardcoding IP addresses, use configuration files:
+
+**horus.toml** (production):
+```toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@192.168.1.100:8000"
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera@192.168.1.50:9000"
+```
+
+**horus_dev.toml** (development):
+```toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry"  # Local for testing
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera"  # Local for testing
+```
+
+**Code** (same for dev and prod):
+```rust
+// Automatically loads from horus.toml or horus_dev.toml
+let telemetry: Hub<Status> = Hub::from_config("telemetry")?;
+let camera: Link<Image> = Link::producer_from_config("camera")?;
+```
+
+See [Communication Configuration](/concepts/communication-configuration) for details.
+
+### Environment-Specific Endpoints
+
+```bash
+# Development (local)
+export HORUS_CONFIG=horus_dev.toml
+horus run robot.rs
+
+# Production (network)
+export HORUS_CONFIG=horus.toml
+horus run --release robot.rs
+```
+
+## Error Handling
+
+### Connection Failures
+
+```rust
+use horus::prelude::*;
+
+let link: Link<Data> = match Link::producer("data@192.168.1.100:9000") {
+    Ok(l) => l,
+    Err(e) => {
+        eprintln!("Failed to connect: {}", e);
+        // Retry or fallback to local mode
+        Link::producer("data")?
+    }
+};
+```
+
+### Timeouts and Heartbeats
+
+```rust
+struct NetworkNode {
+    data_link: Link<SensorData>,
+    last_recv: std::time::Instant,
+}
+
+impl Node for NetworkNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_link.recv(&mut ctx) {
+            self.last_recv = std::time::Instant::now();
+            self.process(data);
+        } else {
+            // Check for timeout
+            if self.last_recv.elapsed() > std::time::Duration::from_secs(5) {
+                if let Some(ref mut c) = ctx {
+                    c.log_error("Network timeout - no data received for 5s");
+                }
+            }
+        }
+    }
+}
+```
+
+### Graceful Degradation
+
+```rust
+struct RobotWithFallback {
+    // Try network first
+    telemetry_network: Option<Hub<Status>>,
+
+    // Fallback to local logging
+    telemetry_local: Hub<Status>,
+}
+
+impl Node for RobotWithFallback {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let status = self.get_status();
+
+        // Try network first
+        if let Some(ref net) = self.telemetry_network {
+            if net.send(status.clone(), &mut ctx).is_ok() {
+                return;  // Success!
+            }
+        }
+
+        // Fallback to local logging
+        self.telemetry_local.send(status, &mut ctx).ok();
+    }
+}
+```
+
+## Network Performance Tuning
+
+### 1. TCP Buffer Sizes
+
+For high-throughput Link connections:
+
+```bash
+# Increase TCP buffer sizes (Linux)
+sudo sysctl -w net.core.rmem_max=16777216
+sudo sysctl -w net.core.wmem_max=16777216
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 16777216"
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 16777216"
+```
+
+### 2. UDP Buffer Sizes
+
+For high-rate Hub pub/sub:
+
+```bash
+# Increase UDP buffer sizes
+sudo sysctl -w net.core.rmem_default=8388608
+sudo sysctl -w net.core.wmem_default=8388608
+```
+
+### 3. Disable WiFi Power Saving
+
+For reliable latency on WiFi:
+
+```bash
+# Disable WiFi power saving
+sudo iw dev wlan0 set power_save off
+```
+
+### 4. QoS and Traffic Shaping
+
+Prioritize HORUS traffic:
+
+```bash
+# Mark HORUS packets with DSCP (Differentiated Services Code Point)
+sudo iptables -t mangle -A OUTPUT -p tcp --dport 9000 -j DSCP --set-dscp 46
+sudo iptables -t mangle -A OUTPUT -p udp --dport 8000 -j DSCP --set-dscp 46
+```
+
+## Firewall Configuration
+
+### Linux (ufw)
+
+```bash
+# Allow HORUS ports
+sudo ufw allow 8000:9999/tcp  # Link (TCP)
+sudo ufw allow 8000:9999/udp  # Hub (UDP)
+```
+
+### Linux (iptables)
+
+```bash
+# Allow inbound HORUS traffic
+sudo iptables -A INPUT -p tcp --dport 9000 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 8000 -j ACCEPT
+```
+
+## Security Considerations
+
+### Network Isolation
+
+- Run HORUS on isolated VLAN for robots
+- Use firewall rules to limit access
+- Disable internet access for safety-critical nodes
+
+### Future: TLS Support
+
+```toml
+# Future feature (not yet implemented)
+[hubs.secure_telemetry]
+name = "telemetry"
+endpoint = "telemetry@192.168.1.100:8000"
+tls = true
+cert = "/path/to/cert.pem"
+key = "/path/to/key.pem"
+```
+
+## Troubleshooting
+
+### Connection Refused
+
+**Symptom**: `Failed to connect: connection refused`
+
+**Causes**:
+1. Consumer not running yet
+2. Firewall blocking port
+3. Wrong IP address or port
+
+**Solutions**:
+```bash
+# Check if consumer is listening
+ss -tulpn | grep :9000
+
+# Check firewall
+sudo ufw status
+sudo iptables -L
+
+# Test connectivity
+nc -zv 192.168.1.100 9000
+```
+
+### High Latency
+
+**Symptom**: Network latency >100µs (expected 5-50µs)
+
+**Causes**:
+1. WiFi congestion or power saving
+2. Network switch buffering
+3. CPU overload
+
+**Solutions**:
+```bash
+# Measure ping latency
+ping -i 0.001 192.168.1.100  # 1ms interval
+
+# Check network interface stats
+ip -s link show eth0
+
+# Disable WiFi power save
+sudo iw dev wlan0 set power_save off
+```
+
+### Packet Loss
+
+**Symptom**: Hub messages missing (UDP)
+
+**Causes**:
+1. Network congestion
+2. UDP buffers too small
+3. WiFi interference
+
+**Solutions**:
+```bash
+# Check packet loss
+ping -c 100 192.168.1.100
+
+# Increase UDP buffers
+sudo sysctl -w net.core.rmem_default=8388608
+
+# Check WiFi signal
+iwconfig wlan0
+```
+
+## Best Practices
+
+**Use Link for critical paths**
+```rust
+// Critical control loop: Link over network
+let motors: Link<MotorCmd> = Link::producer("motors@robot:9000")?;
+```
+
+**Use Hub for broadcasting**
+```rust
+// Status to multiple subscribers: Hub
+let status: Hub<Status> = Hub::new("status@monitoring:8000")?;
+```
+
+**Keep critical loops local**
+```rust
+// Flight control stays on-board (local)
+let imu: Link<ImuData> = Link::consumer("imu")?;  // 248ns, not network
+```
+
+**Use configuration files**
+```rust
+// Don't hardcode IPs
+let telem: Hub<Status> = Hub::from_config("telemetry")?;
+```
+
+**Handle network failures**
+```rust
+if telemetry.send(status, &mut ctx).is_err() {
+    ctx.log_warning("Telemetry unavailable");
+    // Continue operating locally
+}
+```
+
+**Avoid using network for 10kHz loops**
+```rust
+// This won't work - network latency too high
+// Use local shared memory instead
+```
+
+**Don't ignore send errors**
+```rust
+telemetry.send(status, &mut ctx).ok();  // Bad! Silently fails
+```
+
+## Summary
+
+**Link Network** (TCP, 5-15µs):
+- Point-to-point (1P1C)
+- 3-10x faster than Hub network
+- Reliable (TCP)
+- Use for: Critical paths, control loops, pipelines
+
+**Hub Network** (UDP, &lt;50µs):
+- Many-to-many (pub/sub)
+- Flexible, dynamic topologies
+- Connectionless (UDP)
+- Use for: Broadcasting, monitoring, coordination
+
+**Both support**:
+- Simple endpoint syntax (`topic@IP:port`)
+- Transparent fallback to local
+- Configuration file support
+- Same API as local shared memory
+
+## Next Steps
+
+- [Communication Transport](/concepts/communication-transport) - Local vs Network overview
+- [Communication Configuration](/concepts/communication-configuration) - Config files and management
+- [Hub (MPMC)](/concepts/core-concepts-hub) - Hub pattern deep dive
+- [Link (SPSC)](/concepts/core-concepts-link) - Link pattern deep dive
+- [Performance](/performance/performance) - Optimization guide

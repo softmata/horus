@@ -1,0 +1,135 @@
+---
+title: JoystickNode
+description: Game controller input for teleoperation
+---
+
+# JoystickNode
+
+Joystick/gamepad input node for robot teleoperation. Supports PlayStation, Xbox, Logitech, and generic USB game controllers for manual control of robots.
+
+## Source Code
+
+- [JoystickNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/joystick)
+- [Joystick Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/joystick_msg.rs)
+
+## Features
+
+- USB game controller support
+- PlayStation 3/4/5 controllers
+- Xbox 360/One controllers
+- Logitech F310/F710
+- Axis and button mapping
+- Deadzone configuration
+- Button press/release events
+- Trigger support
+- Rumble/vibration (if supported)
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut joystick = JoystickNode::new(0)?;  // Controller index 0
+    joystick.set_deadzone(0.1);  // 10% deadzone
+
+    scheduler.add(Box::new(joystick), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Requires:** USB game controller and the `gilrs` feature.
+
+### Enabling Features
+
+There are three ways to enable the required `gilrs` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `JoystickNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gilrs)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gilrs
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gilrs"] }
+```
+
+## Configuration
+
+```rust
+// Set deadzone for analog sticks
+joystick.set_deadzone(0.15);  // 15%
+
+// Map axes
+joystick.map_axis(0, AxisType::LeftStickX);
+joystick.map_axis(1, AxisType::LeftStickY);
+
+// Button mapping
+joystick.map_button(0, ButtonType::Cross);  // PS: X, Xbox: A
+```
+
+## Usage
+
+```rust
+let hub = Hub::<JoystickState>::new("joystick.state")?;
+
+if let Some(state) = hub.recv(&mut None) {
+    // Read analog sticks
+    println!("Left stick: ({:.2}, {:.2})",
+        state.left_stick_x, state.left_stick_y);
+    println!("Right stick: ({:.2}, {:.2})",
+        state.right_stick_x, state.right_stick_y);
+
+    // Check buttons
+    if state.button_cross {
+        println!("Cross/A button pressed");
+    }
+
+    // Read triggers
+    println!("Triggers: L2={:.2}, R2={:.2}",
+        state.left_trigger, state.right_trigger);
+}
+```
+
+## Teleoperation Example
+
+```rust
+// Convert joystick to velocity commands
+let joy_hub = Hub::<JoystickState>::new("joystick.state")?;
+let cmd_hub = Hub::<TwistCommand>::new("cmd_vel")?;
+
+if let Some(joy) = joy_hub.recv(&mut None) {
+    cmd_hub.send(TwistCommand {
+        linear_x: joy.left_stick_y * 1.0,  // Max 1 m/s
+        angular_z: joy.left_stick_x * 2.0, // Max 2 rad/s
+    }, None)?;
+}
+```
+
+## See Also
+
+- [KeyboardInputNode](./keyboard-input) - Keyboard control
+- [DifferentialDriveNode](./differential-drive) - Drive commands

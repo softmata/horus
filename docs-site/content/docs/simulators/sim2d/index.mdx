@@ -1,0 +1,172 @@
+---
+title: Sim2D Overview
+description: Simple 2D robotics simulator with physics, sensors, and HORUS integration
+---
+
+# Sim2D - 2D Robotics Simulator
+
+A lightweight 2D robotics simulator built with Bevy and Rapier2D physics. One command gives you physics simulation, sensor models, and visualization - perfect for algorithm development, testing, and learning.
+
+## Features
+
+- **Rapier2D Physics** - Realistic rigid body dynamics and collision detection
+- **Multiple Sensors** - LIDAR, camera, GPS, ultrasonic, IMU, contact sensors
+- **HORUS Integration** - Publish/subscribe to standard HORUS topics
+- **Articulated Robots** - Multi-joint robot arms with 2DOF, 6DOF presets
+- **World Editor** - Interactive obstacle placement and world design
+- **Recording/Playback** - Capture and replay simulation sessions
+- **Headless Mode** - Run without GUI for RL training and CI/CD
+
+## Quick Start
+
+```bash
+# Launch with default robot and world
+horus sim2d
+
+# Custom robot configuration
+horus sim2d --robot my_robot.yaml
+
+# Load world from image (occupancy grid)
+horus sim2d --world-image map.pgm --resolution 0.05
+
+# Headless mode for training
+horus sim2d --headless
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                     sim2d                            │
+├─────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│  │   Physics   │  │   Sensors   │  │     UI      │ │
+│  │  (Rapier2D) │  │  (LIDAR,    │  │   (Bevy/    │ │
+│  │             │  │   IMU, GPS) │  │    egui)    │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
+│         │                │                │        │
+│         └────────┬───────┴────────────────┘        │
+│                  │                                  │
+│         ┌────────▼────────┐                        │
+│         │  HORUS Topics   │                        │
+│         │  (Shared Memory)│                        │
+│         └────────┬────────┘                        │
+└──────────────────│──────────────────────────────────┘
+                   │
+        ┌──────────▼──────────┐
+        │   Your Controller   │
+        │   (horus run ...)   │
+        └─────────────────────┘
+```
+
+## Default Topics
+
+| Topic | Type | Direction | Description |
+|-------|------|-----------|-------------|
+| `robot.cmd_vel` | `CmdVel` | Input | Velocity commands |
+| `robot.odom` | `Odometry` | Output | Robot odometry |
+| `robot.imu` | `Imu` | Output | IMU data |
+| `robot.scan` | `LaserScan` | Output | LIDAR scan |
+| `robot.gps` | `NavSatFix` | Output | GPS position |
+
+## Simulator Controls
+
+| Key | Action |
+|-----|--------|
+| **WASD** | Pan camera |
+| **Scroll** | Zoom in/out |
+| **R** | Reset simulation |
+| **Space** | Pause/Resume |
+| **E** | Toggle editor mode |
+| **G** | Toggle grid |
+| **L** | Toggle LIDAR rays |
+
+## Documentation
+
+- [Getting Started](/simulators/sim2d/getting-started) - First steps with Sim2D
+- [Configuration](/simulators/sim2d/configuration) - Robot and world YAML files
+- [Sensors](/simulators/sim2d/sensors) - LIDAR, camera, GPS, ultrasonic, IMU
+- [Articulated Robots](/simulators/sim2d/articulated) - Multi-joint robots
+- [Python API](/simulators/sim2d/python-api) - Python bindings for RL
+
+## Example: Simple Controller
+
+Control the simulated robot from your HORUS node:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {CmdVel, LaserScan};
+
+struct WallFollower {
+    cmd_pub: Hub<CmdVel>,
+    scan_sub: Hub<LaserScan>,
+}
+
+impl WallFollower {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_pub: Hub::new("robot.cmd_vel")?,
+            scan_sub: Hub::new("robot.scan")?,
+        })
+    }
+}
+
+impl Node for WallFollower {
+    fn name(&self) -> &'static str { "WallFollower" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv(&mut ctx) {
+            // Find minimum distance on the right side
+            let right_min = scan.ranges[0..90]
+                .iter()
+                .filter(|r| **r > 0.1)
+                .fold(f64::MAX, |min, r| min.min(*r));
+
+            // Simple wall following
+            let mut cmd = CmdVel::default();
+            cmd.linear.x = 0.3;  // Forward speed
+
+            if right_min < 0.5 {
+                cmd.angular.z = 0.3;  // Turn left
+            } else if right_min > 1.0 {
+                cmd.angular.z = -0.3; // Turn right
+            }
+
+            self.cmd_pub.send(cmd, &mut ctx).ok();
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(WallFollower::new()?), 0, Some(true));
+    scheduler.run()
+}
+```
+
+Run in two terminals:
+
+```bash
+# Terminal 1: Start simulator
+horus sim2d
+
+# Terminal 2: Run your controller
+horus run wall_follower.rs --release
+```
+
+## Comparison: Sim2D vs Sim3D
+
+| Feature | Sim2D | Sim3D |
+|---------|-------|-------|
+| Physics | 2D (Rapier2D) | 3D (Rapier3D) |
+| Visualization | Top-down view | Full 3D camera |
+| URDF Support | No | Yes |
+| RGB-D Camera | No | Yes |
+| Performance | Very fast | Moderate |
+| Best For | Algorithms, navigation | Manipulation, 3D perception |
+
+## See Also
+
+- [Sim3D](/simulators/sim3d) - Full 3D simulator
+- [CLI Reference](/development/cli-reference) - `horus sim2d` options
+- [Built-in Nodes](/rust/library/built-in-nodes) - Sensor and control nodes

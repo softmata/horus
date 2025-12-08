@@ -1,0 +1,368 @@
+---
+title: "Sim3D Editor"
+description: "Interactive scene editor for 3D simulations with gizmos, selection, and property inspection"
+weight: 64
+---
+
+# Sim3D Editor
+
+The Sim3D Editor provides an interactive scene editing interface for manipulating robots, objects, and environments during simulation. It integrates with Bevy's ECS and uses egui for the user interface.
+
+## Enabling the Editor
+
+The editor is behind a feature flag. Enable it in your `Cargo.toml`:
+
+```toml
+[dependencies]
+horus_sim3d = { version = "0.1", features = ["editor"] }
+```
+
+Or run with the feature:
+
+```bash
+cargo run -p sim3d --features editor
+```
+
+## Editor Plugin
+
+Add the editor plugin to your Bevy app:
+
+```rust
+use horus_sim3d::editor::EditorPlugin;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(EditorPlugin)
+        .run();
+}
+```
+
+## Editor State
+
+The `EditorState` resource controls editor behavior:
+
+```rust
+use horus_sim3d::editor::{EditorState, GizmoMode, EditorCameraMode};
+
+fn configure_editor(mut editor_state: ResMut<EditorState>) {
+    // Enable/disable the editor
+    editor_state.enabled = true;
+
+    // Show/hide panels
+    editor_state.show_inspector = true;
+    editor_state.show_hierarchy = true;
+    editor_state.show_toolbar = true;
+
+    // Configure snapping
+    editor_state.snap_to_grid = true;
+    editor_state.grid_size = 0.1;  // 10cm grid
+
+    // Set gizmo mode
+    editor_state.gizmo_mode = GizmoMode::Translate;
+
+    // Set camera mode
+    editor_state.camera_mode = EditorCameraMode::Orbit;
+}
+```
+
+### Gizmo Modes
+
+| Mode | Description | Shortcut |
+|------|-------------|----------|
+| `Translate` | Move objects along axes | W |
+| `Rotate` | Rotate objects | E |
+| `Scale` | Scale objects | R |
+| `None` | Disable gizmos | Q |
+
+### Camera Modes
+
+| Mode | Description |
+|------|-------------|
+| `Orbit` | Orbit around selection point |
+| `Pan` | Pan the camera |
+| `Fly` | First-person fly camera |
+| `Top` | Orthographic top-down view |
+| `Side` | Orthographic side view |
+| `Front` | Orthographic front view |
+
+## Selection System
+
+The selection system allows selecting entities via mouse clicks with physics-based raycasting.
+
+### Making Entities Selectable
+
+Add the `Selectable` component to entities you want to be selectable:
+
+```rust
+use horus_sim3d::editor::selection::Selectable;
+
+commands.spawn((
+    PbrBundle {
+        mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        material: materials.add(Color::rgb(0.8, 0.2, 0.2)),
+        transform: Transform::from_xyz(0.0, 0.5, 0.0),
+        ..default()
+    },
+    Selectable::new("MyObject"),
+));
+
+// Optionally disable selection
+let selectable = Selectable::new("LockedObject").with_enabled(false);
+```
+
+### Working with Selection
+
+Access the `Selection` resource to query or modify selection:
+
+```rust
+use horus_sim3d::editor::selection::Selection;
+
+fn handle_selection(
+    selection: Res<Selection>,
+    query: Query<&Transform>,
+) {
+    // Check if anything is selected
+    if selection.is_empty() {
+        return;
+    }
+
+    // Get primary selected entity
+    if let Some(primary) = selection.primary {
+        if let Ok(transform) = query.get(primary) {
+            println!("Selected at: {:?}", transform.translation);
+        }
+    }
+
+    // Iterate all selected entities
+    for entity in selection.iter() {
+        // Process selected entity
+    }
+
+    // Check selection count
+    println!("{} entities selected", selection.count());
+}
+```
+
+### Selection Events
+
+Listen to selection changes:
+
+```rust
+use horus_sim3d::editor::selection::SelectionEvent;
+
+fn on_selection_change(mut events: EventReader<SelectionEvent>) {
+    for event in events.read() {
+        match event {
+            SelectionEvent::Selected(entity) => {
+                println!("Selected: {:?}", entity);
+            }
+            SelectionEvent::Deselected(entity) => {
+                println!("Deselected: {:?}", entity);
+            }
+            SelectionEvent::Cleared => {
+                println!("Selection cleared");
+            }
+        }
+    }
+}
+```
+
+### Selection Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Click | Select entity |
+| Shift+Click | Add to selection |
+| Ctrl+Click | Toggle selection |
+| Escape | Clear selection |
+| Ctrl+A | Select all |
+
+## Inspector Panel
+
+The inspector panel shows properties of selected entities:
+
+```rust
+use horus_sim3d::editor::inspector::inspector_panel_system;
+
+// The inspector automatically shows:
+// - Transform (position, rotation, scale)
+// - Custom components with #[reflect] attribute
+// - Physics properties (if applicable)
+```
+
+### Making Components Inspectable
+
+Use Bevy's reflection system to expose components to the inspector:
+
+```rust
+use bevy::prelude::*;
+
+#[derive(Component, Reflect)]
+#[reflect(Component)]
+pub struct RobotConfig {
+    pub max_speed: f32,
+    pub turn_rate: f32,
+    pub sensor_range: f32,
+}
+
+// Register the type with the app
+app.register_type::<RobotConfig>();
+```
+
+## Hierarchy Panel
+
+The hierarchy panel shows the entity tree structure:
+
+```rust
+use horus_sim3d::editor::hierarchy::{
+    hierarchy_panel_system,
+    HierarchyCollapseState,
+};
+
+// The hierarchy shows:
+// - Named entities
+// - Parent-child relationships
+// - Selection state
+// - Expand/collapse controls
+```
+
+## Undo System
+
+The editor includes an undo/redo system for transform operations:
+
+```rust
+use horus_sim3d::editor::undo::UndoStack;
+
+fn undo_redo(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut undo_stack: ResMut<UndoStack>,
+) {
+    // Ctrl+Z to undo
+    if keyboard.pressed(KeyCode::ControlLeft) && keyboard.just_pressed(KeyCode::KeyZ) {
+        undo_stack.undo();
+    }
+
+    // Ctrl+Y or Ctrl+Shift+Z to redo
+    if keyboard.pressed(KeyCode::ControlLeft) && keyboard.just_pressed(KeyCode::KeyY) {
+        undo_stack.redo();
+    }
+}
+```
+
+## Editor Camera
+
+The editor camera system provides multiple viewing modes:
+
+```rust
+use horus_sim3d::editor::camera::editor_camera_system;
+
+// Camera controls:
+// - Right-click + drag: Orbit/look around
+// - Middle-click + drag: Pan
+// - Scroll: Zoom in/out
+// - F: Focus on selection
+// - 1-6: Switch to preset views
+```
+
+### Custom Camera Settings
+
+```rust
+use horus_sim3d::editor::EditorState;
+
+fn setup_camera(mut editor_state: ResMut<EditorState>) {
+    // Use orthographic views for precision work
+    editor_state.camera_mode = EditorCameraMode::Top;
+}
+```
+
+## Complete Editor Example
+
+```rust
+use bevy::prelude::*;
+use horus_sim3d::editor::{
+    EditorPlugin, EditorState, GizmoMode,
+    selection::{Selectable, Selection},
+};
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(EditorPlugin)
+        .add_systems(Startup, setup_scene)
+        .add_systems(Update, handle_selection)
+        .run();
+}
+
+fn setup_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut editor_state: ResMut<EditorState>,
+) {
+    // Configure editor
+    editor_state.enabled = true;
+    editor_state.snap_to_grid = true;
+    editor_state.grid_size = 0.5;
+    editor_state.gizmo_mode = GizmoMode::Translate;
+
+    // Spawn ground plane (not selectable)
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Plane3d::default().mesh().size(20.0, 20.0)),
+        material: materials.add(Color::rgb(0.3, 0.3, 0.3)),
+        ..default()
+    });
+
+    // Spawn selectable objects
+    for i in 0..5 {
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+                material: materials.add(Color::rgb(0.8, 0.2 + i as f32 * 0.15, 0.2)),
+                transform: Transform::from_xyz(i as f32 * 2.0 - 4.0, 0.5, 0.0),
+                ..default()
+            },
+            Selectable::new(format!("Cube_{}", i)),
+        ));
+    }
+
+    // Camera
+    commands.spawn(Camera3dBundle {
+        transform: Transform::from_xyz(5.0, 5.0, 10.0)
+            .looking_at(Vec3::ZERO, Vec3::Y),
+        ..default()
+    });
+
+    // Light
+    commands.spawn(DirectionalLightBundle {
+        directional_light: DirectionalLight {
+            illuminance: 10000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ, -0.4, 0.4, 0.0
+        )),
+        ..default()
+    });
+}
+
+fn handle_selection(
+    selection: Res<Selection>,
+    names: Query<&Selectable>,
+) {
+    if selection.is_changed() && !selection.is_empty() {
+        if let Some(primary) = selection.primary {
+            if let Ok(selectable) = names.get(primary) {
+                println!("Selected: {}", selectable.name);
+            }
+        }
+    }
+}
+```
+
+## See Also
+
+- [Sim3D Overview](/development/simulation) - Full Sim3D documentation
+- [Sim3D Recording](/development/sim3d-recording) - Recording and playback
+- [Sim3D Multi-Robot](/development/sim3d-multi-robot) - Multi-robot simulation

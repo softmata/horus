@@ -1,0 +1,1015 @@
+---
+title: Core Concepts - Nodes
+description: Understanding HORUS nodes and their lifecycle
+order: 5
+---
+
+# Nodes and Lifecycle
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- How nodes are self-contained units of computation that run in the scheduler
+- The Node trait's lifecycle methods (init, tick, shutdown) and when each is called
+- How NodeInfo provides logging, metrics, and timing context to your nodes
+- When to use different priority levels (0 for safety-critical, 100 for background logging)
+- Communication patterns (publisher, subscriber, pipeline, aggregator) for building node graphs
+
+Nodes are the fundamental building blocks of HORUS applications. Every component in your robotics system is a node - sensors, actuators, controllers, filters, and more.
+
+## What is a Node?
+
+A node is a **self-contained unit of computation** that runs in the HORUS scheduler. Nodes communicate with each other through the Hub pub/sub system using shared memory IPC.
+
+### Key Characteristics
+
+**Lifecycle Management**: Nodes have explicit initialization, execution, and shutdown phases
+
+**Priority-Based Execution**: Nodes run in priority order every tick cycle
+
+**Zero Boilerplate**: The `node!` macro generates all necessary boilerplate code
+
+**Type-Safe Communication**: Compile-time guarantees for message passing
+
+**Memory Safety**: Written in Rust with zero unsafe code in user-facing APIs
+
+## The Node Trait
+
+Every HORUS node implements the `Node` trait:
+
+```rust
+pub trait Node: Send {
+    fn name(&self) -> &'static str;
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()>;
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>);
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()>;
+    fn get_publishers(&self) -> Vec<TopicMetadata>;
+    fn get_subscribers(&self) -> Vec<TopicMetadata>;
+}
+```
+
+### Required Methods
+
+**name()**: Returns a static string identifying the node
+
+```rust
+fn name(&self) -> &'static str {
+    "MyNode"
+}
+```
+
+**tick()**: Main execution loop called repeatedly by the scheduler
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Your node logic here
+}
+```
+
+### Optional Methods
+
+**init()**: Called once during node startup (default: no-op)
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("Node starting up");
+    // Initialize resources, open files, etc.
+    Ok(())
+}
+```
+
+**shutdown()**: Called once during graceful shutdown (default: no-op)
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("Node shutting down");
+    // Clean up resources, close connections, etc.
+    Ok(())
+}
+```
+
+**get_publishers()**: Returns list of published topics (default: empty)
+
+```rust
+fn get_publishers(&self) -> Vec<TopicMetadata> {
+    vec![
+        TopicMetadata {
+            topic_name: "cmd_vel".to_string(),
+            type_name: "CmdVel".to_string(),
+        }
+    ]
+}
+```
+
+**get_subscribers()**: Returns list of subscribed topics (default: empty)
+
+```rust
+fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    vec![
+        TopicMetadata {
+            topic_name: "laser_scan".to_string(),
+            type_name: "LaserScan".to_string(),
+        }
+    ]
+}
+```
+
+## Node Lifecycle
+
+Nodes transition through well-defined states during their lifetime:
+
+### Lifecycle States
+
+**Uninitialized**: Node created but not added to scheduler
+
+**Initializing**: Running `init()` method
+
+**Running**: Executing `tick()` in main loop
+
+**Paused**: Temporarily suspended (future feature)
+
+**Stopping**: Running `shutdown()` method
+
+**Stopped**: Clean shutdown complete
+
+**Error**: Recoverable error occurred
+
+**Crashed**: Unrecoverable error, node terminated
+
+### State Transitions
+
+```
+Uninitialized  Initializing  Running  Stopping  Stopped
+                                  ->
+                               Error  Running
+                                  ->
+                              Crashed (terminal)
+```
+
+### Lifecycle Example
+
+```rust
+use horus::prelude::*;
+
+struct LifecycleDemo {
+    counter: u32,
+}
+
+impl Node for LifecycleDemo {
+    fn name(&self) -> &'static str {
+        "LifecycleDemo"
+    }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Called ONCE when node starts
+        ctx.log_info("Initializing resources");
+        self.counter = 0;
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Called REPEATEDLY in main loop (~60 FPS default)
+        self.counter += 1;
+
+        ctx.log_debug(&format!("Tick #{}", self.counter));
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Called ONCE during graceful shutdown
+        ctx.log_info(&format!("Shutting down after {} ticks", self.counter));
+        Ok(())
+    }
+}
+```
+
+## NodeInfo Context
+
+The `NodeInfo` struct provides comprehensive context and utilities for nodes:
+
+### Structure
+
+```rust
+pub struct NodeInfo {
+    pub name: &'static str,
+    pub state: NodeState,
+    pub priority: u32,  // Lower number = higher priority (0 = highest)
+    pub metrics: NodeMetrics,
+    pub publishers: Vec<TopicMetadata>,
+    pub subscribers: Vec<TopicMetadata>,
+    // Internal timing and logging fields
+}
+```
+
+### Logging Methods
+
+**log_info()**: General information messages
+
+```rust
+ctx.log_info("Robot ready");
+```
+
+**log_warning()**: Warning messages that don't stop execution
+
+```rust
+ctx.log_warning("Battery low");
+```
+
+**log_error()**: Error messages
+
+```rust
+ctx.log_error("Sensor disconnected");
+```
+
+**log_debug()**: Detailed debugging information
+
+```rust
+ctx.log_debug(&format!("Position: ({}, {})", x, y));
+```
+
+### Pub/Sub Logging (Automatic)
+
+When you pass `ctx` to `Hub::send()` or `Hub::recv()`, HORUS automatically logs IPC operations:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Automatic pub logging - just pass ctx to send()
+    self.velocity_pub.send(1.5, &mut ctx).ok();
+    // Output: [12:34:56.789] [IPC: 437ns | Tick: 12μs] MyNode --PUB--> 'cmd_vel' = 1.5
+
+    // Automatic sub logging - just pass ctx to recv()
+    if let Some(scan) = self.lidar_sub.recv(&mut ctx) {
+        // Output: [12:34:56.789] [IPC: 142ns | Tick: 8μs] MyNode <--SUB-- 'laser_scan' = LaserScan { ... }
+        self.process(scan);
+    }
+}
+```
+
+**You don't need to call any logging methods manually** - Hub handles it automatically when you pass `ctx`.
+
+### Performance Metrics
+
+NodeInfo tracks detailed performance metrics:
+
+```rust
+pub struct NodeMetrics {
+    pub total_ticks: u64,
+    pub successful_ticks: u64,
+    pub failed_ticks: u64,
+    pub avg_tick_duration_ms: f64,
+    pub max_tick_duration_ms: f64,
+    pub min_tick_duration_ms: f64,
+    pub last_tick_duration_ms: f64,
+    pub cpu_usage_percent: f64,
+    pub memory_usage_bytes: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub errors_count: u64,
+    pub warnings_count: u64,
+    pub uptime_seconds: f64,
+}
+```
+
+Access metrics in your node:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    if let Some(ctx) = ctx {
+        let avg_duration = ctx.metrics.avg_tick_duration_ms;
+        if avg_duration > 1.0 {
+            ctx.log_warning("Tick duration exceeding 1ms");
+        }
+    }
+}
+```
+
+### Timing Methods
+
+**start_tick()**: Called automatically at the start of each tick
+
+**record_tick()**: Called automatically at the end of each tick
+
+These methods track tick duration and update metrics.
+
+## Node Priority
+
+Nodes execute in **priority order** each tick cycle:
+
+### Priority Levels
+
+Priorities are represented as `u32` values where **lower numbers = higher priority**.
+
+Common priority values:
+
+```rust
+// Recommended priority constants
+const CRITICAL: u32    = 0;   // Highest priority
+const HIGH: u32        = 10;
+const NORMAL: u32      = 50;  // Default
+const LOW: u32         = 80;
+const BACKGROUND: u32  = 100; // Lowest priority
+```
+
+You can use **any u32 value** for fine-grained control (e.g., 5, 15, 25, 37, 42, etc.).
+
+### Priority Usage
+
+```rust
+use horus::prelude::*;
+
+let mut scheduler = Scheduler::new();
+
+// Safety monitor runs FIRST every tick (priority 0)
+scheduler.add(Box::new(safety_node), 0, None);
+
+// Controller runs second (priority 10)
+scheduler.add(Box::new(control_node), 10, None);
+
+// Sensors run third (priority 50)
+scheduler.add(Box::new(sensor_node), 50, None);
+
+// Logging runs LAST (priority 100)
+scheduler.add(Box::new(logger_node), 100, None);
+
+// Fine-grained priorities for complex systems
+scheduler.add(Box::new(emergency_stop), 0, None);    // Highest
+scheduler.add(Box::new(motor_control), 15, None);    // Between HIGH and NORMAL
+scheduler.add(Box::new(vision_processing), 55, None); // Slightly lower than normal
+scheduler.add(Box::new(telemetry), 90, None);        // Between LOW and BACKGROUND
+```
+
+### Priority Guidelines
+
+**0 (Critical)**: Safety monitors, emergency stops, fault detection
+
+**10 (High)**: Control loops, actuator commands, real-time feedback
+
+**50 (Normal)**: Sensor processing, state estimation, path planning
+
+**80 (Low)**: Non-critical computation, filtering, analysis
+
+**100 (Background)**: Logging, monitoring, diagnostics, data recording
+
+**Custom Values**: Use any value between 0-255 for fine-grained priority control in complex systems
+
+## Creating Nodes
+
+### Manual Implementation
+
+```rust
+use horus::prelude::*;
+
+struct SensorNode {
+    data_pub: Hub<f32>,
+}
+
+impl SensorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            data_pub: Hub::new("sensor_data")?,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str {
+        "SensorNode"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let data = 42.0; // Read sensor
+        self.data_pub.send(data, &mut ctx).ok();
+    }
+}
+```
+
+### Using the node! Macro
+
+The `node!` macro eliminates boilerplate:
+
+```rust
+use horus::prelude::*;
+
+node! {
+    name: SensorNode,
+    publishers: [sensor_data: f32],
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let data = 42.0;
+        self.sensor_data.send(data, &mut ctx).ok();
+    }
+}
+```
+
+The macro generates:
+- Struct definition with Hub fields
+- Node trait implementation
+- Constructor function
+- Topic metadata methods
+
+## Node Communication Patterns
+
+### Publisher Pattern
+
+```rust
+struct Publisher {
+    data_pub: Hub<f32>,
+}
+
+impl Node for Publisher {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let data = self.generate_data();
+        self.data_pub.send(data, &mut ctx).ok();
+    }
+}
+```
+
+### Subscriber Pattern
+
+```rust
+struct Subscriber {
+    data_sub: Hub<f32>,
+}
+
+impl Node for Subscriber {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_sub.recv(&mut ctx) {
+            self.process(data);
+        }
+    }
+}
+```
+
+### Pipeline Pattern
+
+```rust
+struct Filter {
+    input_sub: Hub<f32>,
+    output_pub: Hub<f32>,
+}
+
+impl Node for Filter {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(input) = self.input_sub.recv(&mut ctx) {
+            let output = input * 2.0;
+            self.output_pub.send(output, &mut ctx).ok();
+        }
+    }
+}
+```
+
+### Aggregator Pattern
+
+```rust
+struct Aggregator {
+    input_a: Hub<f32>,
+    input_b: Hub<f32>,
+    output_pub: Hub<f32>,
+}
+
+impl Node for Aggregator {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let (Some(a), Some(b)) = (self.input_a.recv(&mut ctx), self.input_b.recv(&mut ctx)) {
+            let result = a + b;
+            self.output_pub.send(result, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## Best Practices
+
+### Keep tick() Fast
+
+The tick method should complete quickly (ideally &lt;1ms):
+
+```rust
+// GOOD: Fast computation
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    let result = self.compute_quickly();
+    self.pub.send(result, &mut ctx).ok();
+}
+
+// BAD: Blocking I/O
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    let data = std::fs::read_to_string("file.txt").unwrap(); // Blocks!
+    // ...
+}
+```
+
+For slow operations, use async tasks or separate threads initialized in `init()`.
+
+### What to Include in init()
+
+The `init()` method runs **once** when your node starts. Use it to set up everything your node needs before `tick()` begins.
+
+**Always include in init():**
+
+| Category | Examples | Why |
+|----------|----------|-----|
+| **Hardware connections** | Serial ports, I2C/SPI devices, GPIO pins | Must be opened before use |
+| **Network connections** | TCP/UDP sockets, WebSocket clients | Establish before tick loop |
+| **File handles** | Config files, log files, data files | Open once, use in tick |
+| **Pre-allocated buffers** | Image buffers, point cloud arrays | Avoid allocation in tick |
+| **Calibration/setup** | Sensor calibration, motor homing | One-time setup operations |
+| **Initial state** | Reset counters, clear flags | Start from known state |
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("Initializing MyMotorNode");
+
+    // 1. Open hardware connections
+    self.serial_port = serialport::new("/dev/ttyUSB0", 115200)
+        .open()
+        .map_err(|e| format!("Failed to open serial: {}", e))?;
+
+    // 2. Pre-allocate buffers (avoid allocation in tick)
+    self.command_buffer = vec![0u8; 256];
+
+    // 3. Initialize hardware state
+    self.send_init_sequence()?;
+
+    // 4. Set initial values
+    self.velocity = 0.0;
+    self.is_armed = false;
+
+    ctx.log_info("MyMotorNode initialized successfully");
+    Ok(())
+}
+```
+
+### What to Include in shutdown()
+
+The `shutdown()` method runs **once** when your application exits (Ctrl+C, SIGINT, SIGTERM). Use it to safely stop hardware and release resources.
+
+**Always include in shutdown():**
+
+| Category | Examples | Why |
+|----------|----------|-----|
+| **Stop actuators** | Motors, servos, pumps, valves | **CRITICAL SAFETY** - prevent runaway |
+| **Disable hardware** | Disable motor drivers, turn off outputs | Safe state for power-off |
+| **Close connections** | Serial ports, network sockets | Release system resources |
+| **Release GPIO** | Unexport pins, set to input mode | Allow other processes to use |
+| **Save state** | Log final position, save calibration | Preserve data for next run |
+| **Flush buffers** | Write pending data to disk | Prevent data loss |
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("MyMotorNode shutting down");
+
+    // 1. CRITICAL: Stop all actuators FIRST
+    self.velocity = 0.0;
+    self.send_stop_command();
+
+    // 2. Disable hardware (safe state)
+    self.disable_motor_driver();
+
+    // 3. Close hardware connections
+    if let Some(port) = self.serial_port.take() {
+        drop(port);  // Closes the port
+    }
+
+    // 4. Save any important state
+    self.save_position_to_file()?;
+
+    ctx.log_info("MyMotorNode shutdown complete");
+    Ok(())
+}
+```
+
+### Complete Custom Node Example
+
+Here's a complete example showing proper `init()` and `shutdown()` implementation:
+
+```rust
+use horus::prelude::*;
+
+struct MyMotorController {
+    // Hardware
+    serial_port: Option<Box<dyn serialport::SerialPort>>,
+
+    // Communication
+    cmd_sub: Hub<MotorCommand>,
+    status_pub: Hub<MotorStatus>,
+
+    // State
+    velocity: f64,
+    position: i32,
+    is_enabled: bool,
+}
+
+impl MyMotorController {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            serial_port: None,
+            cmd_sub: Hub::new("motor.cmd")?,
+            status_pub: Hub::new("motor.status")?,
+            velocity: 0.0,
+            position: 0,
+            is_enabled: false,
+        })
+    }
+
+    fn send_velocity(&mut self, vel: f64) {
+        if let Some(ref mut port) = self.serial_port {
+            let cmd = format!("V{}\n", vel);
+            let _ = port.write(cmd.as_bytes());
+        }
+    }
+}
+
+impl Node for MyMotorController {
+    fn name(&self) -> &'static str { "MyMotorController" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Opening serial connection to motor controller");
+
+        // Open hardware connection
+        self.serial_port = Some(
+            serialport::new("/dev/ttyUSB0", 115200)
+                .timeout(std::time::Duration::from_millis(100))
+                .open()
+                .map_err(|e| format!("Serial open failed: {}", e))?
+        );
+
+        // Initialize motor to stopped state
+        self.send_velocity(0.0);
+        self.is_enabled = true;
+
+        ctx.log_info("Motor controller ready");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Process commands
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            self.velocity = cmd.velocity;
+            self.send_velocity(self.velocity);
+        }
+
+        // Publish status
+        let status = MotorStatus {
+            velocity: self.velocity,
+            position: self.position,
+        };
+        self.status_pub.send(status, &mut ctx).ok();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Stopping motor for safe shutdown");
+
+        // CRITICAL: Stop motor first!
+        self.velocity = 0.0;
+        self.send_velocity(0.0);
+
+        // Close serial port
+        self.serial_port = None;
+        self.is_enabled = false;
+
+        ctx.log_info("Motor stopped safely");
+        Ok(())
+    }
+}
+```
+
+### When init() and shutdown() Are NOT Optional
+
+While the default implementations are no-ops, you **should** implement them when:
+
+| Scenario | init() Required | shutdown() Required |
+|----------|-----------------|---------------------|
+| Controls motors/actuators | Setup | **YES - SAFETY CRITICAL** |
+| Opens serial/I2C/SPI ports | **YES** | **YES** |
+| Uses GPIO pins | **YES** | **YES** |
+| Opens network connections | **YES** | Recommended |
+| Allocates large buffers | **YES** | No |
+| Reads config files | **YES** | No |
+| Writes log/data files | Optional | **YES** (flush) |
+| Pure computation node | No | No |
+
+### Use Result Types
+
+Return errors from init() and shutdown():
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    if !self.sensor.is_available() {
+        return Err("Sensor not found".into());
+    }
+    Ok(())
+}
+```
+
+### Check ctx Before Logging
+
+The context is optional in tick():
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        ctx.log_info("This is safe");
+}
+```
+
+### Avoid State in Static Variables
+
+Store state in the node struct, not static variables:
+
+```rust
+// GOOD
+struct MyNode {
+    counter: u32,  // Instance state
+}
+
+// BAD
+static mut COUNTER: u32 = 0;  // Unsafe global state
+```
+
+## Error Handling
+
+### Initialization Errors
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    self.device = Device::open().map_err(|e| {
+        HorusError::InitializationFailed(format!("Failed to open device: {}", e))
+    })?;
+
+    ctx.log_info("Device opened successfully");
+    Ok(())
+}
+```
+
+If init() returns an error, the node transitions to **Error** state and won't run.
+
+### Runtime Errors
+
+Handle errors in tick() without panicking:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    match self.data_sub.recv(&mut ctx) {
+        Some(data) => self.process(data),
+        None => {
+            // No data available - this is normal
+        }
+    }
+}
+```
+
+### Shutdown Errors
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    if let Err(e) = self.device.close() {
+        ctx.log_warning(&format!("Failed to close device: {}", e));
+        // Continue shutdown anyway
+    }
+    Ok(())
+}
+```
+
+## Advanced Topics
+
+### Conditional Execution
+
+Run logic only under certain conditions:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    self.tick_count += 1;
+
+    // Execute every 10 ticks
+    if self.tick_count % 10 == 0 {
+        self.slow_operation();
+    }
+}
+```
+
+### State Machines
+
+Implement complex behavior with state machines:
+
+```rust
+enum RobotState {
+    Idle,
+    Moving,
+    Stopped,
+}
+
+struct RobotController {
+    state: RobotState,
+    cmd_sub: Hub<CmdVel>,
+}
+
+impl Node for RobotController {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        match self.state {
+            RobotState::Idle => {
+                if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+                    self.state = RobotState::Moving;
+                }
+            }
+            RobotState::Moving => {
+                // Execute movement
+                if self.is_done() {
+                    self.state = RobotState::Stopped;
+                }
+            }
+            RobotState::Stopped => {
+                self.state = RobotState::Idle;
+            }
+        }
+    }
+}
+```
+
+### Multi-Topic Synchronization
+
+Wait for data from multiple topics:
+
+```rust
+struct Synchronizer {
+    topic_a: Hub<f32>,
+    topic_b: Hub<f32>,
+    last_a: Option<f32>,
+    last_b: Option<f32>,
+}
+
+impl Node for Synchronizer {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update cached values
+        if let Some(a) = self.topic_a.recv(&mut ctx) {
+            self.last_a = Some(a);
+        }
+        if let Some(b) = self.topic_b.recv(&mut ctx) {
+            self.last_b = Some(b);
+        }
+
+        // Process when both available
+        if let (Some(a), Some(b)) = (self.last_a, self.last_b) {
+            self.process(a, b);
+        }
+    }
+}
+```
+
+## Graceful Shutdown & Motor Safety
+
+When a HORUS application receives a termination signal (Ctrl+C, SIGINT, SIGTERM), the scheduler automatically calls `shutdown()` on all registered nodes. This is critical for robotics safety.
+
+### Signal Handling
+
+The scheduler intercepts termination signals and ensures proper cleanup:
+
+```
+User presses Ctrl+C
+        │
+        ▼
+Signal Handler (SIGINT/SIGTERM)
+        │
+        ▼
+scheduler.running = false
+        │
+        ▼
+Break out of tick loop
+        │
+        ▼
+For each node (in priority order):
+    node.shutdown(&mut ctx)
+        │
+        ▼
+Application exits cleanly
+```
+
+### Why shutdown() Matters for Motors
+
+**Without shutdown()**: If you stop your robot with Ctrl+C while motors are running, they continue at their last commanded velocity - potentially dangerous for autonomous vehicles!
+
+**With shutdown()**: Motors receive stop commands before the application exits:
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("Stopping all motors for safe shutdown");
+
+    // Send stop command to all motors
+    self.emergency_stop();
+
+    // Optionally: disable motor drivers
+    self.disable_all_drivers();
+
+    ctx.log_info("Motors stopped safely");
+    Ok(())
+}
+```
+
+### Built-in Node Shutdown Behavior
+
+All HORUS motor and actuator nodes implement `shutdown()` for safety:
+
+| Node | Shutdown Action |
+|------|----------------|
+| **DcMotorNode** | Calls `emergency_stop()` - sets all motors to 0 |
+| **BldcMotorNode** | Stops all ESCs, sets velocities to 0 |
+| **StepperMotorNode** | Emergency stop, disables enable pins |
+| **ServoControllerNode** | Calls `stop_all()` on all servos |
+| **DynamixelNode** | Disables torque on all servos |
+| **RoboclawMotorNode** | Stops both motors, sends serial stop commands |
+| **DifferentialDriveNode** | Publishes zero velocity command |
+| **PidControllerNode** | Resets PID, sends zero output |
+| **DigitalIONode** | Sets all outputs to LOW |
+
+### Sensor and Bus Nodes
+
+Sensor and communication nodes also implement `shutdown()` to release resources:
+
+| Node | Shutdown Action |
+|------|----------------|
+| **CameraNode** | Releases OpenCV capture device |
+| **LidarNode** | Stops LiDAR scanning |
+| **GpsNode** | Closes serial connection |
+| **CanBusNode** | Closes CAN interface |
+| **I2cBusNode** | Releases I2C devices |
+| **SpiBusNode** | Releases SPI devices |
+| **KeyboardInputNode** | Restores terminal mode |
+
+### Implementing shutdown() in Custom Nodes
+
+Always implement `shutdown()` for nodes that control actuators:
+
+```rust
+impl Node for MyMotorController {
+    fn name(&self) -> &'static str { "MyMotorController" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Normal operation - motors running
+        self.motor_pub.send(self.velocity, &mut ctx).ok();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("MyMotorController shutting down");
+
+        // CRITICAL: Stop all motors
+        self.velocity = 0.0;
+        self.motor_pub.send(0.0, &mut None).ok();
+
+        // Close hardware connections
+        if let Some(port) = self.serial_port.take() {
+            port.close();
+        }
+
+        ctx.log_info("All motors stopped safely");
+        Ok(())
+    }
+}
+```
+
+### Testing Shutdown Behavior
+
+Test your shutdown implementation before deploying:
+
+```bash
+# Start your application
+horus run
+
+# In another terminal, send SIGINT
+kill -SIGINT <pid>
+
+# Or simply press Ctrl+C in the application terminal
+```
+
+Verify in logs:
+```
+[12:34:56.789] [INFO] MyMotorController shutting down
+[12:34:56.790] [INFO] All motors stopped safely
+```
+
+### Best Practices for Shutdown
+
+1. **Always stop actuators first** - Motors, servos, and other actuators should receive stop commands
+2. **Close hardware connections** - Serial ports, I2C, SPI, CAN bus connections
+3. **Release system resources** - GPIO pins, file handles, network sockets
+4. **Log shutdown progress** - Helps debug shutdown issues
+5. **Don't panic in shutdown** - Handle errors gracefully, continue cleanup
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    // Always try to stop motors, even if other cleanup fails
+    if let Err(e) = self.stop_motors() {
+        ctx.log_error(&format!("Failed to stop motors: {}", e));
+        // Continue with other cleanup anyway
+    }
+
+    // Close connections (non-critical)
+    if let Err(e) = self.close_connection() {
+        ctx.log_warning(&format!("Failed to close connection: {}", e));
+    }
+
+    Ok(())
+}
+```
+
+## Next Steps
+
+- Learn about [Hub and Pub/Sub](/concepts/core-concepts-hub) for inter-node communication
+- Understand the [Scheduler](/concepts/core-concepts-scheduler) for orchestrating nodes
+- Explore [Message Types](/concepts/message-types) for standard robotics data
+- Read the [API Reference](/rust/api) for complete Node trait documentation

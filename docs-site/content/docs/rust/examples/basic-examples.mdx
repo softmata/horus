@@ -1,0 +1,875 @@
+---
+title: Basic Examples
+description: Simple HORUS patterns for beginners
+order: 16
+---
+
+# Basic Examples
+
+Learn HORUS fundamentals through simple, focused examples. Each example is complete and runnable with `horus run`.
+
+**Estimated time**: 30-45 minutes
+
+## Prerequisites
+
+- HORUS installed ([Installation Guide](/getting-started/installation))
+- Completed [Quick Start](/getting-started/quick-start)
+- Basic Rust knowledge
+
+---
+
+## 1. Basic Publisher-Subscriber
+
+The foundational pattern in HORUS: one node publishes data, another subscribes.
+
+### Publisher Node
+
+**File: `publisher.rs`**
+
+```rust
+use horus::prelude::*;
+
+// Define publisher node
+struct SensorNode {
+    data_pub: Hub<f32>,
+    counter: f32,
+}
+
+impl SensorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            data_pub: Hub::new("sensor_data")?,
+            counter: 0.0,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str {
+        "SensorNode"
+    }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Sensor initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Simulate sensor reading
+        let reading = self.counter.sin() * 10.0;
+
+        // Publish data
+        self.data_pub.send(reading, &mut ctx).ok();
+        if let Some(ref mut c) = ctx {
+            c.log_debug(&format!("Published: {:.2}", reading));
+        }
+
+        self.counter += 0.1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Sensor shutdown");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(SensorNode::new()?), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run publisher.rs
+```
+
+### Subscriber Node
+
+**File: `subscriber.rs`**
+
+```rust
+use horus::prelude::*;
+
+struct ProcessorNode {
+    data_sub: Hub<f32>,
+}
+
+impl ProcessorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            data_sub: Hub::new("sensor_data")?,
+        })
+    }
+}
+
+impl Node for ProcessorNode {
+    fn name(&self) -> &'static str {
+        "ProcessorNode"
+    }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Processor initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_sub.recv(&mut ctx) {
+            // Process received data
+            let processed = data * 2.0;
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!("Processed: {:.2}", processed));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Processor shutdown");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(ProcessorNode::new()?), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+
+> **IMPORTANT - Multi-Process Communication**
+>
+> To run publisher and subscriber in separate terminals, you **must** configure a shared `session_id` in `horus.yaml`:
+>
+> ```yaml
+> name: my_project
+> version: 0.1.0
+> session_id: "my-shared-session"  # Required for multi-process!
+>
+> dependencies:
+>   - horus@0.1.0
+> ```
+>
+> Without this, each `horus run` creates a different session and nodes cannot communicate.
+>
+> **Alternative**: Run both together with glob pattern (no session_id needed):
+> ```bash
+> horus run "*.rs"  # Auto-shares session
+> ```
+
+```bash
+# Terminal 1
+horus run publisher.rs
+
+# Terminal 2
+horus run subscriber.rs
+```
+
+### Combined Application
+
+**File: `pubsub.rs`**
+
+```rust
+use horus::prelude::*;
+
+// Publisher
+struct SensorNode {
+    data_pub: Hub<f32>,
+    counter: f32,
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str { "SensorNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Sensor online");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let reading = self.counter.sin() * 10.0;
+        self.data_pub.send(reading, &mut ctx).ok();
+        self.counter += 0.1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Sensor offline");
+        Ok(())
+    }
+}
+
+// Subscriber
+struct ProcessorNode {
+    data_sub: Hub<f32>,
+}
+
+impl Node for ProcessorNode {
+    fn name(&self) -> &'static str { "ProcessorNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Processor online");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_sub.recv(&mut ctx) {
+            let processed = data * 2.0;
+            if let Some(ref mut c) = ctx {
+                c.log_info(&format!("Received: {:.2} -> {:.2}", data, processed));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Processor offline");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Add both nodes
+    scheduler.add(Box::new(SensorNode {
+        data_pub: Hub::new("sensor_data")?,
+        counter: 0.0,
+    }), 0, Some(true));
+
+    scheduler.add(Box::new(ProcessorNode {
+        data_sub: Hub::new("sensor_data")?,
+    }), 1, Some(true));
+
+    // Run both nodes together
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run pubsub.rs
+```
+
+**Key Concepts**:
+- Publisher uses `Hub::new("topic")` to create publisher
+- Subscriber uses same topic name `"sensor_data"`
+- Priority matters: Publisher (0) runs before Subscriber (1)
+- `recv()` returns `Option<T>` - handle None gracefully
+
+---
+
+## 2. Robot Velocity Controller
+
+Control a robot using standard CmdVel messages.
+
+**File: `robot_controller.rs`**
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel;
+
+// Keyboard input  velocity commands
+struct TeleopNode {
+    cmd_pub: Hub<CmdVel>,
+}
+
+impl TeleopNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_pub: Hub::new("cmd_vel")?,
+        })
+    }
+}
+
+impl Node for TeleopNode {
+    fn name(&self) -> &'static str { "TeleopNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Teleop ready - sending movement commands");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Simulate keyboard input (w/a/s/d)
+        // In real code, read from device::Input
+        let cmd = CmdVel::new(1.0, 0.5);  // Forward + turn right
+        self.cmd_pub.send(cmd, &mut ctx).ok();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Send stop command on shutdown
+        let stop = CmdVel::zero();
+        self.cmd_pub.send(stop, &mut None).ok();
+        ctx.log_info("Teleop stopped");
+        Ok(())
+    }
+}
+
+// Velocity commands  motor control
+struct MotorDriverNode {
+    cmd_sub: Hub<CmdVel>,
+}
+
+impl MotorDriverNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_sub: Hub::new("cmd_vel")?,
+        })
+    }
+}
+
+impl Node for MotorDriverNode {
+    fn name(&self) -> &'static str { "MotorDriverNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Motor driver initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            // Convert to differential drive (left/right wheel speeds)
+            let left_speed = cmd.linear - cmd.angular;
+            let right_speed = cmd.linear + cmd.angular;
+
+            // Send to motors
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!(
+                    "Motors: L={:.2} m/s, R={:.2} m/s",
+                    left_speed, right_speed
+                ));
+            }
+
+            // In real code: send to hardware
+            // motor_driver.set_speeds(left_speed, right_speed)?;
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Motors stopped");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    scheduler.add(Box::new(TeleopNode::new()?), 0, Some(true));
+    scheduler.add(Box::new(MotorDriverNode::new()?), 1, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run robot_controller.rs
+```
+
+**Key Concepts**:
+- `CmdVel` is a standard robotics message type
+- `CmdVel::new(linear, angular)` creates velocity commands
+- Differential drive: `left = linear - angular`, `right = linear + angular`
+- Use `shutdown()` to send safe stop commands
+
+---
+
+## 3. Lidar Obstacle Detection
+
+Process laser scan data to detect obstacles and stop the robot.
+
+**File: `obstacle_detector.rs`**
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {LaserScan, CmdVel};
+
+// Lidar  Scan data
+struct LidarNode {
+    scan_pub: Hub<LaserScan>,
+    angle: f32,
+}
+
+impl LidarNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            scan_pub: Hub::new("scan")?,
+            angle: 0.0,
+        })
+    }
+}
+
+impl Node for LidarNode {
+    fn name(&self) -> &'static str { "LidarNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Lidar initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let mut scan = LaserScan::new();
+
+        // Simulate lidar readings (sine wave for demo)
+        for i in 0..360 {
+            scan.ranges[i] = 5.0 + (self.angle + i as f32 * 0.01).sin() * 2.0;
+        }
+
+        // Add one close obstacle in front
+        scan.ranges[0] = 0.3;  // 30cm directly ahead!
+
+        self.scan_pub.send(scan, &mut ctx).ok();
+        self.angle += 0.1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Lidar offline");
+        Ok(())
+    }
+}
+
+// Scan data  Obstacle detection  Stop command
+struct ObstacleDetector {
+    scan_sub: Hub<LaserScan>,
+    cmd_pub: Hub<CmdVel>,
+    safety_distance: f32,
+}
+
+impl ObstacleDetector {
+    fn new(safety_distance: f32) -> Result<Self> {
+        Ok(Self {
+            scan_sub: Hub::new("scan")?,
+            cmd_pub: Hub::new("cmd_vel")?,
+            safety_distance,
+        })
+    }
+}
+
+impl Node for ObstacleDetector {
+    fn name(&self) -> &'static str { "ObstacleDetector" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info(&format!(
+            "Obstacle detector active - safety distance: {:.2}m",
+            self.safety_distance
+        ));
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv(&mut ctx) {
+            // Find minimum distance
+            if let Some(min_dist) = scan.min_range() {
+                if min_dist < self.safety_distance {
+                    // Emergency stop!
+                    let stop = CmdVel::zero();
+                    self.cmd_pub.send(stop, &mut ctx).ok();
+
+                    if let Some(ref mut c) = ctx {
+                        c.log_warning(&format!(
+                            "[WARNING] Obstacle detected at {:.2}m - STOPPING!",
+                            min_dist
+                        ));
+                    }
+                } else {
+                    // Safe to move
+                    if let Some(ref mut c) = ctx {
+                        c.log_debug(&format!("Safe - closest obstacle: {:.2}m", min_dist));
+                    }
+                }
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Obstacle detector offline");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    scheduler.add(Box::new(LidarNode::new()?), 0, Some(true));
+
+    // Obstacle detector runs with HIGH priority (1)
+    scheduler.add(Box::new(ObstacleDetector::new(0.5)?), 1, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run obstacle_detector.rs
+```
+
+**Key Concepts**:
+- `LaserScan` has 360 range readings (one per degree)
+- `scan.min_range()` finds closest obstacle
+- `scan.is_range_valid(index)` checks if reading is good
+- Safety nodes should run at HIGH priority
+
+---
+
+## 4. PID Controller
+
+Implement a PID controller for position tracking.
+
+**File: `pid_controller.rs`**
+
+```rust
+use horus::prelude::*;
+
+struct PIDController {
+    setpoint_sub: Hub<f32>,    // Desired position
+    feedback_sub: Hub<f32>,    // Current position
+    output_pub: Hub<f32>,      // Control output
+
+    kp: f32,  // Proportional gain
+    ki: f32,  // Integral gain
+    kd: f32,  // Derivative gain
+
+    integral: f32,
+    last_error: f32,
+}
+
+impl PIDController {
+    fn new(kp: f32, ki: f32, kd: f32) -> Result<Self> {
+        Ok(Self {
+            setpoint_sub: Hub::new("setpoint")?,
+            feedback_sub: Hub::new("feedback")?,
+            output_pub: Hub::new("control_output")?,
+            kp, ki, kd,
+            integral: 0.0,
+            last_error: 0.0,
+        })
+    }
+}
+
+impl Node for PIDController {
+    fn name(&self) -> &'static str { "PIDController" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info(&format!(
+            "PID initialized - Kp: {}, Ki: {}, Kd: {}",
+            self.kp, self.ki, self.kd
+        ));
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Get setpoint and current position
+        let setpoint = self.setpoint_sub.recv(&mut ctx).unwrap_or(0.0);
+        let feedback = self.feedback_sub.recv(&mut ctx).unwrap_or(0.0);
+
+        // Calculate error
+        let error = setpoint - feedback;
+
+        // Integral term (accumulated error)
+        self.integral += error;
+
+        // Derivative term (rate of change)
+        let derivative = error - self.last_error;
+
+        // PID output
+        let output = self.kp * error
+                   + self.ki * self.integral
+                   + self.kd * derivative;
+
+        // Publish control output
+        self.output_pub.send(output, &mut ctx).ok();
+
+        if let Some(ref mut c) = ctx {
+            c.log_debug(&format!(
+                "PID: setpoint={:.2}, feedback={:.2}, error={:.2}, output={:.2}",
+                setpoint, feedback, error, output
+            ));
+        }
+
+        // Update state
+        self.last_error = error;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("PID controller stopped");
+        Ok(())
+    }
+}
+
+// Simple test system node
+struct TestSystem {
+    output_sub: Hub<f32>,
+    feedback_pub: Hub<f32>,
+    position: f32,
+}
+
+impl TestSystem {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            output_sub: Hub::new("control_output")?,
+            feedback_pub: Hub::new("feedback")?,
+            position: 0.0,
+        })
+    }
+}
+
+impl Node for TestSystem {
+    fn name(&self) -> &'static str { "TestSystem" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Apply control output to position
+        if let Some(output) = self.output_sub.recv(&mut ctx) {
+            self.position += output * 0.01;  // Simple integration
+        }
+
+        // Publish current position
+        self.feedback_pub.send(self.position, &mut ctx).ok();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Test system stopped");
+        Ok(())
+    }
+}
+
+// Setpoint generator
+struct SetpointNode {
+    setpoint_pub: Hub<f32>,
+}
+
+impl Node for SetpointNode {
+    fn name(&self) -> &'static str { "SetpointNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Target position
+        let setpoint = 10.0;
+        self.setpoint_pub.send(setpoint, &mut ctx).ok();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Setpoint generator stopped");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Setpoint generator
+    scheduler.add(Box::new(SetpointNode {
+        setpoint_pub: Hub::new("setpoint")?,
+    }), 0, Some(true));
+
+    // Test system (simulates plant)
+    scheduler.add(Box::new(TestSystem::new()?), 1, Some(true));
+
+    // PID controller (Kp=0.5, Ki=0.01, Kd=0.1)
+    scheduler.add(Box::new(PIDController::new(0.5, 0.01, 0.1)?), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run pid_controller.rs
+```
+
+**Key Concepts**:
+- PID = Proportional + Integral + Derivative
+- Proportional: immediate response to error
+- Integral: corrects accumulated error
+- Derivative: dampens oscillations
+- Tune gains (Kp, Ki, Kd) for your system
+
+---
+
+## 5. Multi-Node Pipeline
+
+Chain multiple processing stages together.
+
+**File: `pipeline.rs`**
+
+```rust
+use horus::prelude::*;
+
+// Stage 1: Data acquisition
+struct SensorNode {
+    raw_pub: Hub<f32>,
+    counter: f32,
+}
+
+impl SensorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            raw_pub: Hub::new("raw_data")?,
+            counter: 0.0,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str { "SensorNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Stage 1: Sensor online");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Simulate noisy sensor
+        let raw_data = 50.0 + (self.counter * 0.5).sin() * 20.0;
+        self.raw_pub.send(raw_data, &mut ctx).ok();
+
+        if let Some(ref mut c) = ctx {
+            c.log_debug(&format!("Raw: {:.2}", raw_data));
+        }
+
+        self.counter += 0.1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Sensor offline");
+        Ok(())
+    }
+}
+
+// Stage 2: Filtering
+struct FilterNode {
+    raw_sub: Hub<f32>,
+    filtered_pub: Hub<f32>,
+    alpha: f32,  // Low-pass filter coefficient
+    filtered_value: f32,
+}
+
+impl FilterNode {
+    fn new(alpha: f32) -> Result<Self> {
+        Ok(Self {
+            raw_sub: Hub::new("raw_data")?,
+            filtered_pub: Hub::new("filtered_data")?,
+            alpha,
+            filtered_value: 0.0,
+        })
+    }
+}
+
+impl Node for FilterNode {
+    fn name(&self) -> &'static str { "FilterNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Stage 2: Filter online");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(raw) = self.raw_sub.recv(&mut ctx) {
+            // Exponential moving average
+            self.filtered_value = self.alpha * raw
+                                + (1.0 - self.alpha) * self.filtered_value;
+
+            self.filtered_pub.send(self.filtered_value, &mut ctx).ok();
+
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!("Filtered: {:.2}", self.filtered_value));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Filter offline");
+        Ok(())
+    }
+}
+
+// Stage 3: Decision making
+struct ControllerNode {
+    filtered_sub: Hub<f32>,
+    cmd_pub: Hub<f32>,
+    threshold: f32,
+}
+
+impl ControllerNode {
+    fn new(threshold: f32) -> Result<Self> {
+        Ok(Self {
+            filtered_sub: Hub::new("filtered_data")?,
+            cmd_pub: Hub::new("commands")?,
+            threshold,
+        })
+    }
+}
+
+impl Node for ControllerNode {
+    fn name(&self) -> &'static str { "ControllerNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Stage 3: Controller online");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(value) = self.filtered_sub.recv(&mut ctx) {
+            let command = if value > self.threshold { 1.0 } else { 0.0 };
+            self.cmd_pub.send(command, &mut ctx).ok();
+
+            if let Some(ref mut c) = ctx {
+                c.log_info(&format!(
+                    "Value: {:.2}, Threshold: {:.2}, Command: {:.0}",
+                    value, self.threshold, command
+                ));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Controller offline");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Add pipeline stages in priority order
+    scheduler.add(Box::new(SensorNode::new()?), 0, Some(true));
+    scheduler.add(Box::new(FilterNode::new(0.2)?), 1, Some(true));
+    scheduler.add(Box::new(ControllerNode::new(50.0)?), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run pipeline.rs
+```
+
+**Key Concepts**:
+- Data flows: Sensor  Filter  Controller
+- Each stage has different priority (0, 1, 2)
+- Exponential moving average: `filtered = α * new + (1-α) * old`
+- Priorities ensure correct execution order
+
+---
+
+## Next Steps
+
+Now that you understand basic patterns, explore:
+
+- [Second Application Tutorial](/getting-started/second-application) - Build a 3-node sensor pipeline
+- [Advanced Examples](/rust/examples/advanced-examples) - State machines, multi-process systems, Python integration
+- [Testing](/development/testing) - Write tests for your nodes
+- [Using Prebuilt Nodes](/package-management/using-prebuilt-nodes) - Leverage the standard library
+- [Message Types](/concepts/message-types) - Complete message reference
+
+Stuck? Check:
+- [Troubleshooting Runtime Errors](/troubleshooting-runtime) - Fix common issues
+- [Monitor](/development/monitor) - Debug with the web UI

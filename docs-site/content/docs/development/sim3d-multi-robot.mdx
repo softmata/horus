@@ -1,0 +1,569 @@
+---
+title: "Sim3D Multi-Robot"
+description: "Multi-robot simulation with namespacing, communication, swarm coordination, and formation control"
+weight: 66
+---
+
+# Sim3D Multi-Robot
+
+The Sim3D multi-robot system provides infrastructure for simulating multiple robots with inter-robot communication, swarm behaviors, formation control, and distributed coordination.
+
+## Multi-Robot Plugin
+
+Add the multi-robot plugin to enable all multi-robot features:
+
+```rust
+use horus_sim3d::multi_robot::MultiRobotPlugin;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(MultiRobotPlugin::default())
+        .run();
+}
+
+// Configure maximum robots
+App::new()
+    .add_plugins(MultiRobotPlugin { max_robots: 50 })
+    .run();
+```
+
+## Robot Identification
+
+Each robot is identified by a unique `RobotId` for namespacing and communication.
+
+### RobotId
+
+```rust
+use horus_sim3d::multi_robot::RobotId;
+
+// Create robot IDs
+let id1 = RobotId::new("robot_01");
+let id2 = RobotId::from("robot_02");
+let id3 = RobotId::from(String::from("robot_03"));
+
+// Access ID as string
+println!("Robot: {}", id1.as_str());
+```
+
+### Robot Component
+
+Mark entities as robots with the `Robot` component:
+
+```rust
+use horus_sim3d::multi_robot::Robot;
+
+commands.spawn((
+    TransformBundle::default(),
+    Robot::new("robot_01", "turtlebot3"),
+));
+
+// Create inactive robot
+commands.spawn((
+    TransformBundle::default(),
+    Robot::new("robot_02", "ur5e").with_active(false),
+));
+```
+
+## Multi-Robot Manager
+
+The `MultiRobotManager` resource tracks all registered robots:
+
+```rust
+use horus_sim3d::multi_robot::MultiRobotManager;
+
+fn manage_robots(manager: Res<MultiRobotManager>) {
+    // Get robot count
+    println!("{} robots registered", manager.count());
+
+    // Get all robot IDs
+    for id in manager.get_all_ids() {
+        println!("  - {}", id.as_str());
+    }
+
+    // Check if robot exists
+    let id = RobotId::new("robot_01");
+    if manager.contains(&id) {
+        // Get entity for robot
+        if let Some(entity) = manager.get_robot(&id) {
+            println!("Robot entity: {:?}", entity);
+        }
+    }
+}
+```
+
+### Manual Registration
+
+Robots are auto-registered, but you can manually manage them:
+
+```rust
+fn manual_registration(
+    mut manager: ResMut<MultiRobotManager>,
+    mut commands: Commands,
+) {
+    // Spawn and register
+    let entity = commands.spawn((
+        TransformBundle::default(),
+        Robot::new("manual_robot", "custom"),
+    )).id();
+
+    // Manual registration (usually automatic)
+    manager.register(RobotId::new("manual_robot"), entity)?;
+
+    // Unregister
+    manager.unregister(&RobotId::new("old_robot"));
+
+    // Clear all
+    manager.clear();
+}
+```
+
+## Inter-Robot Communication
+
+Simulate message passing between robots with configurable channels.
+
+### CommunicationManager
+
+```rust
+use horus_sim3d::multi_robot::communication::{
+    CommunicationManager, ChannelConfig, RobotMessage
+};
+
+fn setup_communication(mut commands: Commands) {
+    let config = ChannelConfig {
+        max_queue_size: 1000,      // Messages per robot
+        max_message_size: 1024 * 1024,  // 1 MB
+        bandwidth_limit: Some(10_000_000),  // 10 MB/s (optional)
+    };
+
+    commands.insert_resource(CommunicationManager::new(config));
+}
+```
+
+### Sending Messages
+
+```rust
+use horus_sim3d::multi_robot::communication::CommunicationManager;
+
+fn send_messages(
+    mut comm: ResMut<CommunicationManager>,
+    time: Res<Time>,
+) {
+    let sender = RobotId::new("robot_01");
+    let receiver = RobotId::new("robot_02");
+    let payload = b"Hello from robot_01!".to_vec();
+
+    // Send to specific robot
+    comm.send_message(
+        sender.clone(),
+        Some(receiver),
+        payload,
+        time.elapsed_secs_f64(),
+    ).expect("Failed to send");
+
+    // Broadcast to all robots
+    comm.send_message(
+        sender,
+        None,  // None = broadcast
+        b"Broadcast message".to_vec(),
+        time.elapsed_secs_f64(),
+    ).expect("Failed to broadcast");
+}
+```
+
+### Receiving Messages
+
+```rust
+fn receive_messages(mut comm: ResMut<CommunicationManager>) {
+    let robot_id = RobotId::new("robot_02");
+
+    // Check pending messages
+    let pending = comm.pending_count(&robot_id);
+    println!("{} messages waiting", pending);
+
+    // Peek at next message
+    if let Some(msg) = comm.peek_message(&robot_id) {
+        println!("Next message from: {}", msg.from.as_str());
+    }
+
+    // Receive and process messages
+    while let Some(msg) = comm.receive_message(&robot_id) {
+        println!("Received {} bytes from {}",
+            msg.size_bytes(),
+            msg.from.as_str());
+
+        if msg.is_broadcast() {
+            println!("  (broadcast message)");
+        }
+    }
+}
+```
+
+### Communicator Component
+
+Add callbacks for message handling:
+
+```rust
+use horus_sim3d::multi_robot::communication::{Communicator, RobotMessage};
+
+fn handle_message(msg: &RobotMessage) {
+    println!("Got message: {:?}", msg.payload);
+}
+
+commands.spawn((
+    Robot::new("robot_01", "sensor_bot"),
+    Communicator {
+        on_message: Some(handle_message),
+    },
+));
+```
+
+### Communication Statistics
+
+```rust
+fn show_stats(comm: Res<CommunicationManager>) {
+    let stats = comm.get_stats();
+
+    println!("Communication Statistics:");
+    println!("  Sent: {} messages", stats.sent_count);
+    println!("  Received: {} messages", stats.received_count);
+    println!("  Bytes transmitted: {}", stats.bytes_transmitted);
+    println!("  Active robots: {}", stats.active_robots);
+}
+```
+
+## Swarm Coordination
+
+Implement swarm behaviors like flocking, separation, and cohesion.
+
+### SwarmAgent Component
+
+```rust
+use horus_sim3d::multi_robot::coordination::SwarmAgent;
+
+commands.spawn((
+    TransformBundle::from_transform(Transform::from_xyz(0.0, 0.0, 0.0)),
+    Robot::new("swarm_01", "drone"),
+    SwarmAgent {
+        separation_distance: 2.0,    // Min distance between agents
+        alignment_weight: 1.0,       // Match neighbor velocity
+        cohesion_weight: 1.0,        // Move toward group center
+        separation_weight: 1.5,      // Avoid collisions (higher priority)
+        max_speed: 2.0,              // Maximum velocity
+        perception_radius: 5.0,      // Neighbor detection range
+    },
+));
+
+// Use defaults
+commands.spawn((
+    TransformBundle::default(),
+    Robot::new("swarm_02", "drone"),
+    SwarmAgent::default(),
+));
+```
+
+### Swarm Behavior Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `separation_distance` | 2.0 | Minimum distance to maintain |
+| `alignment_weight` | 1.0 | Velocity matching strength |
+| `cohesion_weight` | 1.0 | Group centering strength |
+| `separation_weight` | 1.5 | Collision avoidance strength |
+| `max_speed` | 2.0 | Maximum agent speed |
+| `perception_radius` | 5.0 | Neighbor detection range |
+
+## Formation Control
+
+Control robot formations with leader-follower patterns.
+
+### FormationController Component
+
+```rust
+use horus_sim3d::multi_robot::coordination::{FormationController, FormationType};
+
+// Create formation leader
+let leader_id = commands.spawn((
+    TransformBundle::from_transform(Transform::from_xyz(0.0, 0.0, 0.0)),
+    Robot::new("leader", "turtlebot3"),
+)).id();
+
+// Create followers in line formation
+for i in 0..4 {
+    commands.spawn((
+        TransformBundle::default(),
+        Robot::new(format!("follower_{}", i), "turtlebot3"),
+        FormationController {
+            formation_type: FormationType::Line,
+            formation_index: i,
+            scale: 1.0,
+            leader: Some(RobotId::new("leader")),
+        },
+    ));
+}
+```
+
+### Formation Types
+
+| Type | Description |
+|------|-------------|
+| `Line` | Robots in a horizontal line |
+| `Circle` | Robots in a circle around leader |
+| `Grid` | 4-wide grid formation |
+| `Wedge` | V-formation (like birds) |
+| `Custom` | User-defined positions |
+
+### Formation Scaling
+
+```rust
+let mut controller = FormationController::new(FormationType::Circle, 0);
+controller.scale = 2.0;  // Double the formation size
+controller.leader = Some(RobotId::new("leader"));
+```
+
+### Dynamic Formation Changes
+
+```rust
+fn change_formation(
+    mut query: Query<&mut FormationController>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard.just_pressed(KeyCode::Digit1) {
+        for mut fc in query.iter_mut() {
+            fc.formation_type = FormationType::Line;
+        }
+    }
+    if keyboard.just_pressed(KeyCode::Digit2) {
+        for mut fc in query.iter_mut() {
+            fc.formation_type = FormationType::Circle;
+        }
+    }
+    if keyboard.just_pressed(KeyCode::Digit3) {
+        for mut fc in query.iter_mut() {
+            fc.formation_type = FormationType::Wedge;
+        }
+    }
+}
+```
+
+## Consensus Algorithms
+
+Distributed agreement algorithms for multi-robot systems.
+
+### ConsensusState Resource
+
+```rust
+use horus_sim3d::multi_robot::coordination::ConsensusState;
+
+fn setup_consensus(mut commands: Commands) {
+    commands.insert_resource(ConsensusState::new(0.1));  // threshold
+}
+
+fn run_consensus(mut consensus: ResMut<ConsensusState>) {
+    // Each robot contributes its value
+    consensus.set_value(RobotId::new("robot_01"), 10.0);
+    consensus.set_value(RobotId::new("robot_02"), 15.0);
+    consensus.set_value(RobotId::new("robot_03"), 12.0);
+
+    // Check consensus
+    let avg = consensus.average();
+    let var = consensus.variance();
+    println!("Average: {:.2}, Variance: {:.4}", avg, var);
+
+    if consensus.is_converged() {
+        println!("Consensus reached!");
+    }
+}
+```
+
+## Task Allocation
+
+Distributed task assignment for multi-robot teams.
+
+### TaskAllocation Resource
+
+```rust
+use horus_sim3d::multi_robot::coordination::TaskAllocation;
+
+fn allocate_tasks(mut allocation: ResMut<TaskAllocation>) {
+    // Define costs for each robot-task pair
+    allocation.set_cost(RobotId::new("robot_01"), "pickup_A".to_string(), 5.0);
+    allocation.set_cost(RobotId::new("robot_01"), "pickup_B".to_string(), 10.0);
+    allocation.set_cost(RobotId::new("robot_02"), "pickup_A".to_string(), 8.0);
+    allocation.set_cost(RobotId::new("robot_02"), "pickup_B".to_string(), 3.0);
+
+    // Run greedy allocation
+    let robots = vec![RobotId::new("robot_01"), RobotId::new("robot_02")];
+    let tasks = vec!["pickup_A".to_string(), "pickup_B".to_string()];
+    allocation.allocate_greedy(&robots, &tasks);
+
+    // Get assignments
+    for robot in &robots {
+        if let Some(task) = allocation.get_assignment(robot) {
+            println!("{} assigned to {}", robot.as_str(), task);
+        }
+    }
+}
+```
+
+## Complete Multi-Robot Example
+
+```rust
+use bevy::prelude::*;
+use horus_sim3d::multi_robot::{
+    MultiRobotPlugin, Robot, RobotId, MultiRobotManager,
+    communication::{CommunicationManager, ChannelConfig},
+    coordination::{SwarmAgent, FormationController, FormationType, ConsensusState},
+};
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(MultiRobotPlugin { max_robots: 20 })
+        .add_systems(Startup, setup_robots)
+        .add_systems(Update, (control_robots, show_stats))
+        .run();
+}
+
+fn setup_robots(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // Spawn swarm of drones
+    for i in 0..10 {
+        let x = (i % 5) as f32 * 3.0 - 6.0;
+        let z = (i / 5) as f32 * 3.0 - 3.0;
+
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(0.3)),
+                material: materials.add(Color::rgb(0.2, 0.6, 0.9)),
+                transform: Transform::from_xyz(x, 1.0, z),
+                ..default()
+            },
+            Robot::new(format!("drone_{}", i), "quadcopter"),
+            SwarmAgent::default(),
+        ));
+    }
+
+    // Spawn leader for formation
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Sphere::new(0.4)),
+            material: materials.add(Color::rgb(0.9, 0.2, 0.2)),
+            transform: Transform::from_xyz(0.0, 1.0, 10.0),
+            ..default()
+        },
+        Robot::new("leader", "turtlebot3"),
+    ));
+
+    // Spawn formation followers
+    for i in 0..4 {
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Cuboid::new(0.5, 0.3, 0.6)),
+                material: materials.add(Color::rgb(0.2, 0.9, 0.2)),
+                transform: Transform::from_xyz(i as f32 * 2.0, 0.15, 10.0),
+                ..default()
+            },
+            Robot::new(format!("follower_{}", i), "turtlebot3"),
+            FormationController {
+                formation_type: FormationType::Wedge,
+                formation_index: i,
+                scale: 1.5,
+                leader: Some(RobotId::new("leader")),
+            },
+        ));
+    }
+
+    // Ground
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Plane3d::default().mesh().size(50.0, 50.0)),
+        material: materials.add(Color::rgb(0.3, 0.3, 0.3)),
+        ..default()
+    });
+
+    // Camera
+    commands.spawn(Camera3dBundle {
+        transform: Transform::from_xyz(0.0, 20.0, 20.0)
+            .looking_at(Vec3::ZERO, Vec3::Y),
+        ..default()
+    });
+
+    // Light
+    commands.spawn(DirectionalLightBundle {
+        directional_light: DirectionalLight {
+            illuminance: 10000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform::from_rotation(Quat::from_euler(
+            EulerRot::XYZ, -0.5, 0.5, 0.0
+        )),
+        ..default()
+    });
+}
+
+fn control_robots(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut FormationController>,
+    mut leader_query: Query<&mut Transform, (With<Robot>, Without<FormationController>)>,
+    time: Res<Time>,
+) {
+    // Move leader with arrow keys
+    for mut transform in leader_query.iter_mut() {
+        let speed = 3.0 * time.delta_secs();
+        if keyboard.pressed(KeyCode::ArrowUp) {
+            transform.translation.z -= speed;
+        }
+        if keyboard.pressed(KeyCode::ArrowDown) {
+            transform.translation.z += speed;
+        }
+        if keyboard.pressed(KeyCode::ArrowLeft) {
+            transform.translation.x -= speed;
+        }
+        if keyboard.pressed(KeyCode::ArrowRight) {
+            transform.translation.x += speed;
+        }
+    }
+
+    // Change formation with number keys
+    for mut fc in query.iter_mut() {
+        if keyboard.just_pressed(KeyCode::Digit1) {
+            fc.formation_type = FormationType::Line;
+        }
+        if keyboard.just_pressed(KeyCode::Digit2) {
+            fc.formation_type = FormationType::Circle;
+        }
+        if keyboard.just_pressed(KeyCode::Digit3) {
+            fc.formation_type = FormationType::Wedge;
+        }
+        if keyboard.just_pressed(KeyCode::Digit4) {
+            fc.formation_type = FormationType::Grid;
+        }
+    }
+}
+
+fn show_stats(
+    manager: Res<MultiRobotManager>,
+    comm: Res<CommunicationManager>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard.just_pressed(KeyCode::KeyI) {
+        println!("\n=== Multi-Robot Status ===");
+        println!("Registered robots: {}", manager.count());
+
+        let stats = comm.get_stats();
+        println!("Messages sent: {}", stats.sent_count);
+        println!("Bytes transmitted: {}", stats.bytes_transmitted);
+    }
+}
+```
+
+## See Also
+
+- [Sim3D Overview](/development/simulation) - Full Sim3D documentation
+- [Sim3D Editor](/development/sim3d-editor) - Scene editing tools
+- [Sim3D Recording](/development/sim3d-recording) - Recording and playback
+- [Coordination Messages](/rust/api/coordination-messages) - HORUS coordination message types

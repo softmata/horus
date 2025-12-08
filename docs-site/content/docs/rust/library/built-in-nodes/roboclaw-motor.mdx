@@ -1,0 +1,566 @@
+---
+title: RoboclawMotorNode
+description: Roboclaw dual motor controller with encoder feedback
+---
+
+# RoboclawMotorNode
+
+Roboclaw dual motor controller node supporting the full range of Roboclaw boards from BasicMicro. Provides DC motor control with quadrature encoder feedback, current sensing, and advanced motion profiling for mobile robots and drive systems.
+
+## Source Code
+
+- [RoboclawMotorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/roboclaw_motor)
+- [Motor Control Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/control.rs)
+
+## Features
+
+- Dual motor control per controller
+- Multiple Roboclaw controllers (chaining)
+- Quadrature encoder feedback
+- Position, velocity, and duty cycle control
+- PID tuning and motion profiling
+- Current limiting and monitoring
+- Battery voltage monitoring
+- Temperature monitoring
+- E-stop and failsafe
+- Serial TTL or USB communication
+- Simulation fallback
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create Roboclaw node
+    let mut roboclaw = RoboclawMotorNode::new("/dev/ttyUSB0")?;
+    roboclaw.set_baud_rate(38400);
+    roboclaw.set_address(0x80);  // Default address
+
+    scheduler.add(Box::new(roboclaw), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install USB-serial drivers
+sudo apt install setserial
+
+# Add user to dialout group
+sudo usermod -a -G dialout $USER
+
+# Verify port
+ls -l /dev/ttyUSB*
+```
+
+### Wiring Example
+
+```
+Raspberry Pi    Roboclaw    Motors
+GPIO TX   -->   S1 (RX)
+GPIO RX   <--   S2 (TX)
+GND       ---   GND
+                M1A/M1B --> Motor 1
+                M2A/M2B --> Motor 2
+                +12-34V --> Battery
+                GND     --> Battery GND
+```
+
+### Encoder Connections
+
+```
+Roboclaw        Encoder 1       Encoder 2
+ENC1A     <--   Channel A
+ENC1B     <--   Channel B
+ENC2A     <--   Channel A
+ENC2B     <--   Channel B
+GND       ---   GND
++5V       -->   VCC (if needed)
+```
+
+### Enabling Features
+
+There are three ways to enable the required `serial-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `RoboclawMotorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: serial-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - serial-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["serial-hardware"] }
+```
+
+## Roboclaw Models
+
+### Voltage Ratings
+
+```rust
+// 7.2V - 34V models
+RoboclawModel::_2x7A   // 2x7A continuous
+RoboclawModel::_2x15A  // 2x15A continuous
+RoboclawModel::_2x30A  // 2x30A continuous
+RoboclawModel::_2x45A  // 2x45A continuous
+RoboclawModel::_2x60A  // 2x60A continuous
+
+// High-voltage models (12V - 60V)
+RoboclawModel::_HV_2x30A
+RoboclawModel::_HV_2x60A
+```
+
+## Configuration
+
+### Communication Setup
+
+```rust
+let mut roboclaw = RoboclawMotorNode::new("/dev/ttyUSB0")?;
+
+// Set baud rate (must match controller DIP switches or settings)
+roboclaw.set_baud_rate(38400);    // Default
+roboclaw.set_baud_rate(115200);   // High-speed
+
+// Set controller address (0x80-0x87 for up to 8 controllers)
+roboclaw.set_address(0x80);  // Controller 1
+roboclaw.set_address(0x81);  // Controller 2
+```
+
+### Encoder Configuration
+
+```rust
+// Set encoder counts per revolution
+roboclaw.set_encoder_cpr(1, 1440);  // Motor 1: 1440 CPR
+roboclaw.set_encoder_cpr(2, 1440);  // Motor 2: 1440 CPR
+
+// Set encoder mode
+roboclaw.set_encoder_mode(1, EncoderMode::Quadrature);
+roboclaw.set_encoder_mode(2, EncoderMode::Quadrature);
+
+// Invert encoder direction if needed
+roboclaw.invert_encoder(1, true);
+```
+
+### Motor Configuration
+
+```rust
+// Set motor direction
+roboclaw.invert_motor(1, false);
+roboclaw.invert_motor(2, true);  // Reverse for differential drive
+
+// Set PWM frequency (1kHz - 30kHz)
+roboclaw.set_pwm_frequency(20000);  // 20 kHz
+```
+
+### PID Configuration
+
+```rust
+// Position PID gains for motor 1
+roboclaw.set_position_pid(1, 0x00010000, 0x00008000, 0x00004000, 2000000);
+// Parameters: motor_id, P, I, D, max_speed
+
+// Velocity PID gains
+roboclaw.set_velocity_pid(1, 0x00020000, 0x00010000, 0x00000000, 44000);
+// Parameters: motor_id, P, I, D, QPPS (quadrature pulses per second)
+```
+
+### Limits
+
+```rust
+// Set current limit (Amps * 10)
+roboclaw.set_current_limit(1, 50);  // 5.0 A
+
+// Set min/max voltage
+roboclaw.set_min_voltage(10.5);  // Volts
+robococlaw.set_max_voltage(14.8);  // Volts
+
+// Set max speed (encoder counts/sec)
+roboclaw.set_max_speed(1, 10000);
+```
+
+## Control Modes
+
+### Duty Cycle Control (Open Loop)
+
+```rust
+use horus::prelude::*;
+
+// Drive motor 1 at 50% forward
+let cmd = RoboclawCommand {
+    motor_id: 1,
+    command_type: RoboclawCommand::CMD_DUTY,
+    value: 16384,  // -32768 to +32767 (-100% to +100%)
+};
+
+let hub = Hub::<RoboclawCommand>::new("roboclaw.command")?;
+hub.send(cmd, &mut None).ok();
+
+// Stop motor
+let cmd = RoboclawCommand {
+    motor_id: 1,
+    command_type: RoboclawCommand::CMD_DUTY,
+    value: 0,
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Velocity Control (Closed Loop)
+
+```rust
+// Set velocity in QPPS (Quadrature Pulses Per Second)
+let cmd = RoboclawCommand {
+    motor_id: 1,
+    command_type: RoboclawCommand::CMD_VELOCITY,
+    value: 5000,  // 5000 QPPS
+    accel: 10000,  // Acceleration (QPPS²)
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Position Control (Closed Loop)
+
+```rust
+// Move to absolute position
+let cmd = RoboclawCommand {
+    motor_id: 1,
+    command_type: RoboclawCommand::CMD_POSITION,
+    position: 14400,  // 10 revolutions (1440 CPR * 10)
+    speed: 5000,      // Speed (QPPS)
+    accel: 10000,     // Acceleration
+    deccel: 10000,    // Deceleration
+    buffer: true,     // Buffer command
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Mixed Mode (Differential Drive)
+
+```rust
+// Drive forward at speed with turning
+let cmd = RoboclawMixedCommand {
+    forward_speed: 5000,   // Forward velocity (QPPS)
+    turn_rate: -1000,      // Turn rate (negative = left)
+};
+
+let hub = Hub::<RoboclawMixedCommand>::new("roboclaw.mixed")?;
+hub.send(cmd, &mut None).ok();
+```
+
+## Usage Patterns
+
+### Differential Drive Robot
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure Roboclaw for differential drive
+    let mut roboclaw = RoboclawMotorNode::new("/dev/ttyUSB0")?;
+    roboclaw.set_baud_rate(38400);
+    roboclaw.set_address(0x80);
+
+    // Configure encoders (1440 CPR wheels)
+    roboclaw.set_encoder_cpr(1, 1440);
+    roboclaw.set_encoder_cpr(2, 1440);
+
+    // Invert motor 2 for differential drive
+    roboclaw.invert_motor(2, true);
+
+    // Set velocity PID
+    roboclaw.set_velocity_pid(1, 0x00020000, 0x00010000, 0x00000000, 44000);
+    roboclaw.set_velocity_pid(2, 0x00020000, 0x00010000, 0x00000000, 44000);
+
+    scheduler.add(Box::new(roboclaw), 1, Some(true));
+
+    // Drive control node
+    let drive_node = node! {
+        name: "drive_control",
+        tick: |ctx| {
+            let hub = Hub::<RoboclawMixedCommand>::new("roboclaw.mixed")?;
+
+            // Example: Drive forward
+            hub.send(RoboclawMixedCommand {
+                forward_speed: 5000,
+                turn_rate: 0,
+            }, None)?;
+
+            // Monitor status
+            let status_hub = Hub::<RoboclawStatus>::new("roboclaw.status")?;
+            if let Some(status) = status_hub.recv(&mut None) {
+                ctx.log_info(&format!(
+                    "M1: {} counts, {} QPPS | M2: {} counts, {} QPPS",
+                    status.encoder1, status.speed1,
+                    status.encoder2, status.speed2
+                ));
+
+                // Check battery
+                if status.battery_voltage < 11.0 {
+                    ctx.log_warning("Low battery!");
+                }
+
+                // Check current
+                if status.current1 > 5.0 {
+                    ctx.log_warning("Motor 1 high current!");
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(drive_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+### Position Tracking
+
+```rust
+// Read encoder positions
+let status_hub = Hub::<RoboclawStatus>::new("roboclaw.status")?;
+
+if let Some(status) = status_hub.recv(&mut None) {
+    let motor1_revolutions = status.encoder1 as f32 / 1440.0;
+    let motor2_revolutions = status.encoder2 as f32 / 1440.0;
+
+    println!("M1: {:.2} rev, M2: {:.2} rev",
+        motor1_revolutions, motor2_revolutions);
+}
+```
+
+### Reset Encoders
+
+```rust
+// Reset encoder counts to zero
+let cmd = RoboclawCommand {
+    motor_id: 1,
+    command_type: RoboclawCommand::CMD_RESET_ENCODER,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+## Message Format
+
+### RoboclawCommand
+
+```rust
+pub struct RoboclawCommand {
+    pub motor_id: u8,         // Motor ID (1 or 2)
+    pub command_type: u8,     // Command type
+    pub value: i32,           // Duty/velocity value
+    pub position: i32,        // Target position
+    pub speed: u32,           // Speed for position mode
+    pub accel: u32,           // Acceleration
+    pub deccel: u32,          // Deceleration
+    pub buffer: bool,         // Buffer command
+}
+```
+
+### Command Types
+
+```rust
+pub const CMD_DUTY: u8 = 0;              // Duty cycle control
+pub const CMD_VELOCITY: u8 = 1;          // Velocity control
+pub const CMD_POSITION: u8 = 2;          // Position control
+pub const CMD_RESET_ENCODER: u8 = 3;     // Reset encoder
+pub const CMD_STOP: u8 = 4;              // Stop motor
+pub const CMD_ESTOP: u8 = 5;             // Emergency stop
+```
+
+### RoboclawMixedCommand
+
+```rust
+pub struct RoboclawMixedCommand {
+    pub forward_speed: i32,   // Forward velocity (QPPS)
+    pub turn_rate: i32,       // Turn rate (QPPS)
+}
+```
+
+### RoboclawStatus
+
+```rust
+pub struct RoboclawStatus {
+    pub encoder1: i32,            // Motor 1 encoder count
+    pub encoder2: i32,            // Motor 2 encoder count
+    pub speed1: i32,              // Motor 1 speed (QPPS)
+    pub speed2: i32,              // Motor 2 speed (QPPS)
+    pub current1: f32,            // Motor 1 current (A)
+    pub current2: f32,            // Motor 2 current (A)
+    pub battery_voltage: f32,     // Battery voltage (V)
+    pub temperature: f32,         // Controller temp (°C)
+    pub error_status: u16,        // Error flags
+    pub timestamp: u64,
+}
+```
+
+### Error Flags
+
+```rust
+pub const ERROR_E_STOP: u16 = 0x0001;
+pub const ERROR_TEMPERATURE: u16 = 0x0002;
+pub const ERROR_MAIN_VOLTAGE_HIGH: u16 = 0x0004;
+pub const ERROR_LOGIC_VOLTAGE_HIGH: u16 = 0x0008;
+pub const ERROR_LOGIC_VOLTAGE_LOW: u16 = 0x0010;
+pub const ERROR_M1_DRIVER_FAULT: u16 = 0x0020;
+pub const ERROR_M2_DRIVER_FAULT: u16 = 0x0040;
+pub const ERROR_M1_OVER_CURRENT: u16 = 0x0080;
+pub const ERROR_M2_OVER_CURRENT: u16 = 0x0100;
+```
+
+## PID Tuning Guide
+
+### Velocity PID
+
+1. **Start with all gains at zero**
+2. **Increase P until oscillation:**
+   ```rust
+   roboclaw.set_velocity_pid(1, 0x00020000, 0, 0, 44000);
+   ```
+3. **Add I to eliminate steady-state error:**
+   ```rust
+   roboclaw.set_velocity_pid(1, 0x00020000, 0x00010000, 0, 44000);
+   ```
+4. **Add D to reduce overshoot (usually not needed for velocity)**
+
+### Position PID
+
+1. **Set max_speed appropriately**
+2. **Tune P first**
+3. **Add D to reduce overshoot**
+4. **Add I if needed for position holding**
+
+## Best Practices
+
+1. **Always use encoder feedback:**
+   ```rust
+   roboclaw.set_encoder_cpr(1, 1440);
+   // Closed-loop control is much more accurate
+   ```
+
+2. **Set current limits:**
+   ```rust
+   roboclaw.set_current_limit(1, 50);  // 5.0A
+   // Protects motors and controller
+   ```
+
+3. **Monitor battery voltage:**
+   ```rust
+   if status.battery_voltage < 11.0 {
+       // Stop or slow down
+   }
+   ```
+
+4. **Use buffered commands for smooth motion:**
+   ```rust
+   cmd.buffer = true;
+   // Commands execute sequentially
+   ```
+
+5. **Implement failsafe:**
+   ```rust
+   roboclaw.set_min_voltage(10.5);
+   // Controller stops if voltage too low
+   ```
+
+6. **Check error status:**
+   ```rust
+   if status.error_status != 0 {
+       ctx.log_error(&format!("Error: 0x{:04X}", status.error_status));
+   }
+   ```
+
+## Motion Studio
+
+BasicMicro provides Motion Studio software for:
+- PID auto-tuning
+- Real-time graphing
+- Firmware updates
+- Parameter configuration
+
+Available at: `www.basicmicro.com`
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check USB connection: `ls -l /dev/ttyUSB*`
+2. Add to dialout: `sudo usermod -a -G dialout $USER`
+3. Verify power to Roboclaw (LED should be on)
+4. Check baud rate matches DIP switches
+
+**Problem: Motor runs but wrong direction**
+
+**Solutions:**
+1. Invert motor: `invert_motor(1, true)`
+2. Or swap motor wires (M1A ↔ M1B)
+
+**Problem: Encoder counts not changing**
+
+**Solutions:**
+1. Check encoder wiring (A, B, GND, VCC)
+2. Verify encoder power (usually 5V)
+3. Test encoder with Motion Studio
+4. Check CPR setting matches encoder
+
+**Problem: PID oscillation**
+
+**Solutions:**
+1. Reduce P gain
+2. Increase D gain
+3. Check mechanical binding
+4. Verify encoder is secure (no slipping)
+
+**Problem: Over-current errors**
+
+**Solutions:**
+1. Reduce current limit if too high
+2. Check for stalled motor
+3. Verify motor rating matches controller
+4. Check for mechanical resistance
+
+## Graceful Shutdown
+
+RoboclawMotorNode automatically stops both motors when your application receives Ctrl+C (SIGINT/SIGTERM):
+
+- Both motor velocities set to 0
+- Hardware stop commands sent via serial (duty cycle 0)
+- Motors coast to stop
+
+This ensures your mobile robot stops safely when shutting down.
+
+## See Also
+
+- [DcMotorNode](./dc-motor) - Basic DC motor control
+- [BldcMotorNode](./bldc-motor) - BLDC motor control
+- [DifferentialDriveNode](./differential-drive) - High-level drive control
+- [EncoderNode](./encoder) - Standalone encoder reading

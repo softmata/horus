@@ -1,0 +1,85 @@
+---
+title: EmergencyStopNode
+description: Emergency stop (E-stop) system for safety-critical applications
+---
+
+# EmergencyStopNode
+
+Emergency stop (E-stop) node for immediate system shutdown in dangerous situations. Monitors physical e-stop buttons, software triggers, and watchdog timers for safety-critical robotics applications.
+
+## Source Code
+
+- [EmergencyStopNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/emergency_stop)
+- [Diagnostics Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/diagnostics.rs)
+
+## Features
+
+- Physical e-stop button input
+- Software e-stop triggers
+- Watchdog timer monitoring
+- Motor disable on trigger
+- System state preservation
+- Auto-reset or manual reset
+- Latching/non-latching modes
+- Multiple trigger sources
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut estop = EmergencyStopNode::new()?;
+    estop.set_button_pin(17);  // GPIO 17 for e-stop button
+    estop.set_mode(EstopMode::Latching);  // Requires manual reset
+
+    scheduler.add(Box::new(estop), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+```rust
+// Set e-stop button GPIO pin
+estop.set_button_pin(17);
+
+// Set mode
+estop.set_mode(EstopMode::Latching);      // Manual reset required
+estop.set_mode(EstopMode::NonLatching);   // Auto-reset when clear
+
+// Enable watchdog
+estop.enable_watchdog(true);
+estop.set_watchdog_timeout(1000);  // 1 second timeout
+```
+
+## Usage
+
+```rust
+// Monitor e-stop state
+let hub = Hub::<EstopState>::new("estop.state")?;
+
+if let Some(state) = hub.recv(&mut None) {
+    if state.triggered {
+        println!("E-STOP TRIGGERED! Reason: {:?}", state.reason);
+        // All motors stopped
+    }
+}
+
+// Software e-stop trigger
+let cmd_hub = Hub::<EstopCommand>::new("estop.command")?;
+cmd_hub.send(EstopCommand::Trigger, &mut None).ok();
+
+// Reset e-stop
+cmd_hub.send(EstopCommand::Reset, &mut None).ok();
+```
+
+## See Also
+
+- [SafetyMonitorNode](./safety-monitor) - System health monitoring
+- [CollisionDetectorNode](./collision-detector) - Collision prevention
+- [BatteryMonitorNode](./battery-monitor) - Battery safety

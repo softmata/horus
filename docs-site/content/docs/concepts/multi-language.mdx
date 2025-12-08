@@ -1,0 +1,243 @@
+---
+title: Multi-Language Support
+description: Use HORUS with Python and Rust
+order: 19
+---
+
+# Multi-Language Support
+
+HORUS supports multiple programming languages, allowing you to choose the best tool for each component of your robotics system.
+
+## Supported Languages
+
+### Rust (Native)
+
+**Best for:** High-performance nodes, control loops, real-time systems
+
+HORUS is written in Rust and provides the most complete API. All examples in the documentation use Rust by default.
+
+**Getting Started:**
+```bash
+horus new my-project
+# Select: Rust (option 2)
+```
+
+**Learn more:** [Quick Start](/getting-started/quick-start)
+
+### Python
+
+> **-Production-Ready**: Full-featured Python API with advanced capabilities
+
+**Best for:** Rapid prototyping, AI/ML integration, data processing, visualization
+
+Python bindings provide a simple, Pythonic API for HORUS with production-grade features:
+- **Per-node rate control** - Different rates for different nodes (100Hz sensor, 10Hz logger)
+- **Automatic timestamps** - Built-in message timing and staleness detection
+- **Typed messages** - Optional type-safe messages from Rust (CmdVel, ImuMsg)
+- **Multiprocess support** - Process isolation and multi-language systems
+
+Perfect for integrating with NumPy, PyTorch, TensorFlow, and other Python libraries.
+
+**Getting Started:**
+```bash
+horus new my-project
+# Select: Python (option 1)
+```
+
+**Learn more:** [Python Bindings](/python/api/python-bindings)
+
+## Cross-Language Communication
+
+**All languages can communicate** through HORUS's shared memory system.
+
+### Simple Types (Numbers, Strings)
+
+```python
+# Python publisher
+import horus
+node = horus.Node(name="sensor", pubs="temperature")
+node.send("temperature", 25.5)
+```
+
+```rust
+// Rust subscriber (in another process)
+let hub = Hub::<f32>::new("temperature")?;
+if let Some(temp) = hub.recv(&mut None) {
+    println!("Temperature: {}", temp);
+}
+```
+
+### Structured Messages - Type-Safe Hubs for Cross-Language Communication
+
+**Important**: For cross-language communication with structured data, use typed Hubs. Pass a message type to the Hub constructor to enable automatic serialization that Rust can understand.
+
+#### Python ↔ Rust with Typed Hubs
+
+```python
+# Python publisher (pose_publisher.py)
+from horus import Hub, Pose2D
+
+# Create typed hub - pass message type to constructor
+hub = Hub(Pose2D)
+
+while True:
+    # Create and send Pose2D message
+    pose = Pose2D(x=1.0, y=2.0, theta=0.5)
+    hub.send(pose)
+    time.sleep(0.1)
+```
+
+```rust
+// Rust subscriber (in another process)
+use horus::prelude::*;
+use horus::prelude::*; // Provides geometry::Pose2D;
+
+let hub = Hub::<Pose2D>::new("pose2d")?;
+if let Some(pose) = hub.recv(&mut None) {
+    println!("Received: x={}, y={}, theta={}", pose.x, pose.y, pose.theta);
+}
+```
+
+#### Supported Message Types
+
+Pass these types to `Hub()` for cross-language communication:
+
+| Message Type | Description | Use Case |
+|-------------|-------------|----------|
+| `Pose2D` | 2D position (x, y, theta) | Robot localization |
+| `CmdVel` | Velocity command (linear, angular) | Motion control |
+
+**Usage Pattern:**
+
+```python
+from horus import Hub, Pose2D, CmdVel
+
+# Create typed hubs - pass message type to constructor
+pose_hub = Hub(Pose2D)
+pose_hub.send(Pose2D(x=1.0, y=2.0, theta=0.5))
+
+cmd_hub = Hub(CmdVel)
+cmd_hub.send(CmdVel(linear=1.0, angular=0.5))
+```
+
+#### Generic Hubs (Python-Only or String Topics)
+
+For Python-to-Python communication or custom topics, pass a string:
+
+```python
+from horus import Hub
+
+# Generic Hub - pass topic name as string
+hub = Hub("my_topic")
+hub.send({"any": "python", "object": [1, 2, 3]})  # Dicts, lists, any Python type
+
+# Note: Generic hubs use JSON serialization for simple types
+```
+
+**When to use which:**
+- **Typed Hubs** (`Hub(CmdVel)`, `Hub(Pose2D)`) - When communicating with Rust nodes
+- **Generic Hub** (`Hub("topic")`) - For Python-only systems or custom data
+
+## Choosing a Language
+
+| Use Case | Recommended Language |
+|----------|---------------------|
+| **Control loops** | Rust (lowest latency) |
+| **AI/ML models** | Python (ecosystem) |
+| **Hardware drivers** | Rust |
+| **Data processing** | Python or Rust |
+| **Real-time systems** | Rust |
+| **Prototyping** | Python (fastest development) |
+
+## Mixed-Language Systems
+
+You can build systems with nodes in different languages:
+
+**Example: Robot with mixed languages**
+- **Motor controller** (Rust) - 1kHz control loop
+- **Vision processing** (Python) - PyTorch object detection
+- **Hardware driver** (Rust) - Sensor integration
+- **Monitor** (Rust) - Real-time visualization
+
+All communicate through HORUS shared memory with **sub-microsecond latency**.
+
+### Running Mixed-Language Systems
+
+The `horus run` command automatically handles compilation and execution of mixed-language systems:
+
+```bash
+# Mix Python and Rust nodes
+horus run sensor.py controller.rs visualizer.py
+
+# Mix Rust and Python
+horus run lidar_driver.rs planner.py motor_control.rs
+```
+
+**What happens:**
+1. **Rust files** (`.rs`) are automatically compiled with `cargo build` using HORUS dependencies
+2. **Python files** (`.py`) are executed directly with Python 3
+3. All processes communicate via shared memory at `/dev/shm/horus/`
+4. `horus run` manages the lifecycle (start, monitor, stop all together)
+
+**Note:** For Rust files, `horus run` creates a temporary Cargo project in `.horus/` with proper dependencies, builds it with `cargo build`, and executes the resulting binary.
+
+**Example - Complete Mixed System:**
+
+```python
+# sensor.py - Python sensor node
+import horus
+from horus import Hub, LaserScan
+
+# Create Hub once outside tick function
+hub = Hub("lidar")
+
+def tick(node):
+    scan = LaserScan()
+    scan.ranges = read_lidar()  # Your hardware driver
+    hub.send(scan)
+
+node = horus.Node(name="lidar_sensor", tick=tick, rate=10)
+horus.run(node)
+```
+
+```rust
+// planner.rs - Rust planning node
+use horus::prelude::*;
+use horus::prelude::*; // Provides {sensor::LaserScan, cmd_vel::CmdVel};
+
+fn main() -> Result<()> {
+    let scan_hub = Hub::<LaserScan>::new("lidar")?;
+    let cmd_hub = Hub::<CmdVel>::new("cmd_vel")?;
+
+    loop {
+        if let Some(scan) = scan_hub.recv(&mut None) {
+            let cmd = plan_path(&scan);  // Your planning logic
+            cmd_hub.send(cmd, &mut None).ok();
+        }
+    }
+}
+```
+
+```bash
+# Run both together
+horus run sensor.py planner.rs
+
+# Both processes communicate via shared memory
+```
+
+**Benefits:**
+- **No manual compilation** - `horus run` handles it
+- **Automatic dependency management** - HORUS libraries linked correctly
+- **Process isolation** - One crash doesn't kill the whole system
+- **True parallelism** - Each process can use separate CPU cores
+- **Hot reload** - Change a file, stop/restart just that node
+
+## Next Steps
+
+**Choose your language:**
+- [Python Bindings](/python/api/python-bindings) - Full guide with examples
+- [Quick Start](/getting-started/quick-start) - Get started with Rust
+
+**Build something:**
+- [Examples](/rust/examples/basic-examples) - See multi-language systems in action
+- [CLI Reference](/development/cli-reference) - `horus new` command options

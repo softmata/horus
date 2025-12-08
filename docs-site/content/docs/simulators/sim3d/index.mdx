@@ -1,0 +1,89 @@
+---
+title: "Sim3D - 3D Robotics Simulator"
+description: "High-fidelity 3D physics simulation for robotics development, testing, and reinforcement learning"
+---
+
+# Sim3D - 3D Robotics Simulator
+
+Sim3D is HORUS's high-fidelity 3D robotics simulator built on Bevy and Rapier3D physics. It provides realistic physics simulation, sensor emulation, and reinforcement learning environments for developing and testing robotic systems.
+
+## Key Features
+
+- **Physics Engine**: Rapier3D rigid and soft body dynamics
+- **GPU Acceleration**: Optional GPU-accelerated physics and rendering
+- **Sensor Suite**: 16+ sensor types (cameras, LiDAR, IMU, force/torque, etc.)
+- **Robot Formats**: URDF, MJCF, SDF, USD support
+- **RL Integration**: 6 built-in tasks with curriculum learning
+- **Recording**: Trajectory and video recording/export
+- **Editor**: Full scene editor with undo/redo
+
+## Quick Start
+
+```bash
+# Run sim3d with a URDF robot
+horus sim3d --robot models/robot.urdf --world configs/scene.yaml
+
+# Headless mode for training
+horus sim3d --headless --robot models/robot.urdf
+```
+
+## Architecture
+
+```
+sim3d/
+├── sensors/       # Camera, LiDAR, IMU, force sensors
+├── physics/       # Rigid body, soft body, GPU physics
+├── rl/            # Reinforcement learning tasks
+├── rendering/     # Materials, lighting, post-processing
+├── robot/         # Robot loading and articulation
+├── scene/         # Scene management and spawning
+├── recording/     # Trajectory and video recording
+├── editor/        # Scene editing tools
+└── horus_bridge/  # HORUS topic integration
+```
+
+## HORUS Integration
+
+Sim3D automatically creates HORUS topics for robot control and sensor data:
+
+| Topic | Type | Direction | Description |
+|-------|------|-----------|-------------|
+| `{robot}.cmd_vel` | Twist | Subscribe | Velocity commands |
+| `{robot}.odom` | Odometry | Publish | Robot odometry |
+| `{robot}.scan` | LaserScan | Publish | LiDAR scan |
+| `{robot}.hf` | HFrameStamped | Publish | HFrame tree (transforms) |
+| `{robot}.pointcloud` | PointCloud2 | Publish | 3D point cloud |
+| `{robot}.joint_states` | JointState | Publish | Joint positions/velocities |
+
+## Documentation Sections
+
+- [Getting Started](/simulators/sim3d/getting-started/quick-start) - Installation and first simulation
+- [Sensors](/simulators/sim3d/sensors/overview) - Camera, LiDAR, IMU, and more
+- [Physics](/simulators/sim3d/physics/overview) - Rigid body, soft body, and GPU physics
+- [Reinforcement Learning](/simulators/sim3d/rl/overview) - RL tasks and training
+
+## System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| CPU | 4 cores | 8+ cores |
+| RAM | 8 GB | 16+ GB |
+| GPU | OpenGL 3.3 | Vulkan/CUDA capable |
+| Storage | 2 GB | 10+ GB (with assets) |
+
+## Feature Flags
+
+Enable optional features in your `Cargo.toml`:
+
+```toml
+[dependencies]
+sim3d = { version = "0.1.6", features = ["python", "editor"] }
+```
+
+| Feature | Description |
+|---------|-------------|
+| `visual` | Full 3D rendering (default) |
+| `headless` | No rendering, for training |
+| `editor` | Scene editor UI |
+| `python` | Python bindings for RL training |
+| `full` | All features combined |

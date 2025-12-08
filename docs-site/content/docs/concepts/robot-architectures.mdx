@@ -1,0 +1,650 @@
+---
+title: Robot Architectures
+description: Visual guides for composing built-in nodes into complete robot systems
+order: 15
+---
+
+# Robot Architectures
+
+This guide shows how to compose **built-in nodes** into complete robot systems. Each architecture includes visual diagrams, topic connections, and ready-to-run code.
+
+> **Philosophy**: HORUS built-in nodes are designed to work together. Connect them via topics to build complex systems without writing custom code.
+
+---
+
+## Architecture Patterns
+
+### The Pipeline Pattern
+
+The fundamental pattern in robotics: data flows from sensors through processing to actuators.
+
+```
+┌──────────┐    topic     ┌──────────┐    topic     ┌──────────┐    topic     ┌──────────┐
+│  Sensor  │ ───────────► │  Filter  │ ───────────► │ Control  │ ───────────► │ Actuator │
+│  (P: 0)  │              │  (P: 1)  │              │  (P: 2)  │              │  (P: 3)  │
+└──────────┘              └──────────┘              └──────────┘              └──────────┘
+```
+
+**Key principle**: Lower priority numbers run first. Sensors (P:0) publish data before controllers (P:2) process it.
+
+---
+
+## 1. Mobile Robot Base (Differential Drive)
+
+The most common robot configuration: two-wheeled differential drive with joystick control.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         Mobile Robot Base System                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────┐
+│  JoystickNode     │
+│  (Priority 0)     │
+│                   │
+│  - Reads gamepad  │
+│  - Arrow keys     │
+└─────────┬─────────┘
+          │
+          │ publishes: "joystick.input"
+          │ message: JoystickInput { axes, buttons }
+          ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "joystick.input"           │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes: "joystick.input"
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DifferentialDriveNode (Priority 1)                                             │
+│                                                                                  │
+│  - Converts joystick input to wheel velocities                                   │
+│  - Differential drive kinematics: left = linear - angular, right = linear + ang │
+│  - Configurable wheel separation and max speed                                   │
+└─────────────────────┬───────────────────────────────┬───────────────────────────┘
+                      │                               │
+                      │ publishes: "motor.left"       │ publishes: "motor.right"
+                      │ message: f32 (speed)          │ message: f32 (speed)
+                      ▼                               ▼
+┌─────────────────────────────────┐   ┌─────────────────────────────────┐
+│      Shared Memory (IPC)        │   │       Shared Memory (IPC)       │
+│      Topic: "motor.left"        │   │       Topic: "motor.right"      │
+└─────────────────┬───────────────┘   └─────────────────┬───────────────┘
+                  │                                     │
+                  │ subscribes                          │ subscribes
+                  ▼                                     ▼
+┌─────────────────────────────────┐   ┌─────────────────────────────────┐
+│  DcMotorNode (Left)             │   │  DcMotorNode (Right)            │
+│  (Priority 2)                   │   │  (Priority 2)                   │
+│                                 │   │                                 │
+│  - GPIO PWM output              │   │  - GPIO PWM output              │
+│  - H-bridge control             │   │  - H-bridge control             │
+│  - Pin 12, 13                   │   │  - Pin 18, 19                   │
+└─────────────────────────────────┘   └─────────────────────────────────┘
+```
+
+### Topic Connections
+
+| From Node | Topic | Message Type | To Node |
+|-----------|-------|--------------|---------|
+| JoystickNode | `joystick.input` | JoystickInput | DifferentialDriveNode |
+| DifferentialDriveNode | `motor.left` | f32 | DcMotorNode (left) |
+| DifferentialDriveNode | `motor.right` | f32 | DcMotorNode (right) |
+
+### Code (20 lines)
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Input: Joystick (Priority 0 - runs first)
+    let joystick = JoystickNode::new()?;
+    scheduler.add(Box::new(joystick), 0, Some(true));
+
+    // Control: Differential drive (Priority 1)
+    let diff_drive = DifferentialDriveNode::new(
+        "joystick.input",   // Input topic
+        "motor.left",       // Left motor output
+        "motor.right",      // Right motor output
+        0.3                 // Wheel separation (meters)
+    )?;
+    scheduler.add(Box::new(diff_drive), 1, Some(true));
+
+    // Actuators: DC Motors (Priority 2 - run last)
+    let mut left_motor = DcMotorNode::new()?;
+    left_motor.configure_gpio(12, 13);  // PWM, DIR pins
+    left_motor.set_input_topic("motor.left");
+    scheduler.add(Box::new(left_motor), 2, Some(true));
+
+    let mut right_motor = DcMotorNode::new()?;
+    right_motor.configure_gpio(18, 19);
+    right_motor.set_input_topic("motor.right");
+    scheduler.add(Box::new(right_motor), 2, Some(true));
+
+    scheduler.run()
+}
+```
+
+---
+
+## 2. Autonomous Mobile Robot (with Obstacle Avoidance)
+
+A self-driving robot that uses LiDAR to detect obstacles and navigate safely.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    Autonomous Mobile Robot System                                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────┐
+│  EmergencyStopNode│  ◄── SAFETY LAYER (Priority 0)
+│  (Priority 0)     │      - Always runs first
+│                   │      - Can override all commands
+│  - E-stop button  │      - Monitors: "cmd_vel"
+│  - Watchdog timer │
+└───────────────────┘
+
+┌───────────────────┐
+│  LidarNode        │
+│  (Priority 1)     │
+│                   │
+│  - 360° scan      │
+│  - 10Hz update    │
+│  - /dev/ttyUSB0   │
+└─────────┬─────────┘
+          │
+          │ publishes: "lidar.scan"
+          │ message: LaserScan { ranges[360], angle_min, angle_max }
+          ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "lidar.scan"               │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes: "lidar.scan"
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  CollisionDetectorNode (Priority 2)                                             │
+│                                                                                  │
+│  - Scans for obstacles in front arc (±45°)                                      │
+│  - Configurable safety distance (0.5m default)                                   │
+│  - Outputs obstacle locations                                                    │
+└─────────────────────┬───────────────────────────────────────────────────────────┘
+                      │
+                      │ publishes: "obstacles"
+                      │ message: Obstacles { count, nearest_distance, nearest_angle }
+                      ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "obstacles"                │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes: "obstacles"
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  PathPlannerNode (Priority 3)                                                   │
+│                                                                                  │
+│  - Local path planning (VFH, DWA algorithms)                                     │
+│  - Avoids obstacles while moving toward goal                                     │
+│  - Outputs velocity commands                                                     │
+└─────────────────────┬───────────────────────────────────────────────────────────┘
+                      │
+                      │ publishes: "cmd_vel"
+                      │ message: CmdVel { linear, angular }
+                      ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "cmd_vel"                  │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes: "cmd_vel"
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DifferentialDriveNode (Priority 4)                                             │
+│                                                                                  │
+│  - Converts CmdVel to wheel speeds                                               │
+│  - Differential drive kinematics                                                 │
+└─────────────────────┬───────────────────────────────────────────────────────────┘
+                      │
+                      │ publishes: "motor.left", "motor.right"
+                      ▼
+              ┌───────┴───────┐
+              ▼               ▼
+┌─────────────────┐   ┌─────────────────┐
+│  BldcMotorNode  │   │  BldcMotorNode  │
+│  (Left, P: 5)   │   │  (Right, P: 5)  │
+└─────────────────┘   └─────────────────┘
+```
+
+### Topic Connections
+
+| From Node | Topic | Message Type | To Node |
+|-----------|-------|--------------|---------|
+| LidarNode | `lidar.scan` | LaserScan | CollisionDetectorNode |
+| CollisionDetectorNode | `obstacles` | Obstacles | PathPlannerNode |
+| PathPlannerNode | `cmd_vel` | CmdVel | DifferentialDriveNode, EmergencyStopNode |
+| DifferentialDriveNode | `motor.left` | f32 | BldcMotorNode (left) |
+| DifferentialDriveNode | `motor.right` | f32 | BldcMotorNode (right) |
+
+### Code (35 lines)
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // SAFETY LAYER (Priority 0) - Always runs first!
+    let estop = EmergencyStopNode::new("cmd_vel")?;
+    scheduler.add(Box::new(estop), 0, Some(true));
+
+    // SENSOR LAYER (Priority 1)
+    let mut lidar = LidarNode::new()?;
+    lidar.configure_serial("/dev/ttyUSB0", 115200);
+    scheduler.add(Box::new(lidar), 1, Some(true));
+
+    // PERCEPTION LAYER (Priority 2)
+    let mut detector = CollisionDetectorNode::new()?;
+    detector.set_input_topic("lidar.scan");
+    detector.set_output_topic("obstacles");
+    detector.set_safety_distance(0.5);  // 50cm
+    scheduler.add(Box::new(detector), 2, Some(true));
+
+    // PLANNING LAYER (Priority 3)
+    let mut planner = PathPlannerNode::new()?;
+    planner.set_obstacle_topic("obstacles");
+    planner.set_output_topic("cmd_vel");
+    scheduler.add(Box::new(planner), 3, Some(true));
+
+    // CONTROL LAYER (Priority 4)
+    let diff_drive = DifferentialDriveNode::new(
+        "cmd_vel", "motor.left", "motor.right", 0.3
+    )?;
+    scheduler.add(Box::new(diff_drive), 4, Some(true));
+
+    // ACTUATOR LAYER (Priority 5)
+    let mut left_motor = BldcMotorNode::new()?;
+    left_motor.configure_gpio(12, EscProtocol::DShot600);
+    left_motor.set_input_topic("motor.left");
+    scheduler.add(Box::new(left_motor), 5, Some(true));
+
+    let mut right_motor = BldcMotorNode::new()?;
+    right_motor.configure_gpio(13, EscProtocol::DShot600);
+    right_motor.set_input_topic("motor.right");
+    scheduler.add(Box::new(right_motor), 5, Some(true));
+
+    scheduler.run()
+}
+```
+
+---
+
+## 3. Sensor Fusion System (LiDAR + IMU + Odometry)
+
+Combine multiple sensors for accurate robot localization.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        Sensor Fusion System                                      │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+    SENSORS (Priority 1 - all run in parallel)
+    ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+    │  LidarNode        │  │  ImuNode          │  │  OdometryNode     │
+    │                   │  │                   │  │                   │
+    │  - 2D scan data   │  │  - Acceleration   │  │  - Wheel encoders │
+    │  - 10Hz           │  │  - Angular rate   │  │  - 50Hz           │
+    │                   │  │  - 100Hz          │  │                   │
+    └─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
+              │                      │                      │
+              │ "lidar.scan"         │ "imu.data"           │ "odom.twist"
+              ▼                      ▼                      ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                   Shared Memory (IPC)                           │
+    │  Topics: "lidar.scan", "imu.data", "odom.twist"                 │
+    └───────────────────────────────┬─────────────────────────────────┘
+                                    │
+                                    │ subscribes all three
+                                    ▼
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │  LocalizationNode (Priority 2)                                              │
+    │                                                                              │
+    │  - Extended Kalman Filter (EKF)                                              │
+    │  - Fuses LiDAR landmarks + IMU motion + Odometry                             │
+    │  - Outputs robot pose estimate                                               │
+    │                                                                              │
+    │  State: [x, y, theta, vx, vy, omega]                                         │
+    │  Update rate: 100Hz (IMU rate)                                               │
+    └─────────────────────────────────┬───────────────────────────────────────────┘
+                                      │
+                                      │ publishes: "robot.pose"
+                                      │ message: Pose2D { x, y, theta, covariance }
+                                      ▼
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                   Shared Memory (IPC)                           │
+    │                   Topic: "robot.pose"                           │
+    └─────────────────────────────────┬───────────────────────────────┘
+                                      │
+                          ┌───────────┴───────────┐
+                          ▼                       ▼
+    ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
+    │  PathPlannerNode (P: 3)         │  │  Monitor / Logger             │
+    │  - Uses pose for planning       │  │  - Visualization                │
+    └─────────────────────────────────┘  └─────────────────────────────────┘
+```
+
+### Topic Connections
+
+| From Node | Topic | Message Type | To Node |
+|-----------|-------|--------------|---------|
+| LidarNode | `lidar.scan` | LaserScan | LocalizationNode |
+| ImuNode | `imu.data` | ImuData | LocalizationNode |
+| OdometryNode | `odom.twist` | Twist | LocalizationNode |
+| LocalizationNode | `robot.pose` | Pose2D | PathPlannerNode, Monitor |
+
+### Code (25 lines)
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // SENSORS (Priority 1 - parallel execution)
+    let mut lidar = LidarNode::new()?;
+    lidar.set_output_topic("lidar.scan");
+    scheduler.add(Box::new(lidar), 1, Some(true));
+
+    let mut imu = ImuNode::new()?;
+    imu.configure_i2c("/dev/i2c-1", 0x68);  // MPU6050
+    imu.set_output_topic("imu.data");
+    scheduler.add(Box::new(imu), 1, Some(true));
+
+    let mut odom = OdometryNode::new()?;
+    odom.configure_encoders(17, 18, 27, 22);  // Left A/B, Right A/B
+    odom.set_output_topic("odom.twist");
+    scheduler.add(Box::new(odom), 1, Some(true));
+
+    // FUSION (Priority 2)
+    let mut localization = LocalizationNode::new()?;
+    localization.subscribe_topics(&["lidar.scan", "imu.data", "odom.twist"]);
+    localization.set_output_topic("robot.pose");
+    scheduler.add(Box::new(localization), 2, Some(true));
+
+    scheduler.run()
+}
+```
+
+---
+
+## 4. Vision-Based Robot (Camera + AI Detection)
+
+A robot that uses computer vision for object detection and tracking.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      Vision-Based Robot System                                   │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────┐
+│  CameraNode       │
+│  (Priority 1)     │
+│                   │
+│  - USB/CSI camera │
+│  - 30 FPS         │
+│  - 640x480 RGB    │
+└─────────┬─────────┘
+          │
+          │ publishes: "camera.image"
+          │ message: Image { width, height, data, encoding }
+          ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "camera.image"             │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes: "camera.image"
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  YOLOv8DetectorNode (Priority 2)                                                │
+│                                                                                  │
+│  - Real-time object detection                                                    │
+│  - 80 COCO classes (person, car, bottle, etc.)                                   │
+│  - GPU acceleration (CUDA/TensorRT)                                              │
+│  - ~30ms inference time                                                          │
+└─────────────────────┬───────────────────────────────────────────────────────────┘
+                      │
+                      │ publishes: "detections"
+                      │ message: Detections { objects: [{ class, confidence, bbox }] }
+                      ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "detections"               │
+└─────────────────────┬─────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+          ▼                       ▼
+┌─────────────────────────────────┐  ┌─────────────────────────────────┐
+│  ObjectTrackerNode (P: 3)       │  │  SafetyMonitorNode (P: 3)       │
+│                                 │  │                                 │
+│  - Tracks objects over time     │  │  - Detects "person" class       │
+│  - Assigns unique IDs           │  │  - Triggers slow/stop if close  │
+│  - Predicts future positions    │  │                                 │
+└─────────────────────────────────┘  └─────────────────────────────────┘
+          │                                       │
+          │ "tracked_objects"                     │ monitors: "cmd_vel"
+          ▼                                       │
+┌─────────────────────────────────┐              │
+│  FollowBehaviorNode (P: 4)      │              │
+│                                 │              │
+│  - Follows specific object      │              │
+│  - Maintains safe distance      │              │
+└─────────────────┬───────────────┘              │
+                  │                               │
+                  │ publishes: "cmd_vel"          │
+                  ▼                               │
+┌─────────────────────────────────────────────────┘
+│  DifferentialDriveNode (P: 5) ──► Motors
+└─────────────────────────────────────────────────
+```
+
+### Topic Connections
+
+| From Node | Topic | Message Type | To Node |
+|-----------|-------|--------------|---------|
+| CameraNode | `camera.image` | Image | YOLOv8DetectorNode |
+| YOLOv8DetectorNode | `detections` | Detections | ObjectTrackerNode, SafetyMonitorNode |
+| ObjectTrackerNode | `tracked_objects` | TrackedObjects | FollowBehaviorNode |
+| FollowBehaviorNode | `cmd_vel` | CmdVel | DifferentialDriveNode |
+
+### Code (30 lines)
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // SAFETY (Priority 0)
+    let safety = SafetyMonitorNode::new()?;
+    scheduler.add(Box::new(safety), 0, Some(true));
+
+    // SENSOR (Priority 1)
+    let mut camera = CameraNode::new()?;
+    camera.configure_device("/dev/video0");
+    camera.set_resolution(640, 480);
+    camera.set_fps(30);
+    camera.set_output_topic("camera.image");
+    scheduler.add(Box::new(camera), 1, Some(true));
+
+    // PERCEPTION (Priority 2)
+    let mut detector = YOLOv8DetectorNode::new()?;
+    detector.load_model("yolov8n.onnx");  // Nano model for speed
+    detector.set_input_topic("camera.image");
+    detector.set_output_topic("detections");
+    detector.set_confidence_threshold(0.5);
+    scheduler.add(Box::new(detector), 2, Some(true));
+
+    // CONTROL (Priority 4)
+    let diff_drive = DifferentialDriveNode::new(
+        "cmd_vel", "motor.left", "motor.right", 0.3
+    )?;
+    scheduler.add(Box::new(diff_drive), 4, Some(true));
+
+    // ACTUATORS (Priority 5)
+    // ... motor nodes ...
+
+    scheduler.run()
+}
+```
+
+---
+
+## 5. Industrial Robot Arm (Multi-Joint Servo Control)
+
+A robot arm with multiple Dynamixel servos for precise manipulation.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                     Industrial Robot Arm System                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌───────────────────┐
+│  TrajectoryNode   │
+│  (Priority 1)     │
+│                   │
+│  - Generates      │
+│    smooth paths   │
+│  - Interpolation  │
+└─────────┬─────────┘
+          │
+          │ publishes: "arm.trajectory"
+          │ message: JointTrajectory { positions[6], velocities[6], time }
+          ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "arm.trajectory"           │
+└─────────────────────┬─────────────────────┘
+                      │
+                      │ subscribes
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  DynamixelNode (Priority 2)                                                     │
+│                                                                                  │
+│  - Controls 6 Dynamixel servos (XM430-W350)                                      │
+│  - Position, velocity, torque control modes                                       │
+│  - Reads joint feedback (position, velocity, current, temperature)                │
+│                                                                                  │
+│  Servo IDs: [1, 2, 3, 4, 5, 6] (base to gripper)                                 │
+│  Protocol: Dynamixel Protocol 2.0                                                │
+│  Baudrate: 1Mbps                                                                 │
+└─────────────────────┬───────────────────────────────────────────────────────────┘
+                      │
+                      │ publishes: "arm.joint_states"
+                      │ message: JointState { positions[6], velocities[6], efforts[6] }
+                      ▼
+┌───────────────────────────────────────────┐
+│         Shared Memory (IPC)               │
+│         Topic: "arm.joint_states"         │
+└─────────────────────┬─────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+┌─────────────────────────────────┐  ┌─────────────────────────────────┐
+│  ForwardKinematicsNode (P: 3)   │  │  CollisionCheckNode (P: 3)      │
+│                                 │  │                                 │
+│  - Calculates end-effector pose │  │  - Self-collision detection     │
+│  - DH parameters                │  │  - Workspace limits             │
+└─────────────────────────────────┘  └─────────────────────────────────┘
+          │
+          │ "arm.end_effector_pose"
+          ▼
+┌─────────────────────────────────┐
+│  GripperNode (Priority 4)       │
+│                                 │
+│  - Open/close gripper           │
+│  - Force feedback               │
+└─────────────────────────────────┘
+```
+
+### Topic Connections
+
+| From Node | Topic | Message Type | To Node |
+|-----------|-------|--------------|---------|
+| TrajectoryNode | `arm.trajectory` | JointTrajectory | DynamixelNode |
+| DynamixelNode | `arm.joint_states` | JointState | ForwardKinematicsNode, CollisionCheckNode |
+| ForwardKinematicsNode | `arm.end_effector_pose` | Pose3D | Application layer |
+
+---
+
+## Priority Assignment Guidelines
+
+### Standard Priority Layers
+
+| Priority | Layer | Purpose | Example Nodes |
+|----------|-------|---------|---------------|
+| 0 | **Safety** | Emergency stop, watchdogs | EmergencyStopNode, SafetyMonitorNode |
+| 1 | **Sensors** | Raw data acquisition | LidarNode, CameraNode, ImuNode |
+| 2 | **Perception** | Data processing, detection | YOLOv8DetectorNode, CollisionDetectorNode |
+| 3 | **Planning** | Decision making, path planning | PathPlannerNode, LocalizationNode |
+| 4 | **Control** | Velocity/force commands | DifferentialDriveNode, PidControllerNode |
+| 5 | **Actuators** | Hardware output | DcMotorNode, BldcMotorNode, ServoNode |
+| 6+ | **Logging** | Non-critical monitoring | DataLoggerNode, Monitor |
+
+### Why This Order?
+
+1. **Safety first**: Emergency stop can override everything
+2. **Sensors before perception**: Need fresh data to process
+3. **Perception before planning**: Need to know obstacles before planning
+4. **Planning before control**: Need path before generating velocities
+5. **Control before actuators**: Need commands before moving motors
+
+---
+
+## Default Topic Names (Built-in Nodes)
+
+For interoperability, built-in nodes use these default topics:
+
+| Category | Topic | Message Type | Used By |
+|----------|-------|--------------|---------|
+| **Input** | `joystick/input` | JoystickInput | JoystickNode |
+| **Input** | `keyboard/input` | KeyboardInput | KeyboardInputNode |
+| **Sensors** | `lidar.scan` | LaserScan | LidarNode |
+| **Sensors** | `camera.image` | Image | CameraNode |
+| **Sensors** | `imu.data` | ImuData | ImuNode |
+| **Sensors** | `gps/fix` | NavSatFix | GpsNode |
+| **Sensors** | `ultrasonic/range` | Range | UltrasonicNode |
+| **Perception** | `detections` | Detections | YOLOv8DetectorNode |
+| **Perception** | `obstacles` | Obstacles | CollisionDetectorNode |
+| **Localization** | `robot.pose` | Pose2D | LocalizationNode |
+| **Localization** | `odom.twist` | Twist | OdometryNode |
+| **Control** | `cmd_vel` | CmdVel | Most control nodes |
+| **Motors** | `motor.left` | f32 | DifferentialDriveNode |
+| **Motors** | `motor.right` | f32 | DifferentialDriveNode |
+
+---
+
+## Next Steps
+
+- **[Built-in Nodes Index](/rust/library/built-in-nodes)** - Complete list of 38 production-ready nodes
+- **[Using Pre-Built Nodes](/package-management/using-prebuilt-nodes)** - Installation and configuration
+- **[Basic Examples](/rust/examples/basic-examples)** - Runnable code examples
+- **[Hub Communication](/concepts/core-concepts-hub)** - How pub/sub works

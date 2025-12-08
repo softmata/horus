@@ -1,0 +1,378 @@
+---
+title: Python Message Library
+description: Standard robotics message types for Python
+order: 52
+---
+
+# Python Message Library (horus.library)
+
+The `horus.library` module provides typed message classes for robotics applications in Python. These messages are compatible with Rust and enable cross-language communication.
+
+## Overview
+
+```python
+# Option 1: Import everything (recommended)
+import horus
+
+# Option 2: Import specific types
+from horus import Pose2D, Twist, CmdVel, LaserScan, Transform, Point3, Vector3, Quaternion
+```
+
+**Key Features:**
+- **Cross-language compatible** - Binary-compatible with Rust message types
+- **Automatic timestamps** - All messages include microsecond-precision timestamps
+- **Validation methods** - Built-in checks for finite values, normalized quaternions, etc.
+- **Pickle support** - Can be serialized for Python-only communication
+- **NumPy integration** - LaserScan uses NumPy arrays for zero-copy efficiency
+
+---
+
+## Geometry Messages
+
+### Pose2D
+
+2D robot pose (position + orientation).
+
+```python
+from horus import Pose2D
+
+# Create pose
+pose = Pose2D(x=1.0, y=2.0, theta=0.5)
+
+# Static constructors
+origin = Pose2D.origin()  # Pose2D(0, 0, 0)
+
+# Properties (read/write)
+pose.x = 1.5
+pose.y = 2.5
+pose.theta = 0.785
+timestamp = pose.timestamp  # Microseconds since epoch (read-only)
+
+# Methods
+distance = pose.distance_to(other_pose)  # Euclidean distance
+pose.normalize_angle()  # Normalize theta to [-π, π]
+is_valid = pose.is_valid()  # Check if values are finite
+
+print(pose)  # Pose2D(x=1.500, y=2.500, theta=0.785)
+```
+
+**Fields:**
+- `x` (float): X position in meters
+- `y` (float): Y position in meters
+- `theta` (float): Orientation in radians
+- `timestamp` (int, read-only): Microsecond timestamp
+
+**Use with Hub:**
+```python
+from horus import Hub, Pose2D
+
+hub = Hub(Pose2D)  # Typed hub
+hub.send(Pose2D(x=1.0, y=2.0, theta=0.5))
+pose = hub.recv()  # Returns Pose2D or None
+```
+
+---
+
+### Twist
+
+3D velocity (linear + angular).
+
+```python
+from horus import Twist
+
+# Create 3D twist
+twist = Twist(
+    linear=[1.0, 0.0, 0.0],   # [x, y, z] in m/s
+    angular=[0.0, 0.0, 0.5]    # [roll, pitch, yaw] in rad/s
+)
+
+# Create 2D twist (common for ground robots)
+twist_2d = Twist.new_2d(linear_x=1.0, angular_z=0.5)
+
+# Stop command
+stop = Twist.stop()  # All zeros
+
+# Properties
+twist.linear = [1.5, 0.0, 0.0]
+twist.angular = [0.0, 0.0, 0.3]
+timestamp = twist.timestamp
+
+# Validation
+is_valid = twist.is_valid()  # Check finite values
+
+print(twist)  # Twist(linear=[1.50, 0.00, 0.00], angular=[0.00, 0.00, 0.30])
+```
+
+**Fields:**
+- `linear` (list[3]): Linear velocity [x, y, z] in m/s
+- `angular` (list[3]): Angular velocity [roll, pitch, yaw] in rad/s
+- `timestamp` (int, read-only): Microsecond timestamp
+
+---
+
+### Transform
+
+3D transformation (translation + rotation quaternion).
+
+```python
+from horus import Transform, Pose2D
+
+# Create transform
+tf = Transform(
+    translation=[1.0, 2.0, 0.0],  # [x, y, z]
+    rotation=[0.0, 0.0, 0.0, 1.0]  # Quaternion [x, y, z, w]
+)
+
+# Static constructors
+identity = Transform.identity()  # No translation or rotation
+from_pose = Transform.from_pose_2d(Pose2D(1.0, 2.0, 0.5))  # Convert from 2D pose
+
+# Properties
+tf.translation = [1.5, 2.5, 0.0]
+tf.rotation = [0.0, 0.0, 0.707, 0.707]  # 90° rotation around Z
+timestamp = tf.timestamp
+
+# Methods
+tf.normalize_rotation()  # Ensure quaternion is normalized
+is_valid = tf.is_valid()  # Check finite values and normalized quaternion
+
+print(tf)  # Transform(translation=[1.50, 2.50, 0.00], rotation=[...])
+```
+
+**Fields:**
+- `translation` (list[3]): Position [x, y, z] in meters
+- `rotation` (list[4]): Orientation quaternion [x, y, z, w]
+- `timestamp` (int, read-only): Microsecond timestamp
+
+---
+
+### Point3, Vector3, Quaternion
+
+Basic 3D geometric types.
+
+```python
+from horus import Point3, Vector3, Quaternion
+
+# Point3 - 3D position
+point = Point3(x=1.0, y=2.0, z=3.0)
+origin = Point3.origin()  # (0, 0, 0)
+dist = point.distance_to(other_point)
+
+# Vector3 - 3D vector with operations
+vec = Vector3(x=1.0, y=0.0, z=0.0)
+zero = Vector3.zero()  # (0, 0, 0)
+magnitude = vec.magnitude()
+vec.normalize()  # In-place normalization
+dot_product = vec.dot(other_vec)
+cross_product = vec.cross(other_vec)  # Returns new Vector3
+
+# Quaternion - 3D rotation
+quat = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+identity = Quaternion.identity()  # No rotation
+from_euler = Quaternion.from_euler(roll=0.0, pitch=0.0, yaw=1.57)  # From Euler angles
+quat.normalize()  # Ensure unit quaternion
+is_valid = quat.is_valid()
+```
+
+---
+
+## Control Messages
+
+### CmdVel
+
+2D velocity command (linear + angular).
+
+```python
+from horus import CmdVel
+
+# Create velocity command
+cmd = CmdVel(linear=1.0, angular=0.5)
+
+# Stop command
+stop = CmdVel.zero()  # CmdVel(0.0, 0.0)
+
+# Properties
+cmd.linear = 1.5   # m/s
+cmd.angular = 0.3  # rad/s
+timestamp = cmd.timestamp
+
+print(cmd)  # CmdVel(linear=1.50, angular=0.30)
+```
+
+**Fields:**
+- `linear` (float): Forward velocity in m/s
+- `angular` (float): Angular velocity in rad/s (positive = counter-clockwise)
+- `timestamp` (int, read-only): Microsecond timestamp
+
+**Use with Hub:**
+```python
+from horus import Hub, CmdVel
+
+hub = Hub(CmdVel)  # Typed hub
+hub.send(CmdVel(linear=1.0, angular=0.5))
+cmd = hub.recv()  # Returns CmdVel or None
+```
+
+---
+
+## Sensor Messages
+
+### LaserScan
+
+2D LIDAR scan data (360-point array).
+
+```python
+from horus import LaserScan
+import numpy as np
+
+# Create laser scan
+scan = LaserScan()
+
+# Set ranges (must be exactly 360 elements)
+scan.ranges = [1.0] * 360  # List or NumPy array
+scan.ranges = np.random.uniform(0.1, 10.0, 360)  # NumPy works too
+
+# Set scan parameters
+scan.angle_min = -3.14159       # Start angle (radians)
+scan.angle_max = 3.14159        # End angle (radians)
+scan.range_min = 0.1            # Minimum valid range (meters)
+scan.range_max = 10.0           # Maximum valid range (meters)
+scan.angle_increment = 0.01745  # Angular resolution (radians)
+
+# Access ranges as NumPy array (zero-copy)
+ranges_array = scan.ranges  # Returns np.ndarray
+scan.ranges[90] = 2.5  # Modify directly
+
+# Query methods
+angle = scan.angle_at(180)  # Get angle for specific index
+is_valid = scan.is_range_valid(180)  # Check if reading is valid
+valid_count = scan.valid_count()  # Count valid readings
+min_reading = scan.min_range()  # Minimum valid range (or None)
+
+# Length
+length = len(scan)  # Always 360
+
+print(scan)  # LaserScan(ranges=360, valid=342, min=0.15m)
+```
+
+**Fields:**
+- `ranges` (NumPy array[360]): Distance readings in meters
+- `angle_min` (float): Start angle in radians
+- `angle_max` (float): End angle in radians
+- `range_min` (float): Minimum valid range in meters
+- `range_max` (float): Maximum valid range in meters
+- `angle_increment` (float): Angular resolution in radians
+- `timestamp` (int, read-only): Microsecond timestamp
+
+**Use with Hub:**
+```python
+from horus import Hub, LaserScan
+
+hub = Hub("lidar")  # Generic hub for LaserScan
+
+# Send
+scan = LaserScan()
+scan.ranges = read_lidar_hardware()  # Your driver
+hub.send(scan)
+
+# Receive
+scan = hub.recv()  # Returns LaserScan or None
+if scan:
+    print(f"Got {scan.valid_count()} valid readings")
+```
+
+---
+
+## Cross-Language Compatibility
+
+All `horus.library` messages are **binary-compatible with Rust**:
+
+| Python Class | Rust Type |
+|--------------|-----------|
+| `Pose2D` | `horus_library::messages::geometry::Pose2D` |
+| `Twist` | `horus_library::messages::geometry::Twist` |
+| `Transform` | `horus_library::messages::geometry::Transform` |
+| `Point3` | `horus_library::messages::geometry::Point3` |
+| `Vector3` | `horus_library::messages::geometry::Vector3` |
+| `Quaternion` | `horus_library::messages::geometry::Quaternion` |
+| `CmdVel` | `horus_library::messages::cmd_vel::CmdVel` |
+| `LaserScan` | `horus_library::messages::sensor::LaserScan` |
+
+**Example - Python to Rust:**
+
+```python
+# Python sender
+from horus import Hub, CmdVel
+
+hub = Hub(CmdVel)  # Typed hub
+hub.send(CmdVel(linear=1.0, angular=0.5))
+```
+
+```rust
+// Rust receiver
+use horus::prelude::*;
+use horus::prelude::*; // Provides cmd_vel::CmdVel;
+
+let hub = Hub::<CmdVel>::new("cmd_vel")?;
+if let Some(cmd) = hub.recv(&mut None) {
+    println!("Received: linear={}, angular={}", cmd.linear, cmd.angular);
+}
+```
+
+---
+
+## Usage Patterns
+
+### Robot Controller with Multiple Sensors
+
+```python
+from horus import Node, run, Hub, CmdVel, LaserScan
+
+# Create hubs outside tick function
+scan_hub = Hub("lidar")
+cmd_hub = Hub(CmdVel)
+
+def controller_tick(node):
+    scan = scan_hub.recv()
+    if scan:
+        # Simple obstacle avoidance
+        min_dist = scan.min_range()
+        if min_dist and min_dist < 0.5:
+            # Too close - stop
+            cmd_hub.send(CmdVel.zero())
+        else:
+            # Safe - move forward
+            cmd_hub.send(CmdVel(linear=0.5, angular=0.0))
+
+node = Node(name="controller", tick=controller_tick, rate=10)
+run(node)
+```
+
+### Pose Tracking
+
+```python
+from horus import Hub, Pose2D
+
+# Track robot pose
+pose_hub = Hub(Pose2D)
+
+current_pose = Pose2D.origin()
+
+def update_pose(delta_x, delta_y, delta_theta):
+    global current_pose
+    current_pose.x += delta_x
+    current_pose.y += delta_y
+    current_pose.theta += delta_theta
+    current_pose.normalize_angle()
+
+    if current_pose.is_valid():
+        pose_hub.send(current_pose)
+```
+
+---
+
+## See Also
+
+- [Python Bindings](/python/api/python-bindings) - Full Python API guide
+- [Multi-Language Support](/concepts/multi-language) - Cross-language communication
+- [Message Types](/concepts/message-types) - Rust message type documentation

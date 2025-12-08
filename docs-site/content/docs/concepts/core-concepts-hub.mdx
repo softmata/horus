@@ -1,0 +1,779 @@
+---
+title: Core Concepts - Hub
+description: Understanding HORUS pub/sub communication system
+order: 6
+---
+
+# Hub and Pub/Sub
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- How Hub provides zero-copy, lock-free pub/sub communication with sub-microsecond latency (248ns-437ns)
+- The send() and recv() methods for publishing and subscribing to typed topics
+- Communication patterns (one-to-one, one-to-many, many-to-one, many-to-many) for different architectures
+- How shared memory in /dev/shm enables processes to communicate without serialization
+- When to use Hub for real-time, single-machine communication vs network-based messaging
+
+The Hub is HORUS's ultra-low latency publish-subscribe (pub/sub) communication system. It enables nodes to exchange messages through shared memory IPC with **248ns-437ns latency** (Link/Hub).
+
+## What is a Hub?
+
+A `Hub<T>` is a **typed communication channel** that connects publishers and subscribers through shared memory. Multiple nodes can publish to the same topic, and multiple nodes can subscribe to the same topic.
+
+### Key Features
+
+**Zero-Copy Communication**: Messages are written directly to shared memory without serialization
+
+**Lock-Free Operations**: Atomic operations for thread-safe communication without locks
+
+**Type Safety**: Compile-time guarantees for message types
+
+**Cache-Aligned**: Optimized memory layout prevents false sharing
+
+**Sub-Microsecond Latency**: 248ns (Link) / 437ns (Hub) for small messages (16B)
+
+**Linear Scaling**: Latency scales linearly with message size
+
+## Basic Usage
+
+### Creating a Hub
+
+```rust
+use horus::prelude::*;
+
+// Create a Hub for f32 values on topic "velocity"
+let hub: Hub<f32> = Hub::new("velocity")?;
+```
+
+The generic type `T` must implement:
+- `Clone`: For copying data
+- `Debug`: For logging
+- `Send`: For thread safety
+
+### Publishing Messages
+
+```rust
+use horus::prelude::*;
+
+struct Publisher {
+    velocity_pub: Hub<f32>,
+}
+
+impl Publisher {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            velocity_pub: Hub::new("velocity")?,
+        })
+    }
+}
+
+impl Node for Publisher {
+    fn name(&self) -> &'static str {
+        "Publisher"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let velocity = 1.5;
+
+        // Send message
+        match self.velocity_pub.send(velocity, &mut ctx) {
+            Ok(()) => {
+                // Message sent successfully
+            }
+            Err(msg) => {
+                // Failed to send, msg contains the original value
+            }
+        }
+    }
+}
+```
+
+### Subscribing to Messages
+
+```rust
+use horus::prelude::*;
+
+struct Subscriber {
+    velocity_sub: Hub<f32>,
+}
+
+impl Subscriber {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            velocity_sub: Hub::new("velocity")?,
+        })
+    }
+}
+
+impl Node for Subscriber {
+    fn name(&self) -> &'static str {
+        "Subscriber"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Receive message
+        if let Some(velocity) = self.velocity_sub.recv(&mut ctx) {
+            // Process the received message
+            if let Some(ref mut c) = ctx {
+                c.log_info(&format!("Received velocity: {}", velocity));
+            }
+        }
+    }
+}
+```
+
+## Transport Options
+
+Hub supports both local and network transports transparently:
+
+### Local Shared Memory (Default)
+
+```rust
+// Automatically uses local shared memory
+let hub: Hub<SensorData> = Hub::new("sensors")?;
+```
+
+**Performance**: 481ns latency
+**Use case**: All nodes on same machine
+**Pros**: Ultra-fast, deterministic, zero-copy
+
+### Network Communication
+
+```rust
+// Automatically uses network backend
+let hub: Hub<SensorData> = Hub::new("sensors@192.168.1.5")?;
+let hub: Hub<SensorData> = Hub::new("sensors@192.168.1.5:8000")?;  // Custom port
+```
+
+**Performance**: &lt;50µs latency
+**Use case**: Nodes distributed across multiple machines
+**Pros**: Multi-machine, fault isolation, scalable
+
+**Important**: The Hub pattern (MPMC pub/sub) works identically with both transports - only the endpoint syntax changes!
+
+See [Communication Transport](/concepts/communication-transport) for detailed comparison and [Network Communication](/concepts/network-communication) for multi-machine setup.
+
+## Hub Architecture
+
+### Memory Layout
+
+The Hub uses a **cache-aligned structure** to prevent false sharing:
+
+```rust
+#[repr(align(64))]
+pub struct Hub<T> {
+    shm_topic: Arc<ShmTopic<T>>,
+    network: Option<Mutex<NetworkBackend<T>>>,
+    is_network: bool,
+    topic_name: String,
+    state: AtomicU8,
+    metrics: Arc<AtomicHubMetrics>,
+    _padding: [u8; 14],
+}
+```
+
+**64-byte alignment**: Matches CPU cache line size for optimal performance
+
+**Atomic state**: Lock-free connection state tracking
+
+**Shared metrics**: Performance counters with atomic operations
+
+**Zero unsafe code**: Safe abstractions over shared memory
+
+### Shared Memory Topic
+
+Internally, Hub uses `ShmTopic<T>` for actual shared memory operations:
+
+```rust
+pub struct ShmTopic<T> {
+    topic_name: String,
+    domain_id: String,
+    _phantom: PhantomData<T>,
+}
+```
+
+Topics are stored in `/dev/shm` with naming convention:
+```
+/dev/shm/horus_{domain_id}_{topic_name}
+```
+
+## Send and Receive
+
+### The send() Method
+
+```rust
+pub fn send(&self, msg: T, ctx: &mut Option<&mut NodeInfo>) -> Result<(), T>
+```
+
+**Parameters**:
+- `msg`: Message to send (moved into the function)
+- `ctx`: Optional NodeInfo for logging
+
+**Returns**:
+- `Ok(())`: Message sent successfully
+- `Err(msg)`: Failed to send, returns the original message
+
+**How it works**:
+- Writes data directly to shared memory using zero-copy design
+- Measures IPC latency (248-437ns for small messages)
+- Automatically logs publish events when `ctx` is provided
+- Non-blocking operation - returns immediately
+
+### The recv() Method
+
+```rust
+pub fn recv(&self, ctx: &mut Option<&mut NodeInfo>) -> Option<T>
+```
+
+**Parameters**:
+- `ctx`: Optional NodeInfo for logging
+
+**Returns**:
+- `Some(msg)`: Message received
+- `None`: No message available
+
+**How it works**:
+- Reads directly from shared memory without serialization
+- Measures IPC latency (248-437ns for small messages)
+- Automatically logs subscribe events when `ctx` is provided
+- Non-blocking operation - returns immediately if no data available
+- Returns a clone of the message data
+
+## Connection States
+
+Hub tracks connection state through an atomic enum:
+
+```rust
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Failed,
+}
+```
+
+### Checking Connection State
+
+```rust
+pub fn get_connection_state(&self) -> ConnectionState {
+    // Returns current connection state
+}
+```
+
+### State Transitions
+
+```
+Disconnected  Connecting  Connected
+                               ->
+                          Reconnecting  Connected
+                               ->
+                            Failed
+```
+
+## Performance Metrics
+
+Hub tracks detailed performance metrics atomically:
+
+```rust
+pub struct AtomicHubMetrics {
+    pub messages_sent: AtomicU64,
+    pub messages_received: AtomicU64,
+    pub send_failures: AtomicU64,
+    pub recv_failures: AtomicU64,
+}
+
+pub struct HubMetrics {
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub send_failures: u64,
+    pub recv_failures: u64,
+    pub last_activity: Option<Instant>,
+}
+```
+
+### Accessing Metrics
+
+```rust
+let hub: Hub<f32> = Hub::new("velocity")?;
+
+// Send some messages (requires mutable ctx)
+let mut ctx: Option<&mut NodeInfo> = None;
+hub.send(1.0, &mut ctx).ok();
+hub.send(2.0, &mut ctx).ok();
+
+// Get metrics
+let metrics = hub.get_metrics();
+eprintln!("Total sent: {}", metrics.messages_sent);
+eprintln!("Send failures: {}", metrics.send_failures);
+```
+
+## Communication Patterns
+
+### One-to-One
+
+Single publisher, single subscriber:
+
+```rust
+// Publisher
+struct PubNode {
+    data_pub: Hub<f32>,
+}
+
+impl Node for PubNode {
+    fn name(&self) -> &'static str { "PubNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.data_pub.send(42.0, &mut ctx).ok();
+    }
+}
+
+// Subscriber
+struct SubNode {
+    data_sub: Hub<f32>,
+}
+
+impl Node for SubNode {
+    fn name(&self) -> &'static str { "SubNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_sub.recv(&mut ctx) {
+            ctx.log_info(&format!("Got: {}", data));
+        }
+    }
+}
+```
+
+### One-to-Many (Broadcast)
+
+Single publisher, multiple subscribers:
+
+```rust
+// One publisher
+struct Broadcaster {
+    broadcast_pub: Hub<String>,
+}
+
+// Multiple subscribers
+struct Listener1 {
+    broadcast_sub: Hub<String>,
+}
+
+struct Listener2 {
+    broadcast_sub: Hub<String>,
+}
+
+struct Listener3 {
+    broadcast_sub: Hub<String>,
+}
+
+// All subscribers receive the same message
+```
+
+### Many-to-One (Aggregation)
+
+Multiple publishers, single subscriber:
+
+```rust
+// Multiple publishers
+struct Sensor1 {
+    reading_pub: Hub<f32>,
+}
+
+struct Sensor2 {
+    reading_pub: Hub<f32>,
+}
+
+// Single aggregator
+struct Aggregator {
+    reading_sub: Hub<f32>,
+}
+
+impl Node for Aggregator {
+    fn name(&self) -> &'static str { "Aggregator" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Receives from any publisher on this topic
+        if let Some(reading) = self.reading_sub.recv(&mut ctx) {
+            self.process(reading);
+        }
+    }
+}
+```
+
+### Many-to-Many
+
+Multiple publishers and subscribers:
+
+```rust
+// All nodes can publish and subscribe to the same topic
+struct Agent1 {
+    state_pub: Hub<RobotState>,
+    state_sub: Hub<RobotState>,
+}
+
+struct Agent2 {
+    state_pub: Hub<RobotState>,
+    state_sub: Hub<RobotState>,
+}
+
+// Agents share state with each other
+```
+
+## Topic Naming
+
+### Use Dots, Not Slashes
+
+> **Important**: HORUS uses **dots (`.`)** for topic hierarchy, not slashes (`/`).
+
+```rust
+// CORRECT - Use dots
+let hub = Hub::new("sensors.lidar");
+let hub = Hub::new("robot.cmd_vel");
+
+// WRONG - Do NOT use slashes
+let hub = Hub::new("sensors.lidar");   // Will cause errors!
+let hub = Hub::new("robot.cmd_vel");   // Will cause errors!
+```
+
+**Why dots instead of slashes?**
+
+HORUS uses shared memory files in `/dev/shm` for ultra-low latency communication. Topic names become part of the file path:
+
+```
+Topic: "sensors.lidar"  →  /dev/shm/horus_default_sensors.lidar
+Topic: "sensors.lidar"  →  /dev/shm/horus_default_sensors/lidar  (ERROR!)
+```
+
+When you use a slash in the topic name, the system interprets it as a subdirectory path. Since that directory doesn't exist, you get a **"No such file or directory"** error.
+
+**Coming from ROS?**
+
+ROS uses slashes (`/sensor/lidar`) because it uses a network-based naming service (rosmaster) that treats topics as URIs. HORUS uses file-based shared memory for sub-microsecond latency, so topic names map directly to filenames where slashes have special meaning.
+
+| Framework | Topic Separator | Example | Reason |
+|-----------|----------------|---------|--------|
+| ROS/ROS2 | `/` | `/sensor/lidar` | Network URI-style naming |
+| HORUS | `.` | `sensor.lidar` | File-based shared memory |
+
+### Best Practices
+
+**Use descriptive names**:
+```rust
+let hub = Hub::new("cmd_vel");           // Good
+let hub = Hub::new("data");              // Too vague
+```
+
+**Follow conventions**:
+```rust
+let hub = Hub::new("sensor.lidar");      // Hierarchical
+let hub = Hub::new("robot1.cmd_vel");    // Namespaced
+let hub = Hub::new("diagnostics.cpu");   // Categorized
+```
+
+**Be consistent**:
+```rust
+// Pick one style and stick to it
+"cmd_vel"       // Snake case
+"cmdVel"        // Camel case
+"CmdVel"        // Pascal case
+```
+
+### Reserved Topic Names
+
+Avoid using these patterns:
+- Topics starting with `_` (internal use)
+- Topics containing `/` (causes file path errors)
+- Topics containing `/dev/` (conflicts with paths)
+- Topics with special characters: `!@#$%^&*()`
+
+## Error Handling
+
+### Send Errors
+
+```rust
+match hub.send(data, &mut ctx) {
+    Ok(()) => {
+        // Success
+    }
+    Err(original_data) => {
+        // Failed to send - shared memory full or not available
+        // original_data contains the message that couldn't be sent
+        ctx.log_warning("Failed to publish message");
+    }
+}
+```
+
+### Receive Errors
+
+`recv()` returns `None` when:
+- No message is available (not an error)
+- Topic doesn't exist yet
+- Shared memory not initialized
+
+```rust
+match hub.recv(&mut ctx) {
+    Some(data) => {
+        // Process data
+    }
+    None => {
+        // No data available - this is normal
+        // Don't treat this as an error
+    }
+}
+```
+
+## Type Constraints
+
+### Valid Message Types
+
+Messages must implement `Clone + Debug + Send`:
+
+```rust
+// Simple types work out of the box
+Hub::<f32>::new("float_topic");
+Hub::<bool>::new("bool_topic");
+Hub::<u32>::new("int_topic");
+
+// Structs need derives
+#[derive(Clone, Debug)]
+struct MyMessage {
+    x: f32,
+    y: f32,
+}
+
+Hub::<MyMessage>::new("my_topic");
+
+// Arrays work
+Hub::<[f32; 100]>::new("array_topic");
+
+// Strings work
+Hub::<String>::new("string_topic");
+```
+
+### Invalid Message Types
+
+```rust
+// Missing Clone
+struct NoClone {
+    data: f32,
+}
+// Hub::<NoClone>::new("topic"); // Won't compile
+
+// Missing Send
+struct NoSend {
+    ptr: *const u8,  // Raw pointers are !Send
+}
+// Hub::<NoSend>::new("topic"); // Won't compile
+```
+
+## Advanced Usage
+
+### Conditional Publishing
+
+Only publish when certain conditions are met:
+
+```rust
+impl Node for ConditionalPublisher {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let data = self.read_sensor();
+
+        // Only publish if above threshold
+        if data > self.threshold {
+            self.alert_pub.send(data, &mut ctx).ok();
+        }
+    }
+}
+```
+
+### Message Buffering
+
+Cache the last received message:
+
+```rust
+struct BufferedSubscriber {
+    data_sub: Hub<f32>,
+    last_value: Option<f32>,
+}
+
+impl Node for BufferedSubscriber {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update cached value if new message available
+        if let Some(value) = self.data_sub.recv(&mut ctx) {
+            self.last_value = Some(value);
+        }
+
+        // Always have access to last value
+        if let Some(value) = self.last_value {
+            self.process(value);
+        }
+    }
+}
+```
+
+### Rate Limiting
+
+Publish at a specific rate:
+
+```rust
+struct RateLimitedPublisher {
+    data_pub: Hub<f32>,
+    tick_count: u32,
+    publish_every_n_ticks: u32,
+}
+
+impl Node for RateLimitedPublisher {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.tick_count += 1;
+
+        // Publish every 10 ticks (~6 Hz at 60 FPS)
+        if self.tick_count % self.publish_every_n_ticks == 0 {
+            self.data_pub.send(42.0, &mut ctx).ok();
+        }
+    }
+}
+```
+
+### Message Filtering
+
+Filter messages before processing:
+
+```rust
+impl Node for FilteringSubscriber {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(data) = self.data_sub.recv(&mut ctx) {
+            // Only process valid data
+            if data.is_valid() && data.quality > 0.8 {
+                self.process(data);
+            }
+        }
+    }
+}
+```
+
+## Shared Memory Details
+
+### Location
+
+Hub stores data in `/dev/shm` (Linux shared memory):
+
+```bash
+# View HORUS shared memory segments
+ls -lh /dev/shm/horus_*
+```
+
+### Size Limitations
+
+Shared memory has finite space. Check available space:
+
+```bash
+df -h /dev/shm
+```
+
+Typical default: 50% of RAM or 32MB-2GB depending on system.
+
+### Cleaning Up
+
+Remove stale shared memory segments:
+
+```bash
+# Remove all HORUS shared memory
+rm -f /dev/shm/horus_*
+```
+
+HORUS automatically cleans up when nodes shut down gracefully (Ctrl+C).
+
+## Performance Characteristics
+
+### Latency by Message Size
+
+Based on benchmark data:
+
+| Message Type | Size | Latency |
+|--------------|------|---------|
+| CmdVel | 16B | 437ns |
+| IMU | 304B | 718ns |
+| LaserScan | 1.5KB | 1.31µs |
+| PointCloud | 120KB | 2.8µs |
+
+**Key Insight**: Latency scales linearly with message size.
+
+### Throughput
+
+HORUS can handle:
+- **Millions of messages per second** for small messages
+- **Gigabytes per second** for large messages
+- **Deterministic latency** regardless of system load
+
+### Performance Benchmarks
+
+HORUS achieves sub-microsecond latency across different message sizes:
+
+| Message Type | Size | HORUS Latency |
+|--------------|------|---------------|
+| CmdVel | 16B | 437ns |
+| IMU | 304B | 718ns |
+| LaserScan | 1.5KB | 1.31µs |
+| PointCloud | 120KB | 2.8µs |
+
+## Best Practices
+
+### Use Appropriate Types
+
+Choose the right message type for your data:
+
+```rust
+// Good: Fixed-size array for known dimensions
+Hub::<[f32; 3]>::new("position");
+
+// Bad: Vec requires heap allocation
+Hub::<Vec<f32>>::new("position");
+```
+
+### Minimize Cloning
+
+Hub clones messages internally. Keep messages small:
+
+```rust
+// Good: Small struct
+#[derive(Clone, Debug)]
+struct Pose {
+    x: f32,
+    y: f32,
+    theta: f32,
+}
+
+// Consider Arc for large data
+Hub::<Arc<LargeData>>::new("big_data");
+```
+
+### Check recv() Every Tick
+
+Always check for new messages:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Check EVERY tick
+    if let Some(msg) = self.sub.recv(&mut ctx) {
+        self.process(msg);
+    }
+}
+```
+
+### Handle Send Failures
+
+Don't ignore send errors:
+
+```rust
+if let Err(data) = self.pub.send(data, &mut ctx) {
+        ctx.log_warning("Publish failed");
+}
+```
+
+## Next Steps
+
+- Learn about the [Scheduler](/concepts/core-concepts-scheduler) for orchestrating nodes
+- Understand [Shared Memory](/concepts/core-concepts-shared-memory) internals
+- Explore [Message Types](/concepts/message-types) for standard robotics messages
+- Read the [API Reference](/rust/api) for complete Hub documentation

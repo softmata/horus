@@ -1,0 +1,419 @@
+---
+title: "Safety Monitor"
+description: "Real-time safety monitoring with watchdogs, WCET enforcement, and emergency stop"
+weight: 44
+---
+
+# Safety Monitor
+
+The Safety Monitor provides real-time safety monitoring for safety-critical robotics applications. It enforces timing constraints, monitors node health, and triggers emergency stops when safety violations occur.
+
+## Overview
+
+The Safety Monitor includes:
+- **Watchdogs**: Monitor node liveness
+- **WCET Enforcement**: Worst-Case Execution Time budgets
+- **Deadline Tracking**: Count and handle deadline misses
+- **Emergency Stop**: Immediate system halt on critical failures
+- **Safety States**: Normal, Degraded, Safe Mode, Emergency Stop
+
+## Safety States
+
+| State | Description | Behavior |
+|-------|-------------|----------|
+| **Normal** | All systems operating correctly | Full operation |
+| **Degraded** | Non-critical failures detected | Reduced functionality |
+| **SafeMode** | Significant issues detected | Minimal operation |
+| **EmergencyStop** | Critical failure | All motion stopped |
+
+```
+    [Normal] ──non-critical failure──> [Degraded]
+        │                                   │
+    critical                           critical
+    failure                            failure
+        ↓                                   ↓
+  [EmergencyStop] <───────────── [SafeMode]
+```
+
+## Basic Usage
+
+### Creating a Safety Monitor
+
+```rust
+use horus::prelude::*;
+use std::time::Duration;
+
+// Create with max 10 deadline misses allowed
+let mut monitor = SafetyMonitor::new(10);
+
+// Add critical nodes with watchdog timeouts
+monitor.add_critical_node(
+    "motor_controller".to_string(),
+    Duration::from_millis(100)  // 100ms watchdog timeout
+);
+
+// Set WCET budgets
+monitor.set_wcet_budget(
+    "motor_controller".to_string(),
+    Duration::from_micros(500)  // 500µs max execution time
+);
+```
+
+## Watchdogs
+
+Watchdogs monitor node liveness by requiring periodic "feeding":
+
+### Feeding Watchdogs
+
+```rust
+// During normal node execution
+fn tick_node(monitor: &SafetyMonitor) {
+    // Do node work...
+
+    // Feed the watchdog to signal node is alive
+    monitor.feed_watchdog("motor_controller");
+}
+```
+
+### Checking Watchdogs
+
+```rust
+// Check all watchdogs periodically
+let expired = monitor.check_watchdogs();
+
+if !expired.is_empty() {
+    for node in &expired {
+        log::warn!("Watchdog expired for node: {}", node);
+    }
+    // Note: Critical node watchdog expiration triggers emergency stop automatically
+}
+```
+
+### Watchdog Configuration
+
+```rust
+// Different timeouts for different node types
+monitor.add_critical_node(
+    "safety_controller".to_string(),
+    Duration::from_millis(10)   // Very tight timeout
+);
+
+monitor.add_critical_node(
+    "sensor_fusion".to_string(),
+    Duration::from_millis(100)  // More relaxed
+);
+```
+
+## WCET Enforcement
+
+Worst-Case Execution Time (WCET) budgets ensure nodes complete within time limits:
+
+### Setting Budgets
+
+```rust
+use std::time::Duration;
+
+// Set budgets for nodes
+monitor.set_wcet_budget(
+    "motor_controller".to_string(),
+    Duration::from_micros(500)
+);
+
+monitor.set_wcet_budget(
+    "sensor_read".to_string(),
+    Duration::from_micros(100)
+);
+```
+
+### Checking Execution Time
+
+```rust
+use std::time::Instant;
+
+let start = Instant::now();
+node.tick();
+let execution_time = start.elapsed();
+
+// Check against budget
+match monitor.check_wcet("motor_controller", execution_time) {
+    Ok(()) => {
+        // Within budget
+    }
+    Err(violation) => {
+        log::warn!(
+            "WCET violation: {} took {:?} (budget: {:?})",
+            violation.node_name,
+            violation.actual,
+            violation.budget
+        );
+        // Note: Critical node WCET violation triggers emergency stop
+    }
+}
+```
+
+### WCET Violation Details
+
+```rust
+pub struct WCETViolation {
+    pub node_name: String,
+    pub budget: Duration,
+    pub actual: Duration,
+    pub overrun: Duration,  // actual - budget
+}
+```
+
+## Deadline Monitoring
+
+Track deadline misses across the system:
+
+```rust
+// Record a deadline miss
+monitor.record_deadline_miss("slow_node");
+
+// Check statistics
+let stats = monitor.get_stats();
+println!("Total deadline misses: {}", stats.deadline_misses);
+
+// Note: Critical node deadline miss or exceeding max_deadline_misses
+// triggers emergency stop
+```
+
+## Emergency Stop
+
+Trigger immediate system halt:
+
+```rust
+// Manual emergency stop
+monitor.trigger_emergency_stop("Manual operator stop".to_string());
+
+// Check if emergency stop is active
+if monitor.is_emergency_stop() {
+    // Halt all motion
+    stop_all_motors();
+
+    // Log the event
+    log::error!("EMERGENCY STOP ACTIVE");
+}
+```
+
+### Automatic Triggers
+
+Emergency stop is automatically triggered by:
+- Critical node watchdog expiration
+- Critical node WCET violation
+- Critical node deadline miss
+- Exceeding `max_deadline_misses` threshold
+
+## Safety States Management
+
+### Entering Degraded Mode
+
+```rust
+// Enter degraded mode for non-critical issues
+monitor.enter_degraded_mode("Sensor calibration drift detected".to_string());
+
+// Check current state
+match monitor.get_state() {
+    SafetyState::Normal => { /* Full operation */ }
+    SafetyState::Degraded => { /* Reduce speed, disable features */ }
+    SafetyState::SafeMode => { /* Minimal operation */ }
+    SafetyState::EmergencyStop => { /* All motion stopped */ }
+}
+```
+
+### Entering Safe Mode
+
+```rust
+// Enter safe mode for significant issues
+monitor.enter_safe_mode();
+
+// In safe mode, only essential functions operate
+```
+
+## Statistics
+
+Get comprehensive safety statistics:
+
+```rust
+let stats = monitor.get_stats();
+
+println!("Safety State: {:?}", stats.state);
+println!("WCET Overruns: {}", stats.wcet_overruns);
+println!("Deadline Misses: {}", stats.deadline_misses);
+println!("Watchdog Expirations: {}", stats.watchdog_expirations);
+```
+
+## Integration with Scheduler
+
+The scheduler integrates with the safety monitor:
+
+```rust
+use horus::prelude::*;
+
+let config = SchedulerConfig {
+    safety_monitor_enabled: true,
+    max_deadline_misses: 10,
+    ..Default::default()
+};
+
+let mut scheduler = Scheduler::with_config(config);
+
+// Add critical nodes
+scheduler.add_critical_node("motor_controller", Duration::from_millis(100))?;
+scheduler.set_wcet_budget("motor_controller", Duration::from_micros(500))?;
+
+// Scheduler automatically:
+// - Feeds watchdogs on successful ticks
+// - Checks WCET after each tick
+// - Records deadline misses
+// - Triggers emergency stop on violations
+```
+
+## Complete Example
+
+```rust
+use horus::prelude::*;
+use std::time::{Duration, Instant};
+
+fn main() {
+    // Create safety monitor
+    let mut monitor = SafetyMonitor::new(10);
+
+    // Configure critical nodes
+    monitor.add_critical_node(
+        "motor_controller".to_string(),
+        Duration::from_millis(50)
+    );
+    monitor.set_wcet_budget(
+        "motor_controller".to_string(),
+        Duration::from_micros(200)
+    );
+
+    // Main loop
+    loop {
+        // Check for emergency stop
+        if monitor.is_emergency_stop() {
+            println!("EMERGENCY STOP - Halting all operations");
+            break;
+        }
+
+        // Execute node
+        let start = Instant::now();
+        // motor_controller.tick();
+        let duration = start.elapsed();
+
+        // Feed watchdog
+        monitor.feed_watchdog("motor_controller");
+
+        // Check WCET
+        if let Err(violation) = monitor.check_wcet("motor_controller", duration) {
+            println!("WCET violation: {:?}", violation);
+        }
+
+        // Periodic watchdog check
+        let expired = monitor.check_watchdogs();
+        if !expired.is_empty() {
+            println!("Expired watchdogs: {:?}", expired);
+        }
+
+        // Handle safety state
+        match monitor.get_state() {
+            SafetyState::Normal => {
+                // Full operation
+            }
+            SafetyState::Degraded => {
+                // Reduce speed
+                println!("Operating in degraded mode");
+            }
+            SafetyState::SafeMode => {
+                // Minimal operation
+                println!("Operating in safe mode");
+            }
+            SafetyState::EmergencyStop => {
+                break;
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Print final statistics
+    let stats = monitor.get_stats();
+    println!("\nFinal Statistics:");
+    println!("  State: {:?}", stats.state);
+    println!("  WCET Overruns: {}", stats.wcet_overruns);
+    println!("  Deadline Misses: {}", stats.deadline_misses);
+}
+```
+
+## Best Practices
+
+### 1. Set Conservative Budgets Initially
+
+```rust
+// Start with generous budgets
+monitor.set_wcet_budget(node, expected_time * 3);
+
+// Tighten after profiling
+let measured_wcet = profiler.get_stats(node)?.max_us;
+monitor.set_wcet_budget(node, Duration::from_micros(measured_wcet as u64 * 2));
+```
+
+### 2. Use Appropriate Watchdog Timeouts
+
+```rust
+// Watchdog timeout should be:
+// - Longer than expected execution time
+// - Shorter than safety-critical response time
+
+let expected_period = Duration::from_millis(10);
+let safety_deadline = Duration::from_millis(100);
+let watchdog_timeout = expected_period * 5;  // Allow some misses
+```
+
+### 3. Layer Safety Checks
+
+```rust
+// Don't rely on a single mechanism
+monitor.add_critical_node(node, watchdog_timeout);  // Liveness
+monitor.set_wcet_budget(node, wcet_budget);         // Timing
+scheduler.set_deadline(node, deadline);             // Deadlines
+```
+
+### 4. Log Safety Events
+
+```rust
+// Log all state changes
+if prev_state != monitor.get_state() {
+    log::warn!("Safety state changed: {:?} -> {:?}",
+        prev_state, monitor.get_state());
+}
+
+// Log all violations
+if let Err(v) = monitor.check_wcet(node, duration) {
+    log::error!("WCET violation: {} overran by {:?}",
+        v.node_name, v.overrun);
+}
+```
+
+### 5. Test Emergency Stop
+
+```rust
+#[test]
+fn test_emergency_stop() {
+    let mut monitor = SafetyMonitor::new(3);
+    monitor.add_critical_node("test".to_string(), Duration::from_millis(10));
+
+    // Trigger emergency stop
+    monitor.trigger_emergency_stop("Test".to_string());
+
+    assert!(monitor.is_emergency_stop());
+    assert_eq!(monitor.get_state(), SafetyState::EmergencyStop);
+}
+```
+
+## See Also
+
+- [BlackBox Flight Recorder](/advanced/blackbox) - Event logging
+- [Circuit Breaker](/advanced/circuit-breaker) - Fault tolerance
+- [Checkpoint System](/advanced/checkpoint) - State recovery

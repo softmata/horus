@@ -1,0 +1,375 @@
+---
+title: Communication Transport Overview
+description: Local vs Network transport mechanisms in HORUS
+order: 21
+---
+
+# Communication Transport Overview
+
+HORUS supports two transport mechanisms: **local shared memory** and **network communication**. Both Hub and Link work transparently with either transport.
+
+## Transport vs Pattern
+
+**Important distinction**:
+- **Pattern** (Hub vs Link): How nodes communicate (MPMC vs SPSC)
+- **Transport** (Local vs Network): Where nodes communicate (same machine vs distributed)
+
+You can use any pattern with any transport:
+
+| Pattern | Local Transport | Network Transport |
+|---------|----------------|-------------------|
+| **Hub (MPMC)** | `Hub::new("topic")` | `Hub::new("topic@192.168.1.5")` |
+| **Link (SPSC)** | `Link::producer("topic")` | `Link::producer("topic@192.168.1.5:9000")` |
+
+## Two Transport Mechanisms
+
+### Local: Shared Memory
+
+**What**: Linux shared memory (`/dev/shm`) for same-machine IPC
+**When**: All nodes running on the same computer
+**Latency**: Ultra-fast (248ns Link, 481ns Hub)
+
+```rust
+// Automatically uses shared memory
+let hub: Hub<SensorData> = Hub::new("sensors")?;
+let link: Link<ImuData> = Link::producer("imu")?;
+```
+
+**How it works**:
+- Memory region in RAM accessible by all processes
+- Zero-copy (no serialization)
+- Lock-free atomic operations
+- Cache-aligned for performance
+
+### Network: TCP/UDP
+
+**What**: Network sockets for multi-machine communication
+**When**: Nodes distributed across multiple computers
+**Latency**: Very fast (5-15µs Link, &lt;50µs Hub)
+
+```rust
+// Automatically uses network backend
+let hub: Hub<SensorData> = Hub::new("sensors@192.168.1.5")?;
+let link: Link<ImuData> = Link::producer("imu@192.168.1.5:9000")?;
+```
+
+**How it works**:
+- TCP (Link): Reliable, ordered, connection-oriented
+- UDP (Hub): Connectionless, efficient for pub/sub
+- Binary serialization (bincode)
+- Async I/O for low latency
+
+## Performance Comparison
+
+### Latency
+
+| Transport | Link (SPSC) | Hub (MPMC) | Use Case |
+|-----------|-------------|------------|----------|
+| **Local SHM** | 248ns | 481ns | Same machine, ultra-low latency |
+| **Network** | 5-15µs | &lt;50µs | Multi-machine, still very fast |
+| **Overhead** | ~20-60x | ~100x | Acceptable for distributed systems |
+
+### Throughput
+
+**Local Shared Memory**:
+- Link: 2.5M msgs/sec (small messages)
+- Hub: 1.5M msgs/sec (small messages)
+- Limited by memory bandwidth, not synchronization
+
+**Network**:
+- Link: 100K-500K msgs/sec (depending on message size)
+- Hub: 50K-200K msgs/sec (depending on message size)
+- Limited by network bandwidth and latency
+
+### Scalability
+
+| Aspect | Local | Network |
+|--------|-------|---------|
+| **Max Nodes** | ~100 processes | Limited by network topology |
+| **Max Throughput** | GB/sec | 100MB/sec (1Gbps LAN) |
+| **Latency Variance** | &lt;100ns jitter | 1-10ms jitter (WiFi) |
+| **Reliability** | 100% (same machine) | 99.9%+ (LAN), lower on WiFi |
+
+## When to Use Local Transport
+
+**Single-machine systems**
+```rust
+// Raspberry Pi robot with multiple processes
+let camera: Hub<Image> = Hub::new("camera")?;
+let motors: Link<MotorCmd> = Link::producer("motors")?;
+```
+
+**Development and testing**
+```rust
+// All nodes on your laptop
+horus run sensors.rs &
+horus run controller.rs &
+horus run motors.rs &
+```
+
+**Ultra-low latency requirements**
+```rust
+// 1kHz control loop (1ms period)
+// 248ns Link latency leaves plenty of headroom
+let state: Link<State> = Link::consumer("state")?;
+```
+
+**High-bandwidth data**
+```rust
+// Streaming 30 FPS camera at 1920x1080
+// ~60MB/sec throughput
+let camera: Hub<Image> = Hub::new("camera")?;
+```
+
+### Local Transport Benefits
+
+- **Fastest possible**: 248ns-481ns latency
+- **Zero-copy**: No serialization overhead
+- **Deterministic**: Predictable, no network jitter
+- **Simple**: No network configuration
+- **Reliable**: No packet loss or connection issues
+
+### Local Transport Limitations
+
+- **Same machine only**: All nodes must run on same computer
+- **Limited by RAM**: Shared memory uses system RAM
+- **No fault isolation**: If machine crashes, all nodes down
+
+## When to Use Network Transport
+
+**Multi-robot systems**
+```rust
+// Robot fleet coordination
+// Robot 1 (192.168.1.10)
+let position_pub: Hub<Position> = Hub::new("fleet.positions@router")?;
+
+// Robot 2 (192.168.1.20) subscribes
+let positions: Hub<Position> = Hub::new("fleet.positions@router")?;
+```
+
+**Edge computing clusters**
+```rust
+// Camera on edge device, processing on server
+// Edge device (192.168.1.50)
+let camera: Link<Image> = Link::producer("camera@192.168.1.100:9000")?;
+
+// Server (192.168.1.100) processes images
+let images: Link<Image> = Link::consumer("camera@0.0.0.0:9000")?;
+```
+
+**Distributed sensing**
+```rust
+// Multiple sensors across warehouse
+// Sensor nodes at different locations
+let sensor1: Hub<Temperature> = Hub::new("sensors@192.168.1.5")?;
+let sensor2: Hub<Temperature> = Hub::new("sensors@192.168.1.6")?;
+
+// Central aggregator
+let temps: Hub<Temperature> = Hub::new("sensors@router")?;
+```
+
+**Remote monitoring**
+```rust
+// Robot in field, monitoring monitor on laptop
+// Robot publishes status
+let status: Hub<RobotStatus> = Hub::new("status@192.168.1.100")?;
+
+// Monitor on laptop subscribes
+let monitor: Hub<RobotStatus> = Hub::new("status@0.0.0.0:8080")?;
+```
+
+### Network Transport Benefits
+
+- **Distributed systems**: Nodes across multiple machines
+- **Fault isolation**: One machine crash doesn't kill all nodes
+- **Scalability**: Add more machines for more compute
+- **Flexible topology**: Nodes can be anywhere on LAN
+- **Remote access**: Monitor/control from different machine
+
+### Network Transport Limitations
+
+- **Higher latency**: 5-50µs vs 248-481ns (20-100x slower)
+- **Network dependency**: Requires LAN/WiFi connectivity
+- **Less reliable**: Packet loss, connection drops possible
+- **Configuration**: Need to specify IP addresses/ports
+- **Bandwidth limited**: 1Gbps LAN vs multi-GB/sec shared memory
+
+## Hybrid Deployments
+
+You can mix local and network transport in the same system:
+
+```rust
+struct RobotSystem {
+    // Local: Critical control loop on same machine
+    imu: Link<ImuData>,           // 248ns latency
+    motors: Link<MotorCmd>,       // 248ns latency
+
+    // Network: Communication with other robots
+    fleet_position: Hub<Position>, // &lt;50µs latency (acceptable)
+    camera_stream: Hub<Image>,     // Network to processing server
+}
+
+// Critical loop stays local (fast)
+// Fleet coordination uses network (still fast enough)
+```
+
+### Example: Drone with Ground Station
+
+```rust
+// === ON DRONE (192.168.1.50) ===
+// Local: Flight control loop (ultra-fast)
+let imu_local: Link<ImuData> = Link::producer("imu")?;              // 248ns
+let motors_local: Link<MotorCmd> = Link::consumer("motors")?;      // 248ns
+
+// Network: Telemetry to ground station
+let telemetry: Hub<Telemetry> = Hub::new("telem@192.168.1.100")?;  // &lt;50µs
+
+// === ON GROUND STATION (192.168.1.100) ===
+// Network: Receive telemetry from drone
+let telem_sub: Hub<Telemetry> = Hub::new("telem@0.0.0.0:8000")?;
+
+// Network: Send commands to drone
+let cmd_pub: Hub<Command> = Hub::new("cmd@192.168.1.50")?;
+```
+
+## Automatic Transport Selection
+
+HORUS automatically selects transport based on endpoint syntax:
+
+```rust
+// Local (no '@' in topic name)
+Hub::new("sensors")?                          // → Shared memory
+
+// Network (contains '@')
+Hub::new("sensors@192.168.1.5")?              // → UDP to 192.168.1.5
+Hub::new("sensors@192.168.1.5:9000")?         // → UDP with custom port
+Link::producer("imu@192.168.1.5:9000")?       // → TCP to 192.168.1.5:9000
+Link::consumer("imu@0.0.0.0:9000")?           // → TCP listen on port 9000
+```
+
+**Design principle**: Same API, different transport. Your code doesn't change!
+
+## Performance Guidelines
+
+### Message Size Considerations
+
+**Local Shared Memory**:
+- Small messages (&lt;1KB): 248-481ns
+- Medium messages (1-10KB): 500ns-2µs
+- Large messages (100KB+): 5-20µs
+- Linear scaling with size
+
+**Network**:
+- Small messages (&lt;1KB): 5-50µs
+- Medium messages (1-10KB): 10-100µs
+- Large messages (100KB+): 1-10ms
+- Dominated by network latency, not size (for small messages)
+
+### Frequency Guidelines
+
+**Local Shared Memory**:
+- 10kHz (100us period): Plenty of headroom with 248ns latency
+- 1kHz (1ms period): Typical control loop rate
+- 100Hz (10ms period): Sensor fusion, planning
+- 30Hz (33ms period): Camera, visualization
+
+**Network**:
+- 1kHz (1ms period): Possible with Link (5-15us latency)
+- 100Hz (10ms period): Comfortable for most use cases
+- 30Hz (33ms period): Typical for camera streaming
+- 10kHz: Not recommended due to network overhead
+
+## Reliability Considerations
+
+### Local Shared Memory
+
+**Pros**:
+- No packet loss
+- No connection failures
+- Deterministic latency
+- No network jitter
+
+**Cons**:
+- All nodes must be on same machine
+- Shared fate (machine crash kills everything)
+
+### Network
+
+**Pros**:
+- Fault isolation (machine failures isolated)
+- Distributed across multiple machines
+- Flexible topology
+
+**Cons**:
+- Packet loss possible (especially WiFi)
+- Connection drops require reconnection
+- Latency variance (1-10ms jitter on WiFi)
+- Network outages affect communication
+
+### Reliability Best Practices
+
+**For critical systems**:
+- Use local shared memory for critical control loops
+- Use network for non-critical monitoring/coordination
+- Implement timeouts and heartbeats
+- Handle connection failures gracefully
+
+**Example**:
+```rust
+// Critical: Local (never fails)
+let motors: Link<MotorCmd> = Link::consumer("motors")?;
+
+// Non-critical: Network (can tolerate failures)
+let telemetry: Hub<Status> = Hub::new("status@gcs")?;
+if let Err(_) = telemetry.send(status, &mut ctx) {
+    // Telemetry failed, but motors still work
+    ctx.log_warning("Telemetry unavailable");
+}
+```
+
+## Configuration Management
+
+For production systems, use configuration files instead of hardcoding:
+
+```toml
+# horus.toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@192.168.1.100"  # Network
+
+[hubs.motors]
+name = "motors"
+endpoint = "motors"  # Local (no @)
+```
+
+```rust
+// Load from config
+let telemetry: Hub<Status> = Hub::from_config("telemetry")?;
+let motors: Link<MotorCmd> = Link::consumer_from_config("motors")?;
+```
+
+See [Communication Configuration](/concepts/communication-configuration) for details.
+
+## Summary
+
+### Local Shared Memory
+- **Latency**: 248ns (Link), 481ns (Hub)
+- **Use Case**: Same machine, ultra-low latency
+- **Pros**: Fastest, deterministic, simple
+- **Cons**: Same machine only, shared fate
+
+### Network
+- **Latency**: 5-15µs (Link), &lt;50µs (Hub)
+- **Use Case**: Multi-machine, distributed systems
+- **Pros**: Distributed, fault isolation, scalable
+- **Cons**: Higher latency, requires network
+
+**Choose based on topology, not just latency!**
+
+## Next Steps
+
+- [Local (Shared Memory)](/concepts/core-concepts-shared-memory) - Deep dive into shared memory
+- [Network Communication](/concepts/network-communication) - Multi-machine systems guide
+- [Communication Configuration](/concepts/communication-configuration) - Config files and endpoints
+- [Hub (MPMC)](/concepts/core-concepts-hub) - Hub pattern details
+- [Link (SPSC)](/concepts/core-concepts-link) - Link pattern details

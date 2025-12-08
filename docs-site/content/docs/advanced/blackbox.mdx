@@ -1,0 +1,278 @@
+---
+title: "BlackBox Flight Recorder"
+description: "Event recording and crash analysis for post-mortem debugging and incident investigation"
+weight: 30
+---
+
+# BlackBox Flight Recorder
+
+The BlackBox flight recorder provides continuous event logging in a circular buffer for post-mortem analysis. Like an aircraft flight recorder, it captures all significant events leading up to failures for debugging and incident investigation.
+
+## Overview
+
+The BlackBox system:
+- Records all significant scheduler and node events
+- Uses a circular buffer to limit memory usage
+- Supports write-ahead logging (WAL) for crash recovery
+- Generates detailed crash reports
+- Enables filtering by event type or time range
+
+## Enabling BlackBox
+
+```rust
+use horus::prelude::*;
+use std::path::PathBuf;
+
+// Create with 10MB buffer
+let mut blackbox = BlackBox::new(10);
+
+// Enable disk persistence with WAL
+let blackbox = BlackBox::new(10)
+    .with_persistence(PathBuf::from("/var/log/horus/blackbox.json"));
+```
+
+## Event Types
+
+The BlackBox records 12 event types covering all critical system operations:
+
+| Event | Description |
+|-------|-------------|
+| `SchedulerStart` | Scheduler initialization with config |
+| `SchedulerStop` | Scheduler shutdown with reason |
+| `NodeAdded` | New node registered |
+| `NodeTick` | Node execution completed (with duration) |
+| `NodeError` | Node execution failed |
+| `DeadlineMiss` | Node missed its deadline |
+| `WCETViolation` | Node exceeded WCET budget |
+| `CircuitBreakerChange` | Circuit breaker state transition |
+| `LearningComplete` | Profiling learning phase finished |
+| `JITCompilation` | JIT compilation attempted |
+| `EmergencyStop` | Emergency stop triggered |
+| `Custom` | User-defined events |
+
+## Recording Events
+
+```rust
+use horus::prelude::*;
+
+let mut blackbox = BlackBox::new(10);
+
+// Record scheduler start
+blackbox.record(BlackBoxEvent::SchedulerStart {
+    name: "main_scheduler".to_string(),
+    node_count: 15,
+    config: "default".to_string(),
+});
+
+// Advance tick counter (call each scheduler tick)
+blackbox.tick();
+
+// Record node execution
+blackbox.record(BlackBoxEvent::NodeTick {
+    name: "sensor_node".to_string(),
+    duration_us: 150,
+    success: true,
+});
+
+// Record errors
+blackbox.record(BlackBoxEvent::NodeError {
+    name: "motor_controller".to_string(),
+    error: "I2C timeout".to_string(),
+});
+
+// Record deadline misses
+blackbox.record(BlackBoxEvent::DeadlineMiss {
+    name: "critical_node".to_string(),
+    deadline_us: 1000,
+    actual_us: 1500,
+});
+
+// Record custom events
+blackbox.record(BlackBoxEvent::Custom {
+    category: "sensor".to_string(),
+    message: "IMU calibration started".to_string(),
+});
+```
+
+## Querying Events
+
+### Get All Events
+
+```rust
+let events = blackbox.get_events();
+println!("Total events: {}", events.len());
+```
+
+### Get Recent Events
+
+```rust
+// Get events from last 100 ticks
+let recent = blackbox.get_recent(100);
+```
+
+### Filter by Event Type
+
+```rust
+// Get all deadline misses
+let deadline_misses = blackbox.get_by_type("DeadlineMiss");
+
+// Get all errors
+let errors = blackbox.get_by_type("NodeError");
+
+// Get circuit breaker changes
+let cb_changes = blackbox.get_by_type("CircuitBreakerChange");
+```
+
+### Get Anomalies
+
+Get all error-related events (errors, deadline misses, WCET violations, emergency stops):
+
+```rust
+let anomalies = blackbox.get_anomalies();
+for record in anomalies {
+    println!("[tick {}] {:?}", record.tick, record.event);
+}
+```
+
+## Persistence
+
+### Write-Ahead Logging (WAL)
+
+The WAL file ensures events are persisted immediately for crash recovery:
+
+```rust
+let blackbox = BlackBox::new(10)
+    .with_persistence(PathBuf::from("/var/log/horus/blackbox.json"));
+
+// Events are automatically written to blackbox.wal as JSON lines
+// blackbox.json contains the full buffer on explicit save
+```
+
+### Save and Load
+
+```rust
+// Save current buffer to disk
+blackbox.save()?;
+
+// Load previous session's buffer
+blackbox.load()?;
+```
+
+## Crash Reports
+
+Generate a comprehensive crash report for incident analysis:
+
+```rust
+let report = blackbox.generate_crash_report();
+println!("{}", report);
+```
+
+Sample output:
+
+```
+=== HORUS BLACK BOX CRASH REPORT ===
+
+Total events: 1523
+Last tick: 45678
+
+=== ANOMALIES (12) ===
+[tick 45670] DeadlineMiss { name: "vision_node", deadline_us: 5000, actual_us: 7200 }
+[tick 45672] WCETViolation { name: "planner", budget_us: 1000, actual_us: 1850 }
+[tick 45675] CircuitBreakerChange { name: "motor_ctrl", new_state: "Open", failure_count: 5 }
+[tick 45678] EmergencyStop { reason: "Too many deadline misses: 10" }
+
+=== LAST 100 EVENTS ===
+[tick 45678] EmergencyStop { reason: "Too many deadline misses: 10" }
+[tick 45678] NodeTick { name: "safety_monitor", duration_us: 50, success: true }
+...
+```
+
+## Thread-Safe Usage
+
+For multi-threaded applications, use the shared blackbox wrapper:
+
+```rust
+use horus::prelude::*;
+use std::sync::Arc;
+
+// Create thread-safe blackbox
+let blackbox: SharedBlackBox = create_shared_blackbox(10);
+
+// Use from multiple threads
+let bb_clone = Arc::clone(&blackbox);
+std::thread::spawn(move || {
+    let mut bb = bb_clone.lock().unwrap();
+    bb.record(BlackBoxEvent::Custom {
+        category: "thread".to_string(),
+        message: "Worker started".to_string(),
+    });
+});
+```
+
+## Integration with Scheduler
+
+The scheduler automatically integrates with BlackBox:
+
+```rust
+use horus::prelude::*;
+
+let config = SchedulerConfig {
+    blackbox_size_mb: 10,  // Enable with 10MB buffer
+    blackbox_persist_path: Some("/var/log/horus/blackbox.json".into()),
+    ..Default::default()
+};
+
+let scheduler = Scheduler::with_config(config);
+// All scheduler events are automatically recorded
+```
+
+## Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_size_mb` | 0 (disabled) | Maximum buffer size in MB |
+| Buffer capacity | ~5000/MB | Estimated records per MB |
+| WAL flush | Immediate | Events flushed to WAL immediately |
+
+## Best Practices
+
+### 1. Enable in Production
+
+```rust
+// Production: Enable with persistence
+let blackbox = BlackBox::new(50)
+    .with_persistence(PathBuf::from("/var/log/horus/blackbox.json"));
+```
+
+### 2. Regular Saves
+
+```rust
+// Save periodically (e.g., every minute)
+if last_save.elapsed() > Duration::from_secs(60) {
+    blackbox.save()?;
+    last_save = Instant::now();
+}
+```
+
+### 3. Size Appropriately
+
+- Development: 1-5 MB
+- Production: 10-50 MB
+- Long-running systems: 50-100 MB
+
+### 4. Monitor Anomalies
+
+```rust
+// Check for anomalies periodically
+let anomalies = blackbox.get_anomalies();
+if anomalies.len() > previous_count {
+    alert_operator(&anomalies[previous_count..]);
+}
+```
+
+## See Also
+
+- [Safety Monitor](/advanced/safety-monitor) - Real-time safety monitoring
+- [Circuit Breaker](/advanced/circuit-breaker) - Fault tolerance patterns
+- [Checkpoint System](/advanced/checkpoint) - State persistence
+- [Troubleshooting](/troubleshooting) - Common issues and solutions

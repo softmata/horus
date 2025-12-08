@@ -1,0 +1,342 @@
+---
+title: Occupancy Grid
+description: 2D grid-based environment mapping for robot navigation
+---
+
+# Occupancy Grid
+
+Grid-based environment representation for robot navigation and mapping. Supports binary and probabilistic occupancy with efficient ray tracing for sensor integration.
+
+## Source Code
+
+- [Occupancy Grid Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/occupancy_grid)
+
+## Features
+
+- Binary occupancy (free/occupied)
+- Probabilistic occupancy (0.0 - 1.0)
+- Ray tracing for sensor data integration
+- World-to-grid coordinate conversion
+- Configurable resolution and origin
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::occupancy_grid::OccupancyGrid;
+
+fn main() {
+    // Create 10m × 10m grid at 0.1m resolution (100×100 cells)
+    let mut grid = OccupancyGrid::new(100, 100, 0.1);
+
+    // Add obstacle
+    grid.set_occupied(50, 50);
+
+    // Check if path is clear
+    if grid.is_free(60, 60) {
+        println!("Cell is free for navigation");
+    }
+
+    // Convert world coordinates to grid
+    let (gx, gy) = grid.world_to_grid(5.0, 5.0);
+    println!("World (5.0, 5.0) = Grid ({}, {})", gx, gy);
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let grid = OccupancyGrid::new(
+    width: usize,      // Grid width in cells
+    height: usize,     // Grid height in cells
+    resolution: f64,   // Cell size in meters
+);
+```
+
+### Cell Manipulation
+
+| Method | Description |
+|--------|-------------|
+| `set_occupied(x, y)` | Mark cell as occupied (1.0) |
+| `set_free(x, y)` | Mark cell as free (0.0) |
+| `set_probability(x, y, p)` | Set occupancy probability (0.0-1.0) |
+| `clear()` | Set all cells to free |
+
+### Cell Queries
+
+| Method | Returns |
+|--------|---------|
+| `get_probability(x, y)` | Occupancy probability |
+| `is_free(x, y)` | `true` if probability &lt; 0.5 |
+| `is_occupied(x, y)` | `true` if probability &ge; 0.5 |
+| `is_valid(x, y)` | `true` if coordinates in bounds |
+
+### Coordinate Conversion
+
+| Method | Description |
+|--------|-------------|
+| `world_to_grid(wx, wy)` | World → grid coordinates |
+| `grid_to_world(gx, gy)` | Grid → world coordinates |
+| `set_origin(x, y)` | Set world origin of grid[0][0] |
+
+### Grid Properties
+
+| Method | Returns |
+|--------|---------|
+| `get_dimensions()` | `(width, height)` |
+| `get_resolution()` | Cell size in meters |
+
+### Ray Tracing
+
+```rust
+grid.ray_trace(
+    start: (f64, f64),   // World start point
+    end: (f64, f64),     // World end point
+    mark_free: bool,     // Mark intermediate cells as free
+);
+```
+
+## Example: Building a Map from LIDAR
+
+```rust
+use horus_library::algorithms::occupancy_grid::OccupancyGrid;
+
+struct GridMapper {
+    grid: OccupancyGrid,
+}
+
+impl GridMapper {
+    fn new(width_m: f64, height_m: f64, resolution: f64) -> Self {
+        let width = (width_m / resolution) as usize;
+        let height = (height_m / resolution) as usize;
+
+        let mut grid = OccupancyGrid::new(width, height, resolution);
+
+        // Center the grid origin
+        grid.set_origin(-width_m / 2.0, -height_m / 2.0);
+
+        Self { grid }
+    }
+
+    fn process_lidar_scan(&mut self, robot_pos: (f64, f64), scan: &[(f64, f64)]) {
+        for &(angle, distance) in scan {
+            // Calculate endpoint
+            let end_x = robot_pos.0 + distance * angle.cos();
+            let end_y = robot_pos.1 + distance * angle.sin();
+
+            // Ray trace: mark path as free, endpoint as occupied
+            self.grid.ray_trace(robot_pos, (end_x, end_y), true);
+        }
+    }
+
+    fn is_path_clear(&self, from: (f64, f64), to: (f64, f64)) -> bool {
+        let (x0, y0) = self.grid.world_to_grid(from.0, from.1);
+        let (x1, y1) = self.grid.world_to_grid(to.0, to.1);
+
+        // Simple line check
+        let steps = ((x1 - x0).abs().max((y1 - y0).abs())) as usize;
+        if steps == 0 {
+            return true;
+        }
+
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            let x = (x0 as f64 + t * (x1 - x0) as f64) as usize;
+            let y = (y0 as f64 + t * (y1 - y0) as f64) as usize;
+
+            if self.grid.is_occupied(x, y) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+```
+
+## Example: Integration with A* Planning
+
+```rust
+use horus_library::algorithms::{
+    occupancy_grid::OccupancyGrid,
+    astar::AStar,
+};
+
+struct GridPlanner {
+    grid: OccupancyGrid,
+    planner: AStar,
+    resolution: f64,
+}
+
+impl GridPlanner {
+    fn new(width: usize, height: usize, resolution: f64) -> Self {
+        let mut planner = AStar::new(width, height);
+
+        Self {
+            grid: OccupancyGrid::new(width, height, resolution),
+            planner,
+            resolution,
+        }
+    }
+
+    fn update_obstacles(&mut self) {
+        // Sync occupancy grid to A* obstacle map
+        let (w, h) = self.grid.get_dimensions();
+
+        for y in 0..h {
+            for x in 0..w {
+                if self.grid.is_occupied(x, y) {
+                    self.planner.set_obstacle(x as i32, y as i32);
+                } else {
+                    self.planner.clear_obstacle(x as i32, y as i32);
+                }
+            }
+        }
+    }
+
+    fn plan_path(&mut self, start: (f64, f64), goal: (f64, f64)) -> Option<Vec<(f64, f64)>> {
+        // Convert to grid coordinates
+        let (sx, sy) = self.grid.world_to_grid(start.0, start.1);
+        let (gx, gy) = self.grid.world_to_grid(goal.0, goal.1);
+
+        self.planner.set_start(sx, sy);
+        self.planner.set_goal(gx, gy);
+
+        // Plan on grid
+        let grid_path = self.planner.plan()?;
+
+        // Convert back to world coordinates
+        Some(grid_path.iter().map(|(x, y)| {
+            self.grid.grid_to_world(*x, *y)
+        }).collect())
+    }
+}
+```
+
+## Example: Probabilistic Mapping
+
+Update occupancy using sensor probabilities:
+
+```rust
+use horus_library::algorithms::occupancy_grid::OccupancyGrid;
+
+fn update_cell_probability(
+    grid: &mut OccupancyGrid,
+    x: usize,
+    y: usize,
+    measurement_prob: f64,  // Probability cell is occupied from sensor
+) {
+    let prior = grid.get_probability(x, y);
+
+    // Bayes update (simplified)
+    let posterior = (measurement_prob * prior)
+        / (measurement_prob * prior + (1.0 - measurement_prob) * (1.0 - prior));
+
+    grid.set_probability(x, y, posterior);
+}
+
+fn main() {
+    let mut grid = OccupancyGrid::new(100, 100, 0.1);
+
+    // Start with unknown (0.5)
+    for y in 0..100 {
+        for x in 0..100 {
+            grid.set_probability(x, y, 0.5);
+        }
+    }
+
+    // Update with sensor readings
+    // High probability = likely obstacle
+    update_cell_probability(&mut grid, 50, 50, 0.9);
+    update_cell_probability(&mut grid, 50, 50, 0.85);  // More confident
+
+    // Low probability = likely free
+    update_cell_probability(&mut grid, 60, 60, 0.1);
+
+    println!("Cell (50,50) probability: {:.2}", grid.get_probability(50, 50));
+    println!("Cell (60,60) probability: {:.2}", grid.get_probability(60, 60));
+}
+```
+
+## Example: HORUS Node Integration
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::occupancy_grid::OccupancyGrid;
+use horus::prelude::*; // Provides {LaserScan, Odometry};
+
+struct MappingNode {
+    grid: OccupancyGrid,
+    laser_sub: Hub<LaserScan>,
+    odom_sub: Hub<Odometry>,
+    robot_pose: (f64, f64, f64),
+}
+
+impl MappingNode {
+    fn new() -> Result<Self> {
+        let mut grid = OccupancyGrid::new(200, 200, 0.05);  // 10m × 10m at 5cm
+        grid.set_origin(-5.0, -5.0);  // Center at robot start
+
+        Ok(Self {
+            grid,
+            laser_sub: Hub::new("scan")?,
+            odom_sub: Hub::new("odom")?,
+            robot_pose: (0.0, 0.0, 0.0),
+        })
+    }
+}
+
+impl Node for MappingNode {
+    fn name(&self) -> &'static str { "Mapping" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update robot pose
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            self.robot_pose = (odom.pose.x, odom.pose.y, odom.pose.theta);
+        }
+
+        // Process laser scan
+        if let Some(scan) = self.laser_sub.recv(&mut ctx) {
+            let (rx, ry, rtheta) = self.robot_pose;
+
+            for (i, range) in scan.ranges.iter().enumerate() {
+                if *range > scan.range_min && *range < scan.range_max {
+                    let angle = scan.angle_min + i as f64 * scan.angle_increment + rtheta;
+
+                    let end_x = rx + range * angle.cos();
+                    let end_y = ry + range * angle.sin();
+
+                    self.grid.ray_trace((rx, ry), (end_x, end_y), true);
+                }
+            }
+        }
+    }
+}
+```
+
+## Resolution Guidelines
+
+| Use Case | Resolution | Grid Size |
+|----------|------------|-----------|
+| Indoor navigation | 0.05 m | 200×200 = 10m² |
+| Outdoor navigation | 0.1 - 0.2 m | 500×500 = 50-100m² |
+| Detailed mapping | 0.01 - 0.02 m | 1000×1000 = 10-20m² |
+| Coarse planning | 0.5 - 1.0 m | 100×100 = 50-100m² |
+
+## Memory Usage
+
+Memory = width × height × 8 bytes (f64)
+
+| Grid Size | Memory |
+|-----------|--------|
+| 100×100 | ~80 KB |
+| 500×500 | ~2 MB |
+| 1000×1000 | ~8 MB |
+
+## See Also
+
+- [A* Pathfinding](/rust/library/algorithms/astar) - Grid-based planning
+- [RRT](/rust/library/algorithms/rrt) - Continuous space planning
+- [AABB Collision](/rust/library/algorithms/aabb) - Fast collision detection
+- [LIDAR Node](/rust/library/built-in-nodes/lidar) - LIDAR data processing

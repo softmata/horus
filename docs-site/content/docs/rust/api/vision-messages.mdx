@@ -1,0 +1,370 @@
+---
+title: "Vision Messages"
+description: "Camera, image, calibration, and visual detection messages"
+weight: 58
+---
+
+# Vision Messages
+
+HORUS provides message types for cameras, images, camera calibration, and visual detection/recognition systems.
+
+## Image
+
+Raw image data message.
+
+```rust
+use horus::prelude::*; // Provides vision::{Image, ImageEncoding};
+
+// Create RGB image
+let pixels = vec![255, 0, 0, 0, 255, 0, 0, 0, 255]; // 3 RGB pixels
+let image = Image::new(3, 1, ImageEncoding::Rgb8, pixels)
+    .with_frame_id("camera_front");
+
+// Validate image
+if image.is_valid() {
+    println!("Image: {}x{}, {:?}", image.width, image.height, image.encoding);
+    println!("Data size: {} bytes", image.data.len());
+}
+
+// Access individual pixel
+if let Some(pixel) = image.get_pixel(0, 0) {
+    println!("Pixel[0,0]: R={}, G={}, B={}", pixel[0], pixel[1], pixel[2]);
+}
+
+// Create region of interest (crop)
+if let Some(roi_image) = image.roi(0, 0, 2, 1) {
+    println!("ROI: {}x{}", roi_image.width, roi_image.height);
+}
+```
+
+**ImageEncoding values:**
+
+| Encoding | Channels | Bytes/Pixel | Description |
+|----------|----------|-------------|-------------|
+| `Mono8` | 1 | 1 | 8-bit monochrome |
+| `Mono16` | 1 | 2 | 16-bit monochrome |
+| `Rgb8` | 3 | 3 | 8-bit RGB |
+| `Bgr8` | 3 | 3 | 8-bit BGR (OpenCV) |
+| `Rgba8` | 4 | 4 | 8-bit RGBA |
+| `Bgra8` | 4 | 4 | 8-bit BGRA |
+| `Yuv422` | 2 | 2 | YUV 4:2:2 |
+| `Mono32F` | 1 | 4 | 32-bit float mono |
+| `Rgb32F` | 3 | 12 | 32-bit float RGB |
+| `BayerRggb8` | 1 | 1 | Bayer pattern (raw) |
+| `Depth16` | 1 | 2 | 16-bit depth (mm) |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `width` | `u32` | Image width in pixels |
+| `height` | `u32` | Image height in pixels |
+| `encoding` | `ImageEncoding` | Pixel encoding format |
+| `step` | `u32` | Bytes per row (with padding) |
+| `data` | `Vec<u8>` | Row-major image data |
+| `frame_id` | `[u8; 32]` | Camera identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## CompressedImage
+
+Compressed image data (JPEG, PNG, etc.).
+
+```rust
+use horus::prelude::*; // Provides vision::CompressedImage;
+
+// Create compressed image from JPEG data
+let jpeg_data = std::fs::read("image.jpg").unwrap();
+let compressed = CompressedImage::new("jpeg", jpeg_data);
+
+println!("Format: {}", compressed.format_str());
+println!("Compressed size: {} bytes", compressed.data.len());
+
+// Optional: set original dimensions if known
+let mut img = compressed;
+img.width = 640;
+img.height = 480;
+```
+
+**Supported Formats:**
+
+| Format | Description |
+|--------|-------------|
+| `"jpeg"` | JPEG compression |
+| `"png"` | PNG compression |
+| `"webp"` | WebP compression |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `format` | `[u8; 8]` | Compression format |
+| `data` | `Vec<u8>` | Compressed data |
+| `width` | `u32` | Original width (optional) |
+| `height` | `u32` | Original height (optional) |
+| `frame_id` | `[u8; 32]` | Camera identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## CameraInfo
+
+Camera calibration information.
+
+```rust
+use horus::prelude::*; // Provides vision::CameraInfo;
+
+// Create camera info with intrinsics
+let camera = CameraInfo::new(
+    640, 480,   // width, height
+    525.0, 525.0,  // fx, fy
+    320.0, 240.0   // cx, cy (principal point)
+).with_distortion_model("plumb_bob");
+
+// Access intrinsics
+let (fx, fy) = camera.focal_lengths();
+let (cx, cy) = camera.principal_point();
+
+println!("Focal length: ({:.1}, {:.1})", fx, fy);
+println!("Principal point: ({:.1}, {:.1})", cx, cy);
+
+// Set distortion coefficients
+let mut camera = camera;
+camera.distortion_coefficients = [
+    -0.25,  // k1
+    0.12,   // k2
+    0.001,  // p1
+    -0.001, // p2
+    0.0, 0.0, 0.0, 0.0  // k3-k6
+];
+```
+
+**Camera Matrix (3x3):**
+```
+[fx,  0,  cx]
+[ 0, fy,  cy]
+[ 0,  0,   1]
+```
+
+**Projection Matrix (3x4):**
+```
+[fx',  0, cx', Tx]
+[ 0,  fy', cy', Ty]
+[ 0,   0,   1,  0]
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `width` | `u32` | Image width in pixels |
+| `height` | `u32` | Image height in pixels |
+| `distortion_model` | `[u8; 16]` | Distortion model name |
+| `distortion_coefficients` | `[f64; 8]` | [k1, k2, p1, p2, k3...] |
+| `camera_matrix` | `[f64; 9]` | 3x3 intrinsic matrix |
+| `rectification_matrix` | `[f64; 9]` | 3x3 rectification matrix |
+| `projection_matrix` | `[f64; 12]` | 3x4 projection matrix |
+| `frame_id` | `[u8; 32]` | Camera identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## RegionOfInterest
+
+Region of interest (bounding box) in an image.
+
+```rust
+use horus::prelude::*; // Provides vision::RegionOfInterest;
+
+// Create ROI
+let roi = RegionOfInterest::new(100, 50, 200, 150);
+
+// Check if point is inside ROI
+if roi.contains(150, 100) {
+    println!("Point is inside ROI");
+}
+
+// Get area
+println!("ROI area: {} pixels", roi.area());
+
+// Access properties
+println!("ROI: ({}, {}) -> {}x{}",
+    roi.x_offset, roi.y_offset, roi.width, roi.height);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `x_offset` | `u32` | X offset of region |
+| `y_offset` | `u32` | Y offset of region |
+| `width` | `u32` | Region width |
+| `height` | `u32` | Region height |
+| `do_rectify` | `bool` | Apply rectification |
+
+## Detection
+
+Visual detection/recognition result.
+
+```rust
+use horus::prelude::*; // Provides vision::{Detection, RegionOfInterest};
+
+// Create detection
+let bbox = RegionOfInterest::new(100, 50, 200, 300);
+let mut detection = Detection::new("person", 0.95, bbox);
+detection.track_id = 42;  // For multi-object tracking
+
+println!("Detected: {} ({:.1}% confidence)",
+    detection.class_str(),
+    detection.confidence * 100.0);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `class_name` | `[u8; 32]` | Object class name |
+| `confidence` | `f32` | Detection confidence (0.0-1.0) |
+| `bbox` | `RegionOfInterest` | Bounding box |
+| `pose` | `Option<Transform>` | 3D pose (if available) |
+| `track_id` | `u32` | Object tracking ID |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## DetectionArray
+
+Array of visual detections (up to 32).
+
+```rust
+use horus::prelude::*; // Provides vision::{DetectionArray, Detection, RegionOfInterest};
+
+let mut detections = DetectionArray::new();
+detections.image_width = 640;
+detections.image_height = 480;
+
+// Add detections
+let person = Detection::new("person", 0.95, RegionOfInterest::new(100, 50, 200, 300));
+let car = Detection::new("car", 0.88, RegionOfInterest::new(400, 200, 150, 100));
+
+detections.add_detection(person)?;
+detections.add_detection(car)?;
+
+println!("Found {} objects", detections.count);
+
+// Get valid detections
+for detection in detections.get_detections() {
+    println!("  - {} ({:.1}%)",
+        detection.class_str(),
+        detection.confidence * 100.0);
+}
+
+// Filter by confidence threshold
+let high_conf = detections.filter_by_confidence(0.9);
+println!("High confidence: {} objects", high_conf.len());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `detections` | `[Detection; 32]` | Detection array |
+| `count` | `u8` | Number of valid detections |
+| `image_width` | `u32` | Source image width |
+| `image_height` | `u32` | Source image height |
+| `frame_id` | `[u8; 32]` | Frame identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## StereoInfo
+
+Stereo camera pair information.
+
+```rust
+use horus::prelude::*; // Provides vision::{StereoInfo, CameraInfo};
+
+// Create stereo configuration
+let left = CameraInfo::new(640, 480, 525.0, 525.0, 320.0, 240.0);
+let right = CameraInfo::new(640, 480, 525.0, 525.0, 320.0, 240.0);
+
+let stereo = StereoInfo {
+    left_camera: left,
+    right_camera: right,
+    baseline: 0.12,  // 12cm between cameras
+    depth_scale: 1.0,
+};
+
+// Calculate depth from disparity
+let disparity = 64.0;  // pixels
+let depth = stereo.depth_from_disparity(disparity);
+println!("Disparity {} -> depth {:.2}m", disparity, depth);
+
+// Calculate disparity from depth
+let depth = 2.0;  // meters
+let disparity = stereo.disparity_from_depth(depth);
+println!("Depth {}m -> disparity {:.1}px", depth, disparity);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `left_camera` | `CameraInfo` | Left camera calibration |
+| `right_camera` | `CameraInfo` | Right camera calibration |
+| `baseline` | `f64` | Camera distance (meters) |
+| `depth_scale` | `f64` | Disparity-to-depth factor |
+
+## Vision Processing Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides vision::{
+    Image, ImageEncoding, CameraInfo, DetectionArray, Detection, RegionOfInterest
+};
+
+struct VisionNode {
+    image_sub: Hub<Image>,
+    camera_info_sub: Hub<CameraInfo>,
+    detection_pub: Hub<DetectionArray>,
+    camera_info: Option<CameraInfo>,
+}
+
+impl Node for VisionNode {
+    fn name(&self) -> &'static str { "VisionNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update camera calibration
+        if let Some(info) = self.camera_info_sub.try_recv(&mut ctx) {
+            self.camera_info = Some(info);
+        }
+
+        // Process images
+        if let Some(image) = self.image_sub.recv(&mut ctx) {
+            if !image.is_valid() {
+                return;
+            }
+
+            // Run detection (placeholder)
+            let detections = self.detect_objects(&image);
+
+            // Publish results
+            let mut detection_msg = DetectionArray::new();
+            detection_msg.image_width = image.width;
+            detection_msg.image_height = image.height;
+            detection_msg.frame_id = image.frame_id;
+
+            for detection in detections {
+                detection_msg.add_detection(detection).ok();
+            }
+
+            self.detection_pub.send(detection_msg, &mut ctx).ok();
+        }
+    }
+}
+
+impl VisionNode {
+    fn detect_objects(&self, image: &Image) -> Vec<Detection> {
+        // Object detection implementation
+        // (e.g., using ML models)
+        vec![]
+    }
+}
+```
+
+## See Also
+
+- [ML Messages](/rust/api/ml-messages) - DetectionArray, Tensor, Predictions
+- [Perception Messages](/rust/api/perception-messages) - PointCloud, DepthImage
+- [TensorPool API](/rust/api/tensor-pool) - Zero-copy tensor memory

@@ -1,0 +1,52 @@
+---
+title: "Static Analysis"
+description: "Compile-time detection of Link SPSC violations"
+weight: 28
+---
+
+# Static Analysis
+
+`horus check` includes static analysis to detect Link SPSC violations before runtime.
+
+## Link SPSC Violations
+
+Link is Single-Producer-Single-Consumer. Multiple producers or consumers on the same topic causes undefined behavior.
+
+```rust
+// WRONG: Two producers on same topic
+Link::producer("sensor_data")?;  // Node A
+Link::producer("sensor_data")?;  // Node B - SPSC violation!
+
+// FIX: Use Hub for multiple producers
+Hub::new("sensor_data")?;  // Supports MPMC
+```
+
+## Running
+
+```bash
+horus check
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Static Analysis Warnings
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Link topic 'sensor_data' has 2 producers (expected 1 for SPSC)
+    Hint: Use Hub for multiple producers.
+```
+
+## What's Detected
+
+| Pattern | Detected |
+|---------|----------|
+| `Link::producer("topic")` called twice | Yes |
+| `Link::consumer("topic")` called twice | Yes |
+| Violations across multiple files | Yes |
+| Dynamic topic names (`Link::producer(var)`) | No |
+
+## Link vs Hub
+
+| Scenario | Use |
+|----------|-----|
+| Single producer, single consumer | Link (~248ns) |
+| Multiple producers or consumers | Hub (~481ns) |
+

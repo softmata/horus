@@ -1,0 +1,446 @@
+---
+title: "Diagnostics Messages"
+description: "System monitoring, health checks, heartbeats, and error reporting"
+weight: 57
+---
+
+# Diagnostics Messages
+
+HORUS provides message types for system monitoring, health checks, error reporting, and general diagnostics.
+
+## Heartbeat
+
+Periodic signal indicating a node is alive and operational.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::Heartbeat;
+
+// Create heartbeat
+let mut heartbeat = Heartbeat::new("MotorController", 1);
+
+// Update for each heartbeat cycle
+heartbeat.update(120.5);  // 120.5 seconds uptime
+
+println!("Node: {}", heartbeat.name());
+println!("Sequence: {}", heartbeat.sequence);
+println!("Uptime: {:.1}s", heartbeat.uptime);
+println!("Alive: {}", heartbeat.alive);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `node_name` | `[u8; 32]` | Node name (null-terminated) |
+| `node_id` | `u32` | Node identifier |
+| `sequence` | `u64` | Heartbeat sequence number |
+| `alive` | `bool` | Node is responding |
+| `uptime` | `f64` | Time since startup (seconds) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## Status
+
+General-purpose status reporting.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::{Status, StatusLevel};
+
+// Create status messages
+let ok = Status::ok("System initialized successfully");
+
+let warning = Status::warn(1001, "Battery level low")
+    .with_component("PowerManager");
+
+let error = Status::error(2001, "Sensor communication timeout")
+    .with_component("SensorHub");
+
+let fatal = Status::fatal(9001, "Motor driver fault - emergency stop")
+    .with_component("MotorController");
+
+// Access status info
+println!("[{:?}] {}: {}",
+    error.level,
+    error.component_str(),
+    error.message_str());
+```
+
+**StatusLevel values:**
+
+| Level | Value | Description |
+|-------|-------|-------------|
+| `Ok` | 0 | Everything is OK |
+| `Warn` | 1 | Warning condition |
+| `Error` | 2 | Error (recoverable) |
+| `Fatal` | 3 | Fatal error (system should stop) |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level` | `StatusLevel` | Severity level |
+| `code` | `u32` | Component-specific error code |
+| `message` | `[u8; 128]` | Human-readable message |
+| `component` | `[u8; 32]` | Reporting component name |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## EmergencyStop
+
+Critical safety message to immediately stop all robot motion.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::EmergencyStop;
+
+// Engage emergency stop
+let estop = EmergencyStop::engage("Obstacle detected in safety zone")
+    .with_source("SafetyController");
+
+println!("E-STOP engaged: {}", estop.engaged);
+println!("Reason: {}", estop.reason_str());
+
+// Release emergency stop
+let release = EmergencyStop::release();
+
+// Allow auto-reset
+let mut estop_auto = EmergencyStop::engage("Soft limit exceeded");
+estop_auto.auto_reset = true;
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `engaged` | `bool` | Emergency stop is active |
+| `reason` | `[u8; 64]` | Stop reason |
+| `source` | `[u8; 32]` | Triggering source |
+| `auto_reset` | `bool` | Can auto-reset after clearing |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## ResourceUsage
+
+System resource utilization.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::ResourceUsage;
+
+let mut usage = ResourceUsage::new();
+usage.cpu_percent = 45.5;
+usage.memory_bytes = 1024 * 1024 * 512;  // 512MB
+usage.memory_percent = 25.0;
+usage.temperature = 65.5;
+usage.thread_count = 12;
+
+// Check thresholds
+if usage.is_cpu_high(80.0) {
+    println!("Warning: High CPU usage");
+}
+
+if usage.is_memory_high(90.0) {
+    println!("Warning: High memory usage");
+}
+
+if usage.is_temperature_high(80.0) {
+    println!("Warning: High temperature");
+}
+
+println!("CPU: {:.1}%, Memory: {:.1}%, Temp: {:.1}C",
+    usage.cpu_percent, usage.memory_percent, usage.temperature);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cpu_percent` | `f32` | CPU usage (0-100) |
+| `memory_bytes` | `u64` | Memory usage in bytes |
+| `memory_percent` | `f32` | Memory usage (0-100) |
+| `disk_bytes` | `u64` | Disk usage in bytes |
+| `disk_percent` | `f32` | Disk usage (0-100) |
+| `network_tx_bytes` | `u64` | Network bytes sent |
+| `network_rx_bytes` | `u64` | Network bytes received |
+| `temperature` | `f32` | System temperature (Celsius) |
+| `thread_count` | `u32` | Active thread count |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## DiagnosticValue
+
+Key-value pair for diagnostic reports.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::DiagnosticValue;
+
+// Create different value types
+let string_val = DiagnosticValue::string("firmware_version", "1.2.3");
+let int_val = DiagnosticValue::int("error_count", 42);
+let float_val = DiagnosticValue::float("temperature", 65.5);
+let bool_val = DiagnosticValue::bool("calibrated", true);
+```
+
+**Value Type Constants:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `TYPE_STRING` | 0 | String value |
+| `TYPE_INT` | 1 | Integer value |
+| `TYPE_FLOAT` | 2 | Float value |
+| `TYPE_BOOL` | 3 | Boolean value |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | `[u8; 32]` | Key name |
+| `value` | `[u8; 64]` | Value as string |
+| `value_type` | `u8` | Value type hint |
+
+## DiagnosticReport
+
+Diagnostic report with multiple key-value pairs (up to 16).
+
+```rust
+use horus::prelude::*; // Provides diagnostics::{DiagnosticReport, StatusLevel};
+
+let mut report = DiagnosticReport::new("MotorController");
+
+// Add diagnostic values
+report.add_string("firmware", "2.1.0")?;
+report.add_int("tick_count", 15000)?;
+report.add_float("voltage", 24.5)?;
+report.add_bool("calibrated", true)?;
+
+// Set overall status
+report.set_level(StatusLevel::Ok);
+
+println!("Report for {} has {} values",
+    report.component_str(), report.value_count);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `component` | `[u8; 32]` | Component name |
+| `values` | `[DiagnosticValue; 16]` | Diagnostic values |
+| `value_count` | `u8` | Number of valid values |
+| `level` | `StatusLevel` | Overall status level |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## NodeState
+
+Node execution state enumeration.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::NodeState;
+
+let state = NodeState::Running;
+println!("State: {}", state.as_str());  // "Running"
+```
+
+**NodeState values:**
+
+| State | Value | Description |
+|-------|-------|-------------|
+| `Idle` | 0 | Created but not started |
+| `Initializing` | 1 | Running initialization |
+| `Running` | 2 | Active and executing |
+| `Paused` | 3 | Temporarily suspended |
+| `Stopped` | 4 | Cleanly shut down |
+| `Error` | 5 | Error/crashed state |
+
+## HealthStatus
+
+Node operational health status.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::HealthStatus;
+
+let health = HealthStatus::Healthy;
+println!("Health: {} ({})", health.as_str(), health.color());
+
+// Color codes for monitor display
+// Healthy -> "green"
+// Warning -> "yellow"
+// Error -> "orange"
+// Critical -> "red"
+// Unknown -> "gray"
+```
+
+**HealthStatus values:**
+
+| Status | Value | Description |
+|--------|-------|-------------|
+| `Healthy` | 0 | Operating normally |
+| `Warning` | 1 | Degraded performance |
+| `Error` | 2 | Errors but running |
+| `Critical` | 3 | Fatal errors |
+| `Unknown` | 4 | No heartbeat received |
+
+## NodeHeartbeat
+
+Node status heartbeat with health information (written to shared memory).
+
+```rust
+use horus::prelude::*; // Provides diagnostics::{NodeHeartbeat, NodeState, HealthStatus};
+
+// Create heartbeat
+let mut heartbeat = NodeHeartbeat::new(NodeState::Running, HealthStatus::Healthy);
+heartbeat.tick_count = 15000;
+heartbeat.target_rate_hz = 100;
+heartbeat.actual_rate_hz = 98;
+heartbeat.error_count = 0;
+
+// Update timestamp
+heartbeat.update_timestamp();
+
+// Check freshness (within last 5 seconds)
+if heartbeat.is_fresh(5) {
+    println!("Node is alive");
+}
+
+// Serialize for file writing
+let bytes = heartbeat.to_bytes();
+
+// Deserialize from file
+if let Some(hb) = NodeHeartbeat::from_bytes(&bytes) {
+    println!("Tick rate: {}/{} Hz",
+        hb.actual_rate_hz, hb.target_rate_hz);
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | `NodeState` | Execution state |
+| `health` | `HealthStatus` | Health status |
+| `tick_count` | `u64` | Total tick count |
+| `target_rate_hz` | `u32` | Target tick rate |
+| `actual_rate_hz` | `u32` | Measured tick rate |
+| `error_count` | `u32` | Error count |
+| `last_tick_timestamp` | `u64` | Last tick time (unix epoch seconds) |
+| `heartbeat_timestamp` | `u64` | Heartbeat time (unix epoch seconds) |
+
+## SafetyStatus
+
+Safety system status.
+
+```rust
+use horus::prelude::*; // Provides diagnostics::SafetyStatus;
+
+let mut safety = SafetyStatus::new();
+safety.enabled = true;
+safety.estop_engaged = false;
+safety.watchdog_ok = true;
+safety.limits_ok = true;
+safety.comms_ok = true;
+
+// Check if safe to operate
+if safety.is_safe() {
+    println!("System is safe to operate");
+} else {
+    println!("Safety interlock active - fault code: {}", safety.fault_code);
+}
+
+// Set fault condition
+safety.set_fault(1001);
+println!("Mode: {}", match safety.mode {
+    SafetyStatus::MODE_NORMAL => "Normal",
+    SafetyStatus::MODE_REDUCED => "Reduced",
+    SafetyStatus::MODE_SAFE_STOP => "Safe Stop",
+    _ => "Unknown"
+});
+
+// Clear faults
+safety.clear_faults();
+```
+
+**Mode Constants:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MODE_NORMAL` | 0 | Normal operation |
+| `MODE_REDUCED` | 1 | Reduced speed/power |
+| `MODE_SAFE_STOP` | 2 | Safe stop engaged |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | `bool` | Safety system active |
+| `estop_engaged` | `bool` | Emergency stop engaged |
+| `watchdog_ok` | `bool` | Watchdog timer OK |
+| `limits_ok` | `bool` | All limits within bounds |
+| `comms_ok` | `bool` | Communication healthy |
+| `mode` | `u8` | Safety mode |
+| `fault_code` | `u32` | Fault code (0 = none) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## Diagnostics Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides diagnostics::{
+    Status, StatusLevel, ResourceUsage, DiagnosticReport,
+    SafetyStatus, EmergencyStop
+};
+
+struct DiagnosticsNode {
+    status_pub: Hub<Status>,
+    resource_pub: Hub<ResourceUsage>,
+    safety_sub: Hub<SafetyStatus>,
+    estop_pub: Hub<EmergencyStop>,
+    tick_count: u64,
+    start_time: std::time::Instant,
+}
+
+impl Node for DiagnosticsNode {
+    fn name(&self) -> &'static str { "Diagnostics" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.tick_count += 1;
+
+        // Check safety status
+        if let Some(safety) = self.safety_sub.recv(&mut ctx) {
+            if !safety.is_safe() {
+                // Trigger emergency stop
+                let estop = EmergencyStop::engage(&format!(
+                    "Safety fault code: {}", safety.fault_code
+                )).with_source("DiagnosticsNode");
+                self.estop_pub.send(estop, &mut ctx).ok();
+
+                // Send error status
+                let status = Status::error(safety.fault_code, "Safety system fault")
+                    .with_component("SafetyMonitor");
+                self.status_pub.send(status, &mut ctx).ok();
+            }
+        }
+
+        // Periodic resource reporting (every 100 ticks)
+        if self.tick_count % 100 == 0 {
+            let mut usage = ResourceUsage::new();
+            // ... populate with actual system metrics ...
+
+            // Check thresholds
+            if usage.is_cpu_high(90.0) {
+                let status = Status::warn(1001, "CPU usage above 90%")
+                    .with_component("ResourceMonitor");
+                self.status_pub.send(status, &mut ctx).ok();
+            }
+
+            self.resource_pub.send(usage, &mut ctx).ok();
+        }
+
+        // Periodic OK status (every 1000 ticks)
+        if self.tick_count % 1000 == 0 {
+            let uptime = self.start_time.elapsed().as_secs_f64();
+            let status = Status::ok(&format!("System healthy, uptime: {:.0}s", uptime))
+                .with_component("DiagnosticsNode");
+            self.status_pub.send(status, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## See Also
+
+- [Coordination Messages](/rust/api/coordination-messages) - Fleet status, robot state
+- [Safety Layer Algorithm](/rust/library/algorithms/safety-layer) - Safety monitoring implementation

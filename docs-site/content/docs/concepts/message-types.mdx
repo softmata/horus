@@ -1,0 +1,1105 @@
+---
+title: Message Types
+description: Standard HORUS message types for robotics applications
+order: 8
+---
+
+# Message Types
+
+HORUS provides a comprehensive library of standard message types for robotics applications. All messages are designed for **shared memory efficiency** with fixed-size structures and zero-copy semantics.
+
+## Message Requirements
+
+All HORUS messages must implement:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyMessage {
+    // Your fields here
+}
+```
+
+**Required traits**:
+- `Clone`: For shared memory operations
+- `Debug`: For logging and debugging
+- `Serialize/Deserialize`: For optional serialization
+
+**Best practices**:
+- Use fixed-size arrays instead of `Vec`
+- Prefer `f32`/`f64` over variable-length types
+- Include timestamp fields for all time-sensitive data
+- Use `#[repr(C)]` for C interop
+
+## Typed Messages vs Generic Messages
+
+HORUS supports two fundamentally different approaches to messaging, each with distinct performance and usability tradeoffs.
+
+### 1. Typed Messages (Recommended)
+
+**What:** Strongly-typed Rust structs that implement `Serialize`, `Deserialize`, and `LogSummary`.
+
+**Examples:** `Pose2D`, `CmdVel`, `Imu`, `LaserScan` - all messages in `horus_library::messages`
+
+```rust
+// Rust - Typed message
+use horus::prelude::*;
+use horus::prelude::*; // Provides Pose2D;
+
+let hub: Hub<Pose2D> = Hub::new("robot.pose")?;
+hub.send(Pose2D::new(1.0, 2.0, 0.5), &mut ctx)?;
+```
+
+```python
+# Python - Typed hub
+from horus import Node, Pose2D
+
+node = Node(
+    name="controller",
+    pubs={"robot.pose": {"type": Pose2D}}  # Specify type
+)
+node.send("robot.pose", Pose2D(x=1.0, y=2.0, theta=0.5))
+```
+
+**Logging output:**
+```
+[12:34:56.789] controller --PUB--> 'robot.pose' = Pose2D { x: 1.0, y: 2.0, theta: 0.5 }
+```
+
+**Benefits:**
+- **Ultra-fast**: 248-481 nanoseconds IPC latency (zero-copy shared memory)
+- **Clear logging**: Custom `LogSummary` shows meaningful content
+- **Type safety**: Compile-time checks prevent type mismatches
+- **IDE support**: Autocomplete, type hints, inline documentation
+- **Cross-language**: Rust and Python see the same typed data
+
+**Performance characteristics:**
+- **IPC latency:** 0.248-0.481µs (message passing)
+- **Logging overhead:** ~50-100ns (string formatting)
+- **Total with logging:** ~400-600ns
+- **Memory:** Zero-copy - data shared directly in `/dev/shm`
+
+**Use when:**
+- Production code
+- Performance-critical paths (control loops, sensor fusion)
+- Real-time systems
+- Multi-team projects (clear contracts)
+- Long-term maintainable code
+
+### 2. Generic Messages (Prototyping)
+
+**What:** Dynamic JSON/MessagePack data for arbitrary structures.
+
+**Examples:** Python dicts, Rust `GenericMessage`, any schema-less data
+
+```python
+# Python - Generic hub (string topic)
+node = Node(name="sensor", pubs=["custom_data"])  # No type specified
+node.send("custom_data", {
+    "value": 42,
+    "notes": "testing new algorithm",
+    "measurements": [1.2, 3.4, 5.6]
+})
+```
+
+```rust
+// Rust - GenericMessage
+use horus::prelude::*;
+use horus::prelude::*; // Provides GenericMessage;
+
+let hub: Hub<GenericMessage> = Hub::new("custom_data")?;
+let data = GenericMessage::from_value(&my_dynamic_data)?;
+hub.send(data, &mut ctx)?;
+```
+
+**Logging output (new implementation):**
+```
+[12:34:56.789] sensor --PUB--> 'custom_data' = {"value":42,"notes":"testing new algorithm","measurements":[1.2,3.4,5.6]}
+```
+
+**Tradeoffs:**
+- **Flexibility**: Any data structure, evolving schemas
+- **Quick prototyping**: No need to define Rust structs
+- **Slower IPC**: 4-10µs latency (MessagePack serialization overhead)
+- **Slower logging**: 1-10µs to deserialize and display content
+- **No type safety**: Runtime errors if structure changes
+- **No IDE support**: No autocomplete, manual field access
+
+**Performance characteristics:**
+- **IPC latency:** 4-10µs (serialization + shared memory)
+- **Logging overhead:** 1-10µs (deserialize JSON/MessagePack + format)
+- **Total with logging:** ~5-20µs
+- **Memory:** Extra copy for serialization
+
+**Use when:**
+- Quick prototypes, experiments
+- Data structure still evolving
+- Truly dynamic schemas (runtime-determined structure)
+- Integration with external JSON APIs
+- Not performance-critical
+
+### Performance Comparison Table
+
+| Feature | Typed Messages | Generic Messages |
+|---------|---------------|------------------|
+| **IPC Latency** | 0.248-0.481µs | 4-10µs |
+| **Logging Speed** | ~50-100ns | ~1-10µs |
+| **Type Safety** | Compile-time | Runtime only |
+| **Logging Output** | Custom summary | Full JSON (slow) |
+| **Cross-language** | Seamless | Requires manual deserialization |
+| **IDE Support** | Full autocomplete | None |
+| **Best For** | Production | Prototyping |
+
+### Real-World Impact
+
+**Example:** A 1000 Hz control loop running for 1 second
+
+**With typed messages:**
+- 1000 sends/sec × 0.5µs = 0.5ms total overhead
+- **99.95% of CPU available** for your code
+
+**With generic messages:**
+- 1000 sends/sec × 10µs = 10ms total overhead
+- **99.0% of CPU available** for your code
+
+**At 10 kHz** (high-frequency control):
+- Typed: 5ms overhead → **99.5% CPU available**
+- Generic: 100ms overhead → **90% CPU available** (WARNING: Significant overhead)
+
+### Migration Path
+
+**Start generic, migrate to typed:**
+
+```python
+# Phase 1: Prototyping with generic hub
+node = Node(name="sensor", pubs=["pose"])
+node.send("pose", {"x": 1.0, "y": 2.0, "theta": 0.5})
+```
+
+After schema stabilizes:
+
+```python
+# Phase 2: Production with typed hub
+from horus import Node, Pose2D
+
+node = Node(name="sensor", pubs={"pose": {"type": Pose2D}})
+node.send("pose", Pose2D(x=1.0, y=2.0, theta=0.5))
+```
+
+**Benefits of migration:**
+- 10-20x faster IPC
+- 10-100x faster logging
+- Compile-time type checking
+- Better IDE support
+
+### When Generic Messages Make Sense
+
+**Valid use cases:**
+1. **Rapid experimentation**: Testing multiple data formats quickly
+2. **External integrations**: Wrapping JSON APIs, web services
+3. **Configuration data**: Low-frequency config updates
+4. **Debug/diagnostics**: Ad-hoc debugging messages
+5. **Custom tooling**: One-off scripts, data export tools
+
+**Anti-patterns (use typed instead):**
+- High-frequency sensor data (use `LaserScan`, `Imu`, etc.)
+- Control commands (use `CmdVel`, `Twist`, etc.)
+- Production robot control loops
+- Multi-team shared interfaces
+
+### Recommendation
+
+**Default to typed messages** for any code you intend to keep. The performance difference compounds over time, and type safety catches bugs at compile-time instead of runtime.
+
+Use generic messages only when you genuinely need dynamic schemas or are in early prototyping phases.
+
+## LogSummary Trait
+
+The `LogSummary` trait is **required for all message types** used with Hub/Link communication. It provides a human-readable summary for logging and monitor monitoring.
+
+### Why LogSummary? (Design Rationale)
+
+**Problem**: Robotics messages can be **huge** (megabyte images, LiDAR point clouds with 100K+ points). Using Rust's `Debug` trait would be disastrous:
+
+```rust
+// BAD: Using Debug trait on large messages
+#[derive(Debug)]
+struct PointCloud {
+    points: Vec<[f32; 3]>,  // 100,000 points = 1.2 MB
+}
+
+// Debug output would be:
+// PointCloud { points: [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], ... 99,998 more] }
+// This kills performance and floods logs!
+```
+
+**Solution**: `LogSummary` lets you control **exactly what gets logged**:
+
+```rust
+impl LogSummary for PointCloud {
+    fn log_summary(&self) -> String {
+        format!("PointCloud({} points, {:.2}MB)",
+                self.points.len(),
+                (self.points.len() * 12) as f32 / 1_000_000.0)
+    }
+}
+
+// Output: PointCloud(100000 points, 1.20MB)
+// Clean, informative, fast!
+```
+
+**Key insight**: You want to **log metadata about messages**, not the entire message content. This is why LogSummary is mandatory - it forces you to think about what's important to log.
+
+### When is LogSummary called?
+
+**Technical requirement**: The `Hub::send()` and `Hub::recv()` methods have a trait bound requiring `LogSummary`, so you must implement it for all message types.
+
+**Logging disabled** (`ctx = None`):
+- LogSummary implementation required but **never called**
+- Zero overhead - just type checking at compile time
+- Used in benchmarks for accurate performance measurement
+
+**Logging enabled** (`ctx = Some(...)`):
+- `log_summary()` called once per send/recv
+- Logs written to:
+  - Console output (color-coded)
+  - Shared memory ring buffer at `/dev/shm/horus_logs`
+  - Monitor logs tab (accessible via `horus monitor`)
+
+**Output example**:
+```
+[12:34:56.789] [IPC: 437ns | Tick: 12μs] MyNode --PUB--> 'cmd_vel' = Twist(lin:1.5, ang:0.5)
+```
+
+### Implementation
+
+```rust
+use horus::prelude::*;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotState {
+    pub position: [f64; 3],
+    pub velocity: f64,
+    pub battery_level: f32,
+}
+
+impl LogSummary for RobotState {
+    fn log_summary(&self) -> String {
+        format!(
+            "RobotState(pos:[{:.2},{:.2},{:.2}] vel:{:.2} bat:{:.0}%)",
+            self.position[0], self.position[1], self.position[2],
+            self.velocity,
+            self.battery_level * 100.0
+        )
+    }
+}
+```
+
+### Guidelines
+
+**Keep it concise**: Summaries appear inline in logs
+```rust
+// Good: Compact, essential info only
+format!("Twist(lin:{:.2}, ang:{:.2})", self.linear, self.angular)
+
+// Bad: Too verbose
+format!("Twist {{ linear_x: {}, linear_y: {}, linear_z: {}, angular_x: {}, ... }}", ...)
+```
+
+**Include key fields**: What matters for debugging?
+```rust
+// For sensor data: Include critical measurements
+format!("LaserScan({} points, range:[{:.2}-{:.2}])", self.num_points, self.min, self.max)
+
+// For commands: Include the command values
+format!("CmdVel(v:{:.2} m/s, w:{:.2} rad/s)", self.linear, self.angular)
+```
+
+**Use units**: Make values unambiguous
+```rust
+// Good: Units clear
+format!("Pose(x:{:.2}m, y:{:.2}m, θ:{:.2}°)", x, y, theta_deg)
+
+// Unclear: What units?
+format!("Pose({:.2}, {:.2}, {:.2})", x, y, theta)
+```
+
+### Examples from Standard Library
+
+**Small messages** - Twist (velocity commands):
+```rust
+impl LogSummary for Twist {
+    fn log_summary(&self) -> String {
+        format!("lin:({:.2},{:.2},{:.2}) ang:({:.2},{:.2},{:.2})",
+                self.linear.x, self.linear.y, self.linear.z,
+                self.angular.x, self.angular.y, self.angular.z)
+    }
+}
+// Output: lin:(1.50,0.00,0.00) ang:(0.00,0.00,0.50)
+```
+
+**Large messages** - LaserScan (LiDAR with 1000+ points):
+```rust
+impl LogSummary for LaserScan {
+    fn log_summary(&self) -> String {
+        format!("LaserScan({} pts, {:.2}-{:.2}m @ {:.1}Hz)",
+                self.ranges.len(),     // Don't log all 1000 points!
+                self.range_min,
+                self.range_max,
+                1.0 / self.time_increment)
+    }
+}
+// Output: LaserScan(1080 pts, 0.12-30.00m @ 40.0Hz)
+// Instead of: LaserScan { ranges: [0.12, 0.15, 0.18, ... 1077 more], ... }
+```
+
+**Huge messages** - PointCloud (16KB benchmark message):
+```rust
+impl LogSummary for PointCloud {
+    fn log_summary(&self) -> String {
+        format!("PointCloud(seq:{}, points:{})",
+                self.sequence,
+                self.point_count)  // Just count, not 1365 points!
+    }
+}
+// Output: PointCloud(seq:42, points:1365)
+// Avoids logging ~16KB of point data
+```
+
+**Image metadata** - CameraMetadata (256 bytes):
+```rust
+impl LogSummary for CameraMetadata {
+    fn log_summary(&self) -> String {
+        format!("CameraMeta(frame:{}, {}x{})",
+                self.frame_id,
+                self.width,
+                self.height)
+    }
+}
+// Output: CameraMeta(frame:123, 1920x1080)
+// Avoids logging 200 bytes of padding/metadata
+```
+
+### Monitor Integration
+
+Messages with LogSummary appear automatically in the monitor:
+
+**Logs Tab**:
+- Real-time message stream
+- Filter by node or topic
+- Color-coded by type (Publish/Subscribe/Info/Warning/Error)
+- Shows IPC timing overhead
+
+**Graph Tab**:
+- Visual dataflow between nodes
+- Click topics to see recent messages
+- Hover for message details
+
+**Nodes Tab**:
+- Per-node message statistics
+- Messages sent/received counts
+- Error tracking
+
+**Access the monitor**:
+```bash
+# In terminal 1: Run your application
+horus run
+
+# In terminal 2: Start monitor
+horus monitor
+# Opens browser to http://localhost:3000
+```
+
+### Performance Notes
+
+**LogSummary is zero-cost when disabled**:
+- Pass `None` for context: `hub.send(msg, None)`  No logging
+- Benchmarks disable logging for accurate timing
+- Production code can toggle logging per node
+
+**When logging is enabled** (`Some(ctx)`):
+- `log_summary()` is called once per send/recv
+- String formatting overhead: ~50-100ns
+- Total IPC + logging: ~400-600ns
+- Logs written to shared memory (lock-free ring buffer)
+
+## Geometry Messages
+
+Spatial primitives for representing position, orientation, and motion.
+
+### Twist
+
+3D velocity command with linear and angular components:
+
+```rust
+use horus::prelude::*; // Provides Twist;
+
+// Create 2D twist (common for mobile robots)
+let cmd = Twist::new_2d(1.0, 0.5);  // 1.0 m/s forward, 0.5 rad/s rotation
+
+// Create 3D twist
+let cmd_3d = Twist::new(
+    [1.0, 0.5, 0.0],      // Linear velocity [x, y, z] m/s
+    [0.0, 0.0, 0.5]       // Angular velocity [roll, pitch, yaw] rad/s
+);
+
+// Stop command
+let stop = Twist::stop();
+
+// Check validity
+assert!(cmd.is_valid());
+```
+
+**Fields**:
+- `linear: [f64; 3]` - Linear velocity in m/s
+- `angular: [f64; 3]` - Angular velocity in rad/s
+- `timestamp: u64` - Nanoseconds since epoch
+
+### Pose2D
+
+2D position and orientation for planar robots:
+
+```rust
+use horus::prelude::*; // Provides Pose2D;
+
+// Create pose
+let pose = Pose2D::new(1.0, 2.0, 0.5);  // x=1m, y=2m, theta=0.5rad
+
+// Start at origin
+let origin = Pose2D::origin();
+
+// Calculate distance between poses
+let distance = pose.distance_to(&origin);
+
+// Normalize angle to [-π, π]
+let mut pose = Pose2D::new(1.0, 2.0, 3.5);
+pose.normalize_angle();
+```
+
+**Fields**:
+- `x: f64` - X position in meters
+- `y: f64` - Y position in meters
+- `theta: f64` - Orientation in radians
+- `timestamp: u64` - Nanoseconds since epoch
+
+### Transform
+
+3D transformation with translation and rotation:
+
+```rust
+use horus::prelude::*; // Provides Transform;
+
+// Identity transform
+let identity = Transform::identity();
+
+// From 2D pose
+let pose2d = Pose2D::new(1.0, 2.0, 0.5);
+let transform = Transform::from_pose_2d(&pose2d);
+
+// Custom transform
+let tf = Transform::new(
+    [1.0, 2.0, 3.0],           // Translation [x, y, z]
+    [0.0, 0.0, 0.0, 1.0]       // Rotation quaternion [x, y, z, w]
+);
+
+// Normalize quaternion
+let mut tf = transform;
+tf.normalize_rotation();
+```
+
+**Fields**:
+- `translation: [f64; 3]` - Position in meters
+- `rotation: [f64; 4]` - Quaternion [x, y, z, w]
+- `timestamp: u64` - Nanoseconds since epoch
+
+### Point3 and Vector3
+
+3D points and vectors:
+
+```rust
+use horus::prelude::*; // Provides {Point3, Vector3};
+
+// Create point
+let point = Point3::new(1.0, 2.0, 3.0);
+let distance = point.distance_to(&Point3::origin());
+
+// Create vector
+let mut vec = Vector3::new(1.0, 0.0, 0.0);
+let magnitude = vec.magnitude();
+vec.normalize();
+
+// Vector operations
+let dot_product = vec.dot(&Vector3::new(0.0, 1.0, 0.0));
+let cross_product = vec.cross(&Vector3::new(0.0, 1.0, 0.0));
+```
+
+### Quaternion
+
+3D rotation representation:
+
+```rust
+use horus::prelude::*; // Provides Quaternion;
+
+// Identity quaternion (no rotation)
+let q = Quaternion::identity();
+
+// From Euler angles
+let q = Quaternion::from_euler(0.0, 0.0, std::f64::consts::PI / 2.0);
+
+// Normalize
+let mut q = Quaternion::new(1.0, 0.0, 0.0, 1.0);
+q.normalize();
+```
+
+## Sensor Messages
+
+Standard sensor data formats for common robotics sensors.
+
+### LaserScan
+
+2D lidar scan data (up to 360 points):
+
+```rust
+use horus::prelude::*; // Provides LaserScan;
+
+let mut scan = LaserScan::new();
+
+// Set range readings (360-element array)
+scan.ranges[0] = 5.2;   // Distance in meters
+scan.ranges[1] = 3.8;
+
+// Configure scan parameters
+scan.angle_min = -std::f32::consts::PI;       // -180 degrees
+scan.angle_max = std::f32::consts::PI;        // +180 degrees
+scan.range_min = 0.1;                         // Minimum valid range
+scan.range_max = 30.0;                        // Maximum valid range
+scan.angle_increment = std::f32::consts::PI / 180.0;  // 1 degree
+
+// Get angle for specific reading
+let angle = scan.angle_at(45);  // Angle at index 45
+
+// Check if reading is valid
+if scan.is_range_valid(0) {
+    println!("Range at index 0: {}m", scan.ranges[0]);
+}
+
+// Count valid readings
+let valid_count = scan.valid_count();
+
+// Find minimum range
+if let Some(min) = scan.min_range() {
+    println!("Closest obstacle: {}m", min);
+}
+```
+
+**Fields**:
+- `ranges: [f32; 360]` - Range readings in meters (0 = invalid)
+- `angle_min/max: f32` - Scan angle range in radians
+- `range_min/max: f32` - Valid range limits in meters
+- `angle_increment: f32` - Angular resolution in radians
+- `scan_time: f32` - Time to complete scan in seconds
+- `timestamp: u64` - Nanoseconds since epoch
+
+### IMU
+
+Inertial Measurement Unit data:
+
+```rust
+use horus::prelude::*; // Provides Imu;
+
+let mut imu = Imu::new();
+
+// Set orientation from Euler angles
+imu.set_orientation_from_euler(
+    0.1,  // Roll in radians
+    0.2,  // Pitch in radians
+    1.5   // Yaw in radians
+);
+
+// Set angular velocity
+imu.angular_velocity = [0.1, 0.2, 0.3];  // rad/s
+
+// Set linear acceleration
+imu.linear_acceleration = [0.0, 0.0, 9.81];  // m/s²
+
+// Check if orientation is available
+if imu.has_orientation() {
+    let quat = imu.orientation;
+}
+
+// Validate data
+assert!(imu.is_valid());
+
+// Get vectors
+let angular_vel = imu.angular_velocity_vec();
+let linear_accel = imu.linear_acceleration_vec();
+```
+
+**Fields**:
+- `orientation: [f64; 4]` - Quaternion [x, y, z, w]
+- `orientation_covariance: [f64; 9]` - Covariance matrix (-1 = no data)
+- `angular_velocity: [f64; 3]` - Gyroscope data in rad/s
+- `angular_velocity_covariance: [f64; 9]` - Covariance matrix
+- `linear_acceleration: [f64; 3]` - Accelerometer data in m/s²
+- `linear_acceleration_covariance: [f64; 9]` - Covariance matrix
+- `timestamp: u64` - Nanoseconds since epoch
+
+### Odometry
+
+Combined pose and velocity from wheel encoders or visual odometry:
+
+```rust
+use horus::prelude::*; // Provides {Odometry, Pose2D, Twist};
+
+let mut odom = Odometry::new();
+
+// Set frames
+odom.set_frames("odom", "base_link");
+
+// Update pose and velocity
+let pose = Pose2D::new(1.0, 2.0, 0.5);
+let twist = Twist::new_2d(0.5, 0.2);
+odom.update(pose, twist);
+
+// Access data
+println!("Position: ({}, {})", odom.pose.x, odom.pose.y);
+println!("Velocity: {}m/s", odom.twist.linear[0]);
+
+// Validate
+assert!(odom.is_valid());
+```
+
+**Fields**:
+- `pose: Pose2D` - Current position and orientation
+- `twist: Twist` - Current velocity
+- `pose_covariance: [f64; 36]` - 6x6 covariance matrix
+- `twist_covariance: [f64; 36]` - 6x6 covariance matrix
+- `frame_id: [u8; 32]` - Reference frame (e.g., "odom")
+- `child_frame_id: [u8; 32]` - Child frame (e.g., "base_link")
+- `timestamp: u64` - Nanoseconds since epoch
+
+### Range
+
+Single-point distance sensor (ultrasonic, infrared):
+
+```rust
+use horus::prelude::*; // Provides Range;
+
+// Create ultrasonic range reading
+let range = Range::new(Range::ULTRASONIC, 1.5);  // 1.5 meters
+
+// Configure sensor parameters
+let mut range = Range::new(Range::INFRARED, 0.8);
+range.min_range = 0.02;  // 2cm minimum
+range.max_range = 4.0;   // 4m maximum
+range.field_of_view = 0.1;  // ~6 degrees
+
+// Check validity
+if range.is_valid() {
+    println!("Distance: {}m", range.range);
+}
+```
+
+**Fields**:
+- `sensor_type: u8` - Sensor type (0=ultrasonic, 1=infrared)
+- `field_of_view: f32` - Sensor FOV in radians
+- `min_range: f32` - Minimum valid range in meters
+- `max_range: f32` - Maximum valid range in meters
+- `range: f32` - Distance reading in meters
+- `timestamp: u64` - Nanoseconds since epoch
+
+### BatteryState
+
+Battery status and charge information:
+
+```rust
+use horus::prelude::*; // Provides BatteryState;
+
+let mut battery = BatteryState::new(12.6, 75.0);  // 12.6V, 75% charge
+
+// Set additional parameters
+battery.current = -2.5;  // -2.5A (discharging)
+battery.charge = 5.0;    // 5 Ah remaining
+battery.capacity = 10.0; // 10 Ah total
+battery.temperature = 28.5;  // 28.5°C
+battery.power_supply_status = BatteryState::STATUS_DISCHARGING;
+
+// Check battery level
+if battery.is_low(20.0) {
+    println!("Battery low!");
+}
+
+if battery.is_critical() {  // Below 10%
+    println!("Battery critical!");
+}
+
+// Estimate remaining time
+if let Some(time_left) = battery.time_remaining() {
+    println!("Time remaining: {}s", time_left);
+}
+```
+
+**Fields**:
+- `voltage: f32` - Battery voltage in volts
+- `current: f32` - Current in amperes (negative = discharging)
+- `charge: f32` - Remaining charge in Ah
+- `capacity: f32` - Total capacity in Ah
+- `percentage: f32` - Charge percentage (0-100)
+- `power_supply_status: u8` - Status (0=unknown, 1=charging, 2=discharging, 3=full)
+- `temperature: f32` - Temperature in °C
+- `cell_voltages: [f32; 16]` - Individual cell voltages
+- `cell_count: u8` - Number of cells
+- `timestamp: u64` - Nanoseconds since epoch
+
+## Control Messages
+
+Actuator commands and control parameters (from horus_library).
+
+### CmdVel
+
+Basic velocity command for robot control:
+
+```rust
+use horus::prelude::*; // Provides CmdVel;
+
+// Create command
+let cmd = CmdVel::new(1.0, 0.5);  // 1.0 m/s forward, 0.5 rad/s rotation
+
+// Stop command
+let stop = CmdVel::zero();
+
+// With explicit timestamp
+let cmd = CmdVel::with_timestamp(1.0, 0.5, 123456789);
+```
+
+**Fields**:
+- `stamp_nanos: u64` - Timestamp in nanoseconds
+- `linear: f32` - Forward velocity in m/s
+- `angular: f32` - Rotation velocity in rad/s
+
+### Other Control Messages
+
+Available from `horus_library::messages::control`:
+
+**MotorCommand**: Direct motor control
+
+**DifferentialDriveCommand**: Differential drive (left/right wheels)
+
+**ServoCommand**: Servo position/velocity control
+
+**PidConfig**: PID controller parameters
+
+**TrajectoryPoint**: Single point in a trajectory
+
+**JointCommand**: Multi-joint position/velocity/effort
+
+## Vision Messages
+
+Available from `horus_library::messages::vision`:
+
+**Image**: Raw image data
+
+**CompressedImage**: JPEG/PNG compressed images
+
+**CameraInfo**: Camera calibration parameters
+
+**Detection**: Object detection result
+
+**DetectionArray**: Multiple detections
+
+## Navigation Messages
+
+Available from `horus_library::messages::navigation`:
+
+**Goal**: Navigation goal pose
+
+**Path**: Sequence of waypoints
+
+**OccupancyGrid**: 2D occupancy map
+
+**CostMap**: Cost map for path planning
+
+**PathPlan**: Complete path with metadata
+
+## Diagnostics Messages
+
+Available from `horus_library::messages::diagnostics`:
+
+**Heartbeat**: Node health ping
+
+**Status**: Node status with level
+
+**StatusLevel**: Error severity (OK, Warn, Error, Fatal)
+
+**EmergencyStop**: Emergency stop signal
+
+**ResourceUsage**: CPU/memory usage
+
+**DiagnosticValue**: Key-value diagnostic pair
+
+**DiagnosticReport**: Full diagnostic report
+
+**SafetyStatus**: Safety system status
+
+## Custom Messages
+
+### Creating Custom Messages
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotStatus {
+    pub battery_level: f32,
+    pub temperature: f32,
+    pub error_code: u32,
+    pub timestamp: u64,
+}
+
+impl RobotStatus {
+    pub fn new(battery: f32, temp: f32) -> Self {
+        Self {
+            battery_level: battery,
+            temperature: temp,
+            error_code: 0,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        }
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        self.battery_level > 20.0 && self.temperature < 60.0
+    }
+}
+
+// Use with Hub
+use horus::prelude::*;
+let status_pub: Hub<RobotStatus> = Hub::new("robot_status")?;
+status_pub.send(RobotStatus::new(75.0, 42.0), &mut None).ok();
+```
+
+### Best Practices for Custom Messages
+
+**Use fixed-size types**:
+
+```rust
+// GOOD: Fixed-size array
+pub struct LaserData {
+    pub ranges: [f32; 360],  // Fixed size
+}
+
+// BAD: Variable-size Vec
+pub struct LaserData {
+    pub ranges: Vec<f32>,  // Requires heap allocation
+}
+```
+
+**Include timestamps**:
+
+```rust
+pub struct MyMessage {
+    pub data: f32,
+    pub timestamp: u64,  // Always include timestamp
+}
+```
+
+**Implement helper methods**:
+
+```rust
+impl MyMessage {
+    pub fn new() -> Self { /* ... */ }
+    pub fn is_valid(&self) -> bool { /* ... */ }
+    pub fn from_other(other: &OtherMsg) -> Self { /* ... */ }
+}
+```
+
+**Use repr(C) for C interop**:
+
+```rust
+#[repr(C)]  // C-compatible layout
+#[derive(Debug, Clone, Copy)]
+pub struct CInteropMessage {
+    pub x: f32,
+    pub y: f32,
+}
+```
+
+## Message Sizes and Performance
+
+### Typical Message Sizes
+
+| Message Type | Size | Latency (Hub) | Latency (Link) |
+|--------------|------|---------------|----------------|
+| CmdVel | 16B | ~500ns | 248ns |
+| Pose2D | 32B | ~520ns | ~350ns |
+| IMU | 304B | ~940ns | ~400ns |
+| LaserScan | 1.5KB | ~2.2µs | ~900ns |
+| Image (640x480 RGB) | ~1MB | Variable | Variable |
+
+**Key insight**: Latency scales linearly with message size.
+
+### Optimization Tips
+
+**Minimize message size**:
+
+```rust
+// Instead of sending full image every frame
+pub struct CompressedImage {
+    pub data: Vec<u8>,  // JPEG compressed
+    pub format: u8,
+}
+
+// Or send only regions of interest
+pub struct ImageROI {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub data: [u8; 4096],  // Fixed-size ROI
+}
+```
+
+**Use appropriate precision**:
+
+```rust
+// For high precision (scientific)
+pub struct HighPrecisionPose {
+    pub x: f64,  // Double precision
+    pub y: f64,
+}
+
+// For most robotics (faster)
+pub struct FastPose {
+    pub x: f32,  // Single precision - sufficient for most cases
+    pub y: f32,
+}
+```
+
+**Avoid unnecessary fields**:
+
+```rust
+// GOOD: Only what you need
+pub struct SimpleCmdVel {
+    pub linear: f32,
+    pub angular: f32,
+}
+
+// BAD: Extra unused fields
+pub struct VerboseCmdVel {
+    pub linear: f32,
+    pub angular: f32,
+    pub metadata: [u8; 256],  // Unused
+    pub debug_info: [u8; 512],  // Unused
+}
+```
+
+## Working with Messages in Nodes
+
+### Publishing Messages
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides LaserScan;
+
+struct LidarNode {
+    scan_pub: Hub<LaserScan>,
+}
+
+impl Node for LidarNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let mut scan = LaserScan::new();
+        // Fill in scan data...
+        scan.ranges[0] = 5.2;
+
+        self.scan_pub.send(scan, &mut ctx).ok();
+    }
+}
+```
+
+### Subscribing to Messages
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides LaserScan;
+
+struct ObstacleDetector {
+    scan_sub: Hub<LaserScan>,
+}
+
+impl Node for ObstacleDetector {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv(&mut ctx) {
+            // Find closest obstacle
+            if let Some(min_range) = scan.min_range() {
+                if min_range < 0.5 {
+                    // Obstacle too close!
+                }
+            }
+        }
+    }
+}
+```
+
+## Complete Working Examples
+
+For complete, runnable examples demonstrating message usage in real applications, see:
+
+- **[Basic Examples](/rust/examples/basic-examples)** - Fundamental patterns including teleop robot, sensor fusion, and custom messages
+- **[Advanced Examples](/rust/examples/advanced-examples)** - Complex patterns like state machines and multi-process systems
+- **[Second Application](/getting-started/second-application)** - Step-by-step 3-node pipeline tutorial
+
+### Quick Message Usage Pattern
+### Quick Message Usage Pattern
+
+Here's the essential pattern for using messages in your nodes:
+
+**Publishing a message:**
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel;
+
+struct Publisher {
+    cmd_pub: Hub<CmdVel>,
+}
+
+impl Node for Publisher {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let cmd = CmdVel::new(1.0, 0.5);  // linear, angular
+        self.cmd_pub.send(cmd, &mut ctx).ok();
+    }
+}
+```
+
+**Subscribing to a message:**
+```rust
+struct Subscriber {
+    cmd_sub: Hub<CmdVel>,
+}
+
+impl Node for Subscriber {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            // Use the message
+            println!("linear={}, angular={}", cmd.linear, cmd.angular);
+        }
+    }
+}
+```
+
+For complete, runnable examples, see [Basic Examples](/rust/examples/basic-examples) and [Advanced Examples](/rust/examples/advanced-examples).
+
+---
+
+---
+
+## Next Steps
+
+- **[Basic Examples](/rust/examples/basic-examples)** - Learn fundamental patterns
+- **[Advanced Examples](/rust/examples/advanced-examples)** - State machines, multi-process systems
+- **[Second Application](/getting-started/second-application)** - Build a 3-node pipeline
+- **[API Reference](/rust/api)** - Detailed message type documentation
+- **[Performance Optimization](/performance/performance)** - Optimize for large messages
+- **[Python Bindings](/python/api/python-bindings)** - Multi-language support

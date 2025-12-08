@@ -1,0 +1,449 @@
+---
+title: CanBusNode
+description: CAN bus communication with support for J1939, CANopen, and DeviceNet
+---
+
+# CanBusNode
+
+Controller Area Network (CAN) bus communication node for automotive, industrial, and robotics applications. Supports standard and extended identifiers, CAN-FD, and protocol-specific configurations.
+
+## Source Code
+
+- [CanBusNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/can_bus)
+- [CAN Message Types](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- SocketCAN interface (Linux)
+- Standard (11-bit) and Extended (29-bit) identifiers
+- CAN-FD support (up to 2 Mbit/s data phase)
+- Configurable bitrates (125k, 250k, 500k, 1M)
+- ID filtering (whitelist/blacklist)
+- Listen-only and loopback modes
+- Bus-off auto-recovery
+- J1939, CANopen, DeviceNet presets
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create CAN node on can0 interface
+    let mut can = CanBusNode::new("can0")?;
+    can.set_bitrate(500_000); // 500 kbit/s
+
+    scheduler.add(Box::new(can), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install CAN utilities
+sudo apt install can-utils
+
+# Load SocketCAN kernel module
+sudo modprobe can
+sudo modprobe can_raw
+sudo modprobe vcan  # Virtual CAN for testing
+```
+
+### Setup Virtual CAN (Testing)
+
+```bash
+# Create virtual CAN interface
+sudo ip link add dev can0 type vcan
+sudo ip link set up can0
+
+# Verify
+ip link show can0
+```
+
+### Setup Real CAN Hardware
+
+```bash
+# For physical CAN interfaces (e.g., MCP2515)
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set up can0
+
+# Verify
+ip link show can0
+candump can0  # Monitor CAN traffic
+```
+
+### Enabling Features
+
+There are three ways to enable the required `can-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `CanBusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: can-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - can-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["can-hardware"] }
+```
+
+## Configuration
+
+### Bitrate
+
+```rust
+let mut can = CanBusNode::new("can0")?;
+
+// Standard bitrates
+can.set_bitrate(125_000);   // 125 kbit/s
+can.set_bitrate(250_000);   // 250 kbit/s
+can.set_bitrate(500_000);   // 500 kbit/s
+can.set_bitrate(1_000_000); // 1 Mbit/s
+
+// Or use presets
+can.configure_125k();
+can.configure_250k();
+can.configure_500k();
+can.configure_1m();
+```
+
+### CAN-FD
+
+```rust
+// Enable CAN-FD with higher data phase bitrate
+can.enable_can_fd(true);
+can.set_fd_bitrate(2_000_000); // 2 Mbit/s data phase
+```
+
+### Operating Modes
+
+```rust
+// Listen-only mode (passive monitoring, no ACK)
+can.enable_listen_only(true);
+
+// Loopback mode (for testing without hardware)
+can.enable_loopback(true);
+
+// Automatic bus-off recovery
+can.enable_auto_restart(true);
+```
+
+### ID Filtering
+
+```rust
+// Add single ID filter
+can.add_filter(0x123, 0x7FF); // ID, mask
+
+// Add range filter
+can.add_range_filter(0x100, 0x1FF); // Start, end
+
+// Set filter mode
+can.set_whitelist_mode(); // Only accept filtered IDs
+can.set_blacklist_mode(); // Block filtered IDs
+```
+
+## Usage Patterns
+
+### Sending CAN Frames
+
+```rust
+use horus::prelude::*;
+
+// Create standard CAN frame
+let mut frame = CanFrame::new(0x123, false); // ID, extended
+frame.data[0] = 0x01;
+frame.data[1] = 0x02;
+frame.dlc = 2;
+
+// Publish to TX topic
+let tx_hub = Hub::<CanFrame>::new("can.can0.tx")?;
+tx_hub.send(frame, &mut None).ok();
+```
+
+### Receiving CAN Frames
+
+```rust
+// Subscribe to RX topic
+let rx_hub = Hub::<CanFrame>::new("can.can0.rx")?;
+
+if let Some(frame) = rx_hub.recv(&mut None) {
+    println!("Received CAN ID 0x{:03X}: {:?}",
+        frame.id, &frame.data[..frame.dlc as usize]);
+}
+```
+
+### Error Monitoring
+
+```rust
+// Subscribe to error topic
+let error_hub = Hub::<CanError>::new("can.can0.error")?;
+
+if let Some(error) = error_hub.recv(&mut None) {
+    match error.error_type {
+        CanError::ERROR_TX_TIMEOUT => println!("TX timeout"),
+        CanError::ERROR_BUS_OFF => println!("Bus off"),
+        CanError::ERROR_ACK => println!("No ACK received"),
+        _ => println!("Error: {}", error.error_type),
+    }
+}
+```
+
+## Protocol Presets
+
+### J1939 (Trucks/Heavy Vehicles)
+
+```rust
+can.configure_j1939();
+// Sets: 250 kbit/s, 29-bit extended IDs
+```
+
+Example J1939 frame:
+```rust
+let mut frame = CanFrame::new(0x18FEF100, true); // PGN 65265, SA 0
+frame.data[0] = 0xFF; // Engine speed LSB
+frame.data[1] = 0xFF; // Engine speed MSB
+frame.dlc = 8;
+```
+
+### CANopen (Industrial Automation)
+
+```rust
+can.configure_canopen(1_000_000); // 1 Mbit/s
+// Uses 11-bit IDs
+```
+
+Example CANopen frame:
+```rust
+// NMT: Start node 5
+let mut frame = CanFrame::new(0x000, false);
+frame.data[0] = 0x01; // Start command
+frame.data[1] = 0x05; // Node ID
+frame.dlc = 2;
+```
+
+### DeviceNet (Industrial Control)
+
+```rust
+can.configure_devicenet(125_000); // 125 kbit/s or 250k, 500k
+```
+
+## Message Format
+
+### CanFrame
+
+```rust
+pub struct CanFrame {
+    pub id: u32,              // CAN identifier (11 or 29 bit)
+    pub is_extended: bool,    // Extended frame format
+    pub is_remote: bool,      // Remote transmission request
+    pub is_error: bool,       // Error frame
+    pub is_fd: bool,          // CAN-FD frame
+    pub data: [u8; 64],       // Data (8 bytes standard, 64 CAN-FD)
+    pub dlc: u8,              // Data length code
+    pub timestamp: u64,       // Reception time (ns)
+}
+```
+
+### CanError
+
+```rust
+pub struct CanError {
+    pub error_type: u8,       // Error type code
+    pub tx_errors: u8,        // TX error counter
+    pub rx_errors: u8,        // RX error counter
+    pub timestamp: u64,       // Error time (ns)
+}
+```
+
+### Error Types
+
+```rust
+pub const ERROR_TX_TIMEOUT: u8 = 1;  // TX timeout
+pub const ERROR_LOST_ARB: u8 = 2;    // Lost arbitration
+pub const ERROR_CONTROLLER: u8 = 3;  // Controller problem
+pub const ERROR_PROTOCOL: u8 = 4;    // Protocol violation
+pub const ERROR_TRANSCEIVER: u8 = 5; // Transceiver status
+pub const ERROR_NO_ACK: u8 = 6;      // No ACK
+pub const ERROR_BUS_OFF: u8 = 7;     // Bus off
+pub const ERROR_BUS_ERROR: u8 = 8;   // Bus error
+pub const ERROR_RESTARTED: u8 = 9;   // Controller restarted
+```
+
+## Complete Example
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure CAN bus
+    let mut can = CanBusNode::new("can0")?;
+    can.set_bitrate(500_000);
+    can.add_filter(0x100, 0x700); // Accept 0x100-0x1FF
+    can.set_whitelist_mode();
+
+    scheduler.add(Box::new(can), 1, Some(true));
+
+    // TX node
+    let tx_node = node! {
+        name: "can_tx",
+        init: |ctx| {
+            ctx.log_info("CAN TX node initialized");
+            Ok(())
+        },
+        tick: |ctx| {
+            // Send periodic message
+            let mut frame = CanFrame::new(0x123, false);
+            frame.data[0] = 0xAA;
+            frame.data[1] = 0xBB;
+            frame.dlc = 2;
+
+            let hub = Hub::<CanFrame>::new("can.can0.tx")?;
+            hub.send(frame, &mut None).ok();
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(tx_node), 2, Some(true));
+
+    // RX node
+    let rx_node = node! {
+        name: "can_rx",
+        tick: |ctx| {
+            let hub = Hub::<CanFrame>::new("can.can0.rx")?;
+            while let Some(frame) = hub.recv(&mut None) {
+                ctx.log_info(&format!(
+                    "RX: ID=0x{:03X} Data={:02X?}",
+                    frame.id, &frame.data[..frame.dlc as usize]
+                ));
+            }
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(rx_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Testing with can-utils
+
+```bash
+# Send test frame
+cansend can0 123#AABBCCDD
+
+# Monitor bus
+candump can0
+
+# Generate random traffic
+cangen can0 -v
+
+# Replay captured traffic
+canplayer -I captured.log
+```
+
+## Statistics
+
+```rust
+// Get bus statistics
+let stats = can.get_statistics();
+println!("TX: {}, RX: {}, Errors: {}, Bus-off: {}",
+    stats.tx_count, stats.rx_count, stats.error_count, stats.bus_off_count);
+
+// Get error counters
+let (tx_errors, rx_errors) = can.get_error_counters();
+println!("TX errors: {}, RX errors: {}", tx_errors, rx_errors);
+
+// Get bus load
+let load = can.get_bus_load();
+println!("Bus load: {:.1}%", load);
+```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+```
+[WARN] CanBusNode: Hardware unavailable - using SIMULATION mode
+[WARN]   Tried: can0
+[WARN]   Error: No such device
+[WARN]   Fix:
+[WARN]     1. Install: sudo apt install can-utils
+[WARN]     2. Load kernel module: sudo modprobe vcan
+[WARN]     3. Create interface: sudo ip link add dev can0 type vcan
+[WARN]     4. Bring up interface: sudo ip link set up can0
+[WARN]     5. For real CAN hardware, use socketcan_interface drivers
+[WARN]     6. If using cargo: cargo build --features="can-hardware"
+[WARN]        (horus run auto-detects features)
+```
+
+**Solutions:**
+1. Check if interface exists: `ip link show can0`
+2. Create virtual CAN: `sudo ip link add dev can0 type vcan && sudo ip link set up can0`
+3. Check kernel modules: `lsmod | grep can`
+4. Test with can-utils: `candump can0`
+
+## Best Practices
+
+1. **Always handle errors:**
+   ```rust
+   let error_hub = Hub::<CanError>::new("can.can0.error")?;
+   // Monitor for bus-off and other errors
+   ```
+
+2. **Use ID filtering for performance:**
+   ```rust
+   can.add_range_filter(0x100, 0x1FF);
+   can.set_whitelist_mode();
+   ```
+
+3. **Enable auto-restart for reliability:**
+   ```rust
+   can.enable_auto_restart(true);
+   ```
+
+4. **Test with virtual CAN before hardware:**
+   ```bash
+   sudo ip link add dev can0 type vcan
+   sudo ip link set up can0
+   ```
+
+5. **Monitor bus load:**
+   ```rust
+   if can.get_bus_load() > 80.0 {
+       ctx.log_warning("High bus load!");
+   }
+   ```
+
+## See Also
+
+- [I2cBusNode](./i2c-bus) - I2C communication
+- [SpiBusNode](./spi-bus) - SPI communication
+- [ModbusNode](./modbus) - Modbus RTU/TCP
+- [BldcMotorNode](./bldc-motor) - Can use CAN for ESC control

@@ -1,0 +1,389 @@
+---
+title: Core Concepts - Link
+description: Understanding HORUS ultra-low latency point-to-point communication
+order: 24
+---
+
+# Link and Point-to-Point Communication
+
+Link is HORUS's ultra-low latency **Single Producer Single Consumer (SPSC)** communication system. It enables two nodes to exchange messages through shared memory with **248ns round-trip latency** - 1.94x faster than Hub.
+
+## What is a Link?
+
+A `Link<T>` is a **typed point-to-point channel** that connects exactly one producer to exactly one consumer through lock-free shared memory. Link is optimized for the tightest control loops where every nanosecond counts.
+
+### Key Features
+
+**Ultra-Low Latency**: 248ns round-trip (vs 481ns for Hub) - the fastest IPC primitive in HORUS
+
+**Lock-Free SPSC**: Single Producer Single Consumer queue with no locks or atomic contention
+
+**Zero-Copy**: Messages written directly to shared memory without serialization
+
+**Cache-Optimized**: False sharing eliminated through careful memory alignment
+
+**Type Safety**: Compile-time type checking for message types
+
+**Predictable Performance**: No head-of-line blocking, no subscriber variability
+
+## Basic Usage
+
+### Creating a Link
+
+Links have explicit roles - you create either a producer or consumer:
+
+```rust
+use horus::prelude::*;
+
+// Producer side
+let output: Link<SensorData> = Link::producer("imu_raw")?;
+
+// Consumer side (different node/process)
+let input: Link<SensorData> = Link::consumer("imu_raw")?;
+```
+
+### Sending Messages
+
+```rust
+let data = SensorData { x: 1.0, y: 2.0, z: 3.0 };
+output.send(data, &mut ctx)?; // ctx enables logging
+```
+
+### Receiving Messages
+
+```rust
+if let Some(data) = input.recv(&mut ctx) {
+    ctx.log_info(&format!("Received: {:?}", data));
+}
+```
+
+## Transport Options
+
+Link supports both local and network transports transparently:
+
+### Local Shared Memory (Default)
+
+```rust
+// Automatically uses local shared memory
+let output: Link<SensorData> = Link::producer("sensors")?;
+let input: Link<SensorData> = Link::consumer("sensors")?;
+```
+
+**Performance**: 248ns latency
+**Use case**: All nodes on same machine
+**Pros**: Ultra-fast, deterministic, zero-copy
+
+### Network Communication
+
+```rust
+// Producer connects to consumer
+let output: Link<SensorData> = Link::producer("sensors@192.168.1.5:9000")?;
+
+// Consumer listens for producer
+let input: Link<SensorData> = Link::consumer("sensors@0.0.0.0:9000")?;
+```
+
+**Performance**: 5-15µs latency (3-10x faster than Hub network!)
+**Use case**: Nodes distributed across multiple machines
+**Pros**: Multi-machine, fault isolation, still very fast
+
+**Important**: The Link pattern (SPSC point-to-point) works identically with both transports - only the endpoint syntax changes!
+
+See [Communication Transport](/concepts/communication-transport) for detailed comparison and [Network Communication](/concepts/network-communication) for multi-machine setup.
+
+## Link vs Hub
+
+| Feature | Link (SPSC) | Hub (MPMC) |
+|---------|-------------|------------|
+| **Latency** | 248ns | 481ns |
+| **Pattern** | 1 producer  1 consumer | N producers  M consumers |
+| **Use Case** | Control loops, critical paths | General pub/sub, broadcasting |
+| **Complexity** | Lower (no coordination) | Higher (multi-consumer coordination) |
+| **Performance** | 1.94x faster | Flexible but slower |
+
+### When to Use Link
+
+ **Control loops** running at &gt;100Hz where latency matters
+ **Point-to-point** communication with fixed topology
+ **Critical paths** in your dataflow pipeline
+ **Deterministic** real-time systems
+
+### When to Use Hub
+
+ **Broadcasting** to multiple subscribers
+ **Dynamic** topologies where subscribers change
+ **Logging/monitoring** where many nodes observe one topic
+ **Flexibility** over absolute minimum latency
+
+## How Link Works Internally
+
+### Memory Layout
+
+Link uses a **single-slot design** in shared memory (`/dev/shm/horus/topics/links/<topic>`):
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Header (64 bytes, cache-aligned)                       │
+├─────────────────────────────────────────────────────────┤
+│  - sequence: AtomicU64 (version counter)               │
+│  - element_size: AtomicUsize (validation)              │
+│  - _padding: [u8; 48] (cache line alignment)           │
+├─────────────────────────────────────────────────────────┤
+│ Single Data Slot (sizeof(T) bytes)                     │
+├─────────────────────────────────────────────────────────┤
+│  - Value: T (always the latest message)                │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Total memory**: `64 bytes (header) + sizeof(T)` - extremely compact!
+
+### Single-Slot Design
+
+Unlike a queue or ring buffer, Link uses a **single memory slot** that always contains the **latest value**:
+
+**Producer (send)**:
+1. Write new message directly to the data slot
+2. Increment `sequence` counter with `Release` ordering
+3. **Always succeeds** - overwrites previous value
+
+**Consumer (recv)**:
+1. Load `sequence` with `Acquire` ordering
+2. Compare with last seen sequence (stored locally)
+3. If sequence changed: read message and update last seen
+4. If sequence same: return `None` (already read this value)
+
+**Key insight**: The consumer tracks what it's already read via a **local** `last_seen_sequence` counter, not in shared memory. This eliminates contention.
+
+### Why Single-Slot is Fast
+
+1. **No queue overhead**: No head/tail pointers, no wrap-around logic
+2. **Always overwrites**: Producer never blocks or fails
+3. **Latest value semantics**: Perfect for sensors/control (you always want the newest data)
+4. **Minimal memory footprint**: Just header + one element
+5. **Zero contention**: Producer writes, consumer reads - never compete for same atomic
+
+## Performance Characteristics
+
+### Latency by Message Size
+
+| Message Size | Round-Trip Latency |
+|--------------|-------------------|
+| 16 bytes (small) | ~248ns |
+| 256 bytes | ~350ns |
+| 1KB | ~500ns |
+| 4KB | ~1.0µs |
+
+### Throughput
+
+Link can sustain:
+- **2.5M msgs/sec** for small messages (16B)
+- **500K msgs/sec** for larger messages (1KB)
+- Limited mainly by CPU cache bandwidth, not synchronization
+
+## Common Patterns
+
+### 1. Control Loop Pipeline
+
+```rust
+// IMU  State Estimator  Controller  Motors
+// Each stage connected by a Link
+
+struct ImuNode {
+    output: Link<ImuData>,
+}
+
+struct EstimatorNode {
+    input: Link<ImuData>,
+    output: Link<StateEstimate>,
+}
+
+struct ControllerNode {
+    input: Link<StateEstimate>,
+    output: Link<MotorCommands>,
+}
+```
+
+### 2. Sensor Data Flow
+
+```rust
+use horus::prelude::*;
+
+struct SensorNode {
+    output: Link<LidarScan>,
+}
+
+impl SensorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            output: Link::producer("lidar")?,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str { "SensorNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let scan = self.read_lidar();
+        self.output.send(scan, &mut ctx).ok();
+        thread::sleep(Duration::from_millis(10)); // 100Hz
+    }
+}
+
+// Run with scheduler
+let mut scheduler = Scheduler::new();
+scheduler.add(Box::new(SensorNode::new()?), 0, Some(true));
+scheduler.run()?;
+```
+
+### 3. Metrics and Monitoring
+
+```rust
+// Check Link health
+let metrics = link.get_metrics();
+eprintln!("Sent: {}, Received: {}",
+    metrics.messages_sent,
+    metrics.messages_received
+);
+
+// Large difference = consumer not keeping up (messages being skipped)
+let skipped = metrics.messages_sent - metrics.messages_received;
+if skipped > 100 {
+    eprintln!("Warning: Consumer skipped {} messages!", skipped);
+}
+```
+
+## Error Handling
+
+### Send Always Succeeds
+
+Due to the single-slot design, **`send()` always succeeds**:
+
+```rust
+// Link::send() always returns Ok(()) - it overwrites the previous value
+link.send(data, &mut ctx).ok();
+```
+
+This is by design:
+-  **No backpressure**: Producer never blocks waiting for consumer
+-  **Latest value wins**: Old unread messages are automatically discarded
+-  **Perfect for sensors**: You always want the newest sensor reading, not old ones
+
+If you need guaranteed delivery of every message, use `Hub` instead (MPMC with buffering).
+
+### No Messages Available
+
+```rust
+if let Some(data) = link.recv(&mut ctx) {
+    process(data);
+} else {
+    // No messages available - this is normal, not an error
+    // Consumer is faster than producer
+}
+```
+
+## Debugging Tips
+
+### Check Metrics
+
+```rust
+let metrics = link.get_metrics();
+let skipped = metrics.messages_sent - metrics.messages_received;
+if skipped > 0 {
+    eprintln!("Consumer skipped {} messages - may be too slow!",
+        skipped);
+}
+```
+
+### Enable Logging
+
+Pass `ctx` to send/recv to see colored logs with IPC latency:
+
+```rust
+// Enable logging when adding node
+scheduler.add(Box::new(node), 0, Some(true));
+
+// In tick():
+link.send(data, &mut ctx)?; // Logs: [NodeName] PUB sensor_data (234ns)
+```
+
+### Common Issues
+
+1. **High send failures**: Consumer not calling recv() fast enough
+2. **No messages received**: Check topic names match exactly
+3. **Occasional drops**: Normal for soft real-time, increase buffer if needed
+4. **Consistent latency spikes**: Check for system load, thermal throttling
+
+## Comparison with Other IPC
+
+| System | Latency | Pattern | Notes |
+|--------|---------|---------|-------|
+| **HORUS Link** | 248ns | SPSC | Fastest, specialized |
+| **HORUS Hub** | 481ns | MPMC | More flexible |
+| iceoryx | ~1-2µs | MPSC | Excellent zero-copy |
+| ROS 2 (Cyclone DDS) | ~50-100µs | Pub/sub | Network-capable |
+| Shared memory + mutex | ~1-5µs | Any | Lock overhead |
+| Unix pipes | ~10-20µs | SPSC | Kernel overhead |
+
+Link achieves its low latency through:
+- Lock-free SPSC algorithm
+- Cache-line alignment
+- No serialization
+- Direct shared memory access
+- Minimal atomic operations
+
+## Best Practices
+
+ **Use Link for critical paths**: Flight control, motor commands, sensor fusion
+ **One Link per data flow**: Don't multiplex - create separate Links for separate data streams
+ **Size buffers appropriately**: Match to your actual burst size, not "as large as possible"
+ **Monitor metrics**: Track send failures to detect performance issues
+ **Handle send errors**: Decide your drop policy (soft vs hard real-time)
+
+ **Don't use Link for broadcasting**: Use Hub if you need multiple consumers
+ **Don't share Link instances**: Each node should own its Link
+ **Don't ignore send failures**: They indicate your consumer can't keep up
+ **Don't use massive buffers**: Large buffers hide problems and waste memory
+
+## Example: Drone Flight Controller
+
+```rust
+// Real-world usage from HORUS test suite
+struct FlightController {
+    state_input: Link<StateEstimate>,    // From estimator
+    motor_output: Link<MotorCommands>,   // To motor driver
+}
+
+impl Node for FlightController {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Read latest state (248ns)
+        if let Some(state) = self.state_input.recv(&mut ctx) {
+            let commands = self.compute_pd_control(state);
+
+            // Send motor commands (248ns)
+            if let Err(_) = self.motor_output.send(commands, &mut ctx) {
+                eprintln!("Motor buffer full!"); // Safety critical!
+            }
+        }
+
+        // Total latency: ~600ns including processing
+        // Runs at 1kHz (1ms period)
+    }
+}
+```
+
+See the full example: `tests/link_drone_app/`
+
+## Summary
+
+Link provides the **fastest IPC in HORUS** for point-to-point communication:
+
+- **248ns latency**: 1.94x faster than Hub
+- **SPSC pattern**: One producer, one consumer
+- **Lock-free**: No mutex overhead
+- **Type-safe**: Compile-time guarantees
+- **Production-ready**: Used in real-time control loops
+
+Use Link when you need the absolute minimum latency for critical data paths. Use Hub when you need flexibility and multiple subscribers.
+
+For the full API reference, see [Core API Reference](/rust/api/core#link).

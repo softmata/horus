@@ -1,0 +1,289 @@
+---
+title: Differential Drive
+description: Forward and inverse kinematics for two-wheeled mobile robots
+---
+
+# Differential Drive
+
+Kinematics algorithms for differential drive (two-wheeled) mobile robots. Convert between robot velocity commands and wheel speeds, and compute odometry.
+
+## Source Code
+
+- [Differential Drive Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/differential_drive)
+
+## Features
+
+- Forward kinematics (wheel speeds → robot velocity)
+- Inverse kinematics (robot velocity → wheel speeds)
+- Odometry calculation from wheel encoders
+- Configurable wheel base and radius
+- Unit conversions (angular ↔ linear)
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::differential_drive::DifferentialDrive;
+
+fn main() {
+    // Create kinematics model
+    // wheel_base: distance between wheels (0.5m)
+    // wheel_radius: wheel radius (0.1m)
+    let dd = DifferentialDrive::new(0.5, 0.1);
+
+    // Inverse kinematics: velocity command → wheel speeds
+    let linear_vel = 0.5;   // m/s forward
+    let angular_vel = 0.2;  // rad/s counter-clockwise
+
+    let (left_speed, right_speed) = dd.inverse_kinematics(linear_vel, angular_vel);
+    println!("Wheel speeds: L={:.2} m/s, R={:.2} m/s", left_speed, right_speed);
+
+    // Forward kinematics: wheel speeds → robot velocity
+    let (v, omega) = dd.forward_kinematics(left_speed, right_speed);
+    println!("Robot velocity: v={:.2} m/s, ω={:.2} rad/s", v, omega);
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let dd = DifferentialDrive::new(wheel_base: f64, wheel_radius: f64);
+```
+
+| Parameter | Description | Typical Values |
+|-----------|-------------|----------------|
+| `wheel_base` | Distance between wheel centers (m) | 0.2 - 1.0 m |
+| `wheel_radius` | Radius of drive wheels (m) | 0.03 - 0.2 m |
+
+### Kinematics Methods
+
+```rust
+// Velocity command → wheel speeds (m/s)
+let (left, right) = dd.inverse_kinematics(linear: f64, angular: f64);
+
+// Wheel speeds → velocity command
+let (linear, angular) = dd.forward_kinematics(left_speed: f64, right_speed: f64);
+```
+
+### Unit Conversions
+
+```rust
+// Angular velocity (rad/s) → linear velocity (m/s)
+let linear = dd.wheel_angular_to_linear(angular_speed: f64);
+
+// Linear velocity (m/s) → angular velocity (rad/s)
+let angular = dd.wheel_linear_to_angular(linear_speed: f64);
+```
+
+### Odometry
+
+```rust
+let new_pose = dd.update_odometry(
+    pose: (f64, f64, f64),      // Current (x, y, theta)
+    left_speed: f64,            // Left wheel speed (m/s)
+    right_speed: f64,           // Right wheel speed (m/s)
+    dt: f64,                    // Time step (seconds)
+);
+```
+
+## Kinematics Equations
+
+### Inverse Kinematics
+
+Convert robot velocity to wheel speeds:
+
+```
+v_left  = v - (ω × L / 2)
+v_right = v + (ω × L / 2)
+```
+
+Where:
+- `v` = linear velocity (m/s)
+- `ω` = angular velocity (rad/s)
+- `L` = wheel base (m)
+
+### Forward Kinematics
+
+Convert wheel speeds to robot velocity:
+
+```
+v = (v_left + v_right) / 2
+ω = (v_right - v_left) / L
+```
+
+### Odometry
+
+Update pose from wheel speeds:
+
+```
+x_new = x + v × cos(θ) × dt
+y_new = y + v × sin(θ) × dt
+θ_new = θ + ω × dt
+```
+
+## Example: Motor Controller
+
+```rust
+use horus_library::algorithms::differential_drive::DifferentialDrive;
+
+struct MotorController {
+    dd: DifferentialDrive,
+    max_wheel_speed: f64,
+}
+
+impl MotorController {
+    fn new(wheel_base: f64, wheel_radius: f64, max_speed: f64) -> Self {
+        Self {
+            dd: DifferentialDrive::new(wheel_base, wheel_radius),
+            max_wheel_speed: max_speed,
+        }
+    }
+
+    fn compute_motor_commands(&self, linear: f64, angular: f64) -> (f64, f64) {
+        let (left, right) = self.dd.inverse_kinematics(linear, angular);
+
+        // Clamp to max speed
+        let left = left.clamp(-self.max_wheel_speed, self.max_wheel_speed);
+        let right = right.clamp(-self.max_wheel_speed, self.max_wheel_speed);
+
+        // Convert to motor units (e.g., RPM or PWM)
+        let left_rpm = self.dd.wheel_linear_to_angular(left) * 60.0 / (2.0 * std::f64::consts::PI);
+        let right_rpm = self.dd.wheel_linear_to_angular(right) * 60.0 / (2.0 * std::f64::consts::PI);
+
+        (left_rpm, right_rpm)
+    }
+}
+```
+
+## Example: Odometry Node
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::differential_drive::DifferentialDrive;
+use horus::prelude::*; // Provides {Odometry, Pose2D, Twist};
+
+struct OdometryNode {
+    dd: DifferentialDrive,
+    pose: (f64, f64, f64),
+    last_time: Option<u64>,
+    left_speed: f64,
+    right_speed: f64,
+    odom_pub: Hub<Odometry>,
+}
+
+impl OdometryNode {
+    fn new(wheel_base: f64, wheel_radius: f64) -> Result<Self> {
+        Ok(Self {
+            dd: DifferentialDrive::new(wheel_base, wheel_radius),
+            pose: (0.0, 0.0, 0.0),
+            last_time: None,
+            left_speed: 0.0,
+            right_speed: 0.0,
+            odom_pub: Hub::new("odom")?,
+        })
+    }
+
+    fn update_wheel_speed(&mut self, left: f64, right: f64) {
+        self.left_speed = left;
+        self.right_speed = right;
+    }
+}
+
+impl Node for OdometryNode {
+    fn name(&self) -> &'static str { "Odometry" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+
+        if let Some(last) = self.last_time {
+            let dt = (now - last) as f64 / 1_000_000.0;
+
+            // Update pose
+            self.pose = self.dd.update_odometry(
+                self.pose,
+                self.left_speed,
+                self.right_speed,
+                dt,
+            );
+
+            // Compute velocity
+            let (linear, angular) = self.dd.forward_kinematics(
+                self.left_speed,
+                self.right_speed,
+            );
+
+            // Publish odometry
+            let mut odom = Odometry::default();
+            odom.pose = Pose2D::new(self.pose.0, self.pose.1, self.pose.2);
+            odom.twist = Twist::new_2d(linear, angular);
+            self.odom_pub.send(odom, &mut ctx).ok();
+        }
+
+        self.last_time = Some(now);
+    }
+}
+```
+
+## Common Robot Configurations
+
+| Robot | Wheel Base | Wheel Radius |
+|-------|------------|--------------|
+| TurtleBot3 Burger | 0.16 m | 0.033 m |
+| TurtleBot3 Waffle | 0.287 m | 0.033 m |
+| Create 2 (Roomba) | 0.235 m | 0.036 m |
+| Pioneer 3-DX | 0.38 m | 0.095 m |
+| Small hobby robot | 0.15 m | 0.032 m |
+
+## Motion Types
+
+### Pure Translation (Straight Line)
+
+```rust
+// Forward at 0.5 m/s
+let (l, r) = dd.inverse_kinematics(0.5, 0.0);
+// l == r == 0.5
+```
+
+### Pure Rotation (Spin in Place)
+
+```rust
+// Rotate at 1 rad/s
+let (l, r) = dd.inverse_kinematics(0.0, 1.0);
+// l = -0.25, r = 0.25 (for wheel_base = 0.5)
+```
+
+### Arc Motion
+
+```rust
+// Move in arc: forward + turn
+let (l, r) = dd.inverse_kinematics(0.3, 0.5);
+// Different speeds create curved path
+```
+
+## Velocity Limits
+
+Calculate maximum achievable velocities:
+
+```rust
+fn max_velocities(dd: &DifferentialDrive, max_wheel_speed: f64) -> (f64, f64) {
+    // Max linear (both wheels forward at max)
+    let max_linear = max_wheel_speed;
+
+    // Max angular (wheels spinning opposite)
+    let wheel_base = 0.5;  // Get from dd configuration
+    let max_angular = 2.0 * max_wheel_speed / wheel_base;
+
+    (max_linear, max_angular)
+}
+```
+
+## See Also
+
+- [Differential Drive Node](/rust/library/built-in-nodes/differential-drive) - Ready-to-use node
+- [PID Controller](/rust/library/algorithms/pid) - Motor speed control
+- [Odometry Node](/rust/library/built-in-nodes/odometry) - Odometry publishing
+- [Pure Pursuit](/rust/library/algorithms/pure-pursuit) - Path following

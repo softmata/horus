@@ -1,0 +1,337 @@
+---
+title: Sim2D Python API
+description: Python bindings for Sim2D simulation and RL training
+---
+
+# Sim2D Python API
+
+Sim2D provides Python bindings for reinforcement learning, rapid prototyping, and integration with ML frameworks.
+
+## Installation
+
+```bash
+# Install with Python support
+pip install horus-sim2d
+
+# Or build from source with Python feature
+cd horus_library/tools/sim2d
+maturin develop --features python
+```
+
+## Quick Start
+
+```python
+from horus.sim2d import Sim2D, RobotConfig, WorldConfig
+
+# Create simulation
+sim = Sim2D(
+    robot=RobotConfig(
+        width=0.5,
+        length=0.8,
+        max_speed=2.0
+    ),
+    world=WorldConfig(
+        width=20.0,
+        height=20.0
+    ),
+    headless=True
+)
+
+# Step simulation
+for _ in range(1000):
+    # Set velocity command
+    sim.set_velocity(linear=0.5, angular=0.1)
+
+    # Step physics
+    obs = sim.step()
+
+    # Get sensor data
+    lidar = obs['lidar']
+    pose = obs['pose']
+
+    print(f"Position: ({pose['x']:.2f}, {pose['y']:.2f})")
+```
+
+## API Reference
+
+### Sim2D Class
+
+```python
+class Sim2D:
+    def __init__(
+        self,
+        robot: RobotConfig = None,
+        world: WorldConfig = None,
+        headless: bool = False,
+        topic_prefix: str = "robot"
+    ):
+        """
+        Create a Sim2D simulation instance.
+
+        Args:
+            robot: Robot configuration (uses defaults if None)
+            world: World configuration (uses defaults if None)
+            headless: Run without GUI
+            topic_prefix: HORUS topic prefix
+        """
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `step(dt=0.016)` | Advance simulation by dt seconds |
+| `reset()` | Reset to initial state |
+| `set_velocity(linear, angular)` | Set robot velocity command |
+| `get_pose()` | Get robot pose (x, y, theta) |
+| `get_lidar()` | Get LIDAR scan data |
+| `get_imu()` | Get IMU data |
+| `close()` | Shutdown simulation |
+
+### RobotConfig
+
+```python
+class RobotConfig:
+    width: float = 0.5       # Robot width (m)
+    length: float = 0.8      # Robot length (m)
+    max_speed: float = 2.0   # Max velocity (m/s)
+    position: tuple = (0, 0) # Initial position
+    color: tuple = (0.2, 0.8, 0.2)  # RGB color
+
+    # Sensors
+    lidar_enabled: bool = True
+    lidar_range: float = 10.0
+    lidar_rays: int = 360
+```
+
+### WorldConfig
+
+```python
+class WorldConfig:
+    width: float = 20.0      # World width (m)
+    height: float = 20.0     # World height (m)
+    obstacles: list = []     # List of obstacles
+```
+
+### Obstacle
+
+```python
+class Obstacle:
+    position: tuple      # (x, y) center
+    shape: str           # "rectangle" or "circle"
+    size: tuple          # (width, height) or (radius, radius)
+    color: tuple = None  # Optional RGB
+```
+
+## Observation Space
+
+The `step()` method returns a dictionary:
+
+```python
+obs = sim.step()
+
+# Pose
+obs['pose'] = {
+    'x': float,      # X position (m)
+    'y': float,      # Y position (m)
+    'theta': float,  # Heading (rad)
+}
+
+# Velocity
+obs['velocity'] = {
+    'linear': float,   # Forward velocity (m/s)
+    'angular': float,  # Turn rate (rad/s)
+}
+
+# LIDAR (if enabled)
+obs['lidar'] = np.array([...])  # Range values
+
+# IMU (if enabled)
+obs['imu'] = {
+    'orientation': float,        # Yaw (rad)
+    'angular_velocity': float,   # Turn rate (rad/s)
+    'linear_acceleration': float # Acceleration (m/s²)
+}
+
+# Collision
+obs['collision'] = bool  # True if colliding
+```
+
+## Gym Environment
+
+Wrap Sim2D as a Gymnasium environment:
+
+```python
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+from horus.sim2d import Sim2D, RobotConfig, WorldConfig
+
+class Sim2DEnv(gym.Env):
+    def __init__(self):
+        super().__init__()
+
+        # Create simulation
+        self.sim = Sim2D(headless=True)
+
+        # Action space: [linear_vel, angular_vel]
+        self.action_space = spaces.Box(
+            low=np.array([-1.0, -1.0]),
+            high=np.array([1.0, 1.0]),
+            dtype=np.float32
+        )
+
+        # Observation space: LIDAR + pose
+        self.observation_space = spaces.Dict({
+            'lidar': spaces.Box(
+                low=0, high=10,
+                shape=(360,), dtype=np.float32
+            ),
+            'pose': spaces.Box(
+                low=-20, high=20,
+                shape=(3,), dtype=np.float32
+            )
+        })
+
+        self.goal = np.array([5.0, 5.0])
+
+    def reset(self, seed=None):
+        super().reset(seed=seed)
+        self.sim.reset()
+        obs = self.sim.step()
+        return self._get_obs(obs), {}
+
+    def step(self, action):
+        # Apply action
+        linear = float(action[0])
+        angular = float(action[1])
+        self.sim.set_velocity(linear, angular)
+
+        # Step simulation
+        obs = self.sim.step()
+
+        # Compute reward
+        pose = obs['pose']
+        dist = np.sqrt(
+            (pose['x'] - self.goal[0])**2 +
+            (pose['y'] - self.goal[1])**2
+        )
+        reward = -dist  # Negative distance
+
+        # Check termination
+        terminated = dist < 0.5  # Reached goal
+        truncated = obs['collision']  # Hit obstacle
+
+        return self._get_obs(obs), reward, terminated, truncated, {}
+
+    def _get_obs(self, obs):
+        return {
+            'lidar': np.array(obs['lidar'], dtype=np.float32),
+            'pose': np.array([
+                obs['pose']['x'],
+                obs['pose']['y'],
+                obs['pose']['theta']
+            ], dtype=np.float32)
+        }
+
+    def close(self):
+        self.sim.close()
+```
+
+### Training with Stable-Baselines3
+
+```python
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
+
+# Create vectorized environment
+env = DummyVecEnv([lambda: Sim2DEnv()])
+
+# Train agent
+model = PPO("MultiInputPolicy", env, verbose=1)
+model.learn(total_timesteps=100000)
+
+# Save model
+model.save("sim2d_navigation")
+
+# Test
+obs, _ = env.reset()
+for _ in range(1000):
+    action, _ = model.predict(obs)
+    obs, reward, done, _, _ = env.step(action)
+    if done:
+        obs, _ = env.reset()
+```
+
+## Multi-Robot Simulation
+
+```python
+from horus.sim2d import Sim2D, RobotConfig
+
+# Create robots with different prefixes
+robots = []
+for i in range(3):
+    robot = RobotConfig(
+        position=(i * 3.0 - 3.0, 0.0),
+        color=(0.2 + i * 0.3, 0.8 - i * 0.2, 0.2)
+    )
+    sim = Sim2D(
+        robot=robot,
+        topic_prefix=f"robot{i}",
+        headless=True
+    )
+    robots.append(sim)
+
+# Step all robots
+for sim in robots:
+    sim.set_velocity(0.5, 0.1 * robots.index(sim))
+    sim.step()
+```
+
+## Performance Tips
+
+### Headless Mode
+
+Always use `headless=True` for training:
+
+```python
+sim = Sim2D(headless=True)  # 10x faster
+```
+
+### Batch Stepping
+
+Step multiple times between observations:
+
+```python
+for _ in range(4):  # 4 physics steps per observation
+    sim.step(dt=0.004)
+obs = sim.step(dt=0.004)
+```
+
+### Reduce LIDAR Rays
+
+Fewer rays = faster simulation:
+
+```python
+robot = RobotConfig(
+    lidar_rays=90  # Instead of 360
+)
+```
+
+## HORUS Integration
+
+The Python API uses HORUS shared memory internally:
+
+```python
+# Your Python RL agent
+sim = Sim2D(topic_prefix="robot")
+
+# Can communicate with Rust nodes on same topics!
+# Rust node can subscribe to robot.cmd_vel
+# Python can publish to robot.cmd_vel
+```
+
+## See Also
+
+- [Sim2D Overview](/simulators/sim2d) - Full simulator documentation
+- [Python Bindings](/python/api/python-bindings) - HORUS Python API

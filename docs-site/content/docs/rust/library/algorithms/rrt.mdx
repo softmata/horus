@@ -1,0 +1,389 @@
+---
+title: RRT (Rapidly-exploring Random Tree)
+description: Sampling-based path planning for complex and high-dimensional spaces
+---
+
+# RRT (Rapidly-exploring Random Tree)
+
+Sampling-based motion planning algorithm for finding paths in complex, continuous spaces. RRT builds a tree by randomly sampling the space and connecting samples to the nearest tree node.
+
+## Source Code
+
+- [RRT Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/rrt)
+
+## Features
+
+- Probabilistically complete path planning
+- No grid discretization required
+- Handles complex obstacle environments
+- Configurable sampling and growth parameters
+- Goal biasing for faster convergence
+
+## When to Use RRT
+
+| Use RRT When | Use A* When |
+|--------------|-------------|
+| Continuous space | Grid-based maps |
+| Complex/narrow passages | Open environments |
+| High-dimensional (robot arms) | 2D navigation |
+| Unknown optimal path needed | Optimal path required |
+| Real-time replanning | Static environments |
+
+## Quick Start
+
+```rust
+use horus::prelude::*; // Includes RRT
+
+fn main() {
+    // Create RRT planner
+    let mut rrt = RRT::new(
+        (0.0, 0.0),     // start
+        (10.0, 10.0),   // goal
+        (-5.0, -5.0),   // bounds min
+        (15.0, 15.0),   // bounds max
+    );
+
+    // Add circular obstacles
+    rrt.add_obstacle((5.0, 5.0), 2.0);  // center, radius
+    rrt.add_obstacle((7.0, 3.0), 1.0);
+
+    // Configure planning parameters
+    rrt.set_max_iterations(2000);
+    rrt.set_step_size(0.5);
+    rrt.set_goal_tolerance(0.3);
+    rrt.set_goal_bias(0.1);
+
+    // Plan path
+    if let Some(path) = rrt.plan() {
+        println!("Found path with {} waypoints", path.len());
+
+        let cost = RRT::path_cost(&path);
+        println!("Path length: {:.2} meters", cost);
+
+        for (x, y) in &path {
+            println!("  ({:.2}, {:.2})", x, y);
+        }
+    } else {
+        println!("No path found within {} iterations", 2000);
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let rrt = RRT::new(
+    start: (f64, f64),       // Start position
+    goal: (f64, f64),        // Goal position
+    bounds_min: (f64, f64),  // Sampling space minimum
+    bounds_max: (f64, f64),  // Sampling space maximum
+);
+```
+
+### Configuration Methods
+
+| Method | Description | Default |
+|--------|-------------|---------|
+| `set_max_iterations(n)` | Maximum planning iterations | 1000 |
+| `set_step_size(d)` | Tree extension distance | 0.5 |
+| `set_goal_tolerance(d)` | Goal reached threshold | 0.3 |
+| `set_goal_bias(p)` | Probability of sampling goal | 0.1 |
+
+### Obstacle Management
+
+| Method | Description |
+|--------|-------------|
+| `add_obstacle((x, y), radius)` | Add circular obstacle |
+| `clear_obstacles()` | Remove all obstacles |
+
+### Planning
+
+```rust
+let path: Option<Vec<(f64, f64)>> = rrt.plan();
+```
+
+Returns `Some(path)` if found, `None` if max iterations reached.
+
+### Utility Methods
+
+| Method | Description |
+|--------|-------------|
+| `reset()` | Clear tree, keep config |
+| `tree_size()` | Number of nodes in tree |
+| `RRT::path_cost(&path)` | Calculate path length |
+
+## Parameter Tuning
+
+### Step Size
+
+Controls how far the tree extends toward each sample:
+
+```rust
+// Small steps: More precise, slower, better in cluttered spaces
+rrt.set_step_size(0.2);
+
+// Large steps: Faster exploration, may miss narrow passages
+rrt.set_step_size(1.0);
+```
+
+**Guidelines:**
+- Set to ~10% of average obstacle spacing
+- Smaller for narrow passages
+- Larger for open spaces
+
+### Goal Bias
+
+Probability of sampling the goal directly:
+
+```rust
+// Low bias: More exploration, finds alternative paths
+rrt.set_goal_bias(0.05);
+
+// High bias: Faster convergence to goal, may miss better paths
+rrt.set_goal_bias(0.3);
+```
+
+**Guidelines:**
+- 5-10% for exploration
+- 20-30% for direct paths
+- Balance exploration vs exploitation
+
+### Max Iterations
+
+```rust
+// Complex environments need more iterations
+rrt.set_max_iterations(5000);
+
+// Simple environments
+rrt.set_max_iterations(500);
+```
+
+### Goal Tolerance
+
+How close to goal counts as "reached":
+
+```rust
+// Precise goal reaching
+rrt.set_goal_tolerance(0.1);
+
+// Approximate goal area
+rrt.set_goal_tolerance(0.5);
+```
+
+## Example: Dynamic Replanning
+
+```rust
+use horus::prelude::*; // Includes RRT
+
+struct DynamicPlanner {
+    start: (f64, f64),
+    goal: (f64, f64),
+    bounds: ((f64, f64), (f64, f64)),
+    obstacles: Vec<((f64, f64), f64)>,
+}
+
+impl DynamicPlanner {
+    fn new(
+        start: (f64, f64),
+        goal: (f64, f64),
+        bounds_min: (f64, f64),
+        bounds_max: (f64, f64),
+    ) -> Self {
+        Self {
+            start,
+            goal,
+            bounds: (bounds_min, bounds_max),
+            obstacles: Vec::new(),
+        }
+    }
+
+    fn add_obstacle(&mut self, center: (f64, f64), radius: f64) {
+        self.obstacles.push((center, radius));
+    }
+
+    fn update_robot_position(&mut self, pos: (f64, f64)) {
+        self.start = pos;
+    }
+
+    fn replan(&self) -> Option<Vec<(f64, f64)>> {
+        let mut rrt = RRT::new(
+            self.start,
+            self.goal,
+            self.bounds.0,
+            self.bounds.1,
+        );
+
+        for (center, radius) in &self.obstacles {
+            rrt.add_obstacle(*center, *radius);
+        }
+
+        rrt.set_max_iterations(1000);
+        rrt.set_goal_bias(0.15);
+
+        rrt.plan()
+    }
+}
+```
+
+## Example: Path Smoothing
+
+RRT paths are often jagged. Smooth them for better execution:
+
+```rust
+fn smooth_path(path: &[(f64, f64)], obstacles: &[((f64, f64), f64)]) -> Vec<(f64, f64)> {
+    if path.len() <= 2 {
+        return path.to_vec();
+    }
+
+    let mut smoothed = vec![path[0]];
+    let mut i = 0;
+
+    while i < path.len() - 1 {
+        // Try to skip intermediate points
+        let mut j = path.len() - 1;
+
+        while j > i + 1 {
+            if is_collision_free(path[i], path[j], obstacles) {
+                break;
+            }
+            j -= 1;
+        }
+
+        smoothed.push(path[j]);
+        i = j;
+    }
+
+    smoothed
+}
+
+fn is_collision_free(
+    p1: (f64, f64),
+    p2: (f64, f64),
+    obstacles: &[((f64, f64), f64)],
+) -> bool {
+    // Check line segment against all obstacles
+    for (center, radius) in obstacles {
+        if line_circle_intersects(p1, p2, *center, *radius) {
+            return false;
+        }
+    }
+    true
+}
+
+fn line_circle_intersects(
+    p1: (f64, f64),
+    p2: (f64, f64),
+    center: (f64, f64),
+    radius: f64,
+) -> bool {
+    let dx = p2.0 - p1.0;
+    let dy = p2.1 - p1.1;
+    let fx = p1.0 - center.0;
+    let fy = p1.1 - center.1;
+
+    let a = dx * dx + dy * dy;
+    let b = 2.0 * (fx * dx + fy * dy);
+    let c = fx * fx + fy * fy - radius * radius;
+
+    let discriminant = b * b - 4.0 * a * c;
+
+    if discriminant < 0.0 {
+        return false;
+    }
+
+    let t1 = (-b - discriminant.sqrt()) / (2.0 * a);
+    let t2 = (-b + discriminant.sqrt()) / (2.0 * a);
+
+    (0.0..=1.0).contains(&t1) || (0.0..=1.0).contains(&t2)
+}
+```
+
+## Example: Multiple Goals
+
+Plan to multiple potential goals:
+
+```rust
+use horus::prelude::*; // Includes RRT
+
+fn plan_to_nearest_goal(
+    start: (f64, f64),
+    goals: &[(f64, f64)],
+    obstacles: &[((f64, f64), f64)],
+    bounds: ((f64, f64), (f64, f64)),
+) -> Option<(Vec<(f64, f64)>, usize)> {
+    let mut best_path: Option<Vec<(f64, f64)>> = None;
+    let mut best_cost = f64::INFINITY;
+    let mut best_goal_idx = 0;
+
+    for (i, goal) in goals.iter().enumerate() {
+        let mut rrt = RRT::new(start, *goal, bounds.0, bounds.1);
+
+        for (center, radius) in obstacles {
+            rrt.add_obstacle(*center, *radius);
+        }
+
+        rrt.set_max_iterations(1000);
+
+        if let Some(path) = rrt.plan() {
+            let cost = RRT::path_cost(&path);
+            if cost < best_cost {
+                best_cost = cost;
+                best_path = Some(path);
+                best_goal_idx = i;
+            }
+        }
+    }
+
+    best_path.map(|p| (p, best_goal_idx))
+}
+```
+
+## Performance Considerations
+
+| Factor | Impact | Recommendation |
+|--------|--------|----------------|
+| Max iterations | Planning time | Start low, increase as needed |
+| Step size | Coverage vs speed | Match to obstacle density |
+| Goal bias | Convergence speed | 10-20% for balanced search |
+| Obstacle count | Collision checks | Use spatial indexing for many obstacles |
+
+### Typical Performance
+
+| Scenario | Iterations | Typical Time |
+|----------|------------|--------------|
+| Open space | 100-500 | &lt;10ms |
+| Moderate obstacles | 500-2000 | 10-50ms |
+| Complex maze | 2000-10000 | 50-200ms |
+
+## Comparison with A*
+
+```rust
+use horus_library::algorithms::{
+    astar::AStar,
+    rrt::RRT,
+};
+
+// A*: Grid-based, optimal
+let mut astar = AStar::new(100, 100);
+astar.set_start(10, 10);
+astar.set_goal(90, 90);
+let grid_path = astar.plan();  // Optimal on grid
+
+// RRT: Continuous, probabilistically complete
+let mut rrt = RRT::new(
+    (1.0, 1.0),
+    (9.0, 9.0),
+    (0.0, 0.0),
+    (10.0, 10.0),
+);
+let continuous_path = rrt.plan();  // Works in continuous space
+```
+
+## See Also
+
+- [A* Pathfinding](/rust/library/algorithms/astar) - Grid-based optimal planning
+- [Pure Pursuit](/rust/library/algorithms/pure-pursuit) - Path following
+- [Path Planner Node](/rust/library/built-in-nodes/path-planner) - Ready-to-use planning
+- [Occupancy Grid](/rust/library/algorithms/occupancy-grid) - Environment mapping

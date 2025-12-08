@@ -1,0 +1,194 @@
+---
+title: PoseEstimationNode
+description: Human pose estimation and skeleton detection
+---
+
+# PoseEstimationNode
+
+Human pose estimation node for detecting body keypoints and skeleton structure. Supports multiple pose models for robotics applications including human-robot interaction and gesture recognition.
+
+## Source Code
+
+- [PoseEstimationNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/cv/pose_estimation.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- Multiple pose model support (MoveNet, BlazePose, OpenPose)
+- 17-33 body keypoints detection
+- Skeleton visualization
+- Multi-person pose estimation
+- Real-time performance (30+ FPS)
+- GPU acceleration
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::cv::{PoseEstimationNode, PoseConfig, PoseModelType};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = PoseConfig {
+        model_type: PoseModelType::MoveNetLightning,
+        confidence_threshold: 0.3,
+        ..Default::default()
+    };
+
+    let pose_node = PoseEstimationNode::new(
+        "models/movenet_lightning.onnx",
+        "camera.raw",
+        "vision.poses",
+        config,
+    )?;
+
+    scheduler.add(Box::new(pose_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### PoseConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_type` | PoseModelType | MoveNetLightning | Pose model to use |
+| `confidence_threshold` | f32 | 0.3 | Minimum keypoint confidence |
+| `max_persons` | usize | 6 | Maximum people to detect |
+| `use_gpu` | bool | false | Enable GPU acceleration |
+| `enable_visualization` | bool | false | Output skeleton visualization |
+
+### PoseModelType
+
+| Model | Keypoints | Speed | Use Case |
+|-------|-----------|-------|----------|
+| `MoveNetLightning` | 17 | Fastest | Real-time robotics |
+| `MoveNetThunder` | 17 | Fast | Balanced accuracy |
+| `BlazePose` | 33 | Medium | Full body + hands |
+| `OpenPose` | 25 | Slower | High accuracy |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input camera images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `PoseArray` | Detected poses with keypoints |
+| `{output_topic}/viz` | `Image` | Skeleton visualization |
+
+## Keypoint Layout (17-point model)
+
+```
+       0: nose
+      / \
+    1   2: left/right eye
+    |   |
+    3   4: left/right ear
+      |
+      5: left shoulder -- 6: right shoulder
+      |                   |
+      7: left elbow    8: right elbow
+      |                   |
+      9: left wrist   10: right wrist
+      |
+     11: left hip  -- 12: right hip
+      |                   |
+     13: left knee   14: right knee
+      |                   |
+     15: left ankle  16: right ankle
+```
+
+## Usage Examples
+
+### Gesture Recognition
+
+```rust
+use horus::prelude::*; // Provides PoseArray;
+
+let poses_hub = Hub::<PoseArray>::new("vision.poses")?;
+
+if let Some(poses) = poses_hub.recv(&mut None) {
+    for pose in &poses.poses {
+        // Check if arm is raised (wrist above shoulder)
+        let left_wrist = &pose.keypoints[9];
+        let left_shoulder = &pose.keypoints[5];
+
+        if left_wrist.y < left_shoulder.y && left_wrist.confidence > 0.5 {
+            println!("Left arm raised!");
+        }
+    }
+}
+```
+
+### Human-Robot Interaction
+
+```rust
+// Track the closest person to the robot
+let config = PoseConfig {
+    max_persons: 1,  // Focus on one person
+    confidence_threshold: 0.5,
+    ..Default::default()
+};
+
+let pose_node = PoseEstimationNode::new(
+    "models/movenet_thunder.onnx",
+    "camera.front",
+    "interaction.person_pose",
+    config,
+)?;
+```
+
+### Safety Monitoring
+
+```rust
+// Detect people in robot workspace
+struct SafetyMonitor {
+    poses_sub: Hub<PoseArray>,
+    alert_pub: Hub<SafetyAlert>,
+}
+
+impl Node for SafetyMonitor {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(poses) = self.poses_sub.recv(&mut ctx) {
+            if !poses.poses.is_empty() {
+                // Person detected in workspace
+                self.alert_pub.send(SafetyAlert::PersonDetected, &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+## Performance
+
+| Model | GPU (RTX 3080) | CPU (i7-12700) |
+|-------|---------------|----------------|
+| MoveNet Lightning | 60+ FPS | 30+ FPS |
+| MoveNet Thunder | 45-60 FPS | 15-20 FPS |
+| BlazePose | 30-45 FPS | 8-12 FPS |
+
+## See Also
+
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection
+- [SemanticSegmentationNode](./semantic-segmentation) - Scene understanding
+- [CameraNode](./camera) - Image input

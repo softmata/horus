@@ -1,0 +1,561 @@
+---
+title: Communication Configuration
+description: Managing endpoints with configuration files
+order: 23
+---
+
+# Communication Configuration
+
+Managing endpoints through configuration files makes your code environment-agnostic and easier to deploy across development, staging, and production environments.
+
+## Why Use Configuration Files?
+
+**Without configuration** (hardcoded):
+```rust
+// Development machine
+let hub: Hub<Status> = Hub::new("status")?;  // Local
+
+// Production robot
+let hub: Hub<Status> = Hub::new("status@192.168.1.100")?;  // Network
+// Need to change code for different environments!
+```
+
+**With configuration** (environment-agnostic):
+```rust
+// Same code for dev and production!
+let hub: Hub<Status> = Hub::from_config("status")?;
+// Endpoint loaded from config file
+```
+
+## Configuration File Formats
+
+HORUS supports both TOML and YAML formats:
+
+### TOML Format
+
+**horus.toml**:
+```toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@192.168.1.100:8000"
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera@192.168.1.50:9000"
+
+[hubs.motors]
+name = "motors"
+endpoint = "motors"  # Local shared memory
+```
+
+### YAML Format
+
+**horus.yaml**:
+```yaml
+hubs:
+  telemetry:
+    name: telemetry
+    endpoint: telemetry@192.168.1.100:8000
+
+  camera:
+    name: camera
+    endpoint: camera@192.168.1.50:9000
+
+  motors:
+    name: motors
+    endpoint: motors  # Local shared memory
+```
+
+## Configuration Search Path
+
+HORUS searches for configuration files in this order:
+
+1. `./horus.toml` or `./horus.yaml` (current directory)
+2. `~/.horus/config.toml` or `~/.horus/config.yaml` (user home)
+3. `/etc/horus/config.toml` or `/etc/horus/config.yaml` (system-wide)
+
+**Priority**: Files earlier in the search path override later ones.
+
+## Loading from Configuration
+
+### Hub from Config
+
+```rust
+use horus::prelude::*;
+
+// Load from default search path
+let telemetry: Hub<Status> = Hub::from_config("telemetry")?;
+
+// Load from specific file
+let camera: Hub<Image> = Hub::from_config_file("my_config.toml", "camera")?;
+```
+
+### Link from Config
+
+```rust
+use horus::prelude::*;
+
+// Producer
+let output: Link<SensorData> = Link::producer_from_config("sensors")?;
+
+// Consumer
+let input: Link<SensorData> = Link::consumer_from_config("sensors")?;
+
+// From specific file
+let motors: Link<MotorCmd> = Link::producer_from_config_file(
+    "/etc/robot/config.toml",
+    "motors"
+)?;
+```
+
+## Environment-Specific Configurations
+
+### Development Environment
+
+**horus_dev.toml**:
+```toml
+# Local shared memory for development
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry"  # Local
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera"  # Local
+
+[hubs.motors]
+name = "motors"
+endpoint = "motors"  # Local
+```
+
+### Production Environment
+
+**horus_prod.toml**:
+```toml
+# Network endpoints for production
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@ground-station:8000"
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera@edge-device.local:9000"
+
+[hubs.motors]
+name = "motors"
+endpoint = "motors"  # Still local (critical path)
+```
+
+### Switching Environments
+
+**Method 1: Symlink**
+```bash
+# Development
+ln -sf horus_dev.toml horus.toml
+
+# Production
+ln -sf horus_prod.toml horus.toml
+```
+
+**Method 2: Environment Variable**
+```rust
+use horus::prelude::*;
+
+let config_file = std::env::var("HORUS_CONFIG")
+    .unwrap_or_else(|_| "horus.toml".to_string());
+
+let telemetry: Hub<Status> = Hub::from_config_file(&config_file, "telemetry")?;
+```
+
+```bash
+# Development
+export HORUS_CONFIG=horus_dev.toml
+horus run robot.rs
+
+# Production
+export HORUS_CONFIG=horus_prod.toml
+horus run --release robot.rs
+```
+
+## Complete Example
+
+### Configuration File
+
+**horus.toml**:
+```toml
+# ======= ROBOT CONFIGURATION =======
+
+# Network telemetry to ground station
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@192.168.1.100:8000"
+
+# Network camera to processing server
+[hubs.camera]
+name = "camera"
+endpoint = "camera@192.168.1.200:9000"
+
+# Local motor control (critical path - must be local!)
+[hubs.motors]
+name = "motors"
+endpoint = "motors"
+
+# Local IMU (critical path)
+[hubs.imu]
+name = "imu"
+endpoint = "imu"
+
+# Network fleet coordination
+[hubs.fleet]
+name = "fleet"
+endpoint = "fleet@router:7000"
+```
+
+### Application Code
+
+```rust
+use horus::prelude::*;
+
+struct Robot {
+    // Network: telemetry to ground station
+    telemetry: Hub<Status>,
+
+    // Network: camera to processing server
+    camera: Hub<Image>,
+
+    // Local: critical control loop
+    imu: Link<ImuData>,
+    motors: Link<MotorCmd>,
+
+    // Network: fleet coordination
+    fleet: Hub<FleetMsg>,
+}
+
+impl Robot {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            // All loaded from config - no hardcoded endpoints!
+            telemetry: Hub::from_config("telemetry")?,
+            camera: Hub::from_config("camera")?,
+            imu: Link::consumer_from_config("imu")?,
+            motors: Link::producer_from_config("motors")?,
+            fleet: Hub::from_config("fleet")?,
+        })
+    }
+}
+```
+
+## Advanced Configuration
+
+### Per-Environment Overrides
+
+**horus.toml** (base config):
+```toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@ground-station:8000"
+```
+
+**horus_local.toml** (local override):
+```toml
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry"  # Override to local for testing
+```
+
+```rust
+// Load with fallback
+let config_file = if cfg!(debug_assertions) {
+    "horus_local.toml"
+} else {
+    "horus.toml"
+};
+
+let telemetry: Hub<Status> = Hub::from_config_file(config_file, "telemetry")?;
+```
+
+### Robot-Specific Configs
+
+**robot1_config.toml**:
+```toml
+[hubs.fleet]
+name = "fleet"
+endpoint = "fleet@router:7000"
+
+[robot]
+id = 1
+name = "scout-01"
+position = [0.0, 0.0, 0.0]
+```
+
+**robot2_config.toml**:
+```toml
+[hubs.fleet]
+name = "fleet"
+endpoint = "fleet@router:7000"
+
+[robot]
+id = 2
+name = "scout-02"
+position = [10.0, 10.0, 0.0]
+```
+
+```bash
+# Deploy robot 1
+scp robot1_config.toml robot1:/etc/horus/horus.toml
+ssh robot1 'horus run --release robot.rs'
+
+# Deploy robot 2
+scp robot2_config.toml robot2:/etc/horus/horus.toml
+ssh robot2 'horus run --release robot.rs'
+```
+
+### Multi-Environment Testing
+
+**horus_test.toml**:
+```toml
+# Simulate network delays locally for testing
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@localhost:8000"
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera@localhost:9000"
+```
+
+```bash
+# Run with test config
+export HORUS_CONFIG=horus_test.toml
+horus run robot.rs
+```
+
+## Configuration Management Best Practices
+
+### 1. Version Control
+
+```bash
+# Track all config files
+git add horus*.toml
+git commit -m "Add robot configuration files"
+
+# .gitignore sensitive production configs
+echo "horus_prod_secrets.toml" >> .gitignore
+```
+
+### 2. Environment Templates
+
+**horus.template.toml**:
+```toml
+# Template configuration - copy and customize
+
+[hubs.telemetry]
+name = "telemetry"
+endpoint = "telemetry@GROUND_STATION_IP:8000"
+
+[hubs.camera]
+name = "camera"
+endpoint = "camera@EDGE_DEVICE_IP:9000"
+```
+
+```bash
+# Setup new deployment
+cp horus.template.toml horus.toml
+# Edit horus.toml with actual IPs
+```
+
+### 3. Deployment Scripts
+
+**deploy.sh**:
+```bash
+#!/bin/bash
+# Deploy robot configuration
+
+ROBOT_IP=$1
+CONFIG_ENV=$2
+
+if [ -z "$ROBOT_IP" ] || [ -z "$CONFIG_ENV" ]; then
+    echo "Usage: ./deploy.sh <robot_ip> <dev|staging|prod>"
+    exit 1
+fi
+
+# Copy environment-specific config
+scp "horus_${CONFIG_ENV}.toml" "robot@${ROBOT_IP}:/etc/horus/horus.toml"
+
+# Deploy and run
+ssh "robot@${ROBOT_IP}" 'systemctl restart horus-robot'
+
+echo "Deployed $CONFIG_ENV config to $ROBOT_IP"
+```
+
+```bash
+# Deploy to staging
+./deploy.sh 192.168.1.50 staging
+
+# Deploy to production
+./deploy.sh 192.168.1.50 prod
+```
+
+### 4. Configuration Validation
+
+```rust
+use horus::prelude::*;
+
+fn validate_config() -> Result<()> {
+    // Try loading all configured hubs
+    let _telemetry: Hub<Status> = Hub::from_config("telemetry")?;
+    let _camera: Hub<Image> = Hub::from_config("camera")?;
+    let _motors: Link<MotorCmd> = Link::producer_from_config("motors")?;
+
+    println!("[OK] Configuration valid");
+    Ok(())
+}
+
+fn main() {
+    if let Err(e) = validate_config() {
+        eprintln!("[ERROR] Configuration error: {}", e);
+        std::process::exit(1);
+    }
+
+    // Run application
+}
+```
+
+## Configuration for Different Scenarios
+
+### Scenario 1: Development (Local Only)
+
+**horus_dev.toml**:
+```toml
+[hubs.telemetry]
+endpoint = "telemetry"
+
+[hubs.camera]
+endpoint = "camera"
+
+[hubs.motors]
+endpoint = "motors"
+```
+
+### Scenario 2: Lab Testing (Local Network)
+
+**horus_lab.toml**:
+```toml
+[hubs.telemetry]
+endpoint = "telemetry@192.168.1.100:8000"
+
+[hubs.camera]
+endpoint = "camera@192.168.1.50:9000"
+
+[hubs.motors]
+endpoint = "motors"  # Keep critical path local
+```
+
+### Scenario 3: Field Deployment (Production)
+
+**horus_field.toml**:
+```toml
+[hubs.telemetry]
+endpoint = "telemetry@ground-station.local:8000"
+
+[hubs.camera]
+endpoint = "camera@edge.local:9000"
+
+[hubs.motors]
+endpoint = "motors"  # Always local for safety
+```
+
+### Scenario 4: Multi-Robot Fleet
+
+**horus_fleet.toml**:
+```toml
+# Central router for fleet coordination
+[hubs.fleet_positions]
+endpoint = "positions@router.local:7000"
+
+[hubs.fleet_commands]
+endpoint = "commands@router.local:7001"
+
+# Local control for each robot
+[hubs.motors]
+endpoint = "motors"
+
+[hubs.imu]
+endpoint = "imu"
+```
+
+## Troubleshooting
+
+### Config File Not Found
+
+**Error**: `Failed to load configuration: file not found`
+
+**Solution**:
+```bash
+# Check current directory
+ls -la horus.toml
+
+# Check user config
+ls -la ~/.horus/config.toml
+
+# Check system config
+ls -la /etc/horus/config.toml
+
+# Create config
+cp horus.template.toml horus.toml
+```
+
+### Hub/Link Not Found in Config
+
+**Error**: `Hub 'telemetry' not found in configuration`
+
+**Solution**:
+```bash
+# Verify hub name matches config
+grep -A2 "\[hubs.telemetry\]" horus.toml
+
+# Check TOML syntax
+toml-validator horus.toml
+```
+
+### Invalid Endpoint Syntax
+
+**Error**: `Invalid endpoint: telemetry@invalid:port`
+
+**Solution**:
+```toml
+# Correct endpoint formats
+endpoint = "topic"                      # Local
+endpoint = "topic@192.168.1.100"       # Network (default port)
+endpoint = "topic@192.168.1.100:8000"  # Network (custom port)
+endpoint = "topic@hostname.local:9000"  # Hostname
+```
+
+## Summary
+
+**Benefits of Configuration Files**:
+- Environment-agnostic code
+- Easy deployment across dev/staging/prod
+- No hardcoded IP addresses
+- Centralized endpoint management
+- Version controllable
+
+**Best Practices**:
+- Use configuration files for all endpoints
+- Separate dev/staging/prod configs
+- Version control configuration templates
+- Validate configs before deployment
+- Keep critical paths local (motors, IMU)
+
+**File Locations**:
+1. `./horus.toml` (project-specific)
+2. `~/.horus/config.toml` (user-specific)
+3. `/etc/horus/config.toml` (system-wide)
+
+## Next Steps
+
+- [Network Communication](/concepts/network-communication) - Multi-machine systems guide
+- [Communication Transport](/concepts/communication-transport) - Local vs Network overview
+- [Hub (MPMC)](/concepts/core-concepts-hub) - Hub pattern deep dive
+- [Link (SPSC)](/concepts/core-concepts-link) - Link pattern deep dive
+- [Configuration Reference](/package-management/configuration) - Complete config file reference

@@ -1,0 +1,457 @@
+---
+title: "Network Backends"
+description: "High-performance network transports: QUIC, io_uring, compression, and batching"
+weight: 40
+---
+
+# Network Backends
+
+HORUS provides advanced network backends for high-performance distributed communication. These backends offer significant improvements over basic UDP/TCP for robotics applications.
+
+## Available Backends
+
+| Backend | Latency | Throughput | Use Case |
+|---------|---------|------------|----------|
+| **BatchUDP** | ~10µs | 200K+ pkt/s | Local network |
+| **io_uring** | 3-5µs | High | Linux low-latency |
+| **QUIC** | ~1ms | High | WAN, reliable |
+| **SmartTransport** | Auto | Auto | General purpose |
+
+## QUIC Transport
+
+QUIC provides reliable, encrypted transport with superior performance over TCP:
+
+### Features
+
+- **0-RTT connection resumption**: No handshake latency for repeat connections
+- **No head-of-line blocking**: Independent streams
+- **Built-in TLS 1.3**: Encrypted by default
+- **Connection migration**: Handles IP changes
+- **Better congestion control**: Modern algorithms
+
+### Enabling QUIC
+
+```toml
+[dependencies]
+horus_core = { version = "0.1", features = ["quic"] }
+```
+
+### Configuration
+
+```rust
+use horus_core::communication::network::quic::{QuicConfig, QuicTransport};
+
+// Default configuration
+let config = QuicConfig::default();
+
+// Low latency configuration
+let config = QuicConfig::low_latency();
+
+// High throughput configuration
+let config = QuicConfig::high_throughput();
+```
+
+### Configuration Options
+
+| Parameter | Default | Low Latency | High Throughput |
+|-----------|---------|-------------|-----------------|
+| `max_idle_timeout` | 30s | 60s | 120s |
+| `keep_alive_interval` | 5s | 2s | 10s |
+| `max_concurrent_bidi_streams` | 100 | 256 | 1000 |
+| `enable_0rtt` | true | true | true |
+| `initial_rtt` | 10ms | 5ms | 20ms |
+| `max_udp_payload_size` | 1472 | 1472 | 65527 |
+
+### Client Usage
+
+```rust
+use horus_core::communication::network::quic::{QuicConfig, QuicTransport};
+use std::net::SocketAddr;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+
+    // Create client
+    let transport = QuicTransport::new_client(
+        bind_addr,
+        QuicConfig::low_latency()
+    ).await?;
+
+    // Send data (unidirectional)
+    let server_addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
+    transport.send(server_addr, b"sensor data").await?;
+
+    // Send and receive response (bidirectional)
+    let response = transport.send_recv(server_addr, b"request").await?;
+
+    Ok(())
+}
+```
+
+### Server Usage
+
+```rust
+use horus_core::communication::network::quic::{
+    QuicConfig, QuicTransport, generate_self_signed_cert
+};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // Generate self-signed certificate for development
+    let (certs, key) = generate_self_signed_cert()?;
+
+    let bind_addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
+
+    // Create server
+    let transport = QuicTransport::new_server(
+        bind_addr,
+        certs,
+        key,
+        QuicConfig::default()
+    ).await?;
+
+    // Accept connections
+    loop {
+        let (conn, addr) = transport.accept().await?;
+        println!("Connection from {}", addr);
+
+        // Handle incoming data
+        let (data, _) = transport.accept_uni(&conn).await?;
+        println!("Received: {:?}", data);
+    }
+}
+```
+
+### Statistics
+
+```rust
+let stats = transport.stats();
+
+println!("Connections established: {}", stats.connections_established.load(Ordering::Relaxed));
+println!("Streams opened: {}", stats.streams_opened.load(Ordering::Relaxed));
+println!("Bytes sent: {}", stats.bytes_sent.load(Ordering::Relaxed));
+println!("0-RTT accepted: {}", stats.zero_rtt_accepted.load(Ordering::Relaxed));
+```
+
+## io_uring Backend
+
+True zero-copy networking using Linux io_uring for ultra-low latency:
+
+### Features
+
+- **3-5µs latency**: Matches Zenoh-pico performance
+- **Zero-copy**: Registered buffers avoid copies
+- **SQPOLL mode**: Kernel-side polling without syscalls
+- **Single core 100Gb**: Can saturate high-speed NICs
+
+### Requirements
+
+- Linux 5.6+ (5.19+ for SQPOLL without root)
+- `io-uring-net` feature
+- Root or CAP_SYS_NICE for SQPOLL
+
+### Enabling io_uring
+
+```toml
+[dependencies]
+horus_core = { version = "0.1", features = ["io-uring-net"] }
+```
+
+### Configuration
+
+```rust
+use horus_core::communication::network::io_uring::{
+    RealIoUringConfig, RealIoUringBackend
+};
+
+// Default configuration
+let config = RealIoUringConfig::default();
+
+// High performance (requires root/CAP_SYS_NICE)
+let config = RealIoUringConfig::high_performance();
+
+// Low latency
+let config = RealIoUringConfig::low_latency();
+```
+
+### Configuration Options
+
+| Parameter | Default | High Perf | Low Latency |
+|-----------|---------|-----------|-------------|
+| `sq_entries` | 256 | 1024 | 128 |
+| `sqpoll` | false | true | false |
+| `sqpoll_idle_ms` | 2000 | 10000 | 0 |
+| `num_buffers` | 64 | 256 | 32 |
+| `buffer_size` | 65536 | 65536 | 8192 |
+| `coop_taskrun` | true | true | true |
+| `single_issuer` | true | true | true |
+
+### Basic Usage
+
+```rust
+use horus_core::communication::network::io_uring::{
+    RealIoUringBackend, RealIoUringConfig
+};
+
+// Check availability
+if !is_real_io_uring_available() {
+    eprintln!("io_uring not available on this system");
+    return;
+}
+
+let bind_addr: SocketAddr = "0.0.0.0:9000".parse().unwrap();
+let remote_addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
+
+// Create backend
+let mut backend = RealIoUringBackend::new(
+    bind_addr,
+    Some(remote_addr),  // Connected mode
+    RealIoUringConfig::default()
+)?;
+
+// Synchronous send
+let bytes_sent = backend.send_sync(b"sensor data")?;
+
+// Synchronous receive
+let data = backend.recv_sync()?;
+```
+
+### Async Operations
+
+```rust
+// Submit send (returns immediately)
+let user_data = backend.submit_send(b"data")?;
+
+// Submit receive
+let recv_ud = backend.submit_recv()?;
+
+// Submit to kernel (required for non-SQPOLL)
+backend.submit()?;
+
+// Wait for completions
+backend.submit_and_wait(1)?;
+
+// Process completions
+for completion in backend.process_completions() {
+    match completion {
+        CompletionResult::SendComplete { bytes_sent, .. } => {
+            println!("Sent {} bytes", bytes_sent);
+        }
+        CompletionResult::RecvComplete { data, .. } => {
+            println!("Received {} bytes", data.len());
+        }
+        CompletionResult::Error { error, .. } => {
+            eprintln!("Error: {}", error);
+        }
+    }
+}
+```
+
+### SQPOLL Mode
+
+For maximum performance with kernel-side polling:
+
+```rust
+// Check if SQPOLL is available
+if is_sqpoll_available() {
+    let config = RealIoUringConfig::high_performance();
+    let backend = RealIoUringBackend::new(bind_addr, None, config)?;
+
+    // No submit() calls needed - kernel polls automatically
+    backend.submit_send(b"data")?;
+    // Kernel will send without syscall
+}
+```
+
+## Compression
+
+Transparent compression for large messages:
+
+### Algorithms
+
+| Algorithm | Speed | Ratio | Use Case |
+|-----------|-------|-------|----------|
+| **LZ4** | Fast | Moderate | Real-time data |
+| **Zstd** | Slower | Better | Large payloads |
+| **Auto** | Varies | Varies | General purpose |
+
+### Configuration
+
+```rust
+use horus_core::communication::network::compression::{
+    CompressionConfig, CompressionAlgo, Compressor
+};
+
+// LZ4 for real-time
+let config = CompressionConfig::lz4();
+
+// Zstd for better ratio
+let config = CompressionConfig::zstd();
+
+// Zstd with custom level (1-19)
+let config = CompressionConfig::zstd_level(6);
+
+// Auto-select based on size
+let config = CompressionConfig::auto();
+
+// Custom configuration
+let config = CompressionConfig {
+    algorithm: CompressionAlgo::Zstd,
+    min_size: 1024,      // Don't compress < 1KB
+    level: 3,            // Compression level
+    min_ratio: 0.8,      // Need 20% savings
+};
+```
+
+### Usage
+
+```rust
+let compressor = Compressor::new(CompressionConfig::lz4());
+
+// Compress data
+let compressed = compressor.compress(&large_data);
+
+if compressed.is_compressed {
+    println!("Compressed {} -> {} bytes",
+        compressed.original_size,
+        compressed.data.len()
+    );
+}
+
+// Decompress
+let decompressed = compressor.decompress(
+    &compressed.data,
+    compressed.algorithm,
+    compressed.original_size
+)?;
+```
+
+### Network Packets
+
+```rust
+use horus_core::communication::network::compression::CompressedPacket;
+
+// Create packet from compressed data
+let packet = CompressedPacket::from_compressed(compressed);
+
+// Send over network (serialize packet)
+let bytes = bincode::serialize(&packet)?;
+send_udp(&bytes)?;
+
+// Receive and decompress
+let packet: CompressedPacket = bincode::deserialize(&received)?;
+let data = packet.decompress(&compressor)?;
+```
+
+## Smart Transport
+
+Auto-selects the best transport based on conditions:
+
+```rust
+use horus_core::communication::network::smart_transport::SmartTransport;
+
+// Auto-selects based on:
+// - Local network → BatchUDP or io_uring
+// - WAN → QUIC
+// - Reliability needed → QUIC
+// - Low latency needed → io_uring
+
+let transport = SmartTransport::new()?;
+transport.send(addr, data).await?;
+```
+
+## Message Batching
+
+Batch multiple messages for efficiency:
+
+```rust
+use horus_core::communication::network::batching::MessageBatcher;
+
+let mut batcher = MessageBatcher::new(
+    1024,  // Max batch size bytes
+    10,    // Max messages per batch
+    Duration::from_millis(5),  // Max wait time
+);
+
+// Add messages
+batcher.add(message1)?;
+batcher.add(message2)?;
+
+// Get batch when ready
+if let Some(batch) = batcher.get_batch() {
+    send_batch(&batch)?;
+}
+```
+
+## Congestion Control
+
+Adaptive congestion control for network stability:
+
+```rust
+use horus_core::communication::network::congestion::{
+    CongestionController, DropPolicy
+};
+
+let controller = CongestionController::new(DropPolicy::DropOldest);
+
+// Check if we can send
+if controller.can_send() {
+    send(data)?;
+    controller.record_send(data.len());
+}
+
+// Record acknowledgment
+controller.record_ack();
+
+// Record timeout (congestion signal)
+controller.record_timeout();
+```
+
+## Best Practices
+
+### 1. Choose the Right Backend
+
+```rust
+// Local high-frequency sensors → io_uring
+if is_real_io_uring_available() && is_local {
+    use_io_uring();
+}
+
+// WAN or reliability needed → QUIC
+if is_wan || needs_reliability {
+    use_quic();
+}
+
+// General purpose → SmartTransport
+use_smart_transport();
+```
+
+### 2. Enable Compression for Large Data
+
+```rust
+// Only compress if beneficial
+let config = CompressionConfig {
+    min_size: 512,      // Skip small messages
+    min_ratio: 0.9,     // Need 10% savings
+    algorithm: CompressionAlgo::Auto,
+    ..Default::default()
+};
+```
+
+### 3. Batch Small Messages
+
+```rust
+// For high-frequency small messages
+let batcher = MessageBatcher::new(
+    MTU_SIZE - HEADERS,  // Fill MTU
+    100,                 // Up to 100 messages
+    Duration::from_millis(1),  // 1ms max latency
+);
+```
+
+## See Also
+
+- [Network Communication](/concepts/network-communication) - Basic networking
+- [Shared Memory](/concepts/core-concepts-shared-memory) - Local communication
+- [GPU Tensor Sharing](/advanced/gpu-tensor-sharing) - GPU memory transfer

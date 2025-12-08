@@ -1,0 +1,112 @@
+---
+title: DigitalIONode
+description: GPIO input/output for switches, LEDs, and digital signals
+---
+
+# DigitalIONode
+
+Digital I/O node for GPIO input and output. Controls LEDs, reads buttons/switches, and interfaces with digital sensors and actuators.
+
+## Source Code
+
+- [DigitalIONode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/digital_io)
+- [I/O Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- Digital input (buttons, switches, sensors)
+- Digital output (LEDs, relays, solenoids)
+- Pull-up/pull-down resistors
+- Interrupt-based input
+- Debouncing for switches
+- PWM output
+- Multiple GPIO pins
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut gpio = DigitalIONode::new()?;
+    gpio.configure_input(17, PullMode::PullUp);   // Button
+    gpio.configure_output(27);                     // LED
+
+    scheduler.add(Box::new(gpio), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Requires:** GPIO hardware and the `gpio-hardware` feature.
+
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `DigitalIONode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gpio-hardware"] }
+```
+
+## Configuration
+
+```rust
+// Configure input with pull-up
+gpio.configure_input(17, PullMode::PullUp);
+gpio.enable_debounce(17, 50);  // 50ms debounce
+
+// Configure output
+gpio.configure_output(27);
+```
+
+## Usage
+
+```rust
+// Read input
+let input_hub = Hub::<GpioInput>::new("gpio.input")?;
+if let Some(input) = input_hub.recv(&mut None) {
+    if input.pin == 17 && input.value == false {
+        println!("Button pressed!");
+    }
+}
+
+// Set output
+let output_hub = Hub::<GpioOutput>::new("gpio.output")?;
+output_hub.send(GpioOutput {
+    pin: 27,
+    value: true,  // LED on
+}, None)?;
+```
+
+## See Also
+
+- [EmergencyStopNode](./emergency-stop) - E-stop button input
+- [ServoControllerNode](./servo-controller) - PWM output

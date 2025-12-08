@@ -1,0 +1,652 @@
+---
+title: ServoControllerNode
+description: Standard PWM servo control for up to 16 servos
+---
+
+# ServoControllerNode
+
+Standard PWM servo controller node for hobby servos (analog and digital). Supports up to 16 servos using hardware PWM, software PWM, or external servo controllers like PCA9685. Ideal for robot arms, grippers, pan-tilt systems, and actuated mechanisms.
+
+## Source Code
+
+- [ServoControllerNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/servo_controller)
+- [Motor Control Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/control.rs)
+
+## Features
+
+- Up to 16 servos simultaneously
+- Hardware PWM (2 channels) or software PWM
+- PCA9685 16-channel I2C controller support
+- Configurable pulse width (500-2500 μs)
+- Position, speed, and acceleration control
+- Center calibration per servo
+- Min/max angle limits
+- Smooth motion profiles
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create servo controller
+    let mut servo = ServoControllerNode::new()?;
+    servo.set_num_servos(2);
+
+    // Configure servo 0
+    servo.set_gpio_pin(0, 18);  // Hardware PWM pin
+    servo.set_angle_range(0, 0, 180);
+    servo.set_pulse_range(0, 500, 2500);
+
+    scheduler.add(Box::new(servo), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install GPIO and I2C libraries
+sudo apt install libraspberrypi-dev i2c-tools
+
+# Enable GPIO and I2C
+sudo raspi-config  # Interface Options
+```
+
+### GPIO PWM (Direct Connection)
+
+```
+Raspberry Pi    Servo
+GPIO 18 (PWM0) --> Signal (Orange/White)
+5V             --> VCC (Red)
+GND            --- GND (Brown/Black)
+```
+
+**Hardware PWM pins on Raspberry Pi:**
+- GPIO 12, 13 (PWM0)
+- GPIO 18, 19 (PWM0, PWM1)
+
+### PCA9685 I2C Controller
+
+```
+Raspberry Pi    PCA9685         Servos
+GPIO 2 (SDA) --> SDA
+GPIO 3 (SCL) --> SCL           Servo 0-15
+5V           --> VCC           Signal pins
+GND          --- GND
+                V+ (6V) -->    Servo power
+```
+
+**Advantages:**
+- 16 servos from one I2C address
+- Chain multiple boards (up to 62)
+- Dedicated servo power supply
+- No CPU load for PWM generation
+
+### Enabling Features
+
+There are three ways to enable the required features:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `ServoControllerNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+      - i2c-hardware  # For PCA9685 boards
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gpio-hardware", "i2c-hardware"] }
+```
+
+## Configuration
+
+### Servo Setup (GPIO)
+
+```rust
+let mut servo = ServoControllerNode::new()?;
+
+// Number of servos
+servo.set_num_servos(4);
+
+// Configure each servo
+servo.set_gpio_pin(0, 18);  // PWM pin
+servo.set_gpio_pin(1, 19);
+servo.set_gpio_pin(2, 12);
+servo.set_gpio_pin(3, 13);
+```
+
+### PCA9685 Setup
+
+```rust
+// Use PCA9685 controller
+servo.use_pca9685(true);
+servo.set_pca9685_address(0x40);  // Default I2C address
+
+// All 16 channels available
+servo.set_num_servos(16);
+```
+
+### Pulse Width Configuration
+
+```rust
+// Set pulse width range (microseconds)
+servo.set_pulse_range(
+    0,      // Servo ID
+    500,    // Min pulse (0°)
+    2500    // Max pulse (180°)
+);
+
+// Common ranges:
+// Standard: 1000-2000 μs
+// Extended: 500-2500 μs
+// Futaba: 1500±600 μs
+```
+
+### Angle Configuration
+
+```rust
+// Set angle range
+servo.set_angle_range(0, 0, 180);   // Standard (0-180°)
+servo.set_angle_range(1, -90, 90);  // Centered (-90 to +90°)
+servo.set_angle_range(2, 0, 270);   // Extended range
+
+// Set center position
+servo.set_center_angle(0, 90);      // 90° is center
+servo.set_center_pulse(0, 1500);    // 1500 μs is center
+```
+
+### Speed Control
+
+```rust
+// Set movement speed (degrees per second)
+servo.set_speed(0, 60.0);  // 60°/sec
+
+// Set acceleration (degrees per second²)
+servo.set_acceleration(0, 180.0);  // 180°/sec²
+
+// Disable speed limiting (instant movement)
+servo.set_speed(0, 0.0);
+```
+
+### Limits
+
+```rust
+// Set soft angle limits
+servo.set_min_angle(0, 10);   // Don't go below 10°
+servo.set_max_angle(0, 170);  // Don't go above 170°
+
+// Limits prevent mechanical damage
+```
+
+## Usage Patterns
+
+### Position Control (Angle)
+
+```rust
+use horus::prelude::*;
+
+// Set servo to 90 degrees
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_ANGLE,
+    angle: 90.0,
+};
+
+let hub = Hub::<ServoCommand>::new("servo.command")?;
+hub.send(cmd, &mut None).ok();
+```
+
+### Position Control (Pulse Width)
+
+```rust
+// Set servo directly by pulse width (microseconds)
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_PULSE,
+    pulse_width: 1500,  // 1500 μs (center)
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Smooth Movement
+
+```rust
+// Move with speed limiting
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_ANGLE,
+    angle: 180.0,
+    speed: 60.0,  // Move at 60°/sec
+};
+hub.send(cmd, &mut None).ok();
+
+// Will take 3 seconds to move from 0° to 180°
+```
+
+### Disable/Enable Servo
+
+```rust
+// Disable servo (no holding torque, saves power)
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_DISABLE,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+
+// Re-enable
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_ENABLE,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Calibration
+
+```rust
+// Find center position
+let cmd = ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_CENTER,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+## Complete Example: Pan-Tilt Camera
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure pan-tilt servos
+    let mut servo = ServoControllerNode::new()?;
+    servo.set_num_servos(2);
+
+    // Pan servo (horizontal)
+    servo.set_gpio_pin(0, 18);
+    servo.set_pulse_range(0, 500, 2500);
+    servo.set_angle_range(0, -90, 90);  // -90° to +90°
+    servo.set_center_angle(0, 0);
+    servo.set_speed(0, 90.0);  // 90°/sec
+    servo.set_acceleration(0, 180.0);
+
+    // Tilt servo (vertical)
+    servo.set_gpio_pin(1, 19);
+    servo.set_pulse_range(1, 500, 2500);
+    servo.set_angle_range(1, -45, 45);  // Limited tilt
+    servo.set_center_angle(1, 0);
+    servo.set_speed(1, 60.0);
+
+    scheduler.add(Box::new(servo), 1, Some(true));
+
+    // Pan-tilt control node
+    let pantilt_node = node! {
+        name: "pan_tilt_control",
+        init: |ctx| {
+            // Center both servos
+            let hub = Hub::<ServoCommand>::new("servo.command")?;
+
+            hub.send(ServoCommand {
+                servo_id: 0,
+                command_type: ServoCommand::CMD_CENTER,
+                ..Default::default()
+            }, None)?;
+
+            hub.send(ServoCommand {
+                servo_id: 1,
+                command_type: ServoCommand::CMD_CENTER,
+                ..Default::default()
+            }, None)?;
+
+            ctx.log_info("Pan-tilt initialized");
+            Ok(())
+        },
+        tick: |ctx| {
+            let hub = Hub::<ServoCommand>::new("servo.command")?;
+
+            // Scan pattern
+            // Pan left
+            hub.send(ServoCommand {
+                servo_id: 0,
+                angle: -90.0,
+                speed: 45.0,
+                ..Default::default()
+            }, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+
+            // Pan right
+            hub.send(ServoCommand {
+                servo_id: 0,
+                angle: 90.0,
+                speed: 45.0,
+                ..Default::default()
+            }, None)?;
+            std::thread::sleep(Duration::from_secs(4));
+
+            // Center pan
+            hub.send(ServoCommand {
+                servo_id: 0,
+                angle: 0.0,
+                ..Default::default()
+            }, None)?;
+
+            // Tilt up
+            hub.send(ServoCommand {
+                servo_id: 1,
+                angle: 30.0,
+                ..Default::default()
+            }, None)?;
+            std::thread::sleep(Duration::from_secs(1));
+
+            // Tilt down
+            hub.send(ServoCommand {
+                servo_id: 1,
+                angle: -30.0,
+                ..Default::default()
+            }, None)?;
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(pantilt_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### ServoCommand
+
+```rust
+pub struct ServoCommand {
+    pub servo_id: u8,          // Servo ID (0-15)
+    pub command_type: u8,      // Command type
+    pub angle: f32,            // Target angle (degrees)
+    pub pulse_width: u16,      // Pulse width (μs)
+    pub speed: f32,            // Movement speed (°/sec)
+    pub acceleration: f32,     // Acceleration (°/sec²)
+}
+```
+
+### Command Types
+
+```rust
+pub const CMD_ANGLE: u8 = 0;       // Set by angle
+pub const CMD_PULSE: u8 = 1;       // Set by pulse width
+pub const CMD_CENTER: u8 = 2;      // Move to center
+pub const CMD_ENABLE: u8 = 3;      // Enable servo
+pub const CMD_DISABLE: u8 = 4;     // Disable servo
+pub const CMD_MIN: u8 = 5;         // Move to minimum
+pub const CMD_MAX: u8 = 6;         // Move to maximum
+```
+
+### ServoStatus
+
+```rust
+pub struct ServoStatus {
+    pub servo_id: u8,
+    pub current_angle: f32,
+    pub current_pulse: u16,
+    pub target_angle: f32,
+    pub enabled: bool,
+    pub moving: bool,
+    pub timestamp: u64,
+}
+```
+
+## Servo Types
+
+### Analog Servos
+
+```rust
+// Budget option, slower response
+// Update rate: 50 Hz
+// Typical range: 1000-2000 μs
+servo.set_pulse_range(0, 1000, 2000);
+```
+
+### Digital Servos
+
+```rust
+// Faster response, higher torque holding
+// Update rate: 300-400 Hz
+// Extended range often supported
+servo.set_pulse_range(0, 500, 2500);
+```
+
+### Continuous Rotation Servos
+
+```rust
+// Modified for continuous rotation
+// 1500 μs = stop
+// 1000 μs = full reverse
+// 2000 μs = full forward
+
+servo.set_angle_range(0, -100, 100);  // Map to speed
+servo.set_center_angle(0, 0);  // 0 = stopped
+```
+
+## PCA9685 Features
+
+### Multiple Boards
+
+```rust
+// Chain up to 62 PCA9685 boards
+let servo1 = ServoControllerNode::new()?;
+servo1.set_pca9685_address(0x40);  // Board 1 (servos 0-15)
+
+let servo2 = ServoControllerNode::new()?;
+servo2.set_pca9685_address(0x41);  // Board 2 (servos 16-31)
+```
+
+### Output Enable
+
+```rust
+// Disable all outputs (saves power)
+servo.pca9685_output_enable(false);
+
+// Re-enable
+servo.pca9685_output_enable(true);
+```
+
+### Frequency
+
+```rust
+// Set PWM frequency (40-1000 Hz)
+servo.set_pwm_frequency(50);   // Standard (50 Hz)
+servo.set_pwm_frequency(333);  // High-speed (333 Hz)
+```
+
+## Calibration Procedure
+
+```rust
+// 1. Set servo to test range
+servo.set_pulse_range(0, 500, 2500);
+
+// 2. Move to minimum
+hub.send(ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_MIN,
+    ..Default::default()
+}, None)?;
+// Observe actual angle (should be 0°)
+
+// 3. Move to maximum
+hub.send(ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_MAX,
+    ..Default::default()
+}, None)?;
+// Observe actual angle (should be 180°)
+
+// 4. Adjust pulse range if needed
+// If min angle > 0°, increase min pulse
+// If max angle < 180°, increase max pulse
+servo.set_pulse_range(0, 600, 2400);  // Adjusted
+
+// 5. Find center
+hub.send(ServoCommand {
+    servo_id: 0,
+    command_type: ServoCommand::CMD_CENTER,
+    ..Default::default()
+}, None)?;
+// Should be 90° (perpendicular)
+
+// 6. Adjust center pulse if needed
+servo.set_center_pulse(0, 1520);  // If slightly off
+```
+
+## Best Practices
+
+1. **Always set appropriate limits:**
+   ```rust
+   servo.set_min_angle(0, 10);
+   servo.set_max_angle(0, 170);
+   // Prevents mechanical damage
+   ```
+
+2. **Use speed control for smoother motion:**
+   ```rust
+   servo.set_speed(0, 60.0);
+   // Prevents jerky movements and mechanical stress
+   ```
+
+3. **Calibrate each servo:**
+   ```rust
+   // Servos vary - measure and adjust pulse ranges
+   servo.set_pulse_range(0, 520, 2480);
+   ```
+
+4. **Power servos separately from Pi:**
+   ```
+   Use dedicated 5-6V power supply
+   Share common ground with Pi
+   Servos can draw several amps
+   ```
+
+5. **Disable unused servos:**
+   ```rust
+   servo.disable(0);
+   // Saves power and reduces heat
+   ```
+
+6. **Use PCA9685 for many servos:**
+   ```rust
+   // Offloads PWM generation from CPU
+   // More stable timing
+   // Can control 16 servos per board
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check GPIO permissions
+2. For PCA9685: Check I2C connection (`i2cdetect -y 1`)
+3. Verify power to servo
+4. Check wiring (signal, VCC, GND)
+
+**Problem: Servo jitters at position**
+
+**Solutions:**
+1. Insufficient power - use dedicated supply
+2. Add capacitor (470μF-1000μF) near servo power
+3. Check for loose connections
+4. Digital servo may need higher update rate
+
+**Problem: Servo doesn't reach full range**
+
+**Solutions:**
+1. Adjust pulse range:
+   ```rust
+   servo.set_pulse_range(0, 500, 2500);  // Extended range
+   ```
+2. Check mechanical binding
+3. Some servos are limited to 120° or 90°
+
+**Problem: Servo moves to wrong angle**
+
+**Solutions:**
+1. Recalibrate pulse range
+2. Check angle range mapping
+3. Verify servo center position:
+   ```rust
+   servo.set_center_pulse(0, 1500);
+   ```
+
+**Problem: PCA9685 not detected**
+
+**Solutions:**
+1. Check I2C address: `i2cdetect -y 1` (should show 0x40)
+2. Verify I2C wiring (SDA, SCL)
+3. Check pullup resistors (usually built-in)
+4. Try different I2C address: `servo.set_pca9685_address(0x41)`
+
+## Servo Specifications
+
+### Common Specifications
+
+| Parameter | Analog | Digital |
+|-----------|--------|---------|
+| Update Rate | 50 Hz | 300-400 Hz |
+| Dead Band | 5-10 μs | 1-2 μs |
+| Response | ~0.2 sec/60° | ~0.08 sec/60° |
+| Torque Holding | Lower | Higher |
+| Current | Lower | Higher |
+
+### Torque Ratings
+
+```
+Micro servo: 1-3 kg·cm
+Standard servo: 3-10 kg·cm
+Large servo: 10-30 kg·cm
+Heavy-duty: 30-40+ kg·cm
+```
+
+## Graceful Shutdown
+
+ServoControllerNode automatically stops all servos when your application receives Ctrl+C (SIGINT/SIGTERM):
+
+- `stop_all()` called on all servos
+- All velocities set to 0
+- Servos hold their current position (PWM continues until power off)
+
+## See Also
+
+- [DynamixelNode](./dynamixel) - Smart servos with feedback
+- [StepperMotorNode](./stepper-motor) - Stepper motors
+- [DcMotorNode](./dc-motor) - DC motor control
+- [I2cBusNode](./i2c-bus) - For PCA9685 direct control

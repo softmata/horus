@@ -1,0 +1,127 @@
+---
+title: KeyboardInputNode
+description: Keyboard input for manual robot control
+---
+
+# KeyboardInputNode
+
+Keyboard input node for robot teleoperation and manual control. Captures keyboard events for WASD/arrow key control schemes.
+
+## Source Code
+
+- [KeyboardInputNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/keyboard_input)
+- [Keyboard Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/keyboard_input_msg.rs)
+
+## Features
+
+- Key press/release detection
+- Arrow keys and WASD support
+- Modifier keys (Shift, Ctrl, Alt)
+- Configurable key bindings
+- Key repeat control
+- Non-blocking input
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut keyboard = KeyboardInputNode::new()?;
+    keyboard.enable_key_repeat(false);
+
+    scheduler.add(Box::new(keyboard), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Requires:** Terminal access and the `crossterm` feature.
+
+### Enabling Features
+
+There are three ways to enable the required `crossterm` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `KeyboardInputNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: crossterm)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - crossterm
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["crossterm"] }
+```
+
+## Usage
+
+```rust
+let hub = Hub::<KeyEvent>::new("keyboard.event")?;
+
+if let Some(event) = hub.recv(&mut None) {
+    if event.pressed {
+        match event.key {
+            Key::W | Key::Up => println!("Forward"),
+            Key::S | Key::Down => println!("Backward"),
+            Key::A | Key::Left => println!("Turn left"),
+            Key::D | Key::Right => println!("Turn right"),
+            Key::Space => println!("Stop"),
+            _ => {}
+        }
+    }
+}
+```
+
+## Teleoperation Example
+
+```rust
+let key_hub = Hub::<KeyEvent>::new("keyboard.event")?;
+let cmd_hub = Hub::<TwistCommand>::new("cmd_vel")?;
+
+let mut linear = 0.0;
+let mut angular = 0.0;
+
+while let Some(event) = key_hub.recv(&mut None) {
+    if event.pressed {
+        match event.key {
+            Key::W => linear = 0.5,
+            Key::S => linear = -0.5,
+            Key::A => angular = 1.0,
+            Key::D => angular = -1.0,
+            _ => {}
+        }
+    } else {
+        // Key released
+        linear = 0.0;
+        angular = 0.0;
+    }
+
+    cmd_hub.send(TwistCommand { linear_x: linear, angular_z: angular }, &mut None).ok();
+}
+```
+
+## See Also
+
+- [JoystickNode](./joystick) - Game controller input
+- [DifferentialDriveNode](./differential-drive) - Drive commands

@@ -1,0 +1,286 @@
+---
+title: "Perception Messages"
+description: "3D perception, point cloud, and depth sensing message types"
+weight: 50
+---
+
+# Perception Messages
+
+HORUS provides message types for 3D perception tasks including point clouds, depth images, bounding boxes, and plane detection.
+
+## PointCloud
+
+3D point cloud message compatible with ROS PointCloud2 format.
+
+```rust
+use horus::prelude::*; // Provides perception::{PointCloud, PointField, PointFieldType};
+use horus::prelude::*; // Provides geometry::Point3;
+
+// Create XYZ point cloud from points
+let points = vec![
+    Point3::new(1.0, 2.0, 3.0),
+    Point3::new(4.0, 5.0, 6.0),
+];
+let cloud = PointCloud::xyz(&points);
+
+// Create XYZRGB point cloud with colors
+let colored_points = vec![
+    (Point3::new(1.0, 2.0, 3.0), [255, 0, 0]),   // Red point
+    (Point3::new(4.0, 5.0, 6.0), [0, 255, 0]),   // Green point
+];
+let cloud = PointCloud::xyzrgb(&colored_points);
+
+// Access point count
+println!("Points: {}", cloud.point_count());
+
+// Extract XYZ coordinates back
+if let Some(points) = cloud.extract_xyz() {
+    for point in points {
+        println!("({:.2}, {:.2}, {:.2})", point.x, point.y, point.z);
+    }
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `width` | `u32` | Point cloud width (columns) |
+| `height` | `u32` | Point cloud height (rows, 1 for unorganized) |
+| `fields` | `[PointField; 16]` | Field descriptors (x, y, z, rgb, etc.) |
+| `field_count` | `u8` | Number of valid fields |
+| `is_dense` | `bool` | True if no invalid points |
+| `point_step` | `u32` | Bytes per point |
+| `row_step` | `u32` | Bytes per row |
+| `data` | `Vec<u8>` | Raw point data |
+| `frame_id` | `[u8; 32]` | Coordinate frame |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+### PointField
+
+Describes a field within the point cloud data:
+
+```rust
+use horus::prelude::*; // Provides perception::{PointField, PointFieldType};
+
+// Create custom field
+let intensity = PointField::new("intensity", 12, PointFieldType::Float32, 1);
+println!("Field: {}, size: {} bytes", intensity.name_str(), intensity.field_size());
+```
+
+**PointFieldType values:**
+
+| Type | Rust | Size |
+|------|------|------|
+| `Int8` | `i8` | 1 byte |
+| `UInt8` | `u8` | 1 byte |
+| `Int16` | `i16` | 2 bytes |
+| `UInt16` | `u16` | 2 bytes |
+| `Int32` | `i32` | 4 bytes |
+| `UInt32` | `u32` | 4 bytes |
+| `Float32` | `f32` | 4 bytes |
+| `Float64` | `f64` | 8 bytes |
+
+## BoundingBox3D
+
+3D bounding box for object detection.
+
+```rust
+use horus::prelude::*; // Provides perception::BoundingBox3D;
+use horus::prelude::*; // Provides geometry::{Point3, Vector3};
+
+// Create bounding box
+let center = Point3::new(1.0, 2.0, 0.5);
+let size = Vector3::new(0.5, 0.3, 1.0);  // width, height, depth
+
+let bbox = BoundingBox3D::new(center, size)
+    .with_label("person");
+
+// Check properties
+println!("Label: {}", bbox.label_str());
+println!("Volume: {:.2} m³", bbox.volume());
+println!("Confidence: {:.2}", bbox.confidence);
+
+// Check if point is inside
+let test_point = Point3::new(1.1, 2.0, 0.6);
+if bbox.contains_point(&test_point) {
+    println!("Point is inside bounding box");
+}
+
+// Get corner points
+let corners = bbox.corners();
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `center` | `Point3` | Box center position |
+| `size` | `Vector3` | Dimensions (width, height, depth) |
+| `orientation` | `Quaternion` | Box orientation |
+| `label` | `[u8; 32]` | Object class label |
+| `confidence` | `f32` | Detection confidence (0-1) |
+| `track_id` | `u32` | Tracking ID |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## BoundingBoxArray3D
+
+Array of 3D bounding boxes (max 32).
+
+```rust
+use horus::prelude::*; // Provides perception::{BoundingBoxArray3D, BoundingBox3D};
+use horus::prelude::*; // Provides geometry::{Point3, Vector3};
+
+let mut boxes = BoundingBoxArray3D::new();
+
+// Add bounding boxes
+let bbox1 = BoundingBox3D::new(
+    Point3::new(1.0, 0.0, 0.5),
+    Vector3::new(0.5, 0.5, 1.8)
+).with_label("person");
+
+boxes.add_box(bbox1)?;
+
+// Filter by confidence
+let high_confidence = boxes.filter_by_confidence(0.8);
+
+// Filter by label
+let people = boxes.filter_by_label("person");
+```
+
+## DepthImage
+
+Depth image from depth cameras (RealSense, Kinect, etc.).
+
+```rust
+use horus::prelude::*; // Provides perception::DepthImage;
+
+// Create depth image
+let width = 640;
+let height = 480;
+let depths = vec![0u16; (width * height) as usize];  // Initialize with zeros
+
+let mut depth_image = DepthImage::new(width, height, depths);
+depth_image.min_depth = 200;   // 20cm minimum
+depth_image.max_depth = 10000; // 10m maximum
+depth_image.depth_scale = 1.0; // 1mm per unit
+
+// Access depth at pixel
+if let Some(depth) = depth_image.get_depth(320, 240) {
+    if depth_image.is_valid_depth(depth) {
+        println!("Depth at center: {}mm", depth);
+    }
+}
+
+// Convert to point cloud using camera intrinsics
+let fx = 525.0;  // Focal length x
+let fy = 525.0;  // Focal length y
+let cx = 320.0;  // Principal point x
+let cy = 240.0;  // Principal point y
+
+let point_cloud = depth_image.to_point_cloud(fx, fy, cx, cy);
+
+// Get statistics
+let (min, max, mean) = depth_image.depth_statistics();
+println!("Depth range: {:.0}-{:.0}mm, mean: {:.0}mm", min, max, mean);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `width` | `u32` | Image width in pixels |
+| `height` | `u32` | Image height in pixels |
+| `depths` | `Vec<u16>` | Depth values in millimeters |
+| `min_depth` | `u16` | Minimum reliable depth |
+| `max_depth` | `u16` | Maximum reliable depth |
+| `depth_scale` | `f32` | mm per unit |
+| `frame_id` | `[u8; 32]` | Camera frame ID |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## PlaneDetection
+
+Detected planar surface.
+
+```rust
+use horus::prelude::*; // Provides perception::PlaneDetection;
+use horus::prelude::*; // Provides geometry::{Point3, Vector3};
+
+// Create plane detection (floor plane)
+let coefficients = [0.0, 0.0, 1.0, 0.0];  // ax + by + cz + d = 0 (horizontal plane at z=0)
+let center = Point3::new(0.0, 0.0, 0.0);
+let normal = Vector3::new(0.0, 0.0, 1.0);
+
+let plane = PlaneDetection::new(coefficients, center, normal)
+    .with_type("floor");
+
+// Check distance from point to plane
+let test_point = Point3::new(1.0, 2.0, 0.1);
+let distance = plane.distance_to_point(&test_point);
+println!("Distance to plane: {:.3}m", distance);
+
+// Check if point is on plane (within tolerance)
+if plane.contains_point(&test_point, 0.05) {  // 5cm tolerance
+    println!("Point is on the plane");
+}
+
+println!("Plane type: {}", plane.plane_type_str());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `coefficients` | `[f64; 4]` | Plane equation [a, b, c, d] |
+| `center` | `Point3` | Plane center point |
+| `normal` | `Vector3` | Plane normal vector |
+| `size` | `[f64; 2]` | Plane bounds (width, height) |
+| `inlier_count` | `u32` | Number of inlier points |
+| `confidence` | `f32` | Detection confidence (0-1) |
+| `plane_type` | `[u8; 16]` | Type label ("floor", "wall", etc.) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## PlaneArray
+
+Array of detected planes (max 16).
+
+```rust
+use horus::prelude::*; // Provides perception::PlaneArray;
+
+let planes = PlaneArray::default();
+println!("Detected {} planes", planes.count);
+```
+
+## Use in Nodes
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides perception::{PointCloud, DepthImage};
+
+struct PerceptionNode {
+    depth_sub: Hub<DepthImage>,
+    cloud_pub: Hub<PointCloud>,
+    fx: f64,
+    fy: f64,
+    cx: f64,
+    cy: f64,
+}
+
+impl Node for PerceptionNode {
+    fn name(&self) -> &'static str { "PerceptionNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(depth) = self.depth_sub.recv(&mut ctx) {
+            // Convert depth to point cloud
+            let cloud = depth.to_point_cloud(self.fx, self.fy, self.cx, self.cy);
+            self.cloud_pub.send(cloud, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## See Also
+
+- [Geometry Messages](/concepts/message-types#geometry-messages) - Point3, Vector3, Quaternion
+- [Vision Messages](/rust/api/vision-messages) - Image, Detection, Segmentation
+- [Depth Camera Node](/rust/library/built-in-nodes/depth-camera) - Depth camera driver

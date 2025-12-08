@@ -1,0 +1,340 @@
+---
+title: Extended Kalman Filter (EKF)
+description: State estimation for 2D robot localization using sensor fusion
+---
+
+# Extended Kalman Filter (EKF)
+
+Extended Kalman Filter for 2D robot localization with pose and velocity estimation. Handles nonlinear motion models through linearization.
+
+## Source Code
+
+- [EKF Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/ekf)
+
+## Features
+
+- 2D pose estimation (x, y, theta)
+- Velocity state tracking (vx, vy, omega)
+- Prediction (time update) and correction (measurement update) steps
+- Configurable process and measurement noise
+- Uncertainty tracking via covariance matrix
+
+## State Vector
+
+The EKF tracks a 6-dimensional state:
+
+| Index | State | Description |
+|-------|-------|-------------|
+| 0 | x | Position X (meters) |
+| 1 | y | Position Y (meters) |
+| 2 | theta | Heading (radians) |
+| 3 | vx | Velocity X (m/s) |
+| 4 | vy | Velocity Y (m/s) |
+| 5 | omega | Angular velocity (rad/s) |
+
+## Quick Start
+
+```rust
+use horus::prelude::*; // Includes EKF
+
+fn main() {
+    let mut ekf = EKF::new();
+
+    // Set initial state: stationary at origin
+    ekf.set_state([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+    // Simulate motion
+    ekf.set_state([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);  // Moving at 1 m/s in X
+
+    // Control loop
+    let dt = 0.01;  // 100 Hz
+    for i in 0..100 {
+        // Prediction step (time update)
+        ekf.predict(dt);
+
+        // Measurement update (when available)
+        if i % 10 == 0 {
+            // Simulated odometry measurement
+            let (x, y, theta) = ekf.get_pose();
+            ekf.update_odometry([x + 0.01, y, theta]);  // Noisy measurement
+        }
+
+        let (x, y, theta) = ekf.get_pose();
+        let uncertainty = ekf.get_position_uncertainty();
+        println!("Pose: ({:.3}, {:.3}, {:.3}), Uncertainty: {:.4}",
+                 x, y, theta, uncertainty);
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let ekf = EKF::new();
+```
+
+Creates an EKF with default noise parameters and zero initial state.
+
+### State Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_state([x, y, θ, vx, vy, ω])` | Set full state vector |
+| `get_state()` | Get state as `[f64; 6]` |
+| `get_pose()` | Get `(x, y, theta)` tuple |
+| `get_velocity()` | Get `(vx, vy, omega)` tuple |
+| `reset()` | Reset to zero state |
+
+### Covariance Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_covariance(P)` | Set 6×6 covariance matrix |
+| `get_covariance()` | Get covariance matrix |
+| `get_position_uncertainty()` | Get position std dev |
+
+### Noise Configuration
+
+| Method | Description |
+|--------|-------------|
+| `set_process_noise(Q)` | Set 6×6 process noise |
+| `set_odometry_noise(R)` | Set 3×3 measurement noise |
+
+### Filter Steps
+
+| Method | Description |
+|--------|-------------|
+| `predict(dt)` | Time update (motion model) |
+| `update_odometry([x, y, θ])` | Measurement update |
+
+## Motion Model
+
+The EKF uses a constant-velocity motion model:
+
+```
+x(k+1) = x(k) + vx(k) * dt
+y(k+1) = y(k) + vy(k) * dt
+theta(k+1) = theta(k) + omega(k) * dt
+```
+
+Velocities are assumed constant between updates. The model handles angle wrapping to [-π, π] automatically.
+
+## Tuning Noise Parameters
+
+### Process Noise (Q)
+
+Represents model uncertainty - how much the true state can deviate from the motion model:
+
+```rust
+let mut q = [[0.0; 6]; 6];
+q[0][0] = 0.1;   // x position variance
+q[1][1] = 0.1;   // y position variance
+q[2][2] = 0.05;  // theta variance
+q[3][3] = 0.2;   // vx variance (velocity changes)
+q[4][4] = 0.2;   // vy variance
+q[5][5] = 0.1;   // omega variance
+
+ekf.set_process_noise(q);
+```
+
+**Guidelines:**
+- Higher Q → Trust model less, adapt faster to changes
+- Lower Q → Trust model more, smoother estimates
+- Increase velocity Q for dynamic robots
+- Increase position Q on rough terrain
+
+### Measurement Noise (R)
+
+Represents sensor uncertainty:
+
+```rust
+let mut r = [[0.0; 3]; 3];
+r[0][0] = 0.05;  // x measurement variance
+r[1][1] = 0.05;  // y measurement variance
+r[2][2] = 0.02;  // theta measurement variance
+
+ekf.set_odometry_noise(r);
+```
+
+**Guidelines:**
+- Match actual sensor noise characteristics
+- Higher R → Trust measurements less
+- Lower R → Trust measurements more
+- Use sensor datasheets for initial values
+
+## Example: Fusing Odometry and GPS
+
+```rust
+use horus::prelude::*; // Includes EKF
+
+struct LocalizationFilter {
+    ekf: EKF,
+    last_odom_update: f64,
+    last_gps_update: f64,
+}
+
+impl LocalizationFilter {
+    fn new() -> Self {
+        let mut ekf = EKF::new();
+
+        // Set process noise for mobile robot
+        let mut q = [[0.0; 6]; 6];
+        q[0][0] = 0.1;
+        q[1][1] = 0.1;
+        q[2][2] = 0.05;
+        q[3][3] = 0.5;  // Velocity can change quickly
+        q[4][4] = 0.5;
+        q[5][5] = 0.3;
+        ekf.set_process_noise(q);
+
+        // Odometry is relatively accurate
+        let mut r_odom = [[0.0; 3]; 3];
+        r_odom[0][0] = 0.01;
+        r_odom[1][1] = 0.01;
+        r_odom[2][2] = 0.005;
+        ekf.set_odometry_noise(r_odom);
+
+        Self {
+            ekf,
+            last_odom_update: 0.0,
+            last_gps_update: 0.0,
+        }
+    }
+
+    fn predict(&mut self, dt: f64) {
+        self.ekf.predict(dt);
+    }
+
+    fn update_odometry(&mut self, odom: [f64; 3], timestamp: f64) {
+        // Only update if new data
+        if timestamp > self.last_odom_update {
+            self.ekf.update_odometry(odom);
+            self.last_odom_update = timestamp;
+        }
+    }
+
+    fn update_gps(&mut self, x: f64, y: f64, accuracy: f64) {
+        // GPS provides position only, with variable accuracy
+        // Temporarily increase measurement noise based on accuracy
+        let mut r = [[0.0; 3]; 3];
+        r[0][0] = accuracy * accuracy;
+        r[1][1] = accuracy * accuracy;
+        r[2][2] = 1.0;  // GPS doesn't provide heading, ignore
+
+        self.ekf.set_odometry_noise(r);
+
+        // Get current heading from state
+        let (_, _, theta) = self.ekf.get_pose();
+        self.ekf.update_odometry([x, y, theta]);
+    }
+
+    fn get_pose(&self) -> (f64, f64, f64) {
+        self.ekf.get_pose()
+    }
+
+    fn get_uncertainty(&self) -> f64 {
+        self.ekf.get_position_uncertainty()
+    }
+}
+```
+
+## Example: Integration with HORUS Nodes
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Includes EKF
+use horus::prelude::*; // Provides {Odometry, Pose2D};
+
+struct LocalizationNode {
+    ekf: EKF,
+    odom_sub: Hub<Odometry>,
+    pose_pub: Hub<Pose2D>,
+    last_time: Option<u64>,
+}
+
+impl LocalizationNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ekf: EKF::new(),
+            odom_sub: Hub::new("odom")?,
+            pose_pub: Hub::new("pose")?,
+            last_time: None,
+        })
+    }
+}
+
+impl Node for LocalizationNode {
+    fn name(&self) -> &'static str { "Localization" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Calculate dt
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+
+        let dt = if let Some(last) = self.last_time {
+            (current_time - last) as f64 / 1_000_000.0
+        } else {
+            0.01
+        };
+        self.last_time = Some(current_time);
+
+        // Prediction step every tick
+        self.ekf.predict(dt);
+
+        // Update step when odometry available
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            self.ekf.update_odometry([
+                odom.pose.x,
+                odom.pose.y,
+                odom.pose.theta,
+            ]);
+        }
+
+        // Publish filtered pose
+        let (x, y, theta) = self.ekf.get_pose();
+        let pose = Pose2D::new(x, y, theta);
+        self.pose_pub.send(pose, &mut ctx).ok();
+    }
+}
+```
+
+## Uncertainty Growth
+
+Without measurements, uncertainty grows over time:
+
+```rust
+let mut ekf = EKF::new();
+
+println!("Initial uncertainty: {:.4}", ekf.get_position_uncertainty());
+
+// Predict without measurements
+for i in 0..100 {
+    ekf.predict(0.1);
+    println!("After {:.1}s: {:.4}", (i + 1) as f64 * 0.1,
+             ekf.get_position_uncertainty());
+}
+```
+
+Each measurement update reduces uncertainty. This is the core benefit of Kalman filtering.
+
+## Comparison: EKF vs Kalman Filter
+
+| Feature | EKF | Linear KF |
+|---------|-----|-----------|
+| Motion model | Nonlinear | Linear |
+| State dimension | 6 (pose + vel) | Configurable |
+| Angle handling | Automatic wrap | None |
+| Use case | 2D robot localization | General 1D tracking |
+
+Use EKF for robot localization. Use the linear Kalman Filter for simpler 1D estimation tasks.
+
+## See Also
+
+- [Kalman Filter](/rust/library/algorithms/kalman-filter) - Linear Kalman Filter
+- [Sensor Fusion](/rust/library/algorithms/sensor-fusion) - Multi-sensor combination
+- [Localization Node](/rust/library/built-in-nodes/localization) - Ready-to-use localization
+- [Odometry Node](/rust/library/built-in-nodes/odometry) - Wheel odometry

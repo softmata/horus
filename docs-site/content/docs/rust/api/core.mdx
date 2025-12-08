@@ -1,0 +1,1124 @@
+---
+title: horus_core
+description: Core runtime API - nodes, communication, and scheduling
+order: 1
+---
+
+# horus_core
+
+The core runtime crate for the HORUS robotics framework. Provides the fundamental building blocks for creating distributed real-time robotics systems.
+
+```rust
+use horus::prelude::*;
+```
+
+---
+
+## Node
+
+The fundamental trait for all computation units in HORUS.
+
+```rust
+pub trait Node: Send {
+    fn name(&self) -> &'static str;
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>);
+
+    // Optional methods with defaults
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> { Ok(()) }
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> { Ok(()) }
+    fn on_error(&mut self, error: &str, ctx: &mut NodeInfo) { }
+    fn get_publishers(&self) -> Vec<TopicMetadata> { vec![] }
+    fn get_subscribers(&self) -> Vec<TopicMetadata> { vec![] }
+}
+```
+
+### Required Methods
+
+#### `name`
+
+```rust
+fn name(&self) -> &'static str
+```
+
+Returns the unique identifier for this node. Must be a static string.
+
+**Returns:** `&'static str` - The node's name
+
+**Example:**
+```rust
+fn name(&self) -> &'static str {
+    "my_sensor_node"
+}
+```
+
+---
+
+#### `tick`
+
+```rust
+fn tick(&mut self, ctx: Option<&mut NodeInfo>)
+```
+
+Called repeatedly by the scheduler. This is the main execution loop for the node.
+
+**Parameters:**
+- `ctx` - Optional mutable reference to node runtime context
+
+**Example:**
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Read sensor
+    let value = self.sensor.read();
+
+    // Publish data
+    self.publisher.send(value, &mut ctx).ok();
+
+    // Log (must unwrap Option)
+    if let Some(ref mut c) = ctx {
+        c.log_debug(&format!("Published: {}", value));
+    }
+}
+```
+
+---
+
+### Optional Methods
+
+#### `init`
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()>
+```
+
+Called once before the first tick. Use for initialization that may fail.
+
+**Parameters:**
+- `ctx` - Mutable reference to node runtime context
+
+**Returns:** `Result<()>` - Ok on success, Err on failure
+
+**Default:** Returns `Ok(())`
+
+---
+
+#### `shutdown`
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()>
+```
+
+Called when the scheduler is stopping. Use for cleanup.
+
+**Parameters:**
+- `ctx` - Mutable reference to node runtime context
+
+**Returns:** `Result<()>` - Ok on success, Err on failure
+
+**Default:** Returns `Ok(())`
+
+---
+
+#### `on_error`
+
+```rust
+fn on_error(&mut self, error: &str, ctx: &mut NodeInfo)
+```
+
+Called when an error occurs during tick execution.
+
+**Parameters:**
+- `error` - Error message string
+- `ctx` - Mutable reference to node runtime context
+
+**Default:** Logs the error
+
+---
+
+### Example Implementation
+
+```rust
+use horus::prelude::*;
+
+struct TemperatureSensor {
+    publisher: Hub<f32>,
+    sample_count: u64,
+}
+
+impl TemperatureSensor {
+    pub fn new() -> HorusResult<Self> {
+        Ok(Self {
+            publisher: Hub::new("temperature")?,
+            sample_count: 0,
+        })
+    }
+}
+
+impl Node for TemperatureSensor {
+    fn name(&self) -> &'static str {
+        "temperature_sensor"
+    }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
+        ctx.log_info("Temperature sensor initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Simulate reading temperature
+        let temp = 20.0 + (self.sample_count as f32 * 0.1).sin() * 5.0;
+
+        self.publisher.send(temp, &mut ctx).ok();
+        self.sample_count += 1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
+        ctx.log_info(&format!("Sensor shutdown after {} samples", self.sample_count));
+        Ok(())
+    }
+}
+```
+
+---
+
+## Hub
+
+Generic multi-producer, multi-consumer (MPMC) pub/sub channel using shared memory.
+
+```rust
+pub struct Hub<T> { /* fields omitted */ }
+```
+
+### Type Parameters
+
+- `T` - Message type. Must implement: `Send + Sync + Clone + Debug + Serialize + DeserializeOwned + 'static`
+
+### Constructors
+
+#### `new`
+
+```rust
+pub fn new(topic_name: &str) -> HorusResult<Self>
+```
+
+Creates a new Hub with default capacity (1024 messages).
+
+**Parameters:**
+- `topic_name` - Unique identifier for the topic
+
+**Returns:** `HorusResult<Hub<T>>`
+
+**Example:**
+```rust
+let hub: Hub<f32> = Hub::new("sensor.temperature")?;
+```
+
+---
+
+#### `new_with_capacity`
+
+```rust
+pub fn new_with_capacity(topic_name: &str, capacity: usize) -> HorusResult<Self>
+```
+
+Creates a Hub with custom buffer capacity.
+
+**Parameters:**
+- `topic_name` - Unique identifier for the topic
+- `capacity` - Maximum number of messages in buffer
+
+**Returns:** `HorusResult<Hub<T>>`
+
+**Example:**
+```rust
+let hub: Hub<Image> = Hub::new_with_capacity("camera.image", 16)?;
+```
+
+---
+
+#### `new_global`
+
+```rust
+pub fn new_global(topic_name: &str) -> HorusResult<Self>
+```
+
+Creates a Hub accessible across all HORUS sessions on the system.
+
+**Parameters:**
+- `topic_name` - Unique identifier for the topic
+
+**Returns:** `HorusResult<Hub<T>>`
+
+---
+
+#### `from_config`
+
+```rust
+pub fn from_config(hub_name: &str) -> HorusResult<Self>
+```
+
+Creates a Hub from configuration file (`horus.toml`).
+
+**Parameters:**
+- `hub_name` - Name of the hub in config file
+
+**Returns:** `HorusResult<Hub<T>>`
+
+**Config Example:**
+```toml
+[hubs.camera]
+topic = "camera.image"
+capacity = 16
+```
+
+```rust
+let hub: Hub<Image> = Hub::from_config("camera")?;
+```
+
+---
+
+### Methods
+
+#### `send`
+
+```rust
+pub fn send(&self, msg: T, ctx: &mut Option<&mut NodeInfo>) -> Result<(), T>
+```
+
+Sends a message to the topic. Non-blocking, ~200ns latency.
+
+**Parameters:**
+- `msg` - Message to send
+- `ctx` - Mutable reference to optional node context (for metrics tracking)
+
+**Returns:** `Result<(), T>` - Ok on success, Err(msg) if buffer is full
+
+**Example:**
+```rust
+// Inside tick()
+self.publisher.send(42.0, &mut ctx).ok();
+
+// Outside node context
+hub.send(data, &mut None).ok();
+```
+
+---
+
+#### `recv`
+
+```rust
+pub fn recv(&self, ctx: &mut Option<&mut NodeInfo>) -> Option<T>
+```
+
+Receives the latest message from the topic. Non-blocking.
+
+**Parameters:**
+- `ctx` - Mutable reference to optional node context
+
+**Returns:** `Option<T>` - Some(message) if available, None otherwise
+
+**Example:**
+```rust
+if let Some(value) = self.subscriber.recv(&mut ctx) {
+    // Process value
+}
+```
+
+---
+
+#### `get_topic_name`
+
+```rust
+pub fn get_topic_name(&self) -> &str
+```
+
+Returns the topic name.
+
+**Returns:** `&str`
+
+---
+
+#### `get_metrics`
+
+```rust
+pub fn get_metrics(&self) -> HubMetrics
+```
+
+Returns current metrics snapshot.
+
+**Returns:** `HubMetrics`
+
+---
+
+#### `get_connection_state`
+
+```rust
+pub fn get_connection_state(&self) -> ConnectionState
+```
+
+Returns current connection state.
+
+**Returns:** `ConnectionState`
+
+---
+
+### Network Endpoints
+
+Hub supports network communication via endpoint syntax in the topic name:
+
+```rust
+// Local shared memory (default, fastest)
+Hub::new("topic")?;
+
+// Direct TCP connection
+Hub::new("topic@192.168.1.100")?;
+Hub::new("topic@192.168.1.100:9000")?;
+
+// Multicast discovery
+Hub::new("topic@*")?;
+```
+
+---
+
+## Link
+
+Single-producer, single-consumer (SPSC) lock-free channel for point-to-point communication.
+
+```rust
+pub struct Link<T> { /* fields omitted */ }
+```
+
+### Type Parameters
+
+- `T` - Message type
+
+### Associated Types
+
+#### `LinkRole`
+
+```rust
+pub enum LinkRole {
+    Producer,
+    Consumer,
+}
+```
+
+#### `LinkMetrics`
+
+```rust
+pub struct LinkMetrics {
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub send_failures: u64,
+    pub recv_failures: u64,
+}
+```
+
+---
+
+## Scheduler
+
+Central orchestrator for node execution with priority-based scheduling. **Deterministic by default.**
+
+```rust
+pub struct Scheduler { /* fields omitted */ }
+```
+
+### Constructors
+
+#### `new`
+
+```rust
+pub fn new() -> Self
+```
+
+Creates a **deterministic** scheduler with default settings (~60 Hz tick rate). No learning phase, predictable execution from tick 0.
+
+**Returns:** `Scheduler`
+
+**Example:**
+```rust
+// Default: deterministic, no learning phase
+let scheduler = Scheduler::new();
+```
+
+---
+
+### Builder Methods
+
+#### `with_name`
+
+```rust
+pub fn with_name(self, name: &str) -> Self
+```
+
+Sets the scheduler name.
+
+---
+
+#### `with_capacity`
+
+```rust
+pub fn with_capacity(self, capacity: usize) -> Self
+```
+
+Pre-allocates capacity for nodes (prevents runtime allocations).
+
+---
+
+#### `with_config`
+
+```rust
+pub fn with_config(self, config: SchedulerConfig) -> Self
+```
+
+Applies a configuration preset.
+
+**Available Presets:**
+- `SchedulerConfig::standard()` - General development
+- `SchedulerConfig::hard_realtime()` - &lt;20μs jitter
+- `SchedulerConfig::safety_critical()` - Redundancy and monitoring
+- `SchedulerConfig::high_performance()` - Maximum throughput
+
+---
+
+#### `enable_determinism`
+
+```rust
+pub fn enable_determinism(self) -> Self
+```
+
+Explicitly enables deterministic execution mode. Same as default, but more explicit for code clarity.
+
+---
+
+#### `enable_learning`
+
+```rust
+pub fn enable_learning(self) -> Self
+```
+
+**WARNING: Makes execution non-deterministic!**
+
+Enables the ~100-tick learning phase for automatic node tier classification. Use only when adaptive optimization is worth the non-determinism.
+
+**Example:**
+```rust
+// Opt-in to non-deterministic learning
+let scheduler = Scheduler::new()
+    .enable_learning();  // WARNING: Non-deterministic!
+```
+
+---
+
+#### `with_safety_monitor`
+
+```rust
+pub fn with_safety_monitor(self, max_deadline_misses: u64) -> Self
+```
+
+Enables safety monitoring with deadline miss threshold.
+
+---
+
+### Node Management
+
+#### `add`
+
+```rust
+pub fn add(
+    &mut self,
+    node: Box<dyn Node>,
+    priority: u32,
+    logging_enabled: Option<bool>,
+) -> &mut Self
+```
+
+Adds a node to the scheduler.
+
+**Parameters:**
+- `node` - Boxed node instance
+- `priority` - Execution priority (0 = highest)
+- `logging_enabled` - Enable logging for this node (None = false)
+
+**Returns:** `&mut Self` for chaining
+
+**Example:**
+```rust
+scheduler
+    .add(Box::new(SensorNode::new()?), 0, Some(true))
+    .add(Box::new(ControlNode::new()?), 1, Some(true))
+    .add(Box::new(LoggerNode::new()?), 100, None);
+```
+
+---
+
+#### `add_with_tier`
+
+```rust
+pub fn add_with_tier(
+    &mut self,
+    node: Box<dyn Node>,
+    priority: u32,
+    tier: NodeTier,
+) -> &mut Self
+```
+
+Adds a node with explicit tier annotation for deterministic optimization. Use this to declare node execution characteristics at compile time.
+
+**Parameters:**
+- `node` - Boxed node instance
+- `priority` - Execution priority (0 = highest)
+- `tier` - Explicit execution tier (see NodeTier enum)
+
+**Returns:** `&mut Self` for chaining
+
+**NodeTier Options:**
+- `NodeTier::Jit` - Ultra-fast (&lt;1μs), JIT compiled
+- `NodeTier::Fast` - Fast (&lt;10μs), inline execution
+- `NodeTier::Normal` - Standard (&lt;100μs)
+- `NodeTier::AsyncIO` - Non-blocking I/O
+- `NodeTier::Background` - Low-priority (&gt;100μs)
+- `NodeTier::Isolated` - Process isolation
+
+**Example:**
+```rust
+use horus::scheduling::NodeTier;
+
+scheduler
+    .add_with_tier(Box::new(pid_controller), 0, NodeTier::Jit)
+    .add_with_tier(Box::new(sensor_reader), 1, NodeTier::Fast)
+    .add_with_tier(Box::new(cloud_sync), 5, NodeTier::AsyncIO)
+    .add_with_tier(Box::new(data_logger), 10, NodeTier::Background);
+```
+
+---
+
+#### `add_rt`
+
+```rust
+pub fn add_rt(
+    &mut self,
+    node: Box<dyn Node>,
+    priority: u32,
+    wcet_budget: Duration,
+    deadline: Duration,
+) -> &mut Self
+```
+
+Adds a real-time node with timing constraints.
+
+**Parameters:**
+- `node` - Boxed node instance
+- `priority` - Execution priority
+- `wcet_budget` - Worst-case execution time budget
+- `deadline` - Task deadline
+
+---
+
+#### `set_node_rate`
+
+```rust
+pub fn set_node_rate(&mut self, name: &str, rate_hz: f64) -> &mut Self
+```
+
+Sets per-node tick rate in Hz.
+
+**Example:**
+```rust
+scheduler
+    .set_node_rate("fast_sensor", 1000.0)  // 1 kHz
+    .set_node_rate("slow_logger", 1.0);    // 1 Hz
+```
+
+---
+
+#### `set_node_logging`
+
+```rust
+pub fn set_node_logging(&mut self, name: &str, enabled: bool) -> &mut Self
+```
+
+Enables or disables logging for a specific node.
+
+---
+
+### Execution
+
+#### `run`
+
+```rust
+pub fn run(&mut self) -> HorusResult<()>
+```
+
+Runs all nodes until Ctrl+C or `stop()` is called. Blocking.
+
+**Returns:** `HorusResult<()>`
+
+---
+
+#### `run_for`
+
+```rust
+pub fn run_for(&mut self, duration: Duration) -> HorusResult<()>
+```
+
+Runs all nodes for a specified duration.
+
+**Parameters:**
+- `duration` - How long to run
+
+**Returns:** `HorusResult<()>`
+
+---
+
+#### `tick`
+
+```rust
+pub fn tick(&mut self, node_names: &[&str]) -> HorusResult<()>
+```
+
+Ticks specific nodes by name continuously.
+
+---
+
+#### `tick_for`
+
+```rust
+pub fn tick_for(&mut self, node_names: &[&str], duration: Duration) -> HorusResult<()>
+```
+
+Ticks specific nodes for a specified duration.
+
+---
+
+#### `stop`
+
+```rust
+pub fn stop(&self)
+```
+
+Stops the scheduler.
+
+---
+
+#### `is_running`
+
+```rust
+pub fn is_running(&self) -> bool
+```
+
+Returns whether the scheduler is currently running.
+
+---
+
+### OS Integration (Linux)
+
+#### `set_realtime_priority`
+
+```rust
+pub fn set_realtime_priority(&self, priority: i32) -> HorusResult<()>
+```
+
+Sets SCHED_FIFO real-time priority (1-99). Requires CAP_SYS_NICE.
+
+---
+
+#### `pin_to_cpu`
+
+```rust
+pub fn pin_to_cpu(&self, cpu_id: usize) -> HorusResult<()>
+```
+
+Pins scheduler thread to a specific CPU core.
+
+---
+
+#### `lock_memory`
+
+```rust
+pub fn lock_memory(&self) -> HorusResult<()>
+```
+
+Locks all memory pages to prevent page faults.
+
+---
+
+### Example
+
+```rust
+use horus::prelude::*;
+use std::time::Duration;
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new()
+        .with_name("robot_controller")
+        .with_capacity(10);
+
+    // Add nodes with priorities
+    scheduler
+        .add(Box::new(EmergencyStop::new()?), 0, Some(true))
+        .add(Box::new(MotorController::new()?), 1, Some(true))
+        .add(Box::new(SensorHub::new()?), 2, Some(true))
+        .add(Box::new(DataLogger::new()?), 100, Some(false));
+
+    // Configure rates
+    scheduler
+        .set_node_rate("motor_controller", 1000.0)
+        .set_node_rate("data_logger", 10.0);
+
+    // Run for 60 seconds
+    scheduler.run_for(Duration::from_secs(60))?;
+
+    Ok(())
+}
+```
+
+---
+
+## NodeInfo
+
+Runtime context provided to nodes during execution.
+
+```rust
+pub struct NodeInfo { /* fields omitted */ }
+```
+
+### Constructors
+
+#### `new`
+
+```rust
+pub fn new(name: String, logging_enabled: bool) -> Self
+```
+
+Creates a new NodeInfo instance.
+
+---
+
+### Accessors
+
+#### `name`
+
+```rust
+pub fn name(&self) -> &str
+```
+
+Returns the node name.
+
+---
+
+#### `state`
+
+```rust
+pub fn state(&self) -> &NodeState
+```
+
+Returns current node state.
+
+---
+
+#### `metrics`
+
+```rust
+pub fn metrics(&self) -> &NodeMetrics
+```
+
+Returns node metrics.
+
+---
+
+#### `config`
+
+```rust
+pub fn config(&self) -> &NodeConfig
+```
+
+Returns node configuration.
+
+---
+
+### Logging
+
+#### `log_info`
+
+```rust
+pub fn log_info(&mut self, msg: &str)
+```
+
+Logs an info message.
+
+---
+
+#### `log_debug`
+
+```rust
+pub fn log_debug(&mut self, msg: &str)
+```
+
+Logs a debug message.
+
+---
+
+#### `log_warning`
+
+```rust
+pub fn log_warning(&mut self, msg: &str)
+```
+
+Logs a warning message.
+
+---
+
+#### `log_error`
+
+```rust
+pub fn log_error(&mut self, msg: &str)
+```
+
+Logs an error message.
+
+---
+
+### State Management
+
+#### `transition_to_error`
+
+```rust
+pub fn transition_to_error(&mut self, reason: String)
+```
+
+Transitions node to error state.
+
+---
+
+#### `transition_to_crashed`
+
+```rust
+pub fn transition_to_crashed(&mut self, reason: String)
+```
+
+Transitions node to crashed state.
+
+---
+
+#### `restart`
+
+```rust
+pub fn restart(&mut self) -> HorusResult<()>
+```
+
+Attempts to restart the node.
+
+---
+
+### Usage Pattern
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Pass ctx to Hub methods
+    self.publisher.send(data, &mut ctx).ok();
+
+    // Access NodeInfo (must unwrap Option)
+    if let Some(ref mut c) = ctx {
+        c.log_info("Processing complete");
+    }
+}
+```
+
+---
+
+## HorusError
+
+Unified error type for all HORUS operations.
+
+```rust
+#[derive(Debug, Error)]
+pub enum HorusError {
+    Io(std::io::Error),
+    Config(String),
+    Backend { backend: String, message: String },
+    Communication(String),
+    Node { node: String, message: String },
+    Scheduling(String),
+    Memory(String),
+    SharedMemory(String),
+    Parameter(String),
+    Serialization(String),
+    Timeout(String),
+    NotFound(String),
+    PermissionDenied(String),
+    InvalidInput(String),
+    InitializationFailed(String),
+    AlreadyExists(String),
+    ParseError(String),
+    CommandFailed(String),
+    FeatureNotAvailable(String),
+    Internal(String),
+    Other(String),
+}
+```
+
+### Factory Methods
+
+```rust
+impl HorusError {
+    pub fn config<S: Into<String>>(msg: S) -> Self;
+    pub fn backend<S, T>(backend: S, message: T) -> Self;
+    pub fn node<S, T>(node: S, message: T) -> Self;
+    pub fn communication<S: Into<String>>(msg: S) -> Self;
+    pub fn memory<S: Into<String>>(msg: S) -> Self;
+    pub fn not_found<S: Into<String>>(resource: S) -> Self;
+    pub fn invalid_input<S: Into<String>>(msg: S) -> Self;
+}
+```
+
+### Predicates
+
+```rust
+impl HorusError {
+    pub fn is_not_found(&self) -> bool;
+    pub fn is_timeout(&self) -> bool;
+    pub fn is_permission_denied(&self) -> bool;
+}
+```
+
+---
+
+## HorusResult
+
+Type alias for Results using HorusError.
+
+```rust
+pub type HorusResult<T> = Result<T, HorusError>;
+```
+
+---
+
+## Enums
+
+### NodeState
+
+```rust
+pub enum NodeState {
+    Initializing,
+    Running,
+    Paused,
+    Error(String),
+    Crashed(String),
+    Stopped,
+}
+```
+
+### HealthStatus
+
+```rust
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Unknown,
+}
+```
+
+### ConnectionState
+
+```rust
+pub enum ConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Failed,
+}
+```
+
+---
+
+## Structs
+
+### NodeMetrics
+
+```rust
+pub struct NodeMetrics {
+    pub total_ticks: u64,
+    pub errors_count: u64,
+    pub last_tick_duration_ns: u64,
+    pub avg_tick_duration_ns: u64,
+    pub max_tick_duration_ns: u64,
+}
+```
+
+### NodeConfig
+
+```rust
+pub struct NodeConfig {
+    pub restart_on_failure: bool,
+    pub max_restart_attempts: u32,
+    pub tick_timeout_ms: u64,
+}
+```
+
+### HubMetrics
+
+```rust
+pub struct HubMetrics {
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub send_failures: u64,
+    pub recv_failures: u64,
+    pub last_activity: Option<Instant>,
+}
+```
+
+### TopicMetadata
+
+```rust
+pub struct TopicMetadata {
+    pub topic_name: String,
+    pub type_name: String,
+}
+```
+
+---
+
+## Traits
+
+### Channel
+
+```rust
+pub trait Channel<T>: Send + Sync {
+    fn send(&self, msg: T) -> Result<(), T>;
+    fn recv(&self) -> Option<T>;
+}
+```
+
+### Publisher
+
+```rust
+pub trait Publisher<T>: Send + Sync {
+    fn publish(&self, msg: T) -> Result<(), T>;
+}
+```
+
+### Subscriber
+
+```rust
+pub trait Subscriber<T>: Send + Sync {
+    fn subscribe(&self) -> Option<T>;
+    fn try_recv(&self) -> Option<T>;
+}
+```
+
+---
+
+## Performance
+
+| Operation | Latency | Notes |
+|-----------|---------|-------|
+| `Link::send()` | **87ns** | Wait-free SPSC |
+| `Link::recv()` | ~175ns | Wait-free SPSC |
+| `Link::send_recv()` | ~262ns | Round-trip |
+| `Hub::send()` | **313ns** | Lock-free MPMC |
+| `Hub::recv()` | ~313ns | Lock-free MPMC |
+
+**Note:** Link is 72% faster than Hub for single-producer/single-consumer scenarios. Use Link for control loops, Hub for multi-subscriber topics.

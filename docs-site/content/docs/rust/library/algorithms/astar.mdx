@@ -1,0 +1,256 @@
+---
+title: A* Pathfinding
+description: Grid-based optimal pathfinding using heuristic search
+---
+
+# A* Pathfinding
+
+Grid-based optimal pathfinding algorithm using heuristic search. A* finds the shortest path between two points while avoiding obstacles.
+
+## Source Code
+
+- [A* Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/astar)
+
+## Features
+
+- Optimal pathfinding with admissible heuristics
+- 8-directional movement (diagonal allowed)
+- Configurable heuristic weight for speed/optimality tradeoff
+- Euclidean, Manhattan, and Diagonal distance heuristics
+- Obstacle-aware grid navigation
+
+## Quick Start
+
+```rust
+use horus::prelude::*; // Includes AStar
+
+fn main() {
+    // Create 100x100 grid planner
+    let mut astar = AStar::new(100, 100);
+
+    // Set start and goal positions
+    astar.set_start(10, 10);
+    astar.set_goal(90, 90);
+
+    // Add obstacles
+    astar.set_obstacle(50, 50);
+    astar.set_obstacle(51, 50);
+    astar.set_obstacle(52, 50);
+
+    // Find path
+    if let Some(path) = astar.plan() {
+        println!("Found path with {} waypoints", path.len());
+        for (x, y) in &path {
+            println!("  ({}, {})", x, y);
+        }
+
+        // Calculate path length
+        let length = AStar::path_length(&path);
+        println!("Path length: {:.2} units", length);
+    } else {
+        println!("No path found!");
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let astar = AStar::new(width: usize, height: usize);
+```
+
+Creates a new A* planner with the specified grid dimensions.
+
+### Configuration Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_start(x, y)` | Set start position |
+| `set_goal(x, y)` | Set goal position |
+| `set_obstacle(x, y)` | Mark cell as obstacle |
+| `clear_obstacle(x, y)` | Remove obstacle from cell |
+| `set_grid(grid)` | Set entire grid (`true` = obstacle) |
+| `clear_obstacles()` | Remove all obstacles |
+| `set_heuristic(h)` | Set heuristic function |
+| `set_heuristic_weight(w)` | Set heuristic weight (≥1.0) |
+| `set_allow_diagonal(bool)` | Enable/disable diagonal movement |
+
+### Planning
+
+```rust
+let path: Option<Vec<(i32, i32)>> = astar.plan();
+```
+
+Returns `Some(path)` if a path exists, `None` otherwise.
+
+### Utility Methods
+
+```rust
+let length: f64 = AStar::path_length(&path);
+```
+
+Calculate the total length of a path.
+
+## Heuristics
+
+Choose the best heuristic for your use case:
+
+```rust
+use horus_library::algorithms::astar::Heuristic;
+
+// Best for 8-directional movement (default)
+astar.set_heuristic(Heuristic::Euclidean);
+
+// Best for 4-directional movement
+astar.set_heuristic(Heuristic::Manhattan);
+
+// Good balance for grid-based movement
+astar.set_heuristic(Heuristic::Diagonal);
+```
+
+| Heuristic | Best For | Characteristics |
+|-----------|----------|-----------------|
+| Euclidean | 8-directional | Admissible, smooth paths |
+| Manhattan | 4-directional | Fast, grid-aligned paths |
+| Diagonal | Mixed | Chebyshev distance |
+
+## Heuristic Weight
+
+Control the speed vs optimality tradeoff:
+
+```rust
+// Optimal path (slower)
+astar.set_heuristic_weight(1.0);
+
+// Faster search, possibly suboptimal
+astar.set_heuristic_weight(1.5);
+
+// Much faster, less optimal
+astar.set_heuristic_weight(2.0);
+```
+
+- Weight = 1.0: Guaranteed optimal path
+- Weight &gt; 1.0: Faster search, path within `weight` times optimal
+
+## Movement Options
+
+```rust
+// Allow diagonal movement (default)
+astar.set_allow_diagonal(true);
+
+// 4-directional only (up, down, left, right)
+astar.set_allow_diagonal(false);
+```
+
+Diagonal movement prevents corner-cutting through obstacles automatically.
+
+## Working with Occupancy Grids
+
+Integrate with the OccupancyGrid algorithm:
+
+```rust
+use horus_library::algorithms::{
+    astar::AStar,
+    occupancy_grid::OccupancyGrid,
+};
+
+fn plan_on_map(grid: &OccupancyGrid, start: (i32, i32), goal: (i32, i32)) -> Option<Vec<(i32, i32)>> {
+    let mut astar = AStar::new(grid.width(), grid.height());
+    astar.set_start(start.0, start.1);
+    astar.set_goal(goal.0, goal.1);
+
+    // Copy obstacles from occupancy grid
+    for y in 0..grid.height() {
+        for x in 0..grid.width() {
+            if grid.is_occupied(x, y) {
+                astar.set_obstacle(x as i32, y as i32);
+            }
+        }
+    }
+
+    astar.plan()
+}
+```
+
+## Converting to World Coordinates
+
+Grid paths are in cell coordinates. Convert to world coordinates:
+
+```rust
+fn grid_to_world(
+    path: &[(i32, i32)],
+    resolution: f64,  // meters per cell
+    origin: (f64, f64),  // world origin of grid
+) -> Vec<(f64, f64)> {
+    path.iter()
+        .map(|(gx, gy)| {
+            let wx = origin.0 + (*gx as f64 + 0.5) * resolution;
+            let wy = origin.1 + (*gy as f64 + 0.5) * resolution;
+            (wx, wy)
+        })
+        .collect()
+}
+
+// Example: 10cm resolution, origin at (0, 0)
+let world_path = grid_to_world(&path, 0.1, (0.0, 0.0));
+```
+
+## Performance
+
+| Grid Size | Typical Time | Notes |
+|-----------|--------------|-------|
+| 100×100 | &lt;1ms | Real-time planning |
+| 500×500 | ~10ms | Large indoor maps |
+| 1000×1000 | ~50ms | Outdoor environments |
+
+For larger maps, consider:
+- Using RRT for continuous spaces
+- Hierarchical planning with multiple resolutions
+- Caching and incremental replanning
+
+## Example: Dynamic Replanning
+
+```rust
+use horus::prelude::*; // Includes AStar
+
+struct DynamicPlanner {
+    astar: AStar,
+    current_path: Option<Vec<(i32, i32)>>,
+}
+
+impl DynamicPlanner {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            astar: AStar::new(width, height),
+            current_path: None,
+        }
+    }
+
+    fn set_goal(&mut self, goal: (i32, i32)) {
+        self.astar.set_goal(goal.0, goal.1);
+    }
+
+    fn replan(&mut self, robot_pos: (i32, i32)) -> Option<&Vec<(i32, i32)>> {
+        self.astar.set_start(robot_pos.0, robot_pos.1);
+        self.current_path = self.astar.plan();
+        self.current_path.as_ref()
+    }
+
+    fn add_obstacle(&mut self, x: i32, y: i32) {
+        self.astar.set_obstacle(x, y);
+    }
+
+    fn remove_obstacle(&mut self, x: i32, y: i32) {
+        self.astar.clear_obstacle(x, y);
+    }
+}
+```
+
+## See Also
+
+- [RRT](/rust/library/algorithms/rrt) - Sampling-based planning for complex spaces
+- [Pure Pursuit](/rust/library/algorithms/pure-pursuit) - Path following controller
+- [Occupancy Grid](/rust/library/algorithms/occupancy-grid) - Grid-based mapping
+- [Path Planner Node](/rust/library/built-in-nodes/path-planner) - Ready-to-use planning node

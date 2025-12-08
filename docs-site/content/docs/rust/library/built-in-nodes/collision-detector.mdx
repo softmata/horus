@@ -1,0 +1,64 @@
+---
+title: CollisionDetectorNode
+description: Collision detection and avoidance from sensor data
+---
+
+# CollisionDetectorNode
+
+Collision detection node processing data from ultrasonic sensors, LiDAR, depth cameras, and other proximity sensors. Provides collision warnings and automatic stopping for obstacle avoidance.
+
+## Source Code
+
+- [CollisionDetectorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/collision_detector)
+- [Diagnostics Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/diagnostics.rs)
+
+## Features
+
+- Multi-sensor fusion
+- Configurable safety zones
+- Distance thresholds
+- Directional collision detection
+- Velocity-based prediction
+- Auto-stop triggering
+- Warning levels (caution, warning, critical)
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut collision = CollisionDetectorNode::new()?;
+    collision.set_safe_distance(0.5);  // 0.5m safety margin
+    collision.enable_auto_stop(true);
+
+    scheduler.add(Box::new(collision), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Usage
+
+```rust
+let hub = Hub::<CollisionWarning>::new("collision.warning")?;
+
+if let Some(warning) = hub.recv(&mut None) {
+    println!("Collision risk: {:?} at {:.2}m, angle {}°",
+        warning.level, warning.distance, warning.angle);
+
+    if warning.level == WarningLevel::Critical {
+        // Emergency stop already triggered
+    }
+}
+```
+
+## See Also
+
+- [UltrasonicNode](./ultrasonic) - Distance sensors
+- [LidarNode](./lidar) - Laser scanning
+- [DepthCameraNode](./depth-camera) - 3D depth
+- [EmergencyStopNode](./emergency-stop) - E-stop

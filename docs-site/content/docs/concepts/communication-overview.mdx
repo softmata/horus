@@ -1,0 +1,276 @@
+---
+title: Communication Patterns Overview
+description: Understanding Hub vs Link communication patterns in HORUS
+order: 20
+---
+
+# Communication Patterns Overview
+
+HORUS provides two fundamental communication patterns for different use cases. Understanding when to use each pattern is key to building efficient robotics systems.
+
+## Two Core Patterns
+
+### Hub: Many-to-Many Pub/Sub (MPMC)
+
+**Pattern**: Multiple publishers → Multiple subscribers
+**Use Case**: Broadcasting, flexible topologies, logging
+**Semantics**: Buffered queue, all messages delivered
+
+```rust
+// One publisher
+let pub_hub: Hub<SensorData> = Hub::new("sensors")?;
+pub_hub.send(data, &mut ctx)?;
+
+// Many subscribers receive the same data
+let sub1: Hub<SensorData> = Hub::new("sensors")?;
+let sub2: Hub<SensorData> = Hub::new("sensors")?;
+let sub3: Hub<SensorData> = Hub::new("sensors")?;
+```
+
+### Link: Point-to-Point (SPSC)
+
+**Pattern**: One producer → One consumer
+**Use Case**: Control loops, critical paths, 1P1C pipelines
+**Semantics**: Single-slot, latest value only
+
+```rust
+// Producer
+let output: Link<ImuData> = Link::producer("imu_raw")?;
+output.send(data, &mut ctx)?;
+
+// Consumer (exactly one)
+let input: Link<ImuData> = Link::consumer("imu_raw")?;
+if let Some(data) = input.recv(&mut ctx) {
+    process(data);
+}
+```
+
+## Decision Matrix
+
+| Criteria | Use Hub (MPMC) | Use Link (SPSC) |
+|----------|----------------|-----------------|
+| **Number of Consumers** | Multiple subscribers | Exactly one consumer |
+| **Message Delivery** | All messages buffered | Latest value only |
+| **Latency (local)** | 481ns | 248ns (1.94x faster) |
+| **Latency (network)** | &lt;50µs | 5-15µs (3-10x faster) |
+| **Use Case** | Broadcasting, monitoring | Control loops, pipelines |
+| **Topology** | Dynamic, flexible | Fixed, point-to-point |
+| **Semantics** | Every message matters | Latest value matters |
+
+## Key Differences
+
+### 1. Message Semantics
+
+**Hub (Buffering)**:
+- Messages are queued
+- All messages are delivered to all subscribers
+- If buffer fills, oldest messages dropped
+- Perfect for: Logging, event streams, commands
+
+**Link (Latest Value)**:
+- Single slot, always overwrites
+- Consumer gets latest value only
+- Older unread values are lost
+- Perfect for: Sensor readings, state updates, control signals
+
+### 2. Performance
+
+**Hub**:
+- 481ns latency (local shared memory)
+- &lt;50µs latency (network)
+- Slightly slower due to MPMC coordination
+
+**Link**:
+- 248ns latency (local shared memory)
+- 5-15µs latency (network)
+- Faster due to SPSC optimization (no contention)
+
+### 3. Topology Flexibility
+
+**Hub**:
+```rust
+// Can add/remove subscribers dynamically
+let logger: Hub<Event> = Hub::new("events")?;
+let monitor: Hub<Event> = Hub::new("events")?;
+let analyzer: Hub<Event> = Hub::new("events")?;
+// All receive the same events
+```
+
+**Link**:
+```rust
+// Fixed 1P1C topology
+let producer: Link<Data> = Link::producer("data")?;
+let consumer: Link<Data> = Link::consumer("data")?;
+// Exactly one of each - adding another consumer won't work
+```
+
+## When to Use Hub
+
+**Broadcasting to multiple nodes**
+```rust
+// One camera feeds multiple processors
+let camera_pub: Hub<Image> = Hub::new("camera")?;
+// subscriber 1: face detection
+// subscriber 2: object tracking
+// subscriber 3: recording/logging
+```
+
+**Logging and monitoring**
+```rust
+// Many nodes publish diagnostics, one logger subscribes
+let diag_pub: Hub<DiagMsg> = Hub::new("diagnostics")?;
+let logger: Hub<DiagMsg> = Hub::new("diagnostics")?;
+```
+
+**Event-driven systems**
+```rust
+// Events trigger actions in multiple subsystems
+let event_pub: Hub<EmergencyStop> = Hub::new("estop")?;
+// All motor controllers subscribe and react
+```
+
+**Flexible topologies**
+- Number of subscribers unknown at compile time
+- Nodes can join/leave during runtime
+- Pub/sub pattern from ROS/MQTT/DDS
+
+## When to Use Link
+
+**Control loops** (high-frequency, latency-critical)
+```rust
+// IMU → State Estimator → Controller → Motors
+// Each stage connected by a Link (248ns latency)
+struct FlightController {
+    imu_input: Link<ImuData>,
+    motor_output: Link<MotorCommands>,
+}
+```
+
+**Point-to-point pipelines**
+```rust
+// Sensor → Filter → Processor
+let raw_output: Link<RawData> = Link::producer("raw")?;
+let raw_input: Link<RawData> = Link::consumer("raw")?;
+
+let filtered_output: Link<FilteredData> = Link::producer("filtered")?;
+```
+
+**Latest-value semantics**
+```rust
+// Always want the newest sensor reading
+let lidar: Link<LidarScan> = Link::consumer("lidar")?;
+// Old scans are irrelevant - only latest matters
+```
+
+**Deterministic real-time systems**
+- Fixed topology known at compile time
+- Predictable latency critical
+- Hard real-time requirements
+
+## Hybrid Patterns
+
+You can combine both patterns in the same system:
+
+```rust
+struct RobotSystem {
+    // Link for critical control loop (248ns)
+    imu_link: Link<ImuData>,
+    motor_link: Link<MotorCommands>,
+
+    // Hub for broadcasting and monitoring (481ns)
+    status_hub: Hub<RobotStatus>,
+    diagnostics_hub: Hub<DiagMsg>,
+    camera_hub: Hub<Image>,
+}
+```
+
+**Design principle**: Use Link for the critical path, Hub for everything else.
+
+## Common Patterns
+
+### 1. Sensor Fusion
+
+```rust
+// Multiple sensors → One fusion node (Hub)
+let imu_pub: Hub<ImuData> = Hub::new("sensors.imu")?;
+let gps_pub: Hub<GpsData> = Hub::new("sensors.gps")?;
+let lidar_pub: Hub<LidarScan> = Hub::new("sensors.lidar")?;
+
+// Fusion node subscribes to all
+struct FusionNode {
+    imu_sub: Hub<ImuData>,
+    gps_sub: Hub<GpsData>,
+    lidar_sub: Hub<LidarScan>,
+
+    // Fused output via Link (high performance)
+    state_output: Link<StateEstimate>,
+}
+```
+
+### 2. Command Distribution
+
+```rust
+// One joystick → Multiple motors (Hub)
+let joystick_pub: Hub<JoystickCmd> = Hub::new("joystick")?;
+
+// Each motor controller subscribes
+struct MotorController {
+    cmd_sub: Hub<JoystickCmd>,
+    motor_output: Link<MotorPWM>,  // Link to actual motor driver
+}
+```
+
+### 3. Pipeline Processing
+
+```rust
+// Sequential processing (all Link)
+let raw: Link<RawImage> = Link::producer("raw")?;
+let filtered: Link<FilteredImage> = Link::producer("filtered")?;
+let detected: Link<Detections> = Link::producer("detected")?;
+
+// raw → filter → detector → tracker
+// Each stage: Link input → process → Link output
+```
+
+## Transport Independence
+
+**Important**: Both Hub and Link support **local** and **network** transports!
+
+```rust
+// Local shared memory (default)
+let hub: Hub<Data> = Hub::new("topic")?;           // 481ns
+let link: Link<Data> = Link::producer("topic")?;   // 248ns
+
+// Network (just change the endpoint)
+let hub: Hub<Data> = Hub::new("topic@192.168.1.5")?;        // &lt;50µs
+let link: Link<Data> = Link::producer("topic@192.168.1.5:9000")?;  // 5-15µs
+```
+
+The pattern (Hub vs Link) is independent of the transport (local vs network).
+
+See [Communication Transport](/concepts/communication-transport) for details on local vs network.
+
+## Summary
+
+**Hub (MPMC)**:
+- Many publishers, many subscribers
+- All messages buffered and delivered
+- Flexible, dynamic topologies
+- 481ns local, &lt;50µs network
+- Use for: Broadcasting, monitoring, events
+
+**Link (SPSC)**:
+- One producer, one consumer
+- Latest value only (overwrites)
+- Fixed, point-to-point topology
+- 248ns local, 5-15µs network
+- Use for: Control loops, critical paths, pipelines
+
+Choose based on your **communication pattern**, not transport mechanism!
+
+## Next Steps
+
+- [Hub (MPMC) Details](/concepts/core-concepts-hub) - Deep dive into Hub
+- [Link (SPSC) Details](/concepts/core-concepts-link) - Deep dive into Link
+- [Communication Transport](/concepts/communication-transport) - Local vs Network
+- [Network Communication](/concepts/network-communication) - Multi-machine systems

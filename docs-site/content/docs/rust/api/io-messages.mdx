@@ -1,0 +1,476 @@
+---
+title: "I/O & Industrial Messages"
+description: "Digital/analog I/O, SPI, I2C, serial, CAN bus, and Modbus messages"
+weight: 53
+---
+
+# I/O & Industrial Messages
+
+HORUS provides message types for interfacing with digital/analog I/O, industrial protocols, and communication buses.
+
+## DigitalIO
+
+Digital input/output pin states.
+
+```rust
+use horus::prelude::*; // Provides io::DigitalIO;
+
+let mut dio = DigitalIO::new(8);  // 8 pins
+
+// Set/get pin states
+dio.set_pin(0, true);   // Pin 0 high
+dio.set_pin(7, true);   // Pin 7 high
+
+if let Some(state) = dio.get_pin(0) {
+    println!("Pin 0: {}", if state { "HIGH" } else { "LOW" });
+}
+
+// Set pin direction
+dio.set_pin_direction(0, true);   // Pin 0 as output
+dio.set_pin_direction(1, false);  // Pin 1 as input
+
+// Set pin label
+dio.set_pin_label(0, "motor_enable");
+
+// Count active pins
+println!("Active pins: {}", dio.count_active());
+
+// Work with bitmask
+let mask = dio.as_bitmask();  // 0b10000001 = 0x81
+println!("Bitmask: 0x{:02X}", mask);
+
+// Set from bitmask
+let mut dio2 = DigitalIO::new(8);
+dio2.from_bitmask(0xFF);  // All pins high
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pins` | `[bool; 32]` | Pin states |
+| `pin_count` | `u8` | Active pin count |
+| `pin_directions` | `[bool; 32]` | true=output, false=input |
+| `pullup_enable` | `[bool; 32]` | Pull-up resistor enable |
+| `pin_labels` | `[[u8; 16]; 32]` | Pin name labels |
+| `board_id` | `[u8; 32]` | Board identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## AnalogIO
+
+Analog input/output channels.
+
+```rust
+use horus::prelude::*; // Provides io::AnalogIO;
+
+let mut aio = AnalogIO::new(4);  // 4 channels
+
+// Set channel values
+aio.set_channel(0, 2.5);  // 2.5V
+
+// Configure channel
+aio.set_channel_range(0, 0.0, 10.0);  // 0-10V range
+aio.set_channel_info(0, "temperature", "V");
+
+// ADC conversion
+aio.resolution_bits = 12;  // 12-bit ADC
+
+// Raw to engineering units
+if let Some(voltage) = aio.raw_to_engineering(0, 2048) {
+    println!("Voltage: {:.2}V", voltage);  // ~5V for 12-bit
+}
+
+// Engineering units to raw
+if let Some(raw) = aio.engineering_to_raw(0, 5.0) {
+    println!("Raw value: {}", raw);  // ~2048
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channels` | `[f64; 16]` | Channel values |
+| `channel_count` | `u8` | Active channels |
+| `channel_ranges` | `[[f64; 2]; 16]` | [min, max] per channel |
+| `unit_labels` | `[[u8; 8]; 16]` | Unit strings ("V", "mA") |
+| `channel_labels` | `[[u8; 16]; 16]` | Channel names |
+| `resolution_bits` | `u8` | ADC resolution |
+| `sampling_frequency` | `f32` | Sample rate (Hz) |
+| `board_id` | `[u8; 32]` | Board identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## SpiMessage
+
+SPI bus transaction.
+
+```rust
+use horus::prelude::*; // Provides io::SpiMessage;
+
+// Create SPI message
+let tx_data = [0x9F];  // Read JEDEC ID command
+let mut msg = SpiMessage::new(0, 0, &tx_data);  // bus=0, cs=0
+
+// With configuration
+let msg = SpiMessage::with_config(
+    0,           // bus
+    0,           // chip select
+    &tx_data,
+    SpiMessage::MODE_0,  // SPI mode 0
+    1_000_000    // 1MHz clock
+);
+
+// Set mode
+msg.set_mode(SpiMessage::MODE_3);  // CPOL=1, CPHA=1
+
+// Access data
+let tx = msg.tx_data_slice();
+let rx = msg.rx_data_slice();
+```
+
+**SPI Modes:**
+
+| Constant | Value | CPOL | CPHA |
+|----------|-------|------|------|
+| `MODE_0` | 0 | 0 | 0 |
+| `MODE_1` | 1 | 0 | 1 |
+| `MODE_2` | 2 | 1 | 0 |
+| `MODE_3` | 3 | 1 | 1 |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bus` | `u8` | SPI bus number |
+| `chip_select` | `u8` | CS line (0-7) |
+| `mode` | `u8` | SPI mode (0-3) |
+| `speed_hz` | `u32` | Clock speed |
+| `bits_per_word` | `u8` | Bits per word (typically 8) |
+| `tx_data` | `[u8; 256]` | Transmit data (MOSI) |
+| `rx_data` | `[u8; 256]` | Receive data (MISO) |
+| `length` | `u16` | Transaction length |
+| `cs_high` | `bool` | CS active high |
+| `lsb_first` | `bool` | LSB first mode |
+| `three_wire` | `bool` | 3-wire mode |
+| `success` | `bool` | Transaction success |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## I2cMessage
+
+I2C bus transaction.
+
+```rust
+use horus::prelude::*; // Provides io::I2cMessage;
+
+// Read from device
+let read_msg = I2cMessage::read(1, 0x68, 6);  // bus=1, addr=0x68, read 6 bytes
+
+// Write to device
+let write_msg = I2cMessage::write(1, 0x68, &[0x6B, 0x00]);  // Wake up MPU6050
+
+// Read register
+let reg_read = I2cMessage::read_register(
+    1,     // bus
+    0x68,  // device address
+    0x3B,  // register address (ACCEL_XOUT_H)
+    6      // read 6 bytes
+);
+
+// Write register
+let reg_write = I2cMessage::write_register(
+    1,
+    0x68,
+    0x6B,      // PWR_MGMT_1 register
+    &[0x00]    // Wake up
+);
+
+// Access data
+let data = reg_read.get_data();
+```
+
+**Transaction Types:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `TYPE_READ` | 0 | Raw read |
+| `TYPE_WRITE` | 1 | Raw write |
+| `TYPE_READ_REGISTER` | 2 | Read from register |
+| `TYPE_WRITE_REGISTER` | 3 | Write to register |
+
+**Clock Speeds:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `SPEED_STANDARD` | 100,000 | 100 kHz |
+| `SPEED_FAST` | 400,000 | 400 kHz |
+| `SPEED_FAST_PLUS` | 1,000,000 | 1 MHz |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `device_address` | `u16` | I2C address (7 or 10-bit) |
+| `register_address` | `u8` | Register to access |
+| `transaction_type` | `u8` | Read/write type |
+| `data` | `[u8; 256]` | Data buffer |
+| `data_length` | `u8` | Bytes to transfer |
+| `bus_number` | `u8` | I2C bus (0, 1, 2...) |
+| `clock_speed` | `u32` | Clock speed (Hz) |
+| `success` | `bool` | Transaction success |
+| `error_code` | `u8` | Error code (0=none) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## SerialData
+
+Serial/UART data.
+
+```rust
+use horus::prelude::*; // Provides io::SerialData;
+
+// Create serial message
+let mut serial = SerialData::new("/dev/ttyUSB0");
+serial.baud_rate = 115200;
+serial.data_bits = 8;
+serial.stop_bits = 1;
+serial.parity = SerialData::PARITY_NONE;
+
+// Set data
+serial.set_data(&[0x01, 0x02, 0x03]);
+
+// Or from string
+serial.set_string("AT+GMR\r\n");
+
+// Get data
+let bytes = serial.get_data();
+if let Some(text) = serial.get_string() {
+    println!("Response: {}", text);
+}
+```
+
+**Parity Options:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `PARITY_NONE` | 0 | No parity |
+| `PARITY_ODD` | 1 | Odd parity |
+| `PARITY_EVEN` | 2 | Even parity |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port_id` | `[u8; 64]` | Port name |
+| `data` | `[u8; 1024]` | Data buffer |
+| `data_length` | `u16` | Valid bytes |
+| `baud_rate` | `u32` | Baud rate |
+| `data_bits` | `u8` | Data bits (5-8) |
+| `stop_bits` | `u8` | Stop bits (1-2) |
+| `parity` | `u8` | Parity mode |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## CanFrame
+
+CAN bus frame (CAN 2.0 and CAN-FD).
+
+```rust
+use horus::prelude::*; // Provides io::CanFrame;
+
+// Standard CAN frame
+let frame = CanFrame::new(0x123, &[0x01, 0x02, 0x03, 0x04]);
+
+// Extended CAN frame (29-bit ID)
+let ext_frame = CanFrame::new_extended(0x18FEF100, &[0x01, 0x02]);
+
+// Remote transmission request
+let rtr = CanFrame::new_rtr(0x200, 8);  // Request 8 bytes
+
+// CAN-FD frame with bit rate switching
+let fd_frame = CanFrame::new_fd(0x300, &[0u8; 64], true);
+
+// Set interface
+let mut frame = CanFrame::new(0x100, &[0x01]);
+frame.set_interface("can0");
+
+// Pack/unpack data
+let mut frame = CanFrame::new(0x100, &[0u8; 8]);
+frame.pack_u16(0, 1234);   // Pack u16 at offset 0
+frame.pack_u32(2, 56789);  // Pack u32 at offset 2
+
+if let Some(val) = frame.unpack_u16(0) {
+    println!("Value: {}", val);
+}
+
+// Validation
+if frame.is_valid() {
+    println!("ID: 0x{:03X}, DLC: {}", frame.id, frame.dlc);
+}
+```
+
+**Constants:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MAX_DLC` | 8 | CAN 2.0 max data |
+| `MAX_FD_DLC` | 64 | CAN-FD max data |
+| `MAX_STANDARD_ID` | 0x7FF | 11-bit ID max |
+| `MAX_EXTENDED_ID` | 0x1FFFFFFF | 29-bit ID max |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `u32` | CAN identifier |
+| `is_extended` | `bool` | Extended (29-bit) ID |
+| `is_rtr` | `bool` | Remote request |
+| `is_error` | `bool` | Error frame |
+| `data` | `[u8; 64]` | Data payload |
+| `dlc` | `u8` | Data length |
+| `is_fd` | `bool` | CAN-FD frame |
+| `is_brs` | `bool` | Bit rate switch (FD) |
+| `is_esi` | `bool` | Error state (FD) |
+| `interface` | `[u8; 16]` | Interface name |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## ModbusMessage
+
+Modbus RTU/TCP communication.
+
+```rust
+use horus::prelude::*; // Provides io::ModbusMessage;
+
+// Read holding registers
+let read_msg = ModbusMessage::read_holding_registers(
+    1,    // unit_id (slave address)
+    100,  // start address
+    10    // quantity
+);
+
+// Write single register
+let write_msg = ModbusMessage::write_single_register(
+    1,     // unit_id
+    200,   // address
+    1234   // value
+);
+
+// Write multiple registers
+let values = [100u16, 200, 300];
+let write_multi = ModbusMessage::write_multiple_registers(1, 300, &values);
+
+// Create response
+let response = read_msg.create_response(&[10, 20, 30, 40, 50]);
+
+// Create exception response
+let exception = read_msg.create_exception(0x02);  // Illegal data address
+
+// Check for exception
+if response.is_exception() {
+    println!("Exception code: {}", response.exception_code);
+}
+```
+
+**Function Codes:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `FUNC_READ_COILS` | 1 | Read coils |
+| `FUNC_READ_DISCRETE_INPUTS` | 2 | Read discrete inputs |
+| `FUNC_READ_HOLDING_REGISTERS` | 3 | Read holding registers |
+| `FUNC_READ_INPUT_REGISTERS` | 4 | Read input registers |
+| `FUNC_WRITE_SINGLE_COIL` | 5 | Write single coil |
+| `FUNC_WRITE_SINGLE_REGISTER` | 6 | Write single register |
+| `FUNC_WRITE_MULTIPLE_COILS` | 15 | Write multiple coils |
+| `FUNC_WRITE_MULTIPLE_REGISTERS` | 16 | Write multiple registers |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `unit_id` | `u8` | Slave address (1-255) |
+| `function_code` | `u8` | Modbus function |
+| `start_address` | `u16` | Starting register |
+| `quantity` | `u16` | Number of registers |
+| `data` | `[u16; 32]` | Register data |
+| `data_length` | `u8` | Valid data entries |
+| `exception_code` | `u8` | Exception code |
+| `transaction_id` | `u16` | Transaction ID |
+| `is_request` | `bool` | Request (true) or response |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## NetworkStatus
+
+Network interface status.
+
+```rust
+use horus::prelude::*; // Provides io::NetworkStatus;
+
+let mut status = NetworkStatus::new("eth0");
+status.set_ip_from_string("192.168.1.100")?;
+status.subnet_mask = 0xFFFFFF00;  // 255.255.255.0
+status.link_up = true;
+status.link_speed = 1000;  // 1Gbps
+status.full_duplex = true;
+
+println!("IP: {}", status.ip_to_string());
+println!("Packet loss: {:.2}%", status.packet_loss_percent());
+```
+
+## SafetyRelayStatus
+
+Safety relay monitoring.
+
+```rust
+use horus::prelude::*; // Provides io::SafetyRelayStatus;
+
+let mut relay = SafetyRelayStatus::new("SR001");
+relay.safety_outputs[0] = true;
+relay.safety_active = true;
+
+if relay.is_safe_state() {
+    println!("System is safe");
+}
+
+println!("Active outputs: {}", relay.active_output_count());
+println!("Active inputs: {}", relay.active_input_count());
+```
+
+## I/O Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides io::{DigitalIO, AnalogIO, I2cMessage};
+
+struct SensorNode {
+    dio_pub: Hub<DigitalIO>,
+    aio_pub: Hub<AnalogIO>,
+    i2c_pub: Hub<I2cMessage>,
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str { "SensorNode" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Read digital inputs (simulated)
+        let mut dio = DigitalIO::new(8);
+        // ... read GPIO pins ...
+        self.dio_pub.send(dio, &mut ctx).ok();
+
+        // Read analog channels (simulated)
+        let mut aio = AnalogIO::new(4);
+        // ... read ADC channels ...
+        self.aio_pub.send(aio, &mut ctx).ok();
+
+        // Read I2C sensor
+        let i2c_cmd = I2cMessage::read_register(1, 0x68, 0x3B, 14);
+        self.i2c_pub.send(i2c_cmd, &mut ctx).ok();
+    }
+}
+```
+
+## See Also
+
+- [I2C Bus Node](/rust/library/built-in-nodes/i2c-bus) - I2C driver node
+- [SPI Bus Node](/rust/library/built-in-nodes/spi-bus) - SPI driver node
+- [CAN Bus Node](/rust/library/built-in-nodes/can-bus) - CAN driver node
+- [Serial Node](/rust/library/built-in-nodes/serial) - Serial/UART driver
+- [Modbus Node](/rust/library/built-in-nodes/modbus) - Modbus communication
+- [Digital I/O Node](/rust/library/built-in-nodes/digital-io) - GPIO driver

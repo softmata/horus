@@ -1,0 +1,631 @@
+---
+title: BldcMotorNode
+description: Brushless motor and ESC control with 10+ protocol support
+---
+
+# BldcMotorNode
+
+Brushless DC (BLDC) motor and Electronic Speed Controller (ESC) node supporting 10+ protocols including PWM, OneShot, DShot, CAN, and serial. Controls up to 8 motors simultaneously for drones, rovers, and robotic systems.
+
+## Source Code
+
+- [BldcMotorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/bldc_motor)
+- [Motor Control Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/control.rs)
+
+## Features
+
+- Up to 8 BLDC motors/ESCs
+- 10+ protocols: PWM, OneShot125, OneShot42, MultiShot, DShot150/300/600/1200, KISS, CAN, UART
+- Bidirectional DShot (telemetry)
+- 3D mode (reverse thrust)
+- Arming/disarming safety
+- Failsafe configuration
+- Motor direction reversal
+- Calibration routines
+- Simulation fallback
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create BLDC node
+    let mut bldc = BldcMotorNode::new()?;
+    bldc.set_num_motors(4);
+    bldc.set_protocol(BldcProtocol::DShot600);
+
+    // Configure motor 0
+    bldc.set_gpio_pin(0, 18);  // GPIO pin for motor 0
+    bldc.set_min_throttle(0, 1000);
+    bldc.set_max_throttle(0, 2000);
+
+    scheduler.add(Box::new(bldc), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install GPIO library
+sudo apt install libraspberrypi-dev
+
+# Enable GPIO and PWM
+sudo raspi-config  # Interface Options
+```
+
+### Wiring Example (4 motors)
+
+```
+Raspberry Pi    ESC         Motor
+GPIO 18   -->   Signal  --> Motor 0
+GPIO 19   -->   Signal  --> Motor 1
+GPIO 20   -->   Signal  --> Motor 2
+GPIO 21   -->   Signal  --> Motor 3
+5V        -->   BEC (optional for ESC power)
+GND       ---   GND (common ground REQUIRED)
+```
+
+**IMPORTANT**:
+- Always connect common ground between Pi and ESC
+- Use separate power supply for motors (not Pi's 5V)
+- Calibrate ESCs before first use
+
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `BldcMotorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gpio-hardware"] }
+```
+
+## Supported Protocols
+
+### PWM (Standard RC)
+
+```rust
+bldc.set_protocol(BldcProtocol::PWM);
+// Frequency: 50 Hz
+// Pulse width: 1000-2000 μs
+// Pros: Universal compatibility
+// Cons: Slow update rate (~50Hz)
+```
+
+### OneShot125
+
+```rust
+bldc.set_protocol(BldcProtocol::OneShot125);
+// Pulse width: 125-250 μs
+// Update rate: Up to 4 kHz
+// Pros: 8x faster than PWM
+// Cons: Requires ESC support
+```
+
+### OneShot42
+
+```rust
+bldc.set_protocol(BldcProtocol::OneShot42);
+// Pulse width: 42-84 μs
+// Update rate: Up to 12 kHz
+```
+
+### MultiShot
+
+```rust
+bldc.set_protocol(BldcProtocol::MultiShot);
+// Pulse width: 5-25 μs
+// Update rate: Up to 32 kHz
+// Pros: Very fast response
+```
+
+### DShot (Digital Shot)
+
+```rust
+// DShot150 (150 kbit/s) - reliable, slower
+bldc.set_protocol(BldcProtocol::DShot150);
+
+// DShot300 (300 kbit/s) - balanced
+bldc.set_protocol(BldcProtocol::DShot300);
+
+// DShot600 (600 kbit/s) - fast, recommended
+bldc.set_protocol(BldcProtocol::DShot600);
+
+// DShot1200 (1200 kbit/s) - fastest
+bldc.set_protocol(BldcProtocol::DShot1200);
+
+// Pros: Digital (no calibration), telemetry, CRC
+// Cons: Requires compatible ESC
+```
+
+### KISS (UART-based)
+
+```rust
+bldc.set_protocol(BldcProtocol::KISS);
+// Serial protocol for KISS ESCs
+// Pros: Telemetry, configuration
+```
+
+### CAN Bus
+
+```rust
+bldc.set_protocol(BldcProtocol::CAN);
+// Requires CAN bus setup
+// Pros: Reliable, telemetry, long distances
+```
+
+## Configuration
+
+### Motor Setup
+
+```rust
+let mut bldc = BldcMotorNode::new()?;
+
+// Number of motors (1-8)
+bldc.set_num_motors(4);
+
+// Select protocol
+bldc.set_protocol(BldcProtocol::DShot600);
+
+// Configure each motor
+for motor_id in 0..4 {
+    bldc.set_gpio_pin(motor_id, 18 + motor_id as u8);
+    bldc.set_min_throttle(motor_id, 1000);
+    bldc.set_max_throttle(motor_id, 2000);
+}
+```
+
+### Throttle Range
+
+```rust
+// Set throttle range for motor 0
+bldc.set_min_throttle(0, 1000); // Microseconds (PWM) or value (DShot)
+bldc.set_max_throttle(0, 2000);
+
+// For DShot: 0-2000 maps to 0-2000 throttle value
+// For PWM: 1000-2000 microseconds
+```
+
+### Motor Direction
+
+```rust
+// Reverse motor direction
+bldc.set_direction_reversed(0, true);
+
+// Useful for:
+// - Correcting motor spin direction
+// - Quad/hex copter motor layout
+```
+
+### Arming
+
+```rust
+// Enable arming requirement (safety)
+bldc.set_arming_required(true);
+
+// Set arming timeout (seconds)
+bldc.set_arming_timeout(5.0);
+```
+
+### Failsafe
+
+```rust
+// Set failsafe throttle (used if signal lost)
+bldc.set_failsafe_throttle(1000); // Idle/off
+
+// Failsafe timeout (milliseconds)
+bldc.set_failsafe_timeout(500);
+```
+
+### 3D Mode (Bidirectional)
+
+```rust
+// Enable 3D mode (forward and reverse thrust)
+bldc.enable_3d_mode(true);
+bldc.set_3d_deadband(50); // Deadband around center
+
+// Throttle range in 3D mode:
+// 1000-1500: Reverse thrust
+// 1500: Neutral (deadband)
+// 1500-2000: Forward thrust
+```
+
+## Usage Patterns
+
+### Setting Motor Throttle
+
+```rust
+use horus::prelude::*;
+
+// Create throttle command
+let cmd = BldcCommand {
+    motor_id: 0,
+    throttle: 1500,  // Mid throttle
+};
+
+// Send command
+let hub = Hub::<BldcCommand>::new("bldc.command")?;
+hub.send(cmd, &mut None).ok();
+```
+
+### Arming Sequence
+
+```rust
+// 1. Ensure all throttles at minimum
+for motor_id in 0..4 {
+    let cmd = BldcCommand {
+        motor_id,
+        throttle: 1000,
+    };
+    hub.send(cmd, &mut None).ok();
+}
+
+// 2. Send arm command
+let arm_cmd = BldcCommand {
+    motor_id: 0xFF,  // Broadcast to all
+    command_type: BldcCommand::CMD_ARM,
+    ..Default::default()
+};
+hub.send(arm_cmd, &mut None).ok();
+
+// 3. Wait for confirmation
+std::thread::sleep(Duration::from_millis(100));
+
+// 4. Now safe to send throttle commands
+```
+
+### Reading Telemetry (DShot)
+
+```rust
+// Enable bidirectional DShot
+bldc.enable_telemetry(true);
+
+// Subscribe to telemetry topic
+let telem_hub = Hub::<BldcTelemetry>::new("bldc.telemetry")?;
+
+if let Some(telem) = telem_hub.recv(&mut None) {
+    println!("Motor {}: {} RPM, {}°C, {} A",
+        telem.motor_id,
+        telem.rpm,
+        telem.temperature,
+        telem.current
+    );
+}
+```
+
+### ESC Calibration
+
+```rust
+// Calibrate ESC throttle range
+let calibrate_cmd = BldcCommand {
+    motor_id: 0,
+    command_type: BldcCommand::CMD_CALIBRATE,
+    ..Default::default()
+};
+hub.send(calibrate_cmd, &mut None).ok();
+
+// Process:
+// 1. Send max throttle (2000)
+// 2. Power on ESC
+// 3. Wait for confirmation beep
+// 4. Send min throttle (1000)
+// 5. Wait for confirmation beep
+```
+
+## Complete Example: Quadcopter
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure 4 motors for quadcopter
+    let mut bldc = BldcMotorNode::new()?;
+    bldc.set_num_motors(4);
+    bldc.set_protocol(BldcProtocol::DShot600);
+    bldc.set_arming_required(true);
+    bldc.enable_telemetry(true);
+
+    // Motor layout:
+    //   0   1
+    //    \ /
+    //     X
+    //    / \
+    //   2   3
+
+    for motor_id in 0..4 {
+        bldc.set_gpio_pin(motor_id, 18 + motor_id as u8);
+        bldc.set_min_throttle(motor_id, 1000);
+        bldc.set_max_throttle(motor_id, 2000);
+        bldc.set_failsafe_throttle(motor_id, 1000);
+    }
+
+    // Reverse motors 1 and 3 for proper rotation
+    bldc.set_direction_reversed(1, true);
+    bldc.set_direction_reversed(3, true);
+
+    scheduler.add(Box::new(bldc), 1, Some(true));
+
+    // Motor control node
+    let motor_node = node! {
+        name: "motor_control",
+        init: |ctx| {
+            // Arm motors on startup
+            let hub = Hub::<BldcCommand>::new("bldc.command")?;
+
+            // Set all to idle
+            for motor_id in 0..4 {
+                hub.send(BldcCommand {
+                    motor_id,
+                    throttle: 1000,
+                }, None)?;
+            }
+
+            // Arm
+            hub.send(BldcCommand {
+                motor_id: 0xFF,
+                command_type: BldcCommand::CMD_ARM,
+                ..Default::default()
+            }, None)?;
+
+            ctx.log_info("Motors armed");
+            Ok(())
+        },
+        tick: |ctx| {
+            let hub = Hub::<BldcCommand>::new("bldc.command")?;
+
+            // Example: Spin all motors at 25% throttle
+            let throttle = 1000 + (1000.0 * 0.25) as u16;
+
+            for motor_id in 0..4 {
+                hub.send(BldcCommand {
+                    motor_id,
+                    throttle,
+                }, None)?;
+            }
+
+            // Monitor telemetry
+            let telem_hub = Hub::<BldcTelemetry>::new("bldc.telemetry")?;
+            while let Some(telem) = telem_hub.recv(&mut None) {
+                if telem.temperature > 80.0 {
+                    ctx.log_warning(&format!(
+                        "Motor {} overheating: {}°C",
+                        telem.motor_id, telem.temperature
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(motor_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### BldcCommand
+
+```rust
+pub struct BldcCommand {
+    pub motor_id: u8,         // Motor ID (0-7, 0xFF for all)
+    pub command_type: u8,     // Command type
+    pub throttle: u16,        // Throttle value (1000-2000)
+}
+```
+
+### Command Types
+
+```rust
+pub const CMD_THROTTLE: u8 = 0;         // Set throttle
+pub const CMD_ARM: u8 = 1;              // Arm motors
+pub const CMD_DISARM: u8 = 2;           // Disarm motors
+pub const CMD_CALIBRATE: u8 = 3;        // Calibrate ESC
+pub const CMD_REVERSE: u8 = 4;          // Set direction
+pub const CMD_3D_MODE: u8 = 5;          // Enable 3D mode
+pub const CMD_BEEP: u8 = 6;             // ESC beep (DShot)
+```
+
+### BldcTelemetry (DShot)
+
+```rust
+pub struct BldcTelemetry {
+    pub motor_id: u8,         // Motor ID
+    pub rpm: u32,             // Revolutions per minute
+    pub voltage: f32,         // Voltage (V)
+    pub current: f32,         // Current (A)
+    pub temperature: f32,     // Temperature (°C)
+    pub consumption: u32,     // Energy consumption (mAh)
+    pub timestamp: u64,       // Telemetry time (ns)
+}
+```
+
+## Protocol Comparison
+
+| Protocol | Update Rate | Latency | Telemetry | Digital | Best For |
+|----------|-------------|---------|-----------|---------|----------|
+| PWM | 50 Hz | 20ms | No | No | Basic/legacy |
+| OneShot125 | 4 kHz | 0.25ms | No | No | Fast RC |
+| MultiShot | 32 kHz | 0.03ms | No | No | Racing |
+| DShot600 | Variable | ~0.1ms | Yes | Yes | **Recommended** |
+| DShot1200 | Variable | ~0.05ms | Yes | Yes | High-performance |
+| KISS | 500 Hz | 2ms | Yes | Yes | KISS ESCs |
+| CAN | 1 kHz | 1ms | Yes | Yes | Industrial |
+
+## Best Practices
+
+1. **Use DShot600 for modern ESCs:**
+   ```rust
+   bldc.set_protocol(BldcProtocol::DShot600);
+   // No calibration needed, CRC protection, telemetry
+   ```
+
+2. **Always implement arming:**
+   ```rust
+   bldc.set_arming_required(true);
+   // Prevents accidental motor start
+   ```
+
+3. **Configure failsafe:**
+   ```rust
+   bldc.set_failsafe_throttle(1000);
+   bldc.set_failsafe_timeout(500);
+   // Motors stop if signal lost
+   ```
+
+4. **Common ground is critical:**
+   ```
+   ALWAYS connect GND between Pi and ESC
+   Without common ground, signals will be unreliable
+   ```
+
+5. **Use separate power for motors:**
+   ```
+   Never power motors from Pi's 5V rail
+   Use dedicated LiPo/power supply for ESCs
+   ```
+
+6. **Monitor telemetry:**
+   ```rust
+   if telem.temperature > 80.0 {
+       // Reduce throttle or land
+   }
+   ```
+
+7. **Test individual motors:**
+   ```rust
+   // Test one motor at a time first
+   // Verify correct rotation direction
+   // Check for vibrations or unusual sounds
+   ```
+
+## ESC Calibration Procedure
+
+For PWM/OneShot protocols (DShot doesn't need calibration):
+
+```rust
+// 1. Disconnect motor power
+// 2. Set max throttle
+let cmd = BldcCommand {
+    motor_id: 0,
+    throttle: 2000,
+};
+hub.send(cmd, &mut None).ok();
+
+// 3. Connect motor power (you'll hear beeps)
+// 4. Wait 3 seconds
+std::thread::sleep(Duration::from_secs(3));
+
+// 5. Set min throttle
+let cmd = BldcCommand {
+    motor_id: 0,
+    throttle: 1000,
+};
+hub.send(cmd, &mut None).ok();
+
+// 6. ESC will beep to confirm calibration
+// 7. Repeat for all motors
+```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check GPIO permissions
+2. Install libraspberrypi-dev
+3. Enable GPIO in raspi-config
+4. Verify wiring with multimeter
+
+**Problem: Motor beeps but won't spin**
+
+**Solutions:**
+1. Not armed - send ARM command
+2. Throttle too low - increase above minimum
+3. ESC not calibrated (PWM/OneShot only)
+4. Wrong protocol selected for ESC
+
+**Problem: Motor stutters or jitters**
+
+**Solutions:**
+1. Common ground missing - connect GND
+2. Signal wire too long - use &lt;30cm
+3. Power supply insufficient - check voltage/current
+4. Wrong protocol - try DShot instead of PWM
+
+**Problem: Motor spins wrong direction**
+
+**Solutions:**
+1. Use software reversal: `set_direction_reversed(motor_id, true)`
+2. Or swap any two motor wires (hardware solution)
+
+**Problem: No telemetry data**
+
+**Solutions:**
+1. Telemetry not supported by ESC
+2. Not using DShot protocol
+3. Telemetry not enabled: `enable_telemetry(true)`
+4. Check ESC firmware supports bidirectional DShot
+
+## Safety Guidelines
+
+**CRITICAL SAFETY WARNINGS:**
+
+1. **Remove propellers during testing**
+2. **Secure robot before motor tests**
+3. **Use current-limited power supply initially**
+4. **Always implement arming sequence**
+5. **Configure failsafe for signal loss**
+6. **Monitor battery voltage**
+7. **Keep clear of rotating parts**
+
+## Graceful Shutdown
+
+BldcMotorNode automatically stops all ESCs when your application receives Ctrl+C (SIGINT/SIGTERM):
+
+- All target velocities set to 0
+- Stop commands sent to all motors
+- PWM outputs set to idle (5% duty cycle for ESCs)
+
+This ensures motors stop safely when shutting down your robot.
+
+## See Also
+
+- [StepperMotorNode](./stepper-motor) - Stepper motor control
+- [DynamixelNode](./dynamixel) - Smart servo control
+- [DcMotorNode](./dc-motor) - Basic DC motor control
+- [DifferentialDriveNode](./differential-drive) - Drive system control

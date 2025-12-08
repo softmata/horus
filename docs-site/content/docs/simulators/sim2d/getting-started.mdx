@@ -1,0 +1,333 @@
+---
+title: Getting Started with Sim2D
+description: Launch your first 2D simulation and connect a controller
+---
+
+# Getting Started with Sim2D
+
+This guide walks you through launching Sim2D, understanding the interface, and connecting your first robot controller.
+
+## Prerequisites
+
+- HORUS installed (`./install.sh`)
+- Basic familiarity with HORUS nodes
+
+## Launch the Simulator
+
+```bash
+# Default configuration
+horus sim2d
+
+# With custom topic prefix
+horus sim2d --topic myrobot
+
+# Build from source (development)
+cargo run -p sim2d --release
+```
+
+You'll see a window with:
+- A green robot rectangle
+- Gray boundary walls
+- Grid background
+- UI panels for configuration
+
+## Understanding the Interface
+
+### Main View
+
+The main view shows a top-down view of the simulation:
+
+```
+┌────────────────────────────────────────────┐
+│  [Robot Panel]          [World Panel]      │
+│                                            │
+│         ┌───────────────────┐              │
+│         │                   │              │
+│         │      WORLD        │              │
+│         │                   │              │
+│         │   ┌───┐           │              │
+│         │   │ R │  ← Robot  │              │
+│         │   └───┘           │              │
+│         │                   │              │
+│         └───────────────────┘              │
+│                                            │
+│  [Sensors Panel]      [Performance Panel]  │
+└────────────────────────────────────────────┘
+```
+
+### UI Panels
+
+| Panel | Description |
+|-------|-------------|
+| **Robot** | Position, velocity, configuration |
+| **World** | Dimensions, obstacles, colors |
+| **Sensors** | LIDAR, IMU, GPS settings |
+| **Performance** | FPS, physics step, latency |
+| **Editor** | Place/remove obstacles |
+
+### Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| **W/A/S/D** | Pan camera |
+| **Mouse Scroll** | Zoom in/out |
+| **R** | Reset robot to start position |
+| **Space** | Pause/Resume simulation |
+| **E** | Toggle world editor |
+| **G** | Toggle grid visibility |
+| **L** | Toggle LIDAR ray visualization |
+
+## Your First Controller
+
+Create a simple keyboard teleop controller:
+
+### Step 1: Create Project
+
+```bash
+horus new teleop_demo --rust
+cd teleop_demo
+```
+
+### Step 2: Write the Controller
+
+Replace `main.rs`:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel;
+use std::io::{self, Read};
+
+struct TeleopNode {
+    cmd_pub: Hub<CmdVel>,
+}
+
+impl TeleopNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_pub: Hub::new("robot.cmd_vel")?,
+        })
+    }
+}
+
+impl Node for TeleopNode {
+    fn name(&self) -> &'static str { "Teleop" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Read keyboard input (simplified)
+        let mut cmd = CmdVel::default();
+
+        // In a real implementation, use termion or crossterm
+        // for non-blocking keyboard input
+        cmd.linear.x = 0.5;  // Forward
+        cmd.angular.z = 0.0; // No rotation
+
+        self.cmd_pub.send(cmd, &mut ctx).ok();
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn main() -> Result<()> {
+    println!("Publishing to robot.cmd_vel...");
+    println!("Robot will move forward at 0.5 m/s");
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(TeleopNode::new()?), 0, Some(true));
+    scheduler.run()
+}
+```
+
+### Step 3: Run Both
+
+```bash
+# Terminal 1: Start simulator
+horus sim2d
+
+# Terminal 2: Run controller
+horus run --release
+```
+
+Watch the robot move forward in the simulator!
+
+## Working with LIDAR
+
+Read LIDAR data to implement reactive behaviors:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {CmdVel, LaserScan};
+
+struct ObstacleAvoider {
+    cmd_pub: Hub<CmdVel>,
+    scan_sub: Hub<LaserScan>,
+}
+
+impl ObstacleAvoider {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_pub: Hub::new("robot.cmd_vel")?,
+            scan_sub: Hub::new("robot.scan")?,
+        })
+    }
+
+    fn find_min_distance(&self, scan: &LaserScan, start: usize, end: usize) -> f64 {
+        scan.ranges[start..end]
+            .iter()
+            .filter(|r| **r > scan.range_min && **r < scan.range_max)
+            .fold(f64::MAX, |min, r| min.min(*r))
+    }
+}
+
+impl Node for ObstacleAvoider {
+    fn name(&self) -> &'static str { "ObstacleAvoider" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(scan) = self.scan_sub.recv(&mut ctx) {
+            let num_rays = scan.ranges.len();
+            let front_start = num_rays * 3 / 8;  // Front 90 degrees
+            let front_end = num_rays * 5 / 8;
+
+            let front_min = self.find_min_distance(&scan, front_start, front_end);
+
+            let mut cmd = CmdVel::default();
+
+            if front_min < 0.5 {
+                // Too close - back up and turn
+                cmd.linear.x = -0.2;
+                cmd.angular.z = 0.5;
+            } else if front_min < 1.0 {
+                // Getting close - slow down and turn
+                cmd.linear.x = 0.2;
+                cmd.angular.z = 0.3;
+            } else {
+                // Clear - full speed ahead
+                cmd.linear.x = 0.5;
+                cmd.angular.z = 0.0;
+            }
+
+            self.cmd_pub.send(cmd, &mut ctx).ok();
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(ObstacleAvoider::new()?), 0, Some(true));
+    scheduler.run()
+}
+```
+
+## Using the World Editor
+
+Press **E** to enter editor mode:
+
+1. **Add Rectangle**: Click "Rectangle" then click in world
+2. **Add Circle**: Click "Circle" then click in world
+3. **Delete**: Click obstacle, press Delete
+4. **Move**: Drag obstacles
+5. **Resize**: Drag corners
+6. **Save**: Click "Save World" to export YAML
+
+## Loading Custom Configurations
+
+### Custom Robot
+
+```yaml
+# my_robot.yaml
+name: "my_robot"
+position: [0.0, 0.0]
+width: 0.4
+length: 0.6
+max_speed: 1.5
+color: [0.8, 0.2, 0.2]  # Red
+
+lidar:
+  enabled: true
+  range_max: 8.0
+  num_rays: 180
+
+kinematics:
+  type: "differential"
+  wheel_base: 0.3
+```
+
+```bash
+horus sim2d --robot my_robot.yaml
+```
+
+### Custom World
+
+```yaml
+# my_world.yaml
+width: 20.0
+height: 20.0
+wall_color: [0.4, 0.4, 0.4]
+
+obstacles:
+  - pos: [5.0, 5.0]
+    shape: rectangle
+    size: [2.0, 1.0]
+    color: [0.6, 0.3, 0.1]
+
+  - pos: [-3.0, 2.0]
+    shape: circle
+    size: [1.0, 1.0]
+```
+
+```bash
+horus sim2d --world my_world.yaml
+```
+
+### From Image (Occupancy Grid)
+
+```bash
+# Load PGM/PNG as world map
+# Dark pixels = obstacles
+horus sim2d --world-image map.pgm --resolution 0.05 --threshold 128
+```
+
+## Headless Mode
+
+For RL training or CI/CD:
+
+```bash
+# No window, just physics
+horus sim2d --headless
+
+# With specific configuration
+horus sim2d --headless --robot training_robot.yaml
+```
+
+## Troubleshooting
+
+### Robot doesn't move
+
+1. Check topic names match: `robot.cmd_vel`
+2. Verify messages are being published
+3. Check max_speed in robot config
+
+### LIDAR rays not visible
+
+Press **L** to toggle LIDAR visualization
+
+### Simulation too slow
+
+1. Close UI panels you don't need
+2. Reduce LIDAR ray count
+3. Use `--headless` for training
+
+### Can't connect to topics
+
+Ensure both processes use the same session or use global hubs:
+
+```rust
+// Use global hub for cross-session communication
+let hub = Hub::new_global("robot.cmd_vel")?;
+```
+
+## Next Steps
+
+- [Configuration](/simulators/sim2d/configuration) - Detailed YAML reference
+- [Sensors](/simulators/sim2d/sensors) - All sensor types
+- [Articulated Robots](/simulators/sim2d/articulated) - Multi-joint robots
+- [Python API](/simulators/sim2d/python-api) - For RL integration

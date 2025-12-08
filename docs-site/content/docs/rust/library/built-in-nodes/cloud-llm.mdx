@@ -1,0 +1,231 @@
+---
+title: CloudLLMNode
+description: Cloud LLM integration for natural language robot control
+---
+
+# CloudLLMNode
+
+Cloud LLM integration node for natural language understanding and generation. Connect your robot to OpenAI (GPT-4) or Anthropic (Claude) APIs for intelligent human-robot interaction.
+
+## Source Code
+
+- [CloudLLMNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/llm/cloud_llm.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- OpenAI API support (GPT-4, GPT-3.5-Turbo, GPT-4-Turbo)
+- Anthropic API support (Claude 3.5 Sonnet, Claude 3 Opus, Claude 3 Haiku)
+- Streaming responses
+- Rate limiting and retry logic
+- Token usage tracking
+- Conversation context management
+- Temperature and top-p control
+
+## Requirements
+
+Enable the `ml-inference` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - ml-inference
+```
+
+Set your API key as an environment variable:
+
+```bash
+# For OpenAI
+export OPENAI_API_KEY="sk-..."
+
+# For Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::llm::{CloudLLMNode, LLMConfig};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let llm_node = CloudLLMNode::new(
+        "user.prompts",
+        "robot.responses",
+        LLMConfig::openai_gpt4(),
+    )?;
+
+    scheduler.add(Box::new(llm_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### LLMConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | LLMProvider | OpenAI | API provider |
+| `model` | String | "gpt-4" | Model name |
+| `api_key` | String | env var | API key |
+| `max_tokens` | usize | 2048 | Maximum tokens to generate |
+| `temperature` | f32 | 0.7 | Sampling temperature (0.0-2.0) |
+| `top_p` | f32 | 1.0 | Top-p sampling (0.0-1.0) |
+| `timeout_secs` | u64 | 60 | Request timeout |
+| `stream` | bool | false | Enable streaming |
+| `max_history` | usize | 10 | Conversation history length |
+
+### Preset Configurations
+
+```rust
+// OpenAI GPT-4 (most capable)
+let config = LLMConfig::openai_gpt4();
+
+// OpenAI GPT-3.5-Turbo (faster, cheaper)
+let config = LLMConfig::openai_gpt35_turbo();
+
+// Anthropic Claude 3.5 Sonnet
+let config = LLMConfig::anthropic_claude_sonnet();
+
+// Anthropic Claude 3 Haiku (fastest)
+let config = LLMConfig::anthropic_claude_haiku();
+```
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `LLMRequest` | User prompts |
+| `{input_topic}/system` | `String` | System prompt updates |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `LLMResponse` | Generated responses |
+| `{output_topic}/stream` | `String` | Streaming chunks |
+| `{output_topic}/usage` | `TokenUsage` | Token statistics |
+
+## Usage Examples
+
+### Voice Command Processing
+
+```rust
+use horus::prelude::*; // Provides ml::{LLMRequest, LLMResponse};
+
+struct VoiceCommandNode {
+    prompt_pub: Hub<LLMRequest>,
+    response_sub: Hub<LLMResponse>,
+    cmd_pub: Hub<RobotCommand>,
+}
+
+impl Node for VoiceCommandNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Send voice transcription to LLM
+        let request = LLMRequest {
+            prompt: "User said: 'move forward two meters'".to_string(),
+            system_prompt: Some(
+                "You are a robot command parser. Extract the action and parameters. \
+                 Respond with JSON: {\"action\": \"move\", \"distance\": 2.0}".to_string()
+            ),
+            ..Default::default()
+        };
+        self.prompt_pub.send(request, &mut ctx).ok();
+
+        // Process LLM response
+        if let Some(response) = self.response_sub.recv(&mut ctx) {
+            // Parse JSON and execute command
+            if let Ok(cmd) = serde_json::from_str::<RobotCommand>(&response.content) {
+                self.cmd_pub.send(cmd, &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+### Conversational Robot
+
+```rust
+let config = LLMConfig {
+    model: "gpt-4".to_string(),
+    temperature: 0.9,  // More creative responses
+    max_history: 20,   // Remember more context
+    ..LLMConfig::openai_gpt4()
+};
+
+let conversation_node = CloudLLMNode::new(
+    "user.speech",
+    "robot.reply",
+    config,
+)?;
+```
+
+### Task Planning
+
+```rust
+struct TaskPlannerNode {
+    llm_pub: Hub<LLMRequest>,
+    llm_sub: Hub<LLMResponse>,
+}
+
+impl TaskPlannerNode {
+    fn plan_task(&mut self, task: &str, ctx: &mut Option<&mut NodeInfo>) {
+        let request = LLMRequest {
+            prompt: format!("Plan steps to accomplish: {}", task),
+            system_prompt: Some(
+                "You are a robot task planner. Break down tasks into executable steps. \
+                 Each step should be a simple action the robot can perform.".to_string()
+            ),
+            ..Default::default()
+        };
+        self.llm_pub.send(request, ctx).ok();
+    }
+}
+```
+
+### Streaming Responses
+
+```rust
+let config = LLMConfig {
+    stream: true,  // Enable streaming
+    ..LLMConfig::openai_gpt4()
+};
+
+// Subscribe to streaming chunks
+let stream_sub = Hub::<String>::new("robot.responses.stream")?;
+
+// Process chunks as they arrive
+if let Some(chunk) = stream_sub.recv(&mut None) {
+    print!("{}", chunk);  // Real-time output
+}
+```
+
+## Safety Considerations
+
+- **Rate Limiting**: The node includes built-in rate limiting to prevent API overuse
+- **Timeouts**: Configure appropriate timeouts for your use case
+- **Input Validation**: Always validate LLM outputs before executing robot commands
+- **Cost Management**: Monitor token usage via the `/usage` topic
+
+## Cost Estimation
+
+| Model | Input (per 1K tokens) | Output (per 1K tokens) |
+|-------|----------------------|------------------------|
+| GPT-3.5-Turbo | $0.0005 | $0.0015 |
+| GPT-4 | $0.03 | $0.06 |
+| GPT-4-Turbo | $0.01 | $0.03 |
+| Claude 3 Haiku | $0.00025 | $0.0.1.6 |
+| Claude 3.5 Sonnet | $0.003 | $0.015 |
+
+## See Also
+
+- [KeyboardInputNode](./keyboard-input) - Text input
+- [JoystickNode](./joystick) - Manual control
+- [PathPlannerNode](./path-planner) - Autonomous navigation

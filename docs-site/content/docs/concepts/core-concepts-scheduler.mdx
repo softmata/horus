@@ -1,0 +1,721 @@
+---
+title: Core Concepts - Scheduler
+description: Understanding HORUS priority-based scheduler and execution orchestration
+order: 7
+---
+
+# Scheduler
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- How the Scheduler orchestrates node execution through init(), tick(), and shutdown() phases
+- Why priority-based execution ensures safety-critical nodes run first every tick cycle
+- The default 60 FPS tick rate and how nodes execute in sorted priority order
+- Graceful shutdown via Ctrl+C signal handling without losing data
+- When to use different priority levels (0=Critical for emergency stops, 100=Background for logging)
+
+The Scheduler is the **execution orchestrator** in HORUS. It manages the node lifecycle, coordinates priority-based execution, and handles graceful shutdown.
+
+## What is the Scheduler?
+
+The Scheduler is responsible for:
+
+**Node Registration**: Adding nodes to the scheduler
+
+**Lifecycle Management**: Calling init(), tick(), and shutdown() at the right times
+
+**Priority-Based Execution**: Running nodes in priority order every tick
+
+**Signal Handling**: Graceful shutdown on Ctrl+C
+
+**Performance Monitoring**: Tracking execution metrics for all nodes
+
+**Error Recovery**: Handling node errors without crashing the system
+
+## Basic Usage
+
+### Creating a Scheduler
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Add nodes (priority 0 = highest, logging enabled)
+    scheduler.add(Box::new(my_node), 0, Some(true));
+
+    // Run the scheduler
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+### Adding Nodes
+
+```rust
+use horus::prelude::*;
+
+let mut scheduler = Scheduler::new();
+
+// Add with priority 2 (Normal - default recommended)
+scheduler.add(Box::new(sensor_node), 2, Some(true));
+
+// Add with priority 0 (Critical - highest priority)
+scheduler.add(Box::new(safety_node), 0, Some(true));
+```
+
+### Running the Scheduler
+
+```rust
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Add your nodes
+    scheduler.add(Box::new(node1), 0, Some(true));
+    scheduler.add(Box::new(node2), 1, Some(true));
+
+    // Start the main loop
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Scheduler Architecture
+
+### Internal Structure
+
+```rust
+pub struct Scheduler {
+    nodes: Vec<RegisteredNode>,
+    running: Arc<Mutex<bool>>,
+    tick_rate_fps: u32,
+}
+
+struct RegisteredNode {
+    node: Box<dyn Node>,
+    context: NodeInfo,
+    priority: u32,  // Lower number = higher priority
+}
+```
+
+**nodes**: Vector of registered nodes with their contexts
+
+**running**: Atomic flag for graceful shutdown
+
+**tick_rate_fps**: Target execution rate (default: 60 FPS)
+
+### Execution Flow
+
+```
+1. Initialize all nodes (call init())
+2. Sort nodes by priority
+3. Main loop:
+   a. For each node (in priority order):
+      - Start tick timing
+      - Call node.tick()
+      - Record tick metrics
+   b. Sleep to maintain target FPS
+4. On shutdown signal:
+   a. Set running = false
+   b. Call shutdown() on all nodes
+```
+
+### Tick Rate Limitation
+
+**Important:** HORUS currently has a **hardcoded ~60 FPS tick rate** (~16ms per tick cycle).
+
+**What this means:**
+- The `tick_rate_fps` field is set to 60 and cannot be changed in the current version
+- Each complete tick cycle (all nodes execute once) takes approximately 16ms
+- Maximum achievable frequency: ~60 Hz
+- This is enforced by a sleep at the end of each tick cycle
+
+**Implications for your nodes:**
+```rust
+// 10 Hz sensor - supported
+// Executes once every 6 ticks (~100ms)
+impl Node for SlowSensor {
+    fn tick(&mut self, ctx) {
+        // Runs 60 times/sec, but only does work every 6th time
+    }
+}
+
+//  Works well - 60 Hz control loop
+// Executes every tick (~16ms)
+impl Node for Controller {
+    fn tick(&mut self, ctx) {
+        // Runs at maximum frequency (60 Hz)
+    }
+}
+
+//  Cannot achieve - 100 Hz+ control
+// Scheduler limited to 60 Hz maximum
+impl Node for HighFrequencyController {
+    fn tick(&mut self, ctx) {
+        // Will only run 60 times/sec, not 100+
+    }
+}
+```
+
+**Workaround for higher frequencies:**
+Run nodes in separate processes with their own schedulers. Each process can independently achieve ~60 Hz.
+
+```bash
+# Process 1: High-frequency sensor (60 Hz max)
+horus run high_freq_sensor.rs &
+
+# Process 2: Normal controller (60 Hz max)
+horus run controller.rs &
+
+# Both run at 60 Hz independently
+```
+
+**Future:** Configurable per-node tick rates and removal of the global 60 FPS limit are planned for future releases.
+
+## Priority-Based Execution
+
+### Priority Levels
+
+Priorities are `u32` values where **lower numbers = higher priority**:
+
+```rust
+// Recommended priority constants
+const CRITICAL: u32    = 0;   // Highest priority - safety systems
+const HIGH: u32        = 10;  // Control loops, actuators
+const NORMAL: u32      = 50;  // Default - sensors, processing
+const LOW: u32         = 80;  // Non-critical computation
+const BACKGROUND: u32  = 100; // Logging, monitoring
+```
+
+You can use any u32 value for fine-grained control.
+
+### Execution Order
+
+Nodes execute **in priority order** every tick:
+
+```rust
+let mut scheduler = Scheduler::new();
+
+// Execution order: Safety → Controller → Sensor → Logger
+scheduler.add(Box::new(safety_monitor), 0, Some(true));    // Runs 1st (priority 0 - highest)
+scheduler.add(Box::new(controller), 10, Some(true));        // Runs 2nd (priority 10)
+scheduler.add(Box::new(sensor), 50, Some(true));            // Runs 3rd (priority 50)
+scheduler.add(Box::new(logger), 100, Some(true));           // Runs 4th (priority 100 - lowest)
+
+scheduler.run()?;
+```
+
+**Key Point**: Lower numeric value = higher priority (Critical = 0 runs first)
+
+### Why Priority Matters
+
+**Safety First**: Critical nodes (emergency stop, collision detection) run before anything else
+
+**Real-Time Guarantees**: High-priority control loops execute before low-priority logging
+
+**Deterministic Behavior**: Same execution order every tick
+
+**Resource Management**: Important tasks get CPU time first
+
+### Priority Best Practices
+
+**Critical**: Safety monitors, emergency stops, watchdogs
+
+```rust
+scheduler.add(Box::new(emergency_stop), 0, Some(true));
+```
+
+**High**: Control loops, actuator commands, time-sensitive operations
+
+```rust
+scheduler.add(Box::new(motor_controller), 1, Some(true));
+```
+
+**Normal**: Sensors, filters, state estimation (most nodes)
+
+```rust
+scheduler.add(Box::new(lidar_node), 2, Some(true));
+```
+
+**Low**: Non-real-time computation, planning, optimization
+
+```rust
+scheduler.add(Box::new(path_planner), 3, Some(true));
+```
+
+**Background**: Logging, diagnostics, data recording
+
+```rust
+scheduler.add(Box::new(data_logger), 4, Some(true));
+```
+
+## Lifecycle Management
+
+### Initialization Phase
+
+When you call `run()`, the scheduler first initializes all nodes by calling their `init()` method in sequence.
+
+**Initialization Order**: All nodes initialize before the main loop starts
+
+**Error Handling**: If init() fails, node enters Error state and won't run
+
+**State Tracking**: NodeState transitions Uninitialized  Initializing  Running
+
+### Main Execution Loop
+
+The main loop runs continuously at ~60 FPS (default):
+
+**How it works**:
+- Sorts nodes by priority at the start of each tick
+- Executes each node's `tick()` method in priority order
+- Only runs nodes in Running state (skips errored nodes)
+- Records timing metrics for each node automatically
+- Sleeps to maintain 60 FPS target (~16ms per cycle)
+
+### Shutdown Phase
+
+Graceful shutdown on Ctrl+C:
+
+**How it works**:
+- Ctrl+C signal is automatically caught
+- Main loop stops accepting new ticks
+- Each node's `shutdown()` method is called in sequence
+- Node state transitions: Running  Stopping  Stopped
+- Errors during shutdown are logged but don't prevent other nodes from cleaning up
+
+## Tick Rate Control
+
+### Default Tick Rate
+
+The scheduler runs at **60 FPS** (16ms per tick) by default:
+
+```rust
+let scheduler = Scheduler::new();
+// Runs at ~60 FPS (16ms per tick)
+```
+
+**Note**: The tick rate is currently hardcoded at approximately 60 FPS. The scheduler sleeps for 16ms between tick cycles to maintain this target rate. If your nodes take longer than 16ms to execute, the actual FPS will be lower.
+
+### Tick Rate Considerations
+
+**60 FPS (16ms)**: Default tick rate for most robotics applications
+- Suitable for sensor reading, control loops, and general robotics tasks
+- Provides good balance between responsiveness and CPU usage
+
+**Custom tick rates**: If you need a different tick rate for your application, you can modify the sleep duration in the scheduler's main loop. However, this is not currently exposed as a public API.
+
+**Key Point**: If your nodes take longer than the tick period to execute, you won't hit the target FPS. Monitor your node metrics to ensure tick durations stay within acceptable bounds.
+
+## Running Modes
+
+### Continuous Mode (run)
+
+Run until Ctrl+C:
+
+```rust
+scheduler.run()?;
+```
+
+This is the most common mode for robotics applications. The scheduler will continuously execute all added nodes in priority order until a shutdown signal is received.
+
+### Node-Specific Execution
+
+Execute specific nodes by name:
+
+```rust
+scheduler.tick(&["SensorNode", "MotorNode"])?;
+```
+
+Useful for:
+- Debugging specific nodes in isolation
+- Profiling individual nodes
+- Testing node behavior independently
+- Running only a subset of your system
+
+## Signal Handling
+
+### Ctrl+C Handling
+
+The scheduler automatically handles Ctrl+C:
+
+```rust
+// Automatically set up by run()
+ctrlc::set_handler(move || {
+    eprintln!("\nCtrl+C received! Shutting down HORUS scheduler...");
+    if let Ok(mut r) = running.lock() {
+        *r = false;
+    }
+}).expect("Error setting HORUS signal handler");
+```
+
+**Output**:
+```
+^C
+Ctrl+C received! Shutting down HORUS scheduler...
+[Nodes shutting down gracefully...]
+```
+
+### Graceful Shutdown
+
+The scheduler ensures clean shutdown:
+
+**Stop accepting new ticks**: Main loop exits
+
+**Call shutdown() on all nodes**: Release resources
+
+**Wait for cleanup**: All nodes shut down before exit
+
+**No zombie processes**: Shared memory cleaned up
+
+## Error Handling
+
+### Initialization Errors
+
+If a node fails to initialize:
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    return Err("Sensor not connected".into());
+}
+```
+
+**Behavior**:
+- Node enters Error state
+- Node will NOT run in main loop
+- Other nodes continue normally
+- Error message printed to stderr
+
+### Runtime Errors
+
+If a node panics during tick():
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    panic!("Something went wrong!");
+}
+```
+
+**Behavior**:
+- Entire scheduler stops (panics are not caught)
+- Use Result types instead of panics
+
+**Better approach**:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    match self.do_something() {
+        Ok(result) => { /* process */ }
+        Err(e) => {
+            ctx.log_error(&format!("Error: {}", e));
+        }
+    }
+}
+```
+
+### Shutdown Errors
+
+If shutdown() fails:
+
+```rust
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    Err("Failed to close connection".into())
+}
+```
+
+**Behavior**:
+- Error message printed
+- Shutdown continues for other nodes
+- Scheduler still exits
+
+## Performance Monitoring
+
+### Accessing Node Metrics
+
+The scheduler tracks metrics for all nodes:
+
+```rust
+let metrics = scheduler.get_metrics();
+
+for node_metrics in metrics {
+    println!("Node: {}", node_metrics.name);
+    println!("  Avg tick: {:.2}ms", node_metrics.avg_tick_duration_ms);
+    println!("  Total ticks: {}", node_metrics.total_ticks);
+    println!("  CPU usage: {:.2}%", node_metrics.cpu_usage_percent);
+}
+```
+
+### Built-in Logging
+
+NodeInfo automatically logs timing:
+
+```
+[12:34:56.789] [IPC: 437ns | Tick: 12μs] PublisherNode --PUB--> 'cmd_vel' = 1.5
+```
+
+**IPC**: Inter-process communication latency (Hub send/recv)
+
+**Tick**: Total tick execution time
+
+## Advanced Usage
+
+### Dynamic Node Registration
+
+Add nodes at runtime:
+
+```rust
+let mut scheduler = Scheduler::new();
+
+// Start with basic nodes
+scheduler.add(Box::new(node1), 2, Some(true));
+
+// Later, add more nodes
+scheduler.add(Box::new(node2), 2, Some(true));
+```
+
+**Note**: Nodes added before run() will initialize automatically.
+
+### Conditional Execution
+
+Skip nodes based on conditions:
+
+```rust
+impl Node for ConditionalNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if !self.should_run {
+            return;  // Skip this tick
+        }
+
+        // Execute normally
+        self.do_work();
+    }
+}
+```
+
+### Multi-Scheduler Systems
+
+Run multiple independent schedulers:
+
+```rust
+use std::thread;
+
+fn main() -> Result<()> {
+    let mut scheduler1 = Scheduler::new();
+    scheduler1.add(Box::new(critical_nodes), 0, Some(true));
+
+    let mut scheduler2 = Scheduler::new();
+    scheduler2.add(Box::new(background_nodes), 4, Some(true));
+
+    // Run schedulers in separate threads
+    let handle1 = thread::spawn(move || scheduler1.run());
+    let handle2 = thread::spawn(move || scheduler2.run());
+
+    handle1.join().unwrap()?;
+    handle2.join().unwrap()?;
+    Ok(())
+}
+```
+
+**Use Cases**:
+- Separate real-time and non-real-time systems
+- Isolate critical from non-critical nodes
+- Different tick rates for different subsystems
+
+## Best Practices
+
+### Initialize Heavy Resources in init()
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    // Pre-allocate buffers
+    self.buffer = vec![0.0; 10000];
+
+    // Open connections
+    self.connection = connect_to_hardware()?;
+
+    Ok(())
+}
+```
+
+### Keep tick() Fast
+
+Each tick should complete in &lt;1ms for 1kHz control:
+
+```rust
+// GOOD: Fast tick
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    let data = self.read_sensor();
+    self.pub.send(data, &mut ctx).ok();
+}
+
+// BAD: Slow tick
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    std::thread::sleep(Duration::from_millis(100));  // Blocks!
+}
+```
+
+### Use Appropriate Priorities
+
+Don't make everything Critical:
+
+```rust
+// GOOD: Appropriate priorities
+scheduler.add(Box::new(emergency_stop), 0, Some(true));  // Critical
+scheduler.add(Box::new(controller), 1, Some(true));      // High
+scheduler.add(Box::new(sensor), 2, Some(true));          // Normal
+
+// BAD: Everything is critical
+scheduler.add(Box::new(logger), 0, Some(true));  // Wrong!
+```
+
+### Handle Errors Gracefully
+
+Don't panic in production code:
+
+```rust
+// GOOD: Handle errors
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    match self.operation() {
+        Ok(_) => {},
+        Err(e) => {
+            ctx.log_error(&format!("Error: {}", e));
+        }
+    }
+}
+
+// BAD: Panic on error
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    self.operation().unwrap();  // Will crash scheduler!
+}
+```
+
+### Monitor Performance
+
+Track your node metrics:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    if let Some(ctx) = ctx {
+        if ctx.metrics.avg_tick_duration_ms > 1.0 {
+            ctx.log_warning("Tick duration exceeding 1ms");
+        }
+    }
+}
+```
+
+## Common Patterns
+
+### Layered Architecture
+
+Organize nodes by function with appropriate priorities:
+
+```rust
+// Layer 1: Safety (Critical = 0)
+scheduler.add(Box::new(collision_detector), 0, Some(true));
+scheduler.add(Box::new(emergency_stop), 0, Some(true));
+
+// Layer 2: Control (High = 1)
+scheduler.add(Box::new(pid_controller), 1, Some(true));
+scheduler.add(Box::new(motor_driver), 1, Some(true));
+
+// Layer 3: Sensing (Normal = 2)
+scheduler.add(Box::new(lidar_node), 2, Some(true));
+scheduler.add(Box::new(camera_node), 2, Some(true));
+scheduler.add(Box::new(imu_node), 2, Some(true));
+
+// Layer 4: Processing (Low = 3)
+scheduler.add(Box::new(path_planner), 3, Some(true));
+
+// Layer 5: Monitoring (Background = 4)
+scheduler.add(Box::new(logger), 4, Some(true));
+scheduler.add(Box::new(diagnostics), 4, Some(true));
+```
+
+### Feedback Loops
+
+Create control loops with pub/sub:
+
+```rust
+// Sensor (Normal priority = 2)
+scheduler.add(Box::new(encoder_sensor), 2, Some(true));  // Publishes position
+
+// Controller (High priority = 1) - runs after sensor
+scheduler.add(Box::new(position_controller), 1, Some(true));
+// Subscribes to position, publishes velocity command
+
+// Actuator (High priority = 1)
+scheduler.add(Box::new(motor_actuator), 1, Some(true));
+// Subscribes to velocity command
+```
+
+### Pipeline Processing
+
+Chain nodes for data processing:
+
+```rust
+// Raw sensor (Normal = 2)
+scheduler.add(Box::new(raw_sensor), 2, Some(true));  // Publishes raw data
+
+// Filter (Normal = 2)
+scheduler.add(Box::new(kalman_filter), 2, Some(true));  // Subscribes to raw, publishes filtered
+
+// Analyzer (Low = 3)
+scheduler.add(Box::new(data_analyzer), 3, Some(true));
+// Subscribes to filtered data
+```
+
+## Troubleshooting
+
+### Scheduler Not Stopping
+
+Ensure tick() returns quickly:
+
+```rust
+// WRONG: Infinite loop in tick
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    loop {  // Never returns!
+        // ...
+    }
+}
+
+// RIGHT: Return from tick
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    // Do work
+    // Return naturally
+}
+```
+
+### Nodes Not Running
+
+Check initialization:
+
+```rust
+fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("Initializing...");
+    // If this fails, node won't run
+    Ok(())
+}
+```
+
+### Slow Execution
+
+Profile your nodes:
+
+```rust
+fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    if let Some(ctx) = ctx {
+        let avg_ms = ctx.metrics.avg_tick_duration_ms;
+        if avg_ms > 1.0 {
+            ctx.log_warning(&format!("Slow tick: {:.2}ms", avg_ms));
+        }
+    }
+}
+```
+
+## Next Steps
+
+- Understand [Shared Memory](/concepts/core-concepts-shared-memory) internals
+- Learn about [Message Types](/concepts/message-types) for communication
+- Explore [Examples](/rust/examples/basic-examples) for complete applications
+- Read the [API Reference](/rust/api) for detailed documentation

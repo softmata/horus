@@ -1,0 +1,791 @@
+---
+title: Architecture Overview
+description: Complete technical architecture of the HORUS framework
+order: 25
+category: "internals"
+---
+
+# Architecture Overview
+
+HORUS is a modern robotics framework built on **Rust**, **shared memory IPC**, and **deterministic scheduling**. This document provides a comprehensive overview of the system architecture, core components, and how they work together.
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        HORUS Ecosystem                          │
+└─────────────────────────────────────────────────────────────────┘
+
+  ┌────────────┐    ┌────────────┐
+  │ User Code  │    │ User Code  │
+  │  (Rust)    │    │  (Python)  │
+  └────────────┘    └────────────┘
+                             │
+                             ▼
+         ┌─────────────────────────────────────────┐
+         │       horus (Unified Crate)             │
+         │  - Node trait & NodeInfo                │
+         │  - Hub<T> (pub/sub)                     │
+         │  - Scheduler (priority-based)           │
+         │  - Prelude (unified imports)            │
+         └─────────────────────────────────────────┘
+                             │
+  ┌──────────────────────────▼──────────────────────────────────┐
+  │               Core Framework Layer                          │
+  └─────────────────────────────────────────────────────────────┘
+                             │
+    ┌────────────┐  ┌────────▼──────┐  ┌─────────────┐
+    │horus_macros│  │  horus_core   │  │horus_library│
+    │  - node!   │  │  - Hub<T>     │  │ - Messages  │
+    │  - message!│  │  - Scheduler  │  │ - Nodes     │
+    │  - codegen │  │  - Backends   │  │ - Algorithms│
+    └────────────┘  └───────────────┘  └─────────────┘
+                             │
+  ┌──────────────────────────▼──────────────────────────────────┐
+  │         Shared Memory Communication Layer                   │
+  ├─────────────────────────────────────────────────────────────┤
+  │  Cross-platform shared memory (auto-detected)               │
+  │  - Message channels                                         │
+  │  - Log ring buffer (5000 entries × 512B)                    │
+  │  - Node registry                                            │
+  │  - Parameter storage                                        │
+  └─────────────────────────────────────────────────────────────┘
+                             │
+  ┌──────────────────────────▼──────────────────────────────────┐
+  │            Tooling & Management Layer                       │
+  └─────────────────────────────────────────────────────────────┘
+    ┌────────────┐  ┌────────────┐
+    │   horus    │  │  Registry  │
+    │  _manager  │  │            │
+    │  - CLI     │  │ - Packages │
+    │  - Auth    │  │ - Auth     │
+    │  - Packages│  │ - Search   │
+    └────────────┘  └────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ Platform Shared Memory Paths:                                   │
+│ Linux: /dev/shm/horus/  macOS: /tmp/horus/  Win: %TEMP%\horus\  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Core Components
+
+### 1. **horus** (Unified Crate)
+
+The main entry point for all HORUS applications. Provides a unified API that abstracts the complexity of the framework.
+
+**Key Exports:**
+- `Node` trait: Base interface for all robotics nodes
+- `Hub<T>`: Type-safe pub/sub communication
+- `Scheduler`: Priority-based node orchestration
+- `prelude::*`: Unified imports for all essential types
+
+**Usage:**
+```rust
+use horus::prelude::*;
+
+// All HORUS types available immediately
+let hub: Hub<CmdVel> = Hub::new("cmd_vel")?;
+let mut scheduler = Scheduler::new();
+```
+
+**Location:** `/horus/`
+
+---
+
+### 2. **horus_core** (Framework Engine)
+
+The heart of the HORUS framework. Implements all core functionality including communication, scheduling, and memory management.
+
+**Modules:**
+
+#### `communication/`
+- **hub.rs**: Generic `Hub<T>` implementation with backend abstraction
+- **horus_backend.rs**: Shared memory IPC with serde serialization (248ns-437ns)
+- **message.rs**: Message trait and safety primitives
+
+#### `scheduling/`
+- **scheduler.rs**: Priority-based deterministic scheduler
+- **node.rs**: Node trait, NodeInfo, lifecycle management
+- Priority ordering: Lower number = higher priority (0 = highest)
+
+#### `core/`
+- **log_buffer.rs**: SharedLogBuffer - ring buffer for cross-process logging
+  - 5000 entries × 512B
+  - Lock-free writes with atomic counters
+  - Stored in platform-specific path (Linux: `/dev/shm/`, macOS: `/tmp/`, Windows: `%TEMP%`)
+- **registry.rs**: Node registry for monitoring and discovery
+
+#### `memory/`
+- **shm.rs**: Cross-platform shared memory abstraction
+- **platform.rs**: Platform-specific path detection (Linux, macOS, Windows)
+- **alignment.rs**: Safe cross-process memory alignment
+
+#### Other:
+- **params.rs**: Global parameter storage
+- **error.rs**: Comprehensive error types
+- **backend.rs**: Backend trait for pluggable communication
+
+**Performance:**
+- CmdVel (16B): **437ns** (Hub) / **248ns** (Link)
+- IMU (304B): **940ns** (Hub)
+- Odometry (736B): **1.1μs** (Hub)
+- LaserScan (1.5KB): **2.2μs** (Hub)
+- PointCloud (120KB): **360μs** (Hub)
+
+**Location:** `/horus_core/`
+
+---
+
+### 3. **horus_macros** (Code Generation)
+
+Procedural macros that eliminate boilerplate and enable declarative node development.
+
+**Macros:**
+
+#### `node!` - Zero-Boilerplate Node Definition
+```rust
+node! {
+    MyController {
+        // Publishers
+        pub {
+            cmd: CmdVel -> "motors.cmd"
+            status: Status -> "system.status"
+        }
+
+        // Subscribers
+        sub {
+            sensors: SensorData <- "sensors.data"
+            odom: Odometry <- "nav.odom"
+        }
+
+        // State fields
+        state {
+            counter: u32 = 0
+            enabled: bool = true
+        }
+
+        // Lifecycle methods
+        init(ctx) {
+            println!("Node initialized");
+        }
+
+        tick(ctx) {
+            // Main logic here
+            self.counter += 1;
+        }
+
+        shutdown(ctx) {
+            println!("Node shutdown");
+        }
+    }
+}
+```
+
+**Generated Code:**
+- Struct definition with all fields
+- `Node` trait implementation
+- `Hub<T>` initialization
+- Lifecycle method wiring
+- Default values and constructors
+
+**Benefits:**
+- 10x less code compared to manual implementation
+- Type-safe pub/sub with compile-time checking
+- Automatic logging integration
+- Zero runtime overhead
+
+**Location:** `/horus_macros/`
+
+---
+
+### 4. **horus_manager** (CLI & Package Management)
+
+The unified command-line interface for the HORUS ecosystem. Provides project creation, package management, monitoring, and authentication.
+
+**Commands:**
+
+```bash
+# Project Management
+horus new <name>              # Interactive project creation
+horus run [file]              # Auto-detect, build, and execute
+
+# Package Management
+horus pkg install <package>   # Install from registry
+horus pkg publish             # Publish to registry
+horus pkg list <query>        # Search packages
+horus env freeze              # Snapshot environment
+
+# Authentication
+horus auth login --github     # GitHub OAuth
+horus auth logout             # Clear credentials
+
+# Monitoring (via monitor)
+horus monitor               # Web-based monitoring and visualization
+
+# Alternative: CLI monitoring (if available)
+horus monitor               # Web UI (default, auto-opens)
+horus monitor -t            # Terminal UI
+```
+
+**Features:**
+- **Auto-detection**: Detects Rust and Python projects automatically
+- **Smart templates**: Context-aware project scaffolding
+- **GitHub OAuth**: Secure authentication for package publishing
+- **Interactive workflows**: Guided command interfaces
+- **Real-time monitoring**: Live system metrics
+
+**Location:** `/horus_manager/`
+
+---
+
+### 5. **horus_library** (Standard Library)
+
+Reusable components, message types, and algorithms for robotics applications.
+
+**Structure:**
+
+```
+horus_library/
+── messages/           # Standard message types
+   ── cmd_vel.rs      # CmdVel (linear, angular)
+   ── odometry.rs     # Odometry (pose, twist)
+   ── imu.rs          # IMU (accel, gyro, mag)
+   ── laser_scan.rs   # LaserScan (ranges, angles)
+   ── point_cloud.rs  # PointCloud (3D points)
+                                                                        
+── nodes/              # Generic reusable nodes
+   ── input.rs        # Keyboard, gamepad input
+   ── drivers.rs      # Hardware abstraction
+                                                                        
+── algorithms/         # Robotics algorithms
+   ── pathfinding.rs  # A*, Dijkstra, RRT
+   ── control.rs      # PID, MPC
+   ── filters.rs      # Kalman, particle filters
+                                                                        
+── apps/               # Complete example applications (multi-node apps)
+   ── snakesim/       # Example: snake game demo
+   ── tanksim/        # Example: tank simulation
+                                                                        
+── tools/              # Development tools
+    ── sim2d/          # 2D physics simulator (Bevy + Rapier2D)
+```
+
+**Key Message Types:**
+All messages use **fixed-size arrays** (`[u8; N]`) instead of `String` for cross-process safety:
+
+```rust
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct CmdVel {
+    pub linear: f64,      // m/s
+    pub angular: f64,     // rad/s
+}  // 16 bytes - 437ns (Hub) / 248ns (Link)
+
+pub struct LaserScan {
+    pub ranges: [f32; 360],
+    pub angle_min: f32,
+    pub angle_max: f32,
+    pub angle_increment: f32,
+}  // 1.5KB - 2.2μs (Hub)
+```
+
+**Location:** `/horus_library/`
+
+---
+
+### 6. **Multi-Language Bindings**
+
+#### **horus_py** (Python Support)
+Python bindings using PyO3 for Rust-Python interoperability.
+
+```python
+from horus import Node, Hub
+
+class SensorNode(Node):
+    def __init__(self):
+        self.pub = Hub("sensor_data")
+
+    def tick(self, ctx):
+        self.pub.send({"value": 42.0}, &mut ctx)
+```
+
+**Location:** `/horus_py/`
+
+---
+
+## Communication Architecture
+
+### Shared Memory IPC
+
+HORUS uses **cross-platform shared memory** for ultra-low latency inter-process communication.
+
+**Platform Paths:**
+| Platform | Base Path | Notes |
+|----------|-----------|-------|
+| Linux | `/dev/shm/horus/` | Native POSIX shm, fastest |
+| macOS | `/tmp/horus/` | tmpfs-backed |
+| Windows | `%TEMP%\horus\` | Temp directory |
+
+**Memory Layout (example on Linux):**
+
+```
+/dev/shm/horus/
+── logs/horus_logs            # 5000 × 512B = 2.5MB ring buffer
+── topics/horus_cmd_vel       # Message channel (per topic)
+── topics/horus_laser_scan    # Message channel
+── registry/horus_registry    # Node registry
+── params/horus_params_*      # Parameter storage
+```
+
+**Message Channel Structure:**
+```rust
+struct SharedChannel<T> {
+    header: ChannelHeader,      // Metadata
+    data: [T; CAPACITY],        // Circular buffer
+    read_idx: AtomicUsize,      // Consumer position
+    write_idx: AtomicUsize,     // Producer position
+}
+```
+
+**Zero-Copy Semantics:**
+- Publisher writes directly to shared memory
+- Subscriber reads without copying
+- Serialization happens once (serde)
+- Lock-free atomic operations
+
+**Latency Breakdown (Hub MPMC):**
+```
+Total: 437ns (CmdVel 16B)
+── Serialization (serde):  ~100ns
+── Shared memory write:    ~180ns
+── Atomic operations:       ~80ns
+── Cache coherency:        ~121ns
+```
+
+---
+
+### Communication System
+
+HORUS uses native shared memory IPC for ultra-low latency communication:
+
+| Component | Latency | Use Case |
+|-----------|---------|----------|
+| **Link** (SPSC) | 248ns | Ultra-low latency point-to-point |
+| **Hub** (MPMC) | 437ns | General purpose pub/sub |
+
+**Performance:**
+- Zero-copy shared memory
+- Lock-free algorithms
+- Cache-optimized data structures
+
+---
+
+## Scheduling Architecture
+
+### Priority-Based Execution
+
+HORUS uses **deterministic priority scheduling** where nodes execute in strict priority order each tick cycle.
+
+**Priority Layers:**
+```
+Priority  Layer               Example Nodes
+────────────────────────────────────────────
+0-4       Input Layer         Sensors, keyboards, joysticks
+5-9       Processing Layer    Controllers, path planners
+10-14     Output Layer        Actuators, displays
+15+       Background Layer    Logging, diagnostics
+```
+
+**Execution Model:**
+```rust
+// Each tick cycle:
+for node in scheduler.nodes_sorted_by_priority() {
+    node.tick(&mut ctx);  // Blocking, sequential
+}
+```
+
+**Benefits:**
+- **Deterministic**: Same input  same output, every time
+- **Predictable**: No race conditions or timing bugs
+- **Simple**: Easy to reason about data flow
+- **Real-time**: Guarantees execution order for control loops
+
+**Example:**
+```rust
+scheduler.add(keyboard_node, 0, Some(true));   // Runs first
+scheduler.add(controller, 5, Some(true));      // Processes input
+scheduler.add(motor_driver, 10, Some(true));   // Actuates
+```
+
+### Tick Rate Limitation
+
+**Important:** HORUS currently has a **hardcoded ~60 FPS tick rate limit** (~16ms per tick cycle).
+
+**What this means:**
+- Each `scheduler.run()` loop completes one cycle approximately every 16ms
+- Maximum tick frequency: ~60 Hz
+- All nodes execute sequentially within each 16ms window
+- If your nodes' combined execution time exceeds 16ms, ticks will slow down accordingly
+
+**Implications:**
+- For 60 Hz control loops: Supported
+- For 100 Hz+ control loops: Currently not achievable (planned for future release)
+- For sensor fusion (10-30 Hz): More than sufficient
+
+**Workaround for higher frequencies:**
+If you need &gt;60 Hz for specific nodes, run them in separate processes with their own schedulers. Each process can achieve ~60 Hz independently.
+
+**Future:** Per-node rate control and configurable tick rates are planned for post-beta releases.
+
+---
+
+## Logging System
+
+### SharedLogBuffer Architecture
+
+Cross-process logging with **zero configuration**.
+
+**Implementation:**
+```rust
+pub struct LogEntry {
+    pub timestamp: [u8; 32],    // ISO 8601 timestamp
+    pub node_name: [u8; 64],    // Fixed-size node name
+    pub log_type: LogType,      // Publish, Subscribe, Info, etc.
+    pub topic: [u8; 128],       // Topic name (if applicable)
+    pub message: [u8; 256],     // Log message
+    pub tick_us: u64,           // Tick duration (microseconds)
+    pub ipc_ns: u64,            // IPC latency (nanoseconds)
+}  // Total: 512 bytes per entry
+
+const MAX_LOG_ENTRIES: usize = 5000;  // Ring buffer capacity
+```
+
+**Log Format:**
+```
+[12:39:28.039] [IPC: 1112ns | Tick: 218μs] MotorController --PUB--> 'actuators.motors'
+[12:39:28.040] [IPC: 718ns  | Tick: 89μs]  SensorNode --SUB<-- 'sensors.imu'
+```
+
+**Performance:**
+- Lock-free writes (atomic counter)
+- Automatic wrapping (ring buffer)
+- 2.5MB total size (5000 × 512B)
+- No heap allocation
+
+**Location:** Platform-specific (Linux: `/dev/shm/horus/logs/`, macOS: `/tmp/horus/logs/`, Windows: `%TEMP%\horus\logs\`)
+
+---
+
+## Package Management
+
+### Registry Architecture
+
+HORUS uses a **GitHub-authenticated package registry** for sharing and discovering packages.
+
+**Workflow:**
+
+```bash
+# 1. Authenticate
+horus auth login --github
+# Opens browser  GitHub OAuth  Stores token
+
+# 2. Create package
+horus new my-package
+cd my-package
+
+# 3. Develop
+horus run
+
+# 4. Publish
+horus pkg publish
+# Uploads to registry with Git metadata
+
+# 5. Install (on another machine)
+horus pkg install my-package
+# Downloads, caches, builds
+```
+
+**Registry Features:**
+- **GitHub OAuth**: Secure authentication
+- **Semantic versioning**: `0.1.0`, `1.2.3`, etc.
+- **Dependency resolution**: Automatic transitive deps
+- **Environment snapshots**: `horus env freeze` for reproducibility
+- **Search**: Full-text search across packages
+
+**Package Metadata:**
+```toml
+[package]
+name = "my-package"
+version = "0.1.6"
+authors = ["You <you@example.com>"]
+
+[package.metadata.horus]
+tick_rate = 100         # Hz
+backend = "horus"       # Communication backend
+priority = 5            # Default node priority
+logging_level = "info"  # Log verbosity
+```
+
+---
+
+## Monitoring & Monitor
+
+### Real-Time System Monitoring
+
+**CLI Monitoring:**
+```bash
+$ horus monitor
+=== HORUS System Monitor ===
+
+CPU Usage: 22.6%
+Memory: 8129 MB / 64120 MB (12.7%)
+Active Nodes: 3
+Message Rate: 1247 msg/s
+Shared Memory Regions: 27
+```
+
+**Web Monitor:**
+- **Live metrics**: CPU, memory, message rates
+- **Node graph**: Visualize pub/sub topology
+- **Log viewer**: Real-time log streaming
+- **Parameter editor**: Tune parameters live
+- **Performance charts**: Historical data
+
+**Access:**
+```bash
+horus monitor           # Opens http://localhost:8080
+horus monitor -t        # Terminal UI (TUI)
+```
+
+---
+
+## Memory Safety Guarantees
+
+### Rust Advantages
+
+1. **No Segmentation Faults**: Borrow checker prevents use-after-free
+2. **No Data Races**: `Send` and `Sync` traits enforce thread safety
+3. **No Memory Leaks**: RAII ensures cleanup on drop
+4. **No Buffer Overflows**: Fixed-size arrays with bounds checking
+
+**Example - Safe Shared Memory:**
+```rust
+// Fixed-size message (safe for shared memory)
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub struct CmdVel {
+    pub linear: f64,
+    pub angular: f64,
+}  // Safe: No pointers, no heap
+
+// Unsafe message (would cause corruption)
+pub struct BadMessage {
+    pub data: String,  // Heap-allocated pointer
+    pub items: Vec<f64>,  // Heap-allocated vector
+}  // Won't compile with shared memory backend
+```
+
+---
+
+## Build System & Workspace
+
+### Cargo Workspace Structure
+
+```toml
+[workspace]
+members = [
+    "horus",            # Main unified crate
+    "horus_core",       # Core framework
+    "horus_macros",     # Procedural macros
+    "horus_manager",    # CLI
+    "horus_library",    # Standard library
+    "horus_py",         # Python bindings
+    "benchmarks",       # Performance tests
+]
+```
+
+**Shared Dependencies:**
+- Physics: rapier2d, nalgebra
+- Serialization: serde, toml, ron
+- Async: tokio
+- Memory: memmap2, parking_lot, bytemuck
+
+**Build Optimization:**
+```bash
+# Development (fast compile)
+horus run
+
+# Release (optimized)
+horus run --release
+```
+
+### Rust Project Compilation
+
+For Rust projects, `horus run` uses **Cargo for compilation** while maintaining the unified `horus.yaml` configuration abstraction.
+
+**Architecture:**
+
+1. **User Configuration** (`horus.yaml`):
+   ```yaml
+   name: my_project
+   version: 0.1.0
+   dependencies:
+     - horus@0.1.0
+     - horus_library@0.1.0
+   ```
+
+2. **Auto-Generated Build Config** (`.horus/Cargo.toml`):
+   ```toml
+   [package]
+   name = "horus-project"
+   version = "0.1.6"
+   edition = "2021"
+
+   [[bin]]
+   name = "horus-project"
+   path = "../main.rs"  # Path reference, no source copying
+
+   [dependencies]
+   horus = { path = "/path/to/HORUS/horus" }
+   horus_library = { path = "/path/to/HORUS/horus_library" }
+   ```
+
+3. **Build Process**:
+   - `horus run` parses `horus.yaml`
+   - Generates `.horus/Cargo.toml` with path-based dependencies
+   - Runs `cargo build` in `.horus/` directory
+   - Executes the resulting binary
+
+**Key Benefits:**
+
+-  **No source duplication** - Uses path references, not copies
+-  **Lightweight workspace** - Only 266 bytes for Cargo.toml + build artifacts
+-  **Scalable** - Works for single-file AND multi-file projects
+-  **Automatic dependency resolution** - Cargo handles all transitive dependencies
+-  **Transparent** - Users only work with `horus.yaml`
+
+**HORUS Source Detection:**
+
+The CLI automatically finds HORUS source via:
+1. `$HORUS_SOURCE` environment variable (if set)
+2. Common installation paths: `~/horus/HORUS`, `/horus`, `/opt/horus`, `/usr/local/horus`
+
+**Workspace Structure:**
+```
+my_project/
+── main.rs                  # Your source code
+── horus.yaml               # User-facing config
+── .horus/                  # Auto-managed workspace
+    ── Cargo.toml           # Generated (266 bytes)
+    ── Cargo.lock           # Auto-generated
+    ── target/              # Build artifacts
+        ── debug/           # Debug builds
+        ── release/         # Release builds
+```
+
+See [CLI Reference - horus run](/cli-reference#horus-run---build-and-run) for usage details.
+
+---
+
+## Data Flow Example
+
+### Complete Message Flow
+
+```
+─────────────  1. tick()    ──────────────────
+ SensorNode  ──────────────> Hub<SensorData>               
+ Priority: 0                 "sensors.data"                
+─────────────               ─────────────────
+                                        2. send()
+                                       ▼
+                              ──────────────────
+                               Shared Memory
+                               (cross-platform)  248ns-437ns
+                               horus_sensors
+                              ─────────────────
+                                        3. try_recv()
+                                       ▼
+────────────── 4. tick()   ──────────────────
+ ControlNode  <───────────── Hub<SensorData>               
+ Priority: 5                 "sensors.data"                
+─────────────              ──────────────────
+        5. send()
+       ▼
+──────────────────
+ Hub<CmdVel>                                                 
+ "motors.cmd"                                                
+─────────────────
+          6. Shared memory write
+         ▼
+──────────────────
+ MotorNode                                                   
+ Priority: 10                                                
+──────────────────
+```
+
+**Latency Budget (Hub MPMC):**
+```
+Total: ~3-5μs for 3-node pipeline
+── SensorNode publish:     437ns
+── Shared memory write:    180ns
+── ControlNode receive:    437ns
+── Processing:            1000ns (user code)
+── ControlNode publish:    437ns
+── MotorNode receive:      437ns
+```
+
+---
+
+## When to Use Each Component
+
+| Component | Use When |
+|-----------|----------|
+| **horus** | Building applications (always use this) |
+| **horus_core** | Extending framework, custom backends |
+| **horus_macros** | Want zero-boilerplate development |
+| **horus_manager** | Managing projects, packages, monitoring |
+| **horus_library** | Need standard messages, algorithms, tools |
+| **horus_py** | Python projects, rapid prototyping |
+
+---
+
+## Performance Characteristics
+
+### Latency vs Message Size
+
+```
+Message Size    Latency (Hub)    Latency (Link)    Example
+──────────────────────────────────────────────────────────
+16B             437ns            248ns             CmdVel
+304B            940ns            ~400ns            IMU
+736B            1.1μs            ~600ns            Odometry
+1.5KB           2.2μs            ~900ns            LaserScan
+120KB           360μs            ~120μs            PointCloud (10K points)
+```
+
+**Scaling:** Linear with message size (~1.8ns/byte)
+
+### Comparison to traditional frameworks
+
+| Metric | HORUS (Link) | HORUS (Hub) | ROS2 (DDS) | Improvement |
+|--------|--------------|-------------|------------|-------------|
+| **CmdVel latency** | 248ns | 437ns | 50-100μs | **104-320x faster** |
+| **LaserScan latency** | ~900ns | 2.2μs | 200-500μs | **91-556x faster** |
+| **Setup complexity** | 2 lines | 2 lines | ~50 lines | **25x simpler** |
+| **Memory safety** | Guaranteed (Rust) | Guaranteed (Rust) | Manual (C++) | **Zero segfaults** |
+| **Monitoring** | Built-in | Built-in | External (rviz/rqt) | **Zero config** |
+
+---
+
+## Next Steps
+
+- **[Installation Guide](/getting-started/installation)**: Set up HORUS on your system
+- **[Quick Start](/getting-started/quick-start)**: Build your first node in 5 minutes
+- **[Goals & Vision](/concepts/goals)**: Understand what HORUS is trying to achieve
+- **[API Reference](/rust/api)**: Detailed API documentation
+- **[Examples](/rust/examples/basic-examples)**: Complete example applications
+
+---
+
+**HORUS Architecture: Fast, Safe, Simple** 

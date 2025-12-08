@@ -1,0 +1,405 @@
+---
+title: Sim3D Sensors
+description: Simulated sensors in the HORUS 3D simulator
+---
+
+# Sim3D Sensors
+
+Sim3D provides high-fidelity simulated sensors that mirror real hardware behavior. Each sensor publishes to HORUS topics using identical interfaces as physical hardware, enabling code to run unchanged in simulation and on real robots.
+
+## Available Sensors
+
+| Sensor | Description | Output Topic Type |
+|--------|-------------|-------------------|
+| [Camera](#camera) | RGB camera with lens distortion | `Image` |
+| [Depth Camera](#depth-camera) | Depth sensing (stereo/structured light) | `DepthImage` |
+| [RGB-D](#rgbd) | Combined RGB + Depth | `Image`, `DepthImage` |
+| [LiDAR 3D](#lidar-3d) | 3D laser scanner | `PointCloud2` |
+| [IMU](#imu) | Accelerometer + Gyroscope | `Imu` |
+| [GPS](#gps) | Global positioning | `NavSatFix` |
+| [Encoder](#encoder) | Wheel/joint encoders | `JointState` |
+| [Force/Torque](#forcetorque) | 6-axis force sensing | `Wrench` |
+| [Tactile](#tactile) | Touch/pressure sensing | `TactileArray` |
+| [Event Camera](#event-camera) | Dynamic Vision Sensor (DVS) | `EventArray` |
+| [Radar](#radar) | Radio detection and ranging | `RadarScan` |
+| [Sonar](#sonar) | Ultrasonic ranging | `Range` |
+| [Thermal](#thermal) | Infrared thermal imaging | `Image` |
+| [Segmentation](#segmentation) | Semantic/instance segmentation | `Image` |
+
+## Sensor Configuration
+
+Sensors are configured in your robot URDF or scene YAML:
+
+```yaml
+# scene.yaml
+sensors:
+  - name: front_camera
+    type: camera
+    parent: base_link
+    position: [0.2, 0, 0.3]
+    rotation: [0, 0, 0]
+    config:
+      width: 640
+      height: 480
+      fov: 60.0
+      fps: 30.0
+      topic: camera.front
+
+  - name: main_lidar
+    type: lidar3d
+    parent: base_link
+    position: [0, 0, 0.5]
+    config:
+      channels: 16
+      range: 100.0
+      fov_up: 15.0
+      fov_down: -15.0
+      rpm: 600
+      topic: lidar.scan
+```
+
+## Camera
+
+RGB camera with realistic lens distortion and noise models.
+
+```yaml
+type: camera
+config:
+  width: 1280
+  height: 720
+  fov: 70.0              # Horizontal field of view (degrees)
+  fps: 30.0
+  near_clip: 0.1
+  far_clip: 1000.0
+  distortion:
+    model: brown_conrady  # or fisheye, equidistant
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+  noise:
+    type: gaussian
+    std: 0.01
+  topic: camera.rgb
+```
+
+**Published Topics:**
+- `{topic}` - `Image` (RGB)
+- `{topic}.info` - `CameraInfo` (intrinsics)
+
+## Depth Camera
+
+Simulates stereo or structured-light depth cameras (RealSense, Kinect, etc.).
+
+```yaml
+type: depth
+config:
+  width: 640
+  height: 480
+  fov: 87.0
+  fps: 30.0
+  min_depth: 0.1
+  max_depth: 10.0
+  noise:
+    type: depth_quadratic  # Noise increases with distance
+    base_std: 0.001
+    distance_factor: 0.01
+  topic: camera.depth
+```
+
+**Published Topics:**
+- `{topic}` - `DepthImage` (16-bit depth in mm)
+
+## RGB-D
+
+Combined RGB and depth camera (e.g., RealSense D435).
+
+```yaml
+type: rgbd
+config:
+  width: 640
+  height: 480
+  fov: 87.0
+  fps: 30.0
+  min_depth: 0.1
+  max_depth: 10.0
+  align_depth: true
+  topic: camera.rgbd
+```
+
+**Published Topics:**
+- `{topic}.color` - `Image` (RGB)
+- `{topic}.depth` - `DepthImage`
+- `{topic}.points` - `PointCloud2` (optional)
+
+## LiDAR 3D
+
+3D laser scanner with configurable beam pattern.
+
+```yaml
+type: lidar3d
+config:
+  channels: 16           # Vertical beams (16, 32, 64, 128)
+  points_per_channel: 1800
+  range: 100.0           # Max range (meters)
+  fov_up: 15.0           # Upper vertical FOV (degrees)
+  fov_down: -15.0        # Lower vertical FOV (degrees)
+  rpm: 600               # Rotations per minute
+  noise:
+    type: gaussian
+    range_std: 0.02
+    angle_std: 0.001
+  topic: lidar.scan
+```
+
+**Published Topics:**
+- `{topic}` - `PointCloud2` (XYZ + intensity)
+- `{topic}.scan` - `LaserScan` (2D slice, optional)
+
+## IMU
+
+Inertial Measurement Unit with accelerometer and gyroscope.
+
+```yaml
+type: imu
+config:
+  rate: 200.0            # Hz
+  accel_noise: 0.01      # m/s² std
+  gyro_noise: 0.001      # rad/s std
+  accel_bias: 0.0001     # Bias random walk
+  gyro_bias: 0.00001
+  topic: imu.data
+```
+
+**Published Topics:**
+- `{topic}` - `Imu` (orientation, angular velocity, linear acceleration)
+
+## GPS
+
+Global Positioning System simulation.
+
+```yaml
+type: gps
+config:
+  rate: 10.0             # Hz
+  horizontal_accuracy: 2.0  # meters CEP
+  vertical_accuracy: 4.0
+  fix_type: 3d           # none, 2d, 3d, rtk_float, rtk_fixed
+  origin:                # World origin in lat/lon
+    latitude: 37.7749
+    longitude: -122.4194
+    altitude: 0.0
+  topic: gps.fix
+```
+
+**Published Topics:**
+- `{topic}` - `NavSatFix`
+- `{topic}.velocity` - `TwistStamped`
+
+## Encoder
+
+Wheel or joint encoders.
+
+```yaml
+type: encoder
+config:
+  joints: [wheel_left, wheel_right]
+  resolution: 4096       # Ticks per revolution
+  noise_std: 0.001
+  topic: encoders
+```
+
+**Published Topics:**
+- `{topic}` - `JointState` (position, velocity)
+
+## Force/Torque
+
+6-axis force/torque sensor.
+
+```yaml
+type: force_torque
+config:
+  rate: 1000.0           # Hz
+  force_range: 100.0     # N
+  torque_range: 10.0     # Nm
+  noise:
+    force_std: 0.1
+    torque_std: 0.01
+  topic: ft_sensor
+```
+
+**Published Topics:**
+- `{topic}` - `Wrench` (force XYZ, torque XYZ)
+
+## Tactile
+
+Tactile/pressure sensor array.
+
+```yaml
+type: tactile
+config:
+  rows: 16
+  cols: 16
+  rate: 100.0
+  sensitivity: 0.01      # N
+  max_pressure: 100.0    # N
+  topic: tactile.gripper
+```
+
+**Published Topics:**
+- `{topic}` - `TactileArray` (pressure grid)
+
+## Event Camera
+
+Dynamic Vision Sensor (DVS) - outputs events on brightness change.
+
+```yaml
+type: event_camera
+config:
+  width: 346
+  height: 260
+  threshold_pos: 0.2     # Positive event threshold
+  threshold_neg: 0.2     # Negative event threshold
+  refractory_period: 1.0 # μs
+  topic: events
+```
+
+**Published Topics:**
+- `{topic}` - `EventArray` (x, y, timestamp, polarity)
+
+## Radar
+
+Automotive-style radar sensor.
+
+```yaml
+type: radar
+config:
+  range: 200.0           # meters
+  fov: 120.0             # degrees
+  range_resolution: 0.5
+  velocity_resolution: 0.1
+  rate: 20.0
+  topic: radar.detections
+```
+
+**Published Topics:**
+- `{topic}` - `RadarScan` (range, velocity, angle, RCS)
+
+## Sonar
+
+Ultrasonic range sensor.
+
+```yaml
+type: sonar
+config:
+  range: 5.0             # meters
+  fov: 30.0              # degrees (cone angle)
+  rate: 10.0
+  noise_std: 0.02
+  topic: sonar.range
+```
+
+**Published Topics:**
+- `{topic}` - `Range`
+
+## Thermal
+
+Thermal/infrared camera.
+
+```yaml
+type: thermal
+config:
+  width: 320
+  height: 240
+  fov: 50.0
+  fps: 30.0
+  min_temp: -20.0        # °C
+  max_temp: 150.0
+  noise_std: 0.5         # °C
+  topic: thermal.image
+```
+
+**Published Topics:**
+- `{topic}` - `Image` (temperature as 16-bit values)
+
+## Segmentation
+
+Ground-truth semantic/instance segmentation camera.
+
+```yaml
+type: segmentation
+config:
+  width: 640
+  height: 480
+  mode: semantic         # semantic or instance
+  classes:
+    - name: floor
+      color: [128, 128, 128]
+    - name: wall
+      color: [0, 0, 255]
+    - name: robot
+      color: [255, 0, 0]
+  topic: segmentation
+```
+
+**Published Topics:**
+- `{topic}` - `Image` (class IDs or instance IDs)
+- `{topic}.colored` - `Image` (visualization)
+
+## Noise Models
+
+All sensors support configurable noise:
+
+```yaml
+noise:
+  # Gaussian noise
+  type: gaussian
+  std: 0.01
+
+  # Uniform noise
+  type: uniform
+  min: -0.01
+  max: 0.01
+
+  # Salt-and-pepper (for cameras)
+  type: salt_pepper
+  probability: 0.001
+
+  # Depth-dependent (for depth cameras)
+  type: depth_quadratic
+  base_std: 0.001
+  distance_factor: 0.01
+```
+
+## Distortion Models
+
+Camera distortion models:
+
+```yaml
+distortion:
+  # Brown-Conrady (standard pinhole)
+  model: brown_conrady
+  k1: -0.1    # Radial distortion
+  k2: 0.01
+  k3: 0.0
+  p1: 0.0     # Tangential distortion
+  p2: 0.0
+
+  # Fisheye (wide-angle)
+  model: fisheye
+  k1: -0.2
+  k2: 0.05
+  k3: 0.0
+  k4: 0.0
+
+  # Equidistant
+  model: equidistant
+  k1: -0.15
+  k2: 0.03
+```
+
+## See Also
+
+- [Sim3D Quick Start](/simulators/sim3d/getting-started/quick-start) - Getting started
+- [Sim3D Physics](/simulators/sim3d/physics/overview) - Physics simulation
+- [Sim3D RL](/simulators/sim3d/rl/overview) - Reinforcement learning

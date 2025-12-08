@@ -1,0 +1,69 @@
+---
+title: SafetyMonitorNode
+description: System health monitoring and diagnostics
+---
+
+# SafetyMonitorNode
+
+System health monitoring node tracking temperature, voltage, current, CPU usage, and other vital parameters. Provides warnings and automatic shutdown for safety-critical conditions.
+
+## Source Code
+
+- [SafetyMonitorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/safety_monitor)
+- [Diagnostics Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/diagnostics.rs)
+
+## Features
+
+- Temperature monitoring
+- Voltage monitoring
+- Current monitoring
+- CPU/memory usage
+- Disk space monitoring
+- Network connectivity
+- Sensor health checks
+- Configurable thresholds
+- Warning and critical alerts
+- Auto-shutdown triggers
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut safety = SafetyMonitorNode::new()?;
+    safety.set_temperature_threshold(80.0);  // °C
+    safety.set_voltage_range(10.0, 14.8);    // Min/max volts
+    safety.enable_auto_shutdown(true);
+
+    scheduler.add(Box::new(safety), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Usage
+
+```rust
+let hub = Hub::<SafetyAlert>::new("safety.alert")?;
+
+while let Some(alert) = hub.recv(&mut None) {
+    match alert.alert_type {
+        AlertType::HighTemperature => {
+            println!("WARNING: High temperature {:.1}°C", alert.value);
+        }
+        AlertType::LowVoltage => {
+            println!("CRITICAL: Low voltage {:.2}V", alert.value);
+        }
+        _ => {}
+    }
+}
+```
+
+## See Also
+
+- [EmergencyStopNode](./emergency-stop) - E-stop system
+- [BatteryMonitorNode](./battery-monitor) - Battery monitoring

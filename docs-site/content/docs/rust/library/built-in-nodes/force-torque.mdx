@@ -1,0 +1,99 @@
+---
+title: ForceTorqueSensorNode
+description: 6-axis force/torque sensor for robot arms and manipulation
+---
+
+# ForceTorqueSensorNode
+
+6-axis force/torque sensor node for measuring forces (Fx, Fy, Fz) and torques (Tx, Ty, Tz). Supports ATI, OnRobot, and Robotiq F/T sensors for robot arms, grippers, and haptic feedback.
+
+## Source Code
+
+- [ForceTorqueSensorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/force_torque_sensor)
+- [Force Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/force.rs)
+
+## Features
+
+- 6-axis measurement (3 force + 3 torque)
+- ATI Mini/Nano series
+- OnRobot HEX-E, Robotiq FT 300
+- Configurable sample rates
+- Bias/tare calibration
+- Threshold detection
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut ft_sensor = ForceTorqueSensorNode::new("/dev/ttyUSB0")?;
+    ft_sensor.set_sensor_type(FTSensorType::ATIMini40);
+    ft_sensor.tare()?;  // Zero sensor
+
+    scheduler.add(Box::new(ft_sensor), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Requires:** Serial port access and the `netft` feature for hardware F/T sensor support.
+
+### Enabling Features
+
+There are three ways to enable the required `netft` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `ForceTorqueSensorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: netft)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - netft
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["netft"] }
+```
+
+## Usage
+
+```rust
+let hub = Hub::<ForceTorqueData>::new("ft_sensor.data")?;
+
+if let Some(data) = hub.recv(&mut None) {
+    println!("Force: [{:.2}, {:.2}, {:.2}] N",
+        data.fx, data.fy, data.fz);
+    println!("Torque: [{:.2}, {:.2}, {:.2}] Nm",
+        data.tx, data.ty, data.tz);
+
+    // Detect contact
+    if data.fz > 5.0 {
+        println!("Contact detected!");
+    }
+}
+```
+
+## See Also
+
+- [DynamixelNode](./dynamixel) - Robot arm servos
+- [ServoControllerNode](./servo-controller) - PWM servo control

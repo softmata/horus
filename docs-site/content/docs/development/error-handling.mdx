@@ -1,0 +1,430 @@
+---
+title: "Error Handling"
+description: "Unified error types, result handling, and best practices for HORUS applications"
+weight: 70
+---
+
+# Error Handling
+
+HORUS provides a unified error handling system built on Rust's `Result` type, with rich error contexts and helpful diagnostics.
+
+## Core Error Types
+
+### HorusError
+
+The main error type for all HORUS operations:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn my_function() -> HorusResult<()> {
+    // Your code here
+    Ok(())
+}
+```
+
+### Error Variants
+
+| Variant | Description |
+|---------|-------------|
+| `Io` | File system and I/O errors |
+| `Config` | Configuration parsing/validation |
+| `Backend` | Hardware backend errors |
+| `Communication` | IPC and network errors |
+| `Node` | Node-specific errors |
+| `Scheduling` | Scheduler errors |
+| `Memory` | Memory allocation errors |
+| `SharedMemory` | Shared memory mapping errors |
+| `Parameter` | Parameter management errors |
+| `Serialization` | Serialization/deserialization errors |
+| `Timeout` | Operation timeout |
+| `NotFound` | Resource not found |
+| `PermissionDenied` | Access denied |
+| `InvalidInput` | Invalid argument/input |
+| `InitializationFailed` | Startup failure |
+| `AlreadyExists` | Resource already exists |
+| `ParseError` | Parsing errors |
+| `CommandFailed` | External command errors |
+| `FeatureNotAvailable` | Feature not enabled |
+| `Internal` | Internal errors |
+| `Other` | Catch-all |
+
+## Creating Errors
+
+### Using Constructors
+
+```rust
+use horus::prelude::*;
+
+// Configuration error
+let err = HorusError::config("Invalid frequency: must be positive");
+
+// Backend error with context
+let err = HorusError::backend("mpu6050", "I2C bus error");
+
+// Node error with context
+let err = HorusError::node("MotorController", "Failed to initialize PWM");
+
+// Communication error
+let err = HorusError::communication("Topic not found: /cmd_vel");
+
+// Memory error
+let err = HorusError::memory("Failed to allocate 1GB for buffer");
+
+// Resource not found
+let err = HorusError::not_found("Robot configuration file");
+
+// Invalid input
+let err = HorusError::invalid_input("Speed must be between 0 and 100");
+```
+
+### Using Variants Directly
+
+```rust
+use horus::prelude::*;
+
+let err = HorusError::Timeout("Operation exceeded 5s timeout".to_string());
+let err = HorusError::PermissionDenied("/dev/ttyUSB0".to_string());
+let err = HorusError::AlreadyExists("Session 'main' already exists".to_string());
+```
+
+## Error Propagation
+
+### Using the `?` Operator
+
+```rust
+use horus::prelude::*;
+
+fn load_robot_config(path: &str) -> HorusResult<Config> {
+    // File I/O errors automatically convert to HorusError::Io
+    let content = std::fs::read_to_string(path)?;
+
+    // JSON errors automatically convert to HorusError::Serialization
+    let config: Config = serde_json::from_str(&content)?;
+
+    Ok(config)
+}
+```
+
+### Automatic Conversions
+
+HorusError implements `From` for many common error types:
+
+| Source Type | Target Variant |
+|-------------|----------------|
+| `std::io::Error` | `HorusError::Io` |
+| `serde_json::Error` | `HorusError::Serialization` |
+| `serde_yaml::Error` | `HorusError::Serialization` |
+| `toml::de::Error` | `HorusError::Config` |
+| `std::num::ParseIntError` | `HorusError::ParseError` |
+| `std::num::ParseFloatError` | `HorusError::ParseError` |
+| `uuid::Error` | `HorusError::Internal` |
+| `anyhow::Error` | `HorusError::Other` |
+
+## Error Checking
+
+### Query Error Types
+
+```rust
+fn handle_error(err: HorusError) {
+    if err.is_not_found() {
+        println!("Resource missing, creating default...");
+    } else if err.is_timeout() {
+        println!("Operation timed out, retrying...");
+    } else if err.is_permission_denied() {
+        println!("Access denied, check permissions");
+    }
+}
+```
+
+### Pattern Matching
+
+```rust
+use horus::prelude::*;
+
+match result {
+    Ok(value) => process(value),
+    Err(HorusError::NotFound(resource)) => {
+        eprintln!("Resource not found: {}", resource);
+    }
+    Err(HorusError::Backend { backend, message }) => {
+        eprintln!("Backend {} failed: {}", backend, message);
+    }
+    Err(HorusError::Node { node, message }) => {
+        eprintln!("Node {} error: {}", node, message);
+    }
+    Err(e) => {
+        eprintln!("Unexpected error: {}", e);
+    }
+}
+```
+
+## Enhanced Errors (Sim3D)
+
+The Sim3D module provides `EnhancedError` with rich context for debugging:
+
+### Creating Enhanced Errors
+
+```rust
+use horus_sim3d::error::{EnhancedError, ErrorCategory};
+
+// Basic error
+let err = EnhancedError::new("Something went wrong");
+
+// With full context
+let err = EnhancedError::new("Invalid joint configuration")
+    .with_file("robot.urdf")
+    .with_line(42)
+    .with_column(15)
+    .with_category(ErrorCategory::URDFError)
+    .with_hint("Joint limits must have lower < upper")
+    .with_suggestion("Change: <limit lower=\"1.0\" upper=\"0.0\"/> to <limit lower=\"0.0\" upper=\"1.0\"/>");
+```
+
+### Pre-built Error Constructors
+
+```rust
+use horus_sim3d::error::EnhancedError;
+
+// File not found with suggestions
+let err = EnhancedError::file_not_found("/path/to/robot.urdf");
+// Output includes: verification command, path check hints
+
+// Mesh loading error with format-specific hints
+let err = EnhancedError::mesh_load_failed(
+    "model.obj",
+    "Invalid vertex data at line 42"
+);
+
+// URDF parsing error with validation suggestions
+let err = EnhancedError::urdf_parse_failed(
+    "robot.urdf",
+    "Unknown joint type 'slider'"
+);
+
+// Mesh reference not found (common URDF issue)
+let err = EnhancedError::mesh_reference_not_found(
+    "robot.urdf",
+    "package://my_robot/meshes/wheel.stl",
+    &searched_paths,
+);
+
+// Physics parameter validation
+let err = EnhancedError::invalid_physics_value(
+    "friction",
+    -0.5,
+    (0.0, 1.0),  // valid range
+);
+
+// Generic validation error
+let err = EnhancedError::validation_failed(
+    "mass",
+    "must be positive (got -1.5)"
+);
+```
+
+### Error Categories
+
+| Category | Icon | Description |
+|----------|------|-------------|
+| `FileNotFound` | 📁 | Missing file |
+| `ParseError` | 📝 | Syntax/parsing error |
+| `ValidationError` | ✓ | Value validation failure |
+| `MeshLoadError` | 🔷 | 3D mesh loading issue |
+| `URDFError` | 🤖 | URDF parsing issue |
+| `PhysicsError` | ⚙️ | Physics configuration |
+| `ConfigError` | ⚙️ | Configuration error |
+| `Unknown` | ❌ | Unclassified error |
+
+### Rich Error Output
+
+```
+📁 Error in 'robot.urdf' at line 42, column 15:
+  Invalid joint configuration
+
+💡 Hint: Joint limits must have lower < upper
+
+✏️  Suggestion:
+   Change: <limit lower="1.0" upper="0.0"/>
+   to: <limit lower="0.0" upper="1.0"/>
+```
+
+## Best Practices
+
+### 1. Use Specific Error Types
+
+```rust
+// Good: Specific error with context
+return Err(HorusError::backend("IMU", "I2C read failed on register 0x3B"));
+
+// Avoid: Generic error
+return Err(HorusError::Other("error".to_string()));
+```
+
+### 2. Add Context When Propagating
+
+```rust
+fn initialize_sensor() -> HorusResult<()> {
+    open_i2c_bus().map_err(|e| {
+        HorusError::backend("IMU", format!("Failed to open I2C: {}", e))
+    })?;
+
+    Ok(())
+}
+```
+
+### 3. Handle Expected Errors Gracefully
+
+```rust
+fn get_config() -> HorusResult<Config> {
+    match load_config_file("config.yaml") {
+        Ok(config) => Ok(config),
+        Err(HorusError::NotFound(_)) => {
+            // Expected: use defaults
+            Ok(Config::default())
+        }
+        Err(e) => Err(e),  // Propagate unexpected errors
+    }
+}
+```
+
+### 4. Use Enhanced Errors for User-Facing Messages
+
+```rust
+use horus_sim3d::error::EnhancedError;
+
+fn load_robot(path: &str) -> Result<Robot, EnhancedError> {
+    let urdf = std::fs::read_to_string(path).map_err(|e| {
+        EnhancedError::file_not_found(path)
+    })?;
+
+    parse_urdf(&urdf).map_err(|e| {
+        EnhancedError::urdf_parse_failed(path, e.to_string())
+    })
+}
+```
+
+### 5. Log Errors Before Propagating
+
+```rust
+use tracing::error;
+
+fn critical_operation() -> HorusResult<()> {
+    match do_something_important() {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            error!("Critical operation failed: {}", e);
+            Err(e)
+        }
+    }
+}
+```
+
+## Node Error Handling
+
+### In Tick Methods
+
+```rust
+impl Node for MyNode {
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Handle errors in tick - don't propagate
+        if let Err(e) = self.process_data() {
+            error!("Processing failed: {}", e);
+            // Optionally publish status
+            self.publish_error_status(e);
+        }
+    }
+}
+```
+
+### Initialization Errors
+
+```rust
+impl MyNode {
+    pub fn new(config: Config) -> HorusResult<Self> {
+        let backend = config.backend.connect().map_err(|e| {
+            HorusError::node("MyNode", format!("Backend init failed: {}", e))
+        })?;
+
+        Ok(Self { backend })
+    }
+}
+```
+
+### Graceful Degradation
+
+```rust
+fn read_sensor(&mut self) -> Option<SensorData> {
+    match self.backend.read() {
+        Ok(data) => Some(data),
+        Err(e) => {
+            self.error_count += 1;
+            if self.error_count > 10 {
+                error!("Sensor failing repeatedly: {}", e);
+            }
+            None  // Return None instead of crashing
+        }
+    }
+}
+```
+
+## Testing Error Handling
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus::prelude::*;
+
+    #[test]
+    fn test_returns_not_found_for_missing_file() {
+        let result = load_config("nonexistent.yaml");
+        assert!(matches!(result, Err(HorusError::NotFound(_))));
+    }
+
+    #[test]
+    fn test_returns_config_error_for_invalid_yaml() {
+        let result = parse_config("invalid: [yaml");
+        assert!(matches!(result, Err(HorusError::Config(_))));
+    }
+
+    #[test]
+    fn test_error_context() {
+        let err = HorusError::node("TestNode", "test message");
+        let display = format!("{}", err);
+        assert!(display.contains("TestNode"));
+        assert!(display.contains("test message"));
+    }
+}
+```
+
+## Integration with anyhow
+
+For applications that prefer `anyhow`:
+
+```rust
+use anyhow::{Context, Result};
+use horus::prelude::*;
+
+fn load_robot() -> Result<Robot> {
+    let config = load_config("robot.yaml")
+        .context("Failed to load robot configuration")?;
+
+    let robot = Robot::from_config(config)
+        .context("Failed to create robot from config")?;
+
+    Ok(robot)
+}
+
+// Convert back to HorusError if needed
+fn horus_function() -> horus_core::error::HorusResult<Robot> {
+    load_robot().map_err(|e| HorusError::from(e))
+}
+```
+
+## See Also
+
+- [Nodes](/concepts/core-concepts-nodes) - Understanding HORUS nodes
+- [Diagnostics Messages](/rust/api/diagnostics-messages) - Status and error reporting
+- [Troubleshooting](/troubleshooting) - Common issues and solutions

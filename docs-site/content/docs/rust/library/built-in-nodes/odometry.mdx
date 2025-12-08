@@ -1,0 +1,61 @@
+---
+title: OdometryNode
+description: Dead reckoning position tracking from wheel encoders
+---
+
+# OdometryNode
+
+Odometry node for position tracking using wheel encoder data. Calculates robot pose (x, y, theta) through dead reckoning for navigation and localization.
+
+## Source Code
+
+- [OdometryNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/odometry)
+- [Navigation Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/navigation.rs)
+
+## Features
+
+- 2D pose estimation (x, y, theta)
+- Wheel encoder integration
+- Velocity estimation
+- Covariance tracking
+- Configurable wheel parameters
+- Reset/calibration
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut odom = OdometryNode::new()?;
+    odom.set_wheel_base(0.3);
+    odom.set_wheel_diameter(0.1);
+    odom.set_encoder_cpr(600);  // Counts per revolution
+
+    scheduler.add(Box::new(odom), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Usage
+
+```rust
+let hub = Hub::<Odometry>::new("odom.pose")?;
+
+if let Some(pose) = hub.recv(&mut None) {
+    println!("Position: ({:.2}, {:.2}), Heading: {:.1}°",
+        pose.x, pose.y, pose.theta * 180.0 / PI);
+    println!("Velocity: {:.2} m/s, {:.2} rad/s",
+        pose.linear_velocity, pose.angular_velocity);
+}
+```
+
+## See Also
+
+- [EncoderNode](./encoder) - Encoder reading
+- [DifferentialDriveNode](./differential-drive) - Drive control
+- [LocalizationNode](./localization) - Sensor fusion

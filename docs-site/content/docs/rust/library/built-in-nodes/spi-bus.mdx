@@ -1,0 +1,316 @@
+---
+title: SpiBusNode
+description: SPI bus communication for high-speed peripherals
+---
+
+# SpiBusNode
+
+Serial Peripheral Interface (SPI) bus communication node for high-speed data transfer with ADCs, DACs, SD cards, displays, and other SPI peripherals. Supports multiple chip selects and SPI modes.
+
+## Source Code
+
+- [SpiBusNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/spi_bus)
+- [SPI Message Types](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- Multiple SPI bus support (SPI-0, SPI-1, etc.)
+- Up to 8 chip select (CS) lines per bus
+- Four SPI modes (0-3) for clock polarity/phase
+- Configurable clock speed (up to 32 MHz)
+- Full-duplex communication
+- Per-device configuration
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create SPI bus node
+    let mut spi = SpiBusNode::new()?; // Default: bus 0, 1MHz
+
+    // Configure
+    spi.set_bus_number(0);
+    spi.set_default_speed(1_000_000); // 1 MHz
+    spi.set_default_mode(0); // SPI Mode 0
+
+    // Configure device on CS0
+    spi.configure_device(0, 2_000_000, 0); // CS, speed, mode
+
+    scheduler.add(Box::new(spi), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install SPI tools
+sudo apt install libraspberrypi-dev
+
+# Enable SPI interface
+sudo raspi-config  # Interface Options -> SPI
+
+# Add user to spi group
+sudo usermod -a -G spi $USER
+```
+
+### Wiring Example
+
+```
+Raspberry Pi    SPI Device
+GPIO 10 (MOSI) --> MOSI (SDI)
+GPIO 9  (MISO) <-- MISO (SDO)
+GPIO 11 (SCLK) --> SCLK (SCK)
+GPIO 8  (CE0)  --> CS
+3.3V           --> VCC
+GND            --> GND
+```
+
+### Enabling Features
+
+There are three ways to enable the required `spi-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `SpiBusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: spi-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - spi-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["spi-hardware"] }
+```
+
+## Configuration
+
+### Bus and Speed
+
+```rust
+let mut spi = SpiBusNode::new()?;
+
+// Select SPI bus
+spi.set_bus_number(0); // /dev/spidev0.*
+
+// Default speed for all devices
+spi.set_default_speed(1_000_000); // 1 MHz
+spi.set_default_speed(10_000_000); // 10 MHz
+```
+
+### SPI Modes
+
+```rust
+// Set default mode
+spi.set_default_mode(0); // Mode 0 (CPOL=0, CPHA=0)
+spi.set_default_mode(1); // Mode 1 (CPOL=0, CPHA=1)
+spi.set_default_mode(2); // Mode 2 (CPOL=1, CPHA=0)
+spi.set_default_mode(3); // Mode 3 (CPOL=1, CPHA=1)
+```
+
+### Per-Device Configuration
+
+```rust
+// Configure specific devices
+spi.configure_device(
+    0,          // Chip select 0
+    2_000_000,  // 2 MHz
+    0           // SPI Mode 0
+);
+
+spi.configure_device(1, 500_000, 3); // CS1: 500kHz, Mode 3
+```
+
+## Usage Patterns
+
+### Basic Transfer
+
+```rust
+use horus::prelude::*;
+
+// Create SPI message
+let mut msg = SpiMessage::new(0, 4); // CS=0, 4 bytes
+msg.tx_data[0] = 0x01;
+msg.tx_data[1] = 0x02;
+msg.tx_data[2] = 0x03;
+msg.tx_data[3] = 0x04;
+
+// Send request
+let hub = Hub::<SpiMessage>::new("spi.request")?;
+hub.send(msg, &mut None).ok();
+
+// Receive response
+let resp_hub = Hub::<SpiMessage>::new("spi.response")?;
+if let Some(response) = resp_hub.recv(&mut None) {
+    if response.success {
+        println!("RX: {:?}", &response.rx_data[..response.length as usize]);
+    }
+}
+```
+
+### Read from Device
+
+```rust
+// Read 4 bytes from device on CS0
+let msg = SpiMessage::read(0, 4);
+hub.send(msg, &mut None).ok();
+```
+
+### Write to Device
+
+```rust
+// Write data to device on CS1
+let mut msg = SpiMessage::write(1, 3);
+msg.tx_data[0] = 0xAA;
+msg.tx_data[1] = 0xBB;
+msg.tx_data[2] = 0xCC;
+hub.send(msg, &mut None).ok();
+```
+
+## Common Devices
+
+### MCP3008 ADC (8-channel, 10-bit)
+
+```rust
+// Read channel 0
+let mut msg = SpiMessage::new(0, 3);
+msg.tx_data[0] = 0x01; // Start bit
+msg.tx_data[1] = 0x80; // Single-ended, channel 0
+msg.tx_data[2] = 0x00;
+
+hub.send(msg, &mut None).ok();
+
+if let Some(resp) = resp_hub.recv(&mut None) {
+    let value = ((resp.rx_data[1] as u16 & 0x03) << 8) | (resp.rx_data[2] as u16);
+    println!("ADC: {}", value); // 0-1023
+}
+```
+
+### SD Card (SPI Mode)
+
+```rust
+// Initialize SD card
+spi.configure_device(0, 400_000, 0); // Start slow for init
+
+// Send CMD0 (GO_IDLE_STATE)
+let mut msg = SpiMessage::new(0, 6);
+msg.tx_data[0] = 0x40; // CMD0
+msg.tx_data[1..5].fill(0x00);
+msg.tx_data[5] = 0x95; // CRC
+hub.send(msg, &mut None).ok();
+```
+
+### OLED Display (SSD1306)
+
+```rust
+// Send command
+let mut msg = SpiMessage::new(0, 2);
+msg.tx_data[0] = 0x00; // Command mode
+msg.tx_data[1] = 0xAF; // Display ON
+hub.send(msg, &mut None).ok();
+
+// Send data
+let mut msg = SpiMessage::new(0, 2);
+msg.tx_data[0] = 0x40; // Data mode
+msg.tx_data[1] = 0xFF; // Pixel data
+hub.send(msg, &mut None).ok();
+```
+
+## Message Format
+
+```rust
+pub struct SpiMessage {
+    pub chip_select: u8,      // CS line (0-7)
+    pub length: u8,           // Transfer length
+    pub speed_hz: u32,        // Clock speed
+    pub mode: u8,             // SPI mode (0-3)
+    pub tx_data: [u8; 256],  // Data to transmit
+    pub rx_data: [u8; 256],  // Received data
+    pub success: bool,        // Transfer result
+    pub timestamp: u64,       // Transfer time (ns)
+}
+```
+
+## SPI Modes Explained
+
+| Mode | CPOL | CPHA | Clock Polarity | Clock Phase |
+|------|------|------|----------------|-------------|
+| 0 | 0 | 0 | Idle low | Sample on leading edge |
+| 1 | 0 | 1 | Idle low | Sample on trailing edge |
+| 2 | 1 | 0 | Idle high | Sample on leading edge |
+| 3 | 1 | 1 | Idle high | Sample on trailing edge |
+
+## Best Practices
+
+1. **Use correct SPI mode for your device:**
+   ```rust
+   // Check device datasheet for CPOL/CPHA
+   spi.configure_device(0, 1_000_000, 0); // Mode 0 most common
+   ```
+
+2. **Start with lower speeds:**
+   ```rust
+   // Start slow, increase if stable
+   spi.configure_device(0, 500_000, 0); // 500 kHz
+   ```
+
+3. **Keep wires short:**
+   ```
+   SPI is sensitive to wire length and noise
+   Use &lt;15cm wires for high-speed (>10MHz)
+   ```
+
+4. **Check hardware device paths:**
+   ```bash
+   ls /dev/spidev*
+   # /dev/spidev0.0, /dev/spidev0.1, etc.
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check SPI device: `ls /dev/spidev*`
+2. Enable SPI: `sudo raspi-config -> Interface Options -> SPI`
+3. Check permissions: `ls -l /dev/spidev0.0`
+4. Add to spi group: `sudo usermod -a -G spi $USER`
+5. Reboot: `sudo reboot`
+
+**Problem: Reading all zeros or 0xFF**
+
+**Solutions:**
+1. Check wiring (MOSI ↔ MISO often swapped)
+2. Verify SPI mode matches device
+3. Check clock speed (too fast can cause errors)
+4. Ensure device is powered
+
+## See Also
+
+- [I2cBusNode](./i2c-bus) - I2C communication
+- [CanBusNode](./can-bus) - CAN bus communication
+- [SerialNode](./serial) - UART communication

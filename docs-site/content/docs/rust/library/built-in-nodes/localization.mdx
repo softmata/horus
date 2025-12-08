@@ -1,0 +1,62 @@
+---
+title: LocalizationNode
+description: Sensor fusion for accurate position estimation
+---
+
+# LocalizationNode
+
+Localization node fusing multiple sensors (odometry, IMU, GPS, LiDAR) for accurate position estimation. Implements Extended Kalman Filter (EKF) and particle filters for robust localization.
+
+## Source Code
+
+- [LocalizationNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/localization)
+- [Navigation Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/navigation.rs)
+
+## Features
+
+- Extended Kalman Filter (EKF)
+- Particle Filter (Monte Carlo Localization)
+- Sensor fusion (odom + IMU + GPS + LiDAR)
+- Map-based localization
+- AMCL (Adaptive Monte Carlo Localization)
+- Covariance estimation
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut localization = LocalizationNode::new()?;
+    localization.set_algorithm(LocalizationAlgorithm::EKF);
+    localization.enable_sensor(SensorType::Odometry);
+    localization.enable_sensor(SensorType::IMU);
+    localization.enable_sensor(SensorType::GPS);
+
+    scheduler.add(Box::new(localization), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Usage
+
+```rust
+let hub = Hub::<Pose>::new("localization.pose")?;
+
+if let Some(pose) = hub.recv(&mut None) {
+    println!("Fused position: ({:.2}, {:.2}), heading: {:.1}°",
+        pose.x, pose.y, pose.theta * 180.0 / PI);
+    println!("Covariance: {:.4}", pose.covariance);
+}
+```
+
+## See Also
+
+- [OdometryNode](./odometry) - Wheel odometry
+- [ImuNode](./imu) - Inertial measurement
+- [GpsNode](./gps) - GPS positioning
+- [LidarNode](./lidar) - Map matching

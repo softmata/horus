@@ -1,0 +1,273 @@
+---
+title: "Python Examples"
+description: "Python code examples for HORUS robotics applications"
+order: 6
+---
+
+# Python Examples
+
+Complete Python examples demonstrating HORUS capabilities. All examples are available in the `horus_py/examples/` directory.
+
+## Available Examples
+
+| Example | Description | Key Features |
+|---------|-------------|--------------|
+| `simple_async.py` | Basic async node usage | AsyncNode, AsyncHub |
+| `cross_language_example.py` | Rust-Python communication | Network transport, CmdVel |
+| `pose_estimation.py` | ML pose estimation | ONNXInferenceNode, PerformanceMonitor |
+| `network_hub_example.py` | Network Hub communication | UDP transport, remote nodes |
+| `network_link_example.py` | Network Link communication | Point-to-point, low latency |
+| `custom_data_example.py` | Custom message types | Serialization, GenericMessage |
+| `optimized_api_example.py` | High-performance patterns | Zero-copy, batching |
+| `router_example.py` | Multi-robot routing | horus_router integration |
+| `async_http_api.py` | HTTP API integration | aiohttp, REST APIs |
+
+---
+
+## Simple Async Example
+
+Basic async I/O with HORUS:
+
+```python
+import horus
+
+class DatabaseNode(horus.AsyncNode):
+    """Fetch data from database without blocking"""
+
+    async def setup(self):
+        self.query_sub = horus.AsyncHub("query", str)
+        self.result_pub = horus.AsyncHub("result", str)
+
+    async def tick(self):
+        # Wait for query (non-blocking!)
+        query = await self.query_sub.recv()
+
+        # Fetch from database (non-blocking!)
+        result = await self.fetch_from_db(query)
+
+        # Send result
+        await self.result_pub.send(result)
+
+    async def fetch_from_db(self, query):
+        await horus.sleep(0.5)  # Simulated async database call
+        return f"Result for: {query}"
+
+
+class SensorNode(horus.AsyncNode):
+    """Read sensor data asynchronously"""
+
+    async def setup(self):
+        self.sensor_pub = horus.AsyncHub("sensor_data", float)
+
+    async def tick(self):
+        value = await self.read_sensor()
+        await self.sensor_pub.send(value)
+        await horus.sleep(0.1)
+
+    async def read_sensor(self):
+        await horus.sleep(0.05)  # Simulated sensor read
+        return 23.5
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def main():
+        db = DatabaseNode()
+        sensor = SensorNode()
+        await db.setup()
+        await sensor.setup()
+
+        for _ in range(10):
+            await asyncio.gather(db.tick(), sensor.tick())
+
+    asyncio.run(main())
+```
+
+---
+
+## Cross-Language Communication
+
+Communicate between Python and Rust nodes:
+
+```python
+from horus import Hub, CmdVel, Node
+import time
+
+def python_publisher(endpoint: str, rate_hz: float = 10.0):
+    """Python node publishing CmdVel that Rust nodes can subscribe to"""
+
+    # Create Hub with network endpoint
+    hub = Hub(CmdVel, endpoint=endpoint)
+    node = Node("py_cross_lang_pub")
+    interval = 1.0 / rate_hz
+
+    print(f"Publishing to: {endpoint}")
+    print(f"Transport: {hub.transport_type}")
+
+    while True:
+        t = time.time()
+        linear = 1.0 + 0.5 * (t % 10) / 10.0
+        angular = 0.2 * ((t % 20) - 10) / 10.0
+
+        cmd = CmdVel(linear, angular)
+        hub.send(cmd, node)
+
+        time.sleep(interval)
+
+
+def python_subscriber(endpoint: str):
+    """Python node subscribing to Rust publisher"""
+
+    hub = Hub(CmdVel, endpoint=endpoint)
+    node = Node("py_cross_lang_sub")
+
+    print(f"Subscribing to: {endpoint}")
+
+    while True:
+        msg = hub.try_recv(node)
+        if msg:
+            print(f"Received: linear={msg.linear:.2f}, angular={msg.angular:.2f}")
+        time.sleep(0.01)
+```
+
+**Usage:**
+```bash
+# Python publisher, Rust subscriber
+python cross_language_example.py --mode python-pub --endpoint "cmdvel@192.168.1.5:9000"
+
+# Python subscriber, Rust publisher
+python cross_language_example.py --mode python-sub --endpoint "cmdvel@192.168.1.5:9000"
+```
+
+---
+
+## ML Pose Estimation
+
+Using ONNX models with HORUS:
+
+```python
+import numpy as np
+from horus import Node, run
+from horus.ml_utils import ONNXInferenceNode, PerformanceMonitor
+
+class PoseEstimationNode(ONNXInferenceNode):
+    """Human pose estimation using MoveNet/MediaPipe"""
+
+    def __init__(self, model_path="models/movenet_lightning.onnx"):
+        super().__init__(
+            model_path=model_path,
+            input_topic="camera/raw",
+            output_topic="poses",
+            device="cpu"
+        )
+        self.monitor = PerformanceMonitor(window_size=30)
+
+    def load_model(self):
+        import onnxruntime as ort
+        providers = ['CPUExecutionProvider']
+        self.session = ort.InferenceSession(self.model_path, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+
+    def preprocess(self, image_data):
+        """Resize and normalize for pose model"""
+        img = np.array(image_data).astype(np.float32)
+        img = (img / 127.5) - 1.0  # Normalize to [-1, 1]
+        img = np.transpose(img, (2, 0, 1))  # HWC -> CHW
+        return np.expand_dims(img, 0)  # Add batch dimension
+
+    def infer(self, preprocessed):
+        return self.session.run(None, {self.input_name: preprocessed})[0]
+
+    def postprocess(self, output):
+        """Parse keypoints from model output"""
+        keypoints = []
+        for i in range(17):  # 17 body keypoints
+            y, x, conf = output[0, i, 0], output[0, i, 1], output[0, i, 2]
+            if conf > 0.3:
+                keypoints.append({'id': i, 'x': x, 'y': y, 'confidence': conf})
+        return keypoints
+```
+
+---
+
+## Network Hub Example
+
+Distributed communication across machines:
+
+```python
+from horus import Hub, CmdVel, Node
+
+# Local shared memory (same machine)
+local_hub = Hub(CmdVel, topic="cmd_vel")
+
+# Network UDP (cross-machine)
+network_hub = Hub(CmdVel, endpoint="cmdvel@192.168.1.100:9000")
+
+# Automatic transport selection
+auto_hub = Hub(CmdVel, endpoint="cmdvel@auto")  # Uses optimal transport
+
+node = Node("network_example")
+
+# Send locally
+local_hub.send(CmdVel(1.0, 0.0), node)
+
+# Send over network
+network_hub.send(CmdVel(1.0, 0.0), node)
+
+# Receive from network
+msg = network_hub.try_recv(node)
+if msg:
+    print(f"Received: {msg}")
+```
+
+---
+
+## Custom Data Types
+
+Sending custom data structures:
+
+```python
+from horus import Hub, Node
+import msgpack
+
+# Using GenericMessage for custom data
+hub = Hub(dict, topic="custom_data")
+node = Node("custom_node")
+
+# Send Python dict (auto-serialized)
+hub.send({
+    "robot_id": 1,
+    "position": [1.0, 2.0, 3.0],
+    "sensors": {
+        "lidar": True,
+        "camera": True
+    }
+}, node)
+
+# Receive
+data = hub.try_recv(node)
+if data:
+    print(f"Robot {data['robot_id']} at {data['position']}")
+```
+
+---
+
+## Running Examples
+
+```bash
+# Navigate to examples directory
+cd horus_py/examples
+
+# Run any example
+python simple_async.py
+python cross_language_example.py --help
+python pose_estimation.py
+```
+
+## See Also
+
+- [Python Bindings](/python/api/python-bindings) - Core Python API
+- [Async Nodes](/python/api/async-nodes) - Async/await support
+- [ML Utilities](/python/library/ml-utilities) - ML inference helpers
+- [Multi-Language](/concepts/multi-language) - Rust-Python integration

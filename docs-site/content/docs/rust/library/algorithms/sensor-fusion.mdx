@@ -1,0 +1,308 @@
+---
+title: Sensor Fusion
+description: Multi-sensor combination with variance-weighted averaging
+---
+
+# Sensor Fusion
+
+Combine measurements from multiple sensors for improved state estimation using variance-weighted fusion.
+
+## Source Code
+
+- [Sensor Fusion Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/sensor_fusion)
+
+## Features
+
+- Variance-weighted sensor fusion
+- Time-based measurement weighting
+- Complementary filtering for IMU fusion
+- Automatic stale measurement handling
+- Sensor health monitoring
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+fn main() {
+    let mut fusion = SensorFusion::new();
+
+    // Add measurements with variance (uncertainty)
+    fusion.add_measurement("odometry", 1.50, 0.01);   // Low variance = high confidence
+    fusion.add_measurement("gps", 1.55, 0.10);        // Higher variance = lower confidence
+    fusion.add_measurement("visual", 1.48, 0.05);     // Medium confidence
+
+    // Get fused estimate
+    if let Some(fused_value) = fusion.fuse() {
+        println!("Fused position: {:.3} m", fused_value);
+    }
+
+    // Get combined uncertainty
+    if let Some(variance) = fusion.fused_variance() {
+        println!("Fused uncertainty: {:.4} m²", variance);
+        println!("Standard deviation: {:.3} m", variance.sqrt());
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let fusion = SensorFusion::new();
+```
+
+### Adding Measurements
+
+```rust
+// Basic measurement
+fusion.add_measurement(sensor_id: &str, value: f64, variance: f64);
+
+// With timestamp
+fusion.add_measurement_with_time(sensor_id: &str, value: f64, variance: f64, timestamp: f64);
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `sensor_id` | Unique identifier for the sensor |
+| `value` | Measurement value |
+| `variance` | Measurement uncertainty (σ²) |
+| `timestamp` | Measurement time (seconds) |
+
+### Fusion Methods
+
+| Method | Description |
+|--------|-------------|
+| `fuse()` | Variance-weighted fusion |
+| `fuse_with_time(current_time)` | Time-weighted fusion |
+| `fused_variance()` | Combined uncertainty |
+| `complementary_filter(high, low, alpha)` | IMU-style fusion |
+
+### Management
+
+| Method | Description |
+|--------|-------------|
+| `clear()` | Remove all measurements |
+| `remove_sensor(id)` | Remove specific sensor |
+| `sensor_count()` | Number of active sensors |
+| `set_max_age(seconds)` | Measurement expiration time |
+
+## Variance-Weighted Fusion
+
+Measurements are combined inversely proportional to their variance:
+
+```
+weight_i = 1 / variance_i
+fused = Σ(weight_i × value_i) / Σ(weight_i)
+```
+
+Lower variance sensors contribute more to the final estimate.
+
+### Example: GPS + Odometry Fusion
+
+```rust
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+fn main() {
+    let mut fusion = SensorFusion::new();
+
+    // GPS: accurate but noisy
+    fusion.add_measurement("gps_x", 10.5, 2.0);
+
+    // Odometry: drifts but smooth
+    fusion.add_measurement("odom_x", 10.2, 0.5);
+
+    // Wheel encoders: very accurate short-term
+    fusion.add_measurement("encoder_x", 10.3, 0.1);
+
+    let fused = fusion.fuse().unwrap();
+    println!("Fused X: {:.3} m", fused);  // Closer to encoder value
+
+    // Combined variance is lower than any individual
+    let var = fusion.fused_variance().unwrap();
+    println!("Fused variance: {:.4}", var);  // < 0.1
+}
+```
+
+## Time-Weighted Fusion
+
+More recent measurements receive higher weight:
+
+```rust
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+fn main() {
+    let mut fusion = SensorFusion::new();
+    fusion.set_max_age(1.0);  // Ignore measurements older than 1 second
+
+    // Old GPS measurement
+    fusion.add_measurement_with_time("gps", 10.0, 0.5, 0.0);
+
+    // Recent odometry
+    fusion.add_measurement_with_time("odom", 10.5, 0.5, 0.8);
+
+    // Fuse at current time
+    let current_time = 1.0;
+    if let Some(fused) = fusion.fuse_with_time(current_time) {
+        println!("Fused: {:.3}", fused);  // Weighted toward recent odom
+    }
+}
+```
+
+The time weight decays exponentially:
+```
+time_weight = exp(-age / max_age)
+```
+
+## Complementary Filter
+
+Classic IMU fusion for combining accelerometer and gyroscope:
+
+```rust
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+fn main() {
+    // Gyroscope integration (high frequency, drifts)
+    let gyro_angle = 45.2;
+
+    // Accelerometer angle (low frequency, noisy)
+    let accel_angle = 44.8;
+
+    // Alpha: trust gyro for short-term, accel for long-term
+    let alpha = 0.98;  // 98% gyro, 2% accelerometer
+
+    let fused = SensorFusion::complementary_filter(gyro_angle, accel_angle, alpha);
+    println!("Fused angle: {:.2}°", fused);
+}
+```
+
+### Choosing Alpha
+
+| Alpha | Effect |
+|-------|--------|
+| 0.9 | More accelerometer influence |
+| 0.95 | Balanced |
+| 0.98 | Standard for IMU |
+| 0.99 | Almost pure gyro |
+
+## Multi-Axis Fusion
+
+Fuse each axis independently:
+
+```rust
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+struct Position3D {
+    x: SensorFusion,
+    y: SensorFusion,
+    z: SensorFusion,
+}
+
+impl Position3D {
+    fn new() -> Self {
+        Self {
+            x: SensorFusion::new(),
+            y: SensorFusion::new(),
+            z: SensorFusion::new(),
+        }
+    }
+
+    fn add_gps(&mut self, x: f64, y: f64, z: f64, hdop: f64, vdop: f64) {
+        let h_var = (hdop * 2.5).powi(2);  // Convert HDOP to variance
+        let v_var = (vdop * 2.5).powi(2);
+
+        self.x.add_measurement("gps", x, h_var);
+        self.y.add_measurement("gps", y, h_var);
+        self.z.add_measurement("gps", z, v_var);
+    }
+
+    fn add_odometry(&mut self, x: f64, y: f64, variance: f64) {
+        self.x.add_measurement("odom", x, variance);
+        self.y.add_measurement("odom", y, variance);
+        // Odometry doesn't measure Z
+    }
+
+    fn fuse(&self) -> Option<(f64, f64, f64)> {
+        Some((
+            self.x.fuse()?,
+            self.y.fuse()?,
+            self.z.fuse()?,
+        ))
+    }
+}
+```
+
+## HORUS Node Integration
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+use horus::prelude::*; // Provides {NavSatFix, Odometry, Pose2D};
+
+struct PositionFusionNode {
+    fusion_x: SensorFusion,
+    fusion_y: SensorFusion,
+    gps_sub: Hub<NavSatFix>,
+    odom_sub: Hub<Odometry>,
+    pose_pub: Hub<Pose2D>,
+}
+
+impl Node for PositionFusionNode {
+    fn name(&self) -> &'static str { "PositionFusion" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        // Update from GPS
+        if let Some(gps) = self.gps_sub.recv(&mut ctx) {
+            if gps.has_fix() {
+                let variance = gps.horizontal_accuracy().powi(2);
+                // Convert lat/lon to local coordinates (simplified)
+                let x = gps.longitude * 111000.0;  // Rough conversion
+                let y = gps.latitude * 111000.0;
+
+                self.fusion_x.add_measurement_with_time("gps", x, variance, current_time);
+                self.fusion_y.add_measurement_with_time("gps", y, variance, current_time);
+            }
+        }
+
+        // Update from odometry
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            self.fusion_x.add_measurement_with_time("odom", odom.pose.x, 0.01, current_time);
+            self.fusion_y.add_measurement_with_time("odom", odom.pose.y, 0.01, current_time);
+        }
+
+        // Publish fused position
+        if let (Some(x), Some(y)) = (
+            self.fusion_x.fuse_with_time(current_time),
+            self.fusion_y.fuse_with_time(current_time),
+        ) {
+            let pose = Pose2D::new(x, y, 0.0);
+            self.pose_pub.send(pose, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## Sensor Variance Guidelines
+
+| Sensor | Typical Variance | Notes |
+|--------|------------------|-------|
+| Wheel encoders | 0.001 - 0.01 m² | Very accurate short-term |
+| Visual odometry | 0.01 - 0.1 m² | Depends on features |
+| GPS (good fix) | 1 - 10 m² | HDOP dependent |
+| GPS (poor fix) | 10 - 100 m² | High HDOP |
+| RTK GPS | 0.001 - 0.01 m² | Centimeter accuracy |
+| UWB | 0.01 - 0.1 m² | Indoor positioning |
+| IMU (integrated) | Grows with time | Drift accumulates |
+
+## See Also
+
+- [EKF](/rust/library/algorithms/ekf) - Full state estimation
+- [Kalman Filter](/rust/library/algorithms/kalman-filter) - Linear estimation
+- [IMU Node](/rust/library/built-in-nodes/imu) - IMU data processing
+- [GPS Node](/rust/library/built-in-nodes/gps) - GPS integration

@@ -1,0 +1,875 @@
+---
+title: Advanced Examples
+description: Complex patterns, state machines, multi-process systems, and Python integration
+order: 2
+---
+
+# Advanced Examples
+
+Advanced HORUS patterns for complex robotics systems. These examples demonstrate state machines, priority-based safety systems, multi-process architectures, and cross-language communication.
+
+**Prerequisites**: Complete [Basic Examples](/rust/examples/basic-examples) first.
+
+---
+
+## 1. State Machine Node
+
+Implement complex behavior using state machines - ideal for autonomous robots with multiple operating modes.
+
+**File: `state_machine.rs`**
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RobotState {
+    Idle,
+    Moving,
+    ObstacleDetected,
+    Rotating,
+    Escaped,
+}
+
+struct StateMachineNode {
+    state: RobotState,
+    obstacle_sub: Hub<bool>,
+    cmd_pub: Hub<CmdVel>,
+    rotation_counter: u32,
+}
+
+impl StateMachineNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            state: RobotState::Idle,
+            obstacle_sub: Hub::new("obstacle_detected")?,
+            cmd_pub: Hub::new("cmd_vel")?,
+            rotation_counter: 0,
+        })
+    }
+}
+
+impl Node for StateMachineNode {
+    fn name(&self) -> &'static str { "StateMachineNode" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("State machine initialized - starting in IDLE state");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Check for obstacles
+        let obstacle = self.obstacle_sub.recv(&mut ctx).unwrap_or(false);
+
+        // Store previous state for logging
+        let prev_state = self.state;
+
+        // State machine logic
+        self.state = match self.state {
+            RobotState::Idle => {
+                if !obstacle {
+                    RobotState::Moving
+                } else {
+                    RobotState::Idle
+                }
+            }
+
+            RobotState::Moving => {
+                if obstacle {
+                    self.cmd_pub.send(CmdVel::zero(), &mut ctx).ok();  // Stop
+                    RobotState::ObstacleDetected
+                } else {
+                    self.cmd_pub.send(CmdVel::new(1.0, 0.0), &mut ctx).ok();  // Forward
+                    RobotState::Moving
+                }
+            }
+
+            RobotState::ObstacleDetected => {
+                self.rotation_counter = 0;
+                RobotState::Rotating
+            }
+
+            RobotState::Rotating => {
+                self.cmd_pub.send(CmdVel::new(0.0, 0.5), &mut ctx).ok();  // Rotate
+                self.rotation_counter += 1;
+
+                if self.rotation_counter > 50 {
+                    RobotState::Escaped
+                } else {
+                    RobotState::Rotating
+                }
+            }
+
+            RobotState::Escaped => {
+                RobotState::Moving  // Resume moving
+            }
+        };
+
+        // Log state transitions
+        if self.state != prev_state {
+            if let Some(ref mut c) = ctx {
+                c.log_info(&format!(
+                    "State transition: {:?} -> {:?}",
+                    prev_state, self.state
+                ));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Ensure robot is stopped
+        self.cmd_pub.send(CmdVel::zero(), &mut None).ok();
+        ctx.log_info("State machine shutdown");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(StateMachineNode::new()?), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run state_machine.rs
+```
+
+**Key Concepts**:
+- Enum for states: `Idle`, `Moving`, `ObstacleDetected`, `Rotating`, `Escaped`
+- Match expression handles state transitions
+- Each state defines behavior and next state
+- Log state transitions for debugging
+
+---
+
+## 2. Priority-Based Safety System
+
+Use node priorities to ensure safety-critical tasks always run first - essential for production robotics.
+
+**File: `safety_system.rs`**
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {CmdVel, BatteryState};
+
+// CRITICAL PRIORITY: Emergency stop
+struct EmergencyStopNode {
+    battery_sub: Hub<BatteryState>,
+    lidar_sub: Hub<f32>,  // Min obstacle distance
+    estop_pub: Hub<bool>,
+    estop_active: bool,
+}
+
+impl EmergencyStopNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            battery_sub: Hub::new("battery_state")?,
+            lidar_sub: Hub::new("min_distance")?,
+            estop_pub: Hub::new("emergency_stop")?,
+            estop_active: false,
+        })
+    }
+}
+
+impl Node for EmergencyStopNode {
+    fn name(&self) -> &'static str { "EmergencyStop" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info(" Emergency stop system online - CRITICAL priority");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let mut should_stop = false;
+
+        // Check battery
+        if let Some(battery) = self.battery_sub.recv(&mut ctx) {
+            if battery.is_critical() {  // Below 10%
+                should_stop = true;
+                if let Some(ref mut c) = ctx {
+                    c.log_error(&format!(
+                        " CRITICAL: Battery at {:.0}% - EMERGENCY STOP!",
+                        battery.percentage
+                    ));
+                }
+            }
+        }
+
+        // Check obstacle distance
+        if let Some(min_dist) = self.lidar_sub.recv(&mut ctx) {
+            if min_dist < 0.2 {  // 20cm
+                should_stop = true;
+                if let Some(ref mut c) = ctx {
+                    c.log_error(&format!(
+                        " CRITICAL: Obstacle at {:.2}m - EMERGENCY STOP!",
+                        min_dist
+                    ));
+                }
+            }
+        }
+
+        // Publish estop state
+        if should_stop != self.estop_active {
+            self.estop_pub.send(should_stop, &mut ctx).ok();
+            self.estop_active = should_stop;
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Always activate estop on shutdown
+        self.estop_pub.send(true, &mut None).ok();
+        ctx.log_warning("Emergency stop system offline");
+        Ok(())
+    }
+}
+
+// HIGH PRIORITY: Motor controller
+struct MotorController {
+    estop_sub: Hub<bool>,
+    cmd_sub: Hub<CmdVel>,
+    motor_pub: Hub<CmdVel>,
+    estop_active: bool,
+}
+
+impl MotorController {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            estop_sub: Hub::new("emergency_stop")?,
+            cmd_sub: Hub::new("cmd_vel_request")?,
+            motor_pub: Hub::new("cmd_vel_actual")?,
+            estop_active: false,
+        })
+    }
+}
+
+impl Node for MotorController {
+    fn name(&self) -> &'static str { "MotorController" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Motor controller online - HIGH priority");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Check emergency stop FIRST
+        if let Some(estop) = self.estop_sub.recv(&mut ctx) {
+            if estop != self.estop_active {
+                self.estop_active = estop;
+                if let Some(ctx) = ctx {
+                    if estop {
+                        ctx.log_warning("Motors DISABLED - emergency stop active");
+                    } else {
+                        ctx.log_info("Motors ENABLED - emergency stop cleared");
+                    }
+                }
+            }
+        }
+
+        // Don't move if estop active
+        if self.estop_active {
+            self.motor_pub.send(CmdVel::zero(), &mut ctx).ok();
+            return;
+        }
+
+        // Process normal commands
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            self.motor_pub.send(cmd, &mut ctx).ok();
+
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!(
+                    "Motors: linear={:.2}, angular={:.2}",
+                    cmd.linear, cmd.angular
+                ));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Stop motors
+        self.motor_pub.send(CmdVel::zero(), &mut None).ok();
+        ctx.log_info("Motor controller stopped");
+        Ok(())
+    }
+}
+
+// BACKGROUND PRIORITY: Data logging
+struct LoggerNode {
+    cmd_sub: Hub<CmdVel>,
+    battery_sub: Hub<BatteryState>,
+}
+
+impl LoggerNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_sub: Hub::new("cmd_vel_actual")?,
+            battery_sub: Hub::new("battery_state")?,
+        })
+    }
+}
+
+impl Node for LoggerNode {
+    fn name(&self) -> &'static str { "Logger" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info(" Logger online - BACKGROUND priority");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Log velocity commands
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!(
+                    "LOG: cmd_vel({:.2}, {:.2})",
+                    cmd.linear, cmd.angular
+                ));
+            }
+        }
+
+        // Log battery state
+        if let Some(battery) = self.battery_sub.recv(&mut ctx) {
+            if let Some(ref mut c) = ctx {
+                c.log_debug(&format!(
+                    "LOG: battery({:.1}V, {:.0}%)",
+                    battery.voltage, battery.percentage
+                ));
+            }
+        }
+
+        // In production: write to file, database, etc.
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Logger stopped");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // PRIORITY 0 (Critical): Safety runs FIRST
+    scheduler.add(Box::new(EmergencyStopNode::new()?), 0, Some(true));
+
+    // PRIORITY 1 (High): Control runs SECOND
+    scheduler.add(Box::new(MotorController::new()?), 1, Some(true));
+
+    // PRIORITY 4 (Background): Logging runs LAST
+    scheduler.add(Box::new(LoggerNode::new()?), 4, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Run it**:
+```bash
+horus run safety_system.rs
+```
+
+**Key Concepts**:
+- **Priority 0 (Critical)**: Emergency stop - runs first, always
+- **Priority 1 (High)**: Motor control - runs after safety checks
+- **Priority 4 (Background)**: Logging - runs last, non-critical
+- Lower number = higher priority
+- Safety systems should always check estop before acting
+
+---
+
+## 3. Python Multi-Process System
+
+Build a complete sensor monitoring system with Python nodes running as independent processes.
+
+### Project Structure
+
+```bash
+mkdir multi_node_system
+cd multi_node_system
+mkdir nodes
+```
+
+### Sensor Node
+
+**nodes/sensor.py:**
+```python
+#!/usr/bin/env python3
+import horus
+import time
+import random
+
+def sensor_tick(node):
+    """Simulate temperature sensor readings"""
+    # Generate realistic temperature with noise
+    temperature = 20.0 + random.random() * 10.0
+
+    node.send("temperature", temperature)
+    print(f"Sensor: {temperature:.1f}°C")
+
+node = horus.Node(
+    name="SensorNode",
+    pubs={"temperature": float},
+    tick=sensor_tick,
+    rate=2  # 2 Hz
+)
+
+if __name__ == "__main__":
+    horus.run(node)
+```
+
+### Controller Node
+
+**nodes/controller.py:**
+```python
+#!/usr/bin/env python3
+import horus
+
+def controller_tick(node):
+    """Control cooling fan based on temperature"""
+    temp = node.recv("temperature")
+
+    if temp is not None:
+        if temp > 25.0:
+            # Temperature too high - activate fan
+            fan_speed = min(100, int((temp - 20) * 10))
+            node.send("fan_control", fan_speed)
+            print(f"Controller: Fan at {fan_speed}%")
+        else:
+            # Temperature OK - fan off
+            node.send("fan_control", 0)
+            print(f"Controller: Temperature normal, fan off")
+
+node = horus.Node(
+    name="ControllerNode",
+    subs={"temperature": float},
+    pubs={"fan_control": int},
+    tick=controller_tick,
+    rate=2
+)
+
+if __name__ == "__main__":
+    horus.run(node)
+```
+
+### Logger Node
+
+**nodes/logger.py:**
+```python
+#!/usr/bin/env python3
+import horus
+import datetime
+
+def logger_tick(node):
+    """Log system status"""
+    temp = node.recv("temperature")
+    fan = node.recv("fan_control")
+
+    if temp is not None and fan is not None:
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        status = "COOLING" if fan > 0 else "NORMAL"
+        print(f"Logger [{timestamp}]: {temp:.1f}°C | Fan {fan}% | {status}")
+
+node = horus.Node(
+    name="LoggerNode",
+    subs={"temperature": float, "fan_control": int},
+    tick=logger_tick,
+    rate=1  # 1 Hz
+)
+
+if __name__ == "__main__":
+    horus.run(node)
+```
+
+### Run All Nodes Concurrently
+
+```bash
+# Make scripts executable
+chmod +x nodes/*.py
+
+# Run all nodes as separate processes
+horus run "nodes/*.py"
+```
+
+**Output:**
+```bash
+Executing 3 files concurrently:
+  1. nodes/controller.py (python)
+  2. nodes/logger.py (python)
+  3. nodes/sensor.py (python)
+
+Phase 1: Building all files...
+Phase 2: Starting all processes...
+  Started [controller]
+  Started [logger]
+  Started [sensor]
+
+All processes running. Press Ctrl+C to stop.
+
+[sensor] Sensor: 23.4°C
+[controller] Controller: Fan at 34%
+[logger] Logger [15:30:45]: 23.4°C | Fan 34% | COOLING
+[sensor] Sensor: 26.8°C
+[controller] Controller: Fan at 68%
+[sensor] Sensor: 21.2°C
+[logger] Logger [15:30:46]: 21.2°C | Fan 12% | COOLING
+```
+
+**Key Features**:
+- **Independent Processes**: Each node runs in its own process
+- **Shared Memory IPC**: Nodes communicate via HORUS topics (`/dev/shm/horus/`)
+- **Color-Coded Output**: Each node has a unique color
+- **Graceful Shutdown**: Ctrl+C stops all processes cleanly
+- **Zero Configuration**: No launch files needed
+
+---
+
+## 4. Rust + Python Cross-Language System
+
+Mix Rust and Python nodes in the same application.
+
+### Rust Sensor Node
+
+**nodes/rust_sensor.rs:**
+```rust
+use horus::prelude::*;
+
+pub struct TempSensor {
+    temp_pub: Hub<f32>,
+    counter: f32,
+}
+
+impl TempSensor {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            temp_pub: Hub::new("temperature")?,
+            counter: 0.0,
+        })
+    }
+}
+
+impl Node for TempSensor {
+    fn name(&self) -> &'static str { "RustTempSensor" }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Rust sensor online - high performance mode");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Fast sensor simulation
+        let temp = 20.0 + (self.counter.sin() * 5.0);
+        self.temp_pub.send(temp, &mut ctx).ok();
+
+        if let Some(ref mut c) = ctx {
+            c.log_debug(&format!("Rust: {:.2}°C", temp));
+        }
+
+        self.counter += 0.1;
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Rust sensor offline");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(TempSensor::new()?), 0, Some(true));
+    scheduler.run()
+}
+```
+
+### Python Controller Node
+
+**nodes/py_controller.py:**
+```python
+#!/usr/bin/env python3
+import horus
+
+def controller_tick(node):
+    """Python controller receives from Rust sensor"""
+    temp = node.recv("temperature")
+
+    if temp is not None:
+        status = "HOT" if temp > 22.0 else "NORMAL"
+        print(f"Python controller: {temp:.2f}°C - {status}")
+
+        # Send command back to Rust actuator
+        command = 1.0 if temp > 22.0 else 0.0
+        node.send("actuator_cmd", command)
+
+node = horus.Node(
+    name="PyController",
+    subs={"temperature": float},
+    pubs={"actuator_cmd": float},
+    tick=controller_tick,
+    rate=10
+)
+
+if __name__ == "__main__":
+    horus.run(node)
+```
+
+### Rust Actuator Node
+
+**nodes/rust_actuator.rs:**
+```rust
+use horus::prelude::*;
+
+struct Actuator {
+    cmd_sub: Hub<f32>,
+}
+
+impl Node for Actuator {
+    fn name(&self) -> &'static str { "RustActuator" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            if let Some(ctx) = ctx {
+                let action = if cmd > 0.5 { "COOLING" } else { "IDLE" };
+                ctx.log_info(&format!("Actuator: {}", action));
+            }
+        }
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Actuator stopped");
+        Ok(())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(Actuator {
+        cmd_sub: Hub::new("actuator_cmd")?,
+    }), 0, Some(true));
+    scheduler.run()
+}
+```
+
+### Run Mixed System
+
+```bash
+horus run "nodes/*"
+```
+
+HORUS automatically detects file types and compiles/runs appropriately!
+
+**Key Concepts**:
+- Rust nodes: High performance, type safety
+- Python nodes: Rapid prototyping, easy scripting
+- Shared memory IPC works across languages
+- Zero-copy message passing
+- Sub-microsecond latency even across language boundaries
+
+---
+
+## 5. Advanced Python Features
+
+Per-node rates, timestamp checking, and staleness detection.
+
+**File: `advanced_python.py`**
+
+```python
+#!/usr/bin/env python3
+import horus
+import time
+
+def high_freq_sensor(node):
+    """100Hz IMU sensor"""
+    imu = {
+        "accel_x": 1.0,
+        "accel_y": 0.0,
+        "accel_z": 9.8,
+        "timestamp": time.time()
+    }
+    node.send("imu_data", imu)
+
+def control_loop(node):
+    """50Hz controller with staleness detection"""
+    if node.has_msg("imu_data"):
+        # Check message age
+        imu, timestamp = node.get_with_timestamp("imu_data")
+
+        # Skip stale data (older than 100ms)
+        age = time.time() - timestamp
+        if age > 0.1:
+            node.log_warning(f"Skipping stale IMU data (age: {age*1000:.1f}ms)")
+            return
+
+        # Process fresh data
+        accel_magnitude = (
+            imu["accel_x"]**2 +
+            imu["accel_y"]**2 +
+            imu["accel_z"]**2
+        ) ** 0.5
+
+        print(f"Control: IMU magnitude = {accel_magnitude:.2f} m/s²")
+
+        # Send command
+        cmd = {"linear": 1.0, "angular": 0.5}
+        node.send("cmd_vel", cmd)
+
+def logger(node):
+    """10Hz logger with latency measurement"""
+    if node.has_msg("cmd_vel"):
+        msg, timestamp = node.get_with_timestamp("cmd_vel")
+        latency = (time.time() - timestamp) * 1000  # ms
+
+        print(f"Logger: Command latency = {latency:.1f}ms")
+
+        # Log to file in production
+        # with open("log.txt", "a") as f:
+        #     f.write(f"{timestamp},{msg},{latency}\n")
+
+# Create nodes with different rates
+sensor_node = horus.Node(
+    name="HighFreqSensor",
+    pubs={"imu_data": dict},
+    tick=high_freq_sensor,
+    rate=100.0  # 100 Hz
+)
+
+control_node = horus.Node(
+    name="Controller",
+    subs={"imu_data": dict},
+    pubs={"cmd_vel": dict},
+    tick=control_loop,
+    rate=50.0  # 50 Hz
+)
+
+logger_node = horus.Node(
+    name="Logger",
+    subs={"cmd_vel": dict},
+    tick=logger,
+    rate=10.0  # 10 Hz
+)
+
+# Run all nodes
+if __name__ == "__main__":
+    horus.run(sensor_node, control_node, logger_node, duration=5.0)
+```
+
+**Run it**:
+```bash
+horus run advanced_python.py
+```
+
+**Key Concepts**:
+- **Per-node rates**: Each node runs at different frequency
+- **Timestamps**: `get_with_timestamp()` returns message + time
+- **Staleness detection**: Check message age, skip old data
+- **Latency measurement**: Measure time from publish to receive
+- **Priorities**: Higher priority nodes run first each tick
+
+---
+
+## When to Use Multi-Process vs Single-Process
+
+### Multi-Process (Concurrent Execution)
+
+**Use when:**
+- Nodes need to run independently (like ROS)
+- Want fault isolation (one crash doesn't kill others)
+- Different nodes have vastly different rates
+- Testing distributed system architectures
+- Mixing languages (Rust + Python)
+
+**Command:**
+```bash
+horus run "nodes/*.rs"
+horus run "nodes/*.py"
+horus run "nodes/*"  # Mix Rust and Python!
+```
+
+### Single-Process
+
+**Use when:**
+- All nodes in one file
+- Need maximum performance
+- Require deterministic execution order
+- Simpler deployment
+- Embedded systems with limited resources
+
+**Command:**
+```bash
+horus run main.rs
+```
+
+---
+
+## Performance Notes
+
+### Multi-Process IPC Performance
+- **Latency**: 300ns - 1μs (shared memory)
+- **Throughput**: Thousands of messages/second
+- **Scalability**: Tested with 50+ concurrent processes
+- **Memory**: ~2-5MB overhead per process
+
+### Single-Process Performance
+- **Latency**: 50-200ns (in-memory)
+- **Throughput**: Millions of messages/second
+- **Scalability**: Hundreds of nodes in one process
+- **Memory**: Minimal overhead
+
+---
+
+## Testing Multi-Node Systems
+
+**Create test script: `test_system.py`**
+
+```python
+#!/usr/bin/env python3
+import horus
+import time
+
+def test_sensor_controller_integration():
+    """Integration test for sensor + controller"""
+
+    # Mock sensor
+    def mock_sensor(node):
+        node.send("temperature", 30.0)  # Hot!
+
+    # Test controller
+    fan_commands = []
+
+    def test_controller(node):
+        temp = node.recv("temperature")
+        if temp is not None and temp > 25.0:
+            fan_speed = min(100, int((temp - 20) * 10))
+            fan_commands.append(fan_speed)
+            node.send("fan_control", fan_speed)
+
+    # Run test
+    sensor = horus.Node("sensor", pubs={"temperature": float}, tick=mock_sensor)
+    controller = horus.Node("controller",
+                           subs={"temperature": float},
+                           pubs={"fan_control": int},
+                           tick=test_controller)
+
+    horus.run(sensor, controller, duration=0.1)
+
+    # Verify
+    assert len(fan_commands) > 0, "Controller should have sent fan commands"
+    assert fan_commands[0] == 100, f"Expected fan at 100%, got {fan_commands[0]}%"
+
+    print(" Test passed!")
+
+if __name__ == "__main__":
+    test_sensor_controller_integration()
+```
+
+---
+
+## Next Steps
+
+- [Performance Optimization](/performance/performance) - Tune for maximum throughput
+- [Python Bindings Reference](/python/api/python-bindings) - Complete Python API
+- [Package Management](/package-management/package-management) - Share and reuse nodes
+
+Need help?
+- [Troubleshooting Runtime Errors](/troubleshooting-runtime) - Debug common issues
+- [Monitor](/development/monitor) - Monitor your system in real-time

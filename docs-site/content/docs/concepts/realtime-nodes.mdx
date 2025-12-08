@@ -1,0 +1,501 @@
+---
+title: Real-Time Nodes
+description: Build time-critical robotics applications with guaranteed response times using RTNode
+---
+
+# Real-Time Nodes
+
+HORUS provides industrial-grade real-time support for time-critical robotics applications through the RTNode trait and safety monitoring infrastructure.
+
+## Overview
+
+Real-time nodes (RTNode) enable deterministic execution for:
+- **Surgical robots** requiring guaranteed response times
+- **Industrial robots** with hard real-time control loops
+- **Aerospace and defense systems** with strict deadlines
+- **Safety-critical autonomous vehicles**
+
+## Key Features
+
+### RTNode Trait
+
+The `RTNode` trait extends the standard `Node` trait with real-time constraints:
+
+```rust
+use horus_core::core::{RTNode, RTPriority, RTClass, DeadlineMissPolicy};
+use std::time::Duration;
+
+impl RTNode for YourControlNode {
+    fn wcet_budget(&self) -> Duration {
+        Duration::from_micros(100) // 100μs worst-case execution time
+    }
+
+    fn deadline(&self) -> Duration {
+        Duration::from_millis(1) // 1ms deadline for 1kHz control
+    }
+
+    fn rt_priority(&self) -> RTPriority {
+        RTPriority::Critical // Highest priority
+    }
+
+    fn rt_class(&self) -> RTClass {
+        RTClass::Hard // Must never miss deadline
+    }
+}
+```
+
+### Priority Levels
+
+HORUS provides fine-grained priority control:
+
+| Priority | Use Case | Value |
+|----------|----------|-------|
+| `RTPriority::Critical` | Critical control loops | 0 |
+| `RTPriority::High` | Important sensors/actuators | 10 |
+| `RTPriority::Medium` | Normal processing | 50 |
+| `RTPriority::Low` | Background tasks | 100 |
+| `RTPriority::Custom(u32)` | Custom priority | User-defined |
+
+### Real-Time Classes
+
+Three RT classes for different timing requirements:
+
+| Class | Description | Deadline Miss Behavior |
+|-------|-------------|----------------------|
+| `RTClass::Hard` | Must never miss deadline | Emergency stop |
+| `RTClass::Firm` | Occasional miss tolerated | Skip execution |
+| `RTClass::Soft` | Best effort timing | Warning only |
+
+### Safety Monitor
+
+The safety monitor provides comprehensive runtime protection:
+
+- **WCET Enforcement**: Ensures nodes complete within budget
+- **Deadline Monitoring**: Tracks and responds to deadline misses
+- **Watchdog Timers**: Detects hung or crashed nodes
+- **Emergency Stop**: Immediate shutdown for critical failures
+
+## Basic Usage
+
+### Adding RT Nodes
+
+```rust
+use horus::prelude::*;
+use std::time::Duration;
+
+let mut scheduler = Scheduler::new();
+
+// Add an RT node with explicit constraints
+scheduler.add_rt(
+    Box::new(MotorControlNode::new()),
+    0,  // Priority 0 (highest)
+    Duration::from_micros(100),  // 100μs WCET budget
+    Duration::from_millis(1),    // 1ms deadline
+);
+
+// Mix with regular nodes
+scheduler.add(Box::new(SensorNode::new()), 10, Some(true));
+
+scheduler.run();
+```
+
+### Safety-Critical Configuration
+
+For medical or aerospace applications:
+
+```rust
+use horus::prelude::*;
+
+let mut scheduler = Scheduler::new();
+
+// Configure for safety-critical operation
+scheduler.set_config(SchedulerConfig::safety_critical());
+
+// This configuration enables:
+// - WCET enforcement
+// - Deadline monitoring
+// - Watchdog timers (100ms timeout)
+// - Emergency stop on violations
+// - Triple redundancy
+// - Memory locking (mlockall)
+// - Real-time scheduling class (SCHED_FIFO)
+
+scheduler.add_rt(
+    Box::new(SurgicalRobotControl::new()),
+    0,
+    Duration::from_micros(50),
+    Duration::from_micros(500),
+);
+```
+
+### High-Performance Configuration
+
+For racing robots or competition systems:
+
+```rust
+// Configure for maximum performance
+scheduler.set_config(SchedulerConfig::high_performance());
+
+// This configuration enables:
+// - JIT compilation (37ns tick time)
+// - 10kHz control loops
+// - All CPU cores and GPUs
+// - Memory locking
+// - Minimal monitoring overhead
+
+scheduler.add_rt(
+    Box::new(TractionControl::new()),
+    0,
+    Duration::from_micros(20),
+    Duration::from_micros(100), // 10kHz
+);
+```
+
+## Advanced Features
+
+### Formal Verification
+
+RTNode supports formal methods through contracts:
+
+```rust
+impl RTNode for SafetyCriticalNode {
+    fn pre_condition(&self) -> bool {
+        // Verify system is safe before execution
+        self.system_armed && self.sensors_valid
+    }
+
+    fn post_condition(&self) -> bool {
+        // Verify command was sent successfully
+        self.command_acknowledged
+    }
+
+    fn invariant(&self) -> bool {
+        // System safety invariant that must always hold
+        self.emergency_stop_available && self.watchdog_active
+    }
+}
+```
+
+### Custom Deadline Policies
+
+Configure response to deadline misses:
+
+```rust
+fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+    match self.criticality_level {
+        Critical => DeadlineMissPolicy::EmergencyStop,
+        Important => DeadlineMissPolicy::Degrade,
+        Normal => DeadlineMissPolicy::Skip,
+        Low => DeadlineMissPolicy::Warn,
+    }
+}
+```
+
+### Fallback Nodes
+
+Implement N-version programming for redundancy:
+
+```rust
+fn fallback_node(&self) -> Option<Box<dyn RTNode>> {
+    Some(Box::new(SimplifiedController::new()))
+}
+```
+
+## Robot Presets
+
+Quick configurations for common robot types:
+
+### Standard Industrial Robot
+```rust
+scheduler.set_config(SchedulerConfig::standard());
+// 60Hz control, fault tolerance, monitoring enabled
+```
+
+### Medical/Surgical Robot
+```rust
+scheduler.set_config(SchedulerConfig::safety_critical());
+// 1kHz control, triple redundancy, zero tolerance
+```
+
+### Racing/Competition Robot
+```rust
+scheduler.set_config(SchedulerConfig::high_performance());
+// 10kHz control, JIT compilation, all resources
+```
+
+### Space Robotics
+```rust
+scheduler.set_config(SchedulerConfig::space());
+// GPS time sync, power management, radiation tolerance
+```
+
+### Swarm Robotics
+```rust
+let mut config = SchedulerConfig::swarm();
+config.set_custom("swarm_id", ConfigValue::Integer(42));
+scheduler.set_config(config);
+```
+
+## Performance Characteristics
+
+Real-world performance on modern hardware:
+
+| Metric | Performance | Notes |
+|--------|------------|-------|
+| Tick Latency | 37ns | With JIT compilation |
+| WCET Overhead | &lt;5μs | Monitoring overhead |
+| Deadline Precision | ±10μs | Jitter bounds |
+| Watchdog Resolution | 1ms | Detection time |
+| Context Switch | &lt;1μs | Priority preemption |
+
+## Mixed RT and Normal Nodes
+
+HORUS supports mixed criticality systems through priority-based scheduling:
+
+```rust
+let mut scheduler = Scheduler::new();
+
+// Critical RT nodes (priority 0-10)
+scheduler.add_rt(
+    Box::new(FlightControl::new()),
+    0,
+    Duration::from_micros(100),
+    Duration::from_millis(1),
+);
+
+// Important processing (priority 11-50)
+scheduler.add(
+    Box::new(PathPlanning::new()),
+    20,
+    Some(true),
+);
+
+// Normal tasks (priority 51-100)
+scheduler.add(
+    Box::new(TelemetryLogger::new()),
+    60,
+    Some(true),
+);
+
+// Background tasks (priority 100+)
+scheduler.add(
+    Box::new(DataUploader::new()),
+    150,
+    Some(false),
+);
+```
+
+## Best Practices
+
+### WCET Budget Setting
+
+Set budgets 20-30% higher than typical execution:
+```rust
+// If typical execution is 75μs
+fn wcet_budget(&self) -> Duration {
+    Duration::from_micros(100) // Add 25% margin
+}
+```
+
+### Deadline Configuration
+
+Use 2x WCET as default deadline:
+```rust
+fn deadline(&self) -> Duration {
+    self.wcet_budget() * 2
+}
+```
+
+### Priority Assignment
+
+Reserve priority ranges:
+- **0-10**: Critical RT nodes
+- **11-50**: Important processing
+- **51-100**: Normal operations
+- **100+**: Background tasks
+
+### Testing Under Load
+
+Always verify timing constraints:
+```rust
+#[test]
+fn test_wcet_compliance() {
+    let node = MotorControl::new();
+    let start = Instant::now();
+    node.tick(None);
+    let duration = start.elapsed();
+    assert!(duration <= node.wcet_budget());
+}
+```
+
+## Migration Guide
+
+### From Standard Nodes
+
+1. Implement the RTNode trait:
+```rust
+impl RTNode for YourNode {
+    fn wcet_budget(&self) -> Duration {
+        Duration::from_micros(100)
+    }
+
+    fn deadline(&self) -> Duration {
+        Duration::from_millis(1)
+    }
+}
+```
+
+2. Replace scheduler.add() with scheduler.add_rt():
+```rust
+// Before
+scheduler.add(Box::new(node), 0, Some(false));
+
+// After
+scheduler.add_rt(
+    Box::new(node),
+    0,
+    Duration::from_micros(100),
+    Duration::from_millis(1),
+);
+```
+
+3. Configure scheduler for RT:
+```rust
+scheduler.set_config(SchedulerConfig::safety_critical());
+```
+
+4. Test with monitoring enabled
+
+## Troubleshooting
+
+### WCET Violations
+
+**Symptom**: "WCET violation" warnings in logs
+
+**Solutions**:
+- Increase WCET budget
+- Optimize node computation
+- Add warm-up period
+- Check for blocking operations
+
+### Deadline Misses
+
+**Symptom**: "Deadline miss" errors
+
+**Solutions**:
+- Check for priority inversions
+- Reduce system load
+- Increase deadline
+- Use firm/soft RT class
+
+### Emergency Stops
+
+**Symptom**: Scheduler terminates unexpectedly
+
+**Solutions**:
+- Review safety monitor logs
+- Check critical node health
+- Increase max_deadline_misses
+- Verify WCET budgets
+
+### Watchdog Timeouts
+
+**Symptom**: "Watchdog expired" errors
+
+**Solutions**:
+- Ensure nodes complete quickly
+- Remove blocking I/O
+- Increase watchdog timeout
+- Check for infinite loops
+
+## Complete Example
+
+```rust
+use horus_core::{
+    Scheduler,
+    core::{Node, NodeInfo, RTNode, RTPriority, RTClass},
+    scheduling::SchedulerConfig,
+    error::HorusResult,
+};
+use std::time::Duration;
+
+struct MotorControlNode {
+    pwm_value: f32,
+}
+
+impl Node for MotorControlNode {
+    fn name(&self) -> &'static str {
+        "motor_control"
+    }
+
+    fn init(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
+        ctx.log_info("Motor control initialized");
+        Ok(())
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Read sensors, compute control, send PWM
+        self.pwm_value = self.compute_control();
+        self.send_pwm_signal();
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
+        self.pwm_value = 0.0;  // Safe shutdown
+        ctx.log_info("Motor control shutdown");
+        Ok(())
+    }
+}
+
+impl RTNode for MotorControlNode {
+    fn wcet_budget(&self) -> Duration {
+        Duration::from_micros(100)
+    }
+
+    fn deadline(&self) -> Duration {
+        Duration::from_millis(1)
+    }
+
+    fn rt_priority(&self) -> RTPriority {
+        RTPriority::Critical
+    }
+
+    fn rt_class(&self) -> RTClass {
+        RTClass::Hard
+    }
+
+    fn pre_condition(&self) -> bool {
+        // Verify sensors are valid
+        true
+    }
+
+    fn post_condition(&self) -> bool {
+        // Verify PWM was sent
+        true
+    }
+}
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure for safety-critical operation
+    scheduler.set_config(SchedulerConfig::safety_critical());
+
+    // Add RT control node
+    scheduler.add_rt(
+        Box::new(MotorControlNode { pwm_value: 0.0 }),
+        0,
+        Duration::from_micros(100),
+        Duration::from_millis(1),
+    );
+
+    // Run the system
+    scheduler.run()
+}
+```
+
+## Next Steps
+
+- Explore [Safety Monitor Node](/rust/library/built-in-nodes/safety-monitor) for detailed monitoring
+- Review [Performance Benchmarks](/performance/benchmarks) for timing analysis
+- Read [Architecture](/concepts/architecture) for system design details
+- Check [Testing Guide](/development/testing) for RT test strategies

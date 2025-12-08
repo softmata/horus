@@ -1,0 +1,355 @@
+---
+title: AABB Collision Detection
+description: Fast axis-aligned bounding box collision detection
+---
+
+# AABB Collision Detection
+
+Axis-Aligned Bounding Box (AABB) collision detection for fast broad-phase collision checking. AABBs are rectangles aligned with coordinate axes, enabling extremely efficient intersection tests.
+
+## Source Code
+
+- [AABB Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/aabb)
+
+## Features
+
+- AABB vs AABB intersection
+- Point containment test
+- Ray intersection with distance
+- Box merging and expansion
+- Center and size queries
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+fn main() {
+    // Create two boxes
+    let robot = AABB::new(0.0, 0.0, 2.0, 2.0);
+    let obstacle = AABB::new(1.5, 1.5, 3.0, 3.0);
+
+    // Check collision
+    if robot.intersects(&obstacle) {
+        println!("Collision detected!");
+    }
+
+    // Check if point is inside
+    if robot.contains_point(1.0, 1.0) {
+        println!("Point is inside robot bounds");
+    }
+
+    // Ray intersection
+    let origin = (0.0, 0.0);
+    let direction = (1.0, 0.0);  // Pointing right
+
+    if let Some(distance) = obstacle.ray_intersect(origin, direction) {
+        println!("Ray hits obstacle at distance {:.2}", distance);
+    }
+}
+```
+
+## API Reference
+
+### Constructors
+
+```rust
+// From min/max coordinates
+let box1 = AABB::new(min_x: f64, min_y: f64, max_x: f64, max_y: f64);
+
+// From center and size
+let box2 = AABB::from_center(center_x: f64, center_y: f64, width: f64, height: f64);
+```
+
+### Collision Tests
+
+| Method | Description |
+|--------|-------------|
+| `intersects(&other)` | Check AABB-AABB overlap |
+| `contains_point(x, y)` | Check if point is inside |
+| `contains(&other)` | Check if fully contains another AABB |
+| `ray_intersect(origin, direction)` | Ray intersection, returns distance |
+
+### Properties
+
+| Method | Returns |
+|--------|---------|
+| `width()` | Box width |
+| `height()` | Box height |
+| `center()` | `(center_x, center_y)` |
+| `area()` | width × height |
+
+### Transformations
+
+| Method | Description |
+|--------|-------------|
+| `expand(margin)` | Grow box by margin on all sides |
+| `merge(&other)` | Create box containing both |
+
+### Public Fields
+
+```rust
+pub struct AABB {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+}
+```
+
+## Example: Robot Collision Checking
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+struct Robot {
+    position: (f64, f64),
+    size: (f64, f64),
+}
+
+impl Robot {
+    fn get_bounds(&self) -> AABB {
+        AABB::from_center(
+            self.position.0,
+            self.position.1,
+            self.size.0,
+            self.size.1,
+        )
+    }
+
+    fn would_collide(&self, new_pos: (f64, f64), obstacles: &[AABB]) -> bool {
+        let future_bounds = AABB::from_center(
+            new_pos.0,
+            new_pos.1,
+            self.size.0,
+            self.size.1,
+        );
+
+        obstacles.iter().any(|obs| future_bounds.intersects(obs))
+    }
+
+    fn move_if_safe(&mut self, delta: (f64, f64), obstacles: &[AABB]) -> bool {
+        let new_pos = (
+            self.position.0 + delta.0,
+            self.position.1 + delta.1,
+        );
+
+        if !self.would_collide(new_pos, obstacles) {
+            self.position = new_pos;
+            true
+        } else {
+            false
+        }
+    }
+}
+```
+
+## Example: Broad-Phase Collision Detection
+
+Use AABB for fast filtering before expensive narrow-phase checks:
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+struct CollisionSystem {
+    objects: Vec<(AABB, usize)>,  // (bounds, object_id)
+}
+
+impl CollisionSystem {
+    fn new() -> Self {
+        Self { objects: Vec::new() }
+    }
+
+    fn add_object(&mut self, bounds: AABB, id: usize) {
+        self.objects.push((bounds, id));
+    }
+
+    /// Get pairs that might be colliding (broad phase)
+    fn get_potential_collisions(&self) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+
+        for i in 0..self.objects.len() {
+            for j in (i + 1)..self.objects.len() {
+                if self.objects[i].0.intersects(&self.objects[j].0) {
+                    pairs.push((self.objects[i].1, self.objects[j].1));
+                }
+            }
+        }
+
+        pairs
+    }
+
+    /// Optimized: Only check objects near a point
+    fn get_objects_near(&self, point: (f64, f64), radius: f64) -> Vec<usize> {
+        let query_box = AABB::from_center(point.0, point.1, radius * 2.0, radius * 2.0);
+
+        self.objects
+            .iter()
+            .filter(|(bounds, _)| bounds.intersects(&query_box))
+            .map(|(_, id)| *id)
+            .collect()
+    }
+}
+```
+
+## Example: Sensor Range Checking
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+struct Sensor {
+    position: (f64, f64),
+    range: f64,
+    field_of_view: AABB,
+}
+
+impl Sensor {
+    fn new(position: (f64, f64), range: f64) -> Self {
+        // Sensor can see in a box around it
+        let fov = AABB::from_center(position.0, position.1, range * 2.0, range * 2.0);
+
+        Self {
+            position,
+            range,
+            field_of_view: fov,
+        }
+    }
+
+    fn can_potentially_see(&self, target: &AABB) -> bool {
+        self.field_of_view.intersects(target)
+    }
+
+    fn ray_to_target(&self, target_center: (f64, f64)) -> Option<f64> {
+        let dx = target_center.0 - self.position.0;
+        let dy = target_center.1 - self.position.1;
+        let len = (dx * dx + dy * dy).sqrt();
+
+        if len > 0.0 {
+            let direction = (dx / len, dy / len);
+            // Check if ray is blocked
+            Some(len)
+        } else {
+            Some(0.0)
+        }
+    }
+}
+```
+
+## Example: Safety Zones
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+struct SafetyZone {
+    robot_bounds: AABB,
+    warning_zone: AABB,
+    danger_zone: AABB,
+}
+
+impl SafetyZone {
+    fn new(robot: AABB, warning_margin: f64, danger_margin: f64) -> Self {
+        Self {
+            robot_bounds: robot,
+            warning_zone: robot.expand(warning_margin),
+            danger_zone: robot.expand(danger_margin),
+        }
+    }
+
+    fn check_obstacle(&self, obstacle: &AABB) -> SafetyLevel {
+        if self.robot_bounds.intersects(obstacle) {
+            SafetyLevel::Collision
+        } else if self.danger_zone.intersects(obstacle) {
+            SafetyLevel::Danger
+        } else if self.warning_zone.intersects(obstacle) {
+            SafetyLevel::Warning
+        } else {
+            SafetyLevel::Safe
+        }
+    }
+}
+
+enum SafetyLevel {
+    Safe,
+    Warning,
+    Danger,
+    Collision,
+}
+```
+
+## Example: Ray Casting for LIDAR Simulation
+
+```rust
+use horus_library::algorithms::aabb::AABB;
+
+fn simulate_lidar(
+    origin: (f64, f64),
+    obstacles: &[AABB],
+    num_rays: usize,
+    max_range: f64,
+) -> Vec<f64> {
+    let mut ranges = Vec::with_capacity(num_rays);
+
+    for i in 0..num_rays {
+        let angle = (i as f64 / num_rays as f64) * 2.0 * std::f64::consts::PI;
+        let direction = (angle.cos(), angle.sin());
+
+        // Find closest intersection
+        let mut min_distance = max_range;
+
+        for obstacle in obstacles {
+            if let Some(dist) = obstacle.ray_intersect(origin, direction) {
+                if dist > 0.0 && dist < min_distance {
+                    min_distance = dist;
+                }
+            }
+        }
+
+        ranges.push(min_distance);
+    }
+
+    ranges
+}
+```
+
+## Performance Characteristics
+
+AABB collision detection is O(1) per pair:
+
+| Operation | Complexity | Typical Time |
+|-----------|------------|--------------|
+| `intersects()` | O(1) | &lt;10 ns |
+| `contains_point()` | O(1) | &lt;5 ns |
+| `ray_intersect()` | O(1) | &lt;20 ns |
+| `merge()` | O(1) | &lt;10 ns |
+
+For n objects, naive all-pairs checking is O(n²). For better performance with many objects, use spatial partitioning (quad-tree, grid).
+
+## Limitations
+
+AABBs are conservative approximations:
+
+- May report false positives for rotated or complex shapes
+- Don't account for actual object geometry
+- Best used as broad-phase filter before precise checks
+
+```
+      ┌─────────────────┐
+      │    AABB         │
+      │  ┌─────────┐    │  ← Wasted space
+      │ /           \   │
+      │/             \  │
+      │\             /  │
+      │ \           /   │
+      │  └─────────┘    │
+      │                 │
+      └─────────────────┘
+```
+
+For rotated boxes, consider Oriented Bounding Boxes (OBB) or use AABB as a quick filter.
+
+## See Also
+
+- [Occupancy Grid](/rust/library/algorithms/occupancy-grid) - Grid-based mapping
+- [RRT](/rust/library/algorithms/rrt) - Path planning with collision checking
+- [Safety Layer](/rust/library/algorithms/safety-layer) - Robot safety enforcement
+- [A* Pathfinding](/rust/library/algorithms/astar) - Grid-based navigation

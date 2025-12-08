@@ -1,0 +1,324 @@
+---
+title: "Force & Tactile Messages"
+description: "Force sensing, tactile arrays, impedance control, and haptic feedback"
+weight: 51
+---
+
+# Force & Tactile Messages
+
+HORUS provides message types for force/torque sensors, tactile arrays, impedance control, and haptic feedback systems commonly used in manipulation tasks.
+
+## WrenchStamped
+
+6-DOF force and torque measurement from force/torque sensors.
+
+```rust
+use horus::prelude::*; // Provides force::WrenchStamped;
+use horus::prelude::*; // Provides geometry::Vector3;
+
+// Create wrench measurement
+let force = Vector3::new(10.0, 5.0, -2.0);   // Newtons
+let torque = Vector3::new(0.1, 0.2, 0.05);   // Newton-meters
+
+let wrench = WrenchStamped::new(force, torque)
+    .with_frame_id("tool0");
+
+// Check magnitudes
+println!("Force magnitude: {:.2} N", wrench.force_magnitude());
+println!("Torque magnitude: {:.3} Nm", wrench.torque_magnitude());
+
+// Safety check
+let max_force = 50.0;   // N
+let max_torque = 5.0;   // Nm
+if wrench.exceeds_limits(max_force, max_torque) {
+    println!("Safety limits exceeded!");
+}
+
+// Create from force only
+let force_only = WrenchStamped::force_only(Vector3::new(0.0, 0.0, -10.0));
+
+// Create from torque only
+let torque_only = WrenchStamped::torque_only(Vector3::new(0.0, 0.0, 0.5));
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `force` | `Vector3` | Force [fx, fy, fz] in Newtons |
+| `torque` | `Vector3` | Torque [tx, ty, tz] in Nm |
+| `point_of_application` | `Point3` | Force application point |
+| `frame_id` | `[u8; 32]` | Reference frame |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+### Low-Pass Filtering
+
+```rust
+// Filter noisy sensor readings
+let mut current = wrench;
+current.filter(&previous_wrench, 0.1);  // alpha = 0.1 (heavy filtering)
+```
+
+## TactileArray
+
+Pressure/force array from tactile sensors (fingertip sensors, skin patches).
+
+```rust
+use horus::prelude::*; // Provides force::TactileArray;
+
+// Create 8x8 grid tactile array
+let mut tactile = TactileArray::new(64, TactileArray::ARRANGEMENT_GRID);
+tactile.grid_width = 8;
+tactile.grid_height = 8;
+tactile.sensor_spacing = 2.0;  // 2mm between sensors
+tactile.sensitivity = 0.1;     // N per unit
+
+// Set sensor readings
+tactile.set_sensor(0, 1.5);
+tactile.set_sensor(1, 2.0);
+
+// Get active sensors
+let readings = tactile.get_active_sensors();
+
+// Calculate total force
+let total = tactile.total_force();
+println!("Total force: {:.2} N", total);
+
+// Detect contact
+if tactile.detect_contact(0.5) {  // threshold
+    println!("Contact detected!");
+}
+
+// Calculate center of pressure (grid arrangement only)
+if let Some((cx, cy)) = tactile.center_of_pressure() {
+    println!("Center of pressure: ({:.2}, {:.2})", cx, cy);
+}
+
+// Get contact pattern
+let pattern = tactile.contact_pattern(0.5);  // Returns Vec<bool>
+```
+
+**Arrangement Types:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `ARRANGEMENT_GRID` | 0 | 2D grid layout |
+| `ARRANGEMENT_LINEAR` | 1 | Linear array |
+| `ARRANGEMENT_CIRCULAR` | 2 | Circular arrangement |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sensors` | `[f32; 64]` | Sensor readings |
+| `sensor_count` | `u8` | Number of active sensors |
+| `arrangement` | `u8` | Layout type |
+| `grid_width` | `u8` | Grid columns |
+| `grid_height` | `u8` | Grid rows |
+| `sensor_spacing` | `f32` | Spacing in mm |
+| `sensitivity` | `f32` | N per unit |
+| `frame_id` | `[u8; 32]` | Reference frame |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## ImpedanceParameters
+
+Impedance control parameters for compliant manipulation.
+
+```rust
+use horus::prelude::*; // Provides force::ImpedanceParameters;
+
+// Default impedance (moderate compliance)
+let mut impedance = ImpedanceParameters::new();
+
+// Compliant mode (low stiffness - for delicate tasks)
+let compliant = ImpedanceParameters::compliant();
+// stiffness: [100, 100, 100, 10, 10, 10]
+// damping: [20, 20, 20, 2, 2, 2]
+
+// Stiff mode (high stiffness - for precision tasks)
+let stiff = ImpedanceParameters::stiff();
+// stiffness: [5000, 5000, 5000, 500, 500, 500]
+// damping: [100, 100, 100, 10, 10, 10]
+
+// Enable/disable
+impedance.enable();
+impedance.disable();
+
+// Custom parameters
+impedance.stiffness = [500.0, 500.0, 200.0, 50.0, 50.0, 50.0];  // [Kx, Ky, Kz, Krx, Kry, Krz]
+impedance.damping = [30.0, 30.0, 20.0, 3.0, 3.0, 3.0];          // [Dx, Dy, Dz, Drx, Dry, Drz]
+impedance.force_limits = [50.0, 50.0, 30.0, 5.0, 5.0, 5.0];     // Safety limits
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `stiffness` | `[f64; 6]` | Stiffness [Kx, Ky, Kz, Krx, Kry, Krz] |
+| `damping` | `[f64; 6]` | Damping [Dx, Dy, Dz, Drx, Dry, Drz] |
+| `inertia` | `[f64; 6]` | Virtual inertia |
+| `force_limits` | `[f64; 6]` | Force/torque limits |
+| `enabled` | `bool` | Impedance control active |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## ForceCommand
+
+Hybrid force/position control command.
+
+```rust
+use horus::prelude::*; // Provides force::ForceCommand;
+use horus::prelude::*; // Provides geometry::Vector3;
+
+// Pure force command
+let force_cmd = ForceCommand::force_only(Vector3::new(0.0, 0.0, -5.0));  // 5N downward
+
+// Hybrid force/position control
+// Force control on Z axis, position control on X/Y
+let force_axes = [false, false, true, false, false, false];  // [fx, fy, fz, tx, ty, tz]
+let target_force = Vector3::new(0.0, 0.0, -10.0);
+let target_position = Vector3::new(0.5, 0.3, 0.0);
+
+let hybrid_cmd = ForceCommand::hybrid(force_axes, target_force, target_position);
+
+// Surface contact following
+let surface_normal = Vector3::new(0.0, 0.0, 1.0);  // Horizontal surface
+let contact_force = 5.0;  // 5N contact force
+let surface_cmd = ForceCommand::surface_contact(contact_force, surface_normal);
+
+// Set timeout
+let cmd_with_timeout = force_cmd.with_timeout(5.0);  // 5 second timeout
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target_force` | `Vector3` | Desired force [N] |
+| `target_torque` | `Vector3` | Desired torque [Nm] |
+| `force_mode` | `[bool; 6]` | Force (true) or position (false) control per axis |
+| `position_setpoint` | `Vector3` | Position target for position-controlled axes |
+| `orientation_setpoint` | `Vector3` | Orientation target (Euler angles) |
+| `max_deviation` | `Vector3` | Maximum position deviation |
+| `gains` | `[f64; 6]` | Control gains |
+| `timeout_seconds` | `f64` | Command timeout |
+| `frame_id` | `[u8; 32]` | Reference frame |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## ContactInfo
+
+Contact detection and classification.
+
+```rust
+use horus::prelude::*; // Provides force::{ContactInfo, ContactState};
+use horus::prelude::*; // Provides geometry::Vector3;
+
+// Create contact info
+let contact = ContactInfo::new(ContactState::StableContact, 15.0);  // 15N force
+
+// Check contact state
+if contact.is_in_contact() {
+    println!("Contact force: {:.1} N", contact.contact_force);
+    println!("Duration: {:.2}s", contact.contact_duration_seconds());
+}
+```
+
+**ContactState values:**
+
+| State | Description |
+|-------|-------------|
+| `NoContact` | No contact detected |
+| `InitialContact` | First contact moment |
+| `StableContact` | Established contact |
+| `ContactLoss` | Contact being broken |
+| `Sliding` | Sliding contact |
+| `Impact` | Impact detected |
+
+## HapticFeedback
+
+Haptic feedback commands for user interfaces.
+
+```rust
+use horus::prelude::*; // Provides force::HapticFeedback;
+use horus::prelude::*; // Provides geometry::Vector3;
+
+// Vibration feedback
+let vibration = HapticFeedback::vibration(
+    0.8,   // intensity (0-1)
+    250.0, // frequency (Hz)
+    0.5    // duration (seconds)
+);
+
+// Force feedback
+let force = HapticFeedback::force(
+    Vector3::new(1.0, 0.0, 0.0),  // Force direction
+    1.0                           // Duration (seconds)
+);
+
+// Pulse pattern
+let pulse = HapticFeedback::pulse(
+    0.6,   // intensity
+    100.0, // frequency
+    0.3    // duration
+);
+```
+
+**Pattern Types:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `PATTERN_CONSTANT` | 0 | Constant intensity |
+| `PATTERN_PULSE` | 1 | Pulsing pattern |
+| `PATTERN_RAMP` | 2 | Ramping intensity |
+
+## Force Control Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides force::{WrenchStamped, ForceCommand, ImpedanceParameters};
+use horus::prelude::*; // Provides geometry::Vector3;
+
+struct ForceControlNode {
+    wrench_sub: Hub<WrenchStamped>,
+    cmd_pub: Hub<ForceCommand>,
+    impedance_pub: Hub<ImpedanceParameters>,
+    target_force: f64,
+    prev_wrench: Option<WrenchStamped>,
+}
+
+impl Node for ForceControlNode {
+    fn name(&self) -> &'static str { "ForceControl" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(mut wrench) = self.wrench_sub.recv(&mut ctx) {
+            // Apply low-pass filter
+            if let Some(prev) = &self.prev_wrench {
+                wrench.filter(prev, 0.2);
+            }
+            self.prev_wrench = Some(wrench.clone());
+
+            // Safety check
+            if wrench.exceeds_limits(100.0, 10.0) {
+                // Switch to compliant mode
+                let compliant = ImpedanceParameters::compliant();
+                self.impedance_pub.send(compliant, &mut ctx).ok();
+                return;
+            }
+
+            // Force control to maintain target contact force
+            let error = self.target_force - wrench.force.z;
+            let correction = error * 0.001;  // Simple P control
+
+            let cmd = ForceCommand::force_only(
+                Vector3::new(0.0, 0.0, self.target_force + correction)
+            );
+            self.cmd_pub.send(cmd, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## See Also
+
+- [Force-Torque Sensor Node](/rust/library/built-in-nodes/force-torque) - F/T sensor driver
+- [Geometry Messages](/concepts/message-types#geometry-messages) - Vector3, Point3
+- [Safety Layer Algorithm](/rust/library/algorithms/safety-layer) - Safety monitoring

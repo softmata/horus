@@ -1,0 +1,407 @@
+---
+title: Hybrid Nodes & Processors
+description: Inject custom processing logic into HORUS nodes
+---
+
+# Hybrid Nodes & Processors
+
+HORUS nodes support a **hybrid pattern** that allows them to function as both hardware drivers AND customizable processing pipelines. This enables injecting user-defined processing logic without modifying node source code.
+
+## Key Concepts
+
+- **Zero-config default**: Nodes work out-of-box as pure drivers
+- **Optional customization**: Inject processing via closures or traits
+- **Type-safe**: Compile-time guarantees for processor compatibility
+- **Minimal overhead**: No runtime cost when using defaults (monomorphization)
+- **Ergonomic API**: Simple closure-based or trait-based hooks
+
+## The Processor Trait
+
+The core abstraction is the `Processor` trait:
+
+```rust
+pub trait Processor<I, O = I>: Send + 'static {
+    /// Process input and produce output
+    /// Return Some(output) to publish, None to skip
+    fn process(&mut self, input: I) -> Option<O>;
+
+    /// Called once when the node starts
+    fn on_start(&mut self) {}
+
+    /// Called once when the node shuts down
+    fn on_shutdown(&mut self) {}
+
+    /// Called on each tick, even if no data
+    fn on_tick(&mut self) {}
+}
+```
+
+## Basic Usage
+
+### Default Mode (No Processing)
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::camera::CameraNode;
+
+// Simple driver mode - no custom processing
+let camera = CameraNode::new()?;
+```
+
+### With Inline Closure
+
+```rust
+use horus_library::nodes::camera::CameraNode;
+use horus::prelude::*; // Provides Image;
+
+// Add grayscale conversion
+let camera = CameraNode::new()?
+    .with_processor(|frame: Image| {
+        apply_grayscale(frame)
+    });
+```
+
+### With Filter (Conditional Output)
+
+```rust
+// Only publish frames meeting criteria
+let camera = CameraNode::new()?
+    .with_filter(|frame: Image| {
+        if frame.is_valid() && !frame.is_blurry() {
+            Some(frame)
+        } else {
+            None  // Skip this frame
+        }
+    });
+```
+
+### With Custom Processor Struct
+
+```rust
+use horus_library::nodes::processor::Processor;
+
+struct EdgeDetector {
+    threshold: u8,
+}
+
+impl Processor<Image> for EdgeDetector {
+    fn process(&mut self, input: Image) -> Option<Image> {
+        Some(detect_edges(input, self.threshold))
+    }
+
+    fn on_start(&mut self) {
+        println!("Edge detector initialized");
+    }
+}
+
+let camera = CameraNode::new()?
+    .with_processor(EdgeDetector { threshold: 50 });
+```
+
+## Builder Pattern
+
+Many hybrid nodes support a builder pattern for configuration:
+
+```rust
+use horus_library::nodes::camera::{CameraNode, CameraConfig};
+
+let camera = CameraNode::builder()
+    .config(CameraConfig::default().with_resolution(1280, 720))
+    .with_closure(|frame| {
+        // Transform each frame
+        resize(frame, 640, 480)
+    })
+    .build()?;
+```
+
+## Processing Pipelines
+
+Chain multiple processors together using `pipe()`:
+
+```rust
+use horus_library::nodes::processor::{processor, filter};
+
+let camera = CameraNode::builder()
+    .pipe(processor(|img| resize(img, 640, 480)))
+    .pipe(processor(|img| apply_grayscale(img)))
+    .pipe(filter(|img| {
+        if img.brightness() > 0.1 {
+            Some(img)
+        } else {
+            None
+        }
+    }))
+    .build()?;
+```
+
+## Built-in Processor Types
+
+### PassThrough (Default)
+
+No-op processor that passes data unchanged:
+
+```rust
+use horus_library::nodes::processor::PassThrough;
+
+// This is the default for all hybrid nodes
+let pass = PassThrough::<Image>::new();
+```
+
+### ClosureProcessor
+
+Wraps a closure as a processor:
+
+```rust
+use horus_library::nodes::processor::ClosureProcessor;
+
+let processor = ClosureProcessor::new(|x: i32| x * 2);
+```
+
+### FilterProcessor
+
+Closure that can skip outputs:
+
+```rust
+use horus_library::nodes::processor::FilterProcessor;
+
+let filter = FilterProcessor::new(|x: i32| {
+    if x > 0 { Some(x) } else { None }
+});
+```
+
+### Pipeline
+
+Chains two processors sequentially:
+
+```rust
+use horus_library::nodes::processor::Pipeline;
+
+let pipeline = Pipeline::new(
+    ClosureProcessor::new(|x: i32| x * 2),
+    ClosureProcessor::new(|x: i32| x + 1),
+);
+// Input: 10 -> Output: 21 (10 * 2 + 1)
+```
+
+### Tap
+
+Runs a side-effect without modifying data:
+
+```rust
+use horus_library::nodes::processor::Tap;
+
+let tap = Tap::new(|x: &i32| {
+    println!("Processing: {}", x);
+});
+// Data passes through unchanged
+```
+
+## Extension Methods
+
+The `ProcessorExt` trait adds fluent methods:
+
+```rust
+use horus_library::nodes::processor::{processor, ProcessorExt};
+
+let pipeline = processor(|x: i32| x * 2)
+    .pipe(processor(|x: i32| x + 1))
+    .tap(|x| println!("Value: {}", x))
+    .map(|x| x.to_string())
+    .filter_map(|s| {
+        if s.len() > 1 { Some(s) } else { None }
+    });
+```
+
+## Hybrid Nodes in horus_library
+
+Many built-in nodes support the hybrid pattern:
+
+### Sensor Nodes
+
+```rust
+// Camera with image processing
+let camera = CameraNode::builder()
+    .with_closure(|img| enhance_contrast(img))
+    .build()?;
+
+// IMU with filtering
+let imu = ImuNode::builder()
+    .with_closure(|data| apply_kalman_filter(data))
+    .build()?;
+
+// LiDAR with filtering
+let lidar = LidarNode::builder()
+    .with_filter(|scan| {
+        if scan.ranges.len() > 100 {
+            Some(scan)
+        } else {
+            None
+        }
+    })
+    .build()?;
+```
+
+### Navigation Nodes
+
+```rust
+// Visual odometry with filtering
+let vo = VisualOdometryNode::builder()
+    .with_filter(|odom| {
+        // Only output when moving
+        if odom.twist.linear[0].abs() > 0.01 {
+            Some(odom)
+        } else {
+            None
+        }
+    })
+    .build()?;
+
+// Odometry with covariance estimation
+let odom = OdometryNode::builder()
+    .with_closure(|mut odom| {
+        odom.pose_covariance[0] = 0.1;
+        odom
+    })
+    .build()?;
+```
+
+### Control Nodes
+
+```rust
+// Motor with velocity ramping
+let motor = DcMotorNode::builder()
+    .with_closure(|cmd| {
+        ramp_velocity(cmd, 0.1)
+    })
+    .build()?;
+
+// PID with output limiting
+let pid = PidControllerNode::builder()
+    .with_closure(|output| {
+        output.clamp(-1.0, 1.0)
+    })
+    .build()?;
+```
+
+## Lifecycle Hooks
+
+Processors can implement lifecycle methods:
+
+```rust
+struct StatefulProcessor {
+    buffer: Vec<f32>,
+    running_avg: f32,
+}
+
+impl Processor<f32> for StatefulProcessor {
+    fn process(&mut self, input: f32) -> Option<f32> {
+        self.buffer.push(input);
+        if self.buffer.len() > 10 {
+            self.buffer.remove(0);
+        }
+        self.running_avg = self.buffer.iter().sum::<f32>() / self.buffer.len() as f32;
+        Some(self.running_avg)
+    }
+
+    fn on_start(&mut self) {
+        println!("Processor starting, clearing buffer");
+        self.buffer.clear();
+        self.running_avg = 0.0;
+    }
+
+    fn on_shutdown(&mut self) {
+        println!("Final average: {}", self.running_avg);
+    }
+
+    fn on_tick(&mut self) {
+        // Called every tick, even without data
+        // Useful for timeouts, heartbeats, etc.
+    }
+}
+```
+
+## Helper Functions
+
+Convenience functions for creating processors:
+
+```rust
+use horus_library::nodes::processor::{processor, filter, tap};
+
+// Create a transformation processor
+let double = processor(|x: i32| x * 2);
+
+// Create a filtering processor
+let positive = filter(|x: i32| if x > 0 { Some(x) } else { None });
+
+// Create a side-effect tap
+let logger = tap(|x: &i32| println!("Value: {}", x));
+```
+
+## Example: Complete Vision Pipeline
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::camera::{CameraNode, CameraConfig};
+use horus_library::nodes::processor::{processor, filter, tap};
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Build a complete vision pipeline
+    let camera = CameraNode::builder()
+        .config(CameraConfig::default()
+            .with_resolution(1920, 1080)
+            .with_fps(30.0))
+        // Step 1: Resize for processing
+        .pipe(processor(|img| resize(img, 640, 480)))
+        // Step 2: Color correction
+        .pipe(processor(|img| white_balance(img)))
+        // Step 3: Log frame rate
+        .tap(|img| {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+            if count % 100 == 0 {
+                println!("Processed {} frames", count);
+            }
+        })
+        // Step 4: Quality filter
+        .pipe(filter(|img| {
+            if img.brightness() > 0.1 && !img.is_blurry() {
+                Some(img)
+            } else {
+                None
+            }
+        }))
+        .build()?;
+
+    scheduler.add(Box::new(camera), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Performance Considerations
+
+The hybrid pattern uses Rust's monomorphization, so:
+
+- **Default PassThrough**: Zero overhead (optimized away)
+- **Closures**: Inlined when possible
+- **Trait objects**: Minimal vtable overhead
+- **Pipelines**: Flattened at compile time
+
+```rust
+// These two are equivalent in performance:
+
+// Option 1: Explicit PassThrough
+let node = SensorNode::<PassThrough<Data>>::new()?;
+
+// Option 2: Default (PassThrough is inferred)
+let node = SensorNode::new()?;
+```
+
+## See Also
+
+- [Core Concepts - Nodes](/concepts/core-concepts-nodes) - Node basics
+- [Visual Odometry](/rust/library/built-in-nodes/visual-odometry) - Example hybrid node
+- [Camera Node](/rust/library/built-in-nodes/camera) - Camera with processing
+- [API Reference](/rust/api/core) - Full API documentation

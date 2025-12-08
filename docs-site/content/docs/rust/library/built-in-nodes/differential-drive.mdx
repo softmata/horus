@@ -1,0 +1,292 @@
+---
+title: DifferentialDriveNode
+description: Differential drive kinematics for 2-wheeled robots
+---
+
+# DifferentialDriveNode
+
+Differential drive controller for 2-wheeled mobile robots. Converts linear and angular velocity commands to left/right wheel velocities using inverse kinematics.
+
+## Source Code
+
+- [DifferentialDriveNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/differential_drive)
+- [Velocity Command Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/cmd_vel.rs)
+
+## Features
+
+- Velocity command input (Twist message with linear + angular)
+- Wheel velocity output (DifferentialDriveCommand)
+- Configurable wheel base and radius
+- Velocity limiting (linear and angular)
+- Odometry integration and publishing
+- Graceful shutdown (auto-stop on Ctrl+C)
+
+## Quick Start
+
+```rust
+use horus_library::nodes::DifferentialDriveNode;
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    let mut diff_drive = DifferentialDriveNode::new()?;
+    diff_drive.set_wheel_base(0.3);           // 0.3m between wheels
+    diff_drive.set_wheel_radius(0.05);        // 0.05m wheel radius
+    diff_drive.set_velocity_limits(1.0, 2.0); // 1 m/s linear, 2 rad/s angular
+
+    scheduler.add(Box::new(diff_drive), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Send velocity commands in another node:
+let cmd_hub = Hub::<Twist>::new("cmd_vel")?;
+
+// Drive forward at 0.5 m/s
+cmd_hub.send(Twist::new([0.5, 0.0, 0.0], [0.0, 0.0, 0.0]), None)?;
+```
+
+**Subscribes to:** `cmd_vel` (Twist)
+**Publishes to:** `drive_command` (DifferentialDriveCommand), `odom` (Odometry)
+
+## Configuration
+
+### Construction
+
+```rust
+use horus_library::nodes::DifferentialDriveNode;
+
+// Create with default topics ("cmd_vel", "drive_command", "odom")
+let mut diff_drive = DifferentialDriveNode::new()?;
+
+// Create with custom topics
+let mut diff_drive = DifferentialDriveNode::new_with_topics(
+    "robot/cmd_vel",      // Command input topic
+    "robot/drive",        // Drive output topic
+    "robot/odom"          // Odometry output topic
+)?;
+```
+
+### Configuration Methods
+
+```rust
+// Physical dimensions
+diff_drive.set_wheel_base(0.25);         // Distance between wheels (m)
+diff_drive.set_wheel_radius(0.04);       // Wheel radius (m)
+
+// Velocity limits (combined method)
+diff_drive.set_velocity_limits(1.5, 2.0); // Max linear (m/s), max angular (rad/s)
+
+// Reset odometry to origin
+diff_drive.reset_odometry();
+
+// Get current position (x, y, orientation)
+let (x, y, theta) = diff_drive.get_position();
+```
+
+## Configuration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `wheel_base` | `f32` | `0.5` | Distance between wheels (meters) |
+| `wheel_radius` | `f32` | `0.1` | Wheel radius (meters) |
+| `max_linear_vel` | `f32` | `2.0` | Maximum linear velocity (m/s) |
+| `max_angular_vel` | `f32` | `π` | Maximum angular velocity (rad/s) |
+
+## Topics
+
+### Subscribers
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `cmd_vel` | `Twist` | Velocity command (linear[0]=forward, angular[2]=yaw) |
+
+### Publishers
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `drive_command` | `DifferentialDriveCommand` | Left/right wheel velocities |
+| `odom` | `Odometry` | Position, orientation, and velocity |
+
+## Usage Patterns
+
+### Basic Movement Commands
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+let hub = Hub::<Twist>::new("cmd_vel")?;
+
+// Drive forward at 0.5 m/s
+hub.send(Twist::new([0.5, 0.0, 0.0], [0.0, 0.0, 0.0]), None)?;
+
+// Turn in place (rotate left at 1 rad/s)
+hub.send(Twist::new([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]), None)?;
+
+// Arc turn (forward + rotate)
+hub.send(Twist::new([0.3, 0.0, 0.0], [0.0, 0.0, 0.5]), None)?;
+
+// Stop
+hub.send(Twist::default(), None)?;
+```
+
+### Complete Robot Setup
+
+```rust
+use horus_library::nodes::{DifferentialDriveNode, EncoderNode};
+use horus::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Differential drive controller
+    let mut diff_drive = DifferentialDriveNode::new()?;
+    diff_drive.set_wheel_base(0.25);
+    diff_drive.set_wheel_radius(0.04);
+    diff_drive.set_velocity_limits(1.0, 2.0);
+
+    // Encoders for feedback
+    let mut left_encoder = EncoderNode::new_with_topic("left_encoder")?;
+    left_encoder.set_encoder_config(1024.0, 0.04, 1.0);
+
+    let mut right_encoder = EncoderNode::new_with_topic("right_encoder")?;
+    right_encoder.set_encoder_config(1024.0, 0.04, 1.0);
+
+    scheduler.add(Box::new(diff_drive), 50, Some(true));
+    scheduler.add(Box::new(left_encoder), 50, Some(true));
+    scheduler.add(Box::new(right_encoder), 50, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+### Joystick Control
+
+```rust
+use horus_library::nodes::DifferentialDriveNode;
+use horus_library::{JoystickEvent, Twist};
+use horus_core::{Node, Hub, NodeInfo};
+
+struct JoystickToDrive {
+    joy_sub: Hub<JoystickEvent>,
+    cmd_pub: Hub<Twist>,
+    max_linear: f64,
+    max_angular: f64,
+}
+
+impl Node for JoystickToDrive {
+    fn name(&self) -> &'static str { "JoystickToDrive" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(joy) = self.joy_sub.recv(&mut ctx) {
+            // Left stick Y = forward/backward
+            // Right stick X = turn
+            let linear = joy.axes[1] * self.max_linear;
+            let angular = -joy.axes[2] * self.max_angular;
+
+            let cmd = Twist::new([linear, 0.0, 0.0], [0.0, 0.0, angular]);
+            let _ = self.cmd_pub.send(cmd, None);
+        }
+    }
+}
+```
+
+## Kinematics
+
+### Inverse Kinematics (velocity command to wheel speeds)
+
+```
+v_left  = linear_x - (angular_z * wheel_base / 2)
+v_right = linear_x + (angular_z * wheel_base / 2)
+```
+
+### Forward Kinematics (wheel speeds to robot velocity)
+
+```
+linear_x  = (v_left + v_right) / 2
+angular_z = (v_right - v_left) / wheel_base
+```
+
+## Message Types
+
+### Twist
+
+```rust
+pub struct Twist {
+    pub linear: [f64; 3],   // [x, y, z] velocity in m/s
+    pub angular: [f64; 3],  // [roll, pitch, yaw] velocity in rad/s
+    pub timestamp: u64,
+}
+```
+
+For differential drive, only `linear[0]` (forward) and `angular[2]` (yaw) are used.
+
+## Graceful Shutdown
+
+DifferentialDriveNode automatically stops the robot when your application receives Ctrl+C (SIGINT/SIGTERM):
+
+- Zero velocity command published to motors
+- Robot coasts to a stop
+- Critical for autonomous vehicle safety
+
+```rust
+// This happens automatically on Ctrl+C
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("DifferentialDriveNode shutting down - stopping drive motors");
+    // Publish stop command to motors
+    self.publish_drive_command(0.0, 0.0);
+    ctx.log_info("Differential drive motors stopped safely");
+    Ok(())
+}
+```
+
+## Troubleshooting
+
+### Issue: Robot turns instead of going straight
+
+**Cause**: Wheel radius or motor calibration mismatch
+
+**Solution**: Verify wheel measurements and motor performance. Consider using encoder feedback for closed-loop control.
+
+### Issue: Robot velocity doesn't match command
+
+**Cause**: Wheel slip, motor saturation, or incorrect wheel radius
+
+**Solution**:
+- Verify wheel radius measurement
+- Reduce velocity limits: `diff_drive.set_velocity_limits(0.5, 1.0);`
+- Use encoder feedback for closed-loop control
+
+### Issue: Jerky motion
+
+**Cause**: Rapid velocity changes without acceleration limiting
+
+**Solution**: The current implementation applies velocity changes immediately. For smoother motion, implement velocity ramping in your command source or use a PID controller.
+
+## Performance Considerations
+
+### Update Rate
+
+- Typical: 50-100 Hz
+- High-speed: 200+ Hz
+- Low-power: 10-20 Hz
+
+### CPU Usage
+
+Minimal - simple kinematic calculations (~10 microseconds per tick)
+
+### Memory Usage
+
+Small fixed footprint (~200 bytes)
+
+## See Also
+
+- [OdometryNode](./odometry) - Position tracking
+- [DcMotorNode](./dc-motor) - Motor control
+- [EncoderNode](./encoder) - Wheel feedback
+- [JoystickNode](./joystick) - Joystick input
+- [PidControllerNode](./pid-controller) - Velocity control loops

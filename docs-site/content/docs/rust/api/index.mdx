@@ -1,0 +1,95 @@
+---
+title: API Reference
+description: Complete API reference for the HORUS robotics framework
+order: 50
+---
+
+# API Reference
+
+Welcome to the HORUS API reference documentation. This section provides detailed documentation for all public types, traits, and functions in the HORUS framework.
+
+## Crates
+
+| Crate | Description |
+|-------|-------------|
+| [horus_core](/rust/api/core) | Core runtime - nodes, communication, scheduling |
+| [horus_messages](/rust/api/messages) | Standard message types for robotics |
+| [horus_macros](/rust/api/macros) | Procedural macros (`node!`, `message!`) |
+
+---
+
+## Quick Reference
+
+### Core Types
+
+| Type | Description | Module |
+|------|-------------|--------|
+| [`Node`](/rust/api/core#node) | Base trait for all computation units | `horus_core` |
+| [`Hub<T>`](/rust/api/core#hub) | Multi-producer multi-consumer pub/sub channel | `horus_core` |
+| [`Link<T>`](/rust/api/core#link) | Single-producer single-consumer channel | `horus_core` |
+| [`Scheduler`](/rust/api/core#scheduler) | Node execution orchestrator | `horus_core` |
+| [`NodeInfo`](/rust/api/core#nodeinfo) | Runtime context for nodes | `horus_core` |
+
+### Error Handling
+
+| Type | Description | Module |
+|------|-------------|--------|
+| [`HorusError`](/rust/api/core#horuserror) | Unified error type | `horus_core` |
+| [`HorusResult<T>`](/rust/api/core#horusresult) | Result alias | `horus_core` |
+
+### Message Types
+
+| Type | Description | Module |
+|------|-------------|--------|
+| [`Image`](/rust/api/messages#image) | Camera image data | `horus_messages` |
+| [`LaserScan`](/rust/api/messages#laserscan) | LiDAR scan data | `horus_messages` |
+| [`Imu`](/rust/api/messages#imu) | IMU sensor data | `horus_messages` |
+| [`Twist`](/rust/api/messages#twist) | Velocity commands | `horus_messages` |
+| [`Pose`](/rust/api/messages#pose) | Position and orientation | `horus_messages` |
+
+---
+
+## Import Patterns
+
+### Minimal Import
+
+```rust
+use horus::prelude::*;
+```
+
+### Full Import
+
+```rust
+use horus_core::{
+    // Core traits and types
+    Node, NodeInfo, NodeConfig, NodeMetrics, NodeState,
+    // Communication
+    Hub, Link, LinkMetrics,
+    // Scheduling
+    Scheduler,
+    // Errors
+    HorusError, HorusResult,
+    // Traits
+    Channel, Publisher, Subscriber,
+};
+
+use horus_messages::{
+    Image, LaserScan, Imu, Twist, Pose, PointCloud,
+};
+```
+
+---
+
+## Version Compatibility
+
+| HORUS Version | Rust Edition | MSRV |
+|---------------|--------------|------|
+| 0.1.x | 2021 | 1.70.0 |
+
+---
+
+## See Also
+
+- [Core Concepts](/concepts/core) - Understanding HORUS architecture
+- [Examples](/rust/examples/basic-examples) - Working code examples
+- [Built-in Nodes](/rust/library/built-in-nodes) - Pre-built node library

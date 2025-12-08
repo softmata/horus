@@ -1,0 +1,695 @@
+---
+title: BatteryMonitorNode
+description: INA219/INA226 power monitoring with battery state estimation
+---
+
+# BatteryMonitorNode
+
+Battery and power monitoring node using INA219/INA226 I2C current/voltage sensors. Provides real-time monitoring of voltage, current, power consumption, and battery state of charge for mobile robots and autonomous systems.
+
+## Source Code
+
+- [BatteryMonitorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/battery_monitor)
+- [Battery Sensor Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/sensor.rs)
+
+## Features
+
+- INA219 and INA226 sensor support
+- Voltage monitoring (0-26V for INA219, 0-36V for INA226)
+- Current monitoring (±3.2A for INA219, ±20A for INA226 with shunt)
+- Power calculation
+- Battery state of charge (SOC) estimation
+- Remaining runtime estimation
+- Low battery warnings
+- Configurable alert thresholds
+- Multiple sensors for multi-battery systems
+- Simulation fallback
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create battery monitor
+    let mut battery = BatteryMonitorNode::new()?;
+    battery.set_sensor_type(SensorType::INA219);
+    battery.set_i2c_address(0x40);  // Default address
+    battery.set_battery_capacity(5000);  // 5000 mAh
+
+    scheduler.add(Box::new(battery), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+---
+
+## Hardware Drivers Covered
+
+This node provides production-ready drivers for:
+
+**Primary Support (Full Hardware Integration):**
+- **INA219** - Voltage/current monitor (0-26V, ±3.2A)
+- **INA226** - High-precision voltage/current monitor (0-36V, ±20A)
+
+**Supported Battery Chemistries:**
+- LiPo/LiFePO4 (1S-6S+ configurations)
+- Li-ion (18650, 21700, custom packs)
+- NiMH (6-12 cell packs)
+- Lead-acid (6V, 12V, 24V systems)
+- Custom battery packs
+
+**Additional I2C Sensors (Planned):**
+- BQ27441 - Single-cell fuel gauge
+- MAX17043 - LiPo fuel gauge
+- LC709203F - Battery state estimation
+- ACS712 - Current sensing modules
+
+---
+
+## Applications
+
+### Best Suited For
+
+**Mobile Robots:**
+- Autonomous delivery robots
+- Service robots (indoor navigation)
+- Agricultural robots
+- Inspection drones (ground-based)
+- Educational robot platforms
+
+**Aerial Systems:**
+- Small drones (≤3.2A with INA219)
+- Fixed-wing UAVs (with INA226)
+- Multicopter platforms
+- Tethered systems
+
+**Industrial Applications:**
+- AGVs (Automated Guided Vehicles)
+- Battery-powered tools
+- Portable measurement equipment
+- Solar power monitoring
+- UPS systems
+
+**Research Platforms:**
+- Power consumption analysis
+- Battery discharge testing
+- Energy efficiency optimization
+- Runtime prediction research
+
+### Why Use This Node?
+
+**For Small Robots (INA219):**
+- Real-time power monitoring without microcontrollers
+- State of charge estimation for mission planning
+- Low battery warnings for safe return-to-base
+- Power consumption profiling
+
+**For High-Power Systems (INA226):**
+- Precision current measurement up to 20A+
+- 16-bit resolution for accuracy
+- Hardware averaging for stable readings
+- Alert pin for critical conditions
+
+**For Production Systems:**
+- Proven I2C hardware integration
+- Automatic simulation fallback for testing
+- Comprehensive error handling (24 error cases)
+- Battery chemistry-specific voltage curves
+- Runtime estimation for mission planning
+
+---
+
+## Customization Options
+
+### What Can Be Configured
+
+**Sensor Hardware:**
+```rust
+battery.set_sensor_type(SensorType::INA219);  // INA219 or INA226
+battery.set_i2c_bus(1);                       // I2C bus number
+battery.set_i2c_address(0x40);                // I2C address (0x40-0x4F)
+battery.set_shunt_resistance(0.1);            // Shunt resistor value (Ω)
+```
+
+**Battery Parameters:**
+```rust
+battery.set_battery_capacity(5000);           // Capacity in mAh
+battery.set_battery_chemistry(Chemistry::LiPo); // Chemistry type
+battery.set_cell_count(4);                    // Number of cells (S)
+battery.set_nominal_voltage(3.7);             // Per-cell nominal voltage
+```
+
+**Measurement Settings:**
+```rust
+battery.set_sample_rate(10);                  // Samples per second
+battery.set_averaging(16);                    // INA226: averaging samples
+battery.set_voltage_range(VoltageRange::V32); // INA226: range selection
+```
+
+**Alert Thresholds:**
+```rust
+battery.set_low_voltage_threshold(10.5);      // Low battery warning (V)
+battery.set_critical_voltage_threshold(9.9);  // Critical shutdown (V)
+battery.set_high_current_threshold(5.0);      // Overcurrent alert (A)
+battery.set_low_soc_threshold(20);            // Low SOC warning (%)
+```
+
+**Preset Configurations:**
+```rust
+// Quick presets for common batteries
+battery.configure_3s_lipo(5000.0);   // 3S LiPo, 5000mAh
+battery.configure_4s_lipo(5000.0);   // 4S LiPo, 5000mAh
+battery.configure_6s_lipo(5000.0);   // 6S LiPo, 5000mAh
+battery.configure_12v_lead_acid(7000.0); // 12V Lead-acid
+battery.configure_lifepo4(4, 3000.0);     // 4S LiFePO4
+```
+
+### Extensibility Patterns
+
+**Wrap for Custom Logic:**
+```rust
+struct PredictiveBatteryMonitor {
+    inner: BatteryMonitorNode,
+    kalman_filter: KalmanFilter,
+    degradation_model: DegradationModel,
+}
+
+impl Node for PredictiveBatteryMonitor {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Hardware monitoring
+        self.inner.tick(&mut ctx);
+
+        // Custom prediction
+        let state = self.inner.get_state();
+        let prediction = self.kalman_filter.predict(state);
+        let remaining_life = self.degradation_model.estimate(state);
+
+        // Publish custom metrics
+        // ...
+    }
+}
+```
+
+---
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install I2C tools
+sudo apt install i2c-tools
+
+# Enable I2C
+sudo raspi-config  # Interface Options -> I2C
+
+# Verify I2C device
+i2cdetect -y 1
+```
+
+### INA219 Wiring
+
+```
+Raspberry Pi    INA219      Battery/Load
+GPIO 2 (SDA) --> SDA
+GPIO 3 (SCL) --> SCL
+3.3V         --> VCC
+GND          --- GND
+                VIN+ --> Battery +
+                VIN- --> Load +
+                       Load - --> Battery -
+```
+
+### INA226 Wiring (Same as INA219)
+
+```
+Raspberry Pi    INA226      Battery/Load
+GPIO 2 (SDA) --> SDA
+GPIO 3 (SCL) --> SCL
+3.3V         --> VCC
+GND          --- GND
+                VIN+ --> Battery +
+                VIN- --> Load +
+                       Load - --> Battery -
+```
+
+**Important**: Current flows through the shunt resistor (VIN+ to VIN-)
+
+### Enabling Features
+
+There are three ways to enable the required `i2c-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `BatteryMonitorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: i2c-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - i2c-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["i2c-hardware"] }
+```
+
+## Sensor Comparison
+
+### INA219
+
+```rust
+// Features:
+// - Voltage: 0-26V (bus voltage)
+// - Current: ±3.2A (with 0.1Ω shunt)
+// - Resolution: 12-bit (configurable)
+// - Sample rate: Up to 2kHz
+// - I2C addresses: 0x40-0x4F (16 addresses)
+// - Use for: Small robots, drones, low-power systems
+```
+
+### INA226
+
+```rust
+// Features:
+// - Voltage: 0-36V
+// - Current: ±20A (with appropriate shunt)
+// - Resolution: 16-bit
+// - Sample rate: Up to 8kHz
+// - Averaging: 1-1024 samples
+// - Alert pin support
+// - I2C addresses: 0x40-0x4F (16 addresses)
+// - Use for: High-power systems, current sensing
+```
+
+## Configuration
+
+### Sensor Selection
+
+```rust
+let mut battery = BatteryMonitorNode::new()?;
+
+// Select sensor type
+battery.set_sensor_type(SensorType::INA219);
+battery.set_sensor_type(SensorType::INA226);
+
+// Set I2C bus and address
+battery.set_i2c_bus(1);           // /dev/i2c-1
+battery.set_i2c_address(0x40);    // Default address
+```
+
+### I2C Addresses
+
+```
+Address pins (A0, A1):
+0x40: GND, GND (default)
+0x41: GND, VS+
+0x44: GND, SDA
+0x45: GND, SCL
+... up to 0x4F (16 combinations)
+```
+
+### Shunt Resistor
+
+```rust
+// Set shunt resistance (Ohms)
+battery.set_shunt_resistance(0.1);   // 0.1Ω (INA219 default)
+battery.set_shunt_resistance(0.01);  // 0.01Ω (for higher current)
+
+// Shunt selection guide:
+// 0.1Ω: Up to 3.2A (INA219)
+// 0.01Ω: Up to 32A
+// 0.002Ω: Up to 160A
+// Lower resistance = higher current capacity, lower resolution
+```
+
+### Battery Configuration
+
+```rust
+// Set battery capacity (mAh)
+battery.set_battery_capacity(5000);  // 5000 mAh (5 Ah)
+
+// Set battery chemistry (for SOC curve)
+battery.set_battery_chemistry(BatteryChemistry::LiPo);
+battery.set_battery_chemistry(BatteryChemistry::LiFePO4);
+battery.set_battery_chemistry(BatteryChemistry::NiMH);
+battery.set_battery_chemistry(BatteryChemistry::LeadAcid);
+
+// Set cell count
+battery.set_cell_count(3);  // 3S LiPo (11.1V nominal)
+battery.set_cell_count(4);  // 4S LiPo (14.8V nominal)
+```
+
+### Measurement Configuration
+
+```rust
+// Sample rate (Hz)
+battery.set_sample_rate(10);  // 10 samples/sec
+
+// Averaging (INA226 only)
+battery.set_averaging(4);  // Average 4 samples
+battery.set_averaging(16);  // More averaging = less noise
+
+// Calibration
+battery.calibrate()?;  // Auto-calibrate based on shunt
+```
+
+### Alert Thresholds
+
+```rust
+// Low voltage warning (V)
+battery.set_low_voltage_threshold(10.5);  // 3.5V per cell (3S)
+
+// Critical voltage (V)
+battery.set_critical_voltage_threshold(9.9);  // 3.3V per cell
+
+// High current warning (A)
+battery.set_high_current_threshold(5.0);
+
+// Low SOC warning (%)
+battery.set_low_soc_threshold(20);  // 20%
+battery.set_critical_soc_threshold(5);  // 5%
+```
+
+## Usage Patterns
+
+### Reading Battery Data
+
+```rust
+use horus::prelude::*;
+
+// Subscribe to battery data
+let hub = Hub::<BatteryData>::new("battery.data")?;
+
+if let Some(data) = hub.recv(&mut None) {
+    println!("Voltage: {:.2}V", data.voltage);
+    println!("Current: {:.2}A", data.current);
+    println!("Power: {:.2}W", data.power);
+    println!("SOC: {}%", data.soc);
+    println!("Runtime: {} min", data.remaining_minutes);
+}
+```
+
+### Battery Alerts
+
+```rust
+// Subscribe to alerts
+let alert_hub = Hub::<BatteryAlert>::new("battery.alert")?;
+
+if let Some(alert) = alert_hub.recv(&mut None) {
+    match alert.alert_type {
+        AlertType::LOW_VOLTAGE => {
+            println!("WARNING: Low voltage {:.2}V", alert.voltage);
+        }
+        AlertType::CRITICAL_VOLTAGE => {
+            println!("CRITICAL: Battery critically low!");
+            // Initiate emergency landing/shutdown
+        }
+        AlertType::HIGH_CURRENT => {
+            println!("WARNING: High current draw {:.2}A", alert.current);
+        }
+        AlertType::LOW_SOC => {
+            println!("WARNING: Battery low ({}%)", alert.soc);
+        }
+    }
+}
+```
+
+### Energy Consumption Tracking
+
+```rust
+let hub = Hub::<BatteryData>::new("battery.data")?;
+
+let mut total_energy = 0.0;  // Wh
+
+while let Some(data) = hub.recv(&mut None) {
+    // Integrate power over time
+    let dt = 0.1;  // Sample period (seconds)
+    total_energy += data.power * (dt / 3600.0);  // Convert to Wh
+
+    println!("Energy consumed: {:.2} Wh", total_energy);
+}
+```
+
+## Complete Example: Battery Monitor System
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure battery monitor
+    let mut battery = BatteryMonitorNode::new()?;
+    battery.set_sensor_type(SensorType::INA219);
+    battery.set_i2c_address(0x40);
+    battery.set_shunt_resistance(0.1);
+    battery.set_battery_capacity(5000);  // 5 Ah
+    battery.set_battery_chemistry(BatteryChemistry::LiPo);
+    battery.set_cell_count(3);  // 3S
+
+    // Set alerts
+    battery.set_low_voltage_threshold(10.5);
+    battery.set_critical_voltage_threshold(9.9);
+    battery.set_low_soc_threshold(20);
+    battery.set_high_current_threshold(5.0);
+
+    scheduler.add(Box::new(battery), 1, Some(true));
+
+    // Monitor node
+    let monitor_node = node! {
+        name: "battery_monitor",
+        tick: |ctx| {
+            let data_hub = Hub::<BatteryData>::new("battery.data")?;
+            let alert_hub = Hub::<BatteryAlert>::new("battery.alert")?;
+
+            // Display battery status
+            if let Some(data) = data_hub.recv(&mut None) {
+                ctx.log_info(&format!(
+                    "Battery: {:.2}V, {:.2}A, {:.2}W | SOC: {}% | Runtime: {}min",
+                    data.voltage, data.current, data.power,
+                    data.soc, data.remaining_minutes
+                ));
+            }
+
+            // Handle alerts
+            while let Some(alert) = alert_hub.recv(&mut None) {
+                match alert.alert_type {
+                    AlertType::LOW_VOLTAGE => {
+                        ctx.log_warning(&format!(
+                            "Low battery voltage: {:.2}V", alert.voltage
+                        ));
+                    }
+                    AlertType::CRITICAL_VOLTAGE => {
+                        ctx.log_error("CRITICAL: Battery voltage too low!");
+                        // Trigger emergency shutdown
+                        // ...
+                    }
+                    AlertType::HIGH_CURRENT => {
+                        ctx.log_warning(&format!(
+                            "High current draw: {:.2}A", alert.current
+                        ));
+                    }
+                    AlertType::LOW_SOC => {
+                        ctx.log_warning(&format!(
+                            "Low battery SOC: {}%", alert.soc
+                        ));
+                    }
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(monitor_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### BatteryData
+
+```rust
+pub struct BatteryData {
+    pub voltage: f32,             // Battery voltage (V)
+    pub current: f32,             // Current draw (A)
+    pub power: f32,               // Power consumption (W)
+    pub soc: u8,                  // State of charge (0-100%)
+    pub capacity_remaining: u32,  // Remaining capacity (mAh)
+    pub remaining_minutes: u16,   // Estimated runtime (min)
+    pub energy_consumed: f32,     // Total energy used (Wh)
+    pub timestamp: u64,
+}
+```
+
+### BatteryAlert
+
+```rust
+pub struct BatteryAlert {
+    pub alert_type: u8,
+    pub voltage: f32,
+    pub current: f32,
+    pub soc: u8,
+    pub timestamp: u64,
+}
+```
+
+### Alert Types
+
+```rust
+pub const ALERT_LOW_VOLTAGE: u8 = 0;
+pub const ALERT_CRITICAL_VOLTAGE: u8 = 1;
+pub const ALERT_HIGH_CURRENT: u8 = 2;
+pub const ALERT_LOW_SOC: u8 = 3;
+pub const ALERT_CRITICAL_SOC: u8 = 4;
+```
+
+## Battery Chemistry Voltage Curves
+
+### LiPo (3.7V nominal per cell)
+
+```
+Voltage (per cell) | SOC
+4.2V               | 100%
+4.0V               | 90%
+3.85V              | 70%
+3.7V               | 30%
+3.5V               | 10%
+3.3V               | 0% (critical)
+```
+
+### LiFePO4 (3.2V nominal per cell)
+
+```
+Voltage (per cell) | SOC
+3.65V              | 100%
+3.4V               | 90%
+3.3V               | 50%
+3.0V               | 10%
+2.5V               | 0% (critical)
+```
+
+## Best Practices
+
+1. **Always set battery chemistry:**
+   ```rust
+   battery.set_battery_chemistry(BatteryChemistry::LiPo);
+   battery.set_cell_count(3);
+   // Accurate SOC estimation depends on this
+   ```
+
+2. **Calibrate on first use:**
+   ```rust
+   battery.calibrate()?;
+   // Ensures accurate readings
+   ```
+
+3. **Set appropriate thresholds:**
+   ```rust
+   // LiPo 3S example:
+   battery.set_low_voltage_threshold(10.5);      // 3.5V/cell
+   battery.set_critical_voltage_threshold(9.9);  // 3.3V/cell
+   ```
+
+4. **Monitor current spikes:**
+   ```rust
+   battery.set_high_current_threshold(5.0);
+   // Detect motor stalls or shorts
+   ```
+
+5. **Place sensor close to load:**
+   ```
+   Short, thick wires from battery to INA sensor to load
+   Minimizes voltage drop measurement errors
+   ```
+
+6. **Use appropriate shunt:**
+   ```rust
+   // For high current (>10A), use lower resistance shunt
+   battery.set_shunt_resistance(0.01);  // 10mΩ for 32A max
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check I2C: `i2cdetect -y 1` (should show 0x40)
+2. Enable I2C: `sudo raspi-config`
+3. Check wiring (SDA, SCL, VCC, GND)
+4. Verify sensor power (VCC = 3.3V)
+
+**Problem: Voltage reads 0V**
+
+**Solutions:**
+1. Check VIN+ and VIN- connections
+2. Verify battery is connected
+3. Check polarity (VIN+ to battery +)
+4. Test with multimeter first
+
+**Problem: Current always 0A**
+
+**Solutions:**
+1. Check shunt resistor value: `set_shunt_resistance(0.1)`
+2. Verify load is connected through shunt
+3. Calibrate: `battery.calibrate()?`
+4. Check if load is actually drawing current
+
+**Problem: Inaccurate SOC readings**
+
+**Solutions:**
+1. Set correct battery chemistry
+2. Set correct cell count
+3. SOC estimation requires voltage under load
+4. Fully charge battery and reset SOC
+
+**Problem: Noisy readings**
+
+**Solutions:**
+1. Enable averaging (INA226): `set_averaging(16)`
+2. Add capacitor near sensor (0.1μF)
+3. Reduce sample rate: `set_sample_rate(5)`
+4. Use shielded I2C cables if long
+
+## Multi-Battery Systems
+
+```rust
+// Monitor multiple batteries
+let mut battery1 = BatteryMonitorNode::new()?;
+battery1.set_i2c_address(0x40);
+battery1.set_battery_id(0);
+
+let mut battery2 = BatteryMonitorNode::new()?;
+battery2.set_i2c_address(0x41);
+battery2.set_battery_id(1);
+
+// Each publishes to "battery.data" with different battery_id
+```
+
+## See Also
+
+- [I2cBusNode](./i2c-bus) - I2C communication
+- [UltrasonicNode](./ultrasonic) - Distance sensing
+- [ImuNode](./imu) - Inertial measurement
+- [SafetyMonitorNode](./safety-monitor) - System health monitoring

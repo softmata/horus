@@ -1,0 +1,395 @@
+---
+title: Sim2D Configuration
+description: Robot and world YAML configuration reference
+---
+
+# Sim2D Configuration
+
+Sim2D uses YAML files to configure robots and worlds. This page covers all configuration options.
+
+## Command Line Arguments
+
+```bash
+horus sim2d [OPTIONS]
+
+Options:
+  --robot <FILE>           Robot configuration YAML file
+  --world <FILE>           World configuration YAML file
+  --world-image <FILE>     World from image (PNG, JPG, PGM)
+  --resolution <FLOAT>     Meters per pixel for world image (default: 0.05)
+  --threshold <0-255>      Obstacle threshold - darker = obstacle (default: 128)
+  --topic <PREFIX>         Topic prefix (default: "robot")
+  --name <NAME>            Robot name (default: "robot")
+  --headless               Run without GUI
+  --articulated <FILE>     Articulated robot YAML file
+  --preset <NAME>          Use preset: arm_2dof, arm_6dof, humanoid
+  --gravity                Enable gravity (for side-view simulation)
+```
+
+## Robot Configuration
+
+### Basic Configuration
+
+```yaml
+# robot.yaml
+name: "my_robot"
+topic_prefix: "robot"      # Topics: robot.cmd_vel, robot.odom, etc.
+position: [0.0, 0.0]       # Initial position [x, y] in meters
+
+# Physical dimensions
+width: 0.5                 # Robot width (meters)
+length: 0.8                # Robot length (meters)
+max_speed: 2.0             # Maximum velocity (m/s)
+
+# Appearance
+color: [0.2, 0.8, 0.2]     # RGB (0.0-1.0)
+```
+
+### Kinematics Model
+
+```yaml
+kinematics:
+  type: "differential"     # Options: differential, ackermann, omni
+  wheel_base: 0.5          # Distance between wheels (m)
+  wheel_radius: 0.1        # Wheel radius (m) - for ackermann
+  max_steering_angle: 0.5  # Radians - for ackermann
+```
+
+| Type | Description |
+|------|-------------|
+| `differential` | Two-wheel drive (tank steering) |
+| `ackermann` | Car-like steering |
+| `omni` | Omnidirectional (holonomic) |
+
+### LIDAR Configuration
+
+```yaml
+lidar:
+  enabled: true
+  range_max: 10.0          # Maximum range (meters)
+  range_min: 0.1           # Minimum range (meters)
+  angle_min: -3.14159      # Start angle (radians) - -180°
+  angle_max: 3.14159       # End angle (radians) - +180°
+  num_rays: 360            # Number of rays (1° resolution)
+```
+
+### Camera Configuration
+
+```yaml
+camera:
+  enabled: true
+  width: 640               # Image width (pixels)
+  height: 480              # Image height (pixels)
+  fov: 1.0472              # Field of view (radians) - 60°
+  topic: "camera/image"
+```
+
+### GPS Configuration
+
+```yaml
+gps:
+  enabled: true
+  update_rate: 1.0         # Hz
+  topic: "gps"
+  position_noise:
+    enabled: true
+    std_dev: 2.0           # Position noise (meters)
+    mean: 0.0              # Bias
+```
+
+### Ultrasonic Sensors
+
+```yaml
+ultrasonic:
+  enabled: true
+  topic_prefix: "ultrasonic"
+  sensors:
+    - offset: [0.4, 0.0]   # Position relative to robot center
+      angle: 0.0           # Angle relative to robot heading
+      max_range: 4.0       # Maximum range (meters)
+      min_range: 0.02      # Minimum range (meters)
+      fov: 0.26            # Field of view (radians) - 15°
+      noise:
+        enabled: true
+        std_dev: 0.02
+    - offset: [-0.4, 0.0]  # Rear sensor
+      angle: 3.14159       # Facing backwards
+      max_range: 4.0
+      min_range: 0.02
+      fov: 0.26
+```
+
+### Contact Sensors
+
+```yaml
+contact:
+  enabled: true
+  topic: "contact"
+  sensors:
+    - position: [0.4, 0.0]   # Front bumper
+      radius: 0.05
+    - position: [-0.4, 0.0]  # Rear bumper
+      radius: 0.05
+```
+
+### Visual Components
+
+Add visual details to your robot:
+
+```yaml
+visual:
+  turret:
+    width: 0.3
+    length: 0.3
+    offset_x: 0.0
+    offset_y: 0.0
+    color: [0.25, 0.35, 0.18]
+
+  cannon:
+    length: 0.4
+    width: 0.08
+    offset_x: 0.2
+    color: [0.2, 0.2, 0.2]
+
+  treads:
+    width: 0.1
+    offset: 0.3
+    color: [0.15, 0.15, 0.15]
+```
+
+### Complete Robot Example
+
+```yaml
+# tank_robot.yaml
+name: "tank"
+topic_prefix: "tank"
+position: [0.0, 0.0]
+width: 0.6
+length: 1.0
+max_speed: 1.5
+color: [0.35, 0.45, 0.25]
+
+kinematics:
+  type: "differential"
+  wheel_base: 0.5
+
+lidar:
+  enabled: true
+  range_max: 15.0
+  num_rays: 720
+
+camera:
+  enabled: true
+  width: 640
+  height: 480
+  fov: 1.2
+
+gps:
+  enabled: true
+  update_rate: 5.0
+  position_noise:
+    enabled: true
+    std_dev: 1.0
+
+visual:
+  turret:
+    width: 0.4
+    length: 0.4
+    offset_x: -0.1
+    offset_y: 0.0
+    color: [0.3, 0.4, 0.2]
+  cannon:
+    length: 0.5
+    width: 0.1
+    offset_x: 0.3
+    color: [0.15, 0.15, 0.15]
+  treads:
+    width: 0.12
+    offset: 0.35
+    color: [0.1, 0.1, 0.1]
+```
+
+## World Configuration
+
+### Basic World
+
+```yaml
+# world.yaml
+width: 20.0                # World width (meters)
+height: 20.0               # World height (meters)
+wall_color: [0.3, 0.3, 0.3]              # Boundary wall color
+default_obstacle_color: [0.6, 0.4, 0.2]  # Default obstacle color
+
+obstacles: []              # List of obstacles
+```
+
+### Obstacles
+
+#### Rectangle Obstacles
+
+```yaml
+obstacles:
+  - pos: [5.0, 3.0]        # Center position [x, y]
+    shape: rectangle
+    size: [2.0, 1.0]       # [width, height]
+    color: [0.6, 0.3, 0.1] # Optional RGB color
+```
+
+#### Circle Obstacles
+
+```yaml
+obstacles:
+  - pos: [-3.0, 2.0]
+    shape: circle
+    size: [1.0, 1.0]       # [radius, radius] (use same value)
+    color: [0.5, 0.5, 0.8]
+```
+
+#### Dynamic Obstacles
+
+```yaml
+obstacles:
+  - pos: [0.0, 5.0]
+    shape: rectangle
+    size: [1.0, 1.0]
+    dynamic:
+      enabled: true
+      velocity: [0.5, 0.0]   # Linear velocity [vx, vy]
+      angular: 0.0           # Angular velocity (rad/s)
+      bounds:                # Movement bounds
+        min: [-5.0, 4.0]
+        max: [5.0, 6.0]
+      bounce: true           # Bounce off bounds
+```
+
+### Complete World Example
+
+```yaml
+# warehouse.yaml
+width: 30.0
+height: 20.0
+wall_color: [0.4, 0.4, 0.4]
+default_obstacle_color: [0.5, 0.3, 0.2]
+
+obstacles:
+  # Shelving units
+  - pos: [-10.0, 5.0]
+    shape: rectangle
+    size: [1.0, 8.0]
+    color: [0.6, 0.4, 0.2]
+
+  - pos: [-5.0, 5.0]
+    shape: rectangle
+    size: [1.0, 8.0]
+    color: [0.6, 0.4, 0.2]
+
+  - pos: [0.0, 5.0]
+    shape: rectangle
+    size: [1.0, 8.0]
+    color: [0.6, 0.4, 0.2]
+
+  # Pillars
+  - pos: [8.0, 8.0]
+    shape: circle
+    size: [0.5, 0.5]
+    color: [0.5, 0.5, 0.5]
+
+  - pos: [8.0, -8.0]
+    shape: circle
+    size: [0.5, 0.5]
+    color: [0.5, 0.5, 0.5]
+
+  # Moving forklift
+  - pos: [5.0, 0.0]
+    shape: rectangle
+    size: [0.8, 1.2]
+    color: [0.8, 0.6, 0.0]
+    dynamic:
+      enabled: true
+      velocity: [0.0, 0.3]
+      bounds:
+        min: [4.0, -8.0]
+        max: [6.0, 8.0]
+      bounce: true
+```
+
+## World from Image
+
+Load occupancy grid maps directly from images:
+
+```bash
+# PGM format (common in ROS)
+horus sim2d --world-image map.pgm --resolution 0.05
+
+# PNG with custom threshold
+horus sim2d --world-image floor_plan.png --resolution 0.1 --threshold 200
+```
+
+### Image Format
+
+- **White/Light** = Free space
+- **Black/Dark** = Obstacles
+- **Gray** = Depends on threshold
+
+### Resolution
+
+`--resolution` sets meters per pixel:
+
+| Resolution | Description |
+|------------|-------------|
+| 0.01 | 1 cm per pixel (high detail) |
+| 0.05 | 5 cm per pixel (typical) |
+| 0.1 | 10 cm per pixel (coarse) |
+
+### Creating Maps
+
+1. Use image editor to draw floor plan
+2. Save as PGM, PNG, or JPG
+3. Load with appropriate resolution
+
+```bash
+# Example: 1000x1000 pixel map at 5cm resolution = 50m x 50m world
+horus sim2d --world-image my_map.pgm --resolution 0.05
+```
+
+## Multi-Robot Configuration
+
+For multiple robots, create separate config files with different topic prefixes:
+
+```yaml
+# robot1.yaml
+name: "robot1"
+topic_prefix: "robot1"
+position: [-5.0, 0.0]
+color: [0.8, 0.2, 0.2]
+
+# robot2.yaml
+name: "robot2"
+topic_prefix: "robot2"
+position: [5.0, 0.0]
+color: [0.2, 0.2, 0.8]
+```
+
+Launch with multiple robots:
+
+```bash
+# Currently requires library API
+# See Python API documentation for multi-robot support
+```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `RUST_LOG` | Logging level (debug, info, warn, error) |
+| `SIM2D_SEED` | Random seed for deterministic simulation |
+
+```bash
+RUST_LOG=debug horus sim2d
+```
+
+## See Also
+
+- [Getting Started](/simulators/sim2d/getting-started) - First steps
+- [Sensors](/simulators/sim2d/sensors) - Sensor configuration details
+- [Articulated Robots](/simulators/sim2d/articulated) - Multi-joint robots

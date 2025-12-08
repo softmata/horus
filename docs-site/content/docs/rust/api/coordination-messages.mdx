@@ -1,0 +1,448 @@
+---
+title: "Coordination Messages"
+description: "Multi-robot coordination, fleet management, task assignment, and formation control"
+weight: 56
+---
+
+# Coordination Messages
+
+HORUS provides message types for coordinating multiple robots, fleet management, task assignment, swarm behavior, and formation control.
+
+## RobotState
+
+Individual robot state information for fleet management.
+
+```rust
+use horus::prelude::*; // Provides coordination::{RobotState, RobotType, RobotCapability};
+use horus::prelude::*; // Provides geometry::{Pose2D, Twist};
+
+// Create robot state
+let mut robot = RobotState::new("robot_01", RobotType::Mobile);
+
+// Update motion state
+robot.update_motion(
+    Pose2D::new(5.0, 3.0, 1.57),
+    Twist::linear(0.5, 0.0)
+);
+
+// Set capabilities
+robot.set_capability(RobotCapability::Navigation, true);
+robot.set_capability(RobotCapability::Transport, true);
+robot.set_capability(RobotCapability::Vision, true);
+
+// Set battery and status
+robot.battery_level = 85.0;
+robot.load_factor = 0.3;  // 30% loaded
+
+// Check availability
+if robot.is_available() {
+    println!("{} is available for tasks", robot.robot_id_str());
+}
+
+// Check if maintenance needed
+if robot.needs_maintenance() {
+    println!("{} needs maintenance", robot.robot_id_str());
+}
+
+// Check capabilities
+if robot.has_capability(RobotCapability::Navigation) {
+    println!("Robot can navigate autonomously");
+}
+```
+
+**RobotType values:**
+
+| Type | Description |
+|------|-------------|
+| `Mobile` | General purpose mobile robot |
+| `Manipulator` | Robotic arm |
+| `Aerial` | Drone/UAV |
+| `Marine` | Underwater vehicle |
+| `Stationary` | Fixed sensor/processing unit |
+| `Tool` | Specialized equipment |
+| `Transport` | Logistics robot |
+| `Service` | Cleaning/maintenance robot |
+
+**RobotCapability flags:**
+
+| Capability | Bit | Description |
+|------------|-----|-------------|
+| `Navigation` | 0 | Autonomous navigation |
+| `Manipulation` | 1 | Object manipulation |
+| `Vision` | 2 | Camera/vision system |
+| `Transport` | 3 | Cargo transport |
+| `Cleaning` | 4 | Cleaning tasks |
+| `Inspection` | 5 | Inspection/monitoring |
+| `Communication` | 6 | External comms |
+| `Emergency` | 7 | Emergency response |
+| `Precision` | 8 | High-precision positioning |
+| `Outdoor` | 9 | Outdoor operation |
+| `Underwater` | 10 | Underwater operation |
+| `Aerial` | 11 | Aerial operation |
+| `HeavyLifting` | 12 | Heavy lifting |
+| `Hazmat` | 13 | Hazardous environments |
+| `RealTime` | 14 | Real-time processing |
+| `Swarm` | 15 | Multi-robot coordination |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `robot_id` | `[u8; 32]` | Unique robot identifier |
+| `pose` | `Pose2D` | Current world pose |
+| `velocity` | `Twist` | Current velocity |
+| `status` | `StatusLevel` | Operational status |
+| `battery_level` | `f32` | Battery percentage (0-100) |
+| `current_task_id` | `u32` | Active task ID (0 = none) |
+| `capabilities` | `u32` | Capability bitmask |
+| `load_factor` | `f32` | Cargo utilization (0.0-1.0) |
+| `robot_type` | `RobotType` | Robot classification |
+| `priority` | `u8` | Priority level (0 = highest) |
+| `comm_quality` | `f32` | Communication quality (0.0-1.0) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## FleetStatus
+
+Fleet-wide status overview (up to 64 robots).
+
+```rust
+use horus::prelude::*; // Provides coordination::{FleetStatus, RobotState, RobotType, CoordinationMode};
+
+// Create fleet
+let mut fleet = FleetStatus::new("warehouse_fleet");
+fleet.coordination_mode = CoordinationMode::Centralized;
+
+// Add robots
+let robot1 = RobotState::new("robot_01", RobotType::Transport);
+let robot2 = RobotState::new("robot_02", RobotType::Transport);
+
+fleet.update_robot(robot1)?;
+fleet.update_robot(robot2)?;
+
+println!("Fleet has {} robots", fleet.robot_count);
+println!("Average battery: {:.1}%", fleet.average_battery);
+println!("Communication health: {:.1}%", fleet.comm_health * 100.0);
+
+// Get available robots
+let available = fleet.available_robots();
+println!("{} robots available for tasks", available.len());
+
+// Get robots needing maintenance
+let maintenance = fleet.maintenance_needed();
+if !maintenance.is_empty() {
+    println!("{} robots need maintenance", maintenance.len());
+}
+
+// Check emergency status
+if fleet.emergency_active {
+    println!("EMERGENCY: Fleet-wide emergency active!");
+}
+
+// Remove robot
+fleet.remove_robot("robot_02");
+```
+
+**CoordinationMode values:**
+
+| Mode | Description |
+|------|-------------|
+| `Decentralized` | Robots coordinate directly |
+| `Centralized` | Single coordinator assigns tasks |
+| `Hierarchical` | Multiple coordination levels |
+| `MarketBased` | Robots bid for tasks (auction) |
+| `Swarm` | Emergent swarm behavior |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `robots` | `[RobotState; 64]` | Robot states array |
+| `robot_count` | `u8` | Number of active robots |
+| `fleet_id` | `[u8; 32]` | Fleet identifier |
+| `active_tasks` | `u32` | Total active tasks |
+| `coordination_mode` | `CoordinationMode` | Fleet coordination mode |
+| `coordinator_id` | `[u8; 32]` | Central coordinator ID |
+| `emergency_active` | `bool` | Fleet-wide emergency |
+| `average_battery` | `f32` | Average battery level |
+| `comm_health` | `f32` | Communication health (0.0-1.0) |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## TaskAssignment
+
+Task assignment for robots.
+
+```rust
+use horus::prelude::*; // Provides coordination::{TaskAssignment, TaskType, TaskStatus, RobotCapability};
+
+// Create navigation task
+let task = TaskAssignment::new(1001, "robot_01", TaskType::Navigation)
+    .with_priority_deadline(0, 1704067200_000_000_000)  // High priority with deadline
+    .with_capabilities(RobotCapability::Navigation as u32);
+
+println!("Task {} assigned to {}", task.task_id, task.robot_id_str());
+
+// Update task status
+let mut task = task;
+task.update_status(TaskStatus::InProgress);
+
+// Check if overdue
+if task.is_overdue() {
+    println!("Task {} is overdue!", task.task_id);
+}
+
+// Mark completed
+task.update_status(TaskStatus::Completed);
+```
+
+**TaskType values:**
+
+| Type | Description |
+|------|-------------|
+| `Navigation` | Navigate to location |
+| `Manipulation` | Pick and place |
+| `Transport` | Cargo transport |
+| `Inspection` | Area/object inspection |
+| `Cleaning` | Cleaning operation |
+| `Surveillance` | Monitoring task |
+| `Emergency` | Emergency response |
+| `Maintenance` | Maintenance task |
+| `DataCollection` | Sensor data collection |
+| `Communication` | Communication relay |
+| `Formation` | Formation/coordination |
+| `Custom` | User-defined task |
+
+**TaskStatus values:**
+
+| Status | Description |
+|--------|-------------|
+| `Assigned` | Task assigned, not started |
+| `InProgress` | Task executing |
+| `Completed` | Task succeeded |
+| `Failed` | Task failed |
+| `Cancelled` | Task cancelled |
+| `Paused` | Task suspended |
+| `Aborted` | Emergency abort |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `u32` | Unique task identifier |
+| `robot_id` | `[u8; 32]` | Assigned robot ID |
+| `task_type` | `TaskType` | Task category |
+| `priority` | `u8` | Priority (0 = highest) |
+| `deadline` | `u64` | Task deadline (0 = none) |
+| `estimated_duration` | `f64` | Estimated time (seconds) |
+| `required_capabilities` | `u32` | Required capability bitmask |
+| `parameters` | `[u8; 64]` | Task parameters |
+| `assigned_time` | `u64` | Assignment timestamp |
+| `expected_completion` | `u64` | Expected completion time |
+| `status` | `TaskStatus` | Current task status |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## FormationControl
+
+Formation control parameters for coordinated movement.
+
+```rust
+use horus::prelude::*; // Provides coordination::{FormationControl, FormationType};
+use horus::prelude::*; // Provides geometry::Twist;
+
+// Leader-follower formation
+let follower = FormationControl::leader_follower("leader_robot", [-1.0, 0.5]);
+println!("Following at offset ({:.1}, {:.1})",
+    follower.relative_position[0], follower.relative_position[1]);
+
+// Circle formation (index 0 of 4 robots, 2m radius)
+let circle_pos = FormationControl::circle(0, 4, 2.0);
+
+// Custom formation
+let mut formation = FormationControl::default();
+formation.formation_type = FormationType::Grid;
+formation.spacing = 1.5;  // 1.5m spacing
+formation.scale = 1.0;
+formation.stiffness = 0.8;  // 80% stiffness
+formation.enabled = true;
+
+// Disable formation keeping
+formation.set_enabled(false);
+```
+
+**FormationType values:**
+
+| Type | Description |
+|------|-------------|
+| `Line` | Line formation |
+| `Column` | Column formation |
+| `Wedge` | V-formation |
+| `Circle` | Circular formation |
+| `Grid` | Grid formation |
+| `Diamond` | Diamond formation |
+| `LeaderFollower` | Follow a leader |
+| `Custom` | Custom positions |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `formation_type` | `FormationType` | Formation pattern |
+| `leader_id` | `[u8; 32]` | Leader robot ID |
+| `formation_index` | `u8` | Position in formation |
+| `relative_position` | `[f64; 2]` | [x, y] offset from center/leader |
+| `relative_orientation` | `f64` | Orientation offset (radians) |
+| `scale` | `f64` | Formation scale factor |
+| `spacing` | `f64` | Robot spacing (meters) |
+| `formation_velocity` | `Twist` | Formation movement velocity |
+| `stiffness` | `f32` | Formation stiffness (0.0-1.0) |
+| `enabled` | `bool` | Formation control active |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## AuctionBid
+
+Market-based task allocation bid.
+
+```rust
+use horus::prelude::*; // Provides coordination::{AuctionBid, BidStatus};
+
+// Create bid for task
+let mut bid = AuctionBid::new(1001, "robot_02", 15.5);  // task_id, robot_id, bid_value
+bid.estimated_time = 30.0;  // 30 seconds
+bid.capability_score = 0.9;  // 90% capability match
+bid.availability = 0.8;       // 80% available
+
+// Set expiration
+bid.expiration_time = bid.bid_time + 5_000_000_000;  // 5 second expiration
+
+// Check if valid
+if bid.is_valid() {
+    println!("Bid score: {:.2}", bid.total_score());
+}
+
+// Update status after auction
+bid.status = BidStatus::Won;
+```
+
+**BidStatus values:**
+
+| Status | Description |
+|--------|-------------|
+| `Active` | Bid submitted and active |
+| `Won` | Bid won the auction |
+| `Lost` | Bid lost the auction |
+| `Withdrawn` | Robot withdrew bid |
+| `Expired` | Bid expired |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | `u32` | Task being bid on |
+| `robot_id` | `[u8; 32]` | Bidding robot ID |
+| `bid_value` | `f64` | Bid value (cost/utility) |
+| `estimated_time` | `f64` | Estimated completion time |
+| `capability_score` | `f32` | Capability match (0.0-1.0) |
+| `availability` | `f32` | Robot availability (0.0-1.0) |
+| `bid_time` | `u64` | Bid submission time |
+| `expiration_time` | `u64` | Bid expiration (0 = none) |
+| `status` | `BidStatus` | Bid status |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## Fleet Manager Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides coordination::{
+    FleetStatus, RobotState, TaskAssignment, TaskType, TaskStatus,
+    AuctionBid, BidStatus, CoordinationMode
+};
+
+struct FleetManagerNode {
+    fleet: FleetStatus,
+    robot_state_sub: Hub<RobotState>,
+    task_request_sub: Hub<TaskAssignment>,
+    bid_sub: Hub<AuctionBid>,
+    task_pub: Hub<TaskAssignment>,
+    fleet_pub: Hub<FleetStatus>,
+    pending_auctions: Vec<(u32, Vec<AuctionBid>)>,  // task_id -> bids
+}
+
+impl Node for FleetManagerNode {
+    fn name(&self) -> &'static str { "FleetManager" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update robot states
+        while let Some(state) = self.robot_state_sub.try_recv(&mut ctx) {
+            self.fleet.update_robot(state).ok();
+        }
+
+        // Process new task requests
+        while let Some(task) = self.task_request_sub.try_recv(&mut ctx) {
+            match self.fleet.coordination_mode {
+                CoordinationMode::Centralized => {
+                    // Assign to best available robot
+                    if let Some(robot) = self.find_best_robot(&task) {
+                        let mut assigned_task = task;
+                        let robot_id = robot.robot_id;
+                        assigned_task.robot_id = robot_id;
+                        assigned_task.update_status(TaskStatus::Assigned);
+                        self.task_pub.send(assigned_task, &mut ctx).ok();
+                    }
+                }
+                CoordinationMode::MarketBased => {
+                    // Start auction
+                    self.pending_auctions.push((task.task_id, Vec::new()));
+                }
+                _ => {}
+            }
+        }
+
+        // Process bids for market-based coordination
+        while let Some(bid) = self.bid_sub.try_recv(&mut ctx) {
+            for (task_id, bids) in &mut self.pending_auctions {
+                if *task_id == bid.task_id {
+                    bids.push(bid);
+                }
+            }
+        }
+
+        // Resolve auctions (select lowest bid score)
+        self.pending_auctions.retain(|(task_id, bids)| {
+            if bids.len() >= self.fleet.robot_count as usize {
+                if let Some(winner) = bids.iter()
+                    .filter(|b| b.is_valid())
+                    .min_by(|a, b| a.total_score().partial_cmp(&b.total_score()).unwrap())
+                {
+                    let task = TaskAssignment::new(*task_id, &winner.robot_id_str(), TaskType::Navigation);
+                    self.task_pub.send(task, &mut ctx).ok();
+                }
+                false  // Remove from pending
+            } else {
+                true   // Keep waiting for more bids
+            }
+        });
+
+        // Publish fleet status
+        self.fleet_pub.send(self.fleet.clone(), &mut ctx).ok();
+    }
+}
+
+impl FleetManagerNode {
+    fn find_best_robot(&self, task: &TaskAssignment) -> Option<&RobotState> {
+        self.fleet.available_robots()
+            .into_iter()
+            .filter(|r| (r.capabilities & task.required_capabilities) == task.required_capabilities)
+            .min_by(|a, b| a.priority.cmp(&b.priority))
+    }
+
+    fn robot_id_str(robot_id: &[u8; 32]) -> String {
+        let end = robot_id.iter().position(|&b| b == 0).unwrap_or(32);
+        String::from_utf8_lossy(&robot_id[..end]).into_owned()
+    }
+}
+```
+
+## See Also
+
+- [Navigation Messages](/rust/api/navigation-messages) - Goal, Path, OccupancyGrid
+- [Diagnostics Messages](/rust/api/diagnostics-messages) - Status, Heartbeat
+- [Differential Drive](/rust/library/algorithms/differential-drive) - Differential drive kinematics

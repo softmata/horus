@@ -1,0 +1,209 @@
+---
+title: Algorithms Library
+description: Pure computational algorithms for robotics - pathfinding, state estimation, control, and more
+---
+
+# Algorithms Library
+
+HORUS provides a comprehensive library of pure computational algorithms for robotics. These are **standalone implementations** with no I/O dependencies, making them easy to test, reuse, and integrate into any node or application.
+
+## Key Benefits
+
+- **No I/O Dependencies** - Pure computation, no hardware coupling
+- **Fully Tested** - 107+ unit tests across all algorithms
+- **Reusable** - Use in nodes, applications, or standalone
+- **Well-Documented** - Each includes usage examples and API documentation
+
+## Available Algorithms
+
+| Algorithm | Category | Description |
+|-----------|----------|-------------|
+| [A*](/rust/library/algorithms/astar) | Motion Planning | Optimal grid-based pathfinding |
+| [RRT](/rust/library/algorithms/rrt) | Motion Planning | Sampling-based planning for complex spaces |
+| [Pure Pursuit](/rust/library/algorithms/pure-pursuit) | Path Tracking | Geometric path following controller |
+| [EKF](/rust/library/algorithms/ekf) | State Estimation | Extended Kalman Filter for 2D localization |
+| [Kalman Filter](/rust/library/algorithms/kalman-filter) | State Estimation | Linear Kalman Filter for 1D estimation |
+| [Sensor Fusion](/rust/library/algorithms/sensor-fusion) | State Estimation | Multi-sensor weighted fusion |
+| [PID](/rust/library/algorithms/pid) | Control | Classic feedback control with anti-windup |
+| [Differential Drive](/rust/library/algorithms/differential-drive) | Kinematics | Forward/inverse kinematics and odometry |
+| [Occupancy Grid](/rust/library/algorithms/occupancy-grid) | Mapping | 2D probabilistic grid mapping |
+| [AABB](/rust/library/algorithms/aabb) | Collision | Axis-Aligned Bounding Box collision detection |
+| [Safety Layer](/rust/library/algorithms/safety-layer) | Safety | Multi-level safety monitoring |
+
+## Quick Start
+
+All algorithms are available through `horus_library::algorithms`:
+
+```rust
+use horus_library::algorithms::{
+    astar::AStar,
+    ekf::EKF,
+    pid::PID,
+    pure_pursuit::PurePursuit,
+    rrt::RRT,
+    sensor_fusion::SensorFusion,
+    differential_drive::DifferentialDrive,
+    occupancy_grid::OccupancyGrid,
+};
+```
+
+## Example: Path Planning + Following
+
+Combine algorithms for complete robot navigation:
+
+```rust
+use horus_library::algorithms::{
+    astar::AStar,
+    pure_pursuit::PurePursuit,
+};
+
+fn main() {
+    // Step 1: Plan a path with A*
+    let mut planner = AStar::new(100, 100);
+    planner.set_start(10, 10);
+    planner.set_goal(90, 90);
+    planner.set_obstacle(50, 50);
+
+    let path = planner.plan().expect("No path found");
+
+    // Step 2: Follow the path with Pure Pursuit
+    let mut pursuit = PurePursuit::new(0.5);  // 0.5m look-ahead
+
+    // Convert grid coordinates to world coordinates
+    let world_path: Vec<(f64, f64)> = path
+        .iter()
+        .map(|(x, y)| (*x as f64 * 0.1, *y as f64 * 0.1))
+        .collect();
+    pursuit.set_path(world_path);
+
+    // Control loop
+    let current_pose = (1.0, 1.0, 0.0);  // x, y, theta
+    let (linear, angular) = pursuit.compute_velocity(current_pose, 0.5);
+
+    println!("Command: linear={:.2} m/s, angular={:.2} rad/s", linear, angular);
+}
+```
+
+## Example: State Estimation Pipeline
+
+Combine sensors for robust localization:
+
+```rust
+use horus_library::algorithms::{
+    ekf::EKF,
+    sensor_fusion::SensorFusion,
+};
+
+fn main() {
+    // EKF for pose estimation
+    let mut ekf = EKF::new();
+    ekf.set_state([0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);  // x, y, theta, vx, vy, omega
+
+    // Sensor fusion for position
+    let mut fusion = SensorFusion::new();
+
+    // Simulate sensor readings
+    fusion.add_measurement("odometry", 1.5, 0.1);   // High confidence
+    fusion.add_measurement("gps", 1.6, 0.5);        // Lower confidence
+    fusion.add_measurement("visual", 1.55, 0.2);   // Medium confidence
+
+    // Get fused position estimate
+    let fused_x = fusion.fuse().unwrap();
+    let fused_variance = fusion.fused_variance().unwrap();
+
+    println!("Fused position: {:.3}m (variance: {:.4})", fused_x, fused_variance);
+
+    // Update EKF with fused measurement
+    ekf.predict(0.01);
+    ekf.update_odometry([fused_x, 0.0, 0.0]);
+
+    let (x, y, theta) = ekf.get_pose();
+    println!("EKF pose: ({:.2}, {:.2}, {:.2})", x, y, theta);
+}
+```
+
+## Algorithm Categories
+
+### Motion Planning
+
+Algorithms for finding collision-free paths:
+
+- **A*** - Best for grid-based maps with known obstacles
+- **RRT** - Best for high-dimensional or continuous spaces
+
+### State Estimation
+
+Algorithms for estimating robot state from noisy sensors:
+
+- **EKF** - Full 6-state (pose + velocity) estimation with nonlinear models
+- **Kalman Filter** - Simpler linear estimation for 1D tracking
+- **Sensor Fusion** - Weighted combination of multiple sensors
+
+### Control
+
+Algorithms for controlling actuators:
+
+- **PID** - Classic feedback control for motors, servos, etc.
+- **Pure Pursuit** - Path-following controller for mobile robots
+
+### Kinematics
+
+Algorithms for robot motion models:
+
+- **Differential Drive** - Two-wheel robot kinematics and odometry
+
+### Mapping
+
+Algorithms for environment representation:
+
+- **Occupancy Grid** - 2D probabilistic obstacle map
+
+### Safety
+
+Algorithms for safe operation:
+
+- **AABB** - Fast bounding box collision detection
+- **Safety Layer** - Multi-level safety enforcement
+
+## Integration with Nodes
+
+Algorithms integrate naturally with HORUS nodes:
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::pid::PID;
+use horus::prelude::*; // Provides {MotorCommand, Odometry};
+
+struct MotorController {
+    pid: PID,
+    cmd_pub: Hub<MotorCommand>,
+    odom_sub: Hub<Odometry>,
+    target_velocity: f64,
+}
+
+impl Node for MotorController {
+    fn name(&self) -> &'static str { "MotorController" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            let current_vel = odom.twist.linear[0];
+            let output = self.pid.compute(self.target_velocity, current_vel, 0.01);
+
+            let cmd = MotorCommand {
+                motor_id: 0,
+                value: output as f32,
+                mode: 1,  // velocity mode
+                timestamp: 0,
+            };
+            self.cmd_pub.send(cmd, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## See Also
+
+- [Built-in Nodes](/rust/library/built-in-nodes) - Pre-built nodes using these algorithms
+- [PID Controller Node](/rust/library/built-in-nodes/pid-controller) - Ready-to-use PID node
+- [Path Planner Node](/rust/library/built-in-nodes/path-planner) - Navigation node
+- [Localization Node](/rust/library/built-in-nodes/localization) - EKF-based localization

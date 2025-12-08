@@ -1,0 +1,434 @@
+---
+title: Sim3D Physics
+description: Physics simulation in the HORUS 3D simulator
+---
+
+# Sim3D Physics
+
+Sim3D uses Rapier3D for high-fidelity physics simulation, supporting rigid bodies, soft bodies, joints, and GPU-accelerated physics.
+
+## Physics Engine
+
+Sim3D is built on [Rapier3D](https://rapier.rs/), a fast and accurate physics engine written in Rust:
+
+- **Rigid body dynamics** - Accurate collision and contact simulation
+- **Soft body physics** - Deformable objects and cloth
+- **Articulated bodies** - Robots with joints and constraints
+- **GPU acceleration** - Optional CUDA/Vulkan compute
+
+## Configuration
+
+Configure physics in your scene or via CLI:
+
+```yaml
+# scene.yaml
+physics:
+  gravity: [0.0, -9.81, 0.0]
+  timestep: 0.001           # 1ms fixed timestep
+  substeps: 4               # Physics substeps per frame
+  solver_iterations: 8
+  stabilization: 0.8
+
+  # Contact parameters
+  contact:
+    max_velocity: 100.0
+    prediction_distance: 0.002
+
+  # Joint solver
+  joints:
+    warmstart: true
+    compliance: 0.0
+```
+
+```bash
+# CLI options
+horus sim3d --timestep 0.001 --substeps 4 --gravity -9.81
+```
+
+## Rigid Bodies
+
+### Body Types
+
+```rust
+use sim3d::physics::{RigidBodyType, RigidBodyConfig};
+
+// Dynamic - affected by forces
+let dynamic = RigidBodyConfig {
+    body_type: RigidBodyType::Dynamic,
+    mass: 1.0,
+    ..Default::default()
+};
+
+// Kinematic - moved by user, affects others
+let kinematic = RigidBodyConfig {
+    body_type: RigidBodyType::KinematicPositionBased,
+    ..Default::default()
+};
+
+// Static - immovable
+let static_body = RigidBodyConfig {
+    body_type: RigidBodyType::Static,
+    ..Default::default()
+};
+```
+
+### YAML Configuration
+
+```yaml
+objects:
+  - name: box
+    type: rigid_body
+    shape: box
+    size: [1.0, 1.0, 1.0]
+    position: [0, 2, 0]
+    physics:
+      mass: 5.0
+      friction: 0.5
+      restitution: 0.3
+      linear_damping: 0.1
+      angular_damping: 0.1
+
+  - name: sphere
+    type: rigid_body
+    shape: sphere
+    radius: 0.5
+    position: [0, 5, 0]
+    physics:
+      mass: 2.0
+      friction: 0.8
+      restitution: 0.9
+```
+
+## Colliders
+
+### Primitive Shapes
+
+```yaml
+colliders:
+  # Box
+  - shape: box
+    size: [1.0, 2.0, 0.5]  # half-extents
+
+  # Sphere
+  - shape: sphere
+    radius: 0.5
+
+  # Capsule
+  - shape: capsule
+    radius: 0.3
+    height: 1.0
+
+  # Cylinder
+  - shape: cylinder
+    radius: 0.5
+    height: 2.0
+
+  # Cone
+  - shape: cone
+    radius: 0.5
+    height: 1.0
+```
+
+### Complex Shapes
+
+```yaml
+colliders:
+  # Convex hull from mesh
+  - shape: convex_hull
+    mesh: models/part.obj
+
+  # Triangle mesh (static only)
+  - shape: trimesh
+    mesh: models/terrain.obj
+
+  # Compound shape
+  - shape: compound
+    children:
+      - shape: box
+        size: [1, 0.5, 1]
+        offset: [0, 0, 0]
+      - shape: cylinder
+        radius: 0.3
+        height: 1.0
+        offset: [0, 0.75, 0]
+```
+
+## Materials
+
+Configure surface properties:
+
+```yaml
+materials:
+  rubber:
+    friction: 1.2
+    restitution: 0.8
+    density: 1100.0
+
+  metal:
+    friction: 0.4
+    restitution: 0.1
+    density: 7800.0
+
+  ice:
+    friction: 0.05
+    restitution: 0.1
+    density: 917.0
+
+objects:
+  - name: wheel
+    material: rubber
+    # ...
+```
+
+## Joints
+
+### Revolute Joint (Hinge)
+
+```yaml
+joints:
+  - name: wheel_joint
+    type: revolute
+    parent: chassis
+    child: wheel
+    anchor: [0.5, 0, 0]
+    axis: [0, 0, 1]
+    limits: [-3.14, 3.14]  # Optional angle limits
+    motor:
+      target_velocity: 10.0
+      max_torque: 100.0
+```
+
+### Prismatic Joint (Slider)
+
+```yaml
+joints:
+  - name: lift_joint
+    type: prismatic
+    parent: base
+    child: platform
+    anchor: [0, 0, 0]
+    axis: [0, 1, 0]
+    limits: [0.0, 2.0]  # meters
+    motor:
+      target_position: 1.0
+      stiffness: 1000.0
+      damping: 100.0
+```
+
+### Fixed Joint
+
+```yaml
+joints:
+  - name: mount
+    type: fixed
+    parent: robot
+    child: sensor
+    anchor: [0.1, 0, 0.2]
+```
+
+### Ball Joint (Spherical)
+
+```yaml
+joints:
+  - name: shoulder
+    type: ball
+    parent: torso
+    child: upper_arm
+    anchor: [0.2, 0.5, 0]
+```
+
+### Generic 6-DOF Joint
+
+```yaml
+joints:
+  - name: custom_joint
+    type: generic
+    parent: a
+    child: b
+    locked_axes: [false, false, true, true, true, false]  # x, y, z, rx, ry, rz
+    limits:
+      x: [-1.0, 1.0]
+      rz: [-1.57, 1.57]
+```
+
+## Controllers
+
+Built-in joint controllers:
+
+### Position Controller
+
+```yaml
+joints:
+  - name: arm_joint
+    type: revolute
+    controller:
+      type: position
+      kp: 1000.0
+      kd: 100.0
+      max_torque: 50.0
+```
+
+### Velocity Controller
+
+```yaml
+joints:
+  - name: wheel_joint
+    type: revolute
+    controller:
+      type: velocity
+      kp: 10.0
+      max_torque: 20.0
+```
+
+### Torque Controller
+
+```yaml
+joints:
+  - name: motor_joint
+    type: revolute
+    controller:
+      type: torque
+      max_torque: 100.0
+```
+
+## Differential Drive
+
+Built-in differential drive physics:
+
+```yaml
+robots:
+  - name: mobile_robot
+    drive:
+      type: differential
+      wheel_radius: 0.1
+      wheel_separation: 0.5
+      max_linear_velocity: 2.0
+      max_angular_velocity: 3.14
+      wheel_joints: [left_wheel, right_wheel]
+      cmd_topic: cmd_vel
+      odom_topic: odom
+```
+
+## Soft Bodies
+
+Deformable objects using FEM:
+
+```yaml
+objects:
+  - name: cushion
+    type: soft_body
+    mesh: models/cushion.obj
+    physics:
+      mass: 0.5
+      stiffness: 1000.0
+      damping: 10.0
+      volume_preservation: 0.9
+
+  - name: rope
+    type: soft_body
+    shape: rope
+    length: 2.0
+    segments: 20
+    physics:
+      mass: 0.1
+      bend_stiffness: 100.0
+      stretch_stiffness: 10000.0
+```
+
+## Collision Groups
+
+Control what collides with what:
+
+```yaml
+collision_groups:
+  robot: 0x0001
+  environment: 0x0002
+  sensor_rays: 0x0004
+
+objects:
+  - name: robot_base
+    collision_group: robot
+    collision_filter: environment  # Only collide with environment
+
+  - name: lidar_rays
+    collision_group: sensor_rays
+    collision_filter: environment | robot  # Collide with both
+```
+
+## Contact Events
+
+Subscribe to collision events:
+
+```rust
+use sim3d::physics::ContactEvent;
+
+let contact_hub = Hub::<ContactEvent>::new("physics.contacts")?;
+
+// In your node
+if let Some(event) = contact_hub.recv(&mut ctx) {
+    match event {
+        ContactEvent::Started { body1, body2, point, normal, impulse } => {
+            println!("Collision between {} and {} at {:?}", body1, body2, point);
+        }
+        ContactEvent::Ended { body1, body2 } => {
+            println!("Separation: {} and {}", body1, body2);
+        }
+    }
+}
+```
+
+## GPU Physics
+
+Enable GPU-accelerated physics (requires CUDA):
+
+```yaml
+physics:
+  gpu:
+    enabled: true
+    device: 0
+
+  # Particle systems benefit most from GPU
+  particles:
+    enabled: true
+    max_particles: 1000000
+```
+
+```bash
+horus sim3d --gpu-physics --device 0
+```
+
+## Performance Tuning
+
+### Timestep vs Accuracy
+
+| Timestep | Accuracy | Performance | Use Case |
+|----------|----------|-------------|----------|
+| 0.0001s | Highest | Slowest | High-precision manipulation |
+| 0.001s | High | Good | General robotics |
+| 0.004s | Medium | Fast | Real-time training |
+| 0.016s | Low | Fastest | Visualization only |
+
+### Solver Iterations
+
+```yaml
+physics:
+  solver_iterations: 4   # Fast but less accurate
+  solver_iterations: 8   # Default - good balance
+  solver_iterations: 16  # High accuracy for complex assemblies
+```
+
+### Substeps
+
+```yaml
+physics:
+  # More substeps = more stable high-speed interactions
+  substeps: 1   # Fast, may miss fast collisions
+  substeps: 4   # Default
+  substeps: 8   # High-speed projectiles, fast robots
+```
+
+## See Also
+
+- [Sim3D Sensors](/simulators/sim3d/sensors/overview) - Simulated sensors
+- [Sim3D RL](/simulators/sim3d/rl/overview) - Reinforcement learning
+- [URDF Loading](/simulators/sim3d/getting-started/quick-start) - Robot models

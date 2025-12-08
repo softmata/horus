@@ -1,0 +1,428 @@
+---
+title: Complete Beginner's Guide to Robot Programming
+description: Learn robot programming fundamentals with HORUS. This guide covers installation, basic concepts, and building your first robot program.
+order: 2
+---
+
+# Complete Beginner's Guide to Robot Programming
+
+This guide introduces robot programming concepts and walks through building your first robot program with HORUS. No prior robotics experience is required.
+
+## What You'll Learn
+
+By the end of this guide, you will:
+
+- Understand the fundamental concepts of robot programming
+- Install HORUS on your computer
+- Write your first robot program in Python
+- Create nodes that communicate with each other
+- Use the monitor to monitor your robot
+
+## Prerequisites
+
+- Basic Python knowledge (variables, functions, loops)
+- A Linux, macOS, or Windows computer
+- Terminal/command line familiarity
+
+## Part 1: Understanding Robot Programming
+
+### How Robots Work
+
+A robot system consists of multiple components working together:
+
+- **Sensors** - Read data from the environment (cameras, distance sensors, GPS)
+- **Processors** - Make decisions based on sensor data (navigation, AI, control algorithms)
+- **Actuators** - Execute physical actions (motors, servos, grippers)
+
+Each component needs to communicate with others quickly and reliably. HORUS provides the communication infrastructure that connects these components.
+
+### The Communication Challenge
+
+Consider a mobile robot navigating a room:
+
+1. A LiDAR sensor scans the environment 10 times per second
+2. A navigation algorithm processes the scan data
+3. Motor controllers adjust wheel speeds
+4. A safety system monitors for obstacles
+
+All components must share data with minimal delay. HORUS handles this communication through a publish/subscribe messaging system.
+
+### HORUS Approach
+
+In HORUS, communication between components is straightforward:
+
+```python
+# Component 1: Publish sensor data
+node.send("distance", 1.5)
+
+# Component 2: Receive the data
+distance = node.get("distance")
+```
+
+HORUS manages the underlying shared memory and synchronization.
+
+## Part 2: Installation
+
+Follow the [Installation Guide](/getting-started/installation) to install HORUS. The process takes approximately 5-10 minutes and includes:
+
+- Installing the Rust toolchain
+- Building and installing HORUS
+- Verifying the installation
+
+Once complete, verify the installation:
+
+```bash
+horus --version
+```
+
+## Part 3: Your First Robot Program
+
+### Understanding Nodes
+
+In HORUS, each component is called a **node**. Nodes have these characteristics:
+
+- Each node performs a specific task
+- Nodes communicate by publishing and subscribing to topics
+- Complex systems are built by combining simple nodes
+
+### Create a Project
+
+```bash
+horus new my_first_robot --python
+cd my_first_robot
+```
+
+This creates a project directory with a template `main.py` file.
+
+### Understanding the Code
+
+Open `main.py`:
+
+```python
+import horus
+
+# Counter to track messages
+count = 0
+
+# This function runs repeatedly
+def tick(node):
+    global count
+    count += 1
+    print(f"Hello from robot! Count: {count}")
+
+    # Stop after 5 messages
+    if count >= 5:
+        node.request_stop()
+
+# Create and run the node
+node = horus.Node(name="HelloRobot", tick=tick, rate=1)  # 1 Hz
+horus.run(node, duration=5)
+```
+
+Key elements:
+
+| Element | Description |
+|---------|-------------|
+| `horus.Node()` | Creates a robot component |
+| `tick=tick` | Function called each cycle |
+| `rate=1` | Execution frequency in Hz (1 Hz = once per second) |
+| `horus.run()` | Starts the node execution |
+| `duration=5` | Maximum runtime in seconds |
+
+### Run the Program
+
+```bash
+horus run
+```
+
+Output:
+```
+Hello from robot! Count: 1
+Hello from robot! Count: 2
+Hello from robot! Count: 3
+Hello from robot! Count: 4
+Hello from robot! Count: 5
+```
+
+## Part 4: Node Communication
+
+Real robot systems require multiple nodes working together. This example demonstrates a sensor node communicating with a motor controller node.
+
+### Create `robot_with_sensor.py`
+
+```python
+import horus
+import random
+
+# Node 1: Simulates a distance sensor
+def sensor_tick(node):
+    # Simulate reading a sensor (random distance 0.5-10 meters)
+    distance = random.uniform(0.5, 10.0)
+
+    # Publish the distance
+    node.send("distance", distance)
+    print(f"Sensor: Distance {distance:.2f}m")
+
+# Node 2: Controls motors based on sensor data
+def motor_tick(node):
+    # Subscribe to distance data
+    distance = node.get("distance")
+
+    if distance is not None:
+        if distance < 1.0:
+            print(f"  Motor: Stopping (obstacle at {distance:.2f}m)")
+        else:
+            print(f"  Motor: Moving forward (clear at {distance:.2f}m)")
+
+# Create nodes
+sensor = horus.Node(
+    name="DistanceSensor",
+    pubs=["distance"],
+    tick=sensor_tick,
+    rate=2
+)
+
+motor = horus.Node(
+    name="MotorController",
+    subs=["distance"],
+    tick=motor_tick,
+    rate=2
+)
+
+# Run both nodes for 5 seconds
+horus.run(sensor, motor, duration=5)
+```
+
+### Run the Example
+
+```bash
+horus run robot_with_sensor.py
+```
+
+Output:
+```
+Sensor: Distance 7.23m
+  Motor: Moving forward (clear at 7.23m)
+Sensor: Distance 0.84m
+  Motor: Stopping (obstacle at 0.84m)
+Sensor: Distance 5.67m
+  Motor: Moving forward (clear at 5.67m)
+```
+
+### How It Works
+
+1. The sensor node publishes distance readings to the `"distance"` topic
+2. The motor controller node subscribes to the `"distance"` topic
+3. The motor controller makes decisions based on received data
+4. HORUS handles all inter-node communication via shared memory
+
+This publish/subscribe pattern is the foundation of robot programming: sensors publish data, processors consume it and make decisions, actuators receive commands.
+
+## Part 5: Using the Monitor
+
+HORUS includes a real-time monitoring monitor.
+
+### Launch the Monitor
+
+While your robot program is running, open a new terminal:
+
+```bash
+horus monitor
+```
+
+The monitor displays:
+
+- **Active nodes** - Running components and their status
+- **Message flow** - Data flowing between nodes
+- **Performance metrics** - Message rates, latency, resource usage
+- **Topic information** - Published and subscribed topics
+
+### Testing the Monitor
+
+1. Run the sensor + motor example from Part 4
+2. In another terminal: `horus monitor`
+3. Observe the `"distance"` topic showing message flow
+4. View real-time statistics
+
+## Part 6: Hardware Integration
+
+HORUS works with various hardware platforms:
+
+- Raspberry Pi
+- NVIDIA Jetson
+- Any Linux-based robot controller
+- Arduino (via serial communication)
+
+### Example: Raspberry Pi GPIO
+
+```python
+import horus
+import RPi.GPIO as GPIO
+
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(17, GPIO.OUT)  # Left motor
+GPIO.setup(18, GPIO.OUT)  # Right motor
+
+def motor_tick(node):
+    velocity = node.get("cmd_vel")
+    if velocity:
+        linear, angular = velocity
+        # Convert to motor commands
+        left_speed = linear - angular
+        right_speed = linear + angular
+        # Drive motors
+        GPIO.output(17, left_speed > 0)
+        GPIO.output(18, right_speed > 0)
+
+motor = horus.Node(
+    name="MotorController",
+    subs=["cmd_vel"],
+    tick=motor_tick,
+    rate=50  # 50 Hz control loop
+)
+
+horus.run(motor)
+```
+
+### Built-in Nodes
+
+HORUS provides pre-built nodes for common hardware:
+
+```python
+from horus.nodes import (
+    CameraNode,      # USB/MIPI cameras
+    LidarNode,       # LiDAR sensors
+    ImuNode,         # Inertial measurement units
+    GpsNode,         # GPS receivers
+    JoystickNode,    # Game controller input
+    SerialNode,      # Serial communication
+)
+```
+
+See [Built-in Nodes](/rust/library/built-in-nodes) for complete documentation.
+
+## Part 7: Example Project - Line Following Robot
+
+This example demonstrates a complete robot system.
+
+### Hardware Requirements
+
+- Robot chassis with 2 DC motors
+- Raspberry Pi or similar controller
+- 2x IR line sensors
+- Motor driver (L298N or similar)
+
+### Implementation
+
+```python
+import horus
+
+# Node 1: Read line sensors
+def sensor_tick(node):
+    # Replace with actual GPIO reads
+    left_sees_line = read_left_sensor()
+    right_sees_line = read_right_sensor()
+
+    node.send("sensor.left", left_sees_line)
+    node.send("sensor.right", right_sees_line)
+
+# Node 2: Line following logic
+def follower_tick(node):
+    left = node.get("sensor.left")
+    right = node.get("sensor.right")
+
+    if left is None or right is None:
+        return
+
+    if left and right:
+        # Both sensors on line - go straight
+        node.send("cmd_vel", (1.0, 0.0))
+    elif left:
+        # Left sensor on line - turn left
+        node.send("cmd_vel", (0.5, -0.3))
+    elif right:
+        # Right sensor on line - turn right
+        node.send("cmd_vel", (0.5, 0.3))
+    else:
+        # Lost the line - search
+        node.send("cmd_vel", (0.0, 0.5))
+
+# Node 3: Motor driver
+def motor_tick(node):
+    cmd = node.get("cmd_vel")
+    if cmd:
+        linear, angular = cmd
+        left_speed = linear - angular
+        right_speed = linear + angular
+        drive_motors(left_speed, right_speed)
+
+# Create and run nodes
+sensor = horus.Node(
+    name="LineSensor",
+    pubs=["sensor.left", "sensor.right"],
+    tick=sensor_tick,
+    rate=30
+)
+
+follower = horus.Node(
+    name="LineFollower",
+    subs=["sensor.left", "sensor.right"],
+    pubs=["cmd_vel"],
+    tick=follower_tick,
+    rate=30
+)
+
+motor = horus.Node(
+    name="MotorDriver",
+    subs=["cmd_vel"],
+    tick=motor_tick,
+    rate=30
+)
+
+horus.run(sensor, follower, motor)
+```
+
+## Common Questions
+
+### Do I need to learn Rust?
+
+No. Python is fully supported for all HORUS functionality. Rust is optional and primarily useful for performance-critical applications.
+
+### Do I need hardware to get started?
+
+No. You can develop and test programs using simulated data before deploying to hardware.
+
+### Can HORUS control multiple robots?
+
+Yes. HORUS supports network communication between robots. See [Network Communication](/concepts/network-communication).
+
+### What platforms does HORUS support?
+
+HORUS runs on Linux, macOS, and Windows. Hardware features (GPIO, I2C) require Linux.
+
+## Next Steps
+
+### Core Concepts
+
+- [Nodes](/concepts/core-concepts-nodes) - Node architecture and patterns
+- [Hub and Topics](/concepts/core-concepts-hub) - Message passing system
+- [Scheduler](/concepts/core-concepts-scheduler) - Execution control
+
+### Practical Guides
+
+- [Using Pre-Built Nodes](/package-management/using-prebuilt-nodes) - Leverage existing nodes
+- [Built-in Nodes](/rust/library/built-in-nodes) - Hardware drivers and sensors
+- [Monitor](/development/monitor) - Monitoring and debugging
+
+### Advanced Topics
+
+- [Network Communication](/concepts/network-communication) - Multi-robot systems
+- [Performance](/performance/performance) - Optimization techniques
+- [Python Bindings](/python/api/python-bindings) - Complete Python API reference
+
+## Getting Help
+
+- [Troubleshooting Guide](/troubleshooting) - Common issues and solutions
+- [GitHub Issues](https://github.com/softmata/horus/issues) - Bug reports and feature requests
+- [GitHub Discussions](https://github.com/softmata/horus/discussions) - Questions and community support

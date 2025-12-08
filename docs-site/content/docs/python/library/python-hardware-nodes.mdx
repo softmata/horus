@@ -1,0 +1,715 @@
+---
+title: Python Hardware Nodes
+description: Ready-to-use Python nodes for sensors, actuators, and peripherals
+order: 53
+---
+
+# Python Hardware Nodes
+
+HORUS provides **ready-to-use Python nodes** for common robotics hardware. These nodes handle the low-level hardware communication, letting you focus on your robot's logic.
+
+## Overview
+
+| Node | Hardware | Library | Simulation |
+|------|----------|---------|------------|
+| [`SerialNode`](#serialnode) | UART/RS232 | pyserial | Yes |
+| [`JoystickNode`](#joysticknode) | Gamepads | pygame | Yes |
+| [`KeyboardNode`](#keyboardnode) | Keyboard | pynput | Yes |
+| [`ImuNode`](#imunode) | MPU6050 IMU | smbus2 | Yes |
+| [`GpsNode`](#gpsnode) | NMEA GPS | pynmea2 | Yes |
+| [`CameraNode`](#cameranode) | USB/CSI cameras | opencv-python | Yes |
+| [`LidarNode`](#lidarnode) | RPLidar | rplidar-roboticia | Yes |
+
+**Key Features:**
+- **Real hardware drivers** - Not just simulation
+- **Simulation mode** - Prototype without hardware
+- **Auto-fallback** - Gracefully handle missing hardware
+- **Standard message types** - Consistent data formats
+
+---
+
+## Installation
+
+The nodes use optional Python dependencies. Install what you need:
+
+```bash
+# All hardware dependencies
+pip install pyserial pygame pynput smbus2 pynmea2 opencv-python rplidar-roboticia
+
+# Or install individually
+pip install pyserial          # SerialNode
+pip install pygame            # JoystickNode
+pip install pynput            # KeyboardNode
+pip install smbus2            # ImuNode (I2C)
+pip install pynmea2 pyserial  # GpsNode
+pip install opencv-python     # CameraNode
+pip install rplidar-roboticia # LidarNode
+```
+
+---
+
+## Quick Start
+
+```python
+from horus import Scheduler
+from horus.nodes import SerialNode, ImuNode, CameraNode
+
+# Create nodes (simulation mode if hardware unavailable)
+serial = SerialNode(port="/dev/ttyUSB0", baudrate=115200)
+imu = ImuNode(i2c_bus=1, i2c_address=0x68)
+camera = CameraNode(device_id=0, width=640, height=480)
+
+# Run with scheduler
+scheduler = Scheduler()
+scheduler.add(serial, priority=0)
+scheduler.add(imu, priority=1)
+scheduler.add(camera, priority=2)
+scheduler.run()
+```
+
+---
+
+## SerialNode
+
+Serial/UART communication for Arduino, GPS modules, motor controllers, etc.
+
+### Usage
+
+```python
+from horus.nodes import SerialNode, SerialData
+
+# Create serial node
+serial = SerialNode(
+    port="/dev/ttyUSB0",
+    baudrate=115200,
+    topic_prefix="serial",
+    timeout=0.1,
+    simulation=False,  # Set True for prototyping
+)
+
+# Topics:
+#   serial.rx - Incoming data (SerialData)
+#   serial.tx - Outgoing data (subscribe to send)
+
+# Direct API
+serial.write(b"Hello Arduino!\n")
+response = serial.readline()
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `port` | str | "/dev/ttyUSB0" | Serial port path |
+| `baudrate` | int | 9600 | Baud rate |
+| `topic_prefix` | str | "serial" | Topic name prefix |
+| `bytesize` | int | 8 | Data bits (5-8) |
+| `parity` | str | 'N' | Parity (N/E/O) |
+| `stopbits` | float | 1 | Stop bits (1/1.5/2) |
+| `timeout` | float | 0.1 | Read timeout (seconds) |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class SerialData:
+    port: str           # Port name
+    data: bytes         # Raw bytes
+    timestamp: float    # Unix timestamp
+```
+
+---
+
+## JoystickNode
+
+Gamepad and joystick input using pygame.
+
+### Usage
+
+```python
+from horus.nodes import JoystickNode, JoystickState
+
+joystick = JoystickNode(
+    device_id=0,
+    deadzone=0.1,
+    topic_prefix="joy",
+    simulation=False,
+)
+
+# Topics:
+#   joy.state   - Full state (JoystickState)
+#   joy.axes    - List of axis values
+#   joy.buttons - List of button states
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `device_id` | int | 0 | Joystick index |
+| `topic_prefix` | str | "joystick" | Topic name prefix |
+| `deadzone` | float | 0.1 | Axis deadzone (0-1) |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class JoystickState:
+    axes: List[float]           # Axis values (-1 to 1)
+    buttons: List[bool]         # Button states
+    hats: List[Tuple[int,int]]  # D-pad/hat values
+    device_id: int              # Device index
+    device_name: str            # Controller name
+    timestamp: float
+```
+
+### Example: Tank Drive Control
+
+```python
+from horus import Node, Scheduler
+from horus.nodes import JoystickNode
+
+class TankDrive(Node):
+    def __init__(self):
+        super().__init__(
+            name="tank_drive",
+            subs=["joy.state"],
+            pubs=["cmd_vel"],
+            tick=self.control,
+        )
+
+    def control(self, node):
+        if node.has_msg("joy.state"):
+            state = node.get("joy.state")
+            # Left stick Y = forward, Right stick X = turn
+            linear = -state.axes[1] * 0.5   # Max 0.5 m/s
+            angular = state.axes[2] * 1.0   # Max 1.0 rad/s
+            node.send("cmd_vel", {"linear": linear, "angular": angular})
+
+scheduler = Scheduler()
+scheduler.add(JoystickNode(device_id=0))
+scheduler.add(TankDrive())
+scheduler.run()
+```
+
+---
+
+## KeyboardNode
+
+Keyboard input capture for teleoperation.
+
+### Usage
+
+```python
+from horus.nodes import KeyboardNode, KeyboardState
+
+keyboard = KeyboardNode(
+    topic_prefix="keyboard",
+    simulation=False,
+)
+
+# Topics:
+#   keyboard.events  - Key events (KeyboardState)
+#   keyboard.pressed - Currently pressed keys (set)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `topic_prefix` | str | "keyboard" | Topic name prefix |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class KeyboardState:
+    key: str           # Key character (e.g., 'w', 'space')
+    keycode: int       # Virtual key code
+    pressed: bool      # True=press, False=release
+    modifiers: dict    # Shift, Ctrl, Alt states
+    timestamp: float
+```
+
+### Example: WASD Teleop
+
+```python
+from horus import Node, Scheduler
+from horus.nodes import KeyboardNode
+
+class WASDTeleop(Node):
+    def __init__(self):
+        super().__init__(
+            name="wasd_teleop",
+            subs=["keyboard.pressed"],
+            pubs=["cmd_vel"],
+            tick=self.control,
+            rate=30,
+        )
+
+    def control(self, node):
+        pressed = node.get("keyboard.pressed") or set()
+
+        linear = 0.0
+        angular = 0.0
+
+        if 'w' in pressed: linear = 0.5
+        if 's' in pressed: linear = -0.5
+        if 'a' in pressed: angular = 1.0
+        if 'd' in pressed: angular = -1.0
+
+        node.send("cmd_vel", {"linear": linear, "angular": angular})
+
+scheduler = Scheduler()
+scheduler.add(KeyboardNode())
+scheduler.add(WASDTeleop())
+scheduler.run()
+```
+
+---
+
+## ImuNode
+
+6-DOF IMU sensor reading via I2C (MPU6050).
+
+### Usage
+
+```python
+from horus.nodes import ImuNode, ImuData
+
+imu = ImuNode(
+    i2c_bus=1,
+    i2c_address=0x68,
+    topic_prefix="imu",
+    frame_id="imu_link",
+    simulation=False,
+)
+
+# Topics:
+#   imu - IMU data (ImuData)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `i2c_bus` | int | 1 | I2C bus number |
+| `i2c_address` | int | 0x68 | I2C device address |
+| `topic_prefix` | str | "imu" | Topic name |
+| `frame_id` | str | "imu_link" | TF frame ID |
+| `accel_scale` | float | 16384.0 | Accelerometer scale factor |
+| `gyro_scale` | float | 131.0 | Gyroscope scale factor |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class ImuData:
+    accel_x: float      # m/s²
+    accel_y: float
+    accel_z: float
+    gyro_x: float       # rad/s
+    gyro_y: float
+    gyro_z: float
+    temperature: float  # °C
+    frame_id: str
+    timestamp: float
+```
+
+### Simulation Data
+
+In simulation mode, the IMU generates:
+- Gravity vector: (0, 0, 9.81) m/s²
+- Small gyroscope drift over time
+- Temperature: 25°C constant
+
+---
+
+## GpsNode
+
+NMEA GPS receiver via serial port.
+
+### Usage
+
+```python
+from horus.nodes import GpsNode, GpsData
+
+gps = GpsNode(
+    port="/dev/ttyACM0",
+    baudrate=9600,
+    topic_prefix="gps",
+    simulation=False,
+)
+
+# Topics:
+#   gps.fix - GPS fix data (GpsData)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `port` | str | "/dev/ttyUSB0" | Serial port |
+| `baudrate` | int | 9600 | Baud rate |
+| `topic_prefix` | str | "gps" | Topic name prefix |
+| `frame_id` | str | "gps" | TF frame ID |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class GpsData:
+    latitude: float     # Degrees
+    longitude: float    # Degrees
+    altitude: float     # Meters
+    fix_type: int       # 0=none, 1=2D, 2=3D
+    satellites: int     # Visible satellites
+    hdop: float         # Horizontal dilution
+    speed: float        # m/s
+    heading: float      # Degrees
+    frame_id: str
+    timestamp: float
+
+    def has_fix(self) -> bool:
+        return self.fix_type > 0 and self.satellites >= 4
+```
+
+### Simulation Data
+
+In simulation mode, GPS generates:
+- Position: San Francisco (37.7749, -122.4194)
+- Altitude: 10m
+- 8 satellites, HDOP 1.2
+
+---
+
+## CameraNode
+
+USB/CSI camera capture using OpenCV.
+
+### Usage
+
+```python
+from horus.nodes import CameraNode, ImageData
+
+camera = CameraNode(
+    device_id=0,
+    width=640,
+    height=480,
+    fps=30.0,
+    topic_prefix="camera",
+    simulation=False,
+)
+
+# Topics:
+#   camera.image     - ImageData message
+#   camera.image_raw - Raw numpy array (for CV processing)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `device_id` | int | 0 | Camera device index |
+| `width` | int | 640 | Frame width |
+| `height` | int | 480 | Frame height |
+| `fps` | float | 30.0 | Target framerate |
+| `topic_prefix` | str | "camera" | Topic name prefix |
+| `frame_id` | str | "camera_link" | TF frame ID |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class ImageData:
+    data: bytes         # Raw pixel data
+    width: int
+    height: int
+    encoding: str       # "bgr8", "rgb8", "mono8"
+    step: int           # Row stride in bytes
+    frame_id: str
+    timestamp: float
+```
+
+### Example: Object Detection
+
+```python
+from horus import Node, Scheduler
+from horus.nodes import CameraNode
+import cv2
+
+class ObjectDetector(Node):
+    def __init__(self):
+        super().__init__(
+            name="detector",
+            subs=["camera.image_raw"],
+            pubs=["detections"],
+            tick=self.detect,
+            rate=10,
+        )
+        # Load your model here
+
+    def detect(self, node):
+        if node.has_msg("camera.image_raw"):
+            frame = node.get("camera.image_raw")
+            # Run detection on frame
+            # detections = self.model.predict(frame)
+            # node.send("detections", detections)
+
+scheduler = Scheduler()
+scheduler.add(CameraNode(device_id=0, width=640, height=480))
+scheduler.add(ObjectDetector())
+scheduler.run()
+```
+
+---
+
+## LidarNode
+
+2D LiDAR scanner using RPLidar.
+
+### Usage
+
+```python
+from horus.nodes import LidarNode, LaserScan
+
+lidar = LidarNode(
+    port="/dev/ttyUSB0",
+    num_samples=360,
+    range_min=0.15,
+    range_max=12.0,
+    topic_prefix="scan",
+    simulation=False,
+)
+
+# Topics:
+#   scan - LaserScan data
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `port` | str | "/dev/ttyUSB0" | Serial port |
+| `topic_prefix` | str | "scan" | Topic name |
+| `frame_id` | str | "laser" | TF frame ID |
+| `num_samples` | int | 360 | Samples per scan |
+| `range_min` | float | 0.15 | Min range (meters) |
+| `range_max` | float | 12.0 | Max range (meters) |
+| `simulation` | bool | False | Enable simulation mode |
+
+### Message Type
+
+```python
+@dataclass
+class LaserScan:
+    ranges: List[float]       # Range measurements (meters)
+    intensities: List[float]  # Signal intensities
+    angle_min: float          # Start angle (radians)
+    angle_max: float          # End angle (radians)
+    angle_increment: float    # Angular resolution
+    range_min: float          # Minimum valid range
+    range_max: float          # Maximum valid range
+    frame_id: str
+    timestamp: float
+```
+
+### Supported Hardware
+
+- RPLidar A1
+- RPLidar A2
+- RPLidar A3
+- RPLidar S1
+- RPLidar S2
+
+### Example: Obstacle Avoidance
+
+```python
+from horus import Node, Scheduler
+from horus.nodes import LidarNode
+import math
+
+class ObstacleAvoider(Node):
+    def __init__(self):
+        super().__init__(
+            name="avoider",
+            subs=["scan"],
+            pubs=["cmd_vel"],
+            tick=self.avoid,
+            rate=10,
+        )
+
+    def avoid(self, node):
+        if not node.has_msg("scan"):
+            return
+
+        scan = node.get("scan")
+
+        # Check front sector (±30 degrees)
+        front_ranges = []
+        for i, r in enumerate(scan.ranges):
+            angle = scan.angle_min + i * scan.angle_increment
+            if abs(angle) < math.radians(30):
+                if scan.range_min < r < scan.range_max:
+                    front_ranges.append(r)
+
+        min_front = min(front_ranges) if front_ranges else float('inf')
+
+        if min_front < 0.5:  # Obstacle within 0.5m
+            cmd = {"linear": 0.0, "angular": 0.5}  # Turn
+        else:
+            cmd = {"linear": 0.3, "angular": 0.0}  # Forward
+
+        node.send("cmd_vel", cmd)
+
+scheduler = Scheduler()
+scheduler.add(LidarNode(port="/dev/ttyUSB0"))
+scheduler.add(ObstacleAvoider())
+scheduler.run()
+```
+
+---
+
+## Simulation Mode
+
+All nodes support simulation mode for prototyping without hardware.
+
+### Enabling Simulation
+
+```python
+# Explicit simulation
+imu = ImuNode(simulation=True)
+
+# Auto-fallback (if hardware unavailable)
+imu = ImuNode()  # Falls back to simulation if I2C fails
+```
+
+### Simulation Data
+
+| Node | Simulation Output |
+|------|-------------------|
+| SerialNode | Accepts writes, no reads |
+| JoystickNode | Zero axes/buttons |
+| KeyboardNode | No events |
+| ImuNode | Gravity (0,0,9.81), small drift |
+| GpsNode | San Francisco coordinates |
+| CameraNode | Black frame with "SIMULATION" text |
+| LidarNode | Circular room pattern |
+
+See [Node Simulation Mode](/development/simulation#node-simulation-mode) for details.
+
+---
+
+## Best Practices
+
+### 1. Handle Missing Hardware
+
+```python
+from horus.nodes import ImuNode
+
+# Node will auto-fallback to simulation if hardware fails
+imu = ImuNode(i2c_bus=1)
+
+# Check if running in simulation
+if imu.simulation:
+    print("Warning: IMU running in simulation mode")
+```
+
+### 2. Use Topic Prefixes
+
+```python
+# Multiple cameras
+cam_front = CameraNode(device_id=0, topic_prefix="camera.front")
+cam_rear = CameraNode(device_id=1, topic_prefix="camera.rear")
+
+# Subscribe to specific camera
+node.subs = ["camera.front.image"]
+```
+
+### 3. Combine with Custom Nodes
+
+```python
+from horus import Node, Scheduler
+from horus.nodes import ImuNode, GpsNode
+
+class SensorFusion(Node):
+    def __init__(self):
+        super().__init__(
+            name="fusion",
+            subs=["imu", "gps.fix"],
+            pubs=["pose"],
+            tick=self.fuse,
+            rate=100,
+        )
+
+    def fuse(self, node):
+        imu = node.get("imu")
+        gps = node.get("gps.fix")
+        # Kalman filter, etc.
+        pose = self.kalman.update(imu, gps)
+        node.send("pose", pose)
+
+scheduler = Scheduler()
+scheduler.add(ImuNode())
+scheduler.add(GpsNode())
+scheduler.add(SensorFusion())
+scheduler.run()
+```
+
+---
+
+## API Reference
+
+### Data Classes
+
+```python
+from horus.nodes import (
+    SerialData,
+    JoystickState,
+    KeyboardState,
+    ImuData,
+    GpsData,
+    ImageData,
+    LaserScan,
+)
+```
+
+### Node Classes
+
+```python
+from horus.nodes import (
+    SerialNode,
+    JoystickNode,
+    KeyboardNode,
+    ImuNode,
+    GpsNode,
+    CameraNode,
+    LidarNode,
+)
+```
+
+### Top-Level Import
+
+```python
+# All nodes available from main horus module
+from horus import (
+    SerialNode, JoystickNode, KeyboardNode,
+    ImuNode, GpsNode, CameraNode, LidarNode,
+    SerialData, JoystickState, KeyboardState,
+    ImuData, GpsData, ImageData, LaserScan,
+)
+```
+
+---
+
+## See Also
+
+- [Python Bindings](/python/api/python-bindings) - Core Python API
+- [Node Simulation Mode](/development/simulation#node-simulation-mode) - Simulation details
+- [Built-in Nodes](/rust/library/built-in-nodes) - Rust node reference

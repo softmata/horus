@@ -1,0 +1,276 @@
+---
+title: "Quick Start"
+description: "Create your first Sim3D simulation"
+---
+
+# Quick Start
+
+This guide walks you through creating your first Sim3D simulation with a mobile robot.
+
+## Basic Simulation
+
+### 1. Create a World Configuration
+
+Create `my_world.yaml`:
+
+```yaml
+# World configuration
+name: "my_first_world"
+gravity: [0.0, 0.0, -9.81]
+time_step: 0.001  # 1ms physics step
+
+# Ground plane
+ground:
+  size: [20.0, 20.0]
+  friction: 0.7
+  material: "concrete"
+
+# Obstacles
+objects:
+  - name: "box1"
+    type: "box"
+    position: [3.0, 0.0, 0.5]
+    size: [1.0, 1.0, 1.0]
+    mass: 10.0
+    color: [0.8, 0.2, 0.2, 1.0]
+
+  - name: "cylinder1"
+    type: "cylinder"
+    position: [-2.0, 2.0, 0.5]
+    radius: 0.5
+    height: 1.0
+    mass: 5.0
+    color: [0.2, 0.8, 0.2, 1.0]
+
+# Lighting
+lights:
+  - type: "directional"
+    direction: [-0.5, -0.5, -1.0]
+    intensity: 1.0
+    color: [1.0, 1.0, 0.95]
+```
+
+### 2. Run the Simulation
+
+```bash
+# Via HORUS CLI (recommended)
+horus sim3d --world my_world.yaml
+
+# Or run sim3d binary directly
+sim3d --world my_world.yaml
+```
+
+### 3. Controls
+
+| Key | Action |
+|-----|--------|
+| `WASD` | Move camera |
+| `Mouse` | Look around |
+| `Scroll` | Zoom in/out |
+| `Space` | Pause/Resume |
+| `R` | Reset simulation |
+| `F1` | Toggle debug view |
+| `Escape` | Exit |
+
+## Adding a Robot
+
+### 1. Use a Robot Model
+
+```bash
+# Specify a URDF file
+horus sim3d --world my_world.yaml --robot models/my_robot.urdf
+```
+
+### 2. Create a Robot Configuration
+
+Create `my_robot.yaml`:
+
+```yaml
+name: "scout"
+type: "differential_drive"
+
+# Physical properties
+base:
+  mass: 10.0
+  size: [0.5, 0.3, 0.15]
+
+wheels:
+  radius: 0.1
+  width: 0.05
+  separation: 0.35
+  max_velocity: 2.0  # m/s
+  max_torque: 10.0   # Nm
+
+# Sensors
+sensors:
+  - type: "lidar"
+    name: "front_lidar"
+    position: [0.2, 0.0, 0.1]
+    range: 10.0
+    samples: 360
+    rate: 10  # Hz
+
+  - type: "imu"
+    name: "imu"
+    position: [0.0, 0.0, 0.05]
+    rate: 100  # Hz
+
+  - type: "camera"
+    name: "front_camera"
+    position: [0.25, 0.0, 0.1]
+    resolution: [640, 480]
+    fov: 60
+    rate: 30  # Hz
+```
+
+### 3. Run with Your Robot
+
+```bash
+horus sim3d --world my_world.yaml --robot my_robot.yaml
+```
+
+## Controlling the Robot
+
+### From Command Line
+
+```bash
+# In another terminal, publish velocity commands
+horus pub scout.cmd_vel '{"linear": [0.5, 0.0, 0.0], "angular": [0.0, 0.0, 0.1]}'
+```
+
+### From Rust Code
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    // Connect to robot command topic
+    let cmd_hub: Hub<Twist> = Hub::new("scout.cmd_vel")?;
+
+    // Send velocity command
+    let cmd = Twist::new_2d(0.5, 0.1);  // 0.5 m/s forward, 0.1 rad/s turn
+    cmd_hub.send(cmd, &mut None)?;
+
+    Ok(())
+}
+```
+
+### From Python
+
+```python
+from horus import Hub, Twist
+
+# Connect to robot
+cmd_hub = Hub("scout.cmd_vel")
+
+# Send command
+cmd = Twist(linear=[0.5, 0.0, 0.0], angular=[0.0, 0.0, 0.1])
+cmd_hub.send(cmd)
+```
+
+## Reading Sensor Data
+
+### Subscribe to Topics
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    // Subscribe to sensor topics
+    let odom_hub: Hub<Odometry> = Hub::new("scout.odom")?;
+    let scan_hub: Hub<LaserScan> = Hub::new("scout.scan")?;
+    let imu_hub: Hub<Imu> = Hub::new("scout.imu")?;
+
+    loop {
+        // Read odometry
+        if let Some(odom) = odom_hub.recv(&mut None) {
+            println!("Position: ({:.2}, {:.2})", odom.position.x, odom.position.y);
+        }
+
+        // Read LiDAR
+        if let Some(scan) = scan_hub.recv(&mut None) {
+            let min_range = scan.ranges.iter()
+                .filter(|r| **r > scan.range_min)
+                .min_by(|a, b| a.partial_cmp(b).unwrap());
+            println!("Closest obstacle: {:?}", min_range);
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+```
+
+## Headless Mode
+
+For training or batch simulations:
+
+```bash
+# Run without rendering
+horus sim3d --headless --world my_world.yaml --robot my_robot.yaml
+```
+
+### Deterministic Simulation
+
+```bash
+# Use a fixed seed for reproducible results
+horus sim3d --headless --seed 42 --world my_world.yaml
+```
+
+### Faster-than-Realtime
+
+When running headless, use the `--speed` flag with the sim3d binary directly:
+
+```bash
+# Run at 10x speed (via sim3d binary)
+sim3d --mode headless --speed 10.0 --world my_world.yaml
+```
+
+## Complete Example
+
+Here's a complete node that controls the robot:
+
+```rust
+use horus::prelude::*;
+
+node! {
+    WallFollower {
+        pub {
+            cmd_vel: Twist -> "scout.cmd_vel",
+        }
+        sub {
+            scan: LaserScan -> "scout.scan",
+        }
+        data {
+            target_distance: f32 = 1.0,
+            kp: f32 = 0.5,
+        }
+        tick(ctx) {
+            if let Some(scan) = self.scan.recv(ctx) {
+                // Get right-side distance (90 degrees)
+                let right_idx = 90;
+                let right_dist = scan.ranges[right_idx];
+
+                // Simple P controller to maintain distance
+                let error = self.target_distance - right_dist;
+                let angular = self.kp * error;
+
+                // Move forward while adjusting
+                let cmd = Twist::new_2d(0.3, angular);
+                self.cmd_vel.send(cmd, ctx).ok();
+            }
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(WallFollower::new()?), 50, None);
+    scheduler.run()
+}
+```
+
+## Next Steps
+
+- [Sensors Overview](/simulators/sim3d/sensors/overview) - Configure cameras, LiDAR, IMU
+- [Physics Configuration](/simulators/sim3d/physics/overview) - Tune physics parameters
+- [RL Training](/simulators/sim3d/rl/overview) - Set up reinforcement learning

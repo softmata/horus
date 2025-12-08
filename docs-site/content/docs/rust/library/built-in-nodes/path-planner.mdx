@@ -1,0 +1,68 @@
+---
+title: PathPlannerNode
+description: Path planning algorithms for autonomous navigation
+---
+
+# PathPlannerNode
+
+Path planning node implementing A*, RRT, and other planning algorithms for autonomous navigation. Generates collision-free paths from start to goal positions.
+
+## Source Code
+
+- [PathPlannerNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/path_planner)
+- [Navigation Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/navigation.rs)
+
+## Features
+
+- A* (grid-based)
+- RRT/RRT* (sampling-based)
+- Dijkstra's algorithm
+- Dynamic replanning
+- Obstacle avoidance
+- Configurable resolution
+- Simulation support
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let mut planner = PathPlannerNode::new()?;
+    planner.set_algorithm(PlannerAlgorithm::AStar);
+    planner.set_grid_resolution(0.05);  // 5cm grid
+
+    scheduler.add(Box::new(planner), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Usage
+
+```rust
+let hub = Hub::<PathRequest>::new("path_planner.request")?;
+
+// Request path from (0,0) to (5,5)
+hub.send(PathRequest {
+    start_x: 0.0,
+    start_y: 0.0,
+    goal_x: 5.0,
+    goal_y: 5.0,
+}, None)?;
+
+let path_hub = Hub::<Path>::new("path_planner.path")?;
+if let Some(path) = path_hub.recv(&mut None) {
+    for waypoint in &path.waypoints {
+        println!("Waypoint: ({:.2}, {:.2})", waypoint.x, waypoint.y);
+    }
+}
+```
+
+## See Also
+
+- [OdometryNode](./odometry) - Position tracking
+- [LidarNode](./lidar) - Obstacle detection
+- [CollisionDetectorNode](./collision-detector) - Collision avoidance

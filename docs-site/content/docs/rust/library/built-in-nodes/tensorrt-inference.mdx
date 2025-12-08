@@ -1,0 +1,377 @@
+---
+title: TensorRTInferenceNode
+description: High-performance inference using NVIDIA TensorRT
+---
+
+# TensorRTInferenceNode
+
+High-performance inference using NVIDIA TensorRT for 2-5x speedup over standard ONNX Runtime on NVIDIA GPUs. Supports FP32, FP16, and INT8 precision modes with automatic engine caching.
+
+## Source Code
+
+- [TensorRTInferenceNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/ml_inference/tensorrt_inference.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Performance Comparison
+
+| Backend | YOLOv8n @ 640x640 | Speedup |
+|---------|-------------------|---------|
+| ONNX Runtime CPU | ~100ms | 1x |
+| ONNX Runtime CUDA | ~15ms | 6.7x |
+| TensorRT FP16 | ~5ms | 20x |
+| TensorRT INT8 | ~3ms | 33x |
+
+## Features
+
+- FP32, FP16, and INT8 precision modes
+- Automatic engine caching for fast subsequent loads
+- Zero-copy GPU memory when possible
+- Dynamic batch size support
+- DLA support for Jetson devices
+- CUDA graph capture for reduced kernel overhead
+
+## Requirements
+
+### System Dependencies
+
+```bash
+# Ubuntu 22.04
+sudo apt install nvidia-cuda-toolkit
+sudo apt install tensorrt libnvinfer-dev
+
+# Verify installation
+python3 -c "import tensorrt; print(tensorrt.__version__)"
+```
+
+### Hardware Requirements
+
+- NVIDIA GPU with CUDA compute capability >= 7.0
+- Turing architecture or newer recommended (RTX 20-series, Jetson Xavier/Orin)
+- CUDA toolkit 11.x or 12.x
+- cuDNN 8.x
+- TensorRT 8.x or later (8.6+ recommended)
+
+### Feature Flag
+
+Enable in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::ml_inference::{TensorRTInferenceNode, TensorRTConfig};
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = TensorRTConfig::default()
+        .with_fp16(true)
+        .with_cache_dir("/tmp/trt_engines");
+
+    let inference_node = TensorRTInferenceNode::new_image(
+        "models/yolov8n.onnx",
+        "camera.raw",
+        "ml.detections",
+        config,
+    )?;
+
+    scheduler.add(Box::new(inference_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### TensorRTConfig Options
+
+```rust
+let config = TensorRTConfig {
+    batch_size: 1,
+    max_batch_size: 8,
+    precision: TensorRTPrecision::FP16,
+    device_id: 0,
+    confidence_threshold: 0.5,
+    enable_preprocessing: true,
+    input_size: Some([640, 640]),
+    norm_mean: [0.485, 0.456, 0.406],
+    norm_std: [0.229, 0.224, 0.225],
+    workspace_size_mb: 1024,
+    engine_cache_dir: Some("/tmp/trt_engines".into()),
+    force_rebuild: false,
+    use_dla: false,
+    dla_core: 0,
+    enable_cuda_graph: false,
+    max_optimization_profiles: 1,
+};
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | usize | 1 | Batch size for inference |
+| `max_batch_size` | usize | 8 | Max batch for dynamic batching |
+| `precision` | `TensorRTPrecision` | FP16 | Precision mode |
+| `device_id` | i32 | 0 | GPU device ID |
+| `confidence_threshold` | f32 | 0.5 | Prediction threshold |
+| `enable_preprocessing` | bool | true | Enable preprocessing |
+| `input_size` | `Option<[u32; 2]>` | None | Target input [H, W] |
+| `norm_mean` | `[f32; 3]` | ImageNet | Normalization mean |
+| `norm_std` | `[f32; 3]` | ImageNet | Normalization std |
+| `workspace_size_mb` | usize | 1024 | TensorRT workspace (MB) |
+| `engine_cache_dir` | `Option<PathBuf>` | None | Engine cache directory |
+| `force_rebuild` | bool | false | Force engine rebuild |
+| `use_dla` | bool | false | Use DLA (Jetson only) |
+| `dla_core` | u32 | 0 | DLA core (0 or 1) |
+| `enable_cuda_graph` | bool | false | CUDA graph capture |
+
+### Precision Modes
+
+| Mode | Description | Speed | Accuracy |
+|------|-------------|-------|----------|
+| `FP32` | Full precision | 1x | Best |
+| `FP16` | Half precision | 2-3x | Very good |
+| `INT8` | Quantized | 3-5x | Good (may need calibration) |
+
+## Topics
+
+### Subscribed Topics (Image Input)
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input images |
+
+### Subscribed Topics (Tensor Input)
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Tensor` | Raw tensor input |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `Predictions` | Model predictions |
+| `{output_topic}.tensor` | `Tensor` | Raw output tensor |
+| `{output_topic}.metrics` | `InferenceMetrics` | Performance metrics |
+
+## Usage Examples
+
+### Image Classification
+
+```rust
+let config = TensorRTConfig::default()
+    .with_fp16(true)
+    .with_input_size(224, 224)
+    .with_cache_dir("/tmp/trt_cache");
+
+let node = TensorRTInferenceNode::new_image(
+    "models/resnet50.onnx",
+    "camera.raw",
+    "classification.predictions",
+    config,
+)?;
+```
+
+### Object Detection (YOLOv8)
+
+```rust
+let config = TensorRTConfig::default()
+    .with_fp16(true)
+    .with_input_size(640, 640)
+    .with_confidence_threshold(0.25)
+    .with_cache_dir("/tmp/trt_cache");
+
+let node = TensorRTInferenceNode::new_image(
+    "models/yolov8n.onnx",
+    "camera.raw",
+    "detections",
+    config,
+)?;
+```
+
+### INT8 Quantization
+
+```rust
+// INT8 provides maximum speed but may need calibration
+let config = TensorRTConfig::default()
+    .with_int8(true)
+    .with_cache_dir("/tmp/trt_cache");
+
+// First run will be slow (building INT8 engine)
+// Subsequent runs use cached engine
+let node = TensorRTInferenceNode::new_image(
+    "models/yolov8n.onnx",
+    "camera.raw",
+    "detections",
+    config,
+)?;
+```
+
+### Jetson DLA Acceleration
+
+```rust
+// Use Deep Learning Accelerator on Jetson Xavier/Orin
+let config = TensorRTConfig::default()
+    .with_fp16(true)
+    .with_dla(0)  // DLA core 0
+    .with_cache_dir("/tmp/trt_cache");
+
+let node = TensorRTInferenceNode::new_image(
+    "models/yolov8n.onnx",
+    "camera.raw",
+    "detections",
+    config,
+)?;
+```
+
+### Raw Tensor Input
+
+```rust
+// For non-image inputs (e.g., LiDAR point clouds, sensor data)
+let config = TensorRTConfig::default()
+    .with_fp16(true);
+
+let node = TensorRTInferenceNode::new_tensor(
+    "models/pointnet.onnx",
+    "lidar.pointcloud.tensor",
+    "classification",
+    config,
+)?;
+```
+
+### Batch Processing
+
+```rust
+let config = TensorRTConfig::default()
+    .with_batch_size(4)
+    .with_max_batch_size(8)
+    .with_fp16(true);
+
+let node = TensorRTInferenceNode::new_image(
+    "models/resnet50.onnx",
+    "camera.batch",
+    "classification.batch",
+    config,
+)?;
+```
+
+## Engine Caching
+
+TensorRT builds optimized engines from ONNX models. This process is slow but only happens once:
+
+```rust
+let config = TensorRTConfig::default()
+    .with_fp16(true)
+    .with_cache_dir("/tmp/trt_engines");  // Cache engines here
+
+// First run: ~30-60 seconds (building engine)
+// Subsequent runs: <1 second (loading cached engine)
+```
+
+**Recommendation**: Always set `engine_cache_dir` for production deployments.
+
+## Performance Tips
+
+### 1. Use FP16 for Best Balance
+
+```rust
+// FP16 gives 2-3x speedup with minimal accuracy loss
+let config = TensorRTConfig::default().with_fp16(true);
+```
+
+### 2. Match Input Size to Model
+
+```rust
+// Use the model's native input size
+let config = TensorRTConfig::default()
+    .with_input_size(640, 640);  // YOLOv8 native size
+```
+
+### 3. Enable Engine Caching
+
+```rust
+// Avoid rebuilding engine on every startup
+let config = TensorRTConfig::default()
+    .with_cache_dir("/opt/robot/trt_engines");
+```
+
+### 4. Use Appropriate Workspace
+
+```rust
+// More workspace = potentially faster but more GPU memory
+let config = TensorRTConfig::default()
+    .with_workspace_mb(2048);  // 2GB workspace
+```
+
+### 5. Consider Batch Processing
+
+```rust
+// Batching improves throughput (not latency)
+let config = TensorRTConfig::default()
+    .with_batch_size(4);
+```
+
+## Troubleshooting
+
+### Engine Build Fails
+
+```
+Error: Failed to build TensorRT engine
+```
+
+**Solutions:**
+- Ensure TensorRT is properly installed
+- Check CUDA/cuDNN compatibility
+- Reduce workspace size if OOM
+- Try FP32 first, then FP16
+
+### Slow First Run
+
+First inference takes 30-60 seconds while building the engine. Use `engine_cache_dir` to cache engines.
+
+### INT8 Accuracy Issues
+
+INT8 quantization may reduce accuracy. Options:
+- Use calibration data for better INT8 accuracy
+- Fall back to FP16 for critical applications
+- Fine-tune the model with quantization-aware training
+
+### DLA Not Available
+
+DLA is only available on Jetson Xavier/Orin. On desktop GPUs, the setting is ignored.
+
+## Comparison with ONNXInferenceNode
+
+| Feature | ONNXInferenceNode | TensorRTInferenceNode |
+|---------|-------------------|----------------------|
+| CPU Support | Yes | No |
+| GPU Support | Yes (CUDA EP) | Yes (TensorRT EP) |
+| Speed (GPU) | Fast | Fastest (2-5x faster) |
+| INT8 Support | Limited | Full |
+| Engine Caching | No | Yes |
+| DLA Support | No | Yes (Jetson) |
+| Setup Complexity | Low | Medium |
+
+**Use ONNXInferenceNode when:**
+- You need CPU fallback
+- Simpler deployment is preferred
+- Cross-platform compatibility needed
+
+**Use TensorRTInferenceNode when:**
+- Maximum GPU performance required
+- Running on NVIDIA hardware exclusively
+- Deploying on Jetson devices
+
+## See Also
+
+- [ONNXInferenceNode](./onnx-inference) - Generic ONNX inference
+- [TFLiteInferenceNode](./tflite-inference) - TensorFlow Lite inference
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection
+- [GPU Tensor Sharing](/advanced/gpu-tensor-sharing) - CUDA IPC for ML

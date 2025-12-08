@@ -1,0 +1,377 @@
+---
+title: Safety Layer
+description: Multi-layered safety monitoring and enforcement for robot control
+---
+
+# Safety Layer
+
+Multi-layered safety monitoring and enforcement system for robot control. Provides configurable checks for velocity, obstacle distance, battery level, and temperature with automatic status classification.
+
+## Source Code
+
+- [Safety Layer Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/safety_layer)
+
+## Features
+
+- Velocity limiting and checking
+- Obstacle distance monitoring
+- Battery level monitoring
+- Temperature monitoring
+- Three-level status: Safe, Warning, Critical
+- Per-check enable/disable
+- Configurable thresholds
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::safety_layer::{SafetyLayer, SafetyStatus};
+
+fn main() {
+    let mut safety = SafetyLayer::new();
+
+    // Configure limits
+    safety.set_max_velocity(2.0);         // m/s
+    safety.set_min_obstacle_distance(0.5); // meters
+    safety.set_min_battery(15.0);          // percent
+    safety.set_max_temperature(75.0);      // °C
+
+    // Check individual conditions
+    if !safety.check_velocity(2.5) {
+        println!("Velocity exceeds safe limit!");
+    }
+
+    // Comprehensive check
+    let status = safety.check_all(
+        1.5,   // velocity
+        0.8,   // obstacle distance
+        50.0,  // battery %
+        60.0,  // temperature °C
+    );
+
+    match status {
+        SafetyStatus::Safe => println!("All systems nominal"),
+        SafetyStatus::Warning => println!("Approaching limits"),
+        SafetyStatus::Critical => println!("STOP - Safety violation!"),
+    }
+
+    // Limit velocity to safe range
+    let safe_vel = safety.limit_velocity(3.0);
+    println!("Limited velocity: {} m/s", safe_vel);  // 2.0
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let safety = SafetyLayer::new();
+// Or using Default trait
+let safety = SafetyLayer::default();
+```
+
+Default limits:
+- Max velocity: 2.0 m/s
+- Min obstacle distance: 0.3 m
+- Min battery: 10%
+- Max temperature: 80°C
+
+### Threshold Configuration
+
+| Method | Description | Default |
+|--------|-------------|---------|
+| `set_max_velocity(v)` | Maximum safe velocity (m/s) | 2.0 |
+| `set_min_obstacle_distance(d)` | Minimum obstacle clearance (m) | 0.3 |
+| `set_min_battery(p)` | Minimum battery level (%) | 10.0 |
+| `set_max_temperature(t)` | Maximum temperature (°C) | 80.0 |
+
+### Enable/Disable Checks
+
+| Method | Description |
+|--------|-------------|
+| `enable_velocity_check(bool)` | Toggle velocity monitoring |
+| `enable_obstacle_check(bool)` | Toggle obstacle monitoring |
+| `enable_battery_check(bool)` | Toggle battery monitoring |
+| `enable_temperature_check(bool)` | Toggle temperature monitoring |
+
+### Individual Checks
+
+| Method | Returns `true` if |
+|--------|-------------------|
+| `check_velocity(v)` | velocity ≤ max |
+| `check_obstacle_distance(d)` | distance ≥ min |
+| `check_battery(p)` | battery ≥ min |
+| `check_temperature(t)` | temperature ≤ max |
+
+### Comprehensive Check
+
+```rust
+let status: SafetyStatus = safety.check_all(
+    velocity: f64,
+    obstacle_distance: f64,
+    battery_percent: f64,
+    temperature: f64,
+);
+```
+
+Returns:
+- `SafetyStatus::Safe` - All values within limits
+- `SafetyStatus::Warning` - Values at or slightly past limits
+- `SafetyStatus::Critical` - Values significantly past limits
+
+### Velocity Limiting
+
+```rust
+let safe_velocity = safety.limit_velocity(requested_velocity);
+```
+
+Clamps velocity to [-max_velocity, +max_velocity].
+
+## Safety Status Thresholds
+
+| Check | Warning | Critical |
+|-------|---------|----------|
+| Velocity | &gt; max | &gt; max × 1.2 |
+| Obstacle | &lt; min | &lt; min × 0.5 |
+| Battery | &lt; min | &lt; min × 0.5 |
+| Temperature | &gt; max | &gt; max × 1.1 |
+
+## Example: Motion Controller with Safety
+
+```rust
+use horus_library::algorithms::safety_layer::{SafetyLayer, SafetyStatus};
+
+struct SafeMotionController {
+    safety: SafetyLayer,
+    current_velocity: f64,
+}
+
+impl SafeMotionController {
+    fn new() -> Self {
+        let mut safety = SafetyLayer::new();
+        safety.set_max_velocity(1.5);
+        safety.set_min_obstacle_distance(0.5);
+
+        Self {
+            safety,
+            current_velocity: 0.0,
+        }
+    }
+
+    fn set_velocity(&mut self, requested: f64, obstacle_dist: f64) -> f64 {
+        // First, limit to max velocity
+        let limited = self.safety.limit_velocity(requested);
+
+        // Then check obstacle distance
+        if !self.safety.check_obstacle_distance(obstacle_dist) {
+            // Too close to obstacle - emergency stop
+            self.current_velocity = 0.0;
+        } else if obstacle_dist < 1.0 {
+            // Getting close - reduce speed proportionally
+            let factor = (obstacle_dist - 0.5) / 0.5;  // 0 at 0.5m, 1 at 1m
+            self.current_velocity = limited * factor.clamp(0.0, 1.0);
+        } else {
+            self.current_velocity = limited;
+        }
+
+        self.current_velocity
+    }
+}
+```
+
+## Example: Battery-Aware Navigation
+
+```rust
+use horus_library::algorithms::safety_layer::{SafetyLayer, SafetyStatus};
+
+struct BatteryAwareRobot {
+    safety: SafetyLayer,
+    home_position: (f64, f64),
+    current_position: (f64, f64),
+}
+
+impl BatteryAwareRobot {
+    fn new(home: (f64, f64)) -> Self {
+        let mut safety = SafetyLayer::new();
+        safety.set_min_battery(20.0);  // Return home at 20%
+
+        Self {
+            safety,
+            home_position: home,
+            current_position: home,
+        }
+    }
+
+    fn should_return_home(&self, battery_percent: f64) -> bool {
+        !self.safety.check_battery(battery_percent)
+    }
+
+    fn get_max_range(&self, battery_percent: f64) -> f64 {
+        // Estimate based on battery
+        // Need enough to return home
+        let distance_home = self.distance_to(self.home_position);
+        let usable_battery = battery_percent - 20.0;  // Reserve 20%
+
+        if usable_battery <= 0.0 {
+            0.0
+        } else {
+            // Assume 1% battery = 10m range
+            let max_one_way = usable_battery * 10.0 / 2.0;
+            max_one_way - distance_home
+        }
+    }
+
+    fn distance_to(&self, target: (f64, f64)) -> f64 {
+        let dx = target.0 - self.current_position.0;
+        let dy = target.1 - self.current_position.1;
+        (dx * dx + dy * dy).sqrt()
+    }
+}
+```
+
+## Example: HORUS Node Integration
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::safety_layer::{SafetyLayer, SafetyStatus};
+use horus::prelude::*; // Provides {Twist, LaserScan, BatteryState};
+
+struct SafetyNode {
+    safety: SafetyLayer,
+    cmd_sub: Hub<Twist>,
+    cmd_pub: Hub<Twist>,
+    scan_sub: Hub<LaserScan>,
+    battery_sub: Hub<BatteryState>,
+    min_obstacle_dist: f64,
+    battery_percent: f64,
+}
+
+impl SafetyNode {
+    fn new() -> Result<Self> {
+        let mut safety = SafetyLayer::new();
+        safety.set_max_velocity(1.0);
+        safety.set_min_obstacle_distance(0.3);
+        safety.set_min_battery(15.0);
+
+        Ok(Self {
+            safety,
+            cmd_sub: Hub::new("cmd_vel_raw")?,
+            cmd_pub: Hub::new("cmd_vel")?,
+            scan_sub: Hub::new("scan")?,
+            battery_sub: Hub::new("battery")?,
+            min_obstacle_dist: f64::MAX,
+            battery_percent: 100.0,
+        })
+    }
+}
+
+impl Node for SafetyNode {
+    fn name(&self) -> &'static str { "Safety" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update obstacle distance from LIDAR
+        if let Some(scan) = self.scan_sub.recv(&mut ctx) {
+            self.min_obstacle_dist = scan.ranges
+                .iter()
+                .filter(|r| **r > scan.range_min && **r < scan.range_max)
+                .fold(f64::MAX, |min, r| min.min(*r));
+        }
+
+        // Update battery level
+        if let Some(battery) = self.battery_sub.recv(&mut ctx) {
+            self.battery_percent = battery.percentage;
+        }
+
+        // Filter velocity commands
+        if let Some(cmd) = self.cmd_sub.recv(&mut ctx) {
+            let status = self.safety.check_all(
+                cmd.linear.x,
+                self.min_obstacle_dist,
+                self.battery_percent,
+                50.0,  // Temperature not monitored in this example
+            );
+
+            let safe_cmd = match status {
+                SafetyStatus::Critical => {
+                    // Emergency stop
+                    Twist::stop()
+                }
+                SafetyStatus::Warning => {
+                    // Reduce speed
+                    Twist::new_2d(
+                        self.safety.limit_velocity(cmd.linear.x) * 0.5,
+                        cmd.angular.z * 0.5,
+                    )
+                }
+                SafetyStatus::Safe => {
+                    // Pass through with velocity limiting
+                    Twist::new_2d(
+                        self.safety.limit_velocity(cmd.linear.x),
+                        cmd.angular.z,
+                    )
+                }
+            };
+
+            self.cmd_pub.send(safe_cmd, &mut ctx).ok();
+        }
+    }
+}
+```
+
+## Example: Configurable Safety Profiles
+
+```rust
+use horus_library::algorithms::safety_layer::SafetyLayer;
+
+enum SafetyProfile {
+    Indoor,
+    Outdoor,
+    HighSpeed,
+    LowBattery,
+}
+
+fn configure_safety(profile: SafetyProfile) -> SafetyLayer {
+    let mut safety = SafetyLayer::new();
+
+    match profile {
+        SafetyProfile::Indoor => {
+            safety.set_max_velocity(0.5);
+            safety.set_min_obstacle_distance(0.3);
+            safety.set_min_battery(10.0);
+        }
+        SafetyProfile::Outdoor => {
+            safety.set_max_velocity(2.0);
+            safety.set_min_obstacle_distance(1.0);
+            safety.set_min_battery(15.0);
+        }
+        SafetyProfile::HighSpeed => {
+            safety.set_max_velocity(5.0);
+            safety.set_min_obstacle_distance(2.0);
+            safety.set_min_battery(20.0);
+        }
+        SafetyProfile::LowBattery => {
+            safety.set_max_velocity(0.3);
+            safety.set_min_obstacle_distance(0.5);
+            safety.set_min_battery(5.0);  // Allow lower before stopping
+            safety.enable_temperature_check(false);  // Conserve processing
+        }
+    }
+
+    safety
+}
+```
+
+## Best Practices
+
+1. **Always enable safety** - Even in simulation
+2. **Set conservative defaults** - Tune up, not down
+3. **Monitor all channels** - Don't disable checks without reason
+4. **Log safety events** - Track warnings and violations
+5. **Test failure modes** - Verify behavior at limits
+
+## See Also
+
+- [PID Controller](/rust/library/algorithms/pid) - Velocity control
+- [AABB Collision](/rust/library/algorithms/aabb) - Collision detection
+- [Differential Drive](/rust/library/algorithms/differential-drive) - Velocity commands
+- [Sensor Fusion](/rust/library/algorithms/sensor-fusion) - Combining sensor data

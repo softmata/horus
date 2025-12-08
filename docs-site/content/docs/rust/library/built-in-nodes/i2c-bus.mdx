@@ -1,0 +1,398 @@
+---
+title: I2cBusNode
+description: I2C/TWI bus communication for sensors, displays, and peripherals
+---
+
+# I2cBusNode
+
+I2C (Inter-Integrated Circuit) bus communication node for interfacing with sensors, displays, EEPROMs, power monitors, and other I2C peripherals. Supports multiple I2C buses and device addressing.
+
+## Source Code
+
+- [I2cBusNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/i2c_bus)
+- [I2C Message Types](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- Multiple I2C bus support (I2C-0, I2C-1, etc.)
+- Configurable clock speed (100kHz, 400kHz, 1MHz)
+- 7-bit device addressing
+- Four transaction types: READ, WRITE, READ_REGISTER, WRITE_REGISTER
+- Automatic retries on failure
+- Device labeling for debugging
+- Simulated devices for testing
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create I2C bus node
+    let mut i2c = I2cBusNode::new()?; // Default: bus 1, 400kHz
+
+    // Configure
+    i2c.set_bus_number(1);
+    i2c.set_clock_speed(400_000); // 400kHz
+    i2c.register_device(0x68, "MPU6050 IMU");
+    i2c.register_device(0x40, "INA219 Power Monitor");
+
+    scheduler.add(Box::new(i2c), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install I2C tools
+sudo apt install i2c-tools
+
+# Enable I2C interface
+sudo raspi-config  # Interface Options -> I2C
+
+# Add user to i2c group
+sudo usermod -a -G i2c $USER
+# Log out and back in for group to take effect
+```
+
+### Enabling Features
+
+There are three ways to enable the required `i2c-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `I2cBusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: i2c-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - i2c-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["i2c-hardware"] }
+```
+
+### Verify Hardware
+
+```bash
+# List I2C buses
+ls /dev/i2c-*
+
+# Scan for devices on bus 1
+i2cdetect -y 1
+```
+
+Example output:
+```
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00:          -- -- -- -- -- -- -- -- -- -- -- -- --
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+40: 40 -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+60: -- -- -- -- -- -- -- -- 68 -- -- -- -- -- -- --
+70: -- -- -- -- -- -- -- --
+```
+This shows devices at 0x40 and 0x68.
+
+## Configuration
+
+### Bus and Clock Speed
+
+```rust
+let mut i2c = I2cBusNode::new()?;
+
+// Select I2C bus (0, 1, 2, etc.)
+i2c.set_bus_number(1);
+
+// Set clock speed
+i2c.set_clock_speed(100_000);  // 100kHz (standard mode)
+i2c.set_clock_speed(400_000);  // 400kHz (fast mode)
+i2c.set_clock_speed(1_000_000); // 1MHz (fast mode plus)
+```
+
+### Reliability
+
+```rust
+// Set retry count for failed transactions
+i2c.set_retry_count(3);
+
+// Set transaction timeout
+i2c.set_timeout(100); // milliseconds
+```
+
+### Device Management
+
+```rust
+// Label devices for easier debugging
+i2c.register_device(0x68, "MPU6050 IMU");
+i2c.register_device(0x40, "INA219 Power Monitor");
+
+// Add simulated devices for testing
+i2c.add_simulated_device(0x50, 256); // 256-byte EEPROM simulation
+```
+
+### Custom Topics
+
+```rust
+// Use custom topic names
+let i2c = I2cBusNode::new_with_config(
+    1,                  // Bus number
+    "sensors.i2c.req",  // Request topic
+    "sensors.i2c.resp"  // Response topic
+)?;
+```
+
+## Usage Patterns
+
+### Reading from a Device
+
+```rust
+use horus::prelude::*;
+
+// Create I2C transaction request
+let request = I2cMessage::read(
+    1,      // Bus number
+    0x68,   // Device address
+    6       // Number of bytes to read
+);
+
+// Publish request
+let hub = Hub::<I2cMessage>::new("i2c.request")?;
+hub.send(request, &mut None).ok();
+
+// Receive response
+let response_hub = Hub::<I2cMessage>::new("i2c.response")?;
+if let Some(response) = response_hub.recv(&mut None) {
+    if response.success {
+        println!("Data: {:?}", &response.data[..response.data_length as usize]);
+    } else {
+        println!("Error code: {}", response.error_code);
+    }
+}
+```
+
+### Writing to a Device
+
+```rust
+let mut request = I2cMessage::write(1, 0x68, 2);
+request.data[0] = 0x6B; // Register address
+request.data[1] = 0x00; // Value to write
+
+hub.send(request, &mut None).ok();
+```
+
+### Register Read/Write
+
+```rust
+// Read from specific register
+let request = I2cMessage::read_register(
+    1,      // Bus
+    0x68,   // Device address
+    0x3B,   // Register address
+    6       // Bytes to read
+);
+
+// Write to specific register
+let mut request = I2cMessage::write_register(1, 0x68, 0x6B, 1);
+request.data[0] = 0x00; // Value to write
+```
+
+## Common Devices
+
+### MPU6050 IMU (0x68)
+
+```rust
+// Read accelerometer data (registers 0x3B-0x40)
+let request = I2cMessage::read_register(1, 0x68, 0x3B, 6);
+hub.send(request, &mut None).ok();
+
+if let Some(resp) = response_hub.recv(&mut None) {
+    let ax = i16::from_be_bytes([resp.data[0], resp.data[1]]);
+    let ay = i16::from_be_bytes([resp.data[2], resp.data[3]]);
+    let az = i16::from_be_bytes([resp.data[4], resp.data[5]]);
+    println!("Accel: x={}, y={}, z={}", ax, ay, az);
+}
+```
+
+### INA219 Power Monitor (0x40, 0x41, 0x44, 0x45)
+
+```rust
+// Read bus voltage (register 0x02)
+let request = I2cMessage::read_register(1, 0x40, 0x02, 2);
+hub.send(request, &mut None).ok();
+
+if let Some(resp) = response_hub.recv(&mut None) {
+    let raw = u16::from_be_bytes([resp.data[0], resp.data[1]]);
+    let voltage = (raw >> 3) as f32 * 0.004; // LSB = 4mV
+    println!("Bus voltage: {:.3} V", voltage);
+}
+```
+
+### OLED Display (0x3C, 0x3D)
+
+```rust
+// Send command to display
+let mut request = I2cMessage::write(1, 0x3C, 2);
+request.data[0] = 0x00; // Command mode
+request.data[1] = 0xAF; // Display ON command
+hub.send(request, &mut None).ok();
+```
+
+## Error Handling
+
+### Error Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Out of bounds |
+| 2 | Unknown transaction type |
+| 3 | Device not found |
+| NACK | Device did not acknowledge (hardware) |
+
+### Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+```
+[WARN] I2cBusNode: Hardware unavailable - using SIMULATION mode
+[WARN]   Tried: /dev/i2c-1
+[WARN]   Error: Permission denied (os error 13)
+[WARN]   Fix:
+[WARN]     1. Install: sudo apt install i2c-tools
+[WARN]     2. Enable I2C: sudo raspi-config -> Interface Options -> I2C
+[WARN]     3. Add user to group: sudo usermod -a -G i2c $USER
+[WARN]     4. Reboot or re-login
+[WARN]     5. If using cargo: cargo build --features="i2c-hardware"
+[WARN]        (horus run auto-detects features)
+```
+
+**Solutions:**
+1. Check if I2C device exists: `ls /dev/i2c-*`
+2. Check permissions: `ls -l /dev/i2c-1`
+3. Add user to i2c group: `sudo usermod -a -G i2c $USER`
+4. Reboot: `sudo reboot`
+5. Verify with i2cdetect: `i2cdetect -y 1`
+
+## Statistics
+
+```rust
+// Get transaction statistics
+let (total, successful, failed, last_error) = i2c.get_stats();
+println!("Total: {}, Success: {}, Failed: {}, Last Error: {}",
+    total, successful, failed, last_error);
+```
+
+## Bus Scanning
+
+```rust
+// Scan I2C bus for devices
+let devices = i2c.scan_bus(None);
+println!("Found {} devices: {:?}", devices.len(), devices);
+```
+
+Example output:
+```
+Found I2C device at 0x40
+Found I2C device at 0x68
+I2C scan complete: 2 devices found
+```
+
+## Message Format
+
+```rust
+pub struct I2cMessage {
+    pub bus_number: u8,           // I2C bus (0, 1, 2, etc.)
+    pub device_address: u16,      // 7-bit address (0x00-0x7F)
+    pub register_address: u8,     // Register to read/write
+    pub transaction_type: u8,     // READ, WRITE, READ_REG, WRITE_REG
+    pub data: [u8; 256],         // Data buffer
+    pub data_length: u8,         // Number of bytes
+    pub clock_speed: u32,        // Clock frequency (Hz)
+    pub success: bool,           // Transaction result
+    pub error_code: u8,          // Error if failed
+    pub timestamp: u64,          // Transaction time (ns)
+}
+```
+
+### Transaction Types
+
+```rust
+pub const TYPE_READ: u8 = 0;           // Simple read
+pub const TYPE_WRITE: u8 = 1;          // Simple write
+pub const TYPE_READ_REGISTER: u8 = 2;  // Write reg, then read
+pub const TYPE_WRITE_REGISTER: u8 = 3; // Write reg and data
+```
+
+### Clock Speed Constants
+
+```rust
+pub const SPEED_STANDARD: u32 = 100_000;   // 100kHz
+pub const SPEED_FAST: u32 = 400_000;       // 400kHz
+pub const SPEED_FAST_PLUS: u32 = 1_000_000; // 1MHz
+```
+
+## Best Practices
+
+1. **Always check transaction success:**
+   ```rust
+   if response.success {
+       // Process data
+   } else {
+       println!("I2C error: {}", response.error_code);
+   }
+   ```
+
+2. **Use device labels for debugging:**
+   ```rust
+   i2c.register_device(0x68, "MPU6050");
+   // Logs: "I2C transaction to device MPU6050 (0x68)"
+   ```
+
+3. **Enable retries for unreliable connections:**
+   ```rust
+   i2c.set_retry_count(5);
+   ```
+
+4. **Use simulated devices for testing:**
+   ```rust
+   i2c.add_simulated_device(0x68, 256);
+   // Test code without hardware
+   ```
+
+5. **Check hardware before deployment:**
+   ```bash
+   horus check robot.rs  # Detects missing hardware features
+   ```
+
+## See Also
+
+- [SpiBusNode](./spi-bus) - SPI communication
+- [CanBusNode](./can-bus) - CAN bus communication
+- [BatteryMonitorNode](./battery-monitor) - Uses I2C for INA219
+- [ImuNode](./imu) - Uses I2C for MPU6050, BNO055

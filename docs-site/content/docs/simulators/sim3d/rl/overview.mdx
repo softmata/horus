@@ -1,0 +1,419 @@
+---
+title: Sim3D Reinforcement Learning
+description: RL training environments in the HORUS 3D simulator
+---
+
+# Sim3D Reinforcement Learning
+
+Sim3D provides reinforcement learning environments with curriculum learning, domain randomization, and reward shaping for training robot policies.
+
+## Features
+
+- **6 built-in tasks** - Navigation, manipulation, locomotion, etc.
+- **Curriculum learning** - Automatic difficulty progression
+- **Domain randomization** - Visual, physics, and environment randomization
+- **Reward shaping** - Composable reward functions
+- **Python bindings** - Gymnasium-compatible API
+- **Parallel environments** - Train on multiple envs simultaneously
+
+## Quick Start
+
+### Python (Gymnasium API)
+
+```python
+import gymnasium as gym
+import sim3d
+
+# Create environment
+env = sim3d.make("Reaching-v1",
+    robot="models/robot_arm.urdf",
+    render_mode="human"
+)
+
+# Standard Gym loop
+obs, info = env.reset()
+for _ in range(1000):
+    action = env.action_space.sample()
+    obs, reward, terminated, truncated, info = env.step(action)
+
+    if terminated or truncated:
+        obs, info = env.reset()
+
+env.close()
+```
+
+### Rust API
+
+```rust
+use sim3d::rl::{Environment, ReachingTask, TaskConfig};
+
+let config = TaskConfig::default()
+    .with_robot("models/robot_arm.urdf")
+    .with_max_steps(1000);
+
+let mut env = Environment::new(ReachingTask::new(config))?;
+
+let obs = env.reset()?;
+loop {
+    let action = policy.get_action(&obs);
+    let (obs, reward, done, info) = env.step(action)?;
+
+    if done {
+        break;
+    }
+}
+```
+
+## Built-in Tasks
+
+### Reaching
+
+Reach a target position with end-effector.
+
+```python
+env = sim3d.make("Reaching-v1",
+    robot="models/robot_arm.urdf",
+    target_range=[0.3, 0.8],     # Target distance range
+    goal_threshold=0.02,          # Success threshold (meters)
+    sparse_reward=False,          # Dense or sparse reward
+)
+```
+
+**Observation:** Joint positions, velocities, end-effector position, target position
+**Action:** Joint position or velocity commands
+**Reward:** -distance_to_target + bonus_on_success
+
+### Push
+
+Push an object to a target location.
+
+```python
+env = sim3d.make("Push-v1",
+    robot="models/robot_arm.urdf",
+    object_shape="box",
+    object_size=[0.05, 0.05, 0.05],
+)
+```
+
+**Observation:** Robot state, object pose, target pose
+**Action:** End-effector delta position
+**Reward:** -object_distance_to_target
+
+### Manipulation
+
+Pick and place objects.
+
+```python
+env = sim3d.make("Manipulation-v1",
+    robot="models/robot_arm_gripper.urdf",
+    objects=["cube", "sphere", "cylinder"],
+    num_objects=3,
+)
+```
+
+**Observation:** Robot state, gripper state, object poses
+**Action:** End-effector + gripper commands
+**Reward:** Multi-stage (approach, grasp, lift, place)
+
+### Navigation
+
+Navigate a mobile robot to goals while avoiding obstacles.
+
+```python
+env = sim3d.make("Navigation-v1",
+    robot="models/diff_drive.urdf",
+    map="maps/warehouse.yaml",
+    goal_sampling="random",
+)
+```
+
+**Observation:** LiDAR scan, odometry, goal position
+**Action:** Linear/angular velocity (cmd_vel)
+**Reward:** -distance_to_goal - collision_penalty
+
+### Locomotion
+
+Legged robot locomotion (walking, running).
+
+```python
+env = sim3d.make("Locomotion-v1",
+    robot="models/quadruped.urdf",
+    terrain="flat",              # flat, rough, stairs
+    target_velocity=1.0,          # m/s
+)
+```
+
+**Observation:** Joint states, body orientation, velocity
+**Action:** Joint torques or positions
+**Reward:** velocity_tracking - energy - stability_penalty
+
+### Balancing
+
+Balance an inverted pendulum or unstable system.
+
+```python
+env = sim3d.make("Balancing-v1",
+    robot="models/cartpole.urdf",
+    max_angle=0.4,               # radians
+)
+```
+
+**Observation:** Cart position/velocity, pole angle/velocity
+**Action:** Cart force
+**Reward:** +1 per timestep balanced
+
+## Curriculum Learning
+
+Automatically adjust task difficulty based on performance:
+
+```python
+from sim3d.rl import CurriculumConfig
+
+env = sim3d.make("Reaching-v1",
+    curriculum=CurriculumConfig(
+        stages=[
+            {"target_range": [0.2, 0.3], "threshold": 0.05},
+            {"target_range": [0.3, 0.5], "threshold": 0.03},
+            {"target_range": [0.3, 0.8], "threshold": 0.02},
+        ],
+        advance_threshold=0.8,    # Success rate to advance
+        window_size=100,          # Episodes to track
+    )
+)
+```
+
+### YAML Configuration
+
+```yaml
+curriculum:
+  stages:
+    - name: easy
+      config:
+        target_range: [0.2, 0.3]
+        goal_threshold: 0.05
+      advance_threshold: 0.8
+
+    - name: medium
+      config:
+        target_range: [0.3, 0.5]
+        goal_threshold: 0.03
+      advance_threshold: 0.8
+
+    - name: hard
+      config:
+        target_range: [0.3, 0.8]
+        goal_threshold: 0.02
+```
+
+## Domain Randomization
+
+Randomize environment for sim-to-real transfer:
+
+### Visual Randomization
+
+```python
+from sim3d.rl import DomainRandomization
+
+env = sim3d.make("Reaching-v1",
+    domain_randomization=DomainRandomization(
+        visual=True,
+        camera_position_noise=0.05,
+        lighting_intensity_range=[0.5, 2.0],
+        texture_randomization=True,
+        color_jitter=0.2,
+    )
+)
+```
+
+### Physics Randomization
+
+```python
+env = sim3d.make("Manipulation-v1",
+    domain_randomization=DomainRandomization(
+        physics=True,
+        mass_range=[0.8, 1.2],         # Scale factor
+        friction_range=[0.5, 1.5],
+        joint_damping_range=[0.9, 1.1],
+        actuator_noise=0.05,
+    )
+)
+```
+
+### Environment Randomization
+
+```python
+env = sim3d.make("Navigation-v1",
+    domain_randomization=DomainRandomization(
+        environment=True,
+        obstacle_density_range=[0.1, 0.4],
+        obstacle_size_range=[0.3, 1.0],
+        goal_position_noise=0.1,
+    )
+)
+```
+
+## Reward Shaping
+
+Compose rewards from multiple components:
+
+```python
+from sim3d.rl import RewardConfig, RewardComponent
+
+env = sim3d.make("Manipulation-v1",
+    reward=RewardConfig(
+        components=[
+            RewardComponent("distance_to_object", weight=-1.0),
+            RewardComponent("grasp_success", weight=10.0, sparse=True),
+            RewardComponent("lift_height", weight=5.0),
+            RewardComponent("distance_to_goal", weight=-1.0),
+            RewardComponent("place_success", weight=20.0, sparse=True),
+            RewardComponent("action_penalty", weight=-0.01),
+            RewardComponent("collision_penalty", weight=-5.0, sparse=True),
+        ],
+        normalize=True,
+        clip_range=[-10, 10],
+    )
+)
+```
+
+### Built-in Reward Functions
+
+| Name | Description |
+|------|-------------|
+| `distance_to_target` | Euclidean distance to goal |
+| `velocity_tracking` | Match target velocity |
+| `orientation_error` | Angular error to target orientation |
+| `energy_penalty` | Penalize high torques/velocities |
+| `stability_penalty` | Penalize unstable motion |
+| `collision_penalty` | Penalize collisions |
+| `time_penalty` | Small penalty per timestep |
+| `success_bonus` | Large bonus on task completion |
+
+## Parallel Environments
+
+Train on multiple environments simultaneously:
+
+```python
+import sim3d
+
+# Vector environment (CPU)
+envs = sim3d.make_vec("Reaching-v1", num_envs=16)
+
+# GPU-accelerated (requires CUDA)
+envs = sim3d.make_vec("Reaching-v1", num_envs=1024, device="cuda:0")
+
+# Step all envs
+actions = policy.get_actions(observations)
+observations, rewards, dones, infos = envs.step(actions)
+```
+
+## Headless Training
+
+Run without rendering for maximum speed:
+
+```bash
+# CLI
+horus sim3d --headless --env Reaching-v1 --num-envs 64
+
+# Python
+env = sim3d.make("Reaching-v1", render_mode=None)
+```
+
+## Integration with RL Libraries
+
+### Stable-Baselines3
+
+```python
+from stable_baselines3 import PPO
+import sim3d
+
+env = sim3d.make("Reaching-v1")
+model = PPO("MlpPolicy", env, verbose=1)
+model.learn(total_timesteps=1_000_000)
+model.save("reaching_policy")
+```
+
+### Ray RLlib
+
+```python
+from ray.rllib.algorithms.ppo import PPOConfig
+import sim3d
+
+config = PPOConfig().environment(
+    env="sim3d:Reaching-v1",
+    env_config={"robot": "models/robot_arm.urdf"}
+)
+algo = config.build()
+for i in range(100):
+    result = algo.train()
+    print(f"Episode {i}: reward={result['episode_reward_mean']}")
+```
+
+### CleanRL
+
+```python
+import sim3d
+import cleanrl_utils
+
+env = sim3d.make("Locomotion-v1")
+# Use CleanRL's PPO implementation
+```
+
+## Custom Tasks
+
+Create custom RL tasks:
+
+```rust
+use sim3d::rl::{Task, Observation, Action, StepResult};
+
+pub struct MyCustomTask {
+    // Task state
+}
+
+impl Task for MyCustomTask {
+    fn observation_space(&self) -> ObservationSpace {
+        ObservationSpace::Box {
+            low: vec![-1.0; 10],
+            high: vec![1.0; 10],
+        }
+    }
+
+    fn action_space(&self) -> ActionSpace {
+        ActionSpace::Box {
+            low: vec![-1.0; 4],
+            high: vec![1.0; 4],
+        }
+    }
+
+    fn reset(&mut self) -> Observation {
+        // Reset task state
+        self.get_observation()
+    }
+
+    fn step(&mut self, action: Action) -> StepResult {
+        // Apply action, compute reward
+        StepResult {
+            observation: self.get_observation(),
+            reward: self.compute_reward(),
+            terminated: self.is_success(),
+            truncated: self.step_count >= self.max_steps,
+            info: HashMap::new(),
+        }
+    }
+}
+```
+
+## Performance
+
+| Configuration | Environments | Steps/sec |
+|---------------|--------------|-----------|
+| CPU, 1 env | 1 | ~1,000 |
+| CPU, 16 envs | 16 | ~10,000 |
+| GPU, 64 envs | 64 | ~50,000 |
+| GPU, 1024 envs | 1024 | ~500,000 |
+
+## See Also
+
+- [Sim3D Sensors](/simulators/sim3d/sensors/overview) - Sensor simulation
+- [Sim3D Physics](/simulators/sim3d/physics/overview) - Physics engine
+- [GPU Tensor Sharing](/advanced/gpu-tensor-sharing) - Zero-copy GPU data

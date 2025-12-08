@@ -1,0 +1,378 @@
+---
+title: "Execution Modes"
+description: "Understanding HORUS scheduler execution modes: JIT, Parallel, Sequential, AsyncIO, and AutoAdaptive"
+weight: 41
+---
+
+# Execution Modes
+
+HORUS supports multiple execution modes to optimize for different robotics scenarios. This guide explains each mode, when to use it, and the trade-offs involved.
+
+## Overview
+
+```rust
+pub enum ExecutionMode {
+    JITOptimized,   // Ultra-fast with JIT compilation
+    Parallel,       // Multi-core execution
+    AsyncIO,        // Non-blocking I/O operations
+    Sequential,     // Deterministic, single-threaded
+    AutoAdaptive,   // Learns and adapts at runtime
+}
+```
+
+## Sequential Mode
+
+**The deterministic choice for safety-critical systems.**
+
+```rust
+use horus::scheduling::config::{SchedulerConfig, ExecutionMode};
+
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::Sequential);
+```
+
+### How It Works
+
+- Nodes execute one-by-one in priority order
+- Same execution order every tick
+- No learning phase, no adaptation
+- Bit-for-bit reproducible runs
+
+### Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency | ~100-500ns per node |
+| Deterministic | **Yes** |
+| Multi-core | No (single thread) |
+| Best For | Safety-critical, certification |
+
+### When to Use
+
+- Medical/surgical robots requiring certification
+- Systems needing reproducible behavior
+- Debugging complex timing issues
+- Formal verification scenarios
+
+```rust
+// Safety-critical robot controller
+let config = SchedulerConfig::safety_critical();
+// Automatically uses ExecutionMode::Sequential
+
+let mut scheduler = Scheduler::with_config(config);
+scheduler.add(Box::new(safety_monitor), 0, Some(true));
+scheduler.add(Box::new(controller), 1, Some(true));
+scheduler.run()?;
+```
+
+## JITOptimized Mode
+
+**Maximum performance through Just-In-Time compilation.**
+
+```rust
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::JITOptimized);
+```
+
+### How It Works
+
+- Uses Cranelift JIT compiler
+- Compiles hot paths to native machine code
+- Optimizes simple arithmetic and control flow
+- Learning phase identifies candidates for JIT
+
+### Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency | &lt;50ns for JIT-compiled nodes |
+| Deterministic | No |
+| Learning Phase | ~100 ticks |
+| Best For | High-frequency control |
+
+### JIT-Compatible Operations
+
+The JIT compiler optimizes:
+- Arithmetic operations (`+`, `-`, `*`, `/`)
+- Simple control flow
+- Data transformations
+- Filter calculations
+
+```rust
+// This node benefits from JIT
+impl Node for PIDController {
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Simple math - JIT candidate
+        let error = self.setpoint - self.current;
+        let p_term = self.kp * error;
+        let i_term = self.ki * self.integral;
+        let d_term = self.kd * (error - self.last_error);
+        self.output = p_term + i_term + d_term;
+    }
+}
+```
+
+### When to Use
+
+- Racing/competition robots
+- High-frequency control loops (&gt;1kHz)
+- Performance-critical applications
+- When determinism is not required
+
+## Parallel Mode
+
+**Multi-core execution with dependency resolution.**
+
+```rust
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::Parallel);
+```
+
+### How It Works
+
+- Analyzes node dependencies
+- Builds execution DAG (Directed Acyclic Graph)
+- Schedules independent nodes on different cores
+- Respects data dependencies
+
+### Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency | Variable (depends on DAG) |
+| Deterministic | No |
+| Multi-core | **Yes** |
+| Best For | Multi-sensor fusion |
+
+### Dependency Analysis
+
+```rust
+// These nodes can run in parallel (no dependencies)
+scheduler.add(Box::new(lidar_node), 2, Some(true));    // Core 0
+scheduler.add(Box::new(camera_node), 2, Some(true));   // Core 1
+scheduler.add(Box::new(imu_node), 2, Some(true));      // Core 2
+
+// This node depends on all above (runs after)
+scheduler.add(Box::new(fusion_node), 1, Some(true));   // Waits for sensors
+```
+
+### When to Use
+
+- Multi-sensor robots
+- Compute-heavy pipelines
+- Systems with many independent nodes
+- When you have multiple CPU cores available
+
+## AsyncIO Mode
+
+**Optimized for I/O-bound operations.**
+
+```rust
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::AsyncIO);
+```
+
+### How It Works
+
+- Uses async/await for I/O operations
+- Non-blocking network and file access
+- Event-driven execution
+- Optimal for waiting on external resources
+
+### Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency | Variable |
+| Deterministic | No |
+| I/O Efficiency | **Excellent** |
+| Best For | Network-heavy applications |
+
+### When to Use
+
+- Cloud-connected robots
+- Network sensor aggregation
+- Remote control systems
+- Data logging to disk
+
+```rust
+// Network-heavy robot benefits from AsyncIO
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::AsyncIO);
+
+// These nodes benefit from async I/O
+scheduler.add(Box::new(cloud_telemetry), 3, Some(true));
+scheduler.add(Box::new(remote_commands), 2, Some(true));
+scheduler.add(Box::new(data_logger), 4, Some(true));
+```
+
+## AutoAdaptive Mode (Opt-In)
+
+**Learns and optimizes at runtime - must be explicitly enabled.**
+
+```rust
+// Default scheduler is deterministic (no learning)
+let scheduler = Scheduler::new();
+
+// Opt-in to adaptive learning (non-deterministic!)
+let scheduler = Scheduler::new()
+    .enable_learning();  // WARNING: Non-deterministic
+```
+
+### How It Works
+
+1. **Learning Phase** (~100 ticks): Profiles each node's execution
+2. **Classification**: Categorizes nodes into tiers
+3. **Optimization**: Applies appropriate execution strategy per node
+4. **Continuous Monitoring**: Adjusts based on runtime behavior
+
+### Node Classification Tiers
+
+| Tier | Criteria | Execution Strategy |
+|------|----------|-------------------|
+| **JIT** | Simple math, &lt;1μs | Cranelift compilation |
+| **Fast** | Pure compute, &lt;10μs | Inline execution |
+| **Normal** | Mixed operations | Standard scheduling |
+| **AsyncIO** | I/O-bound | Async execution |
+| **Background** | &gt;100μs, non-critical | Low-priority thread |
+
+### Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency | Varies by node tier |
+| Deterministic | **No** (learning phase) |
+| Adaptation | **Yes** |
+| Best For | Long-running, non-safety systems |
+
+### Deterministic Alternative
+
+For deterministic optimization, use explicit tier annotations:
+
+```rust
+// Explicit tier annotations (deterministic + optimized)
+let mut scheduler = Scheduler::new();
+scheduler
+    .add_with_tier(Box::new(pid), 0, NodeTier::Jit)
+    .add_with_tier(Box::new(sensor), 1, NodeTier::Fast);
+```
+
+### When to Use
+
+- Long-running production systems where learning cost amortizes
+- Non-safety-critical applications
+- When optimal performance is worth the warmup time
+- When determinism is not required
+
+## Mode Comparison
+
+| Feature | Sequential | JIT | Parallel | AsyncIO | AutoAdaptive |
+|---------|------------|-----|----------|---------|--------------|
+| Deterministic | **Yes** | Via profile | Via profile | Via profile | **No** |
+| Multi-core | No | No | Yes | Partial | Auto |
+| JIT Compile | Via tier | Yes | No | No | Auto |
+| Async I/O | No | No | No | Yes | Auto |
+| Learning Phase | No | No | No | No | **Yes** |
+| Best Latency | 87-313ns | &lt;50ns | Variable | Variable | Variable |
+| Certification Ready | **Yes** | With profile | No | No | No |
+
+## Choosing the Right Mode
+
+```
+                         START
+                           │
+               ┌───────────┴───────────┐
+               │ Default: Deterministic │
+               │  (Scheduler::new())    │
+               └───────────┬───────────┘
+                           │
+          ┌────────────────┴────────────────┐
+          │ Need additional optimization?   │
+          └────────────────┬────────────────┘
+                       Yes │ No → Done! (use default)
+                           │
+          ┌────────────────┴────────────────┐
+          │ Can afford non-determinism?     │
+          └────────────────┬────────────────┘
+                       Yes │ No
+                           │  │
+      ┌────────────────────┘  └──────────────────┐
+      │                                          │
+      ▼                                          ▼
+enable_learning()                         add_with_tier()
+(AutoAdaptive)                       (Deterministic + Optimized)
+                                                 │
+                               ┌─────────────────┼─────────────────┐
+                               │                 │                 │
+                               ▼                 ▼                 ▼
+                           NodeTier::Jit    NodeTier::Fast    NodeTier::AsyncIO
+                           (high-freq)      (sensors)         (network)
+```
+
+**Key Insight**: The default `Scheduler::new()` is deterministic and suitable for most robotics applications. Only add complexity if you need specific optimizations.
+
+## Examples
+
+### Safety-Critical System
+
+```rust
+// Surgical robot - must be deterministic
+let config = SchedulerConfig::safety_critical();
+// Uses Sequential mode automatically
+
+let mut scheduler = Scheduler::with_config(config);
+scheduler.add(Box::new(safety_monitor), 0, Some(true));
+scheduler.add(Box::new(force_feedback), 1, Some(true));
+scheduler.add(Box::new(motion_controller), 1, Some(true));
+scheduler.run()?;
+```
+
+### Racing Robot
+
+```rust
+// Competition robot - maximum speed
+let config = SchedulerConfig::high_performance();
+// Uses JITOptimized mode
+
+let mut scheduler = Scheduler::with_config(config);
+scheduler.add(Box::new(imu_reader), 0, Some(true));
+scheduler.add(Box::new(motor_controller), 0, Some(true));
+scheduler.run()?;
+```
+
+### Multi-Sensor Robot
+
+```rust
+// Research robot with many sensors
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::Parallel);
+
+let mut scheduler = Scheduler::with_config(config);
+// These run in parallel
+scheduler.add(Box::new(lidar), 2, Some(true));
+scheduler.add(Box::new(camera), 2, Some(true));
+scheduler.add(Box::new(radar), 2, Some(true));
+scheduler.add(Box::new(imu), 2, Some(true));
+// This waits for all sensors
+scheduler.add(Box::new(fusion), 1, Some(true));
+scheduler.run()?;
+```
+
+### Cloud-Connected Robot
+
+```rust
+// IoT robot with cloud connectivity
+let config = SchedulerConfig::standard()
+    .with_execution_mode(ExecutionMode::AsyncIO);
+
+let mut scheduler = Scheduler::with_config(config);
+scheduler.add(Box::new(local_control), 0, Some(true));
+scheduler.add(Box::new(cloud_sync), 3, Some(true));
+scheduler.add(Box::new(remote_commands), 2, Some(true));
+scheduler.run()?;
+```
+
+## Next Steps
+
+- Learn about [Deterministic Execution](/advanced/deterministic-execution) for reproducible runs
+- Explore [Scheduler Configuration](/advanced/scheduler-configuration) for all options

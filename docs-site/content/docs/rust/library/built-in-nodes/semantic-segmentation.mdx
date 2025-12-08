@@ -1,0 +1,198 @@
+---
+title: SemanticSegmentationNode
+description: Pixel-wise scene segmentation for environment understanding
+---
+
+# SemanticSegmentationNode
+
+Semantic segmentation node for pixel-wise scene understanding. Classifies every pixel in an image into semantic categories for navigation, obstacle detection, and scene comprehension.
+
+## Source Code
+
+- [SemanticSegmentationNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/cv/segmentation.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- Pixel-wise semantic classification
+- Multiple model architectures (DeepLabV3, SegFormer)
+- Real-time performance
+- Configurable class labels
+- GPU acceleration
+- Colorized segmentation output
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::cv::{SemanticSegmentationNode, SegmentationConfig};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = SegmentationConfig {
+        num_classes: 21,  // Pascal VOC classes
+        use_gpu: true,
+        ..Default::default()
+    };
+
+    let segmentation = SemanticSegmentationNode::new(
+        "models/deeplabv3.onnx",
+        "camera.raw",
+        "vision.segmentation",
+        config,
+    )?;
+
+    scheduler.add(Box::new(segmentation), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### SegmentationConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `num_classes` | usize | 21 | Number of semantic classes |
+| `input_size` | (u32, u32) | (512, 512) | Model input resolution |
+| `use_gpu` | bool | false | Enable GPU acceleration |
+| `enable_colorized_output` | bool | true | Output colorized mask |
+| `class_names` | `Vec<String>` | VOC classes | Class label names |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input camera images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `SegmentationMask` | Per-pixel class IDs |
+| `{output_topic}/colorized` | `Image` | Colorized segmentation |
+| `{output_topic}/metrics` | `InferenceMetrics` | Inference timing |
+
+## Common Class Sets
+
+### Pascal VOC (21 classes)
+
+```
+0: background, 1: aeroplane, 2: bicycle, 3: bird, 4: boat,
+5: bottle, 6: bus, 7: car, 8: cat, 9: chair, 10: cow,
+11: dining table, 12: dog, 13: horse, 14: motorbike,
+15: person, 16: potted plant, 17: sheep, 18: sofa,
+19: train, 20: tv/monitor
+```
+
+### Cityscapes (19 classes)
+
+```
+0: road, 1: sidewalk, 2: building, 3: wall, 4: fence,
+5: pole, 6: traffic light, 7: traffic sign, 8: vegetation,
+9: terrain, 10: sky, 11: person, 12: rider, 13: car,
+14: truck, 15: bus, 16: train, 17: motorcycle, 18: bicycle
+```
+
+## Usage Examples
+
+### Navigable Area Detection
+
+```rust
+use horus::prelude::*; // Provides SegmentationMask;
+
+let seg_hub = Hub::<SegmentationMask>::new("vision.segmentation")?;
+
+if let Some(mask) = seg_hub.recv(&mut None) {
+    // Find navigable pixels (road = 0 in Cityscapes)
+    let navigable_pixels: Vec<(usize, usize)> = mask.data
+        .iter()
+        .enumerate()
+        .filter(|(_, &class_id)| class_id == 0)  // Road
+        .map(|(i, _)| (i % mask.width, i / mask.width))
+        .collect();
+
+    println!("Navigable area: {} pixels", navigable_pixels.len());
+}
+```
+
+### Obstacle Avoidance
+
+```rust
+struct NavigationNode {
+    seg_sub: Hub<SegmentationMask>,
+    cmd_pub: Hub<CmdVel>,
+}
+
+impl Node for NavigationNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(mask) = self.seg_sub.recv(&mut ctx) {
+            // Check center region for obstacles
+            let center_x = mask.width / 2;
+            let obstacle_classes = [11, 12, 13, 14, 15];  // Vehicles, people
+
+            let obstacle_ahead = (0..mask.height)
+                .any(|y| {
+                    let idx = y * mask.width + center_x;
+                    obstacle_classes.contains(&mask.data[idx])
+                });
+
+            if obstacle_ahead {
+                // Stop or navigate around
+                self.cmd_pub.send(CmdVel::stop(), &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+### Custom Indoor Classes
+
+```rust
+let config = SegmentationConfig {
+    num_classes: 10,
+    class_names: vec![
+        "floor".to_string(),
+        "wall".to_string(),
+        "ceiling".to_string(),
+        "door".to_string(),
+        "window".to_string(),
+        "furniture".to_string(),
+        "person".to_string(),
+        "robot".to_string(),
+        "obstacle".to_string(),
+        "unknown".to_string(),
+    ],
+    ..Default::default()
+};
+```
+
+## Performance
+
+| Model | Resolution | GPU (RTX 3080) | CPU (i7-12700) |
+|-------|------------|---------------|----------------|
+| DeepLabV3-MobileNet | 512x512 | 45-60 FPS | 8-12 FPS |
+| DeepLabV3-ResNet50 | 512x512 | 25-35 FPS | 3-5 FPS |
+| SegFormer-B0 | 512x512 | 40-50 FPS | 6-10 FPS |
+
+## See Also
+
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection
+- [PoseEstimationNode](./pose-estimation) - Human pose detection
+- [DepthCameraNode](./depth-camera) - 3D depth perception
+- [PathPlannerNode](./path-planner) - Navigation planning

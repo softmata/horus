@@ -1,0 +1,264 @@
+---
+title: "Async Nodes"
+description: "Python async/await support for non-blocking HORUS nodes"
+order: 2
+---
+
+# Async Nodes
+
+HORUS provides native Python async/await support through `AsyncNode` and `AsyncHub` classes. These enable non-blocking I/O operations, making it easy to integrate with async libraries, HTTP APIs, databases, and other async-native Python code.
+
+## Overview
+
+| Class | Description |
+|-------|-------------|
+| `AsyncNode` | Base class for async nodes with `async def tick()` |
+| `AsyncHub` | Async wrapper for Hub with `await send()` and `await recv()` |
+
+## AsyncNode
+
+The `AsyncNode` class lets you use Python's native async/await syntax:
+
+```python
+import horus
+import asyncio
+
+class MyAsyncNode(horus.AsyncNode):
+    async def setup(self):
+        """Called once at startup"""
+        self.hub = horus.AsyncHub("sensor_data", dict)
+        self.api_url = "https://api.example.com/data"
+
+    async def tick(self):
+        """Called each scheduler cycle - use await freely!"""
+        # Fetch from HTTP API (non-blocking)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.api_url) as response:
+                data = await response.json()
+
+        # Publish to HORUS topic
+        await self.hub.send(data)
+
+    async def shutdown(self):
+        """Called once at shutdown"""
+        print("Node shutting down")
+```
+
+### Lifecycle Methods
+
+| Method | Description |
+|--------|-------------|
+| `async def setup()` | One-time initialization before first tick |
+| `async def tick()` | Called each scheduler cycle |
+| `async def shutdown()` | Cleanup when node stops |
+
+### Running an AsyncNode
+
+```python
+import horus
+
+# Create scheduler
+scheduler = horus.Scheduler()
+
+# Add async node
+node = MyAsyncNode()
+scheduler.add(node, priority=0)
+
+# Run - scheduler handles the async event loop
+scheduler.run()
+```
+
+## AsyncHub
+
+`AsyncHub` provides async send/receive operations:
+
+```python
+import horus
+
+# Create async hub
+hub = horus.AsyncHub("my_topic", str)
+
+# Async send
+await hub.send("hello world")
+
+# Async receive (waits for message)
+msg = await hub.recv()
+
+# Try receive (returns None immediately if no message)
+msg = await hub.try_recv()
+```
+
+### API Reference
+
+```python
+class AsyncHub:
+    def __init__(self, topic: str, msg_type: type):
+        """Create async hub for topic with message type"""
+
+    async def send(self, msg: Any) -> None:
+        """Send message asynchronously"""
+
+    async def recv(self) -> Any:
+        """Receive message, waiting until available"""
+
+    async def try_recv(self) -> Optional[Any]:
+        """Try to receive, returns None if no message"""
+
+    def subscribe(self, callback: Callable) -> None:
+        """Subscribe with synchronous callback"""
+
+    async def async_subscribe(self, async_callback: Callable) -> None:
+        """Subscribe with async callback"""
+```
+
+### Async Subscriptions
+
+Subscribe with async callbacks for reactive patterns:
+
+```python
+async def handle_sensor_data(msg):
+    """Async callback - can use await!"""
+    processed = await process_data(msg)
+    await database.save(processed)
+
+hub = horus.AsyncHub("sensors", dict)
+await hub.async_subscribe(handle_sensor_data)
+```
+
+## Utility Functions
+
+HORUS provides async utility functions:
+
+```python
+import horus
+
+# Non-blocking sleep
+await horus.sleep(0.1)
+
+# Run multiple async operations concurrently
+results = await horus.gather(
+    fetch_sensor_a(),
+    fetch_sensor_b(),
+    fetch_sensor_c()
+)
+
+# Wait with timeout
+try:
+    result = await horus.wait_for(slow_operation(), timeout=5.0)
+except asyncio.TimeoutError:
+    print("Operation timed out")
+```
+
+## Complete Example: Async HTTP API Node
+
+```python
+import horus
+import aiohttp
+import asyncio
+
+class WeatherNode(horus.AsyncNode):
+    """Fetches weather data from API and publishes to HORUS"""
+
+    async def setup(self):
+        self.weather_pub = horus.AsyncHub("weather", dict)
+        self.location = "San Francisco"
+        self.api_key = "your-api-key"
+        self.session = aiohttp.ClientSession()
+
+    async def tick(self):
+        url = f"https://api.weather.com/v1/{self.location}?key={self.api_key}"
+
+        try:
+            async with self.session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    await self.weather_pub.send({
+                        "temperature": data["temp"],
+                        "humidity": data["humidity"],
+                        "timestamp": data["timestamp"]
+                    })
+        except aiohttp.ClientError as e:
+            print(f"API error: {e}")
+
+    async def shutdown(self):
+        await self.session.close()
+
+
+class WeatherConsumer(horus.AsyncNode):
+    """Consumes weather data and logs to database"""
+
+    async def setup(self):
+        self.weather_sub = horus.AsyncHub("weather", dict)
+        # Setup async database connection
+        self.db = await asyncpg.connect("postgresql://localhost/robotics")
+
+    async def tick(self):
+        weather = await self.weather_sub.try_recv()
+        if weather:
+            await self.db.execute(
+                "INSERT INTO weather_log (temp, humidity, ts) VALUES ($1, $2, $3)",
+                weather["temperature"],
+                weather["humidity"],
+                weather["timestamp"]
+            )
+
+    async def shutdown(self):
+        await self.db.close()
+
+
+def main():
+    scheduler = horus.Scheduler()
+    scheduler.add(WeatherNode(), priority=0)
+    scheduler.add(WeatherConsumer(), priority=1)
+    scheduler.run()
+
+if __name__ == "__main__":
+    main()
+```
+
+## When to Use AsyncNode
+
+**Good use cases:**
+- HTTP/REST API integration
+- Database operations (asyncpg, aioredis)
+- WebSocket connections
+- File I/O operations
+- Any I/O-bound operations
+
+**Not ideal for:**
+- CPU-bound computations (use regular Node with multiprocessing)
+- Real-time control loops requiring deterministic timing
+- Operations requiring &lt;1ms latency
+
+## Mixing Sync and Async
+
+You can mix regular `Node` and `AsyncNode` in the same scheduler:
+
+```python
+import horus
+
+class SyncSensorNode(horus.Node):
+    """Regular sync node for fast sensor reading"""
+    def tick(self):
+        reading = self.sensor.read()  # Fast, blocking is OK
+        self.hub.send(reading)
+
+class AsyncCloudNode(horus.AsyncNode):
+    """Async node for cloud upload"""
+    async def tick(self):
+        msg = await self.hub.try_recv()
+        if msg:
+            await self.upload_to_cloud(msg)
+
+# Both work together
+scheduler = horus.Scheduler()
+scheduler.add(SyncSensorNode(), priority=0)  # High priority, runs first
+scheduler.add(AsyncCloudNode(), priority=10)  # Lower priority
+scheduler.run()
+```
+
+## See Also
+
+- [Python Bindings](/python/api/python-bindings) - Core Python API
+- [ML Utilities](/python/library/ml-utilities) - ML inference helpers
+- [Examples](/python/examples) - More Python examples

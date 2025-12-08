@@ -1,0 +1,632 @@
+---
+title: DynamixelNode
+description: Dynamixel smart servo control with 18+ model support
+---
+
+# DynamixelNode
+
+Dynamixel smart servo controller supporting 18+ servo models across Protocol 1.0 and 2.0. Provides position, velocity, and torque control for robot arms, humanoids, grippers, and articulated mechanisms.
+
+## Source Code
+
+- [DynamixelNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/dynamixel)
+- [Motor Control Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/control.rs)
+
+## Features
+
+- 18+ Dynamixel models (AX, MX, X, P, PRO series)
+- Protocol 1.0 and 2.0 support
+- Up to 253 servos on one bus
+- Position, velocity, current/torque control
+- Multi-turn absolute positioning
+- PID gain tuning
+- Temperature and voltage monitoring
+- Compliance/stiffness control
+- Sync/bulk read/write for performance
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create Dynamixel node
+    let mut dxl = DynamixelNode::new("/dev/ttyUSB0")?;
+    dxl.set_baud_rate(1_000_000);  // 1 Mbps
+    dxl.set_protocol_version(2.0);  // Protocol 2.0
+
+    // Add servo ID 1 (XM430-W350)
+    dxl.add_servo(1, DynamixelModel::XM430_W350);
+
+    scheduler.add(Box::new(dxl), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install USB-serial drivers
+sudo apt install setserial
+
+# Add user to dialout group
+sudo usermod -a -G dialout $USER
+
+# Verify port
+ls -l /dev/ttyUSB*
+```
+
+### Wiring (Daisy Chain)
+
+```
+USB2Dynamixel    Servo 1    Servo 2    Servo 3
+    DATA   -->   DATA  -->  DATA  -->  DATA
+    VDD    -->   VDD   -->  VDD   -->  VDD
+    GND    -->   GND   -->  GND   -->  GND
+```
+
+**Power Requirements:**
+- AX/MX series: 11-14.8V (3S LiPo)
+- X/XM series: 11-14.8V (3S LiPo)
+- XL series: 6-9V (2S LiPo)
+- PRO/P series: 24V
+
+### U2D2 or USB2Dynamixel
+
+```
+Computer USB  -->  U2D2  -->  Dynamixel Bus
+```
+
+### Enabling Features
+
+There are three ways to enable the required `serial-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `DynamixelNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: serial-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - serial-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["serial-hardware"] }
+```
+
+## Supported Models
+
+### Protocol 1.0 (Legacy)
+
+```rust
+DynamixelModel::AX12A      // Entry-level (0-300°)
+DynamixelModel::AX18A      // Higher torque
+DynamixelModel::MX28       // Mid-range (0-360° or continuous)
+DynamixelModel::MX64       // High torque
+DynamixelModel::MX106      // Very high torque
+```
+
+### Protocol 2.0 (Modern)
+
+```rust
+// XL Series (Budget)
+DynamixelModel::XL320      // Tiny (9V max)
+DynamixelModel::XL430      // Compact
+
+// XM Series (Performance)
+DynamixelModel::XM430_W210 // 4.1 Nm
+DynamixelModel::XM430_W350 // 4.2 Nm
+DynamixelModel::XM540_W270 // 10.6 Nm
+
+// XH Series (High-Performance)
+DynamixelModel::XH430_V210 // Position feedback
+DynamixelModel::XH430_W350
+DynamixelModel::XH540_W270
+
+// XC/XW Series (Industrial)
+DynamixelModel::XC430_W150 // Compact
+DynamixelModel::XW540_T260 // High torque
+
+// P Series (Modular)
+DynamixelModel::PH42_020   // 42mm frame
+DynamixelModel::PH54_100   // 54mm frame
+
+// PRO Series (Industrial)
+DynamixelModel::PRO_M42
+DynamixelModel::PRO_M54
+```
+
+## Configuration
+
+### Bus Setup
+
+```rust
+let mut dxl = DynamixelNode::new("/dev/ttyUSB0")?;
+
+// Set communication parameters
+dxl.set_baud_rate(1_000_000);    // 1 Mbps (standard)
+dxl.set_baud_rate(3_000_000);    // 3 Mbps (fast)
+dxl.set_baud_rate(4_500_000);    // 4.5 Mbps (maximum)
+
+// Set protocol version
+dxl.set_protocol_version(1.0);   // Legacy servos
+dxl.set_protocol_version(2.0);   // Modern servos
+```
+
+### Adding Servos
+
+```rust
+// Add servos by ID and model
+dxl.add_servo(1, DynamixelModel::XM430_W350);
+dxl.add_servo(2, DynamixelModel::XM430_W350);
+dxl.add_servo(3, DynamixelModel::XM540_W270);
+
+// Scan for servos
+let found_servos = dxl.scan_servos()?;
+for servo in found_servos {
+    println!("Found servo ID {} (model: {})", servo.id, servo.model);
+}
+```
+
+### Operating Modes
+
+```rust
+// Position control mode (default)
+dxl.set_operating_mode(1, OperatingMode::Position);
+
+// Extended position mode (multi-turn)
+dxl.set_operating_mode(1, OperatingMode::ExtendedPosition);
+
+// Velocity control mode
+dxl.set_operating_mode(1, OperatingMode::Velocity);
+
+// Current control mode (torque)
+dxl.set_operating_mode(1, OperatingMode::Current);
+
+// PWM control mode (voltage)
+dxl.set_operating_mode(1, OperatingMode::PWM);
+```
+
+### PID Gains
+
+```rust
+// Set position PID gains
+dxl.set_position_p_gain(1, 800);
+dxl.set_position_i_gain(1, 0);
+dxl.set_position_d_gain(1, 0);
+
+// Set velocity PI gains
+dxl.set_velocity_p_gain(1, 100);
+dxl.set_velocity_i_gain(1, 1920);
+```
+
+### Limits
+
+```rust
+// Set position limits (encoder units)
+dxl.set_min_position(1, 0);
+dxl.set_max_position(1, 4095);  // AX/MX: 0-4095
+
+// Set velocity limit
+dxl.set_velocity_limit(1, 50);  // Rev/min
+
+// Set current limit (torque)
+dxl.set_current_limit(1, 1193);  // mA
+
+// Temperature limit
+dxl.set_temperature_limit(1, 80);  // °C
+```
+
+## Usage Patterns
+
+### Position Control
+
+```rust
+use horus::prelude::*;
+
+// Create position command
+let cmd = DynamixelCommand {
+    servo_id: 1,
+    command_type: DynamixelCommand::CMD_POSITION,
+    goal_position: 2048,  // Center position
+    profile_velocity: 50,
+    profile_acceleration: 10,
+};
+
+// Send command
+let hub = Hub::<DynamixelCommand>::new("dynamixel.command")?;
+hub.send(cmd, &mut None).ok();
+
+// Read status
+let status_hub = Hub::<DynamixelStatus>::new("dynamixel.status")?;
+if let Some(status) = status_hub.recv(&mut None) {
+    println!("Servo {}: position = {}, load = {}%",
+        status.servo_id, status.present_position, status.present_load);
+}
+```
+
+### Velocity Control
+
+```rust
+// Set velocity (rev/min)
+let cmd = DynamixelCommand {
+    servo_id: 1,
+    command_type: DynamixelCommand::CMD_VELOCITY,
+    goal_velocity: 50,  // 50 RPM
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Current Control (Torque)
+
+```rust
+// Set current (mA)
+let cmd = DynamixelCommand {
+    servo_id: 1,
+    command_type: DynamixelCommand::CMD_CURRENT,
+    goal_current: 500,  // 500 mA
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Synchronized Motion
+
+```rust
+// Move multiple servos simultaneously
+let sync_cmd = DynamixelSyncWrite {
+    servo_ids: vec![1, 2, 3, 4],
+    positions: vec![1024, 2048, 3072, 2048],
+    velocities: vec![50, 50, 50, 50],
+};
+
+let hub = Hub::<DynamixelSyncWrite>::new("dynamixel.sync_write")?;
+hub.send(sync_cmd, &mut None).ok();
+```
+
+### Bulk Read
+
+```rust
+// Read multiple servo states efficiently
+let bulk_read = DynamixelBulkRead {
+    servo_ids: vec![1, 2, 3, 4],
+};
+
+let hub = Hub::<DynamixelBulkRead>::new("dynamixel.bulk_read")?;
+hub.send(bulk_read, &mut None).ok();
+
+// Receive results
+let result_hub = Hub::<DynamixelBulkReadResult>::new("dynamixel.bulk_result")?;
+if let Some(result) = result_hub.recv(&mut None) {
+    for status in result.statuses {
+        println!("Servo {}: pos={}, vel={}, current={}",
+            status.servo_id, status.present_position,
+            status.present_velocity, status.present_current);
+    }
+}
+```
+
+## Complete Example: Robot Arm
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure 5-DOF arm
+    let mut dxl = DynamixelNode::new("/dev/ttyUSB0")?;
+    dxl.set_baud_rate(1_000_000);
+    dxl.set_protocol_version(2.0);
+
+    // Add servos
+    dxl.add_servo(1, DynamixelModel::XM540_W270); // Base
+    dxl.add_servo(2, DynamixelModel::XM430_W350); // Shoulder
+    dxl.add_servo(3, DynamixelModel::XM430_W350); // Elbow
+    dxl.add_servo(4, DynamixelModel::XM430_W210); // Wrist1
+    dxl.add_servo(5, DynamixelModel::XM430_W210); // Wrist2
+
+    // Configure all servos
+    for id in 1..=5 {
+        dxl.set_operating_mode(id, OperatingMode::ExtendedPosition);
+        dxl.set_velocity_limit(id, 50);
+        dxl.set_current_limit(id, 1000);
+        dxl.set_temperature_limit(id, 75);
+    }
+
+    scheduler.add(Box::new(dxl), 1, Some(true));
+
+    // Arm control node
+    let arm_node = node! {
+        name: "arm_control",
+        init: |ctx| {
+            // Enable torque on all servos
+            let hub = Hub::<DynamixelCommand>::new("dynamixel.command")?;
+
+            for id in 1..=5 {
+                hub.send(DynamixelCommand {
+                    servo_id: id,
+                    command_type: DynamixelCommand::CMD_TORQUE_ENABLE,
+                    ..Default::default()
+                }, None)?;
+            }
+
+            ctx.log_info("Arm initialized");
+            Ok(())
+        },
+        tick: |ctx| {
+            let hub = Hub::<DynamixelCommand>::new("dynamixel.command")?;
+
+            // Move to home position
+            let home_positions = vec![2048, 1024, 2048, 2048, 2048];
+
+            for (idx, &pos) in home_positions.iter().enumerate() {
+                hub.send(DynamixelCommand {
+                    servo_id: (idx + 1) as u8,
+                    command_type: DynamixelCommand::CMD_POSITION,
+                    goal_position: pos,
+                    profile_velocity: 30,
+                    profile_acceleration: 10,
+                }, None)?;
+            }
+
+            // Monitor servo status
+            let status_hub = Hub::<DynamixelStatus>::new("dynamixel.status")?;
+            while let Some(status) = status_hub.recv(&mut None) {
+                // Check for errors
+                if status.hardware_error != 0 {
+                    ctx.log_error(&format!(
+                        "Servo {} error: 0x{:02X}",
+                        status.servo_id, status.hardware_error
+                    ));
+                }
+
+                // Check temperature
+                if status.present_temperature > 70 {
+                    ctx.log_warning(&format!(
+                        "Servo {} hot: {}°C",
+                        status.servo_id, status.present_temperature
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(arm_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### DynamixelCommand
+
+```rust
+pub struct DynamixelCommand {
+    pub servo_id: u8,           // Servo ID (1-253)
+    pub command_type: u8,       // Command type
+    pub goal_position: i32,     // Target position
+    pub goal_velocity: i32,     // Target velocity
+    pub goal_current: i16,      // Target current
+    pub profile_velocity: u32,  // Motion profile velocity
+    pub profile_acceleration: u32, // Motion profile acceleration
+}
+```
+
+### Command Types
+
+```rust
+pub const CMD_POSITION: u8 = 0;
+pub const CMD_VELOCITY: u8 = 1;
+pub const CMD_CURRENT: u8 = 2;
+pub const CMD_PWM: u8 = 3;
+pub const CMD_TORQUE_ENABLE: u8 = 4;
+pub const CMD_TORQUE_DISABLE: u8 = 5;
+pub const CMD_LED_ON: u8 = 6;
+pub const CMD_LED_OFF: u8 = 7;
+pub const CMD_REBOOT: u8 = 8;
+```
+
+### DynamixelStatus
+
+```rust
+pub struct DynamixelStatus {
+    pub servo_id: u8,
+    pub present_position: i32,
+    pub present_velocity: i32,
+    pub present_current: i16,
+    pub present_voltage: f32,      // Volts
+    pub present_temperature: u8,   // °C
+    pub present_load: i16,         // %
+    pub moving: bool,
+    pub hardware_error: u8,
+    pub timestamp: u64,
+}
+```
+
+### Hardware Error Codes
+
+```rust
+pub const ERROR_INPUT_VOLTAGE: u8 = 0x01;
+pub const ERROR_OVERHEATING: u8 = 0x04;
+pub const ERROR_MOTOR_ENCODER: u8 = 0x08;
+pub const ERROR_ELECTRICAL_SHOCK: u8 = 0x10;
+pub const ERROR_OVERLOAD: u8 = 0x20;
+```
+
+## Advanced Features
+
+### Compliance Control
+
+```rust
+// Set compliance (stiffness) for AX/MX series
+dxl.set_cw_compliance_margin(1, 1);
+dxl.set_ccw_compliance_margin(1, 1);
+dxl.set_cw_compliance_slope(1, 32);
+dxl.set_ccw_compliance_slope(1, 32);
+
+// Lower slope = stiffer
+// Higher slope = more compliant
+```
+
+### Profile Control (X series)
+
+```rust
+// Trapezoidal velocity profile
+dxl.set_profile_velocity(1, 50);      // Max velocity
+dxl.set_profile_acceleration(1, 10);  // Acceleration rate
+
+// Motion will smoothly accelerate and decelerate
+```
+
+### Indirect Addressing
+
+```rust
+// Create custom register layouts for efficient bulk operations
+dxl.setup_indirect_address(1, 0, ADDR_GOAL_POSITION);
+dxl.setup_indirect_address(1, 1, ADDR_GOAL_VELOCITY);
+```
+
+## Dynamixel Wizard
+
+Use Dynamixel Wizard to:
+- Scan for servos
+- Update firmware
+- Change servo IDs
+- Test movements
+- Configure PID gains
+
+```bash
+# Available from ROBOTIS website
+# Runs on Windows/Linux/Mac
+```
+
+## Best Practices
+
+1. **Use Protocol 2.0 for new projects:**
+   ```rust
+   dxl.set_protocol_version(2.0);
+   // Better error detection, more features
+   ```
+
+2. **Set appropriate limits:**
+   ```rust
+   dxl.set_velocity_limit(1, 50);
+   dxl.set_current_limit(1, 1000);
+   dxl.set_temperature_limit(1, 75);
+   ```
+
+3. **Use sync write for coordinated motion:**
+   ```rust
+   // Much faster than individual commands
+   let sync = DynamixelSyncWrite { ... };
+   ```
+
+4. **Monitor temperature and voltage:**
+   ```rust
+   if status.present_temperature > 70 {
+       // Reduce load or stop
+   }
+   ```
+
+5. **Disable torque before changing modes:**
+   ```rust
+   dxl.torque_enable(1, false);
+   dxl.set_operating_mode(1, OperatingMode::Velocity);
+   dxl.torque_enable(1, true);
+   ```
+
+6. **Use appropriate baud rate:**
+   ```rust
+   // Start with 1 Mbps (reliable)
+   dxl.set_baud_rate(1_000_000);
+
+   // Increase if needed and stable
+   dxl.set_baud_rate(3_000_000);
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check USB connection: `ls -l /dev/ttyUSB*`
+2. Add to dialout: `sudo usermod -a -G dialout $USER`
+3. Check U2D2/USB2Dynamixel power LED
+4. Verify servo power supply connected
+
+**Problem: Servo not responding**
+
+**Solutions:**
+1. Check servo ID matches
+2. Verify protocol version (1.0 vs 2.0)
+3. Check baud rate settings
+4. Test with Dynamixel Wizard
+5. Verify power voltage (11-14.8V for most)
+
+**Problem: Communication errors**
+
+**Solutions:**
+1. Reduce baud rate to 1 Mbps
+2. Check cable quality and length (&lt;3m)
+3. Reduce number of servos on bus
+4. Add 10ms delay between commands
+
+**Problem: Servo overheating**
+
+**Solutions:**
+1. Reduce current limit
+2. Improve cooling (add fan/heatsink)
+3. Reduce duty cycle
+4. Check for mechanical binding
+
+**Problem: Position oscillation**
+
+**Solutions:**
+1. Reduce P gain
+2. Increase D gain
+3. Check for mechanical play
+4. Use profile control (X series)
+
+## Graceful Shutdown
+
+DynamixelNode automatically disables torque on all servos when your application receives Ctrl+C (SIGINT/SIGTERM):
+
+- Torque disabled on all servos (safe to move by hand)
+- Velocities set to 0
+- Serial port closed
+
+This prevents servos from holding position with high torque after shutdown, making the robot arm safe to manipulate.
+
+## See Also
+
+- [StepperMotorNode](./stepper-motor) - Stepper motor control
+- [BldcMotorNode](./bldc-motor) - BLDC motor control
+- [ServoControllerNode](./servo-controller) - Standard PWM servos
+- [RoboclawMotorNode](./roboclaw-motor) - Roboclaw controllers

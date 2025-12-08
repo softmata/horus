@@ -1,0 +1,300 @@
+---
+title: Pure Pursuit
+description: Geometric path tracking controller for mobile robots
+---
+
+# Pure Pursuit
+
+Geometric path tracking controller that steers a robot toward a look-ahead point on the path. Simple, robust, and widely used for mobile robot navigation.
+
+## Source Code
+
+- [Pure Pursuit Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/pure_pursuit)
+
+## Features
+
+- Simple geometric path following
+- Configurable look-ahead distance
+- Suitable for differential drive robots
+- Smooth trajectory tracking
+- Automatic goal detection
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::pure_pursuit::PurePursuit;
+
+fn main() {
+    // Create controller with 0.5m look-ahead
+    let mut pursuit = PurePursuit::new(0.5);
+
+    // Set path to follow
+    let path = vec![
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, 0.5),
+        (3.0, 1.0),
+        (4.0, 1.0),
+    ];
+    pursuit.set_path(path);
+
+    // Control loop
+    let mut pose = (0.0, 0.0, 0.0);  // x, y, theta
+    let desired_speed = 0.5;  // m/s
+
+    while !pursuit.is_goal_reached(pose) {
+        let (linear, angular) = pursuit.compute_velocity(pose, desired_speed);
+        println!("Command: v={:.2} m/s, ω={:.2} rad/s", linear, angular);
+
+        // Simulate robot motion (simplified)
+        let dt = 0.1;
+        pose.0 += linear * pose.2.cos() * dt;
+        pose.1 += linear * pose.2.sin() * dt;
+        pose.2 += angular * dt;
+    }
+
+    println!("Goal reached!");
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let pursuit = PurePursuit::new(look_ahead_distance: f64);
+```
+
+Creates a Pure Pursuit controller with the specified look-ahead distance in meters.
+
+### Configuration Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_path(path)` | Set path as `Vec<(f64, f64)>` |
+| `set_look_ahead_distance(d)` | Set look-ahead distance |
+| `set_look_ahead_limits(min, max)` | Set look-ahead bounds |
+| `set_goal_tolerance(d)` | Distance to consider goal reached |
+| `reset()` | Reset to path start |
+
+### Control
+
+```rust
+let (linear, angular) = pursuit.compute_velocity(
+    current_pose: (f64, f64, f64),  // (x, y, theta)
+    desired_linear_velocity: f64,
+);
+```
+
+Returns `(linear_velocity, angular_velocity)` commands.
+
+### State Inspection
+
+| Method | Returns |
+|--------|---------|
+| `is_goal_reached(pose)` | `true` if within goal tolerance |
+| `get_path()` | Reference to current path |
+| `get_current_segment()` | Index of closest path segment |
+
+## Look-Ahead Distance Tuning
+
+The look-ahead distance is the key parameter:
+
+```rust
+// Short look-ahead: Follows path closely, may oscillate
+pursuit.set_look_ahead_distance(0.3);
+
+// Medium look-ahead: Good balance (recommended)
+pursuit.set_look_ahead_distance(0.5);
+
+// Long look-ahead: Smooth but cuts corners
+pursuit.set_look_ahead_distance(1.0);
+```
+
+### Guidelines
+
+| Robot Speed | Recommended Look-Ahead |
+|-------------|------------------------|
+| &lt;0.5 m/s | 0.2 - 0.4 m |
+| 0.5-1.0 m/s | 0.4 - 0.8 m |
+| &gt;1.0 m/s | 0.8 - 1.5 m |
+
+**Rule of thumb**: Look-ahead ≈ 1-2 seconds of travel at desired speed.
+
+### Adaptive Look-Ahead
+
+Adjust based on speed and path curvature:
+
+```rust
+fn adaptive_look_ahead(speed: f64, curvature: f64) -> f64 {
+    let base = 0.5;
+    let speed_factor = speed * 0.5;  // Increase with speed
+    let curve_factor = -curvature.abs() * 0.3;  // Decrease on curves
+
+    (base + speed_factor + curve_factor).clamp(0.2, 1.5)
+}
+```
+
+## Integration with Path Planning
+
+Combine with A* or RRT for complete navigation:
+
+```rust
+use horus_library::algorithms::{
+    astar::AStar,
+    pure_pursuit::PurePursuit,
+};
+
+struct Navigator {
+    planner: AStar,
+    controller: PurePursuit,
+    resolution: f64,  // Grid resolution in meters
+}
+
+impl Navigator {
+    fn new(width: usize, height: usize, resolution: f64) -> Self {
+        Self {
+            planner: AStar::new(width, height),
+            controller: PurePursuit::new(0.5),
+            resolution,
+        }
+    }
+
+    fn plan_to(&mut self, goal: (f64, f64), robot_pose: (f64, f64, f64)) {
+        // Convert world to grid coordinates
+        let start_grid = (
+            (robot_pose.0 / self.resolution) as i32,
+            (robot_pose.1 / self.resolution) as i32,
+        );
+        let goal_grid = (
+            (goal.0 / self.resolution) as i32,
+            (goal.1 / self.resolution) as i32,
+        );
+
+        self.planner.set_start(start_grid.0, start_grid.1);
+        self.planner.set_goal(goal_grid.0, goal_grid.1);
+
+        if let Some(grid_path) = self.planner.plan() {
+            // Convert grid path to world coordinates
+            let world_path: Vec<(f64, f64)> = grid_path
+                .iter()
+                .map(|(gx, gy)| {
+                    (
+                        (*gx as f64 + 0.5) * self.resolution,
+                        (*gy as f64 + 0.5) * self.resolution,
+                    )
+                })
+                .collect();
+
+            self.controller.set_path(world_path);
+        }
+    }
+
+    fn compute_command(&mut self, pose: (f64, f64, f64), speed: f64) -> (f64, f64) {
+        self.controller.compute_velocity(pose, speed)
+    }
+
+    fn is_goal_reached(&self, pose: (f64, f64, f64)) -> bool {
+        self.controller.is_goal_reached(pose)
+    }
+}
+```
+
+## HORUS Node Integration
+
+```rust
+use horus::prelude::*;
+use horus_library::algorithms::pure_pursuit::PurePursuit;
+use horus::prelude::*; // Provides {Path, Odometry, Twist};
+
+struct PathFollower {
+    pursuit: PurePursuit,
+    path_sub: Hub<Path>,
+    odom_sub: Hub<Odometry>,
+    cmd_pub: Hub<Twist>,
+    desired_speed: f64,
+}
+
+impl PathFollower {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            pursuit: PurePursuit::new(0.5),
+            path_sub: Hub::new("path")?,
+            odom_sub: Hub::new("odom")?,
+            cmd_pub: Hub::new("cmd_vel")?,
+            desired_speed: 0.3,
+        })
+    }
+}
+
+impl Node for PathFollower {
+    fn name(&self) -> &'static str { "PathFollower" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Update path if new one received
+        if let Some(path_msg) = self.path_sub.recv(&mut ctx) {
+            let path: Vec<(f64, f64)> = path_msg.waypoints
+                .iter()
+                .map(|w| (w.x, w.y))
+                .collect();
+            self.pursuit.set_path(path);
+        }
+
+        // Compute control from odometry
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            let pose = (odom.pose.x, odom.pose.y, odom.pose.theta);
+
+            if !self.pursuit.is_goal_reached(pose) {
+                let (linear, angular) = self.pursuit.compute_velocity(
+                    pose,
+                    self.desired_speed,
+                );
+
+                let cmd = Twist::new_2d(linear, angular);
+                self.cmd_pub.send(cmd, &mut ctx).ok();
+            } else {
+                // Stop at goal
+                self.cmd_pub.send(Twist::stop(), &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+## Handling Edge Cases
+
+### Empty Path
+
+```rust
+let mut pursuit = PurePursuit::new(0.5);
+// No path set
+let (v, w) = pursuit.compute_velocity((0.0, 0.0, 0.0), 1.0);
+// Returns (0.0, 0.0) - safe stop
+```
+
+### Robot Off Path
+
+Pure Pursuit naturally handles robots that are off the path by finding the closest point and steering toward the look-ahead point.
+
+### Sharp Turns
+
+For very sharp turns, consider:
+1. Reducing speed near turns
+2. Using shorter look-ahead
+3. Path smoothing before following
+
+## Comparison with Other Controllers
+
+| Controller | Pros | Cons |
+|------------|------|------|
+| Pure Pursuit | Simple, robust | May cut corners |
+| Stanley | Better path tracking | More complex |
+| MPC | Optimal control | Computationally expensive |
+| PID | Simple | No path awareness |
+
+## See Also
+
+- [A* Pathfinding](/rust/library/algorithms/astar) - Path planning
+- [RRT](/rust/library/algorithms/rrt) - Sampling-based planning
+- [Differential Drive](/rust/library/algorithms/differential-drive) - Robot kinematics
+- [Path Planner Node](/rust/library/built-in-nodes/path-planner) - Ready-to-use planning

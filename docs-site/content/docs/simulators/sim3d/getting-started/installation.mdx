@@ -1,0 +1,159 @@
+---
+title: "Installation"
+description: "Installing and setting up Sim3D"
+---
+
+# Installing Sim3D
+
+Sim3D is included with the HORUS framework. This guide covers installation and initial setup.
+
+## Prerequisites
+
+- HORUS framework installed (`cargo install horus`)
+- Rust 1.70+ (for building from source)
+- OpenGL 3.3+ or Vulkan (for rendering)
+
+### Optional Dependencies
+
+- **CUDA Toolkit 11+**: For GPU-accelerated physics
+- **Python 3.9+**: For RL training with Python
+- **FFmpeg**: For video recording/export
+
+## Installation Methods
+
+### Via HORUS CLI (Recommended)
+
+Sim3D is bundled with the HORUS CLI:
+
+```bash
+# Install HORUS (includes sim3d)
+cargo install horus
+
+# Verify installation
+horus sim3d --help
+```
+
+### From Source
+
+```bash
+# Clone HORUS repository
+git clone https://github.com/softmata/horus.git
+cd horus/HORUS
+
+# Build sim3d with default features
+cargo build -p sim3d --release
+
+# Build with all features
+cargo build -p sim3d --release --features "python,cuda,editor"
+```
+
+### Python Package (for RL)
+
+```bash
+# Install Python bindings
+pip install horus-robotics
+
+# Or build from source with maturin
+cd horus_library/tools/sim3d
+maturin develop --release
+```
+
+## Verify Installation
+
+```bash
+# Check version
+horus sim3d --version
+
+# Run with a test scene
+horus sim3d --world examples/empty_world.yaml
+
+# Test headless mode
+horus sim3d --headless --help
+```
+
+## Directory Structure
+
+After installation, sim3d uses these directories:
+
+```
+~/.horus/
+├── sim3d/
+│   ├── assets/      # Downloaded models and textures
+│   ├── recordings/  # Saved trajectories and videos
+│   └── cache/       # Asset cache
+```
+
+## GPU Setup
+
+### CUDA (NVIDIA)
+
+```bash
+# Check CUDA availability
+nvidia-smi
+
+# Build with CUDA support
+cargo build -p sim3d --release --features cuda
+```
+
+### Vulkan
+
+Vulkan is used for rendering. Install drivers for your GPU:
+
+```bash
+# Ubuntu/Debian
+sudo apt install vulkan-tools libvulkan1
+
+# Verify
+vulkaninfo
+```
+
+## Troubleshooting
+
+### "Failed to create window"
+
+Install graphics drivers and Vulkan support:
+
+```bash
+# NVIDIA
+sudo apt install nvidia-driver-535
+
+# AMD
+sudo apt install mesa-vulkan-drivers
+
+# Intel
+sudo apt install intel-media-va-driver
+```
+
+### "CUDA not found"
+
+Ensure CUDA toolkit is installed and `CUDA_HOME` is set:
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+```
+
+### Headless Server (No Display)
+
+Use virtual framebuffer for headless rendering:
+
+```bash
+# Install Xvfb
+sudo apt install xvfb
+
+# Run sim3d with virtual display
+xvfb-run -a horus sim3d --world scene.yaml
+```
+
+Or use pure headless mode (no rendering):
+
+```bash
+horus sim3d --headless --world scene.yaml
+```
+
+## Next Steps
+
+- [Quick Start Tutorial](/simulators/sim3d/getting-started/quick-start) - Create your first simulation
+- [Loading Robots](/simulators/sim3d/getting-started/robots) - Import URDF/MJCF models
+- [Sensors Overview](/simulators/sim3d/sensors/overview) - Configure sensor suite

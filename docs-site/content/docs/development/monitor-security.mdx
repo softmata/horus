@@ -1,0 +1,75 @@
+---
+title: "Monitor Security"
+description: "Authentication for the HORUS monitor"
+weight: 22
+---
+
+# Monitor Security
+
+The HORUS monitor supports password-based authentication for networked deployments.
+
+## Setup
+
+On first run, set a password (or press Enter to skip):
+
+```bash
+horus monitor
+
+[SECURITY] HORUS Monitor - First Time Setup
+Password: ********
+Confirm password: ********
+[SUCCESS] Password set successfully!
+```
+
+Reset password anytime with:
+
+```bash
+horus monitor -r
+```
+
+## API Authentication
+
+```bash
+# Login
+curl -X POST http://localhost:3000/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"password": "your_password"}'
+# Returns: {"token": "abc123..."}
+
+# Use token for requests
+curl http://localhost:3000/api/nodes \
+  -H "Authorization: Bearer abc123..."
+```
+
+## Security Details
+
+| Feature | Value |
+|---------|-------|
+| Password hashing | Argon2id |
+| Session timeout | 1 hour inactivity |
+| Rate limiting | 5 attempts per 60 seconds |
+| Token size | 256-bit random |
+
+Password hash stored at `~/.horus/monitor_password.hash`.
+
+## Network Access
+
+```bash
+# Local only (default)
+horus monitor
+
+# Allow network access (set password first!)
+horus monitor --host 0.0.0.0
+```
+
+For production, use a reverse proxy with TLS.
+
+## Recovery
+
+If locked out:
+
+```bash
+rm ~/.horus/monitor_password.hash
+horus monitor  # Re-prompts for password
+```
+

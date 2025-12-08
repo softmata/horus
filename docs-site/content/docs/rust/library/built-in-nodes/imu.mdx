@@ -1,0 +1,472 @@
+---
+title: ImuNode
+description: Inertial Measurement Unit with accelerometer, gyroscope, and magnetometer
+---
+
+# ImuNode
+
+Inertial Measurement Unit (IMU) node supporting MPU6050, BNO055, ICM20948, and other I2C-based IMUs. Provides accelerometer, gyroscope, magnetometer data, and sensor fusion for orientation estimation in robots, drones, and stabilization systems.
+
+## Source Code
+
+- [ImuNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/imu)
+- [IMU Sensor Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/sensor.rs)
+
+## Features
+
+- MPU6050/6500 (6-axis: accel + gyro)
+- BNO055 (9-axis with hardware fusion)
+- ICM20948 (9-axis: accel + gyro + mag)
+- Raw sensor data output
+- Sensor fusion (Mahony/Madgwick filters)
+- Quaternion and Euler angle output
+- Configurable sample rates (up to 1000Hz)
+- Builder pattern for easy configuration
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus_library::nodes::{ImuNode, ImuBackend};
+use horus::prelude::*;
+use horus::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut scheduler = Scheduler::new();
+
+    // Option 1: Simulation mode (no hardware needed)
+    let imu = ImuNode::new()?;
+
+    // Option 2: With real hardware (MPU6050)
+    let imu = ImuNode::builder()
+        .with_backend(ImuBackend::Mpu6050)
+        .with_i2c("/dev/i2c-1", 0x68)
+        .build()?;
+
+    scheduler.add(Box::new(imu), 50, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+
+// Subscribe to IMU data in another node:
+let imu_hub = Hub::<Imu>::new("imu")?;
+if let Some(data) = imu_hub.recv(&mut ctx) {
+    println!("Angular velocity: [{:.2}, {:.2}, {:.2}] rad/s",
+        data.angular_velocity[0], data.angular_velocity[1], data.angular_velocity[2]);
+}
+```
+
+**Publishes to:** `imu` topic with orientation, angular velocity, and linear acceleration data.
+
+## Supported Hardware
+
+| IMU Sensor | Type | Features | I2C Address |
+|------------|------|----------|-------------|
+| **MPU6050** | 6-axis | Accel + Gyro | 0x68 (0x69 alt) |
+| **BNO055** | 9-axis | Accel + Gyro + Mag + Fusion | 0x28 (0x29 alt) |
+| **ICM20948** | 9-axis | Accel + Gyro + Mag | 0x68 (0x69 alt) |
+
+### Enabling Features
+
+There are three ways to enable the required IMU feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `ImuNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: bno055-imu)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - bno055-imu  # or mpu6050-imu
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["mpu6050-imu"] }
+# or
+horus_library = { version = "0.1", features = ["bno055-imu"] }
+```
+
+## Hardware Setup
+
+### MPU6050/6500 Wiring
+
+```
+Raspberry Pi    MPU6050
+GPIO 2 (SDA) --> SDA
+GPIO 3 (SCL) --> SCL
+3.3V         --> VCC
+GND          --- GND
+```
+
+### BNO055 Wiring
+
+```
+Raspberry Pi    BNO055
+GPIO 2 (SDA) --> SDA
+GPIO 3 (SCL) --> SCL
+3.3V         --> VIN
+GND          --- GND
+                PS0 --> GND (I2C mode)
+                PS1 --> GND
+```
+
+## Configuration
+
+### Construction Methods
+
+```rust
+use horus_library::nodes::{ImuNode, ImuBackend};
+
+// Create with default topic "imu" in simulation mode
+let mut imu = ImuNode::new()?;
+
+// Create with custom topic
+let mut imu = ImuNode::new_with_topic("sensors.imu")?;
+
+// Create with specific hardware backend
+let mut imu = ImuNode::new_with_backend("imu", ImuBackend::Mpu6050)?;
+```
+
+### Builder Pattern (Recommended)
+
+```rust
+use horus_library::nodes::{ImuNode, ImuBackend};
+
+// Simple builder usage
+let imu = ImuNode::builder()
+    .with_topic("robot.imu")
+    .with_backend(ImuBackend::Mpu6050)
+    .with_i2c("/dev/i2c-1", 0x68)
+    .build()?;
+
+// Builder with data processing closure
+let imu = ImuNode::builder()
+    .with_topic("imu")
+    .with_backend(ImuBackend::Bno055)
+    .with_closure(|mut imu_data| {
+        // Apply calibration offset
+        imu_data.angular_velocity[0] -= 0.01;  // Remove gyro bias
+        imu_data
+    })
+    .build()?;
+```
+
+### Configuration Methods
+
+```rust
+// Set hardware backend
+imu.set_backend(ImuBackend::Mpu6050);
+
+// Set I2C bus and address
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+
+// Set coordinate frame ID
+imu.set_frame_id("base_imu");
+
+// Set sample rate (Hz, clamped to 1.0-1000.0)
+imu.set_sample_rate(200.0);
+
+// Get actual measured sample rate
+let actual_rate = imu.get_actual_sample_rate();
+```
+
+### Hardware Backend Options
+
+```rust
+use horus_library::nodes::ImuBackend;
+
+// Simulation mode (no hardware required)
+imu.set_backend(ImuBackend::Simulation);
+
+// MPU6050 (6-axis: accelerometer + gyroscope)
+imu.set_backend(ImuBackend::Mpu6050);
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+
+// BNO055 (9-axis with built-in sensor fusion)
+imu.set_backend(ImuBackend::Bno055);
+imu.set_i2c_config("/dev/i2c-1", 0x28);
+
+// ICM20948 (9-axis)
+imu.set_backend(ImuBackend::Icm20948);
+imu.set_i2c_config("/dev/i2c-1", 0x68);
+```
+
+## Configuration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `frame_id` | `String` | `"imu_link"` | Coordinate frame identifier |
+| `sample_rate` | `f32` | `100.0` | Target sample rate in Hz (1.0-1000.0) |
+| `topic` | `String` | `"imu"` | Topic name for publishing IMU data |
+| `backend` | `ImuBackend` | `Simulation` | Hardware backend |
+| `i2c_bus` | `String` | `"/dev/i2c-1"` | I2C bus device path |
+| `i2c_address` | `u8` | `0x68` | I2C address of the IMU |
+
+## Usage Patterns
+
+### Reading IMU Data
+
+```rust
+let hub = Hub::<Imu>::new("imu")?;
+
+if let Some(data) = hub.recv(&mut None) {
+    // Orientation as quaternion [x, y, z, w]
+    println!("Orientation: [{:.3}, {:.3}, {:.3}, {:.3}]",
+        data.orientation[0], data.orientation[1],
+        data.orientation[2], data.orientation[3]);
+
+    // Angular velocity [x, y, z] in rad/s
+    println!("Angular velocity: [{:.2}, {:.2}, {:.2}] rad/s",
+        data.angular_velocity[0], data.angular_velocity[1],
+        data.angular_velocity[2]);
+
+    // Linear acceleration [x, y, z] in m/s²
+    println!("Acceleration: [{:.2}, {:.2}, {:.2}] m/s²",
+        data.linear_acceleration[0], data.linear_acceleration[1],
+        data.linear_acceleration[2]);
+}
+```
+
+### Orientation Monitoring with Euler Angles
+
+```rust
+use horus_library::nodes::ImuNode;
+use horus_library::{Imu, Quaternion};
+use horus::prelude::*;
+use std::f64::consts::PI;
+
+struct OrientationMonitor {
+    imu_sub: Hub<Imu>,
+}
+
+impl OrientationMonitor {
+    fn new() -> horus_core::error::HorusResult<Self> {
+        Ok(Self {
+            imu_sub: Hub::new("imu")?,
+        })
+    }
+}
+
+impl Node for OrientationMonitor {
+    fn name(&self) -> &'static str {
+        "OrientationMonitor"
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(imu_data) = self.imu_sub.recv(&mut ctx) {
+            if imu_data.has_orientation() {
+                // Convert quaternion to Euler angles
+                let q = Quaternion::new(
+                    imu_data.orientation[0],
+                    imu_data.orientation[1],
+                    imu_data.orientation[2],
+                    imu_data.orientation[3]
+                );
+                let (roll, pitch, yaw) = q.to_euler();
+
+                if let Some(ctx) = ctx {
+                    ctx.log_info(&format!(
+                        "Roll: {:.2}°, Pitch: {:.2}°, Yaw: {:.2}°",
+                        roll * 180.0 / PI,
+                        pitch * 180.0 / PI,
+                        yaw * 180.0 / PI
+                    ));
+                }
+            }
+        }
+    }
+}
+```
+
+### Motion Detection
+
+```rust
+struct MotionDetector {
+    imu_sub: Hub<Imu>,
+    angular_threshold: f64,
+    accel_threshold: f64,
+}
+
+impl Node for MotionDetector {
+    fn name(&self) -> &'static str { "MotionDetector" }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        if let Some(imu_data) = self.imu_sub.recv(&mut ctx) {
+            // Calculate angular velocity magnitude
+            let angular_mag = (
+                imu_data.angular_velocity[0].powi(2) +
+                imu_data.angular_velocity[1].powi(2) +
+                imu_data.angular_velocity[2].powi(2)
+            ).sqrt();
+
+            if angular_mag > self.angular_threshold {
+                if let Some(ctx) = ctx {
+                    ctx.log_warning(&format!(
+                        "Motion detected! Angular: {:.2} rad/s", angular_mag
+                    ));
+                }
+            }
+        }
+    }
+}
+```
+
+## Message Types
+
+### Imu
+
+```rust
+pub struct Imu {
+    /// Orientation as quaternion [x, y, z, w]
+    pub orientation: [f64; 4],
+    /// Orientation covariance matrix (row-major, -1 = no data)
+    pub orientation_covariance: [f64; 9],
+    /// Angular velocity [x, y, z] in rad/s
+    pub angular_velocity: [f64; 3],
+    /// Angular velocity covariance matrix
+    pub angular_velocity_covariance: [f64; 9],
+    /// Linear acceleration [x, y, z] in m/s²
+    pub linear_acceleration: [f64; 3],
+    /// Linear acceleration covariance matrix
+    pub linear_acceleration_covariance: [f64; 9],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp: u64,
+}
+```
+
+### Helper Methods
+
+```rust
+impl Imu {
+    pub fn new() -> Self;
+    pub fn set_orientation_from_euler(&mut self, roll: f64, pitch: f64, yaw: f64);
+    pub fn has_orientation(&self) -> bool;
+    pub fn is_valid(&self) -> bool;
+    pub fn angular_velocity_vec(&self) -> Vector3;
+    pub fn linear_acceleration_vec(&self) -> Vector3;
+}
+```
+
+## Coordinate Frames
+
+### IMU Frame Convention
+
+The IMU uses a right-handed coordinate system:
+
+- **X-axis**: Forward (robot front)
+- **Y-axis**: Left (robot left side)
+- **Z-axis**: Up (opposite to gravity)
+
+### Rotation Convention
+
+- **Roll**: Rotation around X-axis (positive = lean right)
+- **Pitch**: Rotation around Y-axis (positive = nose up)
+- **Yaw**: Rotation around Z-axis (positive = turn left)
+
+### Quaternion Orientation
+
+Quaternions represent orientation as `[x, y, z, w]`:
+- **Identity** (no rotation): `[0, 0, 0, 1]`
+- **90° yaw** (left turn): `[0, 0, 0.707, 0.707]`
+
+## Troubleshooting
+
+### Issue: No IMU data published
+
+**Cause**: IMU initialization failed or hardware connection issue
+
+**Solution**:
+```rust
+// Check IMU initialization
+let actual_rate = imu.get_actual_sample_rate();
+if actual_rate == 0.0 {
+    eprintln!("IMU not publishing - check hardware connection");
+}
+
+// For I2C IMUs, verify:
+// 1. I2C bus is enabled
+// 2. Correct I2C address
+// 3. Pull-up resistors present
+```
+
+### Issue: I2C communication errors
+
+**Solution**:
+```bash
+# Check I2C devices
+i2cdetect -y 1
+
+# Verify IMU address (common: 0x68, 0x69)
+# Reduce I2C bus speed if needed (in /boot/config.txt)
+dtparam=i2c_arm_baudrate=100000  # Reduce to 100 kHz
+```
+
+### Issue: Noisy accelerometer data
+
+**Solution**:
+```rust
+// Apply low-pass filter
+struct LowPassFilter {
+    alpha: f64,  // 0.0-1.0, lower = more filtering
+    prev: [f64; 3],
+}
+
+impl LowPassFilter {
+    fn filter(&mut self, input: [f64; 3]) -> [f64; 3] {
+        for i in 0..3 {
+            self.prev[i] = self.alpha * input[i] + (1.0 - self.alpha) * self.prev[i];
+        }
+        self.prev
+    }
+}
+```
+
+**Hardware solutions**:
+- Mount IMU on vibration-dampening material
+- Move IMU away from motors and power lines
+- Add capacitors near IMU power supply
+
+### Issue: Gyroscope drift
+
+**Cause**: Temperature changes, bias accumulation
+
+**Solution**: Periodic gyro bias recalibration when robot is stationary
+
+## Best Practices
+
+1. **Always calibrate on startup** - Collect gyro bias while stationary
+2. **Enable sensor fusion for orientation** - Use complementary filter
+3. **Mount IMU at robot center of mass** - Reduces unwanted motion
+4. **Align IMU axes with robot frame** - Simplifies transforms
+5. **Use appropriate sample rate** - 100Hz for most robots, 500Hz for drones
+
+## Performance Considerations
+
+| Sample Rate | CPU Usage | Use Case |
+|-------------|-----------|----------|
+| 10-50 Hz | Minimal | Power saving mode |
+| 100 Hz | ~1.5% | Normal operation |
+| 200-500 Hz | ~3% | High-speed tracking |
+| 1000 Hz | ~6% | Vibration analysis |
+
+## See Also
+
+- [GpsNode](./gps) - GPS positioning
+- [EncoderNode](./encoder) - Wheel encoders
+- [OdometryNode](./odometry) - Position tracking
+- [LocalizationNode](./localization) - Sensor fusion

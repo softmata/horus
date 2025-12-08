@@ -1,0 +1,272 @@
+---
+title: DepthEstimationNode
+description: Monocular depth estimation using neural networks
+---
+
+# DepthEstimationNode
+
+Real-time monocular depth estimation from single RGB images using neural networks like MiDaS, DPT, and Depth Anything. Generates depth maps without requiring stereo cameras or depth sensors.
+
+## Source Code
+
+- [DepthEstimationNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/cv/depth_estimation.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- MiDaS v2/v3 model support
+- DPT (Dense Prediction Transformer) support
+- Depth Anything support (small, base, large)
+- Metric depth estimation (optional)
+- Colorized depth visualization
+- GPU acceleration
+- Relative and metric depth modes
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::cv::{DepthEstimationNode, DepthConfig};
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    let depth_node = DepthEstimationNode::new(
+        "models/midas_v21_384.onnx",
+        "camera.raw",        // Input image topic
+        "vision.depth",      // Output depth topic
+        DepthConfig::midas_v21(),
+    )?;
+
+    scheduler.add(Box::new(depth_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Supported Models
+
+### MiDaS Models
+
+| Model | Config | Input Size | Speed | Quality |
+|-------|--------|------------|-------|---------|
+| MiDaS Small | `midas_small()` | 256x256 | Fast | Good |
+| MiDaS v2.1 | `midas_v21()` | 384x384 | Medium | Better |
+| MiDaS Hybrid | `midas_hybrid()` | 384x384 | Medium | Good |
+| MiDaS DPT-Large | `midas_large()` | 384x384 | Slow | Best |
+
+### Depth Anything Models
+
+| Model | Config | Input Size | Speed | Quality |
+|-------|--------|------------|-------|---------|
+| Small | `depth_anything_small()` | 518x518 | Fast | Good |
+| Base | `depth_anything_base()` | 518x518 | Medium | Better |
+| Large | `depth_anything_large()` | 518x518 | Slow | Best |
+
+## Configuration
+
+### DepthConfig Options
+
+```rust
+let config = DepthConfig {
+    model_type: DepthModelType::MiDaSLarge,
+    input_size: [384, 384],
+    use_gpu: true,
+    device_id: 0,
+    num_threads: 4,
+    metric_depth: false,      // Relative (0-1) vs metric (meters)
+    depth_scale: 1.0,
+    min_depth: 0.1,           // Minimum depth (meters)
+    max_depth: 100.0,         // Maximum depth (meters)
+    enable_visualization: true,
+    invert_depth: true,       // MiDaS outputs inverse depth
+};
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_type` | `DepthModelType` | `MiDaSLarge` | Model architecture |
+| `input_size` | `[usize; 2]` | `[384, 384]` | Input size [H, W] |
+| `use_gpu` | bool | false | Enable GPU acceleration |
+| `device_id` | u32 | 0 | GPU device ID |
+| `num_threads` | usize | 4 | CPU threads |
+| `metric_depth` | bool | false | Output metric depth (meters) |
+| `depth_scale` | f32 | 1.0 | Depth scaling factor |
+| `min_depth` | f32 | 0.1 | Minimum depth (meters) |
+| `max_depth` | f32 | 100.0 | Maximum depth (meters) |
+| `enable_visualization` | bool | true | Output colorized depth |
+| `invert_depth` | bool | true | Invert depth output |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input RGB images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `DepthImage` | Estimated depth map |
+| `{output_topic}.visualization` | `Image` | Colorized depth (if enabled) |
+| `{output_topic}.metrics` | `InferenceMetrics` | Performance metrics |
+
+## Usage Examples
+
+### Basic Depth Estimation
+
+```rust
+use horus::prelude::*; // Provides DepthImage;
+
+let depth_hub = Hub::<DepthImage>::new("vision.depth")?;
+
+if let Some(depth) = depth_hub.recv(&mut None) {
+    println!("Depth map: {}x{}", depth.width, depth.height);
+
+    // Access depth at pixel (x, y)
+    let x = 320;
+    let y = 240;
+    let idx = y as usize * depth.width as usize + x as usize;
+    let depth_mm = depth.depths[idx];
+    println!("Depth at ({}, {}): {} mm", x, y, depth_mm);
+}
+```
+
+### Obstacle Detection
+
+```rust
+// Use depth for simple obstacle detection
+fn check_obstacles(depth: &DepthImage, threshold_mm: u16) -> bool {
+    let center_region = get_center_region(depth, 0.3); // Center 30%
+
+    for &d in &center_region {
+        if d < threshold_mm && d > 0 {
+            return true; // Obstacle detected
+        }
+    }
+    false
+}
+```
+
+### Depth-Based Navigation
+
+```rust
+use horus_library::nodes::cv::{DepthEstimationNode, DepthConfig};
+
+// Configure for navigation (metric depth)
+let config = DepthConfig::depth_anything_small()
+    .metric_depth = true;
+
+let depth_node = DepthEstimationNode::new(
+    "models/depth_anything_small.onnx",
+    "camera.front",
+    "navigation.depth",
+    config,
+)?;
+```
+
+### With GPU Acceleration
+
+```rust
+let config = DepthConfig {
+    use_gpu: true,
+    device_id: 0,
+    ..DepthConfig::midas_v21()
+};
+
+let depth_node = DepthEstimationNode::new(
+    "models/midas_v21_384.onnx",
+    "camera.raw",
+    "vision.depth",
+    config,
+)?;
+```
+
+## Model Downloads
+
+Download pre-trained ONNX models:
+
+```bash
+# MiDaS v2.1 Small (fast)
+wget https://github.com/isl-org/MiDaS/releases/download/v2_1/midas_v21_small_256.onnx
+
+# MiDaS v2.1 (balanced)
+wget https://github.com/isl-org/MiDaS/releases/download/v2_1/midas_v21_384.onnx
+
+# MiDaS DPT-Large (highest quality)
+wget https://github.com/isl-org/MiDaS/releases/download/v3_1/dpt_large_384.onnx
+
+# Depth Anything (convert from PyTorch)
+# See: https://github.com/LiheYoung/Depth-Anything
+```
+
+## Performance
+
+| Model | GPU (RTX 3080) | CPU (i7-12700) | Quality |
+|-------|---------------|----------------|---------|
+| MiDaS Small | 60+ FPS | 15-20 FPS | Good |
+| MiDaS v2.1 | 45-60 FPS | 8-12 FPS | Better |
+| MiDaS DPT | 30-45 FPS | 4-6 FPS | Best |
+| Depth Anything S | 50-60 FPS | 10-15 FPS | Good |
+| Depth Anything B | 40-50 FPS | 6-10 FPS | Better |
+| Depth Anything L | 25-35 FPS | 3-5 FPS | Best |
+
+## Limitations
+
+- **Monocular estimation** - Relative depth only without ground truth scale
+- **Indoor/outdoor bias** - Models trained on specific datasets may not generalize
+- **Reflective surfaces** - Glass, mirrors, and water cause artifacts
+- **Low texture** - Uniform surfaces lack depth cues
+
+## Integration with Other Nodes
+
+### Point Cloud Generation
+
+```rust
+// Combine depth with camera intrinsics for 3D point cloud
+let depth_sub = Hub::<DepthImage>::new("vision.depth")?;
+let pointcloud_pub = Hub::<PointCloud2>::new("vision.pointcloud")?;
+
+if let Some(depth) = depth_sub.recv(&mut ctx) {
+    let cloud = depth_to_pointcloud(&depth, &camera_intrinsics);
+    pointcloud_pub.send(cloud, &mut ctx).ok();
+}
+```
+
+### Collision Avoidance
+
+```rust
+// Use with SafetyMonitorNode for collision avoidance
+let depth_node = DepthEstimationNode::new(
+    "models/midas_small.onnx",
+    "camera.front",
+    "safety.depth",
+    DepthConfig::midas_small(),
+)?;
+
+let safety = SafetyMonitorNode::new(
+    SafetyConfig::default()
+        .with_depth_topic("safety.depth")
+        .with_min_clearance(0.5),  // 50cm minimum
+)?;
+```
+
+## See Also
+
+- [DepthCameraNode](./depth-camera) - Hardware depth cameras (RealSense, etc.)
+- [CameraNode](./camera) - RGB camera input
+- [ONNXInferenceNode](./onnx-inference) - Generic ONNX inference
+- [CollisionDetectorNode](./collision-detector) - Collision detection

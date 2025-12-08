@@ -1,0 +1,179 @@
+---
+title: YOLOv8DetectorNode
+description: Real-time object detection using YOLOv8 models
+---
+
+# YOLOv8DetectorNode
+
+Real-time object detection node using YOLOv8 models (n/s/m/l/x variants). Supports COCO dataset (80 classes) and custom trained models for robotics applications.
+
+## Source Code
+
+- [YOLOv8DetectorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/cv/yolo_detector.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- YOLOv8n/s/m/l/x model support
+- Real-time inference (30-60 FPS on GPU)
+- Non-Maximum Suppression (NMS)
+- Confidence filtering
+- Bounding box visualization (optional)
+- GPU acceleration support
+- COCO and custom model support
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::cv::{YOLOv8DetectorNode, YOLOConfig};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = YOLOConfig {
+        conf_threshold: 0.25,
+        iou_threshold: 0.45,
+        use_gpu: true,
+        ..Default::default()
+    };
+
+    let detector = YOLOv8DetectorNode::new(
+        "models/yolov8n.onnx",
+        "camera.raw",        // Input image topic
+        "vision.detections", // Output detections topic
+        config,
+    )?;
+
+    scheduler.add(Box::new(detector), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### YOLOConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `conf_threshold` | f32 | 0.25 | Confidence threshold (0.0-1.0) |
+| `iou_threshold` | f32 | 0.45 | IoU threshold for NMS |
+| `max_detections` | usize | 100 | Maximum detections to return |
+| `use_gpu` | bool | false | Enable GPU acceleration |
+| `device_id` | u32 | 0 | GPU device ID |
+| `input_size` | u32 | 640 | Model input size (640, 320, etc.) |
+| `class_names` | `Vec<String>` | COCO classes | Class labels |
+| `enable_visualization` | bool | false | Output visualization images |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input camera images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `DetectionArray` | Detected objects with bounding boxes |
+| `{output_topic}/viz` | `Image` | Visualization (if enabled) |
+| `{output_topic}/metrics` | `InferenceMetrics` | Inference timing |
+
+## Usage Examples
+
+### Basic Object Detection
+
+```rust
+use horus::prelude::*; // Provides {Detection, DetectionArray};
+
+let detections_hub = Hub::<DetectionArray>::new("vision.detections")?;
+
+if let Some(detections) = detections_hub.recv(&mut None) {
+    for det in &detections.detections {
+        println!("Detected {} at ({}, {}) with confidence {:.2}",
+            det.class_name, det.bbox.x, det.bbox.y, det.confidence);
+    }
+}
+```
+
+### Person Detection for Robot Navigation
+
+```rust
+let config = YOLOConfig {
+    conf_threshold: 0.5,  // Higher confidence for safety
+    class_names: vec!["person".to_string()],  // Only detect people
+    ..Default::default()
+};
+
+let detector = YOLOv8DetectorNode::new(
+    "models/yolov8s.onnx",  // Larger model for accuracy
+    "camera.front",
+    "safety.persons",
+    config,
+)?;
+```
+
+### Multi-Class Detection
+
+```rust
+// Use default COCO classes (80 classes)
+let config = YOLOConfig::default();
+
+// Or specify custom classes
+let config = YOLOConfig {
+    class_names: vec![
+        "robot".to_string(),
+        "person".to_string(),
+        "obstacle".to_string(),
+    ],
+    ..Default::default()
+};
+```
+
+## Model Download
+
+Download pre-trained YOLOv8 ONNX models:
+
+```bash
+# Nano (fastest, least accurate)
+wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx
+
+# Small (balanced)
+wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8s.onnx
+
+# Medium
+wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8m.onnx
+
+# Large (slowest, most accurate)
+wget https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8l.onnx
+```
+
+## Performance
+
+| Model | GPU (RTX 3080) | CPU (i7-12700) | Accuracy (mAP) |
+|-------|---------------|----------------|----------------|
+| YOLOv8n | 60+ FPS | 15-20 FPS | 37.3 |
+| YOLOv8s | 45-60 FPS | 8-12 FPS | 44.9 |
+| YOLOv8m | 30-45 FPS | 4-6 FPS | 50.2 |
+| YOLOv8l | 20-30 FPS | 2-3 FPS | 52.9 |
+
+## See Also
+
+- [PoseEstimationNode](./pose-estimation) - Human pose detection
+- [SemanticSegmentationNode](./semantic-segmentation) - Pixel-wise segmentation
+- [CameraNode](./camera) - Image input
+- [ONNXInferenceNode](./onnx-inference) - Generic ONNX inference

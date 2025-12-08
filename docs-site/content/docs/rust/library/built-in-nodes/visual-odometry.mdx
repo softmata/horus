@@ -1,0 +1,221 @@
+---
+title: "Visual Odometry"
+description: "Camera-based motion estimation using feature tracking"
+---
+
+# Visual Odometry Node
+
+The `VisualOdometryNode` provides visual odometry estimation from camera images using feature-based methods. It extracts features, tracks them across frames, and estimates camera motion for localization.
+
+## Features
+
+- **Monocular visual odometry** - Single camera with scale ambiguity
+- **Stereo visual odometry** - Full scale recovery with stereo baseline
+- **RGB-D visual odometry** - Depth from sensor for metric scale
+- **Multiple feature detectors** - ORB, SIFT, FAST, Good Features to Track
+- **Loop closure detection** - Appearance-based place recognition
+- **Hybrid node pattern** - Injectable processing via closures or processors
+
+## Basic Usage
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::visual_odometry::{VisualOdometryNode, VOConfig, CameraMode};
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create monocular visual odometry
+    let vo = VisualOdometryNode::new(
+        "camera.raw",      // Input topic
+        "vo.odom",         // Output topic
+        VOConfig::default()
+            .with_mode(CameraMode::Monocular)
+            .with_feature_detector(FeatureDetector::ORB)
+            .with_max_features(1000),
+    )?;
+
+    scheduler.add(Box::new(vo), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### Camera Modes
+
+| Mode | Description | Scale Recovery |
+|------|-------------|----------------|
+| `Monocular` | Single camera | Unknown (needs external reference) |
+| `Stereo` | Stereo camera pair | Full scale from baseline |
+| `RgbD` | RGB-D camera | Full scale from depth |
+
+### Feature Detectors
+
+| Detector | Speed | Rotation Invariant | Best For |
+|----------|-------|-------------------|----------|
+| `ORB` | Fast | Yes | General purpose |
+| `SIFT` | Slow | Yes | High accuracy |
+| `FAST` | Very fast | No | Real-time |
+| `GoodFeatures` | Medium | No | Shi-Tomasi corners |
+
+### VOConfig Options
+
+```rust
+let config = VOConfig::default()
+    .with_mode(CameraMode::Stereo)
+    .with_feature_detector(FeatureDetector::ORB)
+    .with_matching_method(MatchingMethod::OpticalFlow)
+    .with_max_features(500)
+    .with_intrinsics(fx, fy, cx, cy)  // Camera intrinsics
+    .with_stereo_baseline(0.12)       // 12cm baseline
+    .with_loop_closure(true);         // Enable loop closure
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `mode` | `CameraMode` | `Monocular` | Camera configuration |
+| `feature_detector` | `FeatureDetector` | `ORB` | Feature detection method |
+| `matching_method` | `MatchingMethod` | `OpticalFlow` | Feature matching approach |
+| `max_features` | `usize` | `500` | Maximum features to track |
+| `quality_level` | `f64` | `0.01` | Minimum feature quality (0-1) |
+| `min_distance` | `f64` | `7.0` | Min distance between features (px) |
+| `camera_intrinsics` | `[f64; 4]` | `[554, 554, 320, 240]` | [fx, fy, cx, cy] |
+| `stereo_baseline` | `f64` | `0.12` | Stereo baseline (meters) |
+| `min_inlier_ratio` | `f64` | `0.3` | Min inliers for valid pose |
+| `enable_loop_closure` | `bool` | `false` | Enable loop closure |
+| `keyframe_threshold_trans` | `f64` | `0.2` | Keyframe translation threshold (m) |
+| `keyframe_threshold_rot` | `f64` | `0.1` | Keyframe rotation threshold (rad) |
+
+## Topics
+
+### Subscribed
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| Input topic | `Image` | Camera images |
+| Depth topic (RGB-D) | `Image` | Depth images |
+| Stereo topic (Stereo) | `Image` | Right camera images |
+
+### Published
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| Output topic | `Odometry` | Estimated motion |
+
+## Stereo Visual Odometry
+
+```rust
+let vo = VisualOdometryNode::new("camera.left", "vo.odom",
+    VOConfig::default().with_mode(CameraMode::Stereo)
+)?
+.with_stereo("camera.right")?;  // Add stereo input
+```
+
+## RGB-D Visual Odometry
+
+```rust
+let vo = VisualOdometryNode::new("camera.rgb", "vo.odom",
+    VOConfig::default().with_mode(CameraMode::RgbD)
+)?
+.with_depth("camera.depth")?;  // Add depth input
+```
+
+## Hybrid Processing
+
+The node supports the hybrid pattern for custom processing:
+
+```rust
+// Using builder with filter
+let node = VisualOdometryNode::builder()
+    .input_topic("camera.raw")
+    .output_topic("vo.odom")
+    .config(VOConfig::default())
+    .with_filter(|odom| {
+        // Only output when moving forward
+        if odom.twist.linear[0] > 0.01 {
+            Some(odom)
+        } else {
+            None
+        }
+    })
+    .build()?;
+
+// Using closure processor
+let node = VisualOdometryNode::builder()
+    .with_closure(|mut odom| {
+        // Add covariance estimate
+        odom.pose_covariance[0] = 0.1;
+        odom
+    })
+    .build()?;
+```
+
+## Integration with Localization
+
+Combine visual odometry with other sensors for robust localization:
+
+```rust
+// Visual odometry provides relative motion estimates
+let vo = VisualOdometryNode::new("camera.raw", "vo.odom", VOConfig::default())?;
+
+// Wheel odometry for scale reference
+let wheel_odom = OdometryNode::new(
+    "encoders.left", "encoders.right", "wheel.odom",
+    OdometryConfig::default(),
+)?;
+
+// Localization fuses multiple sources
+let localization = LocalizationNode::new(
+    "vo.odom",           // Primary odometry
+    "localized.pose",    // Output
+    LocalizationConfig::default()
+        .with_secondary_odom("wheel.odom")  // Fuse wheel odom
+        .with_imu("imu.data"),              // Add IMU
+)?;
+```
+
+## Scale Estimation
+
+For monocular VO, scale must be estimated from external sources:
+
+```rust
+let mut vo = VisualOdometryNode::new("camera.raw", "vo.odom",
+    VOConfig::default()
+)?;
+
+// Set scale from wheel odometry or known landmark
+vo.set_scale(1.0);  // meters per unit
+
+// Or use ground plane assumption
+// (scale from known camera height above ground)
+```
+
+## Performance Considerations
+
+| Setting | CPU Usage | Accuracy | Latency |
+|---------|-----------|----------|---------|
+| 200 features, FAST | Low | Medium | ~5ms |
+| 500 features, ORB | Medium | Good | ~15ms |
+| 1000 features, SIFT | High | Best | ~50ms |
+
+**Tips:**
+- Start with ORB + OpticalFlow for balanced performance
+- Use stereo or RGB-D when metric scale is required
+- Enable loop closure only if revisiting locations
+- Reduce max_features for real-time on embedded systems
+
+## Limitations
+
+- **Pure Rust implementation** - For full Visual SLAM with mapping, consider ROS2 bridge integration with ORB-SLAM3 or similar
+- **Scale ambiguity** - Monocular mode requires external scale reference
+- **Motion blur** - Fast motions degrade feature tracking
+- **Texture-less scenes** - Requires sufficient visual features
+
+## See Also
+
+- [Odometry Node](/rust/library/built-in-nodes/odometry) - Wheel encoder odometry
+- [Localization Node](/rust/library/built-in-nodes/localization) - Sensor fusion for localization
+- [Camera Node](/rust/library/built-in-nodes/camera) - Camera input
+- [Depth Camera Node](/rust/library/built-in-nodes/depth-camera) - RGB-D cameras

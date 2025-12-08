@@ -1,0 +1,324 @@
+---
+title: Kalman Filter
+description: Linear state estimation with configurable dimensions
+---
+
+# Kalman Filter
+
+Linear Kalman Filter for optimal state estimation with Gaussian noise. Supports arbitrary state and measurement dimensions with configurable system models.
+
+## Source Code
+
+- [Kalman Filter Implementation](https://github.com/softmata/horus/tree/main/horus_library/algorithms/kalman_filter)
+
+## Features
+
+- Multi-dimensional state estimation
+- Configurable state transition matrix (F)
+- Configurable measurement matrix (H)
+- Prediction and update steps
+- Process and measurement noise covariances
+
+## When to Use
+
+| Use Kalman Filter | Use EKF Instead |
+|-------------------|-----------------|
+| Linear systems | Nonlinear motion |
+| 1D tracking | 2D robot localization |
+| Signal filtering | Pose estimation |
+| Generic estimation | Robot-specific states |
+
+## Quick Start
+
+```rust
+use horus_library::algorithms::kalman_filter::KalmanFilter;
+
+fn main() {
+    // 1D position-velocity tracker: 2 states, 1 measurement
+    let mut kf = KalmanFilter::new(2, 1);
+
+    // Set initial state [position, velocity]
+    kf.set_state(vec![0.0, 1.0]);  // At origin, moving at 1 m/s
+
+    // Configure constant-velocity model
+    // x' = x + v*dt, v' = v
+    let dt = 0.1;
+    kf.set_state_transition(vec![
+        vec![1.0, dt],   // position = position + velocity * dt
+        vec![0.0, 1.0],  // velocity stays constant
+    ]);
+
+    // Measure position only
+    kf.set_measurement_matrix(vec![
+        vec![1.0, 0.0],  // Measure position, not velocity
+    ]);
+
+    // Simulation loop
+    for _ in 0..10 {
+        // Prediction step
+        kf.predict();
+
+        // Update with noisy measurement
+        let true_position = kf.get_state()[0];
+        let noisy_measurement = true_position + 0.1;  // Add noise
+        kf.update(vec![noisy_measurement]);
+
+        println!("Estimated: pos={:.2}, vel={:.2}",
+                 kf.get_state()[0], kf.get_state()[1]);
+    }
+}
+```
+
+## API Reference
+
+### Constructor
+
+```rust
+let kf = KalmanFilter::new(n_states: usize, n_measurements: usize);
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `n_states` | Number of state variables |
+| `n_measurements` | Number of measurements |
+
+### State Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_state(vec)` | Set state vector |
+| `get_state()` | Get state vector reference |
+
+### Model Configuration
+
+| Method | Description |
+|--------|-------------|
+| `set_state_transition(F)` | State transition matrix (n×n) |
+| `set_measurement_matrix(H)` | Measurement matrix (m×n) |
+| `set_process_noise(Q)` | Process noise covariance (n×n) |
+| `set_measurement_noise(R)` | Measurement noise covariance (m×m) |
+
+### Filter Operations
+
+| Method | Description |
+|--------|-------------|
+| `predict()` | Time update (prediction step) |
+| `update(measurement)` | Measurement update (correction step) |
+
+## Kalman Filter Equations
+
+### Prediction Step
+
+```
+x̂⁻ = F × x̂        (State prediction)
+P⁻ = F × P × Fᵀ + Q   (Covariance prediction)
+```
+
+### Update Step
+
+```
+y = z - H × x̂⁻         (Innovation)
+S = H × P⁻ × Hᵀ + R     (Innovation covariance)
+K = P⁻ × Hᵀ × S⁻¹       (Kalman gain)
+x̂ = x̂⁻ + K × y         (State update)
+P = (I - K × H) × P⁻    (Covariance update)
+```
+
+## Example: Position-Velocity Tracking
+
+Track a moving object with position measurements:
+
+```rust
+use horus_library::algorithms::kalman_filter::KalmanFilter;
+
+struct PositionTracker {
+    kf: KalmanFilter,
+    dt: f64,
+}
+
+impl PositionTracker {
+    fn new(dt: f64) -> Self {
+        let mut kf = KalmanFilter::new(2, 1);
+
+        // Constant velocity model
+        kf.set_state_transition(vec![
+            vec![1.0, dt],
+            vec![0.0, 1.0],
+        ]);
+
+        // Measure position only
+        kf.set_measurement_matrix(vec![
+            vec![1.0, 0.0],
+        ]);
+
+        // Tune noise parameters
+        kf.set_process_noise(vec![
+            vec![0.01, 0.0],
+            vec![0.0, 0.1],  // Velocity can change
+        ]);
+
+        kf.set_measurement_noise(vec![
+            vec![0.5],  // Position measurement noise
+        ]);
+
+        Self { kf, dt }
+    }
+
+    fn predict(&mut self) {
+        self.kf.predict();
+    }
+
+    fn update(&mut self, measured_position: f64) {
+        self.kf.update(vec![measured_position]);
+    }
+
+    fn get_position(&self) -> f64 {
+        self.kf.get_state()[0]
+    }
+
+    fn get_velocity(&self) -> f64 {
+        self.kf.get_state()[1]
+    }
+}
+
+fn main() {
+    let mut tracker = PositionTracker::new(0.1);
+
+    // Simulate noisy position measurements
+    let measurements = [0.1, 0.3, 0.4, 0.6, 0.85, 1.05, 1.2];
+
+    for measurement in measurements {
+        tracker.predict();
+        tracker.update(measurement);
+
+        println!("Measured: {:.2}, Estimated pos: {:.2}, vel: {:.2}",
+                 measurement, tracker.get_position(), tracker.get_velocity());
+    }
+}
+```
+
+## Example: Signal Filtering
+
+Use Kalman filter to smooth noisy sensor data:
+
+```rust
+use horus_library::algorithms::kalman_filter::KalmanFilter;
+
+fn filter_signal(noisy_data: &[f64]) -> Vec<f64> {
+    // Simple 1-state filter for signal smoothing
+    let mut kf = KalmanFilter::new(1, 1);
+
+    // Identity matrices (signal doesn't change much)
+    kf.set_state_transition(vec![vec![1.0]]);
+    kf.set_measurement_matrix(vec![vec![1.0]]);
+
+    // Tune for smoothing
+    kf.set_process_noise(vec![vec![0.01]]);      // Low = smooth output
+    kf.set_measurement_noise(vec![vec![0.5]]);   // High = trust model more
+
+    let mut filtered = Vec::new();
+
+    for &value in noisy_data {
+        kf.predict();
+        kf.update(vec![value]);
+        filtered.push(kf.get_state()[0]);
+    }
+
+    filtered
+}
+```
+
+## Tuning Guidelines
+
+### Process Noise (Q)
+
+Controls how much the model can deviate:
+
+| Q Value | Effect |
+|---------|--------|
+| Low (0.01) | Smooth output, slow to adapt |
+| Medium (0.1) | Balanced |
+| High (1.0) | Responsive, may be noisy |
+
+### Measurement Noise (R)
+
+Represents sensor uncertainty:
+
+| R Value | Effect |
+|---------|--------|
+| Low (0.01) | Trust measurements more |
+| Medium (0.1) | Balanced |
+| High (1.0) | Trust model more |
+
+### Initialization
+
+```rust
+// Set initial state to first measurement
+kf.set_state(vec![first_measurement, 0.0]);
+
+// Set high initial covariance if uncertain
+// This is done automatically by default
+```
+
+## Example: 2D Position Tracking
+
+Track X and Y position with velocity:
+
+```rust
+use horus_library::algorithms::kalman_filter::KalmanFilter;
+
+fn main() {
+    // 4 states: [x, y, vx, vy], 2 measurements: [x, y]
+    let mut kf = KalmanFilter::new(4, 2);
+
+    let dt = 0.1;
+
+    // State transition for constant velocity in 2D
+    kf.set_state_transition(vec![
+        vec![1.0, 0.0, dt,  0.0],   // x = x + vx*dt
+        vec![0.0, 1.0, 0.0, dt ],   // y = y + vy*dt
+        vec![0.0, 0.0, 1.0, 0.0],   // vx = vx
+        vec![0.0, 0.0, 0.0, 1.0],   // vy = vy
+    ]);
+
+    // Measure position only
+    kf.set_measurement_matrix(vec![
+        vec![1.0, 0.0, 0.0, 0.0],   // Measure x
+        vec![0.0, 1.0, 0.0, 0.0],   // Measure y
+    ]);
+
+    // Initial state: at (1, 2) moving at (0.5, 0.3) m/s
+    kf.set_state(vec![1.0, 2.0, 0.5, 0.3]);
+
+    // Run filter
+    for _ in 0..20 {
+        kf.predict();
+
+        // Simulated measurement (add noise in real application)
+        let state = kf.get_state();
+        kf.update(vec![state[0] + 0.1, state[1] + 0.1]);
+    }
+
+    let final_state = kf.get_state();
+    println!("Final position: ({:.2}, {:.2})", final_state[0], final_state[1]);
+    println!("Final velocity: ({:.2}, {:.2})", final_state[2], final_state[3]);
+}
+```
+
+## Comparison: Kalman Filter vs EKF
+
+| Feature | Kalman Filter | EKF |
+|---------|---------------|-----|
+| Motion model | Linear only | Nonlinear |
+| State | Configurable | Fixed 6D pose |
+| Complexity | Simpler | More complex |
+| Use case | Generic tracking | Robot localization |
+| Angle handling | None | Automatic wrap |
+
+For 2D robot localization with pose (x, y, θ), use [EKF](/rust/library/algorithms/ekf) instead.
+
+## See Also
+
+- [EKF](/rust/library/algorithms/ekf) - Nonlinear robot localization
+- [Sensor Fusion](/rust/library/algorithms/sensor-fusion) - Multi-sensor combination
+- [PID Controller](/rust/library/algorithms/pid) - Feedback control

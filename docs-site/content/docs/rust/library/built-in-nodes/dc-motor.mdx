@@ -1,0 +1,645 @@
+---
+title: DcMotorNode
+description: Basic DC motor control with PWM and direction
+---
+
+# DcMotorNode
+
+Basic DC motor control node providing PWM speed control and direction switching for up to 8 motors. Simple interface for brushed DC motors using H-bridge drivers like L298N, TB6612, DRV8833, and similar motor drivers.
+
+## Source Code
+
+- [DcMotorNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/dc_motor)
+- [Motor Control Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/control.rs)
+
+## Features
+
+- Up to 8 DC motors
+- PWM speed control (0-100%)
+- Forward/reverse/brake control
+- Configurable PWM frequency
+- Current limiting (driver-dependent)
+- Soft start/acceleration
+- Multiple driver support (L298N, TB6612, DRV8833)
+- Simulation fallback
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create DC motor node
+    let mut dc = DcMotorNode::new()?;
+    dc.set_num_motors(2);
+
+    // Configure motor 0 (L298N driver)
+    dc.set_motor_pins(0, 18, 23, 24);  // PWM, IN1, IN2
+
+    scheduler.add(Box::new(dc), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install GPIO library
+sudo apt install libraspberrypi-dev
+
+# Enable GPIO and PWM
+sudo raspi-config  # Interface Options
+```
+
+### L298N H-Bridge Wiring
+
+```
+Raspberry Pi    L298N       Motor
+GPIO 18 (PWM) --> ENA
+GPIO 23       --> IN1       Motor A+
+GPIO 24       --> IN2       Motor A-
+5V            --> +5V
+GND           --- GND
+                +12V  -->   Motor Power
+```
+
+### TB6612 Driver Wiring
+
+```
+Raspberry Pi    TB6612      Motors
+GPIO 18 (PWM) --> PWMA
+GPIO 23       --> AIN1      Motor A
+GPIO 24       --> AIN2
+GPIO 19 (PWM) --> PWMB
+GPIO 25       --> BIN1      Motor B
+GPIO 26       --> BIN2
+3.3V          --> VCC
+GND           --- GND
+                VM    -->   Motor Power (12V)
+```
+
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `DcMotorNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gpio-hardware"] }
+```
+
+## Supported Drivers
+
+### L298N
+
+```rust
+dc.set_driver_type(0, DriverType::L298N);
+// Dual H-bridge
+// Max current: 2A per channel
+// Logic voltage: 5V
+// Motor voltage: 5V-35V
+```
+
+### TB6612FNG
+
+```rust
+dc.set_driver_type(0, DriverType::TB6612);
+// Dual H-bridge
+// Max current: 1.2A per channel (3.2A peak)
+// Logic voltage: 3.3V/5V
+// Motor voltage: 4.5V-13.5V
+// More efficient than L298N
+```
+
+### DRV8833
+
+```rust
+dc.set_driver_type(0, DriverType::DRV8833);
+// Dual H-bridge
+// Max current: 1.5A per channel (2A peak)
+// Logic voltage: 3.3V/5V
+// Motor voltage: 2.7V-10.8V
+```
+
+### Custom/Generic
+
+```rust
+dc.set_driver_type(0, DriverType::Generic);
+// For other H-bridge drivers
+```
+
+## Configuration
+
+### Motor Setup
+
+```rust
+let mut dc = DcMotorNode::new()?;
+
+// Number of motors (1-8)
+dc.set_num_motors(2);
+
+// Configure each motor
+dc.set_motor_pins(
+    0,      // Motor ID
+    18,     // PWM pin
+    23,     // Direction pin 1 (IN1/AIN1)
+    24      // Direction pin 2 (IN2/AIN2)
+);
+```
+
+### PWM Configuration
+
+```rust
+// Set PWM frequency (Hz)
+dc.set_pwm_frequency(1000);   // 1 kHz (audible)
+dc.set_pwm_frequency(20000);  // 20 kHz (ultrasonic, preferred)
+
+// Set PWM resolution
+dc.set_pwm_resolution(8);     // 8-bit (0-255)
+dc.set_pwm_resolution(10);    // 10-bit (0-1023)
+```
+
+### Motor Direction
+
+```rust
+// Invert motor direction
+dc.invert_direction(0, true);
+
+// Useful if motor wired backwards
+```
+
+### Speed Limits
+
+```rust
+// Set minimum speed (dead zone)
+dc.set_min_speed(0, 20);  // 20% minimum
+
+// Set maximum speed
+dc.set_max_speed(0, 80);  // 80% maximum (protects motor)
+```
+
+### Acceleration
+
+```rust
+// Enable soft start
+dc.enable_acceleration(0, true);
+
+// Set acceleration rate (% per second)
+dc.set_acceleration_rate(0, 100.0);  // Reach full speed in 1 sec
+
+// Set deceleration rate
+dc.set_deceleration_rate(0, 200.0);  // Stop in 0.5 sec
+```
+
+## Control Modes
+
+### Speed Control
+
+```rust
+use horus::prelude::*;
+
+// Set motor speed (-100 to +100)
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_SPEED,
+    speed: 75,  // 75% forward
+};
+
+let hub = Hub::<DcMotorCommand>::new("dc_motor.command")?;
+hub.send(cmd, &mut None).ok();
+
+// Negative speed = reverse
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_SPEED,
+    speed: -50,  // 50% reverse
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Direction Control
+
+```rust
+// Forward
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_FORWARD,
+    speed: 60,
+};
+
+// Reverse
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_REVERSE,
+    speed: 60,
+};
+```
+
+### Brake/Coast
+
+```rust
+// Brake (active braking, both motor leads LOW or HIGH)
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_BRAKE,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+
+// Coast (free-spinning, both motor leads floating)
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_COAST,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+### Stop
+
+```rust
+// Stop (gradual deceleration if acceleration enabled)
+let cmd = DcMotorCommand {
+    motor_id: 0,
+    command_type: DcMotorCommand::CMD_STOP,
+    ..Default::default()
+};
+hub.send(cmd, &mut None).ok();
+```
+
+## Usage Patterns
+
+### Basic Motor Control
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure single motor
+    let mut dc = DcMotorNode::new()?;
+    dc.set_num_motors(1);
+    dc.set_motor_pins(0, 18, 23, 24);
+    dc.set_pwm_frequency(20000);
+
+    scheduler.add(Box::new(dc), 1, Some(true));
+
+    // Control node
+    let control_node = node! {
+        name: "motor_control",
+        tick: |ctx| {
+            let hub = Hub::<DcMotorCommand>::new("dc_motor.command")?;
+
+            // Run motor at 70% forward
+            hub.send(DcMotorCommand {
+                motor_id: 0,
+                command_type: DcMotorCommand::CMD_SPEED,
+                speed: 70,
+            }, None)?;
+
+            // Wait 2 seconds
+            std::thread::sleep(Duration::from_secs(2));
+
+            // Reverse at 50%
+            hub.send(DcMotorCommand {
+                motor_id: 0,
+                command_type: DcMotorCommand::CMD_SPEED,
+                speed: -50,
+            }, None)?;
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(control_node), 2, Some(false));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+### Differential Drive
+
+```rust
+// Configure left and right motors
+dc.set_motor_pins(0, 18, 23, 24);  // Left motor
+dc.set_motor_pins(1, 19, 25, 26);  // Right motor
+dc.invert_direction(1, true);       // Mirror right motor
+
+// Drive forward
+hub.send(DcMotorCommand { motor_id: 0, speed: 70, ..Default::default() }, None)?;
+hub.send(DcMotorCommand { motor_id: 1, speed: 70, ..Default::default() }, None)?;
+
+// Turn right (left motor faster)
+hub.send(DcMotorCommand { motor_id: 0, speed: 80, ..Default::default() }, None)?;
+hub.send(DcMotorCommand { motor_id: 1, speed: 40, ..Default::default() }, None)?;
+```
+
+## Complete Example: Tank Drive
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure tank drive (2 motors)
+    let mut dc = DcMotorNode::new()?;
+    dc.set_num_motors(2);
+
+    // Left motor
+    dc.set_motor_pins(0, 18, 23, 24);
+    dc.set_driver_type(0, DriverType::L298N);
+    dc.enable_acceleration(0, true);
+    dc.set_acceleration_rate(0, 150.0);
+
+    // Right motor (mirrored)
+    dc.set_motor_pins(1, 19, 25, 26);
+    dc.set_driver_type(1, DriverType::L298N);
+    dc.invert_direction(1, true);
+    dc.enable_acceleration(1, true);
+    dc.set_acceleration_rate(1, 150.0);
+
+    scheduler.add(Box::new(dc), 1, Some(true));
+
+    // Drive control node
+    let drive_node = node! {
+        name: "tank_drive",
+        tick: |ctx| {
+            let hub = Hub::<DcMotorCommand>::new("dc_motor.command")?;
+
+            // Simple autonomous pattern
+            // Forward
+            ctx.log_info("Forward");
+            hub.send(DcMotorCommand { motor_id: 0, speed: 60, ..Default::default() }, None)?;
+            hub.send(DcMotorCommand { motor_id: 1, speed: 60, ..Default::default() }, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+
+            // Turn left
+            ctx.log_info("Turn left");
+            hub.send(DcMotorCommand { motor_id: 0, speed: 30, ..Default::default() }, None)?;
+            hub.send(DcMotorCommand { motor_id: 1, speed: 60, ..Default::default() }, None)?;
+            std::thread::sleep(Duration::from_secs(1));
+
+            // Reverse
+            ctx.log_info("Reverse");
+            hub.send(DcMotorCommand { motor_id: 0, speed: -40, ..Default::default() }, None)?;
+            hub.send(DcMotorCommand { motor_id: 1, speed: -40, ..Default::default() }, None)?;
+            std::thread::sleep(Duration::from_secs(1));
+
+            // Stop
+            ctx.log_info("Stop");
+            hub.send(DcMotorCommand {
+                motor_id: 0,
+                command_type: DcMotorCommand::CMD_BRAKE,
+                ..Default::default()
+            }, None)?;
+            hub.send(DcMotorCommand {
+                motor_id: 1,
+                command_type: DcMotorCommand::CMD_BRAKE,
+                ..Default::default()
+            }, None)?;
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(drive_node), 2, Some(false));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### DcMotorCommand
+
+```rust
+pub struct DcMotorCommand {
+    pub motor_id: u8,         // Motor ID (0-7)
+    pub command_type: u8,     // Command type
+    pub speed: i8,            // Speed (-100 to +100)
+}
+```
+
+### Command Types
+
+```rust
+pub const CMD_SPEED: u8 = 0;      // Set speed (signed)
+pub const CMD_FORWARD: u8 = 1;    // Forward direction
+pub const CMD_REVERSE: u8 = 2;    // Reverse direction
+pub const CMD_BRAKE: u8 = 3;      // Active brake
+pub const CMD_COAST: u8 = 4;      // Free coast
+pub const CMD_STOP: u8 = 5;       // Gradual stop
+```
+
+## Best Practices
+
+1. **Use appropriate PWM frequency:**
+   ```rust
+   dc.set_pwm_frequency(20000);  // 20 kHz (silent)
+   // Avoid 1-10 kHz (audible whine)
+   ```
+
+2. **Enable acceleration for smooth starts:**
+   ```rust
+   dc.enable_acceleration(0, true);
+   dc.set_acceleration_rate(0, 100.0);
+   ```
+
+3. **Set speed limits to protect motors:**
+   ```rust
+   dc.set_max_speed(0, 80);  // 80% max
+   dc.set_min_speed(0, 20);  // 20% min (stall prevention)
+   ```
+
+4. **Use brake instead of coast for precision:**
+   ```rust
+   // Brake stops faster
+   hub.send(DcMotorCommand {
+       command_type: DcMotorCommand::CMD_BRAKE,
+       ..Default::default()
+   }, None)?;
+   ```
+
+5. **Monitor current if driver supports it:**
+   ```rust
+   // Some drivers have current sense pins
+   // Monitor to prevent overload
+   ```
+
+6. **Separate motor power from logic:**
+   ```
+   Use separate power supply for motors
+   Share common ground
+   ```
+
+## H-Bridge Truth Table
+
+### L298N / Generic
+
+| IN1 | IN2 | Motor Action |
+|-----|-----|--------------|
+| LOW | LOW | Brake        |
+| LOW | HIGH | Reverse     |
+| HIGH | LOW | Forward     |
+| HIGH | HIGH | Brake       |
+
+PWM on ENA/ENB controls speed.
+
+### TB6612 / DRV8833
+
+| AIN1 | AIN2 | Motor Action |
+|------|------|--------------|
+| LOW  | LOW  | Coast/Brake  |
+| LOW  | HIGH | Reverse     |
+| HIGH | LOW  | Forward     |
+| HIGH | HIGH | Brake       |
+
+PWM on PWMA/PWMB controls speed.
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check GPIO permissions
+2. Install libraspberrypi-dev
+3. Enable GPIO in raspi-config
+4. Verify wiring with multimeter
+
+**Problem: Motor doesn't spin**
+
+**Solutions:**
+1. Check power supply to driver (VM/VCC)
+2. Verify motor connections
+3. Test with higher speed (min speed too low)
+4. Check if speed limit set too low
+
+**Problem: Motor runs at full speed always**
+
+**Solutions:**
+1. PWM pin not connected correctly
+2. PWM frequency too low
+3. Driver enable pin issue
+4. Check wiring diagram for your driver
+
+**Problem: Motor changes direction randomly**
+
+**Solutions:**
+1. Check direction pin connections (IN1/IN2)
+2. Loose wires - verify all connections
+3. Common ground between Pi and driver
+4. Driver overheating - add heatsink
+
+**Problem: Motor whines/buzzes**
+
+**Solutions:**
+1. Increase PWM frequency: `set_pwm_frequency(20000)`
+2. Add capacitor across motor terminals (0.1μF)
+3. Check mechanical binding
+
+## Graceful Shutdown
+
+DcMotorNode automatically stops all motors when your application receives Ctrl+C (SIGINT/SIGTERM). This is a critical safety feature for autonomous vehicles and robots.
+
+### Automatic Emergency Stop
+
+When shutdown is triggered:
+
+1. `emergency_stop()` is called automatically
+2. All motor velocities are set to 0
+3. PWM duty cycles are set to 0%
+4. Motors coast to a stop (or brake if configured)
+
+```rust
+// This happens automatically on Ctrl+C
+fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+    ctx.log_info("DcMotorNode shutting down - stopping all motors");
+    self.emergency_stop();  // Sets all motors to 0
+    ctx.log_info("All DC motors stopped safely");
+    Ok(())
+}
+```
+
+### Manual Emergency Stop
+
+You can also trigger an emergency stop programmatically:
+
+```rust
+// In your control node
+if danger_detected {
+    hub.send(DcMotorCommand {
+        motor_id: 0,
+        command_type: DcMotorCommand::CMD_BRAKE,
+        ..Default::default()
+    }, None)?;
+}
+```
+
+### Shutdown Logging
+
+When shutdown occurs, you'll see in the logs:
+
+```
+[12:34:56.789] [INFO] DcMotorNode shutting down - stopping all motors
+[12:34:56.790] [INFO] All DC motors stopped safely
+```
+
+## Safety Guidelines
+
+1. **Always use appropriate current rating:**
+   - Motor current < Driver max current
+   - Add safety margin (50%)
+
+2. **Heat management:**
+   - Add heatsinks to drivers
+   - Monitor driver temperature
+   - Ensure good ventilation
+
+3. **Flyback diodes:**
+   - Most drivers have built-in diodes
+   - If using discrete MOSFETs, add diodes
+
+4. **Fuses:**
+   - Add fuse on motor power supply
+   - Protects against shorts
+
+5. **Test shutdown behavior:**
+   - Test Ctrl+C behavior before deployment
+   - Verify motors actually stop in logs
+
+## See Also
+
+- [BldcMotorNode](./bldc-motor) - Brushless motor control
+- [StepperMotorNode](./stepper-motor) - Stepper motor control
+- [RoboclawMotorNode](./roboclaw-motor) - Roboclaw controllers
+- [DifferentialDriveNode](./differential-drive) - High-level drive control

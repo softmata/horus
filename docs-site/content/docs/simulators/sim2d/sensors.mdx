@@ -1,0 +1,390 @@
+---
+title: Sim2D Sensors
+description: LIDAR, camera, GPS, IMU, ultrasonic, and contact sensor simulation
+---
+
+# Sim2D Sensors
+
+Sim2D provides realistic sensor models with configurable noise for testing perception and navigation algorithms.
+
+## Available Sensors
+
+| Sensor | Topic | Message Type | Description |
+|--------|-------|--------------|-------------|
+| LIDAR | `{prefix}.scan` | `LaserScan` | 2D laser scanner |
+| IMU | `{prefix}.imu` | `Imu` | Inertial measurement unit |
+| Odometry | `{prefix}.odom` | `Odometry` | Wheel odometry |
+| Camera | `{prefix}.camera` | `Image` | 2D top-down view |
+| GPS | `{prefix}.gps` | `NavSatFix` | Global position |
+| Ultrasonic | `{prefix}.ultrasonic/*` | `Range` | Short-range proximity |
+| Contact | `{prefix}.contact` | `ContactArray` | Collision detection |
+
+## LIDAR
+
+2D laser scanner with configurable range and resolution.
+
+### Configuration
+
+```yaml
+lidar:
+  enabled: true
+  range_max: 10.0      # Maximum range (meters)
+  range_min: 0.1       # Minimum range (meters)
+  angle_min: -3.14159  # Start angle (radians)
+  angle_max: 3.14159   # End angle (radians)
+  num_rays: 360        # Number of rays
+```
+
+### Common Configurations
+
+| Robot Type | range_max | num_rays | Notes |
+|------------|-----------|----------|-------|
+| Indoor robot | 8.0 | 360 | 1° resolution |
+| Outdoor robot | 30.0 | 720 | 0.5° resolution |
+| Low-cost | 4.0 | 180 | 2° resolution |
+| High-precision | 50.0 | 1800 | 0.2° resolution |
+
+### Message Format
+
+```rust
+pub struct LaserScan {
+    pub angle_min: f64,      // Start angle (rad)
+    pub angle_max: f64,      // End angle (rad)
+    pub angle_increment: f64, // Angle between rays
+    pub range_min: f64,      // Minimum valid range
+    pub range_max: f64,      // Maximum valid range
+    pub ranges: Vec<f64>,    // Distance measurements
+    pub intensities: Vec<f64>, // Intensity values (optional)
+}
+```
+
+### Usage Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides LaserScan;
+
+fn process_lidar(scan: &LaserScan) {
+    // Find closest obstacle
+    let min_range = scan.ranges
+        .iter()
+        .filter(|r| **r > scan.range_min && **r < scan.range_max)
+        .fold(f64::MAX, |min, r| min.min(*r));
+
+    // Get angle of closest obstacle
+    let min_idx = scan.ranges
+        .iter()
+        .position(|r| (*r - min_range).abs() < 0.01)
+        .unwrap_or(0);
+
+    let angle = scan.angle_min + (min_idx as f64 * scan.angle_increment);
+
+    println!("Closest: {:.2}m at {:.1}°", min_range, angle.to_degrees());
+}
+```
+
+## IMU
+
+Inertial measurement unit providing orientation, angular velocity, and linear acceleration.
+
+### Configuration
+
+IMU is always enabled when the robot moves. Configure noise for realism:
+
+```yaml
+# In robot config, IMU noise is applied automatically
+# based on physics simulation
+```
+
+### Message Format
+
+```rust
+pub struct Imu {
+    pub orientation: Quaternion,      // Current orientation
+    pub angular_velocity: Vector3,    // rad/s
+    pub linear_acceleration: Vector3, // m/s²
+}
+```
+
+### Usage Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides Imu;
+
+fn process_imu(imu: &Imu) {
+    // Get yaw from quaternion (2D simulation, only Z rotation)
+    let yaw = imu.orientation.z.atan2(imu.orientation.w) * 2.0;
+
+    // Angular velocity (turning rate)
+    let turn_rate = imu.angular_velocity.z;
+
+    // Forward acceleration
+    let accel = imu.linear_acceleration.x;
+
+    println!("Yaw: {:.1}°, Turn: {:.2} rad/s, Accel: {:.2} m/s²",
+             yaw.to_degrees(), turn_rate, accel);
+}
+```
+
+## Odometry
+
+Wheel encoder-based pose and velocity estimation.
+
+### Message Format
+
+```rust
+pub struct Odometry {
+    pub pose: Pose2D,    // x, y, theta
+    pub twist: Twist,    // linear and angular velocity
+}
+```
+
+### Usage Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides Odometry;
+
+fn process_odometry(odom: &Odometry) {
+    println!("Position: ({:.2}, {:.2}), Heading: {:.1}°",
+             odom.pose.x, odom.pose.y,
+             odom.pose.theta.to_degrees());
+
+    println!("Velocity: {:.2} m/s, Turn: {:.2} rad/s",
+             odom.twist.linear.x, odom.twist.angular.z);
+}
+```
+
+## GPS
+
+Simulated GPS providing latitude/longitude coordinates with configurable noise.
+
+### Configuration
+
+```yaml
+gps:
+  enabled: true
+  update_rate: 1.0         # Hz (typical GPS is 1-10 Hz)
+  topic: "gps"
+  position_noise:
+    enabled: true
+    std_dev: 2.0           # Position error (meters)
+    mean: 0.0              # Systematic bias
+```
+
+### Accuracy Levels
+
+| Quality | std_dev | Description |
+|---------|---------|-------------|
+| RTK | 0.01-0.02 | Centimeter accuracy |
+| Good | 1.0-2.0 | Clear sky |
+| Urban | 3.0-5.0 | Buildings, multipath |
+| Indoor | 10.0+ | Very poor signal |
+
+### Message Format
+
+```rust
+pub struct NavSatFix {
+    pub latitude: f64,   // Degrees
+    pub longitude: f64,  // Degrees
+    pub altitude: f64,   // Meters (0.0 in 2D)
+    pub status: i8,      // Fix status
+}
+```
+
+### Coordinate System
+
+Sim2D converts local XY coordinates to lat/lon:
+- Origin: San Francisco (37.7749°N, 122.4194°W)
+- Scale: ~0.00001° per meter
+
+## Ultrasonic Sensors
+
+Short-range proximity sensors with cone-shaped field of view.
+
+### Configuration
+
+```yaml
+ultrasonic:
+  enabled: true
+  topic_prefix: "ultrasonic"
+  sensors:
+    # Front sensor
+    - offset: [0.4, 0.0]     # Position on robot
+      angle: 0.0             # Facing direction
+      max_range: 4.0         # meters
+      min_range: 0.02        # meters
+      fov: 0.26              # radians (15°)
+      noise:
+        enabled: true
+        std_dev: 0.02        # 2cm noise
+
+    # Left sensor
+    - offset: [0.0, 0.2]
+      angle: 1.5708          # 90° left
+      max_range: 4.0
+      min_range: 0.02
+      fov: 0.26
+```
+
+### Typical Configurations
+
+| Sensor Type | max_range | fov | min_range |
+|-------------|-----------|-----|-----------|
+| HC-SR04 | 4.0 | 15° | 0.02 |
+| MaxSonar | 6.5 | 15° | 0.15 |
+| Short-range | 0.8 | 30° | 0.02 |
+
+### Message Format
+
+```rust
+pub struct Range {
+    pub radiation_type: u8, // ULTRASOUND = 0
+    pub field_of_view: f64, // radians
+    pub min_range: f64,     // meters
+    pub max_range: f64,     // meters
+    pub range: f64,         // Current reading
+}
+```
+
+## Contact Sensors
+
+Bump sensors that detect physical contact with obstacles.
+
+### Configuration
+
+```yaml
+contact:
+  enabled: true
+  topic: "contact"
+  sensors:
+    - position: [0.4, 0.0]   # Front center
+      radius: 0.05           # Detection radius
+
+    - position: [0.4, 0.2]   # Front left
+      radius: 0.05
+
+    - position: [0.4, -0.2]  # Front right
+      radius: 0.05
+
+    - position: [-0.4, 0.0]  # Rear
+      radius: 0.05
+```
+
+### Message Format
+
+```rust
+pub struct ContactArray {
+    pub contacts: Vec<Contact>,
+}
+
+pub struct Contact {
+    pub position: Point,     // Contact location
+    pub normal: Vector3,     // Contact normal
+    pub depth: f64,          // Penetration depth
+}
+```
+
+### Usage Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides ContactArray;
+
+struct BumperController {
+    contact_sub: Hub<ContactArray>,
+    cmd_pub: Hub<CmdVel>,
+}
+
+impl Node for BumperController {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(contacts) = self.contact_sub.recv(&mut ctx) {
+            if !contacts.contacts.is_empty() {
+                // Collision detected - stop and back up
+                let mut cmd = CmdVel::default();
+                cmd.linear.x = -0.2;  // Reverse
+                self.cmd_pub.send(cmd, &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+## Noise Models
+
+All sensors support Gaussian noise models:
+
+```yaml
+noise:
+  enabled: true
+  std_dev: 0.1    # Standard deviation
+  mean: 0.0       # Bias/offset
+```
+
+### Applying Noise
+
+```
+noisy_value = true_value + N(mean, std_dev)
+```
+
+### Realistic Noise Values
+
+| Sensor | Parameter | Typical Noise |
+|--------|-----------|---------------|
+| LIDAR | Range | 0.01-0.05 m |
+| GPS | Position | 1.0-5.0 m |
+| IMU | Gyro | 0.01 rad/s |
+| IMU | Accel | 0.1 m/s² |
+| Ultrasonic | Range | 0.02 m |
+| Odometry | Drift | 1-5% per meter |
+
+## Sensor Fusion Example
+
+Combine multiple sensors for robust localization:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {Odometry, NavSatFix, Imu};
+use horus_library::algorithms::sensor_fusion::SensorFusion;
+
+struct LocalizationNode {
+    odom_sub: Hub<Odometry>,
+    gps_sub: Hub<NavSatFix>,
+    imu_sub: Hub<Imu>,
+    fusion_x: SensorFusion,
+    fusion_y: SensorFusion,
+}
+
+impl Node for LocalizationNode {
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // High-confidence odometry
+        if let Some(odom) = self.odom_sub.recv(&mut ctx) {
+            self.fusion_x.add_measurement("odom", odom.pose.x, 0.01);
+            self.fusion_y.add_measurement("odom", odom.pose.y, 0.01);
+        }
+
+        // Low-confidence GPS
+        if let Some(gps) = self.gps_sub.recv(&mut ctx) {
+            // Convert lat/lon to local coordinates
+            let x = (gps.longitude + 122.4194) / 0.00001;
+            let y = (gps.latitude - 37.7749) / 0.00001;
+
+            self.fusion_x.add_measurement("gps", x, 4.0);  // Higher variance
+            self.fusion_y.add_measurement("gps", y, 4.0);
+        }
+
+        // Get fused estimate
+        if let (Some(x), Some(y)) = (self.fusion_x.fuse(), self.fusion_y.fuse()) {
+            println!("Fused position: ({:.2}, {:.2})", x, y);
+        }
+    }
+}
+```
+
+## See Also
+
+- [Configuration](/simulators/sim2d/configuration) - Full YAML reference
+- [Sensor Fusion Algorithm](/rust/library/algorithms/sensor-fusion) - Combining sensors
+- [EKF Algorithm](/rust/library/algorithms/ekf) - State estimation
+- [Built-in Sensor Nodes](/rust/library/built-in-nodes) - Hardware sensor drivers

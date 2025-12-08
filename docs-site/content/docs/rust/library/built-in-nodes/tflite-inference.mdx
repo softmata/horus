@@ -1,0 +1,232 @@
+---
+title: TFLiteInferenceNode
+description: TensorFlow Lite inference for edge devices
+---
+
+# TFLiteInferenceNode
+
+TensorFlow Lite inference node optimized for edge devices and embedded systems. Run ML models on Raspberry Pi, Jetson, and other resource-constrained platforms.
+
+## Source Code
+
+- [TFLiteInferenceNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/ml_inference/tflite_inference.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- Optimized for edge devices (Raspberry Pi, Jetson)
+- CPU, GPU delegate, and Coral TPU support
+- Quantized model support (INT8)
+- Low memory footprint
+- Real-time inference on embedded systems
+
+## Requirements
+
+Enable the `tflite-inference` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - tflite-inference
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::ml_inference::{TFLiteInferenceNode, TFLiteConfig};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = TFLiteConfig {
+        num_threads: 4,
+        use_gpu_delegate: false,  // CPU only for Pi
+        ..Default::default()
+    };
+
+    let tflite_node = TFLiteInferenceNode::new(
+        "models/mobilenet_v2_quant.tflite",
+        "camera.raw",
+        "ml.predictions",
+        config,
+    )?;
+
+    scheduler.add(Box::new(tflite_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### TFLiteConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `num_threads` | usize | 4 | Number of CPU threads |
+| `use_gpu_delegate` | bool | false | Enable GPU delegate |
+| `use_coral_tpu` | bool | false | Enable Coral Edge TPU |
+| `input_size` | `Option<[u32; 2]>` | None | Input size [H, W] |
+| `enable_preprocessing` | bool | true | Enable image preprocessing |
+
+## Delegates
+
+### CPU (Default)
+
+```rust
+let config = TFLiteConfig {
+    num_threads: 4,  // Use 4 CPU cores
+    ..Default::default()
+};
+```
+
+### GPU Delegate (Jetson, Android)
+
+```rust
+let config = TFLiteConfig {
+    use_gpu_delegate: true,
+    ..Default::default()
+};
+```
+
+### Coral Edge TPU
+
+```rust
+let config = TFLiteConfig {
+    use_coral_tpu: true,  // Use USB Coral Accelerator
+    ..Default::default()
+};
+```
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `Predictions` | Model predictions |
+| `{output_topic}/metrics` | `InferenceMetrics` | Performance metrics |
+
+## Usage Examples
+
+### Image Classification on Raspberry Pi
+
+```rust
+use horus::prelude::*; // Provides ml::Predictions;
+
+// Optimized for Raspberry Pi 4
+let config = TFLiteConfig {
+    num_threads: 4,
+    input_size: Some([224, 224]),
+    ..Default::default()
+};
+
+let classifier = TFLiteInferenceNode::new(
+    "models/mobilenet_v2_quant.tflite",  // Quantized model
+    "camera.raw",
+    "classification/result",
+    config,
+)?;
+```
+
+### Object Detection with Coral TPU
+
+```rust
+// Use Coral USB Accelerator for 10x speedup
+let config = TFLiteConfig {
+    use_coral_tpu: true,
+    input_size: Some([320, 320]),
+    ..Default::default()
+};
+
+let detector = TFLiteInferenceNode::new(
+    "models/ssd_mobilenet_edgetpu.tflite",
+    "camera.raw",
+    "detection/result",
+    config,
+)?;
+```
+
+### Reading Predictions
+
+```rust
+let predictions_hub = Hub::<Predictions>::new("ml.predictions")?;
+
+if let Some(preds) = predictions_hub.recv(&mut None) {
+    if let Some((class_id, confidence)) = preds.top_k(1).first() {
+        println!("Detected class {} with {:.1}% confidence",
+                 class_id, confidence * 100.0);
+    }
+}
+```
+
+## Model Sources
+
+### TensorFlow Hub
+
+```bash
+# Download pre-trained TFLite models
+wget https://tfhub.dev/tensorflow/lite-model/mobilenet_v2_1.0_224_quantized/1/default/1?lite-format=tflite \
+     -O mobilenet_v2_quant.tflite
+```
+
+### Coral Model Zoo
+
+```bash
+# Edge TPU optimized models
+wget https://raw.githubusercontent.com/google-coral/test_data/master/ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite
+```
+
+## Performance
+
+### Raspberry Pi 4 (4GB)
+
+| Model | Quantization | FPS |
+|-------|--------------|-----|
+| MobileNetV2 | INT8 | 25-30 |
+| MobileNetV2 | FP32 | 8-12 |
+| EfficientNet-Lite0 | INT8 | 15-20 |
+
+### With Coral USB Accelerator
+
+| Model | FPS |
+|-------|-----|
+| MobileNetV2 EdgeTPU | 100+ |
+| SSD MobileNetV2 EdgeTPU | 40-50 |
+
+## Model Quantization
+
+Convert a TensorFlow model to quantized TFLite:
+
+```python
+import tensorflow as tf
+
+converter = tf.lite.TFLiteConverter.from_saved_model("saved_model")
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.target_spec.supported_types = [tf.int8]
+
+# Representative dataset for calibration
+def representative_dataset():
+    for _ in range(100):
+        yield [np.random.rand(1, 224, 224, 3).astype(np.float32)]
+
+converter.representative_dataset = representative_dataset
+tflite_model = converter.convert()
+
+with open("model_quant.tflite", "wb") as f:
+    f.write(tflite_model)
+```
+
+## See Also
+
+- [ONNXInferenceNode](./onnx-inference) - ONNX model inference
+- [CameraNode](./camera) - Image input
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection

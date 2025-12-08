@@ -1,0 +1,597 @@
+---
+title: horus_messages
+description: Standard message types for robotics communication
+order: 2
+---
+
+# horus_messages
+
+Standard message types for robotics communication. All messages are designed for zero-copy shared memory transport.
+
+```rust
+use horus::prelude::*; // Provides *;
+```
+
+---
+
+## Geometry
+
+Spatial primitives for position, orientation, and motion.
+
+### Twist
+
+3D velocity command with linear and angular components.
+
+```rust
+pub struct Twist {
+    pub linear: [f64; 3],    // [x, y, z] in m/s
+    pub angular: [f64; 3],   // [roll, pitch, yaw] in rad/s
+    pub timestamp: u64,
+}
+```
+
+#### Constructors
+
+```rust
+// Full 3D velocity
+let twist = Twist::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.5]);
+
+// 2D velocity (forward + rotation)
+let twist = Twist::new_2d(1.0, 0.5);  // 1 m/s forward, 0.5 rad/s rotation
+
+// Stop command
+let twist = Twist::stop();
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `is_valid()` | Returns true if all values are finite |
+
+---
+
+### Pose2D
+
+2D pose (position and orientation) for planar robots.
+
+```rust
+pub struct Pose2D {
+    pub x: f64,       // X position in meters
+    pub y: f64,       // Y position in meters
+    pub theta: f64,   // Orientation in radians
+    pub timestamp: u64,
+}
+```
+
+#### Constructors
+
+```rust
+let pose = Pose2D::new(1.0, 2.0, 0.5);  // x=1m, y=2m, theta=0.5rad
+let pose = Pose2D::origin();             // (0, 0, 0)
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `distance_to(&other)` | Euclidean distance to another pose |
+| `normalize_angle()` | Normalize theta to [-π, π] |
+| `is_valid()` | Returns true if all values are finite |
+
+---
+
+### Transform
+
+Full 3D transformation (translation + quaternion rotation).
+
+```rust
+pub struct Transform {
+    pub translation: [f64; 3],  // [x, y, z] in meters
+    pub rotation: [f64; 4],     // Quaternion [x, y, z, w]
+    pub timestamp: u64,
+}
+```
+
+#### Constructors
+
+```rust
+let tf = Transform::identity();
+let tf = Transform::new([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+let tf = Transform::from_pose_2d(&pose);
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `is_valid()` | Check if quaternion is normalized |
+| `normalize_rotation()` | Normalize the quaternion |
+
+---
+
+### Point3
+
+3D point in space.
+
+```rust
+pub struct Point3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+```
+
+#### Methods
+
+```rust
+let p1 = Point3::new(1.0, 2.0, 3.0);
+let p2 = Point3::origin();
+let dist = p1.distance_to(&p2);
+```
+
+---
+
+### Vector3
+
+3D vector for representing directions and velocities.
+
+```rust
+pub struct Vector3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `magnitude()` | Vector length |
+| `normalize()` | Normalize to unit vector |
+| `dot(&other)` | Dot product |
+| `cross(&other)` | Cross product |
+
+---
+
+### Quaternion
+
+Quaternion for 3D rotation representation.
+
+```rust
+pub struct Quaternion {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub w: f64,
+}
+```
+
+#### Constructors
+
+```rust
+let q = Quaternion::identity();
+let q = Quaternion::new(0.0, 0.0, 0.0, 1.0);
+let q = Quaternion::from_euler(roll, pitch, yaw);
+```
+
+---
+
+## Sensor
+
+Standard sensor data formats.
+
+### LaserScan
+
+2D LiDAR scan data with 360 range measurements.
+
+```rust
+pub struct LaserScan {
+    pub ranges: [f32; 360],      // Range measurements in meters
+    pub angle_min: f32,          // Start angle in radians
+    pub angle_max: f32,          // End angle in radians
+    pub range_min: f32,          // Minimum valid range
+    pub range_max: f32,          // Maximum valid range
+    pub angle_increment: f32,    // Angular resolution
+    pub time_increment: f32,     // Time between measurements
+    pub scan_time: f32,          // Full scan time
+    pub timestamp: u64,
+}
+```
+
+#### Constructors
+
+```rust
+let scan = LaserScan::new();
+let scan = LaserScan::default();
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `angle_at(index)` | Get angle for range index |
+| `is_range_valid(index)` | Check if reading is valid |
+| `valid_count()` | Count valid readings |
+| `min_range()` | Get minimum valid range |
+
+#### Example
+
+```rust
+if let Some(scan) = scan_sub.recv(&mut ctx) {
+    if let Some(min_dist) = scan.min_range() {
+        if min_dist < 0.5 {
+            // Obstacle detected!
+        }
+    }
+}
+```
+
+---
+
+### Imu
+
+IMU sensor data (orientation, angular velocity, acceleration).
+
+```rust
+pub struct Imu {
+    pub orientation: [f64; 4],              // Quaternion [x, y, z, w]
+    pub orientation_covariance: [f64; 9],   // 3x3 covariance (-1 = no data)
+    pub angular_velocity: [f64; 3],         // [x, y, z] in rad/s
+    pub angular_velocity_covariance: [f64; 9],
+    pub linear_acceleration: [f64; 3],      // [x, y, z] in m/s²
+    pub linear_acceleration_covariance: [f64; 9],
+    pub timestamp: u64,
+}
+```
+
+#### Constructors
+
+```rust
+let imu = Imu::new();
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_orientation_from_euler(roll, pitch, yaw)` | Set orientation from Euler angles |
+| `has_orientation()` | Check if orientation data is available |
+| `is_valid()` | Check if all values are finite |
+| `angular_velocity_vec()` | Get angular velocity as Vector3 |
+| `linear_acceleration_vec()` | Get linear acceleration as Vector3 |
+
+---
+
+### Odometry
+
+Combined pose and velocity estimate.
+
+```rust
+pub struct Odometry {
+    pub pose: Pose2D,
+    pub twist: Twist,
+    pub pose_covariance: [f64; 36],    // 6x6 covariance
+    pub twist_covariance: [f64; 36],
+    pub frame_id: [u8; 32],            // e.g., "odom"
+    pub child_frame_id: [u8; 32],      // e.g., "base_link"
+    pub timestamp: u64,
+}
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `set_frames(frame, child)` | Set frame IDs |
+| `update(pose, twist)` | Update pose and velocity |
+| `is_valid()` | Check validity |
+
+---
+
+### NavSatFix
+
+GPS/GNSS position data.
+
+```rust
+pub struct NavSatFix {
+    pub latitude: f64,           // Degrees (+ North, - South)
+    pub longitude: f64,          // Degrees (+ East, - West)
+    pub altitude: f64,           // Meters above WGS84
+    pub position_covariance: [f64; 9],
+    pub position_covariance_type: u8,
+    pub status: u8,              // Fix status
+    pub satellites_visible: u16,
+    pub hdop: f32,
+    pub vdop: f32,
+    pub speed: f32,              // m/s
+    pub heading: f32,            // degrees
+    pub timestamp: u64,
+}
+```
+
+#### Constants
+
+```rust
+NavSatFix::STATUS_NO_FIX    // 0
+NavSatFix::STATUS_FIX       // 1
+NavSatFix::STATUS_SBAS_FIX  // 2
+NavSatFix::STATUS_GBAS_FIX  // 3
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `from_coordinates(lat, lon, alt)` | Create from coordinates |
+| `has_fix()` | Check if GPS has fix |
+| `is_valid()` | Check coordinate validity |
+| `horizontal_accuracy()` | Estimated accuracy in meters |
+| `distance_to(&other)` | Distance to another position (Haversine) |
+
+---
+
+### BatteryState
+
+Battery status information.
+
+```rust
+pub struct BatteryState {
+    pub voltage: f32,            // Volts
+    pub current: f32,            // Amperes (negative = discharging)
+    pub charge: f32,             // Amp-hours
+    pub capacity: f32,           // Amp-hours
+    pub percentage: f32,         // 0-100
+    pub power_supply_status: u8,
+    pub temperature: f32,        // Celsius
+    pub cell_voltages: [f32; 16],
+    pub cell_count: u8,
+    pub timestamp: u64,
+}
+```
+
+#### Constants
+
+```rust
+BatteryState::STATUS_UNKNOWN     // 0
+BatteryState::STATUS_CHARGING    // 1
+BatteryState::STATUS_DISCHARGING // 2
+BatteryState::STATUS_FULL        // 3
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `new(voltage, percentage)` | Create new battery state |
+| `is_low(threshold)` | Check if below threshold |
+| `is_critical()` | Check if below 10% |
+| `time_remaining()` | Estimated time in seconds |
+
+---
+
+### Range
+
+Single-point distance measurement (ultrasonic, IR).
+
+```rust
+pub struct Range {
+    pub sensor_type: u8,     // 0=ultrasonic, 1=infrared
+    pub field_of_view: f32,  // radians
+    pub min_range: f32,      // meters
+    pub max_range: f32,      // meters
+    pub range: f32,          // meters
+    pub timestamp: u64,
+}
+```
+
+---
+
+## Vision
+
+Image and camera data types.
+
+### Image
+
+Camera image data.
+
+```rust
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub encoding: ImageEncoding,
+    pub step: u32,           // Row size in bytes
+    pub data: Vec<u8>,
+    pub timestamp: u64,
+}
+```
+
+#### ImageEncoding
+
+```rust
+pub enum ImageEncoding {
+    Rgb8,
+    Bgr8,
+    Rgba8,
+    Bgra8,
+    Mono8,
+    Mono16,
+    Depth16,
+    Depth32f,
+}
+```
+
+---
+
+### CameraInfo
+
+Camera calibration information.
+
+```rust
+pub struct CameraInfo {
+    pub width: u32,
+    pub height: u32,
+    pub distortion_model: [u8; 32],
+    pub d: [f64; 5],         // Distortion coefficients
+    pub k: [f64; 9],         // Intrinsic matrix
+    pub r: [f64; 9],         // Rectification matrix
+    pub p: [f64; 12],        // Projection matrix
+}
+```
+
+---
+
+### Detection
+
+Object detection result.
+
+```rust
+pub struct Detection {
+    pub class_id: u32,
+    pub class_name: [u8; 32],
+    pub confidence: f32,
+    pub bbox: [f32; 4],      // [x, y, width, height]
+}
+```
+
+---
+
+## Control
+
+Actuator command messages.
+
+### MotorCommand
+
+Motor control command.
+
+```rust
+pub struct MotorCommand {
+    pub motor_id: u8,
+    pub value: f32,          // -1.0 to 1.0 or actual units
+    pub mode: u8,            // 0=duty, 1=velocity, 2=position
+    pub timestamp: u64,
+}
+```
+
+---
+
+### ServoCommand
+
+Servo position command.
+
+```rust
+pub struct ServoCommand {
+    pub channel: u8,
+    pub angle: f32,          // degrees
+    pub speed: f32,          // degrees/second (0 = max)
+    pub timestamp: u64,
+}
+```
+
+---
+
+### PidConfig
+
+PID controller configuration.
+
+```rust
+pub struct PidConfig {
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
+    pub setpoint: f32,
+    pub output_min: f32,
+    pub output_max: f32,
+    pub integral_min: f32,
+    pub integral_max: f32,
+}
+```
+
+---
+
+## GenericMessage
+
+Dynamic message type for cross-language communication.
+
+```rust
+pub struct GenericMessage {
+    // Fixed-size buffer for shared memory safety
+    // Max payload: 4KB
+}
+```
+
+### Constructors
+
+```rust
+// From raw bytes
+let msg = GenericMessage::new(data_vec)?;
+
+// From any serializable type
+let msg = GenericMessage::from_value(&my_struct)?;
+
+// With metadata
+let msg = GenericMessage::with_metadata(data, "my_type".to_string())?;
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `data()` | Get payload as `Vec<u8>` |
+| `metadata()` | Get metadata string if present |
+| `to_value::<T>()` | Deserialize to typed value |
+
+### Example
+
+```rust
+use std::collections::HashMap;
+
+// Send
+let mut data = HashMap::new();
+data.insert("x", 1.0);
+data.insert("y", 2.0);
+let msg = GenericMessage::from_value(&data)?;
+hub.send(msg, &mut ctx)?;
+
+// Receive
+if let Some(msg) = hub.recv(&mut ctx) {
+    let data: HashMap<String, f64> = msg.to_value()?;
+    println!("x: {}", data["x"]);
+}
+```
+
+---
+
+## Performance Notes
+
+All message types are optimized for shared memory transport:
+
+| Message | Size | Notes |
+|---------|------|-------|
+| `Twist` | 64 bytes | Cache-line aligned |
+| `Pose2D` | 32 bytes | Minimal footprint |
+| `LaserScan` | ~1.5 KB | 360 range values |
+| `Image` | Variable | Use compression for large images |
+| `GenericMessage` | ~4.5 KB | Fixed-size for safety |
+
+For best performance, prefer typed messages over `GenericMessage` when possible.
+
+---
+
+## Detailed Message Documentation
+
+For comprehensive documentation of specialized message types, see:
+
+| Category | Description |
+|----------|-------------|
+| [Vision Messages](/rust/api/vision-messages) | Image, CameraInfo, Detection, CompressedImage |
+| [Perception Messages](/rust/api/perception-messages) | PointCloud, DepthImage, BoundingBox3D, PlaneDetection |
+| [Control Messages](/rust/api/control-messages) | MotorCommand, ServoCommand, PwmCommand, PidConfig, JointCommand |
+| [Force & Tactile Messages](/rust/api/force-messages) | WrenchStamped, TactileArray, ImpedanceParameters, ForceCommand |
+| [I/O & Industrial Messages](/rust/api/io-messages) | DigitalIO, AnalogIO, SPI, I2C, CAN, Modbus, Serial |
+| [ML Messages](/rust/api/ml-messages) | Tensor, Predictions, Detection, Pose estimation, LLM |
+| [Navigation Messages](/rust/api/navigation-messages) | Goal, Path, OccupancyGrid, CostMap, VelocityObstacle |
+| [Coordination Messages](/rust/api/coordination-messages) | RobotState, FleetStatus, TaskAssignment, FormationControl |
+| [Diagnostics Messages](/rust/api/diagnostics-messages) | Heartbeat, Status, EmergencyStop, ResourceUsage, SafetyStatus |
+| [TensorPool API](/rust/api/tensor-pool) | Zero-copy tensor memory management for CPU/GPU |

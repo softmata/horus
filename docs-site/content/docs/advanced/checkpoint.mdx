@@ -1,0 +1,335 @@
+---
+title: "Checkpoint System"
+description: "Periodic state snapshots for crash recovery and rollback"
+weight: 46
+---
+
+# Checkpoint System
+
+The Checkpoint System provides periodic state snapshots that can be used to recover from crashes or rollback to known-good states. This is essential for long-running robotics applications that need fault tolerance.
+
+## Overview
+
+The checkpoint system provides:
+- **Periodic snapshots**: Automatic state persistence at intervals
+- **Crash recovery**: Restore from last checkpoint after failure
+- **Rollback**: Return to previous known-good states
+- **Retention policy**: Automatic cleanup of old checkpoints
+
+## Basic Usage
+
+### Creating a Checkpoint Manager
+
+```rust
+use horus::prelude::*;
+use std::path::PathBuf;
+
+// Create with checkpoint directory and interval
+let mut manager = CheckpointManager::new(
+    PathBuf::from("/var/lib/horus/checkpoints"),
+    10000  // Checkpoint every 10 seconds (0 = disabled)
+);
+
+// Set maximum checkpoints to retain
+manager.set_max_checkpoints(5);
+```
+
+### Checking When to Checkpoint
+
+```rust
+// In main loop
+if manager.should_checkpoint() {
+    // Time to create a checkpoint
+}
+```
+
+### Creating Checkpoints
+
+```rust
+use horus::prelude::*;
+
+// Create metadata about current state
+let metadata = CheckpointMetadata {
+    scheduler_name: "main_scheduler".to_string(),
+    total_ticks: 150000,
+    learning_complete: true,
+    node_count: 15,
+    uptime_secs: 3600.0,
+};
+
+// Create checkpoint
+if let Some(mut checkpoint) = manager.create_checkpoint(metadata) {
+    // Add node states
+    checkpoint.node_states.insert(
+        "sensor_node".to_string(),
+        NodeCheckpoint {
+            name: "sensor_node".to_string(),
+            tick_count: 150000,
+            last_tick_us: 125,
+            error_count: 2,
+            custom_state: None,  // Or serialized node state
+        }
+    );
+
+    // Save to disk
+    let path = manager.save_checkpoint(&checkpoint)?;
+    println!("Checkpoint saved to {:?}", path);
+}
+```
+
+## Checkpoint Structure
+
+```rust
+pub struct Checkpoint {
+    pub id: u64,           // Unique checkpoint ID
+    pub timestamp: u64,    // Unix timestamp
+    pub node_states: HashMap<String, NodeCheckpoint>,
+    pub metadata: CheckpointMetadata,
+}
+
+pub struct NodeCheckpoint {
+    pub name: String,
+    pub tick_count: u64,
+    pub last_tick_us: u64,
+    pub error_count: u64,
+    pub custom_state: Option<Vec<u8>>,  // Serialized state
+}
+
+pub struct CheckpointMetadata {
+    pub scheduler_name: String,
+    pub total_ticks: u64,
+    pub learning_complete: bool,
+    pub node_count: usize,
+    pub uptime_secs: f64,
+}
+```
+
+## Loading Checkpoints
+
+### Load Latest
+
+```rust
+// Load the most recent checkpoint
+if let Some(checkpoint) = manager.load_latest_checkpoint()? {
+    println!("Restored checkpoint {} from tick {}",
+        checkpoint.id,
+        checkpoint.metadata.total_ticks
+    );
+
+    // Restore node states
+    for (name, state) in &checkpoint.node_states {
+        println!("  Node {}: {} ticks, {} errors",
+            name, state.tick_count, state.error_count);
+    }
+}
+```
+
+### Load Specific Checkpoint
+
+```rust
+let path = PathBuf::from("/var/lib/horus/checkpoints/checkpoint_00000005.bin");
+if let Some(checkpoint) = manager.load_checkpoint(&path)? {
+    // Use checkpoint
+}
+```
+
+### List Available Checkpoints
+
+```rust
+let checkpoints = manager.list_checkpoints();
+for (id, path) in checkpoints {
+    println!("Checkpoint {}: {:?}", id, path);
+}
+```
+
+## Custom Node State
+
+Nodes can save custom state in checkpoints:
+
+```rust
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct SensorNodeState {
+    calibration_offset: f64,
+    sample_count: u64,
+    last_readings: Vec<f64>,
+}
+
+impl Node for SensorNode {
+    fn checkpoint_state(&self) -> Option<Vec<u8>> {
+        let state = SensorNodeState {
+            calibration_offset: self.calibration_offset,
+            sample_count: self.sample_count,
+            last_readings: self.last_readings.clone(),
+        };
+        bincode::serialize(&state).ok()
+    }
+
+    fn restore_state(&mut self, data: &[u8]) -> HorusResult<()> {
+        let state: SensorNodeState = bincode::deserialize(data)?;
+        self.calibration_offset = state.calibration_offset;
+        self.sample_count = state.sample_count;
+        self.last_readings = state.last_readings;
+        Ok(())
+    }
+}
+```
+
+## Automatic Cleanup
+
+Old checkpoints are automatically removed:
+
+```rust
+// Set retention policy
+manager.set_max_checkpoints(10);
+
+// When saving a new checkpoint, old ones are cleaned up
+manager.save_checkpoint(&checkpoint)?;
+// Checkpoints beyond max_checkpoints are deleted
+```
+
+## Integration with Scheduler
+
+```rust
+use horus::prelude::*;
+
+let config = SchedulerConfig {
+    checkpoint_enabled: true,
+    checkpoint_dir: "/var/lib/horus/checkpoints".into(),
+    checkpoint_interval_ms: 60000,  // Every minute
+    max_checkpoints: 10,
+    ..Default::default()
+};
+
+let scheduler = Scheduler::with_config(config);
+
+// Scheduler automatically:
+// - Creates checkpoints at interval
+// - Saves node states
+// - Cleans up old checkpoints
+```
+
+## Recovery Flow
+
+```rust
+fn main() -> HorusResult<()> {
+    let mut manager = CheckpointManager::new(
+        PathBuf::from("/var/lib/horus/checkpoints"),
+        60000
+    );
+
+    // Try to recover from previous session
+    if let Some(checkpoint) = manager.load_latest_checkpoint()? {
+        println!("Recovering from checkpoint {}", checkpoint.id);
+        println!("Previous uptime: {:.0}s", checkpoint.metadata.uptime_secs);
+
+        // Restore scheduler state
+        // restore_scheduler(&checkpoint)?;
+
+        println!("Recovery complete");
+    } else {
+        println!("Starting fresh - no checkpoint found");
+    }
+
+    // Normal operation with checkpointing
+    loop {
+        // scheduler.tick();
+
+        if manager.should_checkpoint() {
+            let metadata = /* collect metadata */;
+            if let Some(checkpoint) = manager.create_checkpoint(metadata) {
+                manager.save_checkpoint(&checkpoint)?;
+            }
+        }
+    }
+}
+```
+
+## Best Practices
+
+### 1. Choose Appropriate Intervals
+
+```rust
+// Real-time critical: More frequent
+let manager = CheckpointManager::new(dir, 10000);  // 10s
+
+// Long-running batch: Less frequent
+let manager = CheckpointManager::new(dir, 300000);  // 5min
+```
+
+### 2. Checkpoint Before Risky Operations
+
+```rust
+// Before firmware update
+let checkpoint = manager.create_checkpoint(metadata)?;
+manager.save_checkpoint(&checkpoint)?;
+
+// Attempt update
+if update_firmware().is_err() {
+    // Rollback
+    let checkpoint = manager.load_latest_checkpoint()?.unwrap();
+    restore_state(&checkpoint)?;
+}
+```
+
+### 3. Validate Checkpoints
+
+```rust
+fn validate_checkpoint(checkpoint: &Checkpoint) -> bool {
+    // Check basic validity
+    if checkpoint.node_states.is_empty() {
+        return false;
+    }
+
+    // Check timestamp is reasonable
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    if checkpoint.timestamp > now {
+        return false;
+    }
+
+    true
+}
+```
+
+### 4. Log Checkpoint Events
+
+```rust
+// After saving
+log::info!(
+    "Checkpoint {} saved: {} nodes, {} ticks",
+    checkpoint.id,
+    checkpoint.metadata.node_count,
+    checkpoint.metadata.total_ticks
+);
+
+// After loading
+log::info!(
+    "Restored checkpoint {}: uptime {:.0}s",
+    checkpoint.id,
+    checkpoint.metadata.uptime_secs
+);
+```
+
+## File Format
+
+Checkpoints are stored as bincode-serialized files:
+
+```
+/var/lib/horus/checkpoints/
+├── checkpoint_00000001.bin
+├── checkpoint_00000002.bin
+├── checkpoint_00000003.bin
+└── checkpoint_00000004.bin
+```
+
+File naming ensures chronological ordering and easy identification.
+
+## See Also
+
+- [BlackBox Flight Recorder](/advanced/blackbox) - Event logging
+- [Safety Monitor](/advanced/safety-monitor) - Real-time safety
+- [Circuit Breaker](/advanced/circuit-breaker) - Fault tolerance

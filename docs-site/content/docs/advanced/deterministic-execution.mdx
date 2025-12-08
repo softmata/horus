@@ -1,0 +1,470 @@
+---
+title: "Deterministic Execution"
+description: "Achieving bit-for-bit reproducible execution in HORUS for testing, debugging, and safety certification"
+weight: 42
+---
+
+# Deterministic Execution
+
+HORUS supports fully deterministic execution where the same inputs produce identical outputs every run. This is essential for safety-critical systems, debugging, and formal verification.
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- Why determinism matters for robotics
+- How to enable deterministic mode in HORUS
+- The trade-offs between determinism and performance
+- Best practices for reproducible robot behavior
+
+## Why Determinism Matters
+
+### Safety Certification
+
+Safety standards (ISO 26262, IEC 62443) often require:
+- Predictable execution timing
+- Reproducible behavior under test
+- Formal verification of control loops
+
+### Debugging
+
+Non-deterministic bugs are hard to reproduce:
+- "It worked yesterday but fails today"
+- Race conditions that appear randomly
+- Timing-dependent failures
+
+### Testing
+
+Deterministic execution enables:
+- Repeatable unit tests
+- Regression testing
+- Simulation validation
+
+## Determinism Levels
+
+HORUS offers different levels of deterministic guarantees. Choose based on your requirements:
+
+| Level | Config | What You Get | Use Case |
+|-------|--------|--------------|----------|
+| **Basic** | `Scheduler::new()` | Sequential execution, no learning | Most applications |
+| **+ Performance** | `add_with_tier()` | Basic + explicit JIT/optimization tiers | When you need speed + determinism |
+| **+ Safety** | `SchedulerConfig::safety_critical()` | Basic + watchdogs, WCET enforcement | Medical, industrial |
+| **+ Topology** | `SchedulerConfig::deterministic()` | Basic + connection validation, locked graph | Formal verification |
+
+### Level 1: Basic Determinism (Default)
+
+`Scheduler::new()` is deterministic out of the box:
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(my_node), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+**Guarantees:**
+- Sequential execution (same order every tick)
+- No learning phase (no ~100-tick profiling)
+- Reproducible runs with same inputs
+
+**Does NOT include:** Performance optimization, safety monitoring, topology validation.
+
+### Level 2: Determinism + Performance
+
+Use `add_with_tier()` to get deterministic execution with explicit performance tiers:
+
+```rust
+use horus::prelude::*;
+use horus::scheduling::NodeTier;
+
+let mut scheduler = Scheduler::new();
+
+scheduler
+    .add_with_tier(Box::new(pid_controller), 0, NodeTier::Jit)      // JIT compiled
+    .add_with_tier(Box::new(sensor_reader), 1, NodeTier::Fast)      // Inline
+    .add_with_tier(Box::new(data_logger), 5, NodeTier::Background); // Low priority
+
+scheduler.run()?;
+```
+
+**Adds:** Explicit performance tiers without runtime profiling (deterministic optimization).
+
+### Level 3: Determinism + Safety
+
+Use `SchedulerConfig::safety_critical()` for safety-critical systems:
+
+```rust
+use horus::scheduling::config::SchedulerConfig;
+
+let mut scheduler = Scheduler::new()
+    .with_config(SchedulerConfig::safety_critical());
+```
+
+**Adds:**
+- Watchdog timers (100ms timeout)
+- WCET enforcement
+- Deadline monitoring (panic on miss)
+- Memory locking (mlockall)
+- Real-time scheduling class (SCHED_FIFO)
+
+### Level 4: Determinism + Topology Validation
+
+Use `SchedulerConfig::deterministic()` for formal verification and copper-rs level guarantees:
+
+```rust
+use horus::scheduling::config::SchedulerConfig;
+
+let mut scheduler = Scheduler::new()
+    .with_config(SchedulerConfig::deterministic());
+
+// Add nodes - topology auto-collected from node.get_publishers() / get_subscribers()
+scheduler.add(Box::new(ImuNode::new()), 0, None);
+scheduler.add(Box::new(ControllerNode::new()), 1, None);
+scheduler.add(Box::new(MotorNode::new()), 2, None);
+
+// Validate all connections before running
+let errors = scheduler.validate_topology();
+if !errors.is_empty() {
+    for err in &errors {
+        eprintln!("Topology error: {}", err);
+    }
+    panic!("Topology validation failed");
+}
+
+// Lock topology - no more nodes can be added after this
+scheduler.lock_topology();
+
+scheduler.run();
+```
+
+**Adds:**
+- Topology validation (orphaned topics, type mismatches)
+- Startup barrier (wait for all nodes)
+- Frozen topology (no dynamic node addition)
+- Deterministic RNG seed
+
+## Topology Validation
+
+HORUS can validate your system topology before the first tick, catching errors that would otherwise cause runtime failures.
+
+### DeterministicConfig Options
+
+```rust
+pub struct DeterministicConfig {
+    /// Reject undeclared topics at runtime
+    pub strict_topology: bool,
+
+    /// Wait for all nodes to connect before tick 0
+    pub startup_barrier: bool,
+
+    /// Timeout for startup barrier (ms)
+    pub barrier_timeout_ms: u64,
+
+    /// Deterministic RNG seed for reproducibility
+    pub rng_seed: Option<u64>,
+
+    /// Prevent node addition after startup
+    pub freeze_topology_after_start: bool,
+
+    /// Require all topics have both publishers and subscribers
+    pub require_complete_connections: bool,
+
+    /// Use static execution order (computed once)
+    pub static_execution_order: bool,
+}
+```
+
+### Presets
+
+```rust
+// Full determinism (copper-rs level)
+DeterministicConfig::strict()
+
+// Just static execution order, no topology validation
+DeterministicConfig::execution_only()
+```
+
+### Topology Methods
+
+```rust
+// Validate all connections
+let errors: Vec<String> = scheduler.validate_topology();
+
+// Lock topology (panics if nodes added after in strict mode)
+scheduler.lock_topology();
+
+// Inspect collected topology
+let (publishers, subscribers) = scheduler.get_topology();
+// Each is Vec<(node_name, topic_name, type_name)>
+
+// Check if locked
+let locked: bool = scheduler.is_topology_locked();
+```
+
+### What Topology Validation Checks
+
+| Check | Description |
+|-------|-------------|
+| **Orphaned publishers** | Topics with publishers but no subscribers |
+| **Orphaned subscribers** | Topics with subscribers but no publishers |
+| **Type mismatches** | Publisher sends `TypeA`, subscriber expects `TypeB` |
+
+### Auto-Collection from Nodes
+
+When you use the `node!` macro, topology is automatically declared:
+
+```rust
+node! {
+    ImuNode {
+        pub {
+            imu_data: ImuData -> "sensors/imu",
+        }
+
+        tick { /* ... */ }
+    }
+}
+
+// When added to scheduler, get_publishers() returns:
+// [TopicMetadata { topic_name: "sensors/imu", type_name: "ImuData" }]
+```
+
+No manual topic declarations needed - the scheduler collects topology from nodes automatically.
+
+## What Makes Execution Deterministic?
+
+### Learning Phase (Opt-In Only)
+
+By default, the scheduler has **no learning phase**. The ~100-tick profiling phase that classifies nodes into execution tiers is only enabled when you explicitly opt-in with `enable_learning()`.
+
+| Feature | Default (Deterministic) | With `enable_learning()` |
+|---------|------------------------|-------------------------|
+| Learning Phase | **Disabled** | Enabled (~100 ticks) |
+| JIT Compilation | Manual via tiers | Auto-detected |
+| Adaptive Tiers | Fixed (explicit) | Adjusts at runtime |
+| Node Reordering | Never | Based on profiling |
+| Startup Behavior | Predictable | Variable |
+
+### Sequential Execution
+
+Deterministic mode uses `ExecutionMode::Sequential`:
+- Nodes execute one-by-one
+- Same order every tick
+- No parallel execution
+- No async I/O optimization
+
+### Fixed Timing
+
+```rust
+// Deterministic timing configuration
+TimingConfig {
+    global_rate_hz: 1000.0,
+    per_node_rates: false,  // Disabled for determinism
+    max_jitter_us: 10,
+    deadline_miss_policy: DeadlineMissPolicy::Panic,
+    time_sync_source: TimeSyncSource::Monotonic,
+}
+```
+
+## Deterministic vs Non-Deterministic
+
+### Execution Comparison
+
+**Default (Deterministic):**
+```
+Run 1: Node A → Node B → Node C
+Run 2: Node A → Node B → Node C
+Run 3: Node A → Node B → Node C
+```
+
+**With `enable_learning()` (Non-Deterministic):**
+```
+Run 1: Node A → Node B → Node C (during learning)
+Run 2: Node B → Node A → Node C (after optimization)
+Run 3: Node A → Node C → Node B (different profiling results)
+```
+
+### Performance Trade-off
+
+| Metric | Default (Deterministic) | With `enable_learning()` |
+|--------|------------------------|-------------------------|
+| Consistency | Perfect | Variable |
+| Average Latency | 87-313ns | &lt;50ns (after learning) |
+| Peak Performance | Consistent | Higher (variable) |
+| Multi-core | Via config | Auto-detected |
+| Certification Ready | **Yes** | No |
+| Startup | Immediate | ~100 ticks warmup |
+
+## Best Practices
+
+### Use Deterministic Seeds
+
+For any randomness in your nodes:
+
+```rust
+impl Node for RandomNode {
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Use deterministic seed from tick
+        self.rng = StdRng::seed_from_u64(42);
+        Ok(())
+    }
+
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Generates same sequence every run
+        let value = self.rng.gen::<f64>();
+    }
+}
+```
+
+### Avoid System Time
+
+```rust
+// BAD: Non-deterministic
+fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    let now = std::time::Instant::now();  // Different every run
+}
+
+// GOOD: Use internal state counter
+fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    self.tick_count += 1;  // Increment your own counter
+    // Same sequence every run
+}
+```
+
+### Control External Inputs
+
+```rust
+// For testing, mock external sensors
+#[cfg(test)]
+impl Node for SensorNode {
+    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        // Return predetermined values in tests
+        self.output = self.test_data[self.tick_count % self.test_data.len()];
+    }
+}
+```
+
+## Example: Deterministic Robot Controller
+
+```rust
+use horus::prelude::*;
+
+struct DeterministicController {
+    kp: f64,
+    ki: f64,
+    kd: f64,
+    integral: f64,
+    last_error: f64,
+    tick_count: u64,  // Track ticks internally for determinism
+}
+
+impl Node for DeterministicController {
+    fn name(&self) -> &'static str {
+        "DeterministicController"
+    }
+
+    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        // Increment internal tick counter
+        self.tick_count += 1;
+
+        // PID calculation (pure math, deterministic)
+        let setpoint = 1.0;
+        let current = self.read_sensor();  // Must also be deterministic
+        let error = setpoint - current;
+
+        self.integral += error;
+        let derivative = error - self.last_error;
+
+        let output = self.kp * error
+                   + self.ki * self.integral
+                   + self.kd * derivative;
+
+        self.last_error = error;
+
+        println!(
+            "Tick {}: error={:.4}, output={:.4}",
+            self.tick_count, error, output
+        );
+    }
+}
+
+fn main() -> Result<()> {
+    // Scheduler is deterministic by default
+    let mut scheduler = Scheduler::new();
+
+    let controller = DeterministicController {
+        kp: 1.0,
+        ki: 0.1,
+        kd: 0.05,
+        integral: 0.0,
+        last_error: 0.0,
+        tick_count: 0,
+    };
+
+    scheduler.add(Box::new(controller), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Verification
+
+### Comparing Runs
+
+```bash
+# Run 1
+horus run my_robot.rs 2>&1 | tee run1.log
+
+# Run 2
+horus run my_robot.rs 2>&1 | tee run2.log
+
+# Compare (should be identical in deterministic mode)
+diff run1.log run2.log
+# No output = identical runs
+```
+
+### Automated Testing
+
+```rust
+#[test]
+fn test_deterministic_output() {
+    let output1 = run_robot_deterministic();
+    let output2 = run_robot_deterministic();
+
+    // Outputs must be identical
+    assert_eq!(output1, output2);
+}
+```
+
+## When to Enable Learning
+
+The default deterministic mode is best for most use cases. Consider enabling learning only when:
+
+- **Maximum performance needed**: Learning identifies JIT candidates automatically
+- **Variable workloads**: Runtime adaptation can optimize dynamically
+- **Long-running systems**: Learning cost amortizes over time
+- **Non-safety-critical**: Where determinism isn't required
+
+```rust
+// Only if you need adaptive optimization and don't care about determinism
+let scheduler = Scheduler::new()
+    .enable_learning();  // WARNING: Non-deterministic!
+```
+
+## Summary
+
+| Use Case | Level | Config |
+|----------|-------|--------|
+| General robotics | Basic | `Scheduler::new()` |
+| Unit testing / debugging | Basic | `Scheduler::new()` |
+| Performance-critical + deterministic | + Performance | `add_with_tier()` |
+| Medical / surgical robots | + Safety | `SchedulerConfig::safety_critical()` |
+| Formal verification / certification | + Topology | `SchedulerConfig::deterministic()` |
+| Racing / competition (non-deterministic OK) | N/A | `enable_learning()` |
+
+## Next Steps
+
+- Learn about [Execution Modes](/advanced/execution-modes) for alternatives
+- Explore [Scheduler Configuration](/advanced/scheduler-configuration) for all options

@@ -1,0 +1,327 @@
+---
+title: Monitor Guide
+description: Monitor, debug, and manage your HORUS applications in real-time
+order: 12
+---
+
+# Monitor
+
+> **Under Development**: The HORUS Monitor is currently under active development. Core monitoring features work, but some functionality (parameter management UI, package browser) is still being finalized. Check back for updates as we complete this feature.
+
+Your mission control for robotics applications. Monitor performance, debug issues, and tune parameters - all from your browser, accessible from any device on your network.
+
+## What is it?
+
+The HORUS Monitor is a **web interface** that lets you see inside your running robot system. Instead of tailing logs or SSH'ing into your robot, you get a visual, real-time view of everything happening.
+
+**Access it from:**
+- Your laptop while the robot runs
+- Your phone/tablet for mobile monitoring
+- Another team member's computer
+- Anywhere on your network
+
+## Why use it?
+
+### You want to know: "Is my robot working?"
+
+The monitor shows you **at a glance**:
+- All nodes running? (System health badge)
+- Performance good? (CPU, memory, tick rates)
+- Messages flowing? (Topic activity)
+- Any errors? (Error counts)
+
+**Without the monitor:** Grep logs, check processes, SSH into robot, hope you find the issue
+
+**With the monitor:** Open browser, see everything instantly
+
+### You want to: "Debug why it's not working"
+
+**Common problems the monitor solves:**
+
+**"My subscriber isn't getting messages"**
+- Check Topics tab  Is the topic there?
+- Check Graph view  Are publisher and subscriber connected?
+- Check Logs  Any connection errors?
+
+**"The robot is running slow"**
+- Check Nodes tab  Which node is using 90% CPU?
+- Check tick rates  Which node can't keep up?
+- Check Logs  Any "slow tick" warnings?
+
+**"It worked yesterday, what changed?"**
+- Check Parameters  What values are different?
+- Check Nodes  Same nodes running as before?
+
+### You want to: "Tune parameters live"
+
+**Example: Tuning PID controller gains**
+
+**Without monitor:**
+1. Edit config file
+2. Stop robot
+3. Restart robot
+4. Test behavior
+5. Repeat 20 times
+
+**With monitor:**
+1. Open Parameters tab
+2. Edit `pid.kp` value
+3. Watch robot respond instantly
+4. Adjust until optimal behavior is achieved
+5. Export final values
+
+**Result:** 5 minutes instead of an hour
+
+## Quick Start
+
+```bash
+# Start your robot
+horus run
+
+# In another terminal, start monitor
+horus monitor
+```
+
+Browser opens automatically to `http://localhost:3000`
+
+## What You Can Do
+
+### 1. **Monitor Performance**
+
+**See at a glance:**
+- All running nodes in a table
+- CPU and memory usage per node
+- How fast each node is running (tick rate)
+- Error counts
+
+**When to check:**
+- Starting up (verify all nodes launched)
+- During operation (watch for anomalies)
+- After code changes (ensure no performance regression)
+
+**What you'll notice:**
+- Tick rate steady at ~60 Hz = Good
+- CPU jumping to 90% = Check that node
+- Errors climbing = Something's wrong
+
+### 2. **Debug Message Flow**
+
+**Visual graph showing:**
+- Blue circles = Your nodes
+- Green circles = Topics
+- Arrows = Who's talking to whom
+
+**Use it when:**
+- "Why isn't my subscriber getting data?"
+  - Look: Is there an arrow from publisher -> topic -> subscriber?
+  - If not: Name mismatch or node not running
+
+- "Which nodes use this topic?"
+  - Click the topic circle
+  - See all connected nodes highlighted
+
+### 3. **Watch Real-Time Logs**
+
+**See logs from:**
+- All nodes combined (system-wide view)
+- One specific node (filter dropdown)
+- Messages on a specific topic
+
+**Use it when:**
+- Debugging errors
+- Verifying messages are being sent
+- Checking timing (IPC overhead shown)
+
+**Better than terminal logs:**
+- Color-coded by level (info/warning/error)
+- Filter by node without grep
+- Auto-scrolls with new messages
+- Shows performance metrics
+
+### 4. **Tune Parameters Live**
+
+**Interactive parameter editor:**
+- See all current values
+- Edit any parameter
+- Changes apply immediately
+- Auto-saves to disk
+
+**Perfect for:**
+- PID tuning (adjust gains while watching behavior)
+- Speed limits (test different max velocities)
+- Sensor thresholds (tune detection sensitivity)
+
+**You'll save hours** compared to edit-restart-test cycles
+
+### 5. **Manage Packages**
+
+**Browse and install:**
+- Search the registry for packages
+- One-click install
+- Choose global or local installation
+
+**Like npm/pip** but for robot components
+
+### 6. **Deploy to Robots**
+
+**Send code to physical hardware:**
+- Enter robot's IP/ID
+- Select file to deploy
+- Click deploy
+- Watch build progress
+- View robot's logs and stats
+
+**Use it when:**
+- Testing on real hardware
+- Running experiments remotely
+- Managing multiple robots
+
+## Common Scenarios
+
+### Starting Your Day
+
+**You just sat down with coffee:**
+
+1. Open monitor
+2. Check health badge  🟢 All good
+3. Glance at nodes table  All running, tick rates normal
+4. Start working
+
+**Total time:** 10 seconds to verify system health
+
+### Something Broke
+
+**Your robot stopped moving:**
+
+**Monitor workflow:**
+1. Health badge is 🔴 Critical
+2. Nodes tab  `motor_controller` has 50 errors
+3. Click logs for that node
+4. See: "Failed to connect to motor driver"
+5. Fix: Cable unplugged
+
+**Without monitor:** Spend 15 minutes SSH'ing and grepping logs
+
+**With monitor:** Find issue in 30 seconds
+
+### Performance Tuning
+
+**Robot feels sluggish:**
+
+**Monitor shows:**
+- `path_planner` using 85% CPU
+- Tick rate dropped to 25 Hz (should be 60)
+- Logs show "Path computation taking 40ms"
+
+**Action:**
+- Optimize path planning algorithm
+- Or reduce planning frequency
+- Or move to faster computer
+
+**You found the bottleneck** in 2 minutes
+
+### Team Collaboration
+
+**Scenario:** Two people debugging
+
+**Person 1 (at robot):**
+- Running the code
+- Making physical adjustments
+
+**Person 2 (at desk):**
+- Watching monitor
+- "CPU just spiked to 95%"
+- "Tick rate dropped when you turned that corner"
+- "I see errors in the lidar node"
+
+**Real-time feedback loop** without both people crowding around one screen
+
+## Access From Anywhere
+
+**The monitor binds to all network interfaces**, meaning:
+
+**Works great:**
+- Monitor from your desk while robot runs across the room
+- Check on phone while robot is charging
+- Team member in another room sees same view
+- Demo to visitors on a tablet
+
+**How to access:**
+
+**Same computer:**
+```
+http://localhost:3000
+```
+
+**Different device (same WiFi):**
+```
+http://192.168.1.100:3000
+```
+(Use your computer's actual IP - monitor shows it at startup)
+
+**Security note:** Token-based authentication is enabled by default. The monitor generates a secure random token that must be included in the URL.
+
+## Tips
+
+**Leave it open:** Keep monitor open while developing. Glance at it occasionally to catch issues early.
+
+**Second monitor:** Perfect use for that extra screen - full-time system monitoring.
+
+**Mobile monitoring:** Put it on a tablet mounted near your robot for at-a-glance status.
+
+**Parameter experiments:** Export parameters before experimenting, so you can restore if needed.
+
+## Quick Reference
+
+**What each tab shows:**
+
+| Tab | Shows | Use it to |
+|-----|-------|-----------|
+| **Nodes** | All running processes with CPU/memory/tick rate | Find performance issues |
+| **Topics** | Active message channels with sizes | Verify communication setup |
+| **Graph** | Visual network of nodes and topics | Understand system architecture |
+| **Logs** | Real-time log stream from all nodes | Debug errors and timing |
+| **Parameters** | Live config editor | Tune without restart |
+| **Packages** | Registry browser | Install components |
+| **Remote** | Robot deployment manager | Deploy to hardware |
+
+**Health colors:**
+- 🟢 Healthy - Everything normal
+- 🟡 Warning - Minor issues
+- 🟠 Degraded - Some errors
+- 🔴 Critical - Major problems
+- ⚪ Idle - Nothing running
+
+## Troubleshooting
+
+**Monitor shows nothing**
+ Make sure your HORUS app is running first
+
+**Can't access from phone**
+ Check both devices on same WiFi
+ Allow port 3000 in firewall: `sudo ufw allow 3000`
+
+**Port already in use**
+ Use different port: `horus monitor 8080`
+
+**Parameters not saving**
+ Create config directory: `mkdir -p ~/.horus/config`
+
+## Terminal UI Mode
+
+Prefer the command line? Use terminal UI mode:
+
+```bash
+horus monitor --tui
+```
+
+All the same features, rendered in your terminal. Perfect for:
+- SSH sessions
+- Headless servers
+- Terminal enthusiasts
+
+## Next Steps
+
+- **[CLI Reference](/development/cli-reference)** - Monitor commands
+- **[Parameters Guide](/development/parameters)** - Deep dive into params
+- **[Examples](/rust/examples/basic-examples)** - Real usage patterns

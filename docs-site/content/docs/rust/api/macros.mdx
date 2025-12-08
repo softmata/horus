@@ -1,0 +1,519 @@
+---
+title: horus_macros
+description: Procedural macros for reducing boilerplate
+order: 3
+---
+
+# horus_macros
+
+Procedural macros for reducing boilerplate in HORUS applications.
+
+```rust
+use horus::prelude::*;  // Includes all macros
+```
+
+---
+
+## node!
+
+Declarative macro for creating HORUS nodes with minimal boilerplate.
+
+### Syntax
+
+```rust
+node! {
+    NodeName {
+        pub { ... }         // Publishers (optional)
+        sub { ... }         // Subscribers (optional)
+        data { ... }        // Internal state (optional)
+        tick(ctx) { ... }   // Main loop (required)
+        init(ctx) { ... }   // Initialization (optional)
+        shutdown(ctx) { ... } // Cleanup (optional)
+        impl { ... }        // Custom methods (optional)
+    }
+}
+```
+
+### Sections
+
+#### `pub` - Publishers
+
+Define topics this node publishes to.
+
+```rust
+pub {
+    // Syntax: name: Type -> "topic_name"
+    velocity: f32 -> "robot.velocity",
+    status: String -> "robot.status",
+    pose: Pose2D -> "robot.pose"
+}
+```
+
+**Generated code:**
+- `Hub<Type>` field for each publisher
+- Automatic initialization in `new()`
+
+#### `sub` - Subscribers
+
+Define topics this node subscribes to.
+
+```rust
+sub {
+    // Syntax: name: Type <- "topic_name"
+    commands: String <- "user.commands",
+    sensors: f32 <- "sensors.temperature"
+}
+```
+
+**Generated code:**
+- `Hub<Type>` field for each subscriber
+- Automatic initialization in `new()`
+
+#### `data` - Internal State
+
+Define internal fields with default values.
+
+```rust
+data {
+    counter: u32 = 0,
+    buffer: Vec<f32> = Vec::new(),
+    last_time: Instant = Instant::now(),
+    config: MyConfig = MyConfig::default()
+}
+```
+
+#### `tick(ctx)` - Main Loop
+
+**Required.** Called every scheduler cycle (~60 Hz by default).
+
+```rust
+tick(ctx) {
+    // ctx is Option<&mut NodeInfo>
+
+    // Read from subscribers
+    if let Some(cmd) = self.commands.recv(&mut ctx) {
+        // Process
+    }
+
+    // Write to publishers
+    self.velocity.send(1.0, &mut ctx).ok();
+
+    // Access internal state
+    self.counter += 1;
+}
+```
+
+#### `init(ctx)` - Initialization
+
+Called once before the first tick.
+
+```rust
+init(ctx) {
+    // ctx is &mut NodeInfo
+    ctx.log_info("Node starting");
+    self.buffer.reserve(1000);
+}
+```
+
+#### `shutdown(ctx)` - Cleanup
+
+Called once when the scheduler stops.
+
+```rust
+shutdown(ctx) {
+    // ctx is &mut NodeInfo
+    ctx.log_info("Node stopping");
+    // Close files, save state, etc.
+}
+```
+
+#### `impl` - Custom Methods
+
+Add helper methods to the node.
+
+```rust
+impl {
+    fn calculate(&self, x: f32) -> f32 {
+        x * 2.0 + self.offset
+    }
+
+    fn reset(&mut self) {
+        self.counter = 0;
+    }
+}
+```
+
+### Generated Code
+
+The macro generates:
+
+1. **Struct definition** with all fields
+2. **`new()` constructor** that initializes Hubs
+3. **`Node` trait implementation**
+4. **`Default` trait implementation**
+
+```rust
+// This macro call:
+node! {
+    SensorNode {
+        pub { data: f32 -> "sensor" }
+        data { count: u32 = 0 }
+        tick(ctx) { self.count += 1; }
+    }
+}
+
+// Generates approximately:
+struct SensorNode {
+    data: Hub<f32>,
+    count: u32,
+}
+
+impl SensorNode {
+    pub fn new() -> HorusResult<Self> {
+        Ok(Self {
+            data: Hub::new("sensor")?,
+            count: 0,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str { "SensorNode" }
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        self.count += 1;
+    }
+}
+
+impl Default for SensorNode {
+    fn default() -> Self {
+        Self::new().expect("Failed to create SensorNode")
+    }
+}
+```
+
+### Examples
+
+#### Minimal Node
+
+```rust
+node! {
+    MinimalNode {
+        tick(ctx) {
+            // Called every tick
+        }
+    }
+}
+```
+
+#### Publisher Only
+
+```rust
+node! {
+    HeartbeatNode {
+        pub { alive: bool -> "system.heartbeat" }
+        data { count: u64 = 0 }
+
+        tick(ctx) {
+            self.alive.send(true, &mut ctx).ok();
+            self.count += 1;
+        }
+    }
+}
+```
+
+#### Subscriber Only
+
+```rust
+node! {
+    LoggerNode {
+        sub { messages: String <- "logs" }
+
+        tick(ctx) {
+            while let Some(msg) = self.messages.recv(&mut ctx) {
+                if let Some(ref mut c) = ctx {
+                    c.log_info(&msg);
+                }
+            }
+        }
+    }
+}
+```
+
+#### Full Pipeline
+
+```rust
+node! {
+    ProcessorNode {
+        sub { input: f32 <- "raw_data" }
+        pub { output: f32 -> "processed_data" }
+        data {
+            scale: f32 = 2.0,
+            offset: f32 = 10.0
+        }
+
+        tick(ctx) {
+            if let Some(value) = self.input.recv(&mut ctx) {
+                let result = value * self.scale + self.offset;
+                self.output.send(result, &mut ctx).ok();
+            }
+        }
+
+        impl {
+            fn set_scale(&mut self, scale: f32) {
+                self.scale = scale;
+            }
+        }
+    }
+}
+```
+
+#### With Lifecycle
+
+```rust
+node! {
+    StatefulNode {
+        pub { status: String -> "status" }
+        data {
+            initialized: bool = false,
+            tick_count: u64 = 0
+        }
+
+        init(ctx) {
+            ctx.log_info("Initializing...");
+            self.initialized = true;
+        }
+
+        tick(ctx) {
+            self.tick_count += 1;
+            let msg = format!("Tick {}", self.tick_count);
+            self.status.send(msg, &mut ctx).ok();
+        }
+
+        shutdown(ctx) {
+            ctx.log_info(&format!("Total ticks: {}", self.tick_count));
+        }
+    }
+}
+```
+
+### Usage
+
+```rust
+use horus::prelude::*;
+
+node! {
+    MyNode {
+        pub { output: f32 -> "data" }
+        tick(ctx) {
+            self.output.send(42.0, &mut ctx).ok();
+        }
+    }
+}
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+    scheduler.add(Box::new(MyNode::new()?), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+---
+
+## message!
+
+Macro for defining custom message types compatible with HORUS communication.
+
+### Syntax
+
+```rust
+message! {
+    MessageName {
+        field1: Type,
+        field2: Type,
+        // ...
+    }
+}
+```
+
+### Features
+
+The macro automatically implements:
+
+- `Clone`, `Debug`
+- `Serialize`, `Deserialize` (serde)
+- `LogSummary` trait for debugging
+- `Default` trait
+- Fixed-size representation for shared memory
+
+### Example
+
+```rust
+message! {
+    RobotCommand {
+        linear_velocity: f32,
+        angular_velocity: f32,
+        timestamp: u64,
+    }
+}
+
+// Usage
+let cmd = RobotCommand {
+    linear_velocity: 1.0,
+    angular_velocity: 0.5,
+    timestamp: 12345,
+};
+
+let hub: Hub<RobotCommand> = Hub::new("commands")?;
+hub.send(cmd, &mut None).ok();
+```
+
+### With Arrays
+
+```rust
+message! {
+    SensorArray {
+        values: [f32; 8],
+        valid_count: u8,
+    }
+}
+```
+
+### Complex Types
+
+```rust
+message! {
+    RobotState {
+        position: [f64; 3],
+        orientation: [f64; 4],  // quaternion
+        velocity: [f64; 6],     // linear + angular
+        status: u8,
+        battery_percent: f32,
+        timestamp: u64,
+    }
+}
+```
+
+---
+
+## Best Practices
+
+### Keep tick() Fast
+
+```rust
+// Good - non-blocking
+tick(ctx) {
+    if let Some(x) = self.input.recv(&mut ctx) {
+        self.output.send(x * 2.0, &mut ctx).ok();
+    }
+}
+
+// Bad - blocking operation
+tick(ctx) {
+    std::thread::sleep(Duration::from_secs(1));  // Blocks scheduler!
+}
+```
+
+### Pre-allocate in init()
+
+```rust
+init(ctx) {
+    self.buffer.reserve(1000);  // Do once
+}
+
+tick(ctx) {
+    // Don't allocate here - runs every tick
+}
+```
+
+### Use Descriptive Names
+
+```rust
+// Good
+pub { motor_velocity: f32 -> "motors.velocity" }
+
+// Bad
+pub { x: f32 -> "data" }
+```
+
+### Handle Errors Gracefully
+
+```rust
+tick(ctx) {
+    // Use .ok() for non-critical sends
+    self.status.send("ok".to_string(), &mut ctx).ok();
+
+    // Or handle errors explicitly
+    if let Err(msg) = self.critical.send(data, &mut ctx) {
+        if let Some(ref mut c) = ctx {
+            c.log_error("Failed to send critical data");
+        }
+    }
+}
+```
+
+---
+
+## Troubleshooting
+
+### "Cannot find type in scope"
+
+Import message types:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel;
+
+node! {
+    MyNode {
+        pub { cmd: CmdVel -> "cmd_vel" }
+        tick(ctx) { }
+    }
+}
+```
+
+### "Expected `,`, found `{`"
+
+Check arrow syntax:
+
+```rust
+// Wrong
+pub { cmd: f32 "topic" }
+
+// Correct
+pub { cmd: f32 -> "topic" }
+```
+
+### "Node name must be CamelCase"
+
+```rust
+// Wrong
+node! { my_node { ... } }
+
+// Correct
+node! { MyNode { ... } }
+```
+
+### ctx is Option, not direct reference
+
+```rust
+tick(ctx) {
+    // ctx is Option<&mut NodeInfo>
+
+    // Wrong - ctx is not NodeInfo directly
+    ctx.log_info("test");
+
+    // Correct - unwrap the Option
+    if let Some(ref mut c) = ctx {
+        c.log_info("test");
+    }
+}
+```
+
+---
+
+## See Also
+
+- [node! Macro Guide](/concepts/node-macro) - Detailed tutorial
+- [message! Macro Guide](/concepts/message-macro) - Custom messages
+- [horus_core API](/rust/api/core) - Core types reference

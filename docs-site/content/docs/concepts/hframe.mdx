@@ -1,0 +1,82 @@
+---
+title: "HFrame Transform System"
+description: "Lock-free coordinate frame management"
+weight: 25
+---
+
+# HFrame Transform System
+
+HFrame is a lock-free coordinate frame system for real-time robotics applications.
+
+## Performance
+
+| Operation | HFrame | ROS2 TF2 |
+|-----------|--------|----------|
+| Lookup by ID | ~50ns | N/A |
+| Lookup by name | ~200ns | ~2μs |
+| Chain resolution | ~150ns | ~5μs |
+
+## Usage
+
+```rust
+use horus_library::hframe::{HFrame, Transform};
+
+// Create and register frames
+let hf = HFrame::new();
+hf.register_frame("world", None)?;
+hf.register_frame("base_link", Some("world"))?;
+hf.register_frame("camera", Some("base_link"))?;
+
+// Update transform
+let tf = Transform::new(
+    [1.0, 0.0, 0.5],        // translation
+    [0.0, 0.0, 0.0, 1.0]    // quaternion [x,y,z,w]
+);
+hf.update_transform("camera", &tf, timestamp_now())?;
+
+// Query transform
+let tf = hf.tf("camera", "world")?;
+let point_world = tf.transform_point([1.0, 0.0, 0.0]);
+
+// Fast path with cached IDs
+let camera_id = hf.frame_id("camera").unwrap();
+let world_id = hf.frame_id("world").unwrap();
+let tf = hf.tf_by_id(camera_id, world_id);  // ~50ns
+```
+
+## Configuration Presets
+
+| Preset | Frames | Memory |
+|--------|--------|--------|
+| `small()` | 256 | ~550KB |
+| `medium()` | 1024 | ~2.2MB |
+| `large()` | 4096 | ~9MB |
+
+## Transform Type
+
+```rust
+pub struct Transform {
+    pub translation: [f64; 3],  // meters
+    pub rotation: [f64; 4],     // quaternion [x,y,z,w]
+}
+
+// Creation helpers
+Transform::identity()
+Transform::from_translation([x, y, z])
+Transform::from_euler([x, y, z], [roll, pitch, yaw])
+
+// Operations
+tf.compose(&other)
+tf.inverse()
+tf.transform_point(point)
+tf.interpolate(&other, 0.5)
+```
+
+## Time-Travel Queries
+
+```rust
+// Query transform at past timestamp
+let past = timestamp_now() - 100_000_000;  // 100ms ago
+let tf = hf.tf_at("camera", "world", past)?;
+```
+

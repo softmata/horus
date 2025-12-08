@@ -1,0 +1,213 @@
+---
+title: "TensorPool API"
+description: "Zero-copy tensor memory management for high-performance robotics and AI/ML"
+weight: 40
+---
+
+# TensorPool API
+
+HORUS provides efficient tensor memory management through shared memory pools, enabling zero-copy data sharing between processes for both CPU and GPU tensors.
+
+## Overview
+
+The TensorPool system consists of:
+
+- **TensorPool** - CPU tensor allocation via shared memory
+- **CudaTensorPool** - GPU tensor allocation with CUDA IPC support
+- **TensorHandle** - RAII wrapper for automatic memory management
+- **HorusTensor** - Lightweight tensor descriptor (metadata only)
+
+## CPU TensorPool
+
+### Creating a Pool
+
+```rust
+use horus::memory::{TensorPool, TensorPoolConfig};
+
+// Create with default config (256 slots, 1GB max)
+let pool = TensorPool::new(1, TensorPoolConfig::default())?;
+
+// Or customize
+let config = TensorPoolConfig {
+    max_slots: 512,
+    max_total_size: 2 * 1024 * 1024 * 1024, // 2GB
+    ..Default::default()
+};
+let pool = TensorPool::new(1, config)?;
+```
+
+### Allocating Tensors
+
+```rust
+use horus::memory::{TensorHandle, TensorDtype};
+
+// Allocate a 1080p RGB image
+let handle = TensorHandle::alloc(
+    pool.clone(),
+    &[1080, 1920, 3],
+    TensorDtype::U8,
+)?;
+
+// Access data
+let data: &mut [u8] = handle.as_slice_mut();
+```
+
+### Supported Data Types
+
+| Type | Rust | Size |
+|------|------|------|
+| `TensorDtype::U8` | `u8` | 1 byte |
+| `TensorDtype::U16` | `u16` | 2 bytes |
+| `TensorDtype::U32` | `u32` | 4 bytes |
+| `TensorDtype::U64` | `u64` | 8 bytes |
+| `TensorDtype::I8` | `i8` | 1 byte |
+| `TensorDtype::I16` | `i16` | 2 bytes |
+| `TensorDtype::I32` | `i32` | 4 bytes |
+| `TensorDtype::I64` | `i64` | 8 bytes |
+| `TensorDtype::F32` | `f32` | 4 bytes |
+| `TensorDtype::F64` | `f64` | 8 bytes |
+
+## GPU TensorPool (CUDA)
+
+Enable with the `cuda` feature:
+
+```toml
+[dependencies]
+horus_core = { version = "0.1", features = ["cuda"] }
+```
+
+### Creating a GPU Pool
+
+```rust
+use horus::memory::{CudaTensorPool, CudaTensorPoolConfig, cuda_available};
+
+if cuda_available() {
+    // Create pool on device 0
+    let pool = CudaTensorPool::new(1, 0, CudaTensorPoolConfig::default())?;
+
+    // Or open existing pool (for consumer processes)
+    let pool = CudaTensorPool::open(1, 0)?;
+}
+```
+
+### GPU Tensor Allocation
+
+```rust
+use horus::memory::tensor_pool::TensorDtype;
+
+// Allocate GPU tensor
+let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::F32)?;
+
+// Get device pointer for CUDA kernels
+let gpu_ptr = pool.device_ptr(&tensor);
+
+// Get IPC handle for cross-process sharing (64 bytes)
+let ipc_handle = tensor.ipc_handle_bytes();
+
+// Release when done
+pool.release(&tensor)?;
+```
+
+### Cross-Process GPU Sharing
+
+```rust
+// Process A (producer): Create tensor and get IPC handle
+let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::F32)?;
+let ipc_handle = tensor.ipc_handle_bytes(); // 64 bytes
+// Send ipc_handle to Process B via Hub/Link...
+
+// Process B (consumer): Import GPU memory
+let pool = CudaTensorPool::open(1, 0)?;
+let (gpu_ptr, tensor) = pool.import_ipc(ipc_handle, &[1080, 1920, 3], TensorDtype::F32)?;
+// gpu_ptr points to SAME GPU memory - zero copy!
+
+// When done
+pool.close_ipc(gpu_ptr)?;
+```
+
+## HorusTensor Structure
+
+The tensor descriptor that gets shared between processes:
+
+```rust
+pub struct HorusTensor {
+    pub pool_id: u32,           // Which pool this tensor belongs to
+    pub slot_id: u32,           // Slot index within pool
+    pub generation: u32,        // ABA problem prevention
+    pub device_id: u8,          // 0 = CPU, 1+ = GPU device
+    pub dtype: TensorDtype,     // Data type
+    pub ndim: u8,               // Number of dimensions
+    pub shape: [u64; 8],        // Shape (up to 8 dimensions)
+    pub strides: [u64; 8],      // Strides for each dimension
+    pub numel: u64,             // Total number of elements
+    pub size: u64,              // Size in bytes
+    pub cuda_ipc_handle: [u8; 64], // CUDA IPC handle (GPU only)
+}
+```
+
+## Python API
+
+```python
+import horus
+
+# Check CUDA availability
+if horus.cuda_is_available():
+    print(f"CUDA devices: {horus.cuda_device_count()}")
+
+# Create tensor pool
+pool = horus.TensorPool(pool_id=1, size_mb=1024)
+
+# Allocate CPU tensor
+tensor = pool.alloc(shape=(1080, 1920, 3), dtype="float32")
+
+# Transfer to GPU
+gpu_tensor = tensor.cuda("cuda:0")
+
+# Get IPC handle for sharing
+ipc_handle = gpu_tensor.get_cuda_ipc_handle()
+
+# Zero-copy PyTorch integration
+import torch
+torch_tensor = torch.as_tensor(gpu_tensor)  # Uses __cuda_array_interface__
+```
+
+## Performance
+
+### CPU TensorPool
+
+| Operation | Latency |
+|-----------|---------|
+| Slot allocation | ~100ns |
+| Cross-process access | Zero-copy via mmap |
+
+### GPU TensorPool
+
+| Operation | Latency |
+|-----------|---------|
+| Allocation (VGA) | ~260µs |
+| Allocation (1080p) | ~960µs |
+| Allocation (4K) | ~3.4ms |
+| IPC handle transfer | ~26ns |
+| Pool create | ~156µs |
+| Pool open | ~42µs |
+
+### IPC vs Memcpy
+
+For a 1080p RGB f32 tensor (~24MB):
+
+| Method | Latency | Speedup |
+|--------|---------|---------|
+| CPU memcpy | ~2.26ms | 1x |
+| CUDA IPC | ~26ns | **87,000x** |
+
+## Best Practices
+
+1. **Reuse pools**: Create pools once at startup, not per-tensor
+2. **Match dtypes**: Ensure sender and receiver use same dtype
+3. **Close IPC handles**: Always close imported handles to prevent leaks
+4. **Check CUDA availability**: Guard GPU code with `cuda_available()`
+
+## See Also
+
+- [GPU Tensor Sharing](/advanced/gpu-tensor-sharing) - Detailed CUDA IPC guide
+- [Zero-Copy Shared Memory](/concepts/core-concepts-shared-memory#zero-copy-loan-pattern-internal) - How HORUS achieves zero-copy

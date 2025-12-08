@@ -1,0 +1,369 @@
+---
+title: "Scheduler Configuration"
+description: "Advanced scheduler configuration for real-time, safety-critical, and high-performance robotics"
+weight: 40
+---
+
+# Scheduler Configuration
+
+HORUS provides a comprehensive `SchedulerConfig` system that allows you to tune the scheduler for different robotics scenarios - from rapid prototyping to safety-critical medical devices.
+
+## Key Takeaways
+
+After reading this guide, you will understand:
+- How to configure the scheduler for different execution modes (Sequential, Parallel, JIT, Adaptive)
+- When to use deterministic vs adaptive scheduling
+- How to apply robot presets for common scenarios
+- Advanced timing, fault tolerance, and real-time configuration options
+
+## SchedulerConfig Overview
+
+The `SchedulerConfig` struct provides complete control over scheduler behavior. Note that `Scheduler::new()` is **deterministic by default** - configuration is only needed for advanced customization.
+
+```rust
+use horus::prelude::*;
+use horus::scheduling::config::{SchedulerConfig, ExecutionMode, RobotPreset};
+
+fn main() -> Result<()> {
+    // Simple case: deterministic scheduler (no config needed)
+    let scheduler = Scheduler::new();
+
+    // With explicit tier annotations (deterministic + optimized)
+    let mut scheduler = Scheduler::new();
+    scheduler.add_with_tier(Box::new(my_node), 0, NodeTier::Jit);
+
+    // With full configuration preset
+    let config = SchedulerConfig::safety_critical();
+    let scheduler = Scheduler::new().with_config(config);
+
+    // Or customize from standard
+    let config = SchedulerConfig::standard()
+        .with_execution_mode(ExecutionMode::Sequential)
+        .with_tick_rate(1000.0);  // 1kHz
+
+    let mut scheduler = Scheduler::new().with_config(config);
+    scheduler.add(Box::new(my_node), 0, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration Sections
+
+### Execution Mode
+
+Controls how nodes are executed each tick:
+
+```rust
+pub enum ExecutionMode {
+    /// JIT compilation for ultra-fast control loops
+    JITOptimized,
+    /// Parallel execution with dependency resolution
+    Parallel,
+    /// Async I/O for network and file operations
+    AsyncIO,
+    /// Traditional sequential execution (deterministic)
+    Sequential,
+    /// Mixed mode with automatic classification
+    AutoAdaptive,
+}
+```
+
+| Mode | Latency | Deterministic | Best For |
+|------|---------|---------------|----------|
+| `JITOptimized` | &lt;50ns tick | No | Racing, competition |
+| `Parallel` | Variable | No | Multi-core systems |
+| `AsyncIO` | Variable | No | Network-heavy apps |
+| `Sequential` | ~100-500ns | **Yes** | Safety-critical |
+| `AutoAdaptive` | Variable | No | General robotics |
+
+### Timing Configuration
+
+```rust
+pub struct TimingConfig {
+    /// Global tick rate in Hz (default: 60)
+    pub global_rate_hz: f64,
+    /// Enable per-node rate control
+    pub per_node_rates: bool,
+    /// Maximum allowed jitter in microseconds
+    pub max_jitter_us: u64,
+    /// Deadline miss policy
+    pub deadline_miss_policy: DeadlineMissPolicy,
+    /// Time synchronization source
+    pub time_sync_source: TimeSyncSource,
+}
+```
+
+**Deadline Miss Policy:**
+
+```rust
+pub enum DeadlineMissPolicy {
+    Warn,      // Log warning and continue
+    Skip,      // Skip the node for this tick
+    Panic,     // Terminate the scheduler (safety-critical)
+    Degrade,   // Downgrade priority and continue
+}
+```
+
+**Time Sync Sources (Reserved):**
+
+```rust
+pub enum TimeSyncSource {
+    Monotonic,  // System monotonic clock (default, currently only supported)
+    NTP,        // Reserved for future use
+    GPS,        // Reserved for future use
+    PTP,        // Reserved for future use
+    External,   // Reserved for future use
+}
+```
+
+> **Note:** Currently only `Monotonic` is used. Other time sync sources are reserved for future implementation.
+
+### Fault Tolerance Configuration
+
+```rust
+pub struct FaultConfig {
+    /// Enable circuit breaker pattern
+    pub circuit_breaker_enabled: bool,
+    /// Max failures before circuit opens
+    pub max_failures: u32,
+    /// Success count to close circuit
+    pub recovery_threshold: u32,
+    /// Circuit timeout in milliseconds
+    pub circuit_timeout_ms: u64,
+    /// Enable automatic node restart
+    pub auto_restart: bool,
+    /// Redundancy factor - reserved for future use
+    pub redundancy_factor: u32,
+    /// Checkpointing frequency (0 = disabled)
+    pub checkpoint_interval_ms: u64,
+}
+```
+
+> **Note:** `redundancy_factor` is reserved for future use. The RedundancyManager infrastructure exists but is not yet integrated into the scheduler's tick loop.
+
+### Real-Time Configuration
+
+```rust
+pub struct RealTimeConfig {
+    /// Enable WCET enforcement
+    pub wcet_enforcement: bool,
+    /// Enable deadline monitoring
+    pub deadline_monitoring: bool,
+    /// Enable watchdog timers
+    pub watchdog_enabled: bool,
+    /// Default watchdog timeout in milliseconds
+    pub watchdog_timeout_ms: u64,
+    /// Enable safety monitor
+    pub safety_monitor: bool,
+    /// Maximum deadline misses before emergency stop
+    pub max_deadline_misses: u64,
+    /// Enable priority inheritance protocol
+    pub priority_inheritance: bool,
+    /// Enable formal verification checks (debug builds only)
+    pub formal_verification: bool,
+    /// Memory locking (mlockall)
+    pub memory_locking: bool,
+    /// Use real-time scheduling class (SCHED_FIFO/RR)
+    pub rt_scheduling_class: bool,
+}
+```
+
+### Resource Configuration
+
+```rust
+pub struct ResourceConfig {
+    /// CPU cores to use (None = all cores) - Linux only
+    pub cpu_cores: Option<Vec<usize>>,
+    /// Memory limit in MB (0 = unlimited) - reserved
+    pub memory_limit_mb: usize,
+    /// I/O priority (0-7, 0 = highest) - reserved
+    pub io_priority: u8,
+    /// Enable NUMA awareness - Linux only
+    pub numa_aware: bool,
+    /// GPU device IDs - reserved for future use
+    pub gpu_devices: Vec<usize>,
+    /// Power management - reserved for future use
+    pub power_management: bool,
+    /// Power budget in watts - reserved for future use
+    pub power_budget_watts: u32,
+}
+```
+
+> **Note:** Only `cpu_cores` and `numa_aware` are currently implemented (Linux only). Other fields are reserved for future use.
+
+## Built-in Presets
+
+HORUS provides optimized presets for common robotics scenarios:
+
+### Default (No Config Needed)
+
+```rust
+// Simple: deterministic by default
+let scheduler = Scheduler::new();
+```
+
+- **Execution**: Sequential (deterministic)
+- **Learning**: Disabled
+- **Tick Rate**: ~60 Hz
+- **Deterministic**: **Yes** from tick 0
+
+**Best for**: Most robotics applications, safety-critical, testing
+
+### Standard (With Config)
+
+```rust
+let config = SchedulerConfig::standard();
+let scheduler = Scheduler::new().with_config(config);
+```
+
+- **Execution**: AutoAdaptive (requires `enable_learning()`)
+- **Tick Rate**: 60 Hz
+- **Jitter**: &lt;1000μs
+- **Fault Tolerance**: Circuit breaker enabled, auto-restart
+- **Real-Time**: Disabled (for development)
+
+**Best for**: Development, prototyping when using `enable_learning()`
+
+### Safety-Critical
+
+```rust
+let config = SchedulerConfig::safety_critical();
+```
+
+- **Execution**: Sequential (deterministic)
+- **Tick Rate**: 1000 Hz (1kHz)
+- **Jitter**: &lt;10μs (ultra-low)
+- **Deadline Policy**: Panic (fail-safe)
+- **Fault Tolerance**: Circuit breaker disabled, no auto-restart
+- **Real-Time**: Full WCET enforcement, watchdogs, memory locking, SCHED_FIFO
+
+**Best for**: Medical devices, surgical robots, safety-critical systems
+
+### High-Performance
+
+```rust
+let config = SchedulerConfig::high_performance();
+```
+
+- **Execution**: JITOptimized
+- **Tick Rate**: 10,000 Hz (10kHz)
+- **Jitter**: &lt;100μs
+- **Deadline Policy**: Skip (maintain throughput)
+- **Real-Time**: WCET enforcement, memory locking, SCHED_FIFO
+
+**Best for**: Racing robots, competition, high-speed control
+
+### Hard Real-Time
+
+```rust
+let config = SchedulerConfig::hard_realtime();
+```
+
+- **Execution**: JITOptimized
+- **Tick Rate**: 1000 Hz
+- **Jitter**: &lt;5μs
+- **Deadline Policy**: Panic
+- **Real-Time**: Full enforcement, 10ms watchdog, formal verification
+
+**Best for**: CNC machines, surgical robots, aerospace
+
+### Space Robotics
+
+```rust
+let config = SchedulerConfig::space();
+```
+
+- **Checkpointing**: Every 5 seconds
+
+**Best for**: Systems requiring state persistence and checkpointing
+
+### Swarm Robotics
+
+```rust
+let config = SchedulerConfig::swarm();
+```
+
+- **Execution**: Parallel
+- **Scheduler Name**: Auto-set from `swarm_id` custom config
+
+**Best for**: Multi-robot coordination
+
+## Custom Configuration
+
+Create custom configurations for specific needs:
+
+```rust
+use horus::scheduling::config::*;
+
+let config = SchedulerConfig {
+    execution: ExecutionMode::Sequential,
+    timing: TimingConfig {
+        global_rate_hz: 500.0,
+        per_node_rates: true,
+        max_jitter_us: 50,
+        deadline_miss_policy: DeadlineMissPolicy::Warn,
+        time_sync_source: TimeSyncSource::PTP,
+    },
+    fault: FaultConfig {
+        circuit_breaker_enabled: true,
+        max_failures: 3,
+        recovery_threshold: 2,
+        circuit_timeout_ms: 1000,
+        auto_restart: false,
+        redundancy_factor: 2,
+        checkpoint_interval_ms: 1000,
+    },
+    realtime: RealTimeConfig {
+        wcet_enforcement: true,
+        deadline_monitoring: true,
+        watchdog_enabled: true,
+        watchdog_timeout_ms: 50,
+        safety_monitor: true,
+        max_deadline_misses: 5,
+        priority_inheritance: true,
+        formal_verification: false,
+        memory_locking: true,
+        rt_scheduling_class: true,
+    },
+    resources: ResourceConfig {
+        cpu_cores: Some(vec![2, 3]),  // Isolate to cores 2-3
+        memory_limit_mb: 512,
+        io_priority: 0,
+        numa_aware: true,
+        gpu_devices: vec![0],
+        power_management: false,
+        power_budget_watts: 0,
+    },
+    monitoring: MonitoringConfig {
+        profiling_enabled: false,
+        tracing_enabled: true,
+        metrics_interval_ms: 100,
+        telemetry_endpoint: None,
+        black_box_enabled: true,
+        black_box_size_mb: 256,
+    },
+    preset: RobotPreset::Custom,
+    custom: HashMap::new(),
+};
+```
+
+## Configuration Comparison
+
+| Setting | Default | Standard | Safety-Critical | High-Performance | Hard-RT |
+|---------|---------|----------|-----------------|------------------|---------|
+| Execution | Sequential | AutoAdaptive | Sequential | JITOptimized | JITOptimized |
+| Learning | **No** | Opt-in | **No** | Opt-in | Opt-in |
+| Tick Rate | 60 Hz | 60 Hz | 1 kHz | 10 kHz | 1 kHz |
+| Max Jitter | - | 1000μs | 10μs | 100μs | 5μs |
+| Deadline Miss | - | Warn | Panic | Skip | Panic |
+| WCET Enforce | No | No | Yes | Yes | Yes |
+| Watchdog | No | No | Yes (100ms) | No | Yes (10ms) |
+| Memory Lock | No | No | Yes | Yes | Yes |
+| SCHED_FIFO | No | No | Yes | Yes | Yes |
+| Deterministic | **Yes** | With profile | **Yes** | With profile | With profile |
+
+## Next Steps
+
+- Learn about [Execution Modes](/advanced/execution-modes) in detail
+- Understand [Deterministic Execution](/advanced/deterministic-execution) for reproducible runs

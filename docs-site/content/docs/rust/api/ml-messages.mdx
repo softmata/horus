@@ -1,0 +1,669 @@
+---
+title: "Machine Learning Messages"
+description: "ML model inference, training, pose estimation, and LLM integration messages"
+weight: 54
+---
+
+# Machine Learning Messages
+
+HORUS provides message types for ML model inference, training, object detection, pose estimation, and LLM integration in robotics applications.
+
+## Tensor
+
+Generic tensor for ML model inputs and outputs.
+
+```rust
+use horus::prelude::*; // Provides ml::{Tensor, DataType};
+
+// Create a 3x3 tensor
+let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+let tensor = Tensor::new(data, vec![3, 3], DataType::Float32);
+
+// With name
+let named_tensor = Tensor::new(data, vec![3, 3], DataType::Float32)
+    .with_name("input_features".to_string());
+
+// Get properties
+println!("Shape: {:?}", tensor.shape);
+println!("Elements: {}", tensor.size());  // 9
+println!("Dimensions: {}", tensor.ndim()); // 2
+```
+
+**DataType values:**
+
+| Type | Rust | Size |
+|------|------|------|
+| `Float32` | `f32` | 4 bytes |
+| `Float64` | `f64` | 8 bytes |
+| `Int8` | `i8` | 1 byte |
+| `Int16` | `i16` | 2 bytes |
+| `Int32` | `i32` | 4 bytes |
+| `Int64` | `i64` | 8 bytes |
+| `UInt8` | `u8` | 1 byte |
+| `UInt16` | `u16` | 2 bytes |
+| `UInt32` | `u32` | 4 bytes |
+| `UInt64` | `u64` | 8 bytes |
+| `Bool` | `bool` | 1 byte |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | `Vec<f32>` | Flattened tensor data (row-major) |
+| `shape` | `Vec<usize>` | Tensor dimensions |
+| `dtype` | `DataType` | Element data type |
+| `name` | `Option<String>` | Optional tensor name |
+
+## Predictions
+
+Generic predictions from ML classification models.
+
+```rust
+use horus::prelude::*; // Provides ml::Predictions;
+use std::collections::HashMap;
+
+let preds = Predictions {
+    class_ids: vec![0, 1, 2],
+    scores: vec![0.95, 0.88, 0.72],
+    class_names: Some(vec!["person".into(), "car".into(), "dog".into()]),
+    metadata: HashMap::new(),
+};
+
+// With metadata
+let mut meta = HashMap::new();
+meta.insert("model_version".to_string(), "1.0.0".to_string());
+
+let preds_with_meta = Predictions {
+    class_ids: vec![0],
+    scores: vec![0.99],
+    class_names: Some(vec!["cat".into()]),
+    metadata: meta,
+};
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `class_ids` | `Vec<u32>` | Predicted class IDs |
+| `scores` | `Vec<f32>` | Confidence scores (0.0-1.0) |
+| `class_names` | `Option<Vec<String>>` | Optional class names |
+| `metadata` | `HashMap<String, String>` | Additional metadata |
+
+## Detection
+
+Object detection bounding box result.
+
+```rust
+use horus::prelude::*; // Provides ml::Detection;
+
+let detection = Detection {
+    bbox: [100.0, 100.0, 200.0, 300.0],  // [x, y, width, height]
+    class_id: 0,
+    class_name: Some("person".into()),
+    confidence: 0.95,
+    track_id: Some(42),  // For multi-object tracking
+};
+
+println!("Detected {} at ({}, {}) with {:.1}% confidence",
+    detection.class_name.as_deref().unwrap_or("unknown"),
+    detection.bbox[0], detection.bbox[1],
+    detection.confidence * 100.0);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bbox` | `[f32; 4]` | Bounding box [x, y, width, height] in pixels |
+| `class_id` | `u32` | Class ID |
+| `class_name` | `Option<String>` | Class name (if available) |
+| `confidence` | `f32` | Detection confidence (0.0-1.0) |
+| `track_id` | `Option<u32>` | Tracking ID for MOT |
+
+## DetectionArray
+
+Array of object detections from a single image.
+
+```rust
+use horus::prelude::*; // Provides ml::{DetectionArray, Detection};
+
+let detections = DetectionArray {
+    detections: vec![
+        Detection {
+            bbox: [100.0, 100.0, 200.0, 300.0],
+            class_id: 0,
+            class_name: Some("person".into()),
+            confidence: 0.95,
+            track_id: None,
+        },
+        Detection {
+            bbox: [400.0, 200.0, 100.0, 80.0],
+            class_id: 2,
+            class_name: Some("car".into()),
+            confidence: 0.88,
+            track_id: None,
+        },
+    ],
+    image_width: 640,
+    image_height: 480,
+    timestamp_ns: 0,
+};
+
+println!("Found {} objects", detections.detections.len());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `detections` | `Vec<Detection>` | List of detections |
+| `image_width` | `u32` | Source image width |
+| `image_height` | `u32` | Source image height |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## SegmentationMask
+
+Semantic segmentation per-pixel predictions.
+
+```rust
+use horus::prelude::*; // Provides ml::SegmentationMask;
+
+// Create mask for 480x640 image with 21 classes (PASCAL VOC)
+let mask = SegmentationMask {
+    mask: vec![0u8; 640 * 480],  // Class ID per pixel
+    width: 640,
+    height: 480,
+    num_classes: 21,
+    class_names: vec![
+        "background".into(), "aeroplane".into(), "bicycle".into(),
+        "bird".into(), "boat".into(), "bottle".into(),
+        // ... more classes
+    ],
+    timestamp_ns: 0,
+};
+
+// Get class at pixel
+let pixel_class = mask.mask[(240 * 640 + 320) as usize];
+println!("Center pixel class: {}", mask.class_names[pixel_class as usize]);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mask` | `Vec<u8>` | Flattened HxW class IDs |
+| `width` | `u32` | Mask width in pixels |
+| `height` | `u32` | Mask height in pixels |
+| `num_classes` | `u32` | Number of semantic classes |
+| `class_names` | `Vec<String>` | Class name for each ID |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## Keypoint
+
+Single keypoint in pose estimation.
+
+```rust
+use horus::prelude::*; // Provides ml::Keypoint;
+
+let nose = Keypoint {
+    x: 320.0,
+    y: 100.0,
+    z: Some(0.5),  // Optional depth
+    confidence: 0.98,
+    name: "nose".to_string(),
+};
+
+println!("{}: ({:.1}, {:.1}) conf={:.2}",
+    nose.name, nose.x, nose.y, nose.confidence);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `x` | `f32` | X coordinate in pixels |
+| `y` | `f32` | Y coordinate in pixels |
+| `z` | `Option<f32>` | Z coordinate (3D pose) |
+| `confidence` | `f32` | Detection confidence (0.0-1.0) |
+| `name` | `String` | Keypoint name |
+
+## Pose
+
+Human pose estimation result for a single person.
+
+```rust
+use horus::prelude::*; // Provides ml::{Pose, Keypoint};
+
+let pose = Pose {
+    keypoints: vec![
+        Keypoint { x: 320.0, y: 100.0, z: None, confidence: 0.98, name: "nose".into() },
+        Keypoint { x: 300.0, y: 200.0, z: None, confidence: 0.95, name: "left_shoulder".into() },
+        Keypoint { x: 340.0, y: 200.0, z: None, confidence: 0.96, name: "right_shoulder".into() },
+        // ... typically 17-33 keypoints
+    ],
+    confidence: 0.92,
+    person_id: 0,
+    bbox: Some([280.0, 80.0, 80.0, 200.0]),
+};
+
+// Check if key joints are detected
+let high_conf_keypoints: Vec<_> = pose.keypoints.iter()
+    .filter(|kp| kp.confidence > 0.8)
+    .collect();
+println!("{}/{} keypoints detected with high confidence",
+    high_conf_keypoints.len(), pose.keypoints.len());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `keypoints` | `Vec<Keypoint>` | Detected keypoints (17-33 typically) |
+| `confidence` | `f32` | Overall pose confidence |
+| `person_id` | `u32` | Person/instance ID |
+| `bbox` | `Option<[f32; 4]>` | Person bounding box [x,y,w,h] |
+
+## PoseArray
+
+Multi-person pose estimation results.
+
+```rust
+use horus::prelude::*; // Provides ml::PoseArray;
+
+let poses = PoseArray {
+    poses: vec![/* multiple Pose instances */],
+    image_width: 640,
+    image_height: 480,
+    timestamp_ns: 0,
+};
+
+println!("Detected {} people", poses.poses.len());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `poses` | `Vec<Pose>` | Detected poses |
+| `image_width` | `u32` | Source image width |
+| `image_height` | `u32` | Source image height |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## Classification
+
+Top-K classification results.
+
+```rust
+use horus::prelude::*; // Provides ml::Classification;
+
+let classification = Classification {
+    class_ids: vec![281, 282, 285],
+    class_names: vec!["tabby".into(), "tiger_cat".into(), "Egyptian_cat".into()],
+    probabilities: vec![0.75, 0.15, 0.08],  // Sum to ~1.0
+    timestamp_ns: 0,
+};
+
+println!("Top prediction: {} ({:.1}%)",
+    classification.class_names[0],
+    classification.probabilities[0] * 100.0);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `class_ids` | `Vec<u32>` | Class IDs (sorted by probability) |
+| `class_names` | `Vec<String>` | Class names |
+| `probabilities` | `Vec<f32>` | Probabilities (sum to 1.0) |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## FeatureVector
+
+Feature embeddings for similarity search and transfer learning.
+
+```rust
+use horus::prelude::*; // Provides ml::FeatureVector;
+
+let features = FeatureVector {
+    features: vec![0.1, 0.2, -0.3, /* ... 512 or 2048 dims */],
+    source: Some("image_001.jpg".to_string()),
+    timestamp_ns: 0,
+};
+
+// Compute cosine similarity
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm_a * norm_b)
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `features` | `Vec<f32>` | Feature vector (128-2048 dims) |
+| `source` | `Option<String>` | Source identifier |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## ModelInfo
+
+ML model metadata and configuration.
+
+```rust
+use horus::prelude::*; // Provides ml::{ModelInfo, ModelFormat};
+
+let model_info = ModelInfo {
+    name: "yolov8n".to_string(),
+    version: "8.0.0".to_string(),
+    format: ModelFormat::ONNX,
+    input_shapes: vec![vec![1, 3, 640, 640]],
+    output_shapes: vec![vec![1, 84, 8400]],
+    input_names: vec!["images".to_string()],
+    output_names: vec!["output0".to_string()],
+    metadata: std::collections::HashMap::new(),
+};
+
+println!("Model: {} v{}", model_info.name, model_info.version);
+println!("Input shape: {:?}", model_info.input_shapes[0]);
+```
+
+**ModelFormat values:**
+
+| Format | Description |
+|--------|-------------|
+| `ONNX` | Open Neural Network Exchange |
+| `TFLite` | TensorFlow Lite |
+| `PyTorch` | PyTorch (.pt/.pth) |
+| `TensorFlow` | TensorFlow SavedModel |
+| `Tract` | Tract runtime format |
+| `TensorRT` | NVIDIA TensorRT |
+| `CoreML` | Apple CoreML |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `String` | Model name |
+| `version` | `String` | Model version (semver) |
+| `format` | `ModelFormat` | Model format |
+| `input_shapes` | `Vec<Vec<usize>>` | Input tensor shapes |
+| `output_shapes` | `Vec<Vec<usize>>` | Output tensor shapes |
+| `input_names` | `Vec<String>` | Input tensor names |
+| `output_names` | `Vec<String>` | Output tensor names |
+| `metadata` | `HashMap<String, String>` | Additional metadata |
+
+## InferenceMetrics
+
+Performance metrics for ML inference.
+
+```rust
+use horus::prelude::*; // Provides ml::InferenceMetrics;
+
+let metrics = InferenceMetrics {
+    latency_ms: 12.5,
+    throughput: 80.0,  // 80 fps
+    model_name: "yolov8n".to_string(),
+    batch_size: 1,
+    timestamp_ns: 0,
+};
+
+println!("{}: {:.1}ms latency, {:.0} fps",
+    metrics.model_name, metrics.latency_ms, metrics.throughput);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `latency_ms` | `f32` | Inference latency (ms) |
+| `throughput` | `f32` | Samples per second |
+| `model_name` | `String` | Model identifier |
+| `batch_size` | `usize` | Batch size used |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## LLM Messages
+
+### ChatMessage
+
+Single message in an LLM conversation.
+
+```rust
+use horus::prelude::*; // Provides ml::ChatMessage;
+
+let system_msg = ChatMessage {
+    role: "system".to_string(),
+    content: "You are a helpful robot assistant.".to_string(),
+};
+
+let user_msg = ChatMessage {
+    role: "user".to_string(),
+    content: "What objects do you see?".to_string(),
+};
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `role` | `String` | "system", "user", or "assistant" |
+| `content` | `String` | Message content |
+
+### LLMRequest
+
+Request to an LLM inference node.
+
+```rust
+use horus::prelude::*; // Provides ml::{LLMRequest, ChatMessage};
+
+let request = LLMRequest {
+    messages: vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: "You are a robot navigation assistant.".to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: "Navigate to the kitchen.".to_string(),
+        },
+    ],
+};
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messages` | `Vec<ChatMessage>` | Conversation history |
+
+### LLMResponse
+
+Response from an LLM inference node.
+
+```rust
+use horus::prelude::*; // Provides ml::LLMResponse;
+
+let response = LLMResponse {
+    response: "I'll navigate to the kitchen. Setting waypoint...".to_string(),
+    tokens_used: 42,
+    latency_ms: 250,
+    model: "llama-3-8b".to_string(),
+    finish_reason: "stop".to_string(),
+    timestamp_ns: 0,
+};
+
+println!("Response: {}", response.response);
+println!("Tokens: {}, Latency: {}ms", response.tokens_used, response.latency_ms);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `response` | `String` | Generated text |
+| `tokens_used` | `u64` | Total tokens (input + output) |
+| `latency_ms` | `u64` | Generation time (ms) |
+| `model` | `String` | Model name/ID |
+| `finish_reason` | `String` | "stop", "length", or "error" |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## TrainingMetrics
+
+Online learning/fine-tuning progress.
+
+```rust
+use horus::prelude::*; // Provides ml::TrainingMetrics;
+
+let metrics = TrainingMetrics {
+    epoch: 5,
+    step: 1000,
+    loss: 0.042,
+    accuracy: Some(0.95),
+    learning_rate: 0.0001,
+    timestamp_ns: 0,
+};
+
+println!("Epoch {}, Step {}: loss={:.4}, acc={:.2}%",
+    metrics.epoch, metrics.step, metrics.loss,
+    metrics.accuracy.unwrap_or(0.0) * 100.0);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `epoch` | `u32` | Current epoch |
+| `step` | `u32` | Current batch/step |
+| `loss` | `f32` | Training loss |
+| `accuracy` | `Option<f32>` | Validation accuracy |
+| `learning_rate` | `f32` | Current learning rate |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## TrajectoryPoint (Imitation Learning)
+
+Observation-action pair for behavior cloning.
+
+```rust
+use horus::prelude::*; // Provides ml::{TrajectoryPoint, Tensor, DataType};
+
+let point = TrajectoryPoint {
+    observation: Tensor::new(vec![/* sensor data */], vec![128], DataType::Float32),
+    action: Tensor::new(vec![0.5, 0.0, 0.2], vec![3], DataType::Float32),
+    reward: Some(1.0),
+    done: false,
+    timestamp_ns: 0,
+};
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `observation` | `Tensor` | Sensor/state observation |
+| `action` | `Tensor` | Action taken |
+| `reward` | `Option<f32>` | Reward signal |
+| `done` | `bool` | Episode termination flag |
+| `timestamp_ns` | `u64` | Nanoseconds since epoch |
+
+## DeploymentConfig
+
+ML model deployment configuration.
+
+```rust
+use horus::prelude::*; // Provides ml::{DeploymentConfig, ModelFormat};
+
+let config = DeploymentConfig {
+    model_path: "/models/yolov8n.onnx".to_string(),
+    format: ModelFormat::ONNX,
+    execution_provider: "cuda".to_string(),
+    batch_size: 1,
+    use_fp16: true,
+    num_threads: None,
+    device_id: Some(0),
+};
+```
+
+**Execution Providers:**
+
+| Provider | Description |
+|----------|-------------|
+| `"cpu"` | CPU inference |
+| `"cuda"` | NVIDIA CUDA |
+| `"tensorrt"` | NVIDIA TensorRT |
+| `"coreml"` | Apple CoreML |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_path` | `String` | Model path or URL |
+| `format` | `ModelFormat` | Model format |
+| `execution_provider` | `String` | Runtime backend |
+| `batch_size` | `usize` | Inference batch size |
+| `use_fp16` | `bool` | Half precision mode |
+| `num_threads` | `Option<usize>` | CPU threads |
+| `device_id` | `Option<u32>` | GPU device ID |
+
+## ML Inference Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides ml::{DetectionArray, Detection, InferenceMetrics};
+use horus::prelude::*; // Provides Image;
+
+struct ObjectDetectionNode {
+    image_sub: Hub<Image>,
+    detection_pub: Hub<DetectionArray>,
+    metrics_pub: Hub<InferenceMetrics>,
+    model_name: String,
+}
+
+impl Node for ObjectDetectionNode {
+    fn name(&self) -> &'static str { "ObjectDetection" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(image) = self.image_sub.recv(&mut ctx) {
+            let start = std::time::Instant::now();
+
+            // Run inference (placeholder)
+            let detections = self.run_inference(&image);
+
+            let elapsed = start.elapsed().as_secs_f32() * 1000.0;
+
+            // Publish detections
+            let detection_msg = DetectionArray {
+                detections,
+                image_width: image.width,
+                image_height: image.height,
+                timestamp_ns: image.timestamp,
+            };
+            self.detection_pub.send(detection_msg, &mut ctx).ok();
+
+            // Publish metrics
+            let metrics = InferenceMetrics {
+                latency_ms: elapsed,
+                throughput: 1000.0 / elapsed,
+                model_name: self.model_name.clone(),
+                batch_size: 1,
+                timestamp_ns: image.timestamp,
+            };
+            self.metrics_pub.send(metrics, &mut ctx).ok();
+        }
+    }
+}
+
+impl ObjectDetectionNode {
+    fn run_inference(&self, _image: &Image) -> Vec<Detection> {
+        // Model inference implementation
+        vec![]
+    }
+}
+```
+
+## See Also
+
+- [TensorPool API](/rust/api/tensor-pool) - Zero-copy tensor memory management
+- [Vision Messages](/rust/api/vision-messages) - Image and camera messages
+- [Perception Messages](/rust/api/perception-messages) - Point cloud and depth sensing

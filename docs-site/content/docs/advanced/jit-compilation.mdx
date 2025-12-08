@@ -1,0 +1,294 @@
+---
+title: "JIT Compilation"
+description: "Just-in-time compilation for ultra-fast node execution using Cranelift"
+weight: 34
+---
+
+# JIT Compilation
+
+HORUS includes a JIT (Just-In-Time) compiler that compiles deterministic dataflow nodes to native machine code for ultra-fast execution (20-50ns latency). This is ideal for simple arithmetic operations that run millions of times.
+
+## Overview
+
+The JIT compiler:
+- Compiles deterministic nodes to native x86-64/ARM64 code
+- Achieves 20-50ns execution latency (vs ~1µs for interpreted)
+- Uses Cranelift as the backend compiler
+- Automatically selected for nodes classified as "UltraFast" tier
+
+## When to Use JIT
+
+JIT compilation is beneficial for:
+- Simple arithmetic/math operations
+- Dataflow transformations (scale, offset, combine)
+- High-frequency sensor processing
+- Nodes with &lt;5µs execution time and low variance
+
+JIT is **not** suitable for:
+- Nodes with I/O operations
+- Nodes that allocate memory
+- Nodes with complex control flow
+- Nodes that call external libraries
+
+## Enabling JIT
+
+Enable the JIT feature in `Cargo.toml`:
+
+```toml
+[dependencies]
+horus_core = { version = "0.1", features = ["jit"] }
+```
+
+## Basic Usage
+
+### Creating the JIT Compiler
+
+```rust
+use horus::prelude::*;
+
+// Create a new JIT compiler
+let mut compiler = JITCompiler::new()?;
+```
+
+### Compiling Arithmetic Nodes
+
+Compile a simple `output = input * factor + offset` operation:
+
+```rust
+// Compile: output = input * 2 + 10
+let func_ptr = compiler.compile_arithmetic_node(
+    "scale_sensor",  // Node name
+    2,               // Multiply factor
+    10,              // Offset
+)?;
+
+// Execute the compiled function
+let result = unsafe {
+    compiler.execute_arithmetic(func_ptr, 100)
+};
+assert_eq!(result, 210);  // 100 * 2 + 10
+```
+
+### Compiling Dataflow Combiners
+
+Compile multi-input dataflow: `output = (a + b) * (c - d)`:
+
+```rust
+let func_ptr = compiler.compile_dataflow_combiner("combine_sensors")?;
+
+// Execute with 4 inputs
+let result = unsafe {
+    compiler.execute_combiner(func_ptr, 10, 5, 20, 3)
+};
+assert_eq!(result, 255);  // (10 + 5) * (20 - 3) = 15 * 17
+```
+
+## Integration with Scheduler
+
+The scheduler automatically identifies and JIT-compiles suitable nodes:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*;
+
+let config = SchedulerConfig {
+    jit_enabled: true,
+    ..Default::default()
+};
+
+let mut scheduler = Scheduler::with_config(config);
+
+// After learning phase, ultra-fast nodes are JIT-compiled
+// Node tier can be checked:
+if let Some(tier) = scheduler.get_node_tier("sensor_scale") {
+    if tier == ExecutionTier::UltraFast {
+        println!("Node is JIT-compiled");
+    }
+}
+```
+
+## Execution Tiers
+
+The scheduler classifies nodes into execution tiers based on profiling:
+
+| Tier | Latency | Description |
+|------|---------|-------------|
+| **UltraFast** | 20-50ns | JIT-compiled native code |
+| **Fast** | 50-100ns | Inline execution |
+| **AsyncIO** | 10-100µs | Async I/O executor |
+| **Isolated** | 1-10ms | Process isolation |
+| **Background** | 1-100ms | Background thread pool |
+
+### Tier Classification Criteria
+
+```rust
+// UltraFast tier requirements:
+// - Average execution < 5µs
+// - Deterministic (low variance, CV < 10%)
+// - No I/O operations
+
+// Classification happens automatically during learning phase
+```
+
+## Performance Comparison
+
+| Method | Latency | Use Case |
+|--------|---------|----------|
+| JIT Native | 20-50ns | Simple math |
+| Inline Rust | 50-100ns | Fast nodes |
+| Function Call | 100-500ns | General nodes |
+| Process Call | 1-10ms | Isolated nodes |
+
+## Example: Sensor Pipeline
+
+```rust
+use horus::prelude::*;
+
+fn setup_sensor_pipeline() -> Result<(), String> {
+    let mut compiler = JITCompiler::new()?;
+
+    // Temperature sensor: raw ADC to Celsius
+    // celsius = (raw * 0.01) - 40
+    // Using integers: (raw * 1 + -4000) / 100
+    let temp_convert = compiler.compile_arithmetic_node(
+        "temp_convert",
+        1,
+        -4000,
+    )?;
+
+    // Pressure sensor: raw to kPa
+    // kPa = raw * 0.1
+    let pressure_convert = compiler.compile_arithmetic_node(
+        "pressure_convert",
+        1,  // Scale factor
+        0,  // No offset
+    )?;
+
+    // Process sensor readings
+    loop {
+        let raw_temp = read_adc(0);
+        let raw_pressure = read_adc(1);
+
+        let celsius = unsafe {
+            compiler.execute_arithmetic(temp_convert, raw_temp)
+        } / 100;  // Final division for decimal
+
+        let pressure = unsafe {
+            compiler.execute_arithmetic(pressure_convert, raw_pressure)
+        };
+
+        // Ultra-fast processing!
+    }
+}
+```
+
+## Compiled Dataflow
+
+The JIT compiler supports compiled dataflow graphs:
+
+```rust
+use horus::prelude::*;
+
+// Define dataflow: (sensor1 + sensor2) * gain + offset
+let dataflow = CompiledDataflow::builder()
+    .input("sensor1")
+    .input("sensor2")
+    .add("sensor1", "sensor2", "sum")
+    .multiply("sum", "gain", "scaled")
+    .add("scaled", "offset", "output")
+    .build()?;
+
+// Compile to native code
+let compiled = dataflow.compile()?;
+
+// Execute
+let result = compiled.execute(&[
+    ("sensor1", 100),
+    ("sensor2", 50),
+    ("gain", 2),
+    ("offset", 10),
+])?;
+// result = (100 + 50) * 2 + 10 = 310
+```
+
+## Limitations
+
+### Supported Operations
+
+- Integer arithmetic (add, sub, mul, div)
+- Bitwise operations (and, or, xor, shift)
+- Comparisons
+- Constants
+
+### Not Supported
+
+- Floating point (use scaled integers)
+- Memory allocation
+- System calls
+- Complex control flow
+- External function calls
+
+### Workarounds
+
+```rust
+// Instead of floating point:
+// celsius = raw * 0.0125 - 40
+
+// Use scaled integers:
+// celsius_x1000 = raw * 125 / 10 - 40000
+let func = compiler.compile_arithmetic_node("temp", 125, -400000)?;
+let result_x1000 = unsafe { compiler.execute_arithmetic(func, raw) };
+let celsius = result_x1000 as f64 / 10000.0;
+```
+
+## Safety
+
+JIT-compiled functions require unsafe to execute:
+
+```rust
+// The function pointer must be valid JIT-compiled code
+let result = unsafe {
+    compiler.execute_arithmetic(func_ptr, input)
+};
+
+// Safety requirements:
+// - func_ptr from this compiler instance
+// - Correct signature (compile_arithmetic -> execute_arithmetic)
+// - Compiler not dropped while function in use
+```
+
+## Debugging
+
+### Check Compilation
+
+```rust
+match compiler.compile_arithmetic_node("test", 2, 0) {
+    Ok(ptr) => println!("Compiled at {:p}", ptr),
+    Err(e) => eprintln!("Compilation failed: {}", e),
+}
+```
+
+### Verify Results
+
+```rust
+// Test against reference implementation
+fn reference_impl(input: i64, factor: i64, offset: i64) -> i64 {
+    input * factor + offset
+}
+
+let jit_result = unsafe { compiler.execute_arithmetic(func, 100) };
+let ref_result = reference_impl(100, 2, 10);
+assert_eq!(jit_result, ref_result);
+```
+
+## Requirements
+
+- Feature flag: `jit`
+- Dependencies: `cranelift-*` crates
+- Platform: x86-64 or ARM64
+
+## See Also
+
+- [Scheduling Intelligence](/advanced/scheduling-intelligence) - Auto-classification
+- [Execution Modes](/advanced/execution-modes) - Execution tiers
+- [Deterministic Execution](/advanced/deterministic-execution) - Timing guarantees

@@ -1,0 +1,490 @@
+---
+title: "Navigation Messages"
+description: "Path planning, goals, waypoints, occupancy grids, and cost maps"
+weight: 55
+---
+
+# Navigation Messages
+
+HORUS provides message types for autonomous navigation, path planning, mapping, and localization systems.
+
+## Goal
+
+Navigation goal specification with tolerance and timeout.
+
+```rust
+use horus::prelude::*; // Provides navigation::Goal;
+use horus::prelude::*; // Provides geometry::Pose2D;
+
+// Create navigation goal
+let target = Pose2D::new(5.0, 3.0, 1.57);  // x, y, theta
+let goal = Goal::new(target, 0.1, 0.05);   // 10cm position, 0.05rad angle tolerance
+
+// With timeout and priority
+let goal = Goal::new(target, 0.1, 0.05)
+    .with_timeout(30.0)  // 30 second timeout
+    .with_priority(0);   // Highest priority
+
+// Check if goal reached
+let current_pose = Pose2D::new(5.05, 3.02, 1.55);
+if goal.is_reached(&current_pose) {
+    println!("Goal reached!");
+}
+
+// Check position and orientation separately
+if goal.is_position_reached(&current_pose) {
+    println!("Position reached, adjusting orientation...");
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target_pose` | `Pose2D` | Target pose to reach |
+| `tolerance_position` | `f64` | Position tolerance (meters) |
+| `tolerance_angle` | `f64` | Orientation tolerance (radians) |
+| `timeout_seconds` | `f64` | Maximum time (0 = no limit) |
+| `priority` | `u8` | Goal priority (0 = highest) |
+| `goal_id` | `u32` | Unique goal identifier |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## GoalStatus
+
+Goal execution status enumeration.
+
+```rust
+use horus::prelude::*; // Provides navigation::GoalStatus;
+
+let status = GoalStatus::Active;
+
+match status {
+    GoalStatus::Pending => println!("Waiting to start"),
+    GoalStatus::Active => println!("Moving to goal"),
+    GoalStatus::Succeeded => println!("Goal reached!"),
+    GoalStatus::Aborted => println!("Navigation failed"),
+    GoalStatus::Cancelled => println!("Goal cancelled by user"),
+    GoalStatus::Preempted => println!("Higher priority goal received"),
+    GoalStatus::TimedOut => println!("Goal timed out"),
+}
+```
+
+**Status Values:**
+
+| Status | Value | Description |
+|--------|-------|-------------|
+| `Pending` | 0 | Goal pending execution |
+| `Active` | 1 | Actively pursuing goal |
+| `Succeeded` | 2 | Goal reached successfully |
+| `Aborted` | 3 | Navigation aborted (error) |
+| `Cancelled` | 4 | Cancelled by user |
+| `Preempted` | 5 | Preempted by higher priority |
+| `TimedOut` | 6 | Goal timed out |
+
+## GoalResult
+
+Goal status feedback with progress information.
+
+```rust
+use horus::prelude::*; // Provides navigation::{GoalResult, GoalStatus};
+
+// Create success result
+let result = GoalResult::new(42, GoalStatus::Succeeded);
+
+// Create failure result with error
+let error_result = GoalResult::new(42, GoalStatus::Aborted)
+    .with_error("Obstacle blocking path");
+
+// Update progress
+let mut in_progress = GoalResult::new(42, GoalStatus::Active);
+in_progress.distance_to_goal = 2.5;  // 2.5m remaining
+in_progress.eta_seconds = 5.0;       // 5s estimated
+in_progress.progress = 0.75;         // 75% complete
+
+println!("Goal {}: {:?}, {:.1}m to go, ETA {:.1}s",
+    in_progress.goal_id, in_progress.status,
+    in_progress.distance_to_goal, in_progress.eta_seconds);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `goal_id` | `u32` | Goal identifier |
+| `status` | `GoalStatus` | Current status |
+| `distance_to_goal` | `f64` | Distance remaining (meters) |
+| `eta_seconds` | `f64` | Estimated time to arrive |
+| `progress` | `f32` | Progress (0.0 to 1.0) |
+| `error_message` | `[u8; 64]` | Error message if failed |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## Waypoint
+
+Single waypoint in a navigation path.
+
+```rust
+use horus::prelude::*; // Provides navigation::Waypoint;
+use horus::prelude::*; // Provides geometry::{Pose2D, Twist};
+
+// Simple waypoint
+let wp = Waypoint::new(Pose2D::new(1.0, 2.0, 0.0));
+
+// Waypoint with velocity profile
+let wp = Waypoint::new(Pose2D::new(1.0, 2.0, 0.0))
+    .with_velocity(Twist::linear(0.5, 0.0));  // 0.5 m/s forward
+
+// Waypoint requiring stop (e.g., for pickup)
+let stop_wp = Waypoint::new(Pose2D::new(3.0, 4.0, 1.57))
+    .with_stop();
+
+// Access properties
+println!("Position: ({:.1}, {:.1})", wp.pose.x, wp.pose.y);
+println!("Curvature: {:.3}", wp.curvature);
+println!("Stop required: {}", wp.stop_required);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pose` | `Pose2D` | Waypoint pose (x, y, theta) |
+| `velocity` | `Twist` | Desired velocity at this point |
+| `time_from_start` | `f64` | Time from path start (seconds) |
+| `curvature` | `f32` | Path curvature (1/radius) |
+| `stop_required` | `bool` | Whether to stop at waypoint |
+
+## Path
+
+Navigation path with up to 256 waypoints.
+
+```rust
+use horus::prelude::*; // Provides navigation::{Path, Waypoint};
+use horus::prelude::*; // Provides geometry::Pose2D;
+
+// Create empty path
+let mut path = Path::new();
+
+// Add waypoints
+path.add_waypoint(Waypoint::new(Pose2D::new(0.0, 0.0, 0.0)))?;
+path.add_waypoint(Waypoint::new(Pose2D::new(1.0, 0.0, 0.0)))?;
+path.add_waypoint(Waypoint::new(Pose2D::new(2.0, 1.0, 0.785)))?;
+
+// Set frame ID
+let path = path.with_frame_id("map");
+
+// Get path info
+println!("Waypoints: {}", path.waypoint_count);
+println!("Total length: {:.2}m", path.total_length);
+
+// Get valid waypoints slice
+let waypoints = path.get_waypoints();
+
+// Find closest waypoint to current position
+let current = Pose2D::new(1.2, 0.3, 0.0);
+if let Some(idx) = path.closest_waypoint_index(&current) {
+    println!("Closest waypoint: {}", idx);
+}
+
+// Calculate progress along path
+let progress = path.calculate_progress(&current);
+println!("Path progress: {:.0}%", progress * 100.0);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `waypoints` | `[Waypoint; 256]` | Array of waypoints |
+| `waypoint_count` | `u16` | Number of valid waypoints |
+| `total_length` | `f64` | Total path length (meters) |
+| `duration_seconds` | `f64` | Estimated completion time |
+| `frame_id` | `[u8; 32]` | Coordinate frame |
+| `algorithm` | `[u8; 32]` | Planning algorithm used |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## PathPlan
+
+Simplified path plan for basic navigation.
+
+```rust
+use horus::prelude::*; // Provides navigation::PathPlan;
+
+// Create path plan with waypoints
+let waypoints = vec![
+    [0.0, 0.0, 0.0],      // [x, y, theta]
+    [1.0, 0.0, 0.0],
+    [2.0, 0.5, 0.5],
+    [3.0, 1.0, 0.785],
+];
+let goal = [3.0, 1.0, 0.785];
+
+let plan = PathPlan::with_waypoints(waypoints, goal);
+
+// Or build incrementally
+let mut plan = PathPlan::new();
+plan.add_waypoint(0.0, 0.0, 0.0);
+plan.add_waypoint(1.0, 0.5, 0.2);
+plan.goal_pose = [1.0, 0.5, 0.2];
+
+println!("Path has {} waypoints", plan.path_length);
+println!("Empty: {}", plan.is_empty());
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `waypoints` | `Vec<[f32; 3]>` | Waypoints as [x, y, theta] |
+| `goal_pose` | `[f32; 3]` | Goal pose [x, y, theta] |
+| `path_length` | `u32` | Number of waypoints |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## OccupancyGrid
+
+2D occupancy grid map for navigation.
+
+```rust
+use horus::prelude::*; // Provides navigation::OccupancyGrid;
+use horus::prelude::*; // Provides geometry::Pose2D;
+
+// Create 10m x 10m map at 5cm resolution
+let origin = Pose2D::origin();
+let mut grid = OccupancyGrid::new(
+    200,   // width (200 * 0.05 = 10m)
+    200,   // height
+    0.05,  // resolution (5cm per cell)
+    origin
+);
+
+// Set occupancy (-1=unknown, 0=free, 100=occupied)
+grid.set_occupancy(100, 100, 0);    // Free cell
+grid.set_occupancy(150, 150, 100);  // Occupied cell (obstacle)
+
+// World to grid coordinate conversion
+if let Some((gx, gy)) = grid.world_to_grid(5.0, 5.0) {
+    println!("World (5.0, 5.0) -> Grid ({}, {})", gx, gy);
+}
+
+// Grid to world coordinate conversion
+if let Some((x, y)) = grid.grid_to_world(100, 100) {
+    println!("Grid (100, 100) -> World ({:.2}, {:.2})", x, y);
+}
+
+// Check cell status
+let test_x = 7.5;
+let test_y = 7.5;
+if grid.is_free(test_x, test_y) {
+    println!("({}, {}) is free", test_x, test_y);
+} else if grid.is_occupied(test_x, test_y) {
+    println!("({}, {}) is occupied", test_x, test_y);
+}
+
+// Get occupancy value
+if let Some((gx, gy)) = grid.world_to_grid(test_x, test_y) {
+    if let Some(value) = grid.get_occupancy(gx, gy) {
+        println!("Occupancy: {}", value);
+    }
+}
+```
+
+**Occupancy Values:**
+
+| Value | Meaning |
+|-------|---------|
+| `-1` | Unknown |
+| `0` | Free |
+| `1-49` | Probably free |
+| `50-99` | Probably occupied |
+| `100` | Occupied |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resolution` | `f32` | Meters per pixel |
+| `width` | `u32` | Map width in pixels |
+| `height` | `u32` | Map height in pixels |
+| `origin` | `Pose2D` | Map origin (bottom-left) |
+| `data` | `Vec<i8>` | Occupancy values |
+| `frame_id` | `[u8; 32]` | Coordinate frame |
+| `metadata` | `[u8; 64]` | Map metadata |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## CostMap
+
+Navigation cost map with obstacle inflation.
+
+```rust
+use horus::prelude::*; // Provides navigation::{CostMap, OccupancyGrid};
+use horus::prelude::*; // Provides geometry::Pose2D;
+
+// Create occupancy grid first
+let grid = OccupancyGrid::new(200, 200, 0.05, Pose2D::origin());
+
+// Create costmap with inflation radius
+let costmap = CostMap::from_occupancy_grid(grid, 0.55);  // 55cm inflation
+
+// Get cost at world coordinates (0-255, 253=lethal)
+if let Some(cost) = costmap.get_cost(5.0, 5.0) {
+    if cost >= costmap.lethal_cost {
+        println!("Position is in obstacle!");
+    } else {
+        println!("Cost: {}", cost);
+    }
+}
+
+// Access underlying grid
+println!("Map size: {}x{}",
+    costmap.occupancy_grid.width,
+    costmap.occupancy_grid.height);
+```
+
+**Cost Values:**
+
+| Value | Meaning |
+|-------|---------|
+| `0` | Free space |
+| `1-252` | Increasing cost (near obstacles) |
+| `253` | Lethal (default lethal_cost) |
+| `254-255` | Reserved |
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `occupancy_grid` | `OccupancyGrid` | Base occupancy map |
+| `costs` | `Vec<u8>` | Cost values (0-255) |
+| `inflation_radius` | `f32` | Inflation radius (meters) |
+| `cost_scaling_factor` | `f32` | Cost decay factor |
+| `lethal_cost` | `u8` | Lethal obstacle threshold |
+
+## VelocityObstacle
+
+Dynamic obstacle for velocity-based avoidance.
+
+```rust
+use horus::prelude::*; // Provides navigation::VelocityObstacle;
+
+let obstacle = VelocityObstacle {
+    position: [3.0, 2.0],        // [x, y]
+    velocity: [0.5, 0.0],        // Moving at 0.5 m/s in x
+    radius: 0.3,                  // 30cm radius
+    time_horizon: 5.0,            // 5 second prediction
+    obstacle_id: 1,
+};
+
+println!("Obstacle {} at ({:.1}, {:.1}) moving at ({:.1}, {:.1})",
+    obstacle.obstacle_id,
+    obstacle.position[0], obstacle.position[1],
+    obstacle.velocity[0], obstacle.velocity[1]);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | `[f64; 2]` | Obstacle position [x, y] |
+| `velocity` | `[f64; 2]` | Obstacle velocity [vx, vy] |
+| `radius` | `f32` | Obstacle radius (meters) |
+| `time_horizon` | `f32` | Collision prediction horizon |
+| `obstacle_id` | `u32` | Tracking ID |
+
+## VelocityObstacles
+
+Array of velocity obstacles (max 32).
+
+```rust
+use horus::prelude::*; // Provides navigation::{VelocityObstacles, VelocityObstacle};
+
+let mut obstacles = VelocityObstacles::default();
+obstacles.obstacles[0] = VelocityObstacle {
+    position: [2.0, 1.0],
+    velocity: [0.3, 0.1],
+    radius: 0.25,
+    time_horizon: 3.0,
+    obstacle_id: 1,
+};
+obstacles.count = 1;
+
+println!("Tracking {} dynamic obstacles", obstacles.count);
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `obstacles` | `[VelocityObstacle; 32]` | Obstacle array |
+| `count` | `u8` | Number of valid obstacles |
+| `timestamp` | `u64` | Nanoseconds since epoch |
+
+## Navigation Node Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides navigation::{Goal, GoalResult, GoalStatus, Path, OccupancyGrid};
+use horus::prelude::*; // Provides geometry::Pose2D;
+use horus::prelude::*; // Provides Odometry;
+
+struct NavigationNode {
+    goal_sub: Hub<Goal>,
+    odom_sub: Hub<Odometry>,
+    map_sub: Hub<OccupancyGrid>,
+    path_pub: Hub<Path>,
+    result_pub: Hub<GoalResult>,
+    current_goal: Option<Goal>,
+    current_path: Option<Path>,
+}
+
+impl Node for NavigationNode {
+    fn name(&self) -> &'static str { "Navigation" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Check for new goals
+        if let Some(goal) = self.goal_sub.recv(&mut ctx) {
+            self.current_goal = Some(goal);
+            // Plan path to goal
+            if let Some(map) = self.map_sub.try_recv(&mut ctx) {
+                let path = self.plan_path(&goal, &map);
+                self.path_pub.send(path.clone(), &mut ctx).ok();
+                self.current_path = Some(path);
+            }
+        }
+
+        // Check goal progress
+        if let (Some(goal), Some(odom)) = (&self.current_goal, self.odom_sub.recv(&mut ctx)) {
+            let current_pose = Pose2D::new(
+                odom.pose.position.x,
+                odom.pose.position.y,
+                odom.pose.orientation.yaw()
+            );
+
+            if goal.is_reached(&current_pose) {
+                let result = GoalResult::new(goal.goal_id, GoalStatus::Succeeded);
+                self.result_pub.send(result, &mut ctx).ok();
+                self.current_goal = None;
+            } else {
+                let mut result = GoalResult::new(goal.goal_id, GoalStatus::Active);
+                result.distance_to_goal = goal.target_pose.distance_to(&current_pose);
+                if let Some(path) = &self.current_path {
+                    result.progress = path.calculate_progress(&current_pose);
+                }
+                self.result_pub.send(result, &mut ctx).ok();
+            }
+        }
+    }
+}
+
+impl NavigationNode {
+    fn plan_path(&self, goal: &Goal, _map: &OccupancyGrid) -> Path {
+        // Path planning implementation (A*, RRT*, etc.)
+        Path::new()
+    }
+}
+```
+
+## See Also
+
+- [A* Path Planning](/rust/library/algorithms/astar) - A* pathfinding implementation
+- [Pure Pursuit Algorithm](/rust/library/algorithms/pure-pursuit) - Path tracking controller
+- [Occupancy Grid Algorithm](/rust/library/algorithms/occupancy-grid) - Grid-based mapping
+- [Geometry Messages](/concepts/message-types#geometry-messages) - Pose2D, Twist

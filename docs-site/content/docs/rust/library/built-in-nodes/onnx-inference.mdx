@@ -1,0 +1,227 @@
+---
+title: ONNXInferenceNode
+description: Generic ONNX model inference for custom ML models
+---
+
+# ONNXInferenceNode
+
+Generic ONNX model inference node for running custom machine learning models. Supports image classification, object detection, segmentation, and any ONNX-compatible model.
+
+## Source Code
+
+- [ONNXInferenceNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/ml_inference/onnx_inference.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- Generic ONNX model support
+- CPU and GPU execution providers
+- Batch inference support
+- Dynamic input/output tensor handling
+- Preprocessing pipeline (resize, normalize)
+- Performance metrics tracking
+- Model optimization levels
+
+## Supported Model Types
+
+- Image classification (ResNet, MobileNet, EfficientNet)
+- Object detection (YOLO, SSD, Faster R-CNN)
+- Semantic segmentation (DeepLab, U-Net)
+- Pose estimation (OpenPose, MediaPipe)
+- Custom ONNX models
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::ml_inference::{ONNXInferenceNode, InferenceConfig};
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    let config = InferenceConfig {
+        use_gpu: true,
+        input_size: Some([224, 224]),
+        ..Default::default()
+    };
+
+    let inference_node = ONNXInferenceNode::new(
+        "models/mobilenet_v2.onnx",
+        "camera.raw",
+        "ml.predictions",
+        config,
+    )?;
+
+    scheduler.add(Box::new(inference_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Configuration
+
+### InferenceConfig
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `batch_size` | usize | 1 | Batch size for inference |
+| `use_gpu` | bool | false | Enable GPU acceleration |
+| `device_id` | u32 | 0 | GPU device ID |
+| `confidence_threshold` | f32 | 0.5 | Prediction confidence threshold |
+| `enable_preprocessing` | bool | true | Enable image preprocessing |
+| `input_size` | `Option<[u32; 2]>` | None | Target input size [H, W] |
+| `norm_mean` | [f32; 3] | [0.485, 0.456, 0.406] | Normalization mean (ImageNet) |
+| `norm_std` | [f32; 3] | [0.229, 0.224, 0.225] | Normalization std (ImageNet) |
+| `optimization_level` | u8 | 1 | Graph optimization (0-3) |
+
+### Optimization Levels
+
+| Level | Description | Use Case |
+|-------|-------------|----------|
+| 0 | No optimization | Debugging |
+| 1 | Basic optimizations | Default |
+| 2 | Extended optimizations | Production |
+| 3 | All optimizations | Maximum performance |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input images |
+| `{input_topic}/tensor` | `Tensor` | Raw tensor input |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `Predictions` | Model predictions |
+| `{output_topic}/tensor` | `Tensor` | Raw output tensor |
+| `{output_topic}/metrics` | `InferenceMetrics` | Performance metrics |
+
+## Usage Examples
+
+### Image Classification
+
+```rust
+use horus::prelude::*; // Provides ml::Predictions;
+
+let predictions_hub = Hub::<Predictions>::new("ml.predictions")?;
+
+if let Some(preds) = predictions_hub.recv(&mut None) {
+    // Get top-k predictions
+    for (class_id, confidence) in preds.top_k(5) {
+        println!("Class {}: {:.2}%", class_id, confidence * 100.0);
+    }
+}
+```
+
+### Custom Model with Specific Preprocessing
+
+```rust
+let config = InferenceConfig {
+    input_size: Some([320, 320]),
+    // Custom normalization for your model
+    norm_mean: [0.5, 0.5, 0.5],
+    norm_std: [0.5, 0.5, 0.5],
+    ..Default::default()
+};
+
+let node = ONNXInferenceNode::new(
+    "models/custom_model.onnx",
+    "sensor.image",
+    "custom.output",
+    config,
+)?;
+```
+
+### Batch Processing
+
+```rust
+let config = InferenceConfig {
+    batch_size: 4,  // Process 4 images at once
+    use_gpu: true,  // GPU recommended for batching
+    ..Default::default()
+};
+```
+
+### Raw Tensor I/O
+
+```rust
+use horus::prelude::*; // Provides ml::Tensor;
+
+// For models that don't use images
+let input_pub = Hub::<Tensor>::new("ml.input.tensor")?;
+let output_sub = Hub::<Tensor>::new("ml.output.tensor")?;
+
+// Send custom tensor
+let tensor = Tensor {
+    data: vec![1.0, 2.0, 3.0, 4.0],
+    shape: vec![1, 4],
+    dtype: "float32".to_string(),
+};
+input_pub.send(tensor, &mut None).ok();
+
+// Receive output
+if let Some(output) = output_sub.recv(&mut None) {
+    println!("Output shape: {:?}", output.shape);
+}
+```
+
+## Model Conversion
+
+Convert models from other frameworks to ONNX:
+
+### PyTorch
+
+```python
+import torch
+import torchvision.models as models
+
+model = models.mobilenet_v2(pretrained=True)
+model.eval()
+
+dummy_input = torch.randn(1, 3, 224, 224)
+torch.onnx.export(model, dummy_input, "mobilenet_v2.onnx",
+                  input_names=['input'],
+                  output_names=['output'],
+                  dynamic_axes={'input': {0: 'batch_size'},
+                              'output': {0: 'batch_size'}})
+```
+
+### TensorFlow
+
+```python
+import tf2onnx
+import tensorflow as tf
+
+model = tf.keras.applications.MobileNetV2()
+spec = (tf.TensorSpec((None, 224, 224, 3), tf.float32),)
+tf2onnx.convert.from_keras(model, input_signature=spec,
+                           output_path="mobilenet_v2.onnx")
+```
+
+## Performance Tips
+
+1. **Enable GPU** - Set `use_gpu: true` for 5-10x speedup
+2. **Batch processing** - Process multiple images together
+3. **Optimize graph** - Use `optimization_level: 2` or higher
+4. **Match input size** - Use model's native input size when possible
+
+## See Also
+
+- [TFLiteInferenceNode](./tflite-inference) - TensorFlow Lite inference
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection
+- [PoseEstimationNode](./pose-estimation) - Pose estimation

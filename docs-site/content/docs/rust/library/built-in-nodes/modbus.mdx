@@ -1,0 +1,615 @@
+---
+title: ModbusNode
+description: Modbus RTU/TCP communication for industrial devices
+---
+
+# ModbusNode
+
+Modbus protocol communication node for industrial automation, supporting both Modbus RTU (serial) and Modbus TCP (Ethernet) variants. Interfaces with PLCs, sensors, motor drives, power meters, and industrial control systems.
+
+## Source Code
+
+- [ModbusNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/modbus)
+- [Modbus Message Types](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- Modbus RTU (RS485/RS232)
+- Modbus TCP (Ethernet)
+- Master and Slave modes
+- All function codes (0x01-0x17)
+- Multiple slave addressing (1-247)
+- Configurable timeouts
+- CRC/checksum validation
+- Register mapping
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create Modbus RTU node
+    let mut modbus = ModbusNode::new_rtu("/dev/ttyUSB0")?;
+    modbus.set_baud_rate(19200);
+    modbus.set_slave_id(1);
+
+    scheduler.add(Box::new(modbus), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install Modbus tools
+sudo apt install libmodbus-dev
+
+# For RTU: Add user to dialout group
+sudo usermod -a -G dialout $USER
+
+# For TCP: Ensure network connectivity
+ping 192.168.1.100
+```
+
+### Modbus RTU Wiring (RS485)
+
+```
+USB-RS485 Adapter    Device
+A/D+ (Green)   ---   A/D+
+B/D- (White)   ---   B/D-
+GND  (Black)   ---   GND
+```
+
+**Important**: RS485 requires 120Ω termination resistors at both ends of the bus.
+
+### Modbus TCP Setup
+
+```bash
+# No special wiring - uses standard Ethernet
+# Default port: 502
+```
+
+### Enabling Features
+
+There are three ways to enable the required `serial-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `ModbusNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: serial-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - serial-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["serial-hardware"] }
+```
+
+## Configuration
+
+### Modbus RTU
+
+```rust
+// Create RTU master
+let mut modbus = ModbusNode::new_rtu("/dev/ttyUSB0")?;
+
+// Configure serial parameters
+modbus.set_baud_rate(19200);     // Common: 9600, 19200, 38400
+modbus.set_parity(Parity::Even); // Even parity typical for Modbus
+modbus.set_data_bits(8);
+modbus.set_stop_bits(1);
+
+// Set slave ID (1-247)
+modbus.set_slave_id(1);
+
+// Timeouts
+modbus.set_response_timeout(1000); // 1 second
+modbus.set_byte_timeout(50);       // 50ms between bytes
+```
+
+### Modbus TCP
+
+```rust
+// Create TCP master
+let mut modbus = ModbusNode::new_tcp("192.168.1.100:502")?;
+
+// Set slave ID (unit identifier)
+modbus.set_slave_id(1);
+
+// Timeout
+modbus.set_response_timeout(5000); // 5 seconds
+```
+
+### Operating Modes
+
+```rust
+// Master mode (default) - initiates requests
+modbus.set_mode(ModbusMode::Master);
+
+// Slave mode - responds to requests
+modbus.set_mode(ModbusMode::Slave);
+modbus.set_slave_id(1);
+```
+
+## Function Codes
+
+### Coils (Digital Outputs)
+
+```rust
+// 0x01: Read Coils
+modbus.read_coils(1, 0, 16)?; // slave, address, count
+
+// 0x05: Write Single Coil
+modbus.write_single_coil(1, 0, true)?;
+
+// 0x0F: Write Multiple Coils
+let coils = vec![true, false, true, false];
+modbus.write_multiple_coils(1, 0, &coils)?;
+```
+
+### Discrete Inputs (Digital Inputs)
+
+```rust
+// 0x02: Read Discrete Inputs
+modbus.read_discrete_inputs(1, 0, 8)?; // slave, address, count
+```
+
+### Input Registers (Analog Inputs)
+
+```rust
+// 0x04: Read Input Registers
+let values = modbus.read_input_registers(1, 0, 10)?;
+println!("Input registers: {:?}", values);
+```
+
+### Holding Registers (Analog Outputs)
+
+```rust
+// 0x03: Read Holding Registers
+let registers = modbus.read_holding_registers(1, 0, 10)?;
+
+// 0x06: Write Single Register
+modbus.write_single_register(1, 0, 1234)?;
+
+// 0x10: Write Multiple Registers
+let data = vec![100, 200, 300, 400];
+modbus.write_multiple_registers(1, 0, &data)?;
+```
+
+## Usage Patterns
+
+### Reading Sensor Data
+
+```rust
+use horus::prelude::*;
+
+// Create Modbus request
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x04,  // Read Input Registers
+    address: 0,
+    count: 2,
+    data: vec![],
+};
+
+// Send request
+let hub = Hub::<ModbusRequest>::new("modbus.request")?;
+hub.send(request, &mut None).ok();
+
+// Receive response
+let resp_hub = Hub::<ModbusResponse>::new("modbus.response")?;
+if let Some(response) = resp_hub.recv(&mut None) {
+    if response.success {
+        // Convert registers to temperature (example)
+        let raw = (response.data[0] as u32) << 16 | response.data[1] as u32;
+        let temp = raw as f32 / 10.0;
+        println!("Temperature: {:.1}°C", temp);
+    } else {
+        println!("Error: 0x{:02X}", response.exception_code);
+    }
+}
+```
+
+### Writing Control Values
+
+```rust
+// Write setpoint to holding register
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x06,  // Write Single Register
+    address: 100,
+    count: 1,
+    data: vec![5000],  // Setpoint value
+};
+hub.send(request, &mut None).ok();
+```
+
+### Polling Multiple Slaves
+
+```rust
+// Poll 3 slaves in sequence
+for slave_id in 1..=3 {
+    let request = ModbusRequest {
+        slave_id,
+        function_code: 0x03,
+        address: 0,
+        count: 10,
+        data: vec![],
+    };
+    hub.send(request, &mut None).ok();
+
+    if let Some(resp) = resp_hub.recv(Some(Duration::from_millis(500))) {
+        println!("Slave {}: {:?}", slave_id, resp.data);
+    }
+}
+```
+
+## Common Devices
+
+### Power Meter (Eastron SDM120)
+
+```rust
+// Read voltage (register 0x0000)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x04,
+    address: 0x0000,
+    count: 2,  // Float32 = 2 registers
+    data: vec![],
+};
+hub.send(request, &mut None).ok();
+
+// Read current (register 0x0006)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x04,
+    address: 0x0006,
+    count: 2,
+    data: vec![],
+};
+hub.send(request, &mut None).ok();
+```
+
+### Temperature Controller
+
+```rust
+// Read process value (PV)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x03,  // Read Holding Registers
+    address: 0x1000,
+    count: 1,
+    data: vec![],
+};
+
+// Write setpoint (SP)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x06,
+    address: 0x1001,
+    count: 1,
+    data: vec![2500],  // 25.00°C
+};
+```
+
+### VFD (Variable Frequency Drive)
+
+```rust
+// Read motor speed (Hz)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x03,
+    address: 0x2103,
+    count: 1,
+    data: vec![],
+};
+
+// Set frequency setpoint
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x06,
+    address: 0x2001,
+    count: 1,
+    data: vec![5000],  // 50.00 Hz
+};
+
+// Start motor (write coil)
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x05,
+    address: 0x0000,
+    count: 1,
+    data: vec![1],  // ON
+};
+```
+
+### PLC (Programmable Logic Controller)
+
+```rust
+// Read digital inputs
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x02,  // Read Discrete Inputs
+    address: 0,
+    count: 16,
+    data: vec![],
+};
+
+// Write digital outputs
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x0F,  // Write Multiple Coils
+    address: 0,
+    count: 8,
+    data: vec![0b10101010],  // Coil states
+};
+```
+
+## Message Format
+
+### ModbusRequest
+
+```rust
+pub struct ModbusRequest {
+    pub slave_id: u8,         // Slave address (1-247)
+    pub function_code: u8,    // Function code (0x01-0x17)
+    pub address: u16,         // Starting address
+    pub count: u16,           // Number of coils/registers
+    pub data: Vec<u16>,       // Data to write
+    pub timestamp: u64,       // Request time (ns)
+}
+```
+
+### ModbusResponse
+
+```rust
+pub struct ModbusResponse {
+    pub slave_id: u8,         // Slave address
+    pub function_code: u8,    // Function code
+    pub data: Vec<u16>,       // Response data
+    pub success: bool,        // Request succeeded
+    pub exception_code: u8,   // Error code if failed
+    pub timestamp: u64,       // Response time (ns)
+}
+```
+
+### Exception Codes
+
+```rust
+pub const ILLEGAL_FUNCTION: u8 = 0x01;
+pub const ILLEGAL_DATA_ADDRESS: u8 = 0x02;
+pub const ILLEGAL_DATA_VALUE: u8 = 0x03;
+pub const SLAVE_DEVICE_FAILURE: u8 = 0x04;
+pub const ACKNOWLEDGE: u8 = 0x05;
+pub const SLAVE_DEVICE_BUSY: u8 = 0x06;
+pub const MEMORY_PARITY_ERROR: u8 = 0x08;
+pub const GATEWAY_PATH_UNAVAILABLE: u8 = 0x0A;
+pub const GATEWAY_TARGET_NO_RESPONSE: u8 = 0x0B;
+```
+
+## Complete Example: SCADA System
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure Modbus RTU
+    let mut modbus = ModbusNode::new_rtu("/dev/ttyUSB0")?;
+    modbus.set_baud_rate(19200);
+    modbus.set_response_timeout(1000);
+
+    scheduler.add(Box::new(modbus), 1, Some(true));
+
+    // SCADA polling node
+    let scada_node = node! {
+        name: "scada_poller",
+        tick: |ctx| {
+            let req_hub = Hub::<ModbusRequest>::new("modbus.request")?;
+            let resp_hub = Hub::<ModbusResponse>::new("modbus.response")?;
+
+            // Poll slave 1: Temperature sensor
+            let request = ModbusRequest {
+                slave_id: 1,
+                function_code: 0x04,  // Read Input Registers
+                address: 0,
+                count: 2,
+                data: vec![],
+            };
+            req_hub.send(request, &mut None).ok();
+
+            if let Some(resp) = resp_hub.recv(Some(Duration::from_millis(500))) {
+                if resp.success {
+                    let temp = resp.data[0] as f32 / 10.0;
+                    ctx.log_info(&format!("Slave 1 Temp: {:.1}°C", temp));
+
+                    // Check alarm condition
+                    if temp > 80.0 {
+                        ctx.log_warning("High temperature alarm!");
+                        // Send shutdown command to slave 2
+                    }
+                } else {
+                    ctx.log_error(&format!(
+                        "Slave 1 error: 0x{:02X}", resp.exception_code
+                    ));
+                }
+            }
+
+            // Poll slave 2: Motor controller
+            let request = ModbusRequest {
+                slave_id: 2,
+                function_code: 0x03,
+                address: 100,
+                count: 4,
+                data: vec![],
+            };
+            req_hub.send(request, &mut None).ok();
+
+            if let Some(resp) = resp_hub.recv(Some(Duration::from_millis(500))) {
+                if resp.success {
+                    ctx.log_info(&format!("Motor status: {:?}", resp.data));
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(scada_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Register Mapping
+
+Many devices use specific register layouts. Example:
+
+```rust
+// Define register map
+const REG_VOLTAGE: u16 = 0x0000;
+const REG_CURRENT: u16 = 0x0006;
+const REG_POWER: u16 = 0x000C;
+const REG_ENERGY: u16 = 0x0156;
+
+// Read using named constants
+let request = ModbusRequest {
+    slave_id: 1,
+    function_code: 0x04,
+    address: REG_VOLTAGE,
+    count: 2,
+    data: vec![],
+};
+```
+
+## Best Practices
+
+1. **Use correct function code for register type:**
+   ```rust
+   // Input registers (read-only)
+   function_code: 0x04
+
+   // Holding registers (read/write)
+   function_code: 0x03  // Read
+   function_code: 0x06  // Write single
+   function_code: 0x10  // Write multiple
+   ```
+
+2. **Set appropriate timeouts:**
+   ```rust
+   // RTU: 1-2 seconds
+   modbus.set_response_timeout(1000);
+
+   // TCP: 3-5 seconds
+   modbus.set_response_timeout(3000);
+   ```
+
+3. **Handle exceptions gracefully:**
+   ```rust
+   if !response.success {
+       match response.exception_code {
+           ILLEGAL_DATA_ADDRESS => ctx.log_error("Invalid register address"),
+           SLAVE_DEVICE_BUSY => ctx.log_warning("Slave busy, retry later"),
+           _ => ctx.log_error(&format!("Exception: 0x{:02X}", response.exception_code)),
+       }
+   }
+   ```
+
+4. **Respect bus timing (RTU):**
+   ```rust
+   // Wait between requests to avoid bus collisions
+   std::thread::sleep(Duration::from_millis(50));
+   ```
+
+5. **Use proper termination (RS485):**
+   ```
+   Install 120Ω resistors at both ends of the bus
+   ```
+
+6. **Test with Modbus tools first:**
+   ```bash
+   # Read registers
+   modpoll -m rtu -b 19200 -p even -a 1 -r 1 -c 10 /dev/ttyUSB0
+
+   # Write register
+   modpoll -m rtu -b 19200 -a 1 -r 100 -t 4 -- 1234 /dev/ttyUSB0
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. RTU: Check serial port: `ls -l /dev/ttyUSB*`
+2. RTU: Add to dialout: `sudo usermod -a -G dialout $USER`
+3. TCP: Check network: `ping <device_ip>`
+4. TCP: Check firewall: `sudo ufw allow 502`
+
+**Problem: Timeout on all requests**
+
+**Solutions:**
+1. Check wiring (A/B swapped?)
+2. Verify baud rate matches device
+3. Check slave ID is correct
+4. Verify parity settings (usually Even)
+5. Check termination resistors (120Ω)
+
+**Problem: CRC error**
+
+**Solutions:**
+1. Bad cable or loose connection
+2. Bus termination missing
+3. Electrical noise - add ferrite cores
+4. Cable too long (max 1200m for RS485)
+
+**Problem: Exception code 0x02 (Illegal Data Address)**
+
+**Solutions:**
+1. Check device datasheet for register map
+2. Verify register address is correct
+3. Some devices use 0-based, others 1-based addressing
+
+## Testing
+
+```bash
+# Modbus RTU testing
+modpoll -m rtu -b 19200 -p even -a 1 -t 4 -r 1 -c 10 /dev/ttyUSB0
+
+# Modbus TCP testing
+modpoll -m tcp -a 1 -t 4 -r 1 -c 10 192.168.1.100
+
+# Modbus slave simulator
+diagslave -m rtu -b 19200 -p even /dev/ttyUSB0
+```
+
+## See Also
+
+- [SerialNode](./serial) - UART/RS232 communication
+- [CanBusNode](./can-bus) - CAN bus communication
+- [I2cBusNode](./i2c-bus) - I2C communication
+- [BldcMotorNode](./bldc-motor) - Motor control (some use Modbus)

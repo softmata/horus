@@ -1,0 +1,317 @@
+---
+title: EmbeddingNode
+description: Feature embedding extraction using CLIP, DINOv2, and other vision models
+---
+
+# EmbeddingNode
+
+Real-time feature embedding extraction using neural networks like CLIP, DINOv2, ResNet, and EfficientNet. Produces dense feature vectors useful for image similarity, zero-shot classification, visual navigation, and place recognition.
+
+## Source Code
+
+- [EmbeddingNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/cv/embedding.rs)
+- [ML Messages](https://github.com/softmata/horus/blob/main/horus_library/messages/ml.rs)
+
+## Features
+
+- CLIP vision encoder support (ViT-B/32, ViT-B/16, ViT-L/14)
+- DINOv2 support (small, base, large)
+- ResNet and EfficientNet feature extraction
+- Batch processing capability
+- L2 normalization (optional)
+- GPU acceleration
+- Cosine similarity computation
+
+## Use Cases
+
+- **Image similarity search** - Find similar images in a database
+- **Zero-shot classification** - Classify without training data
+- **Visual place recognition** - Loop closure in SLAM
+- **Robot navigation** - Visual landmark matching
+- **Object re-identification** - Track objects across cameras
+
+## Requirements
+
+Enable the `onnx` feature in your `horus.yaml`:
+
+```yaml
+dependencies:
+  - name: horus_library
+    features:
+      - onnx
+```
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+use horus_library::nodes::cv::{EmbeddingNode, EmbeddingConfig};
+
+fn main() -> HorusResult<()> {
+    let mut scheduler = Scheduler::new();
+
+    let embedding_node = EmbeddingNode::new(
+        "models/clip_vit_b32_visual.onnx",
+        "camera.raw",           // Input image topic
+        "vision.embeddings",    // Output embeddings topic
+        EmbeddingConfig::clip_vit_b32(),
+    )?;
+
+    scheduler.add(Box::new(embedding_node), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Supported Models
+
+### CLIP Models
+
+| Model | Config | Embedding Dim | Speed | Best For |
+|-------|--------|---------------|-------|----------|
+| ViT-B/32 | `clip_vit_b32()` | 512 | Fast | General use |
+| ViT-B/16 | `clip_vit_b16()` | 512 | Medium | Better quality |
+| ViT-L/14 | `clip_vit_l14()` | 768 | Slow | Highest quality |
+
+### DINOv2 Models
+
+| Model | Config | Embedding Dim | Speed | Best For |
+|-------|--------|---------------|-------|----------|
+| Small | `dinov2_small()` | 384 | Fast | Real-time |
+| Base | `dinov2_base()` | 768 | Medium | Balanced |
+| Large | `dinov2_large()` | 1024 | Slow | Highest quality |
+
+### Other Models
+
+| Model | Config | Embedding Dim | Notes |
+|-------|--------|---------------|-------|
+| ResNet50 | `resnet50()` | 2048 | ImageNet features |
+| EfficientNet-B0 | `efficientnet_b0()` | 1280 | Efficient features |
+
+## Configuration
+
+### EmbeddingConfig Options
+
+```rust
+let config = EmbeddingConfig {
+    model_type: EmbeddingModelType::ClipVitB32,
+    input_size: [224, 224],
+    embedding_dim: 512,
+    use_gpu: true,
+    device_id: 0,
+    num_threads: 4,
+    normalize: true,  // L2 normalization
+    normalize_mean: [0.48145466, 0.4578275, 0.40821073],
+    normalize_std: [0.26862954, 0.26130258, 0.27577711],
+};
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_type` | `EmbeddingModelType` | `ClipVitB32` | Model architecture |
+| `input_size` | `[usize; 2]` | `[224, 224]` | Input size [H, W] |
+| `embedding_dim` | usize | 512 | Output dimension |
+| `use_gpu` | bool | false | Enable GPU |
+| `device_id` | u32 | 0 | GPU device ID |
+| `num_threads` | usize | 4 | CPU threads |
+| `normalize` | bool | true | Apply L2 normalization |
+| `normalize_mean` | `[f32; 3]` | Model-specific | Input normalization mean |
+| `normalize_std` | `[f32; 3]` | Model-specific | Input normalization std |
+
+## Topics
+
+### Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{input_topic}` | `Image` | Input RGB images |
+
+### Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{output_topic}` | `EmbeddingVector` | Feature embeddings |
+| `{output_topic}.metrics` | `InferenceMetrics` | Performance metrics |
+
+## Usage Examples
+
+### Basic Embedding Extraction
+
+```rust
+use horus::prelude::*; // Provides ml::EmbeddingVector;
+
+let embedding_hub = Hub::<EmbeddingVector>::new("vision.embeddings")?;
+
+if let Some(emb) = embedding_hub.recv(&mut None) {
+    println!("Embedding: {} dimensions", emb.data.len());
+    println!("Model: {}", emb.model_name);
+    println!("Normalized: {}", emb.normalized);
+}
+```
+
+### Image Similarity Search
+
+```rust
+use horus_library::nodes::cv::EmbeddingNode;
+
+// Store reference embeddings
+let mut database: Vec<(String, Vec<f32>)> = Vec::new();
+
+// Add reference images
+database.push(("kitchen".to_string(), kitchen_embedding));
+database.push(("hallway".to_string(), hallway_embedding));
+
+// Find most similar
+fn find_similar(query: &[f32], database: &[(String, Vec<f32>)]) -> &str {
+    let mut best_score = -1.0;
+    let mut best_match = "";
+
+    for (name, db_emb) in database {
+        let similarity = cosine_similarity(query, db_emb);
+        if similarity > best_score {
+            best_score = similarity;
+            best_match = name;
+        }
+    }
+    best_match
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm_a * norm_b)
+}
+```
+
+### Visual Place Recognition
+
+```rust
+// Use embeddings for loop closure detection in SLAM
+struct PlaceRecognition {
+    embedding_sub: Hub<EmbeddingVector>,
+    keyframes: Vec<(u64, Vec<f32>)>,  // (timestamp, embedding)
+    threshold: f32,
+}
+
+impl PlaceRecognition {
+    fn check_loop_closure(&mut self, current: &EmbeddingVector) -> Option<u64> {
+        for (timestamp, keyframe_emb) in &self.keyframes {
+            let similarity = cosine_similarity(&current.data, keyframe_emb);
+            if similarity > self.threshold {
+                return Some(*timestamp);  // Loop closure detected!
+            }
+        }
+        None
+    }
+}
+```
+
+### Zero-Shot Classification with CLIP
+
+```rust
+// CLIP enables zero-shot classification by comparing
+// image embeddings with text embeddings
+
+// Pre-compute text embeddings for classes
+let class_embeddings = vec![
+    ("person", person_text_embedding),
+    ("robot", robot_text_embedding),
+    ("obstacle", obstacle_text_embedding),
+];
+
+fn classify(image_emb: &[f32], classes: &[(&str, Vec<f32>)]) -> &str {
+    let mut best_score = -1.0;
+    let mut best_class = "";
+
+    for (class_name, class_emb) in classes {
+        let score = cosine_similarity(image_emb, class_emb);
+        if score > best_score {
+            best_score = score;
+            best_class = class_name;
+        }
+    }
+    best_class
+}
+```
+
+### With GPU Acceleration
+
+```rust
+let config = EmbeddingConfig {
+    use_gpu: true,
+    device_id: 0,
+    ..EmbeddingConfig::clip_vit_b32()
+};
+
+let embedding_node = EmbeddingNode::new(
+    "models/clip_vit_b32_visual.onnx",
+    "camera.raw",
+    "vision.embeddings",
+    config,
+)?;
+```
+
+## Model Downloads
+
+### CLIP Models
+
+```bash
+# Export CLIP visual encoder to ONNX
+python -c "
+import torch
+import clip
+
+model, _ = clip.load('ViT-B/32')
+visual = model.visual
+
+dummy = torch.randn(1, 3, 224, 224)
+torch.onnx.export(visual, dummy, 'clip_vit_b32_visual.onnx',
+    input_names=['image'],
+    output_names=['embedding'],
+    dynamic_axes={'image': {0: 'batch'}, 'embedding': {0: 'batch'}})
+"
+```
+
+### DINOv2 Models
+
+```bash
+# Export DINOv2 to ONNX
+python -c "
+import torch
+
+model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+model.eval()
+
+dummy = torch.randn(1, 3, 224, 224)
+torch.onnx.export(model, dummy, 'dinov2_small.onnx',
+    input_names=['image'],
+    output_names=['embedding'])
+"
+```
+
+## Performance
+
+| Model | GPU (RTX 3080) | CPU (i7-12700) | Embedding Dim |
+|-------|---------------|----------------|---------------|
+| CLIP ViT-B/32 | 200+ FPS | 30-40 FPS | 512 |
+| CLIP ViT-B/16 | 150+ FPS | 20-30 FPS | 512 |
+| CLIP ViT-L/14 | 80+ FPS | 10-15 FPS | 768 |
+| DINOv2 Small | 180+ FPS | 25-35 FPS | 384 |
+| DINOv2 Base | 120+ FPS | 15-25 FPS | 768 |
+| DINOv2 Large | 60+ FPS | 8-12 FPS | 1024 |
+
+## Best Practices
+
+1. **Normalize embeddings** - Always use L2 normalization for cosine similarity
+2. **Match preprocessing** - Use the same normalization as model training
+3. **GPU for real-time** - CPU is sufficient for &lt;10 FPS, GPU for higher
+4. **Cache reference embeddings** - Pre-compute and store database embeddings
+5. **Use appropriate model** - CLIP for multi-modal, DINOv2 for pure vision
+
+## See Also
+
+- [YOLOv8DetectorNode](./yolo-detector) - Object detection
+- [PoseEstimationNode](./pose-estimation) - Pose estimation
+- [ONNXInferenceNode](./onnx-inference) - Generic ONNX inference
+- [VisualOdometryNode](./visual-odometry) - Visual odometry

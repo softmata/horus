@@ -1,0 +1,442 @@
+---
+title: message! Macro
+description: Define custom message types with zero boilerplate
+order: 11
+---
+
+# message! Macro
+
+The `message!` macro provides a **zero-boilerplate** way to define custom message types in HORUS. With a single line, you get a fully-functional message type with all necessary traits implemented automatically.
+
+## Why Use message!?
+
+### The Problem
+
+Before the `message!` macro, defining a custom message required manual implementation:
+
+```rust
+use horus::prelude::*;
+
+// Manual definition - lots of boilerplate!
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Position {
+    pub x: f32,
+    pub y: f32,
+}
+
+// Must manually implement LogSummary
+impl LogSummary for Position {
+    fn log_summary(&self) -> String {
+        format!("Position(x={:.2}, y={:.2})", self.x, self.y)
+    }
+}
+```
+
+**That's 15+ lines for a simple 2-field message!**
+
+### The Solution
+
+With `message!`, it's just **one line**:
+
+```rust
+use horus::prelude::*;
+
+message!(Position = (f32, f32));
+```
+
+**Done!** You get the same functionality with 98% less code.
+
+## Basic Usage
+
+### Tuple-Style Messages (Recommended for Simple Types)
+
+Perfect for messages with 2-4 fields:
+
+```rust
+use horus::prelude::*;
+
+// 2D position
+message!(Position = (f32, f32));
+
+// RGB color
+message!(Color = (u8, u8, u8));
+
+// Command with ID and enable flag
+message!(Command = (u32, bool));
+
+// Velocity in 3D
+message!(Velocity = (f32, f32, f32));
+```
+
+### Struct-Style Messages (For Complex Types)
+
+Use for messages with many fields or when field names improve clarity:
+
+```rust
+use horus::prelude::*;
+
+message! {
+    RobotStatus {
+        position_x: f32,
+        position_y: f32,
+        battery_level: u8,
+        is_moving: bool,
+        error_code: u32,
+    }
+}
+
+message! {
+    SensorData {
+        temperature: f32,
+        humidity: f32,
+        pressure: f32,
+        timestamp: u64,
+    }
+}
+```
+
+## What Gets Generated?
+
+For every `message!` invocation, HORUS automatically generates:
+
+### 1. The Struct Definition
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+pub struct YourMessage(/* fields */);
+```
+
+### 2. LogSummary Implementation
+```rust
+impl LogSummary for YourMessage {
+    fn log_summary(&self) -> String {
+        format!("{:?}", self)  // Uses Debug format
+    }
+}
+```
+
+### 3. Full Hub/Link Compatibility
+
+Your message immediately works with all HORUS communication:
+
+```rust
+let hub = Hub::<YourMessage>::new("topic")?;  //  Works!
+let link = Link::<YourMessage>::producer("topic")?;  //  Works!
+```
+
+## Complete Example
+
+The following example demonstrates a temperature monitoring system:
+
+```rust
+use horus::prelude::*;
+
+// Define messages in one line each!
+message!(TempReading = (f32, u64));  // (celsius, timestamp)
+message!(Alert = (bool, f32));       // (is_critical, threshold)
+
+// Sensor node
+struct TempSensor {
+    publisher: Hub<TempReading>,
+    reading: f32,
+}
+
+impl TempSensor {
+    fn new() -> HorusResult<Self> {
+        Ok(Self {
+            publisher: Hub::new("sensors.temperature")?,
+            reading: 20.0,
+        })
+    }
+}
+
+impl Node for TempSensor {
+    fn name(&self) -> &'static str { "temp_sensor" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        let reading = TempReading(self.reading, now);
+        self.publisher.send(reading, &mut ctx).ok();
+
+        self.reading += 0.1;  // Simulate change
+    }
+}
+
+// Alert node
+struct AlertMonitor {
+    subscriber: Hub<TempReading>,
+    alert_pub: Hub<Alert>,
+    threshold: f32,
+}
+
+impl AlertMonitor {
+    fn new() -> HorusResult<Self> {
+        Ok(Self {
+            subscriber: Hub::new("sensors.temperature")?,
+            alert_pub: Hub::new("alerts.temperature")?,
+            threshold: 30.0,
+        })
+    }
+}
+
+impl Node for AlertMonitor {
+    fn name(&self) -> &'static str { "alert_monitor" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        if let Some(TempReading(temp, _)) = self.subscriber.recv(&mut ctx) {
+            if temp > self.threshold {
+                let alert = Alert(true, temp);
+                self.alert_pub.send(alert, &mut ctx).ok();
+                println!("  High temperature: {:.1}°C", temp);
+            }
+        }
+    }
+}
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new().name("temp_monitor");
+
+    scheduler.add(Box::new(TempSensor::new()?), 0, Some(true));
+    scheduler.add(Box::new(AlertMonitor::new()?), 1, Some(true));
+
+    scheduler.run()
+}
+```
+
+## Advanced Features
+
+### Using Tuple Fields
+
+Access tuple fields by index:
+
+```rust
+message!(Position = (f32, f32));
+
+let pos = Position(1.0, 2.0);
+println!("X: {}, Y: {}", pos.0, pos.1);
+```
+
+### Using Struct Fields
+
+Access struct fields by name:
+
+```rust
+message! {
+    RobotStatus {
+        x: f32,
+        y: f32,
+        battery: u8,
+    }
+}
+
+let status = RobotStatus { x: 1.0, y: 2.0, battery: 85 };
+println!("Battery: {}%", status.battery);
+```
+
+### Logging Output
+
+The auto-generated `LogSummary` produces clean output:
+
+```rust
+message!(Position = (f32, f32));
+
+let pos = Position(3.5, 7.2);
+println!("{}", pos.log_summary());
+// Output: Position(3.5, 7.2)
+```
+
+For large messages (like sensor data), this avoids expensive clones during logging.
+
+## When to Use Each Style
+
+### Use Tuple-Style When:
+- **2-4 fields** that are related
+- **Simple data** like coordinates, colors, velocities
+- **Field order is obvious** (x/y, r/g/b, etc.)
+
+```rust
+message!(RGB = (u8, u8, u8));
+message!(Point2D = (f32, f32));
+message!(Command = (u32, bool));
+```
+
+### Use Struct-Style When:
+- **5+ fields** that need names
+- **Complex data** where names improve clarity
+- **Mixed types** that aren't obviously ordered
+
+```rust
+message! {
+    SensorReading {
+        temperature: f32,
+        humidity: f32,
+        pressure: f32,
+        altitude: f32,
+        timestamp: u64,
+    }
+}
+```
+
+## Comparison with Library Types
+
+HORUS library messages (like `CmdVel`, `Image`) already have custom `LogSummary` implementations for optimal performance:
+
+```rust
+// Library type - optimized LogSummary
+use horus::prelude::*; // Provides vision::Image;
+// Logs: "Image(1920x1080, Rgb8, 6220800 bytes)"
+// NOT the full 6.2 MB of pixel data!
+
+// Your custom type - simple LogSummary
+message!(MyImage = (u32, u32, Vec<u8>));
+// Logs: Debug format (still better than cloning!)
+```
+
+For most custom messages, the auto-generated `LogSummary` is sufficient. Override only when special formatting is needed for large data structures.
+
+## Best Practices
+
+### 1. Import Once
+
+Add these imports at the top of your file:
+
+```rust
+use horus::prelude::*;
+```
+
+### 2. Define Messages Near Usage
+
+Keep message definitions close to the nodes that use them:
+
+```rust
+// Temperature monitoring module
+mod temperature {
+    use horus::prelude::*;
+
+    message!(TempReading = (f32, u64));
+
+    pub struct TempSensor { /* ... */ }
+}
+```
+
+### 3. Use Descriptive Names
+
+Choose clear, specific names:
+
+```rust
+// Good
+message!(WheelVelocity = (f32, f32));
+message!(BatteryStatus = (f32, bool));
+
+// Avoid
+message!(Data = (f32, f32));  // Too vague
+message!(Msg = (f32, bool));  // Not descriptive
+```
+
+### 4. Consider Field Order
+
+For tuple-style, put most important fields first:
+
+```rust
+// Good - value first, metadata second
+message!(SensorReading = (f32, u64));  // (value, timestamp)
+
+// Less clear
+message!(SensorReading = (u64, f32));  // (timestamp, value)
+```
+
+## Common Patterns
+
+### Timestamped Messages
+
+```rust
+message!(TimedValue = (f32, u64));  // (value, timestamp_ns)
+
+fn create_reading(value: f32) -> TimedValue {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    TimedValue(value, now)
+}
+```
+
+### Status Messages
+
+```rust
+message! {
+    SystemStatus {
+        is_ok: bool,
+        error_code: u32,
+        message: String,
+        timestamp: u64,
+    }
+}
+```
+
+### Command Messages
+
+```rust
+message!(MotorCommand = (u8, f32, bool));  // (motor_id, speed, enable)
+```
+
+## Limitations
+
+### Cannot Override Pod/Zeroable
+
+The macro doesn't generate `Pod` and `Zeroable` traits (used for zero-copy). If you need these for performance, define the type manually:
+
+```rust
+// Manual definition for Pod types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+pub struct FastMessage {
+    pub x: f32,
+    pub y: f32,
+}
+
+unsafe impl bytemuck::Pod for FastMessage {}
+unsafe impl bytemuck::Zeroable for FastMessage {}
+
+impl LogSummary for FastMessage {
+    fn log_summary(&self) -> String {
+        format!("FastMessage({:.2}, {:.2})", self.x, self.y)
+    }
+}
+```
+
+### Must Import LogSummary
+
+To call `.log_summary()` on your types, you need:
+
+```rust
+use horus::prelude::*;
+```
+
+This is because LogSummary is a trait method.
+
+## Summary
+
+The `message!` macro gives you:
+
+ **Zero boilerplate** - one line per message type
+ **Automatic LogSummary** - efficient logging without clones
+ **Hub/Link compatibility** - works immediately
+ **Clean syntax** - tuple or struct style
+ **Type safety** - full Rust type checking
+
+**Before**: 15+ lines of boilerplate per message
+**After**: 1 line with `message!()`
+
+Use `message!` for all your custom message types and spend more time building, less time on boilerplate!
+
+## Next Steps
+
+- Learn about [Hub](/concepts/core-concepts-hub) for pub/sub communication
+- Explore [node! Macro](/concepts/node-macro) to eliminate node boilerplate too
+- See [Library Reference](/development/library-reference) for pre-built message types

@@ -1,0 +1,372 @@
+---
+title: "Model Registry"
+description: "ML model versioning, metadata management, and deployment configuration"
+weight: 42
+---
+
+# Model Registry
+
+The Model Registry provides centralized management for machine learning models used in HORUS applications. It handles versioning, metadata, and deployment configuration for models in various formats.
+
+## Overview
+
+The registry provides:
+- **Version management**: Track multiple versions of each model
+- **Metadata storage**: Metrics, training info, format details
+- **Status tracking**: latest, stable, deprecated
+- **YAML persistence**: Human-readable configuration
+
+## Registry Configuration
+
+Models are configured in `~/.horus/models.yaml`:
+
+```yaml
+models:
+  yolov8n:
+    versions:
+      - name: yolov8n
+        version: "1.0.0"
+        format: onnx
+        path: models/yolov8n.onnx
+        hash: "sha256:abc123..."
+        size_bytes: 6000000
+        status: latest
+        metrics:
+          mAP: 0.372
+          latency_ms: 5.2
+        trained_date: "2024-01-15"
+        dataset: "COCO"
+
+      - name: yolov8n
+        version: "0.9.0"
+        format: onnx
+        path: models/yolov8n_v0.9.onnx
+        status: stable
+        metrics:
+          mAP: 0.358
+```
+
+## Basic Usage
+
+### Creating a Registry
+
+```rust
+use horus_core::ml::ModelRegistry;
+use std::path::PathBuf;
+
+// Create from file
+let registry = ModelRegistry::new(
+    PathBuf::from("/path/to/models.yaml")
+)?;
+
+// Or use default location (~/.horus/models.yaml)
+let registry = ModelRegistry::default();
+```
+
+### Getting Models
+
+```rust
+// Get latest version
+let model = registry.get_model("yolov8n", None)?;
+println!("Using {} v{}", model.name, model.version);
+
+// Get specific version
+let model = registry.get_model("yolov8n", Some("1.0.0"))?;
+
+// Get model path
+println!("Model path: {}", model.path);
+```
+
+### Listing Models
+
+```rust
+// List all model names
+let models = registry.list_models();
+for name in models {
+    println!("Model: {}", name);
+}
+
+// List versions of a model
+let versions = registry.list_versions("yolov8n");
+for version in versions {
+    println!("  v{}", version);
+}
+```
+
+## Model Entry
+
+Each model version has comprehensive metadata:
+
+```rust
+pub struct ModelEntry {
+    pub name: String,           // Model name
+    pub version: String,        // Semantic version
+    pub format: String,         // onnx, tflite, pytorch, etc.
+    pub path: String,           // File path or URL
+    pub hash: Option<String>,   // SHA256 hash
+    pub size_bytes: Option<u64>,
+    pub metrics: HashMap<String, f64>,  // mAP, accuracy, etc.
+    pub status: String,         // latest, stable, deprecated
+    pub trained_date: Option<String>,
+    pub dataset: Option<String>,
+    pub metadata: HashMap<String, String>,  // Custom fields
+}
+```
+
+## Registering Models
+
+### Add New Version
+
+```rust
+use horus_core::ml::{ModelRegistry, ModelEntry};
+use std::collections::HashMap;
+
+let mut registry = ModelRegistry::default();
+
+let entry = ModelEntry {
+    name: "yolov8n".to_string(),
+    version: "1.1.0".to_string(),
+    format: "onnx".to_string(),
+    path: "models/yolov8n_v1.1.onnx".to_string(),
+    hash: Some("sha256:def456...".to_string()),
+    size_bytes: Some(6_200_000),
+    metrics: [
+        ("mAP".to_string(), 0.385),
+        ("latency_ms".to_string(), 4.8),
+    ].iter().cloned().collect(),
+    status: "latest".to_string(),
+    trained_date: Some("2024-03-01".to_string()),
+    dataset: Some("COCO".to_string()),
+    metadata: HashMap::new(),
+};
+
+registry.register_model(entry)?;
+registry.save()?;
+```
+
+### Update Status
+
+```rust
+// Mark version as deprecated
+registry.deprecate_model("yolov8n", "0.9.0")?;
+
+// Set new latest version
+registry.set_latest("yolov8n", "1.1.0")?;
+
+registry.save()?;
+```
+
+## Model Formats
+
+The registry supports various model formats:
+
+| Format | Extension | Use Case |
+|--------|-----------|----------|
+| **ONNX** | `.onnx` | Cross-platform inference |
+| **TFLite** | `.tflite` | Edge/mobile deployment |
+| **PyTorch** | `.pt`, `.pth` | PyTorch inference |
+| **TensorRT** | `.engine` | NVIDIA GPU inference |
+| **OpenVINO** | `.xml`, `.bin` | Intel acceleration |
+
+## Metrics Tracking
+
+Track model performance metrics:
+
+```rust
+let model = registry.get_model("yolov8n", None)?;
+
+// Common metrics
+if let Some(map) = model.metrics.get("mAP") {
+    println!("mAP: {:.3}", map);
+}
+
+if let Some(latency) = model.metrics.get("latency_ms") {
+    println!("Inference latency: {:.1}ms", latency);
+}
+
+// Custom metrics
+println!("All metrics:");
+for (key, value) in &model.metrics {
+    println!("  {}: {}", key, value);
+}
+```
+
+## Integration with Nodes
+
+Use the registry in inference nodes:
+
+```rust
+use horus_core::ml::ModelRegistry;
+
+struct ObjectDetectionNode {
+    model_path: String,
+    model_version: String,
+}
+
+impl ObjectDetectionNode {
+    pub fn new(registry: &ModelRegistry) -> HorusResult<Self> {
+        // Get latest model
+        let model = registry.get_model("yolov8n", None)?;
+
+        // Verify model exists
+        if !std::path::Path::new(&model.path).exists() {
+            return Err(HorusError::not_found(
+                format!("Model file: {}", model.path)
+            ));
+        }
+
+        // Log model info
+        println!("Loading {} v{}", model.name, model.version);
+        if let Some(map) = model.metrics.get("mAP") {
+            println!("  mAP: {:.3}", map);
+        }
+
+        Ok(Self {
+            model_path: model.path,
+            model_version: model.version,
+        })
+    }
+}
+```
+
+## Validation
+
+Validate model integrity:
+
+```rust
+use sha2::{Sha256, Digest};
+
+fn validate_model(registry: &ModelRegistry, name: &str) -> HorusResult<bool> {
+    let model = registry.get_model(name, None)?;
+
+    // Check file exists
+    let path = std::path::Path::new(&model.path);
+    if !path.exists() {
+        return Err(HorusError::not_found("Model file"));
+    }
+
+    // Check size
+    if let Some(expected_size) = model.size_bytes {
+        let actual_size = std::fs::metadata(path)?.len();
+        if actual_size != expected_size {
+            return Err(HorusError::invalid_input(
+                format!("Size mismatch: {} vs {}", actual_size, expected_size)
+            ));
+        }
+    }
+
+    // Check hash
+    if let Some(expected_hash) = &model.hash {
+        let data = std::fs::read(path)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let actual_hash = format!("sha256:{:x}", hasher.finalize());
+
+        if &actual_hash != expected_hash {
+            return Err(HorusError::invalid_input("Hash mismatch"));
+        }
+    }
+
+    Ok(true)
+}
+```
+
+## Model Selection
+
+Select models based on requirements:
+
+```rust
+fn select_model(
+    registry: &ModelRegistry,
+    max_latency_ms: f64,
+    min_accuracy: f64,
+) -> HorusResult<ModelEntry> {
+    let versions = registry.list_versions("yolov8n");
+
+    for version in versions {
+        let model = registry.get_model("yolov8n", Some(&version))?;
+
+        if model.status == "deprecated" {
+            continue;
+        }
+
+        let latency = model.metrics.get("latency_ms").copied().unwrap_or(f64::MAX);
+        let accuracy = model.metrics.get("mAP").copied().unwrap_or(0.0);
+
+        if latency <= max_latency_ms && accuracy >= min_accuracy {
+            return Ok(model);
+        }
+    }
+
+    Err(HorusError::not_found("No suitable model found"))
+}
+```
+
+## Best Practices
+
+### 1. Use Semantic Versioning
+
+```yaml
+# Good
+version: "1.2.3"  # major.minor.patch
+
+# Bad
+version: "new"
+version: "final_v2"
+```
+
+### 2. Include Hashes for Production
+
+```rust
+let entry = ModelEntry {
+    hash: Some(compute_sha256(&model_path)?),
+    ..
+};
+```
+
+### 3. Track Training Metadata
+
+```yaml
+trained_date: "2024-03-01"
+dataset: "COCO"
+metadata:
+  epochs: "300"
+  batch_size: "16"
+  learning_rate: "0.001"
+```
+
+### 4. Deprecate Gracefully
+
+```rust
+// Don't delete - deprecate first
+registry.deprecate_model("yolov8n", "0.9.0")?;
+
+// Clean up deprecated versions later
+for version in registry.list_versions("yolov8n") {
+    let model = registry.get_model("yolov8n", Some(&version))?;
+    if model.status == "deprecated" {
+        // Remove after grace period
+    }
+}
+```
+
+## File Structure
+
+Recommended project structure:
+
+```
+project/
+├── models/
+│   ├── yolov8n.onnx
+│   ├── yolov8n_v0.9.onnx
+│   └── mobilenet.tflite
+├── config/
+│   └── models.yaml
+└── src/
+    └── ...
+```
+
+## See Also
+
+- [GPU Tensor Sharing](/advanced/gpu-tensor-sharing) - GPU memory for inference
+- [Built-in Nodes](/rust/library/built-in-nodes) - Using models in nodes

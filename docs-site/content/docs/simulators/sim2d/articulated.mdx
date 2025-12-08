@@ -1,0 +1,279 @@
+---
+title: Articulated Robots in Sim2D
+description: Multi-joint robot simulation with preset configurations
+---
+
+# Articulated Robots
+
+Sim2D supports multi-joint articulated robots for simulating robot arms, humanoids, and other kinematic chains in 2D.
+
+## Quick Start
+
+```bash
+# Use a preset robot arm
+horus sim2d --preset arm_2dof
+
+# 6-DOF arm
+horus sim2d --preset arm_6dof
+
+# Humanoid (side view with gravity)
+horus sim2d --preset humanoid --gravity
+
+# Custom articulated robot
+horus sim2d --articulated my_robot.yaml
+```
+
+## Available Presets
+
+### arm_2dof
+
+Simple 2-joint planar arm:
+
+```
+     ┌───┐
+     │ J1│ (shoulder)
+     └─┬─┘
+       │ Link 1
+     ┌─┴─┐
+     │ J2│ (elbow)
+     └─┬─┘
+       │ Link 2
+     ┌─┴─┐
+     │EE │ (end effector)
+     └───┘
+```
+
+- 2 revolute joints
+- Shoulder + elbow configuration
+- Good for learning kinematics
+
+### arm_6dof
+
+Industrial-style 6-DOF arm:
+
+- 6 revolute joints
+- Full planar reachability
+- Suitable for manipulation tasks
+
+### humanoid
+
+Bipedal humanoid (side view):
+
+- Torso, legs, arms
+- Requires `--gravity` flag
+- Side-view simulation
+
+## Configuration File
+
+### Basic Structure
+
+```yaml
+# articulated_robot.yaml
+name: "my_arm"
+base_position: [0.0, 0.0]
+base_fixed: true
+
+links:
+  - name: "link1"
+    length: 0.5
+    width: 0.1
+    mass: 1.0
+    color: [0.8, 0.2, 0.2]
+
+  - name: "link2"
+    length: 0.4
+    width: 0.08
+    mass: 0.8
+    color: [0.2, 0.8, 0.2]
+
+joints:
+  - name: "joint1"
+    type: revolute
+    parent: base
+    child: link1
+    anchor: [0.0, 0.0]
+    limits: [-3.14, 3.14]
+
+  - name: "joint2"
+    type: revolute
+    parent: link1
+    child: link2
+    anchor: [0.5, 0.0]  # At end of link1
+    limits: [-2.5, 2.5]
+```
+
+### Link Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | string | Link identifier |
+| `length` | float | Link length (meters) |
+| `width` | float | Link width (meters) |
+| `mass` | float | Mass (kg) |
+| `color` | [r,g,b] | RGB color (0.0-1.0) |
+| `inertia` | float | Rotational inertia (optional) |
+
+### Joint Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | string | Joint identifier |
+| `type` | string | `revolute` or `prismatic` |
+| `parent` | string | Parent link name |
+| `child` | string | Child link name |
+| `anchor` | [x,y] | Joint position on parent |
+| `limits` | [min,max] | Joint angle limits (rad) |
+| `damping` | float | Joint damping |
+| `stiffness` | float | Joint stiffness |
+
+## Control Interface
+
+### Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `{prefix}.joint_command` | `JointCommand` | Target positions/velocities |
+| `{prefix}.joint_state` | `JointState` | Current joint states |
+
+### JointCommand Message
+
+```rust
+pub struct JointCommand {
+    pub names: Vec<String>,      // Joint names
+    pub positions: Vec<f64>,     // Target positions (rad)
+    pub velocities: Vec<f64>,    // Target velocities (rad/s)
+    pub effort: Vec<f64>,        // Target torques (Nm)
+}
+```
+
+### JointState Message
+
+```rust
+pub struct JointState {
+    pub names: Vec<String>,      // Joint names
+    pub positions: Vec<f64>,     // Current positions (rad)
+    pub velocities: Vec<f64>,    // Current velocities (rad/s)
+    pub effort: Vec<f64>,        // Current torques (Nm)
+}
+```
+
+## Control Example
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides {JointCommand, JointState};
+
+struct ArmController {
+    cmd_pub: Hub<JointCommand>,
+    state_sub: Hub<JointState>,
+    target: Vec<f64>,
+}
+
+impl ArmController {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            cmd_pub: Hub::new("robot.joint_command")?,
+            state_sub: Hub::new("robot.joint_state")?,
+            target: vec![0.0, 0.0],  // 2 joints
+        })
+    }
+}
+
+impl Node for ArmController {
+    fn name(&self) -> &'static str { "ArmController" }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        // Read current state
+        if let Some(state) = self.state_sub.recv(&mut ctx) {
+            println!("Joint positions: {:?}", state.positions);
+        }
+
+        // Simple oscillation
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+
+        self.target[0] = (t * 0.5).sin() * 1.5;
+        self.target[1] = (t * 0.8).cos() * 1.0;
+
+        // Send command
+        let cmd = JointCommand {
+            names: vec!["joint1".to_string(), "joint2".to_string()],
+            positions: self.target.clone(),
+            velocities: vec![],
+            effort: vec![],
+        };
+
+        self.cmd_pub.send(cmd, &mut ctx).ok();
+    }
+}
+```
+
+## Inverse Kinematics
+
+For end-effector control, compute joint angles:
+
+```rust
+fn inverse_kinematics_2dof(
+    target_x: f64,
+    target_y: f64,
+    l1: f64,  // Link 1 length
+    l2: f64,  // Link 2 length
+) -> Option<(f64, f64)> {
+    let d = (target_x.powi(2) + target_y.powi(2)).sqrt();
+
+    // Check reachability
+    if d > l1 + l2 || d < (l1 - l2).abs() {
+        return None;
+    }
+
+    // Elbow angle (law of cosines)
+    let cos_q2 = (d.powi(2) - l1.powi(2) - l2.powi(2)) / (2.0 * l1 * l2);
+    let q2 = cos_q2.acos();
+
+    // Shoulder angle
+    let alpha = target_y.atan2(target_x);
+    let beta = ((l2 * q2.sin()) / d).asin();
+    let q1 = alpha - beta;
+
+    Some((q1, q2))
+}
+```
+
+## Gravity Mode
+
+For side-view simulation with gravity:
+
+```bash
+horus sim2d --preset humanoid --gravity
+```
+
+In gravity mode:
+- Y-axis points up
+- Gravity pulls downward
+- Useful for legged robots, pendulums
+
+## Visual Markers
+
+Joint positions are marked with circles in the UI:
+- Red: Active/moving
+- Gray: Stationary
+- Green: At target position
+
+Enable/disable with **J** key.
+
+## Limitations
+
+- 2D only (planar kinematics)
+- No closed kinematic chains
+- Limited collision detection between links
+- No self-collision by default
+
+For 3D articulated robots with full dynamics, use [Sim3D](/simulators/sim3d).
+
+## See Also
+
+- [Sim2D Configuration](/simulators/sim2d/configuration) - YAML reference
+- [Sim3D](/simulators/sim3d) - 3D simulation
+- [Differential Drive](/rust/library/algorithms/differential-drive) - Mobile robot kinematics

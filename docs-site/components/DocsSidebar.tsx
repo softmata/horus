@@ -194,8 +194,8 @@ const sections: SidebarSection[] = [
     title: "Development",
     links: [
       { title: "CLI Reference", href: "/development/cli-reference", order: 1 },
-      { title: "Dashboard", href: "/development/dashboard", order: 2 },
-      { title: "Dashboard Security", href: "/development/dashboard-security", order: 3 },
+      { title: "Monitor", href: "/development/monitor", order: 2 },
+      { title: "Monitor Security", href: "/development/monitor-security", order: 3 },
       { title: "Simulation", href: "/development/simulation", order: 4 },
       { title: "Testing", href: "/development/testing", order: 5 },
       { title: "Parameters", href: "/development/parameters", order: 6 },

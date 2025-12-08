@@ -1,0 +1,443 @@
+---
+title: UltrasonicNode
+description: HC-SR04 ultrasonic distance sensor with multi-sensor support
+---
+
+# UltrasonicNode
+
+HC-SR04 ultrasonic distance sensor node for obstacle detection, proximity sensing, and rangefinding. Supports multiple sensors simultaneously for 360° coverage or sensor arrays.
+
+## Source Code
+
+- [UltrasonicNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/ultrasonic)
+- [Range Message Type](https://github.com/softmata/horus/blob/main/horus_library/messages/sensor.rs)
+
+## Features
+
+- HC-SR04 and compatible sensors
+- Multi-sensor support (up to 8 sensors)
+- Range: 2cm to 4m
+- Configurable measurement rate
+- Median filtering for noise reduction
+- Temperature compensation
+- Simulation fallback
+- Hardware GPIO control
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create ultrasonic node
+    let mut ultrasonic = UltrasonicNode::new()?;
+
+    // Configure sensor
+    ultrasonic.set_num_sensors(1);
+    ultrasonic.set_gpio_pins(0, 23, 24); // sensor_id, trigger_pin, echo_pin
+    ultrasonic.set_measurement_rate(10.0); // 10 Hz
+
+    scheduler.add(Box::new(ultrasonic), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### HC-SR04 Wiring
+
+```
+Raspberry Pi    HC-SR04
+GPIO 23   -->   Trig
+GPIO 24   -->   Echo (via voltage divider!)
+5V        -->   VCC
+GND       -->   GND
+```
+
+**IMPORTANT**: HC-SR04 Echo pin outputs 5V but Raspberry Pi GPIOs are 3.3V tolerant!
+
+### Voltage Divider for Echo Pin
+
+```
+Echo (5V) ---[R1: 1kΩ]---+--- GPIO 24 (3.3V)
+                         |
+                      [R2: 2kΩ]
+                         |
+                        GND
+```
+
+This creates: `3.3V = 5V × (2kΩ / (1kΩ + 2kΩ))`
+
+### Multiple Sensors
+
+```
+           Raspberry Pi
+Sensor 0:  GPIO 23, 24
+Sensor 1:  GPIO 25, 8
+Sensor 2:  GPIO 7, 1
+Sensor 3:  GPIO 12, 16
+```
+
+### System Requirements
+
+```bash
+# Install GPIO library
+sudo apt install libraspberrypi-dev
+
+# Enable GPIO
+sudo raspi-config  # Interface Options
+```
+
+### Enabling Features
+
+There are three ways to enable the required `gpio-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `UltrasonicNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: gpio-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - gpio-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["gpio-hardware"] }
+```
+
+## Configuration
+
+### Adding Sensors
+
+```rust
+let mut ultrasonic = UltrasonicNode::new()?;
+
+// Configure multiple sensors
+ultrasonic.set_num_sensors(4);
+ultrasonic.set_gpio_pins(0, 23, 24); // Front
+ultrasonic.set_gpio_pins(1, 25, 8);  // Right
+ultrasonic.set_gpio_pins(2, 7, 1);   // Back
+ultrasonic.set_gpio_pins(3, 12, 16); // Left
+```
+
+### Measurement Rate
+
+```rust
+// Set measurement frequency (Hz)
+ultrasonic.set_measurement_rate(10.0);  // 10 measurements/sec
+ultrasonic.set_measurement_rate(20.0);  // 20 measurements/sec
+```
+
+### Filtering
+
+```rust
+// Enable median filtering (reduces noise)
+ultrasonic.enable_median_filter(true);
+ultrasonic.set_median_filter_size(5); // Median of 5 samples
+
+// Disable filtering
+ultrasonic.enable_median_filter(false);
+```
+
+### Range Limits
+
+```rust
+// Set valid range (meters)
+ultrasonic.set_range_limits(0, 0.02, 4.0); // sensor_id, min, max
+```
+
+### Temperature Compensation
+
+```rust
+// Set ambient temperature for speed of sound correction
+ultrasonic.set_temperature(20.0); // 20°C
+
+// Speed of sound at different temperatures:
+// 15°C: 340.0 m/s
+// 20°C: 343.0 m/s
+// 25°C: 346.0 m/s
+```
+
+## Usage Patterns
+
+### Reading Distance
+
+```rust
+use horus::prelude::*;
+
+// Subscribe to distance measurements
+let hub = Hub::<Range>::new("ultrasonic.range")?;
+
+if let Some(range) = hub.recv(&mut None) {
+    println!("Range: {:.3} m", range.range);
+}
+```
+
+### Obstacle Detection
+
+```rust
+let hub = Hub::<Range>::new("ultrasonic.range")?;
+
+while let Some(range) = hub.recv(&mut None) {
+    if range.range >= range.min_range && range.range <= range.max_range {
+        if range.range < 0.3 {
+            println!("WARNING: Obstacle at {:.2}m!", range.range);
+        }
+    } else {
+        println!("Out of range");
+    }
+}
+```
+
+### Multi-Sensor Array
+
+```rust
+use std::collections::HashMap;
+
+let hub = Hub::<Range>::new("ultrasonic.range")?;
+let mut distances: HashMap<u8, f32> = HashMap::new();
+let mut sensor_id = 0; // Track which sensor in multi-sensor setup
+
+// Collect from all sensors
+while let Some(range) = hub.recv(&mut None) {
+    if range.range >= range.min_range && range.range <= range.max_range {
+        distances.insert(sensor_id, range.range);
+    }
+    sensor_id += 1;
+}
+
+// Find closest obstacle
+if let Some((&id, &dist)) = distances.iter().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()) {
+    println!("Closest obstacle: Sensor {} at {:.2}m", id, dist);
+}
+```
+
+## Complete Example: Obstacle Avoidance
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure 4 sensors around robot
+    let mut ultrasonic = UltrasonicNode::new()?;
+    ultrasonic.set_num_sensors(4);
+    ultrasonic.set_gpio_pins(0, 23, 24);  // Front
+    ultrasonic.set_gpio_pins(1, 25, 8);   // Right
+    ultrasonic.set_gpio_pins(2, 7, 1);    // Back
+    ultrasonic.set_gpio_pins(3, 12, 16);  // Left
+    ultrasonic.set_measurement_rate(10.0);
+    ultrasonic.enable_median_filter(true);
+    ultrasonic.set_median_filter_size(3);
+
+    scheduler.add(Box::new(ultrasonic), 1, Some(true));
+
+    // Obstacle avoidance node
+    let avoidance_node = node! {
+        name: "obstacle_avoidance",
+        tick: |ctx| {
+            let hub = Hub::<Range>::new("ultrasonic.range")?;
+            let mut front_clear = true;
+
+            while let Some(range) = hub.recv(&mut None) {
+                // Assuming first reading is front sensor
+                if range.range < 0.5 && range.range >= range.min_range {
+                    front_clear = false;
+                    ctx.log_warning(&format!(
+                        "Obstacle ahead: {:.2}m", range.range
+                    ));
+                }
+            }
+
+            if !front_clear {
+                // Send stop command to motors
+                ctx.log_info("Stopping due to obstacle");
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(avoidance_node), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Message Format
+
+### Range
+
+```rust
+pub struct Range {
+    pub sensor_type: u8,      // Sensor type (0=ultrasonic, 1=infrared)
+    pub field_of_view: f32,   // Beam angle in radians
+    pub min_range: f32,       // Minimum range in meters
+    pub max_range: f32,       // Maximum range in meters
+    pub range: f32,           // Distance reading in meters
+    pub timestamp: u64,       // Measurement time (ns since epoch)
+}
+```
+
+**Published on topic**: `ultrasonic.range`
+
+**Constants**:
+- `Range::ULTRASONIC = 0`
+- `Range::INFRARED = 1`
+
+## Timing and Accuracy
+
+### Measurement Process
+
+1. **Trigger**: 10μs pulse on trigger pin
+2. **Echo wait**: Up to 38ms for maximum range
+3. **Echo measurement**: Time echo pin is HIGH
+4. **Distance calculation**: `distance = (time × speed_of_sound) / 2`
+
+### Timing Constraints
+
+```
+Max range = 4m
+Speed of sound = 343 m/s (20°C)
+Echo time = (4m × 2) / 343 m/s = 23.3ms
+Safe timeout = 38ms (allows margin)
+```
+
+### Accuracy
+
+- **Resolution**: ~3mm (based on timing resolution)
+- **Accuracy**: ±3cm typical
+- **Affected by**:
+  - Temperature (speed of sound changes)
+  - Surface angle (best at 90°)
+  - Surface material (soft materials absorb sound)
+  - Air currents
+
+### Limitations
+
+- **Minimum range**: 2cm (echo too close to trigger)
+- **Maximum range**: 4m (signal too weak)
+- **Beam angle**: ~15° cone
+- **Update rate**: Max ~50Hz (depends on max range)
+
+## Best Practices
+
+1. **Use voltage divider on Echo pin:**
+   ```
+   Always protect 3.3V GPIO from 5V Echo signal!
+   ```
+
+2. **Space sensors apart:**
+   ```rust
+   // Avoid crosstalk between sensors
+   // Minimum 10cm spacing recommended
+   ```
+
+3. **Use filtering for noisy environments:**
+   ```rust
+   ultrasonic.set_filter_size(5); // Median of 5
+   ```
+
+4. **Set appropriate measurement rate:**
+   ```rust
+   // Balance between update rate and range
+   // Faster rate = shorter max range
+   ultrasonic.set_measurement_rate(10.0); // 10Hz for 4m range
+   ultrasonic.set_measurement_rate(20.0); // 20Hz for 2m range
+   ```
+
+5. **Handle invalid measurements:**
+   ```rust
+   if data.is_valid {
+       // Use distance
+   } else {
+       // Out of range or error - use last valid or default
+   }
+   ```
+
+6. **Compensate for temperature:**
+   ```rust
+   // Read ambient temperature from IMU or separate sensor
+   ultrasonic.set_temperature(measured_temp);
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+```
+[WARN] UltrasonicNode sensor 0: Hardware unavailable - using SIMULATION mode
+[WARN]   Tried GPIO pins: trigger=23, echo=24
+[WARN]   Error: Permission denied
+[WARN]   Fix:
+[WARN]     1. Install: sudo apt install libraspberrypi-dev
+[WARN]     2. Enable GPIO: sudo raspi-config -> Interface Options
+[WARN]     3. Check wiring: Verify GPIO pin connections
+[WARN]     4. If using cargo: cargo build --features="gpio-hardware"
+[WARN]        (horus run auto-detects features)
+```
+
+**Solutions:**
+1. Check GPIO permissions
+2. Verify wiring and voltage divider
+3. Test pins with `gpio readall`
+
+**Problem: Always reading maximum distance**
+
+**Solutions:**
+1. Check VCC and GND connections
+2. Verify voltage divider on Echo pin
+3. Check for obstacles in range
+4. Ensure sensor faces forward (not angled down/up)
+
+**Problem: Erratic readings**
+
+**Solutions:**
+1. Enable filtering: `set_filter_size(5)`
+2. Check for electrical noise sources
+3. Ensure solid connections (no loose wires)
+4. Add capacitor near sensor (100μF)
+
+**Problem: No readings below 20cm**
+
+**Solution:** This is normal - HC-SR04 has 2cm minimum range
+
+## Simulation Mode
+
+When hardware is unavailable, the node operates in simulation mode:
+
+```
+[INFO] UltrasonicNode sensor 0: (SIM) distance 1.234 m
+```
+
+Simulated behavior:
+- Returns random distances between 0.3m and 3.0m
+- Includes realistic noise and occasional invalid readings
+- Useful for testing logic without hardware
+
+## See Also
+
+- [LidarNode](./lidar) - 360° laser rangefinding
+- [DepthCameraNode](./depth-camera) - Dense 3D depth maps
+- [CollisionDetectorNode](./collision-detector) - Collision avoidance
+- [SafetyMonitorNode](./safety-monitor) - Safety systems

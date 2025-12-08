@@ -1,0 +1,629 @@
+---
+title: "Sim3D Recording"
+description: "Trajectory recording, time control, video export, and sensor data bags for simulation"
+weight: 65
+---
+
+# Sim3D Recording
+
+The Sim3D recording system provides comprehensive tools for capturing simulation data including trajectories, sensor data, and video output.
+
+## Recording Plugin
+
+Add the recording plugin to enable all recording features:
+
+```rust
+use horus_sim3d::recording::RecordingPlugin;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(RecordingPlugin)
+        .run();
+}
+```
+
+## Trajectory Recording
+
+Record the motion of entities over time for playback and analysis.
+
+### TrajectoryPoint
+
+Each trajectory point captures the full state at a moment in time:
+
+```rust
+use horus_sim3d::recording::trajectory::TrajectoryPoint;
+
+let point = TrajectoryPoint {
+    timestamp: 1.5,
+    position: Vec3::new(1.0, 0.5, 2.0),
+    rotation: Quat::IDENTITY,
+    linear_velocity: Vec3::new(0.5, 0.0, 0.0),
+    angular_velocity: Vec3::ZERO,
+};
+```
+
+### Recording Sessions
+
+Use `RecordingSession` to capture multiple entity trajectories:
+
+```rust
+use horus_sim3d::recording::trajectory::{RecordingSession, TrajectoryPoint};
+
+fn start_recording(mut session: ResMut<RecordingSession>, time: Res<Time>) {
+    session.start(time.elapsed_secs_f64());
+    println!("Recording started");
+}
+
+fn stop_recording(mut session: ResMut<RecordingSession>) {
+    session.stop();
+
+    // Save to file
+    let path = std::path::PathBuf::from("recordings/session.json");
+    session.save_to_file(&path).expect("Failed to save");
+    println!("Saved {} trajectories", session.trajectories.len());
+}
+```
+
+### TrajectoryRecorder Component
+
+Add to entities to automatically record their motion:
+
+```rust
+use horus_sim3d::recording::trajectory::TrajectoryRecorder;
+
+commands.spawn((
+    TransformBundle::default(),
+    RigidBody::Dynamic,
+    TrajectoryRecorder::new(30.0),  // Record at 30 Hz
+    Name::new("TrackedRobot"),
+));
+```
+
+### Trajectory Analysis
+
+Query and analyze recorded trajectories:
+
+```rust
+use horus_sim3d::recording::trajectory::Trajectory;
+
+fn analyze_trajectory(trajectory: &Trajectory) {
+    // Get duration
+    println!("Duration: {:.2}s", trajectory.duration());
+
+    // Get point at specific time (interpolated)
+    if let Some(point) = trajectory.get_point_at(2.5) {
+        println!("Position at 2.5s: {:?}", point.position);
+    }
+
+    // Sample at fixed intervals
+    let sampled = trajectory.sample(0.1);  // 10 Hz
+    println!("Sampled {} points", sampled.len());
+}
+```
+
+### Trajectory Playback
+
+Play back recorded trajectories on entities:
+
+```rust
+use horus_sim3d::recording::trajectory::{Trajectory, TrajectoryPlayback};
+
+fn setup_playback(
+    mut commands: Commands,
+    trajectory: Trajectory,
+) {
+    let mut playback = TrajectoryPlayback::new(trajectory);
+    playback.loop_playback = true;
+    playback.playback_speed = 1.0;
+
+    commands.spawn((
+        TransformBundle::default(),
+        playback,
+    ));
+}
+
+fn control_playback(mut query: Query<&mut TrajectoryPlayback>) {
+    for mut playback in query.iter_mut() {
+        playback.play();        // Start playback
+        playback.pause();       // Pause
+        playback.reset();       // Go to start
+        playback.playback_speed = 2.0;  // 2x speed
+    }
+}
+```
+
+## Time Control
+
+Control simulation time for debugging and analysis.
+
+### TimeControl Resource
+
+```rust
+use horus_sim3d::recording::time_control::{TimeControl, TimeControlMode, TimeScalePresets};
+
+fn configure_time(mut time_control: ResMut<TimeControl>) {
+    // Pause simulation
+    time_control.pause();
+
+    // Resume
+    time_control.resume();
+
+    // Toggle pause
+    time_control.toggle_pause();
+
+    // Slow motion
+    time_control.set_slow_motion(0.25);  // 0.25x speed
+
+    // Fast forward
+    time_control.set_fast_forward(4.0);  // 4x speed
+
+    // Use presets
+    time_control.set_time_scale(TimeScalePresets::HALF_SPEED);
+    time_control.set_time_scale(TimeScalePresets::DOUBLE_SPEED);
+
+    // Frame stepping
+    time_control.enable_frame_stepping();
+    time_control.step_frame_forward();
+}
+```
+
+### TimeControlMode
+
+| Mode | Description |
+|------|-------------|
+| `Normal` | Real-time simulation |
+| `Paused` | Simulation frozen |
+| `SlowMotion` | 0.01x - 1.0x speed |
+| `FastForward` | 1.0x - 10.0x speed |
+| `FrameStepping` | Manual frame advance |
+
+### Time Scale Presets
+
+| Preset | Value |
+|--------|-------|
+| `VERY_SLOW` | 0.1x |
+| `SLOW` | 0.25x |
+| `HALF_SPEED` | 0.5x |
+| `NORMAL` | 1.0x |
+| `DOUBLE_SPEED` | 2.0x |
+| `QUAD_SPEED` | 4.0x |
+| `MAX_SPEED` | 10.0x |
+
+### Scripted Time Control
+
+Create keyframed time control sequences:
+
+```rust
+use horus_sim3d::recording::time_control::{
+    TimeControlRecording, TimeKeyframe, TimeControlMode
+};
+
+fn setup_scripted_time(mut recording: ResMut<TimeControlRecording>) {
+    // Slow down at t=2.0 for dramatic effect
+    recording.add_keyframe(TimeKeyframe::new(0.0, 1.0, TimeControlMode::Normal));
+    recording.add_keyframe(TimeKeyframe::new(2.0, 0.25, TimeControlMode::SlowMotion));
+    recording.add_keyframe(TimeKeyframe::new(4.0, 1.0, TimeControlMode::Normal));
+
+    recording.loop_playback = true;
+    recording.play();
+}
+```
+
+### Time Statistics
+
+Monitor simulation time metrics:
+
+```rust
+use horus_sim3d::recording::time_control::TimeStats;
+
+fn show_stats(time_control: Res<TimeControl>, time: Res<Time>) {
+    let stats = TimeStats::from_time_control(&time_control, time.elapsed_secs_f64());
+
+    println!("Real time: {:.2}s", stats.real_time_elapsed);
+    println!("Sim time: {:.2}s", stats.simulation_time_elapsed);
+    println!("Frame count: {}", stats.frame_count);
+    println!("FPS: {:.1}", stats.average_fps);
+    println!("Time ratio: {:.2}x", stats.get_time_ratio());
+}
+```
+
+## Video Export
+
+Capture simulation frames for video creation.
+
+### VideoRecordingConfig
+
+```rust
+use horus_sim3d::recording::video_export::{
+    VideoRecordingConfig, VideoFormat, VideoRecorder
+};
+
+let config = VideoRecordingConfig::new(
+    std::path::PathBuf::from("output/video"),
+    1920, 1080  // Resolution
+)
+.with_framerate(60)
+.with_format(VideoFormat::ImageSequence)
+.with_quality(90);  // JPEG quality
+
+let recorder = VideoRecorder::new(config);
+```
+
+### Video Formats
+
+| Format | Description | Use Case |
+|--------|-------------|----------|
+| `ImageSequence` | PNG frame sequence | Lossless, post-processing |
+| `JpegSequence` | JPEG frame sequence | Smaller files |
+| `RawRGB` | Raw RGB bytes | External encoding |
+
+### Recording Video
+
+```rust
+use horus_sim3d::recording::video_export::{VideoRecorder, VideoFrame, ImageDataFormat};
+
+fn video_recording(
+    mut recorder: ResMut<VideoRecorder>,
+    time: Res<Time>,
+) {
+    // Start recording
+    if !recorder.active {
+        recorder.start_recording(time.elapsed_secs_f64());
+    }
+
+    // Check if frame should be captured
+    if recorder.should_capture_frame(time.elapsed_secs_f64()) {
+        // Get frame data from render target
+        let frame_data: Vec<u8> = capture_screen(); // Your capture function
+
+        let frame = VideoFrame::new(
+            recorder.frame_count,
+            time.elapsed_secs_f64(),
+            1920, 1080,
+            frame_data,
+            ImageDataFormat::RGB8,
+        );
+
+        recorder.add_frame(frame);
+    }
+}
+
+fn finish_video(recorder: Res<VideoRecorder>) {
+    // Export all frames to disk
+    recorder.export_frames().expect("Failed to export");
+
+    println!("Exported {} frames", recorder.frame_count);
+    println!("Duration: {:.2}s", recorder.get_duration());
+    println!("Size: ~{:.1} MB", recorder.get_estimated_size_mb());
+}
+```
+
+### Frame Conversion Utilities
+
+```rust
+use horus_sim3d::recording::video_export::FrameConverter;
+
+// Convert RGBA to RGB (remove alpha)
+let rgb_data = FrameConverter::rgba_to_rgb(&rgba_data);
+
+// Convert RGB to RGBA (add alpha)
+let rgba_data = FrameConverter::rgb_to_rgba(&rgb_data, 255);
+
+// Flip image vertically (OpenGL convention)
+let flipped = FrameConverter::flip_vertical(&data, width, height, 3);
+```
+
+### Screenshots
+
+Take individual screenshots:
+
+```rust
+use horus_sim3d::recording::video_export::ScreenshotCapture;
+
+commands.spawn(ScreenshotCapture::new(
+    std::path::PathBuf::from("screenshots/capture.png")
+));
+
+// The screenshot component auto-disables after capture
+```
+
+## Sensor Data Bags
+
+Record sensor data in a rosbag-like format for replay and analysis.
+
+### SensorData Types
+
+```rust
+use horus_sim3d::recording::sensor_data::{SensorData, ImageFormat};
+
+// Camera image
+let image = SensorData::Image {
+    width: 640,
+    height: 480,
+    format: ImageFormat::RGB8,
+    data: pixel_data,
+};
+
+// LiDAR scan
+let scan = SensorData::LaserScan {
+    ranges: vec![1.5, 2.0, 2.5, /* ... */],
+    intensities: Some(vec![0.8, 0.9, 0.7]),
+    angle_min: -std::f32::consts::PI,
+    angle_max: std::f32::consts::PI,
+    angle_increment: 0.01,
+    range_min: 0.1,
+    range_max: 30.0,
+};
+
+// IMU data
+let imu = SensorData::IMU {
+    orientation: [0.0, 0.0, 0.0, 1.0],
+    angular_velocity: [0.0, 0.0, 0.1],
+    linear_acceleration: [0.0, 0.0, 9.81],
+};
+
+// Odometry
+let odom = SensorData::Odometry {
+    position: [1.0, 2.0, 0.0],
+    orientation: [0.0, 0.0, 0.0, 1.0],
+    linear_velocity: [0.5, 0.0, 0.0],
+    angular_velocity: [0.0, 0.0, 0.1],
+};
+
+// GPS
+let gps = SensorData::GPS {
+    latitude: 37.7749,
+    longitude: -122.4194,
+    altitude: 10.0,
+};
+
+// Custom data
+let custom = SensorData::Custom {
+    data_type: "my_sensor".to_string(),
+    data: serialized_bytes,
+};
+```
+
+### Recording Sensor Data
+
+```rust
+use horus_sim3d::recording::sensor_data::{
+    SensorBagRecorder, SensorMessage, SensorData, ImageFormat
+};
+
+fn setup_recorder(mut commands: Commands) {
+    commands.insert_resource(SensorBagRecorder::new("experiment_001".to_string()));
+}
+
+fn record_sensors(
+    mut recorder: ResMut<SensorBagRecorder>,
+    time: Res<Time>,
+) {
+    if !recorder.active {
+        recorder.start_recording();
+    }
+
+    // Record camera data
+    recorder.record_message(SensorMessage {
+        timestamp: time.elapsed_secs_f64(),
+        topic: "camera/rgb".to_string(),
+        data: SensorData::Image {
+            width: 640,
+            height: 480,
+            format: ImageFormat::RGB8,
+            data: get_camera_data(),
+        },
+    });
+
+    // Record IMU data
+    recorder.record_message(SensorMessage {
+        timestamp: time.elapsed_secs_f64(),
+        topic: "imu/data".to_string(),
+        data: SensorData::IMU {
+            orientation: get_orientation(),
+            angular_velocity: get_angular_velocity(),
+            linear_acceleration: get_acceleration(),
+        },
+    });
+}
+
+fn save_bag(recorder: Res<SensorBagRecorder>) {
+    let mut bag = recorder.bag.clone();
+    let path = std::path::PathBuf::from("data/experiment.bag");
+    bag.save_to_file(&path).expect("Failed to save bag");
+}
+```
+
+### RecordSensor Component
+
+Automatically record sensor entities:
+
+```rust
+use horus_sim3d::recording::sensor_data::RecordSensor;
+
+commands.spawn((
+    Camera3dBundle::default(),
+    RecordSensor::new("camera/front".to_string(), 30.0),  // 30 Hz
+));
+
+commands.spawn((
+    ImuSensor::default(),
+    RecordSensor::new("imu/data".to_string(), 100.0),  // 100 Hz
+));
+```
+
+### Sensor Bag Playback
+
+Play back recorded sensor data:
+
+```rust
+use horus_sim3d::recording::sensor_data::{SensorBag, SensorBagPlayback};
+
+fn setup_playback(mut commands: Commands) {
+    let path = std::path::PathBuf::from("data/experiment.bag");
+    let bag = SensorBag::load_from_file(&path).expect("Failed to load bag");
+
+    let mut playback = SensorBagPlayback::new(bag);
+    playback.loop_playback = true;
+    playback.playback_speed = 1.0;
+
+    commands.insert_resource(playback);
+}
+
+fn process_playback(
+    mut playback: ResMut<SensorBagPlayback>,
+    time: Res<Time>,
+) {
+    playback.play();
+
+    // Get messages for current time
+    let messages = playback.get_messages_at_time(time.delta_secs_f64());
+
+    for msg in messages {
+        match &msg.data {
+            SensorData::Image { width, height, .. } => {
+                println!("Camera frame: {}x{}", width, height);
+            }
+            SensorData::IMU { angular_velocity, .. } => {
+                println!("IMU: {:?}", angular_velocity);
+            }
+            _ => {}
+        }
+    }
+}
+```
+
+### Bag Statistics
+
+Analyze recorded bags:
+
+```rust
+use horus_sim3d::recording::sensor_data::BagStatistics;
+
+fn analyze_bag(bag: &SensorBag) {
+    let stats = BagStatistics::from_bag(bag);
+
+    println!("Duration: {:.2}s", stats.duration);
+    println!("Total messages: {}", stats.total_messages);
+    println!("Estimated size: {:.2} MB", stats.estimated_size_mb);
+
+    for (topic, topic_stats) in &stats.topics {
+        println!("  {}: {} msgs @ {:.1} Hz ({})",
+            topic,
+            topic_stats.message_count,
+            topic_stats.frequency,
+            topic_stats.message_type);
+    }
+}
+```
+
+### Query Bag Data
+
+```rust
+// Get all messages for a topic
+let camera_msgs = bag.get_messages("camera/rgb");
+
+// Get messages in time range
+let msgs = bag.get_messages_in_range(2.0, 5.0);
+
+// Export to JSON for analysis
+bag.export_to_json(&std::path::PathBuf::from("data/analysis.json"))?;
+```
+
+## Complete Example
+
+```rust
+use bevy::prelude::*;
+use horus_sim3d::recording::{
+    RecordingPlugin,
+    trajectory::{RecordingSession, TrajectoryRecorder},
+    time_control::{TimeControl, TimeControlMode},
+    sensor_data::{SensorBagRecorder, SensorMessage, SensorData},
+};
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(RecordingPlugin)
+        .add_systems(Startup, setup)
+        .add_systems(Update, (control_recording, record_sensors))
+        .run();
+}
+
+fn setup(mut commands: Commands) {
+    // Spawn robot with trajectory recording
+    commands.spawn((
+        TransformBundle::default(),
+        TrajectoryRecorder::new(60.0),
+        Name::new("Robot"),
+    ));
+
+    // Initialize sensor bag recorder
+    commands.insert_resource(SensorBagRecorder::new("session".to_string()));
+}
+
+fn control_recording(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut session: ResMut<RecordingSession>,
+    mut time_control: ResMut<TimeControl>,
+    time: Res<Time>,
+) {
+    // R: Start/stop recording
+    if keyboard.just_pressed(KeyCode::KeyR) {
+        if session.active {
+            session.stop();
+            println!("Recording stopped");
+        } else {
+            session.start(time.elapsed_secs_f64());
+            println!("Recording started");
+        }
+    }
+
+    // Space: Toggle pause
+    if keyboard.just_pressed(KeyCode::Space) {
+        time_control.toggle_pause();
+    }
+
+    // [ and ]: Adjust time scale
+    if keyboard.just_pressed(KeyCode::BracketLeft) {
+        time_control.set_time_scale(time_control.time_scale * 0.5);
+    }
+    if keyboard.just_pressed(KeyCode::BracketRight) {
+        time_control.set_time_scale(time_control.time_scale * 2.0);
+    }
+}
+
+fn record_sensors(
+    mut recorder: ResMut<SensorBagRecorder>,
+    session: Res<RecordingSession>,
+    time: Res<Time>,
+) {
+    if session.active && !recorder.active {
+        recorder.start_recording();
+    } else if !session.active && recorder.active {
+        recorder.stop_recording();
+    }
+
+    // Record sensor data while session is active
+    if recorder.active {
+        // Example: Record odometry
+        recorder.record_message(SensorMessage {
+            timestamp: time.elapsed_secs_f64(),
+            topic: "odom".to_string(),
+            data: SensorData::Odometry {
+                position: [0.0, 0.0, 0.0],
+                orientation: [0.0, 0.0, 0.0, 1.0],
+                linear_velocity: [0.0, 0.0, 0.0],
+                angular_velocity: [0.0, 0.0, 0.0],
+            },
+        });
+    }
+}
+```
+
+## See Also
+
+- [Sim3D Overview](/development/simulation) - Full Sim3D documentation
+- [Sim3D Editor](/development/sim3d-editor) - Scene editing tools
+- [Sim3D Multi-Robot](/development/sim3d-multi-robot) - Multi-robot simulation

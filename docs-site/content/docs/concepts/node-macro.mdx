@@ -1,0 +1,455 @@
+---
+title: node! Macro Guide
+description: Write less code with the node! macro
+order: 10
+---
+
+# The node! Macro
+
+**The problem**: Writing HORUS nodes manually requires lots of boilerplate code.
+
+**The solution**: The node! macro generates all the boilerplate for you!
+
+## Why Use It?
+
+**Without the macro** (47 lines):
+```rust
+struct SensorNode {
+    publisher: Hub<f32>,
+    counter: u32,
+}
+
+impl SensorNode {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            publisher: Hub::new("temperature")?,
+            counter: 0,
+        })
+    }
+}
+
+impl Node for SensorNode {
+    fn name(&self) -> &'static str {
+        "SensorNode"
+    }
+
+    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+        let temp = 20.0 + (self.counter as f32 * 0.1);
+        self.publisher.send(temp, &mut ctx).ok();
+        self.counter += 1;
+    }
+}
+
+impl Default for SensorNode {
+    fn default() -> Self {
+        Self::new().expect("Failed to create SensorNode")
+    }
+}
+```
+
+**With the macro** (13 lines):
+```rust
+node! {
+    SensorNode {
+        pub { temperature: f32 -> "temperature" }
+        data { counter: u32 = 0 }
+
+        tick(ctx) {
+            let temp = 20.0 + (self.counter as f32 * 0.1);
+            self.temperature.send(temp, &mut ctx).ok();
+            self.counter += 1;
+        }
+    }
+}
+```
+
+**73% less code!** And it's easier to read.
+
+## Basic Syntax
+
+```rust
+node! {
+    NodeName {
+        pub { ... }    // Publishers (optional)
+        sub { ... }    // Subscribers (optional)
+        data { ... }   // Internal state (optional)
+        tick(ctx) { ... }   // Main loop (required)
+        init(ctx) { ... }   // Startup (optional)
+        shutdown(ctx) { ... } // Cleanup (optional)
+        impl { ... }   // Custom methods (optional)
+    }
+}
+```
+
+**Only the node name and `tick` are required!** Everything else is optional.
+
+## Sections Explained
+
+### `pub` - Send Messages
+
+Define what this node sends:
+
+```rust
+pub {
+    // Syntax: name: Type -> "topic"
+    velocity: f32 -> "robot.velocity",
+    status: String -> "robot.status"
+}
+```
+
+This creates:
+- A `Hub<f32>` field called `velocity`
+- A `Hub<String>` field called `status`
+- Both connected to their respective topics
+
+### `sub` - Receive Messages
+
+Define what this node receives:
+
+```rust
+sub {
+    // Syntax: name: Type <- "topic"
+    commands: String <- "user.commands",
+    sensors: f32 <- "sensors.temperature"
+}
+```
+
+This creates:
+- A `Hub<String>` field called `commands`
+- A `Hub<f32>` field called `sensors`
+- Both listening to their respective topics
+
+### `data` - Internal State
+
+Store data inside your node:
+
+```rust
+data {
+    counter: u32 = 0,
+    buffer: Vec<f32> = Vec::new(),
+    last_time: Instant = Instant::now()
+}
+```
+
+Access these as `self.counter`, `self.buffer`, etc.
+
+### `tick(ctx)` - Main Loop
+
+This runs repeatedly (about 60 times per second):
+
+```rust
+tick(ctx) {
+    // Read inputs
+    if let Some(cmd) = self.commands.recv(&mut ctx) {
+        // Process
+        let result = process(cmd);
+        // Send outputs
+        self.status.send(result, &mut ctx).ok();
+    }
+
+    // Update state
+    self.counter += 1;
+}
+```
+
+**Keep this fast!** It runs every frame.
+
+### `init(ctx)` - Startup (Optional)
+
+Runs once when your node starts:
+
+```rust
+init(ctx) {
+    ctx.log_info("Starting up");
+    self.buffer.reserve(1000); // Pre-allocate
+}
+```
+
+Use this for:
+- Opening files/connections
+- Pre-allocating memory
+- One-time setup
+
+### `shutdown(ctx)` - Cleanup (Optional)
+
+Runs once when your node stops:
+
+```rust
+shutdown(ctx) {
+    ctx.log_info(&format!("Processed {} messages", self.counter));
+    // Save state, close files, etc.
+}
+```
+
+### `impl` - Custom Methods (Optional)
+
+Add helper functions:
+
+```rust
+impl {
+    fn calculate(&self, x: f32) -> f32 {
+        x * 2.0 + self.counter as f32
+    }
+
+    fn reset(&mut self) {
+        self.counter = 0;
+    }
+}
+```
+
+## Complete Examples
+
+### Simple Publisher
+
+```rust
+node! {
+    HeartbeatNode {
+        pub { alive: bool -> "system.heartbeat" }
+
+        tick(ctx) {
+            self.alive.send(true, &mut ctx).ok();
+        }
+    }
+}
+```
+
+### Simple Subscriber
+
+```rust
+node! {
+    LoggerNode {
+        sub { messages: String <- "logs" }
+
+        tick(ctx) {
+            if let Some(msg) = self.messages.recv(&mut ctx) {
+                ctx.log_info(&format!("[LOG] {}", msg));
+            }
+        }
+    }
+}
+```
+
+### Pipeline (Sub + Pub)
+
+```rust
+node! {
+    DoubleNode {
+        sub { input: f32 <- "numbers" }
+        pub { output: f32 -> "doubled" }
+
+        tick(ctx) {
+            if let Some(num) = self.input.recv(&mut ctx) {
+                self.output.send(num * 2.0, &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+### With State
+
+```rust
+node! {
+    AverageNode {
+        sub { input: f32 <- "values" }
+        pub { output: f32 -> "average" }
+        data {
+            buffer: Vec<f32> = Vec::new(),
+            max_size: usize = 10
+        }
+
+        tick(ctx) {
+            if let Some(value) = self.input.recv(&mut ctx) {
+                self.buffer.push(value);
+
+                // Keep only last 10 values
+                if self.buffer.len() > self.max_size {
+                    self.buffer.remove(0);
+                }
+
+                // Calculate average
+                let avg: f32 = self.buffer.iter().sum::<f32>() / self.buffer.len() as f32;
+                self.output.send(avg, &mut ctx).ok();
+            }
+        }
+    }
+}
+```
+
+### With Lifecycle
+
+```rust
+node! {
+    FileLoggerNode {
+        sub { data: String <- "logs" }
+        data { file: Option<std::fs::File> = None }
+
+        init(ctx) {
+            use std::fs::OpenOptions;
+            self.file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("log.txt")
+                .ok();
+            ctx.log_info("File opened");
+        }
+
+        tick(ctx) {
+            if let Some(msg) = self.data.recv(&mut ctx) {
+                if let Some(file) = &mut self.file {
+                    use std::io::Write;
+                    writeln!(file, "{}", msg).ok();
+                }
+            }
+        }
+
+        shutdown(ctx) {
+            ctx.log_info("Closing file");
+            self.file = None; // Closes the file
+        }
+    }
+}
+```
+
+## Tips and Tricks
+
+### Use Descriptive Names
+
+```rust
+// Good
+pub { motor_speed: f32 -> "motors.speed" }
+
+// Bad
+pub { x: f32 -> "data" }
+```
+
+### Keep tick() Fast
+
+```rust
+// Good - quick operation
+tick(ctx) {
+    if let Some(x) = self.input.recv(&mut ctx) {
+        let y = x * 2.0;
+        self.output.send(y, &mut ctx).ok();
+    }
+}
+
+// Bad - slow operation
+tick(ctx) {
+    std::thread::sleep(Duration::from_secs(1)); // Blocks everything!
+}
+```
+
+### Pre-allocate in init()
+
+```rust
+init(ctx) {
+    self.buffer.reserve(1000); // Do this once
+}
+
+tick(ctx) {
+    // Not in tick - would allocate every tick!
+}
+```
+
+## Common Questions
+
+### Do I need to import anything?
+
+Yes, import the prelude:
+
+```rust
+use horus::prelude::*;
+
+node! {
+    MyNode { ... }
+}
+```
+
+### Can I have multiple publishers?
+
+Yes!
+
+```rust
+pub {
+    speed: f32 -> "speed",
+    direction: f32 -> "direction",
+    status: String -> "status"
+}
+```
+
+### Can I skip sections I don't need?
+
+Yes! Only `NodeName` and `tick` are required:
+
+```rust
+node! {
+    MinimalNode {
+        tick(ctx) {
+            ctx.log_info("Hello!");
+        }
+    }
+}
+```
+
+### How do I use the node?
+
+Just create it and register it:
+
+```rust
+let mut scheduler = Scheduler::new();
+scheduler.add(Box::new(MyNode::new()?), 0, Some(true));
+scheduler.run()?;
+```
+
+The macro generates a `new()` method automatically.
+
+## Troubleshooting
+
+### "Cannot find type in scope"
+
+Import your message types:
+
+```rust
+use horus::prelude::*;
+use horus::prelude::*; // Provides CmdVel; // If using library types
+
+node! {
+    MyNode {
+        pub { cmd: CmdVel -> "cmd_vel" }
+        ...
+    }
+}
+```
+
+### "Expected `,`, found `{`"
+
+Check your syntax:
+
+```rust
+// Wrong
+pub { cmd: f32 "topic" }
+
+// Right
+pub { cmd: f32 -> "topic" }
+```
+
+### Node name must be CamelCase
+
+```rust
+// Wrong
+node! { my_node { ... } }
+
+// Right
+node! { MyNode { ... } }
+```
+
+## Next Steps
+
+Now that you can write nodes quickly:
+
+1. **[Try some examples ](/rust/examples/basic-examples)** - See real applications
+2. **[Learn about Messages ](/concepts/message-types)** - Work with complex data
+3. **[Master the Hub ](/concepts/core-concepts-hub)** - Understand communication
+
+**The macro makes HORUS fast to write. Shared memory makes it fast to run!** 

@@ -1,0 +1,68 @@
+---
+title: "Tensor Messages"
+description: "Zero-copy tensor types for ML workloads"
+weight: 15
+---
+
+# Tensor Messages
+
+Zero-copy tensor sharing between nodes for ML/AI workloads.
+
+## HorusTensor
+
+A ~200 byte descriptor pointing to data in shared memory:
+
+```rust
+use horus::prelude::*; // Provides tensor::{HorusTensor, TensorDtype, TensorDevice};
+
+// Send tensor descriptor through Hub
+let hub = Hub::<HorusTensor>::new("camera/frames")?;
+
+if let Some(tensor) = hub.recv(ctx) {
+    println!("Shape: {:?}", tensor.shape());
+    println!("Dtype: {:?}", tensor.dtype);
+    println!("Device: {}", tensor.device);
+}
+```
+
+## TensorDtype
+
+| Dtype | Size | Use Case |
+|-------|------|----------|
+| F32 | 4 | ML training/inference |
+| F16 | 2 | Memory-efficient inference |
+| BF16 | 2 | Training on modern GPUs |
+| U8 | 1 | Images |
+| I8 | 1 | Quantized inference |
+
+## TensorDevice
+
+```rust
+TensorDevice::Cpu     // Shared memory
+TensorDevice::Cuda0   // GPU 0
+TensorDevice::Cuda1   // GPU 1
+```
+
+## With TensorPool
+
+```rust
+use horus_core::memory::{TensorPool, TensorPoolConfig, TensorDtype, TensorDevice};
+
+let pool = TensorPool::new(1, TensorPoolConfig::default())?;
+let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::U8, TensorDevice::Cpu)?;
+
+// Write data
+pool.data_slice_mut(&tensor)[0] = 255;
+
+// Share via Hub
+hub.send(tensor, &mut ctx)?;
+```
+
+## Python Interop
+
+```python
+hub = PyHub("camera/frames")
+tensor = hub.recv_tensor(node)
+arr = np.asarray(tensor)  # Zero-copy via __array_interface__
+```
+

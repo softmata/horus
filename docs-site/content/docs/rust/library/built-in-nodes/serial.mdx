@@ -1,0 +1,523 @@
+---
+title: SerialNode
+description: UART/RS232/RS485 serial communication for sensors and devices
+---
+
+# SerialNode
+
+Universal Asynchronous Receiver-Transmitter (UART) serial communication node for interfacing with GPS modules, sensor arrays, motor controllers, telemetry radios, and any serial devices. Supports RS232, RS485, and TTL serial protocols.
+
+## Source Code
+
+- [SerialNode Implementation](https://github.com/softmata/horus/tree/main/horus_library/nodes/serial)
+- [Serial Message Types](https://github.com/softmata/horus/blob/main/horus_library/messages/io.rs)
+
+## Features
+
+- Multiple serial ports (ttyUSB*, ttyS*, ttyAMA*)
+- Configurable baud rates (9600 to 921600)
+- Data bits (5, 6, 7, 8), parity (None, Even, Odd), stop bits (1, 2)
+- Flow control (None, RTS/CTS, XON/XOFF)
+- Binary and ASCII modes
+- Line-based and binary framing
+- Timeout configuration
+- Hardware fallback to simulation
+
+## Quick Start
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Create serial node
+    let mut serial = SerialNode::new("/dev/ttyUSB0")?;
+    serial.set_baud_rate(9600);
+    serial.set_data_bits(8);
+    serial.set_parity(Parity::None);
+    serial.set_stop_bits(1);
+
+    scheduler.add(Box::new(serial), 1, Some(true));
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Hardware Setup
+
+### System Requirements
+
+```bash
+# Install serial tools
+sudo apt install setserial
+
+# Add user to dialout group
+sudo usermod -a -G dialout $USER
+
+# Verify serial ports
+ls -l /dev/ttyUSB* /dev/ttyS* /dev/ttyAMA*
+```
+
+### USB-to-Serial Adapters
+
+```
+Common adapters:
+- FTDI FT232RL   → /dev/ttyUSB0
+- Prolific PL2303 → /dev/ttyUSB0
+- CP2102         → /dev/ttyUSB0
+```
+
+### RS232 Wiring
+
+```
+Computer (DB9)    Device
+Pin 2 (RX)  <--   TX
+Pin 3 (TX)  -->   RX
+Pin 5 (GND) ---   GND
+```
+
+### RS485 Wiring (Half-Duplex)
+
+```
+RS485 Adapter     Device
+A (Data+)   ---   A/D+
+B (Data-)   ---   B/D-
+GND         ---   GND
+```
+
+### Enabling Features
+
+There are three ways to enable the required `serial-hardware` feature:
+
+**Option 1: Automatic detection (recommended)**
+
+When you use `horus run`, HORUS automatically detects that you're using `SerialNode` and enables the feature:
+
+```bash
+horus run main.rs
+# Output: Auto-detected hardware nodes (features: serial-hardware)
+```
+
+**Option 2: Explicit in horus.yaml**
+
+Add the feature to your `horus.yaml` dependencies:
+
+```yaml
+dependencies:
+  - name: horus
+    features:
+      - serial-hardware
+```
+
+**Option 3: Manual Cargo.toml (for cargo projects)**
+
+If using `cargo` directly:
+
+```toml
+[dependencies]
+horus_library = { version = "0.1", features = ["serial-hardware"] }
+```
+
+## Configuration
+
+### Port and Baud Rate
+
+```rust
+let mut serial = SerialNode::new("/dev/ttyUSB0")?;
+
+// Common baud rates
+serial.set_baud_rate(9600);     // GPS, Arduino
+serial.set_baud_rate(19200);    // Modbus RTU
+serial.set_baud_rate(57600);    // Fast sensors
+serial.set_baud_rate(115200);   // High-speed data
+serial.set_baud_rate(921600);   // Maximum speed
+```
+
+### Data Format
+
+```rust
+// 8N1 (most common: 8 data bits, no parity, 1 stop bit)
+serial.set_data_bits(8);
+serial.set_parity(Parity::None);
+serial.set_stop_bits(1);
+
+// 7E1 (7 data bits, even parity, 1 stop bit)
+serial.set_data_bits(7);
+serial.set_parity(Parity::Even);
+serial.set_stop_bits(1);
+
+// 8E2 (8 data bits, even parity, 2 stop bits)
+serial.set_data_bits(8);
+serial.set_parity(Parity::Even);
+serial.set_stop_bits(2);
+```
+
+### Flow Control
+
+```rust
+// No flow control (default)
+serial.set_flow_control(FlowControl::None);
+
+// Hardware flow control (RTS/CTS)
+serial.set_flow_control(FlowControl::Hardware);
+
+// Software flow control (XON/XOFF)
+serial.set_flow_control(FlowControl::Software);
+```
+
+### Timeouts
+
+```rust
+// Read timeout (milliseconds)
+serial.set_read_timeout(1000);  // 1 second
+
+// Write timeout
+serial.set_write_timeout(500);  // 500ms
+```
+
+### Framing Modes
+
+```rust
+// Line-based (newline-terminated)
+serial.set_framing_mode(FramingMode::Line);
+serial.set_line_ending("\r\n");  // CRLF
+serial.set_line_ending("\n");    // LF
+
+// Binary (fixed-length packets)
+serial.set_framing_mode(FramingMode::Binary);
+serial.set_packet_size(16);
+
+// Raw (no framing)
+serial.set_framing_mode(FramingMode::Raw);
+```
+
+## Usage Patterns
+
+### Sending Data
+
+```rust
+use horus::prelude::*;
+
+// Create serial message
+let msg = SerialMessage {
+    port: "/dev/ttyUSB0".to_string(),
+    data: b"AT+CSQ\r\n".to_vec(),  // AT command
+    length: 8,
+};
+
+// Send
+let hub = Hub::<SerialMessage>::new("serial.tx")?;
+hub.send(msg, &mut None).ok();
+```
+
+### Receiving Data
+
+```rust
+// Subscribe to RX topic
+let hub = Hub::<SerialMessage>::new("serial.rx")?;
+
+if let Some(msg) = hub.recv(&mut None) {
+    // Convert to string if ASCII
+    if let Ok(text) = String::from_utf8(msg.data.clone()) {
+        println!("RX: {}", text);
+    } else {
+        // Binary data
+        println!("RX: {:02X?}", msg.data);
+    }
+}
+```
+
+### Line-Based Protocol
+
+```rust
+// Configure for line-based
+serial.set_framing_mode(FramingMode::Line);
+serial.set_line_ending("\r\n");
+
+// Send command
+let cmd = SerialMessage {
+    port: "/dev/ttyUSB0".to_string(),
+    data: "GET_TEMP\r\n".as_bytes().to_vec(),
+    length: 10,
+};
+hub.send(cmd, &mut None).ok();
+
+// Receive response (automatically framed by newline)
+if let Some(resp) = rx_hub.recv(&mut None) {
+    let text = String::from_utf8_lossy(&resp.data);
+    println!("Response: {}", text);
+}
+```
+
+## Common Devices
+
+### GPS Module (NMEA)
+
+```rust
+// Configure for GPS (9600 baud, line-based)
+let mut serial = SerialNode::new("/dev/ttyUSB0")?;
+serial.set_baud_rate(9600);
+serial.set_framing_mode(FramingMode::Line);
+serial.set_line_ending("\r\n");
+
+// Read NMEA sentences
+let hub = Hub::<SerialMessage>::new("serial.rx")?;
+while let Some(msg) = hub.recv(&mut None) {
+    let nmea = String::from_utf8_lossy(&msg.data);
+    if nmea.starts_with("$GPGGA") {
+        println!("GPS Fix: {}", nmea);
+    }
+}
+```
+
+### Arduino (Firmata Protocol)
+
+```rust
+// Configure for Arduino (57600 baud)
+serial.set_baud_rate(57600);
+serial.set_framing_mode(FramingMode::Binary);
+
+// Send Firmata digital write
+let msg = SerialMessage {
+    port: "/dev/ttyUSB0".to_string(),
+    data: vec![0xF5, 0x01, 0x00],  // Digital write pin 1 LOW
+    length: 3,
+};
+hub.send(msg, &mut None).ok();
+```
+
+### Modbus RTU Device
+
+```rust
+// Configure for Modbus RTU (19200 baud, 8E1)
+serial.set_baud_rate(19200);
+serial.set_data_bits(8);
+serial.set_parity(Parity::Even);
+serial.set_stop_bits(1);
+serial.set_framing_mode(FramingMode::Binary);
+
+// Read holding registers (function code 0x03)
+let msg = SerialMessage {
+    port: "/dev/ttyUSB0".to_string(),
+    data: vec![
+        0x01,       // Slave address
+        0x03,       // Function code: Read holding registers
+        0x00, 0x00, // Start address
+        0x00, 0x0A, // Number of registers
+        0xC5, 0xCD  // CRC16
+    ],
+    length: 8,
+};
+hub.send(msg, &mut None).ok();
+```
+
+### Telemetry Radio (3DR Radio)
+
+```rust
+// Configure for telemetry (57600 baud)
+serial.set_baud_rate(57600);
+serial.set_framing_mode(FramingMode::Raw);
+
+// Send MAVLink heartbeat
+let heartbeat = vec![
+    0xFE,       // STX
+    0x09,       // Length
+    0x00,       // Sequence
+    0x01,       // System ID
+    0x00,       // Component ID
+    0x00,       // Message ID (HEARTBEAT)
+    // ... payload and checksum
+];
+hub.send(SerialMessage {
+    port: "/dev/ttyUSB0".to_string(),
+    data: heartbeat,
+    length: 14,
+}, None)?;
+```
+
+## Message Format
+
+```rust
+pub struct SerialMessage {
+    pub port: String,         // Port path (e.g., "/dev/ttyUSB0")
+    pub data: Vec<u8>,        // Data bytes
+    pub length: usize,        // Data length
+    pub timestamp: u64,       // Message time (ns)
+}
+```
+
+## Complete Example: GPS Logger
+
+```rust
+use horus::prelude::*;
+
+fn main() -> Result<()> {
+    let mut scheduler = Scheduler::new();
+
+    // Configure GPS serial port
+    let mut serial = SerialNode::new("/dev/ttyUSB0")?;
+    serial.set_baud_rate(9600);
+    serial.set_data_bits(8);
+    serial.set_parity(Parity::None);
+    serial.set_stop_bits(1);
+    serial.set_framing_mode(FramingMode::Line);
+    serial.set_line_ending("\r\n");
+
+    scheduler.add(Box::new(serial), 1, Some(true));
+
+    // GPS parser node
+    let gps_parser = node! {
+        name: "gps_parser",
+        tick: |ctx| {
+            let hub = Hub::<SerialMessage>::new("serial.rx")?;
+
+            while let Some(msg) = hub.recv(&mut None) {
+                let nmea = String::from_utf8_lossy(&msg.data);
+
+                // Parse GPGGA sentence (GPS fix data)
+                if nmea.starts_with("$GPGGA") {
+                    let fields: Vec<&str> = nmea.split(',').collect();
+                    if fields.len() >= 10 {
+                        let time = fields[1];
+                        let lat = fields[2];
+                        let lat_dir = fields[3];
+                        let lon = fields[4];
+                        let lon_dir = fields[5];
+                        let fix = fields[6];
+
+                        ctx.log_info(&format!(
+                            "GPS: {}°{} {}°{} (fix: {})",
+                            lat, lat_dir, lon, lon_dir, fix
+                        ));
+                    }
+                }
+            }
+
+            Ok(())
+        }
+    };
+    scheduler.add(Box::new(gps_parser), 2, Some(true));
+
+    scheduler.run()?;
+    Ok(())
+}
+```
+
+## Port Discovery
+
+```rust
+// List available serial ports
+let ports = serial.list_ports()?;
+for port in ports {
+    println!("Port: {} ({})", port.name, port.description);
+}
+
+// Auto-detect device by VID:PID
+let ftdi_port = serial.find_port_by_vid_pid(0x0403, 0x6001)?; // FTDI
+let arduino_port = serial.find_port_by_vid_pid(0x2341, 0x0043)?; // Arduino Uno
+```
+
+## Best Practices
+
+1. **Always configure format correctly:**
+   ```rust
+   // Most devices use 8N1
+   serial.set_data_bits(8);
+   serial.set_parity(Parity::None);
+   serial.set_stop_bits(1);
+   ```
+
+2. **Set appropriate timeouts:**
+   ```rust
+   // Prevent blocking forever
+   serial.set_read_timeout(1000);  // 1 second
+   ```
+
+3. **Use correct framing for your protocol:**
+   ```rust
+   // ASCII/text protocols
+   serial.set_framing_mode(FramingMode::Line);
+
+   // Binary protocols
+   serial.set_framing_mode(FramingMode::Binary);
+   ```
+
+4. **Check permissions:**
+   ```bash
+   # Add user to dialout group
+   sudo usermod -a -G dialout $USER
+   # Logout and login for changes to take effect
+   ```
+
+5. **Flush buffers when switching modes:**
+   ```rust
+   serial.flush_input();
+   serial.flush_output();
+   ```
+
+6. **Handle disconnections gracefully:**
+   ```rust
+   if let Some(error) = error_hub.recv(&mut None) {
+       ctx.log_error("Serial disconnected - attempting reconnect");
+       serial.reconnect()?;
+   }
+   ```
+
+## Troubleshooting
+
+**Problem: "Hardware unavailable - using SIMULATION mode"**
+
+**Solutions:**
+1. Check port exists: `ls -l /dev/ttyUSB*`
+2. Check permissions: `groups` (should include "dialout")
+3. Add to dialout: `sudo usermod -a -G dialout $USER` (then logout/login)
+4. Check if port is in use: `lsof /dev/ttyUSB0`
+5. Test with minicom: `minicom -D /dev/ttyUSB0 -b 9600`
+
+**Problem: Garbage characters received**
+
+**Solutions:**
+1. Wrong baud rate - verify device datasheet
+2. Wrong data format - check parity and stop bits
+3. Bad cable or loose connection
+4. Ground connection missing
+
+**Problem: No data received**
+
+**Solutions:**
+1. Check TX/RX wiring (often swapped)
+2. Verify device is powered
+3. Check baud rate matches device
+4. Test loopback (connect TX to RX)
+
+**Problem: "Permission denied" error**
+
+**Solutions:**
+1. Add user to dialout group: `sudo usermod -a -G dialout $USER`
+2. Reboot or logout/login
+3. Check port ownership: `ls -l /dev/ttyUSB0`
+4. Try with sudo (temporarily for testing)
+
+## Testing
+
+```bash
+# Send test data
+echo "Hello" > /dev/ttyUSB0
+
+# Receive data
+cat /dev/ttyUSB0
+
+# Monitor with screen
+screen /dev/ttyUSB0 9600
+
+# Monitor with minicom
+minicom -D /dev/ttyUSB0 -b 9600
+```
+
+## See Also
+
+- [ModbusNode](./modbus) - Modbus RTU/TCP protocol
+- [CanBusNode](./can-bus) - CAN bus communication
+- [GpsNode](./gps) - GPS-specific parsing
+- [I2cBusNode](./i2c-bus) - I2C communication

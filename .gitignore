@@ -75,5 +75,5 @@ Thumbs.db
 .cache/
 *.cache
 
-# Documentation
-docs/
+# Documentation (only root-level docs/, not docs-site/content/docs/)
+/docs/
