@@ -314,8 +314,8 @@ export function DocsSidebar({ isOpen = true, onClose }: DocsSidebarProps) {
               hasChildren ? "" : depth > 0 ? "ml-4" : ""
             } ${
               isActive
-                ? "bg-[var(--accent)]/10 text-[var(--accent)] font-medium border-l-2 border-[var(--accent)]"
-                : "text-[var(--text-secondary)] hover:text-[var(--accent)] hover:bg-[var(--border)]"
+                ? "bg-[var(--surface)] text-[var(--text)] font-medium border-l-2 border-[var(--accent)]"
+                : "text-[var(--text-secondary)] hover:text-[var(--text)] hover:bg-[var(--surface)]"
             }`}
           >
             {link.title}
@@ -342,7 +342,7 @@ export function DocsSidebar({ isOpen = true, onClose }: DocsSidebarProps) {
           <div key={section.title}>
             <button
               onClick={() => toggleSection(section.title)}
-              className="flex items-center gap-2 w-full text-left font-semibold text-[var(--text-primary)] hover:text-[var(--accent)] transition-colors mb-2 touch-manipulation"
+              className="flex items-center gap-2 w-full text-left font-semibold text-[var(--text)] hover:text-[var(--text-muted)] transition-colors mb-2 touch-manipulation"
             >
               {isExpanded ? (
                 <FiChevronDown className="w-4 h-4" />
@@ -383,15 +383,15 @@ export function DocsSidebar({ isOpen = true, onClose }: DocsSidebarProps) {
       )}
 
       <aside
-        className={`fixed top-0 left-0 bottom-0 w-80 max-w-[85vw] bg-[var(--background)] border-r border-[var(--border)] z-50 lg:hidden transform transition-transform duration-300 ease-in-out overflow-y-auto ${
+        className={`fixed top-0 left-0 bottom-0 w-80 max-w-[85vw] bg-[var(--bg)] border-r border-[var(--border)] z-50 lg:hidden transform transition-transform duration-300 ease-in-out overflow-y-auto ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="sticky top-0 bg-[var(--background)] border-b border-[var(--border)] p-4 flex items-center justify-between">
-          <span className="font-semibold text-[var(--text-primary)]">Documentation</span>
+        <div className="sticky top-0 bg-[var(--bg)] border-b border-[var(--border)] p-4 flex items-center justify-between">
+          <span className="font-semibold text-[var(--text)]">Documentation</span>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-[var(--surface)] rounded-md transition-colors touch-manipulation"
+            className="p-2 hover:bg-[var(--surface)] transition-colors touch-manipulation"
             aria-label="Close menu"
           >
             <FiX className="w-5 h-5" />

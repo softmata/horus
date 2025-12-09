@@ -3,6 +3,7 @@
 //! Records all significant events in a circular buffer that persists
 //! across crashes for debugging and incident analysis.
 
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
@@ -225,7 +226,7 @@ impl BlackBox {
             let file = File::create(path)?;
             let writer = BufWriter::new(file);
             serde_json::to_writer_pretty(writer, &self.get_events())?;
-            println!(
+            info!(
                 "[BLACKBOX] Saved {} events to {:?}",
                 self.buffer.len(),
                 path
@@ -241,7 +242,7 @@ impl BlackBox {
                 let content = fs::read_to_string(path)?;
                 let events: Vec<BlackBoxRecord> = serde_json::from_str(&content)?;
                 self.buffer = VecDeque::from(events);
-                println!(
+                info!(
                     "[BLACKBOX] Loaded {} events from {:?}",
                     self.buffer.len(),
                     path

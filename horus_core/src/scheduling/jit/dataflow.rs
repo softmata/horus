@@ -111,33 +111,35 @@ unsafe impl Send for CompiledDataflow {}
 unsafe impl Sync for CompiledDataflow {}
 
 impl CompiledDataflow {
-    /// Create a new compiled dataflow for automatic JIT tracking
-    pub fn new(name: &str) -> Self {
-        // Try to compile a simple arithmetic function for demonstration
-        // In production, this would analyze the node's actual logic
-        match Self::compile_default(name) {
-            Ok(compiled) => compiled,
-            Err(e) => {
-                eprintln!("[JIT] Failed to compile node '{}': {}", name, e);
-                // Fall back to tracking-only mode
-                Self {
-                    name: name.to_string(),
-                    func_ptr: std::ptr::null(),
-                    exec_count: 0,
-                    total_ns: 0,
-                }
-            }
-        }
+    /// Create a new compiled dataflow from a dataflow expression
+    ///
+    /// # Arguments
+    /// * `name` - Name for the compiled function
+    /// * `expr` - The dataflow expression to compile
+    ///
+    /// # Returns
+    /// A compiled dataflow that can execute native code, or an error if compilation fails
+    pub fn new(name: &str, expr: &DataflowExpr) -> Result<Self, String> {
+        let mut compiler = JITCompiler::new()?;
+        let func_ptr = compiler.compile_dataflow_expr(name, expr)?;
+
+        Ok(Self {
+            name: name.to_string(),
+            func_ptr,
+            exec_count: 0,
+            total_ns: 0,
+        })
     }
 
-    /// Compile a default ultra-fast arithmetic function for the node
-    /// This demonstrates real JIT compilation producing 20-50ns execution
-    fn compile_default(name: &str) -> Result<Self, String> {
+    /// Create a compiled dataflow for a simple arithmetic operation: output = input * multiplier + addend
+    ///
+    /// # Arguments
+    /// * `name` - Name for the compiled function
+    /// * `multiplier` - The multiplier value
+    /// * `addend` - The value to add
+    pub fn new_arithmetic(name: &str, multiplier: i64, addend: i64) -> Result<Self, String> {
         let mut compiler = JITCompiler::new()?;
-
-        // Compile a simple arithmetic operation: output = input * 3 + 7
-        // This represents a typical ultra-fast deterministic computation
-        let func_ptr = compiler.compile_arithmetic_node(name, 3, 7)?;
+        let func_ptr = compiler.compile_arithmetic_node(name, multiplier, addend)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -148,10 +150,14 @@ impl CompiledDataflow {
     }
 
     /// Execute the compiled dataflow with given inputs
+    ///
+    /// # Panics
+    /// Panics if the compiled function pointer is null (JIT compilation failed).
+    /// Use `try_execute` for error handling instead of panics.
     pub fn execute(&mut self, input: i64) -> i64 {
         let start = Instant::now();
 
-        // Execute the compiled function if available, otherwise fallback
+        // Execute the compiled function - panic if null (JIT failed)
         let result = if !self.func_ptr.is_null() {
             // Cast to function pointer and execute
             unsafe {
@@ -159,9 +165,11 @@ impl CompiledDataflow {
                 func(input)
             }
         } else {
-            // Fallback computation when JIT compilation failed
-            // This simulates the node's computation
-            input * 3 + 7
+            panic!(
+                "JIT compilation failed for '{}': cannot execute without compiled function. \
+                Use try_execute() to handle this case gracefully.",
+                self.name
+            );
         };
 
         let elapsed_ns = start.elapsed().as_nanos() as u64;
@@ -169,6 +177,53 @@ impl CompiledDataflow {
         self.total_ns += elapsed_ns;
 
         result
+    }
+
+    /// Try to execute the compiled dataflow, returning an error if JIT compilation failed
+    pub fn try_execute(&mut self, input: i64) -> Result<i64, String> {
+        if self.func_ptr.is_null() {
+            return Err(format!(
+                "JIT compilation failed for '{}': no compiled function available",
+                self.name
+            ));
+        }
+
+        let start = Instant::now();
+        let result = unsafe {
+            let func: fn(i64) -> i64 = std::mem::transmute(self.func_ptr);
+            func(input)
+        };
+
+        let elapsed_ns = start.elapsed().as_nanos() as u64;
+        self.exec_count += 1;
+        self.total_ns += elapsed_ns;
+
+        Ok(result)
+    }
+
+    /// Check if this dataflow has a valid compiled function
+    pub fn is_compiled(&self) -> bool {
+        !self.func_ptr.is_null()
+    }
+
+    /// Create a stats-only CompiledDataflow without actual JIT compilation
+    ///
+    /// Use this when you want to track execution statistics for a node that
+    /// doesn't support JIT compilation. The `execute()` method will panic if called
+    /// on a stats-only dataflow - use `try_execute()` or check `is_compiled()` first.
+    pub fn new_stats_only(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            func_ptr: std::ptr::null(),
+            exec_count: 0,
+            total_ns: 0,
+        }
+    }
+
+    /// Record execution time for stats tracking (when not using JIT)
+    pub fn record_execution(&mut self, elapsed_ns: u64) {
+        self.exec_count += 1;
+        self.total_ns += elapsed_ns;
     }
 
     /// Get average execution time in nanoseconds

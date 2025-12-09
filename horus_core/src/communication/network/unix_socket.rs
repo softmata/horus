@@ -3,6 +3,7 @@
 /// Provides <5μs latency for same-machine communication using Unix sockets.
 /// More efficient than TCP loopback as it avoids the IP stack.
 use crate::error::HorusResult;
+use log::warn;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -131,7 +132,7 @@ where
 
         // Safety check
         if len > BUFFER_SIZE {
-            eprintln!("Message too large: {} bytes", len);
+            warn!("[UnixSocket] Message too large: {} bytes", len);
             return None;
         }
 

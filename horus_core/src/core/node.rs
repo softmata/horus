@@ -1031,11 +1031,17 @@ pub trait Node: Send {
     }
 
     /// Get list of publishers (topic metadata)
+    ///
+    /// **Important:** Override this if your node publishes to any topics.
+    /// The default returns empty, which may hide connectivity issues during debugging.
     fn get_publishers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
     /// Get list of subscribers (topic metadata)
+    ///
+    /// **Important:** Override this if your node subscribes to any topics.
+    /// The default returns empty, which may hide connectivity issues during debugging.
     fn get_subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
@@ -1057,6 +1063,10 @@ pub trait Node: Send {
     }
 
     /// Health check (optional override)
+    ///
+    /// **Important:** Override this for production nodes to report actual health status.
+    /// The default always returns `true`, which may mask real issues.
+    /// Consider checking: connection status, last successful tick, resource availability.
     fn is_healthy(&self) -> bool {
         true
     }

@@ -84,30 +84,17 @@ export default function CodeBlock({ children, className = '' }: CodeBlockProps) 
     highlightCode();
   }, [children, language, theme]);
 
-  const preStyle: React.CSSProperties = theme === 'light' ? {
-    fontFamily: '"Courier New", Courier, monospace',
+  const preStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-mono, "SF Mono", Monaco, "Cascadia Code", Consolas, monospace)',
     fontVariantLigatures: 'none' as const,
     fontFeatureSettings: '"liga" 0, "calt" 0',
     letterSpacing: '0',
     textRendering: 'optimizeSpeed' as const,
     WebkitFontSmoothing: 'antialiased' as const,
     fontWeight: 'normal',
-    backgroundColor: '#f8fafc',
+    backgroundColor: 'var(--surface)',
+    border: '1px solid var(--border)',
     padding: '1rem',
-    borderRadius: '0.375rem',
-    overflow: 'auto',
-    marginBottom: '1.5rem',
-  } : {
-    fontFamily: '"Courier New", Courier, monospace',
-    fontVariantLigatures: 'none' as const,
-    fontFeatureSettings: '"liga" 0, "calt" 0',
-    letterSpacing: '0',
-    textRendering: 'optimizeSpeed' as const,
-    WebkitFontSmoothing: 'none' as const,
-    fontWeight: 'normal',
-    backgroundColor: '#1e1e1e',
-    padding: '1rem',
-    borderRadius: '0.375rem',
     overflow: 'auto',
     marginBottom: '1.5rem',
   };
@@ -116,32 +103,12 @@ export default function CodeBlock({ children, className = '' }: CodeBlockProps) 
     <div style={{ position: 'relative', marginBottom: '1.5rem' }}>
       <button
         onClick={handleCopy}
+        className="absolute top-2 right-2 px-2 py-1 text-xs font-medium bg-[var(--bg)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)] hover:border-[var(--border-hover)] transition-colors z-10"
         style={{
-          position: 'absolute',
-          top: '0.5rem',
-          right: '0.5rem',
-          padding: '0.5rem 0.75rem',
-          background: theme === 'light' ? '#E2E8F0' : '#1F2229',
-          border: `1px solid ${theme === 'light' ? 'rgba(100, 116, 139, 0.3)' : 'rgba(0, 212, 255, 0.2)'}`,
-          borderRadius: '4px',
-          color: theme === 'light' ? '#0F172A' : '#E2E8F0',
-          fontSize: '0.75rem',
-          fontWeight: '500',
-          cursor: 'pointer',
-          transition: 'all 0.2s',
-          fontFamily: 'JetBrains Mono, monospace',
-          zIndex: 10,
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = theme === 'light' ? '#CBD5E1' : '#2D3748';
-          e.currentTarget.style.borderColor = theme === 'light' ? '#0284C7' : '#00D4FF';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = theme === 'light' ? '#E2E8F0' : '#1F2229';
-          e.currentTarget.style.borderColor = theme === 'light' ? 'rgba(100, 116, 139, 0.3)' : 'rgba(0, 212, 255, 0.2)';
+          fontFamily: 'var(--font-mono, monospace)',
         }}
       >
-        {copied ? ' Copied!' : 'Copy'}
+        {copied ? 'Copied' : 'Copy'}
       </button>
       <pre className={`code-block ${className}`} style={preStyle}>
         <code

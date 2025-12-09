@@ -184,7 +184,7 @@ pub fn get_device_count() -> CudaResult<i32> {
 
 #[cfg(not(feature = "cuda"))]
 pub fn get_device_count() -> CudaResult<i32> {
-    Ok(0)
+    Err(CudaError::NotSupported)
 }
 
 /// Set current CUDA device

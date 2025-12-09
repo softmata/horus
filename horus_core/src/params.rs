@@ -3,6 +3,7 @@
 //! Provides a straightforward key-value store for runtime configuration
 
 use crate::error::{HorusError, HorusResult};
+use log::warn;
 use regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -469,8 +470,8 @@ impl Clone for RuntimeParams {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self::init().unwrap_or_else(|e| {
-            eprintln!(
-                "Warning: Failed to initialize RuntimeParams: {}. Using empty params.",
+            warn!(
+                "Failed to initialize RuntimeParams: {}. Using empty params.",
                 e
             );
             Self {

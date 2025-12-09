@@ -1,4 +1,5 @@
 use crate::memory::platform::shm_logs_path;
+use log::error;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -99,7 +100,7 @@ impl SharedLogBuffer {
         let write_idx = match write_idx_bytes.try_into() {
             Ok(bytes) => u64::from_le_bytes(bytes) as usize,
             Err(_) => {
-                eprintln!(" Failed to read log buffer index");
+                error!("[LogBuffer] Failed to read log buffer index");
                 return;
             }
         };
@@ -116,11 +117,11 @@ impl SharedLogBuffer {
             Ok(data) if data.len() <= LOG_ENTRY_SIZE => data,
             Ok(data) => {
                 // This should rarely happen now, but keep as safety net
-                eprintln!(" Log entry still too large ({} bytes) after message truncation - metadata too big?", data.len());
+                error!("[LogBuffer] Log entry still too large ({} bytes) after message truncation - metadata too big?", data.len());
                 data[..LOG_ENTRY_SIZE].to_vec()
             }
             Err(e) => {
-                eprintln!(" Failed to serialize log: {}", e);
+                error!("[LogBuffer] Failed to serialize log: {}", e);
                 return;
             }
         };
@@ -152,7 +153,7 @@ impl SharedLogBuffer {
         let write_idx = match write_idx_bytes.try_into() {
             Ok(bytes) => u64::from_le_bytes(bytes) as usize,
             Err(_) => {
-                eprintln!(" Failed to read log buffer index");
+                error!("[LogBuffer] Failed to read log buffer index");
                 return Vec::new();
             }
         };

@@ -258,17 +258,8 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
     setResults([]);
   };
 
-  const getCategoryColor = (category: string) => {
-    const colors: Record<string, string> = {
-      'getting-started': 'text-green-400',
-      'architecture': 'text-blue-400',
-      'api': 'text-purple-400',
-      'development': 'text-orange-400',
-      'advanced': 'text-red-400',
-      'multi-language': 'text-cyan-400',
-      'troubleshooting': 'text-yellow-400',
-    };
-    return colors[category] || 'text-[var(--text-tertiary)]';
+  const getCategoryColor = () => {
+    return 'text-[var(--text-muted)]';
   };
 
   if (!isOpen) return null;
@@ -279,19 +270,19 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-2xl mx-4 bg-[var(--card-bg)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden"
+        className="w-full max-w-2xl mx-4 bg-[var(--bg)] border border-[var(--border)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Search Input */}
         <div className="flex items-center gap-3 px-4 py-4 border-b border-[var(--border)]">
-          <FiSearch className="w-5 h-5 text-[var(--accent)]" />
+          <FiSearch className="w-5 h-5 text-[var(--text-muted)]" />
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search documentation..."
-            className="flex-1 bg-transparent outline-none text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] text-lg"
+            className="flex-1 bg-transparent outline-none text-[var(--text)] placeholder:text-[var(--text-tertiary)] text-lg"
             autoComplete="off"
             autoCorrect="off"
             spellCheck="false"
@@ -349,10 +340,10 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <span
-                          className="font-medium text-[var(--text-primary)]"
+                          className="font-medium text-[var(--text)]"
                           dangerouslySetInnerHTML={{ __html: result.highlights.title || result.title }}
                         />
-                        <span className={`text-xs uppercase tracking-wide ${getCategoryColor(result.category)}`}>
+                        <span className={`text-xs uppercase tracking-wide ${getCategoryColor()}`}>
                           {result.category.replace('-', ' ')}
                         </span>
                       </div>
@@ -386,7 +377,7 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
                   <button
                     key={term}
                     onClick={() => setQuery(term)}
-                    className="px-3 py-1 text-sm bg-[var(--surface)] border border-[var(--border)] rounded-full hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+                    className="px-3 py-1 text-sm bg-[var(--surface)] border border-[var(--border)] hover:border-[var(--border-hover)] hover:text-[var(--text)] transition-colors"
                   >
                     {term}
                   </button>

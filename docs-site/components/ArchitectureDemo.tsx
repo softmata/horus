@@ -87,7 +87,7 @@ export function ArchitectureDemo() {
   ];
 
   return (
-    <div className="w-full relative bg-[var(--card-bg)] rounded-2xl border border-[var(--border)] overflow-hidden shadow-2xl">
+    <div className="w-full relative bg-[var(--surface)] border border-[var(--border)] overflow-hidden">
       {/* Mobile scroll hint */}
       <div className="md:hidden absolute top-2 right-4 z-10 text-xs text-[var(--text-tertiary)] bg-[var(--surface)] px-2 py-1 rounded border border-[var(--border)] opacity-75">
          Scroll 
@@ -102,7 +102,7 @@ export function ArchitectureDemo() {
         >
 
         {/* Title */}
-        <text x="900" y="30" fill="var(--text-primary)" fontSize="18" textAnchor="middle" fontWeight="700">
+        <text x="900" y="30" fill="var(--text)" fontSize="18" textAnchor="middle" fontWeight="700">
           HORUS IPC Architecture
         </text>
         <text x="900" y="50" fill="var(--text-tertiary)" fontSize="13" textAnchor="middle">
@@ -115,7 +115,7 @@ export function ArchitectureDemo() {
           y="135"
           width="1100"
           height="330"
-          fill="rgba(0, 212, 255, 0.03)"
+          fill="var(--surface)"
           stroke="var(--accent)"
           strokeWidth="3"
           rx="12"
@@ -145,7 +145,7 @@ export function ArchitectureDemo() {
               y1={node.y}
               x2={695}
               y2={topic.y}
-              stroke="rgba(0, 212, 255, 0.12)"
+              stroke="var(--border)"
               strokeWidth="1.5"
             />
           ))
@@ -166,8 +166,8 @@ export function ArchitectureDemo() {
           const x = startX + (endX - startX) * (packet.progress / 100);
           const y = startY + (endY - startY) * (packet.progress / 100);
 
-          // Different colors for publish (cyan) vs subscribe (green)
-          const color = isPublish ? 'var(--accent)' : 'var(--success)';
+          // Different colors for publish vs subscribe
+          const color = isPublish ? 'var(--text)' : 'var(--text-muted)';
 
           return (
             <g key={packet.id}>
@@ -223,31 +223,10 @@ export function ArchitectureDemo() {
                 repeatCount="indefinite"
               />
             </circle>
-            {/* Node inner glow */}
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r="28"
-              fill={node.color}
-              opacity="0.2"
-            >
-              <animate
-                attributeName="cy"
-                values={`${node.y};${node.y - 8};${node.y}`}
-                dur={`${4 + i * 0.5}s`}
-                repeatCount="indefinite"
-              />
-              <animate
-                attributeName="opacity"
-                values="0.15;0.3;0.15"
-                dur="3s"
-                repeatCount="indefinite"
-              />
-            </circle>
             <text
               x={node.x}
               y={node.y - 5}
-              fill="var(--text-primary)"
+              fill="var(--text)"
               fontSize="12"
               textAnchor="middle"
               fontWeight="700"
@@ -287,7 +266,7 @@ export function ArchitectureDemo() {
               y={topic.y - 24}
               width="420"
               height="48"
-              fill="rgba(0, 255, 136, 0.08)"
+              fill="var(--surface)"
               stroke="var(--success)"
               strokeWidth="2.5"
               rx="10"
@@ -312,7 +291,7 @@ export function ArchitectureDemo() {
               fill="var(--success)"
               fontSize="16"
               textAnchor="middle"
-              fontFamily="JetBrains Mono, monospace"
+              fontFamily="monospace"
               fontWeight="700"
             >
               {topic.label}
@@ -321,7 +300,7 @@ export function ArchitectureDemo() {
         ))}
 
         {/* Log entries panel header (right side of shared memory) */}
-        <text x="1450" y="165" fill="#FFA500" fontSize="13" textAnchor="middle" fontWeight="700" letterSpacing="0.5">
+        <text x="1450" y="165" fill="var(--text-muted)" fontSize="13" textAnchor="middle" fontWeight="700" letterSpacing="0.5">
           Live Logs
         </text>
 
@@ -355,15 +334,15 @@ export function ArchitectureDemo() {
                 y={loopedY}
                 fill="var(--text-tertiary)"
                 fontSize="9"
-                fontFamily="JetBrains Mono, monospace"
+                fontFamily="monospace"
                 opacity={0.85}
               >
-                <tspan fill="#888">[{log.time}]</tspan>
-                <tspan fill="#666"> [IPC: </tspan>
-                <tspan fill="#FFA500">{log.ipc}</tspan>
-                <tspan fill="#666"> | Tick: </tspan>
-                <tspan fill="#FFA500">{log.tick}</tspan>
-                <tspan fill="#666">] </tspan>
+                <tspan fill="var(--text-tertiary)">[{log.time}]</tspan>
+                <tspan fill="var(--text-tertiary)"> [IPC: </tspan>
+                <tspan fill="var(--text-muted)">{log.ipc}</tspan>
+                <tspan fill="var(--text-tertiary)"> | Tick: </tspan>
+                <tspan fill="var(--text-muted)">{log.tick}</tspan>
+                <tspan fill="var(--text-tertiary)">] </tspan>
                 <tspan fill="var(--text-secondary)">{log.node}</tspan>
                 <tspan fill={log.type === 'PUB' ? 'var(--accent)' : 'var(--success)'}> {arrow} </tspan>
                 <tspan fill="var(--success)">'{log.topic}'</tspan>

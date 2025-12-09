@@ -1,4 +1,5 @@
 use crate::communication::network::fragmentation::{Fragment, FragmentManager};
+use log::{error, warn};
 /// High-performance async router client backend
 ///
 /// Optimizations:
@@ -127,7 +128,7 @@ where
             )
             .await
             {
-                eprintln!("Router connection error: {}", e);
+                error!("[Router] Connection error: {}", e);
             }
         });
 
@@ -197,7 +198,7 @@ where
 
             let packet_len = u32::from_le_bytes(len_buffer) as usize;
             if packet_len > BUFFER_SIZE {
-                eprintln!("Packet too large: {}", packet_len);
+                warn!("[Router] Packet too large: {}", packet_len);
                 continue;
             }
 

@@ -124,13 +124,13 @@ export function Breadcrumb() {
               <FiChevronRight className="w-4 h-4 mx-2 text-[var(--border)]" />
             )}
             {isLast ? (
-              <span className="text-[var(--accent)] font-medium" aria-current="page">
+              <span className="text-[var(--text)] font-medium" aria-current="page">
                 {isHome ? <FiHome className="w-4 h-4" /> : crumb.label}
               </span>
             ) : (
               <Link
                 href={crumb.href}
-                className="hover:text-[var(--accent)] transition-colors"
+                className="hover:text-[var(--text)] transition-colors"
               >
                 {isHome ? <FiHome className="w-4 h-4" /> : crumb.label}
               </Link>

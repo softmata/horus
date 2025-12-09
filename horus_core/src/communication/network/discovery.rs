@@ -4,6 +4,7 @@
 /// Target: <1ms discovery for 10 peers
 use crate::communication::network::protocol::{HorusPacket, MessageType};
 use crate::error::HorusResult;
+use log::{error, warn};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
@@ -209,7 +210,7 @@ impl DiscoveryService {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Discovery packet decode error: {}", e);
+                                warn!("[Discovery] Packet decode error: {}", e);
                             }
                         }
                     }
@@ -218,7 +219,7 @@ impl DiscoveryService {
                         std::thread::sleep(Duration::from_micros(100));
                     }
                     Err(e) => {
-                        eprintln!("Discovery recv error: {}", e);
+                        error!("[Discovery] Recv error: {}", e);
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }

@@ -28,7 +28,7 @@ export function ThemeToggle() {
   if (!mounted) {
     return (
       <button
-        className="p-2 text-[var(--text-secondary)] rounded-md transition-colors touch-manipulation"
+        className="p-2 text-[var(--text-secondary)] transition-colors touch-manipulation"
         aria-label="Toggle theme"
       >
         <FiMoon className="w-5 h-5" />
@@ -39,7 +39,7 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggleTheme}
-      className="p-2 text-[var(--text-secondary)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--surface)] transition-colors touch-manipulation"
+      className="p-2 text-[var(--text-secondary)] hover:text-[var(--text)] hover:bg-[var(--surface)] transition-colors touch-manipulation"
       aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
       title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
     >

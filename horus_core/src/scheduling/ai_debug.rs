@@ -665,18 +665,15 @@ impl PatternDetector for JitterDetector {
     }
 }
 
-/// Detects sensor data anomalies
+/// Detects sensor data anomalies (execution time spikes)
 struct SensorAnomalyDetector {
     spike_threshold: f64,
-    #[allow(dead_code)] // Reserved for future dropout detection
-    dropout_threshold: usize,
 }
 
 impl SensorAnomalyDetector {
     fn new() -> Self {
         Self {
             spike_threshold: 3.0, // 3 standard deviations
-            dropout_threshold: 5, // 5 consecutive zeros
         }
     }
 }

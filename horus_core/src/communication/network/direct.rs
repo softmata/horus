@@ -10,6 +10,7 @@
 /// - Zero-allocation buffer pooling
 /// - No router middleman = lower latency (~5-15µs)
 use crate::error::HorusResult;
+use log::{error, warn};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use crossbeam::queue::SegQueue;
 use std::net::SocketAddr;
@@ -99,7 +100,7 @@ where
         runtime_handle.spawn(async move {
             if let Err(e) = Self::producer_handler(consumer_addr, send_rx, buffer_pool_clone).await
             {
-                eprintln!("Producer connection error: {}", e);
+                error!("[Direct] Producer connection error: {}", e);
             }
         });
 
@@ -127,7 +128,7 @@ where
         // Spawn async consumer task
         runtime_handle.spawn(async move {
             if let Err(e) = Self::consumer_handler(listen_addr, recv_tx).await {
-                eprintln!("Consumer connection error: {}", e);
+                error!("[Direct] Consumer connection error: {}", e);
             }
         });
 
@@ -201,7 +202,7 @@ where
 
             let msg_len = u32::from_le_bytes(len_buffer) as usize;
             if msg_len > read_buffer.len() {
-                eprintln!("Message too large: {}", msg_len);
+                warn!("[Direct] Message too large: {}", msg_len);
                 continue;
             }
 

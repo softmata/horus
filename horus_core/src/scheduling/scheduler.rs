@@ -1226,7 +1226,7 @@ impl Scheduler {
             } else {
                 // JIT capable but no compile params - track for stats only
                 println!("[JIT] Node '{}' is JIT-capable (tracking stats)", node_name);
-                (true, Some(CompiledDataflow::new(&node_name)))
+                (true, Some(CompiledDataflow::new_stats_only(&node_name)))
             }
         } else {
             (false, None)
@@ -2682,14 +2682,14 @@ impl Scheduler {
                                                 total_ns: 0,
                                             })
                                         }
-                                        Err(_) => Some(CompiledDataflow::new(node_name)),
+                                        Err(_) => Some(CompiledDataflow::new_stats_only(node_name)),
                                     }
                                 }
-                                Err(_) => Some(CompiledDataflow::new(node_name)),
+                                Err(_) => Some(CompiledDataflow::new_stats_only(node_name)),
                             }
                         } else {
                             // No JIT params - use generic function for stats tracking
-                            Some(CompiledDataflow::new(node_name))
+                            Some(CompiledDataflow::new_stats_only(node_name))
                         };
 
                         if let Some(compiled) = compiled {

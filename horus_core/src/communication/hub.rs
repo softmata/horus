@@ -72,7 +72,7 @@ pub struct HubMetrics {
 /// Optimized Hub for pub/sub messaging with cache-aligned lock-free hot paths
 #[repr(align(64))] // Cache-line aligned structure
 pub struct Hub<T> {
-    shm_topic: Arc<ShmTopic<T>>, // Local shared memory (always present)
+    shm_topic: Option<Arc<ShmTopic<T>>>, // Local shared memory (None for network-only endpoints)
     network: Option<std::sync::Mutex<NetworkBackend<T>>>, // Optional network backend (needs Mutex for recv)
     is_network: bool,                                     // Fast dispatch flag
     topic_name: String,
@@ -247,11 +247,11 @@ impl<
 
         match endpoint {
             Endpoint::Local { topic } => {
-                // Fast path: local shared memory only (existing code unchanged)
+                // Fast path: local shared memory only
                 let shm_topic = Arc::new(ShmTopic::new(&topic, capacity)?);
 
                 Ok(Hub {
-                    shm_topic,
+                    shm_topic: Some(shm_topic),
                     network: None,
                     is_network: false,
                     topic_name: topic_name.to_string(),
@@ -261,16 +261,12 @@ impl<
                 })
             }
 
-            // Network endpoints
+            // Network endpoints - no shared memory allocated (avoids wasting resources)
             network_endpoint => {
-                // Create actual network backend
                 let network_backend = NetworkBackend::new(network_endpoint)?;
 
-                // Create a placeholder shared memory topic (not used for network)
-                let shm_topic = Arc::new(ShmTopic::new("__placeholder", capacity)?);
-
                 Ok(Hub {
-                    shm_topic,
+                    shm_topic: None, // Network-only: no local shared memory needed
                     network: Some(std::sync::Mutex::new(network_backend)),
                     is_network: true,
                     topic_name: topic_name.to_string(),
@@ -334,7 +330,22 @@ impl<
         }
 
         // Local shared memory path (OPTIMIZED - time only IPC)
-        match self.shm_topic.loan() {
+        let shm_topic = match &self.shm_topic {
+            Some(topic) => topic,
+            None => {
+                // Network hub incorrectly fell through to shm path - this is a bug
+                self.metrics
+                    .send_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.state.store(
+                    ConnectionState::Failed.into_u8(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                return Err(msg);
+            }
+        };
+
+        match shm_topic.loan() {
             Ok(mut sample) => {
                 // Fast path: when ctx is None (benchmarks), bypass logging completely
                 if let Some(ref mut ctx) = ctx {
@@ -429,9 +440,20 @@ impl<
         }
 
         // Local shared memory path (ZERO-COPY OPTIMIZED)
+        let shm_topic = match &self.shm_topic {
+            Some(topic) => topic,
+            None => {
+                // Network hub incorrectly fell through to shm path - this is a bug
+                self.metrics
+                    .recv_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return None;
+            }
+        };
+
         // TIME ONLY THE ACTUAL IPC OPERATION
         let ipc_start = Instant::now();
-        match self.shm_topic.receive() {
+        match shm_topic.receive() {
             Some(sample) => {
                 let ipc_ns = ipc_start.elapsed().as_nanos() as u64;
                 // END TIMING

@@ -84,10 +84,10 @@ export function TableOfContents() {
   };
 
   return (
-    <nav className="hidden xl:block w-64 border-l border-[var(--border)] bg-[var(--background)] h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
+    <nav className="hidden xl:block w-64 border-l border-[var(--border)] bg-[var(--bg)] h-[calc(100vh-4rem)] sticky top-16 overflow-y-auto">
       <div className="p-6 space-y-4">
         <div className="mb-6">
-          <h3 className="text-sm font-semibold text-[var(--text-primary)] uppercase tracking-wide mb-4">
+          <h3 className="text-sm font-semibold text-[var(--text)] uppercase tracking-wide mb-4">
             On This Page
           </h3>
           <ul className="space-y-2">
@@ -101,8 +101,8 @@ export function TableOfContents() {
                   onClick={(e) => handleClick(e, heading.id)}
                   className={`block text-sm py-1 transition-all duration-200 border-l-2 pl-3 touch-manipulation ${
                     activeId === heading.id
-                      ? "border-[var(--accent)] text-[var(--accent)] font-medium"
-                      : "border-transparent text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--border)]"
+                      ? "border-[var(--text)] text-[var(--text)] font-medium"
+                      : "border-transparent text-[var(--text-secondary)] hover:text-[var(--text)] hover:border-[var(--border)]"
                   }`}
                 >
                   {heading.text}
@@ -121,7 +121,7 @@ export function TableOfContents() {
             <li>
               <a
                 href="/getting-started/installation"
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors block touch-manipulation py-1"
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors block touch-manipulation py-1"
               >
                 Getting Started
               </a>
@@ -129,7 +129,7 @@ export function TableOfContents() {
             <li>
               <a
                 href="/examples"
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors block touch-manipulation py-1"
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors block touch-manipulation py-1"
               >
                 Examples
               </a>
@@ -137,7 +137,7 @@ export function TableOfContents() {
             <li>
               <a
                 href="/api-node"
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors block touch-manipulation py-1"
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors block touch-manipulation py-1"
               >
                 API Reference
               </a>
@@ -145,7 +145,7 @@ export function TableOfContents() {
             <li>
               <a
                 href="/benchmarks"
-                className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors block touch-manipulation py-1"
+                className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors block touch-manipulation py-1"
               >
                 Benchmarks
               </a>
