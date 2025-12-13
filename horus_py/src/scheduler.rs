@@ -35,7 +35,7 @@ struct RegisteredNode {
     watchdog_timeout_ms: u64,    // Watchdog timeout in milliseconds
     last_watchdog_feed: Instant, // Last time watchdog was fed
     watchdog_expired: bool,      // Has watchdog expired?
-    // Pub/Sub tracking for dashboard
+    // Pub/Sub tracking for monitor
     publishers: Vec<String>,  // Topics this node publishes to
     subscribers: Vec<String>, // Topics this node subscribes to
 }
@@ -65,7 +65,7 @@ impl PyScheduler {
     #[new]
     #[pyo3(signature = (config=None))]
     pub fn new(config: Option<PySchedulerConfig>) -> PyResult<Self> {
-        // Create heartbeat directory for dashboard monitoring
+        // Create heartbeat directory for monitor
         Self::setup_heartbeat_directory();
 
         // Extract config values or use defaults
@@ -442,7 +442,7 @@ impl PyScheduler {
                 }
             }
 
-            // Write initial registry for dashboard
+            // Write initial registry for monitor
             Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
         }
 
@@ -632,7 +632,7 @@ impl PyScheduler {
                         }
                     }
 
-                    // Write heartbeat for dashboard monitoring
+                    // Write heartbeat for monitor
                     if let Ok(ctx) = registered.context.lock() {
                         Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
                     }
@@ -754,7 +754,7 @@ impl PyScheduler {
                 }
             }
 
-            // Write initial registry for dashboard
+            // Write initial registry for monitor
             Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
         }
 
@@ -977,7 +977,7 @@ impl PyScheduler {
                         }
                     }
 
-                    // Write heartbeat for dashboard monitoring
+                    // Write heartbeat for monitor
                     if let Ok(ctx) = registered.context.lock() {
                         Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
                     }
@@ -1282,7 +1282,7 @@ impl PyScheduler {
                         ctx.record_tick();
                     }
 
-                    // Write heartbeat for dashboard monitoring
+                    // Write heartbeat for monitor
                     if let Ok(ctx) = registered.context.lock() {
                         Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
                     }
@@ -1475,7 +1475,7 @@ impl PyScheduler {
                         ctx.record_tick();
                     }
 
-                    // Write heartbeat for dashboard monitoring
+                    // Write heartbeat for monitor
                     if let Ok(ctx) = registered.context.lock() {
                         Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
                     }
@@ -1589,13 +1589,13 @@ impl PyScheduler {
 }
 
 impl PyScheduler {
-    /// Create heartbeat directory for dashboard monitoring
+    /// Create heartbeat directory for monitor
     fn setup_heartbeat_directory() {
         let dir = shm_heartbeats_dir();
         let _ = fs::create_dir_all(&dir);
     }
 
-    /// Write heartbeat for a node (for dashboard monitoring)
+    /// Write heartbeat for a node (for monitor)
     fn write_heartbeat(node_name: &str, context: &CoreNodeInfo, rate_hz: f64) {
         let heartbeat = NodeHeartbeat::from_metrics(context.state().clone(), context.metrics());
 

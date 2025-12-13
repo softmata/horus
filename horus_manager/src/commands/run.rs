@@ -628,29 +628,11 @@ fn execute_single_file(
     if !dependencies.is_empty() {
         eprintln!("{} Found {} dependencies", "".cyan(), dependencies.len());
 
-        // For Rust files, cargo dependencies are handled in Cargo.toml generation
-        // So we filter them out here to avoid trying to `cargo install` library crates
-        let dependencies_to_resolve = if language == "rust" {
-            let (horus_pkgs, pip_pkgs, _cargo_pkgs) =
-                split_dependencies_with_context(dependencies.clone(), Some(&language));
-            // Reconstruct set with only HORUS and pip packages
-            horus_pkgs
-                .into_iter()
-                .chain(pip_pkgs.into_iter().map(|p| {
-                    if let Some(ref v) = p.version {
-                        format!("pip:{}=={}", p.name, v)
-                    } else {
-                        format!("pip:{}", p.name)
-                    }
-                }))
-                .collect()
-        } else {
-            dependencies
-        };
-
-        if !dependencies_to_resolve.is_empty() {
-            resolve_dependencies(dependencies_to_resolve)?;
-        }
+        // Resolve dependencies with language context
+        // This ensures cargo library dependencies are handled correctly:
+        // - For Rust: cargo deps go to Cargo.toml, not cargo install
+        // - For Python: cargo deps are skipped entirely (they're library crates)
+        resolve_dependencies_with_context(dependencies, Some(&language))?;
     }
 
     // Setup environment
@@ -1266,7 +1248,8 @@ fn build_file_for_concurrent_execution(
     // Scan imports and resolve dependencies
     let dependencies = scan_imports(&file_path, &language, &ignore)?;
     if !dependencies.is_empty() {
-        resolve_dependencies(dependencies)?;
+        // Resolve dependencies with language context
+        resolve_dependencies_with_context(dependencies, Some(&language))?;
     }
 
     // Setup environment
@@ -2708,7 +2691,20 @@ fn split_dependencies_with_context(
                     }
                 }
                 "python" => {
-                    // Python context: unprefixed deps are pip packages
+                    // Python context: check if it's a known cargo crate first
+                    let dep_name = if let Some(at_pos) = dep.find('@') {
+                        &dep[..at_pos]
+                    } else {
+                        dep
+                    };
+
+                    // Skip Rust library crates when running Python code
+                    if is_cargo_package(dep_name) {
+                        // This is a Rust crate - skip it for Python runtime
+                        continue;
+                    }
+
+                    // Otherwise treat as pip package
                     if let Ok(pkg) = PipPackage::from_string(dep) {
                         pip_packages.push(pkg);
                     }
@@ -2935,7 +2931,20 @@ fn split_dependencies_with_path_context(
                     }
                 }
                 "python" => {
-                    // Python context: unprefixed deps are pip packages
+                    // Python context: check if it's a known cargo crate first
+                    let dep_name = if let Some(at_pos) = dep.find('@') {
+                        &dep[..at_pos]
+                    } else {
+                        dep
+                    };
+
+                    // Skip Rust library crates when running Python code
+                    if is_cargo_package(dep_name) {
+                        // This is a Rust crate - skip it for Python runtime
+                        continue;
+                    }
+
+                    // Otherwise treat as pip package
                     if let Ok(pkg) = PipPackage::from_string(dep) {
                         pip_packages.push(pkg);
                     }
@@ -3300,6 +3309,10 @@ fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> {
 }
 
 fn resolve_dependencies(dependencies: HashSet<String>) -> Result<()> {
+    resolve_dependencies_with_context(dependencies, None)
+}
+
+fn resolve_dependencies_with_context(dependencies: HashSet<String>, context_language: Option<&str>) -> Result<()> {
     // Check version compatibility first
     if let Err(e) = version::check_version_compatibility() {
         eprintln!("\n{}", "Hint:".cyan());
@@ -3308,7 +3321,7 @@ fn resolve_dependencies(dependencies: HashSet<String>) -> Result<()> {
     }
 
     // Split dependencies into HORUS packages, pip packages, and cargo packages
-    let (horus_packages, pip_packages, cargo_packages) = split_dependencies(dependencies);
+    let (horus_packages, pip_packages, cargo_packages) = split_dependencies_with_context(dependencies, context_language);
 
     // Resolve HORUS packages (existing logic)
     if !horus_packages.is_empty() {
@@ -3320,8 +3333,9 @@ fn resolve_dependencies(dependencies: HashSet<String>) -> Result<()> {
         install_pip_packages(pip_packages)?;
     }
 
-    // Resolve cargo packages
-    if !cargo_packages.is_empty() {
+    // Resolve cargo packages - skip for Python (library crates can't be installed with cargo install)
+    // Cargo library dependencies are handled by Cargo.toml for Rust projects
+    if !cargo_packages.is_empty() && context_language != Some("python") {
         install_cargo_packages(cargo_packages)?;
     }
 

@@ -3,6 +3,7 @@
 //! Provides a unified dockable workspace similar to Gazebo and Isaac Sim.
 //! Users can drag, dock, and arrange panels as needed.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
@@ -13,6 +14,10 @@ use crate::systems::hframe_update::HFramePublisher;
 use crate::systems::horus_sync::HorusSyncStats;
 use crate::ui::controls::{render_controls_ui, SimulationControls, SimulationEvent};
 use crate::ui::hframe_panel::{render_hframe_ui, HFramePanelConfig};
+use crate::ui::physics_panel::{render_physics_panel_ui, PhysicsPanelConfig, PhysicsParams};
+use crate::ui::recording_panel::{render_recording_panel_ui, RecordingEvent, RecordingPanelConfig, RecordingSettings};
+use crate::ui::rendering_panel::{render_rendering_panel_ui, RenderingPanelConfig, RenderingSettings};
+use crate::ui::sensor_panel::{render_sensor_panel_ui, SensorPanelConfig, SensorSettings};
 use crate::ui::stats_panel::{render_stats_ui, FrameTimeBreakdown, SimulationStats};
 use crate::ui::view_modes::{render_view_modes_ui, CurrentViewMode};
 
@@ -29,6 +34,14 @@ pub enum DockTab {
     HFrameTree,
     /// Camera view modes
     ViewModes,
+    /// Physics parameters
+    Physics,
+    /// Sensor configuration
+    Sensors,
+    /// Rendering settings
+    Rendering,
+    /// Recording controls
+    Recording,
     /// Custom plugin tab
     Plugin(String),
 }
@@ -41,6 +54,10 @@ impl DockTab {
             DockTab::Console => "Console",
             DockTab::HFrameTree => "HFrame Tree",
             DockTab::ViewModes => "View Modes",
+            DockTab::Physics => "Physics",
+            DockTab::Sensors => "Sensors",
+            DockTab::Rendering => "Rendering",
+            DockTab::Recording => "Recording",
             DockTab::Plugin(name) => name.as_str(),
         }
     }
@@ -81,6 +98,45 @@ pub struct DockRenderContext<'a> {
     pub hframe_panel_config: &'a mut HFramePanelConfig,
     pub view_mode: &'a mut CurrentViewMode,
     pub current_time: f32,
+    // New panel resources
+    pub physics_params: &'a mut PhysicsParams,
+    pub physics_panel_config: &'a mut PhysicsPanelConfig,
+    pub sensor_settings: &'a mut SensorSettings,
+    pub sensor_panel_config: &'a mut SensorPanelConfig,
+    pub rendering_settings: &'a mut RenderingSettings,
+    pub rendering_panel_config: &'a mut RenderingPanelConfig,
+    pub recording_settings: &'a mut RecordingSettings,
+    pub recording_panel_config: &'a mut RecordingPanelConfig,
+}
+
+/// Bundled panel resources to reduce system parameter count
+/// (Bevy has a 16-parameter limit for systems with scheduling constraints)
+#[derive(SystemParam)]
+pub struct PanelResources<'w> {
+    pub physics_params: ResMut<'w, PhysicsParams>,
+    pub physics_panel_config: ResMut<'w, PhysicsPanelConfig>,
+    pub sensor_settings: ResMut<'w, SensorSettings>,
+    pub sensor_panel_config: ResMut<'w, SensorPanelConfig>,
+    pub rendering_settings: ResMut<'w, RenderingSettings>,
+    pub rendering_panel_config: ResMut<'w, RenderingPanelConfig>,
+    pub recording_settings: ResMut<'w, RecordingSettings>,
+    pub recording_panel_config: ResMut<'w, RecordingPanelConfig>,
+    pub recording_events: EventWriter<'w, RecordingEvent>,
+}
+
+/// Bundled core UI resources
+#[derive(SystemParam)]
+pub struct CoreUiResources<'w, 's> {
+    pub time: Res<'w, Time>,
+    pub stats: Res<'w, SimulationStats>,
+    pub frame_time: Res<'w, FrameTimeBreakdown>,
+    pub controls: ResMut<'w, SimulationControls>,
+    pub hframe_tree: Res<'w, HFrameTree>,
+    pub physics_world: Option<Res<'w, PhysicsWorld>>,
+    pub horus_stats: Option<Res<'w, HorusSyncStats>>,
+    pub hframe_publishers: Query<'w, 's, &'static HFramePublisher>,
+    pub hframe_panel_config: ResMut<'w, HFramePanelConfig>,
+    pub view_mode: ResMut<'w, CurrentViewMode>,
 }
 
 /// Tab viewer implementation for our dock system
@@ -90,6 +146,8 @@ pub struct SimDockViewer<'a> {
     pub console_messages: &'a mut Vec<String>,
     /// Collected events from controls tab that need to be sent
     pub pending_events: Vec<SimulationEvent>,
+    /// Collected events from recording tab
+    pub pending_recording_events: Vec<RecordingEvent>,
 }
 
 impl TabViewer for SimDockViewer<'_> {
@@ -132,6 +190,40 @@ impl TabViewer for SimDockViewer<'_> {
             DockTab::ViewModes => {
                 // Use the full view modes UI from view_modes.rs
                 render_view_modes_ui(ui, self.ctx.view_mode);
+            }
+            DockTab::Physics => {
+                // Physics parameters panel
+                render_physics_panel_ui(
+                    ui,
+                    self.ctx.physics_params,
+                    self.ctx.physics_panel_config,
+                    self.ctx.physics_world,
+                );
+            }
+            DockTab::Sensors => {
+                // Sensor configuration panel
+                render_sensor_panel_ui(
+                    ui,
+                    self.ctx.sensor_settings,
+                    self.ctx.sensor_panel_config,
+                );
+            }
+            DockTab::Rendering => {
+                // Rendering settings panel
+                render_rendering_panel_ui(
+                    ui,
+                    self.ctx.rendering_settings,
+                    self.ctx.rendering_panel_config,
+                );
+            }
+            DockTab::Recording => {
+                // Recording controls panel
+                let events = render_recording_panel_ui(
+                    ui,
+                    self.ctx.recording_settings,
+                    self.ctx.recording_panel_config,
+                );
+                self.pending_recording_events.extend(events);
             }
             DockTab::Plugin(name) => {
                 ui.heading(format!("Plugin: {}", name));
@@ -450,23 +542,17 @@ pub fn dock_keyboard_system(
 
 /// Main dock UI rendering system
 #[cfg(feature = "visual")]
+#[allow(clippy::too_many_arguments)]
 pub fn dock_ui_system(
     mut contexts: EguiContexts,
     config: Res<DockConfig>,
     mut workspace: ResMut<DockWorkspace>,
     mut console: ResMut<ConsoleMessages>,
-    time: Res<Time>,
-    stats: Res<SimulationStats>,
-    frame_time: Res<FrameTimeBreakdown>,
-    mut controls: ResMut<SimulationControls>,
-    hframe_tree: Res<HFrameTree>,
-    physics_world: Option<Res<PhysicsWorld>>,
-    horus_stats: Option<Res<HorusSyncStats>>,
-    hframe_publishers: Query<&HFramePublisher>,
-    mut hframe_panel_config: ResMut<HFramePanelConfig>,
-    mut view_mode: ResMut<CurrentViewMode>,
     mut layout_events: EventWriter<ChangeDockLayoutEvent>,
     mut sim_events: EventWriter<SimulationEvent>,
+    // Bundled resources (reduces parameter count below Bevy's 16 limit)
+    mut core_ui: CoreUiResources,
+    mut panel_resources: PanelResources,
 ) {
     if !config.enabled {
         return;
@@ -502,39 +588,43 @@ pub fn dock_ui_system(
                 });
 
                 ui.menu_button("Panels", |ui| {
-                    if ui.button("Add Controls").clicked() {
-                        workspace
-                            .state
-                            .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::Controls);
+                    ui.label("Core");
+                    if ui.button("  Controls").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Controls);
                         ui.close_menu();
                     }
-                    if ui.button("Add Statistics").clicked() {
-                        workspace
-                            .state
-                            .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::Stats);
+                    if ui.button("  Statistics").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Stats);
                         ui.close_menu();
                     }
-                    if ui.button("Add Console").clicked() {
-                        workspace
-                            .state
-                            .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::Console);
+                    if ui.button("  Console").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Console);
                         ui.close_menu();
                     }
-                    if ui.button("Add HFrame Tree").clicked() {
-                        workspace
-                            .state
-                            .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::HFrameTree);
+                    if ui.button("  HFrame Tree").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::HFrameTree);
                         ui.close_menu();
                     }
-                    if ui.button("Add View Modes").clicked() {
-                        workspace
-                            .state
-                            .main_surface_mut()
-                            .push_to_focused_leaf(DockTab::ViewModes);
+                    if ui.button("  View Modes").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::ViewModes);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    ui.label("Simulation");
+                    if ui.button("  Physics").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Physics);
+                        ui.close_menu();
+                    }
+                    if ui.button("  Sensors").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Sensors);
+                        ui.close_menu();
+                    }
+                    if ui.button("  Rendering").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Rendering);
+                        ui.close_menu();
+                    }
+                    if ui.button("  Recording").clicked() {
+                        workspace.state.main_surface_mut().push_to_focused_leaf(DockTab::Recording);
                         ui.close_menu();
                     }
                 });
@@ -547,21 +637,30 @@ pub fn dock_ui_system(
     }
 
     // Collect HFrame publishers
-    let hframe_pubs: Vec<&HFramePublisher> = hframe_publishers.iter().collect();
+    let hframe_pubs: Vec<&HFramePublisher> = core_ui.hframe_publishers.iter().collect();
 
     // Build render context
     let render_ctx = DockRenderContext {
-        time: &time,
-        stats: &stats,
-        frame_time: &frame_time,
-        controls: &mut controls,
-        hframe_tree: &hframe_tree,
-        physics_world: physics_world.as_deref(),
-        horus_stats: horus_stats.as_deref(),
+        time: &core_ui.time,
+        stats: &core_ui.stats,
+        frame_time: &core_ui.frame_time,
+        controls: &mut core_ui.controls,
+        hframe_tree: &core_ui.hframe_tree,
+        physics_world: core_ui.physics_world.as_deref(),
+        horus_stats: core_ui.horus_stats.as_deref(),
         hframe_publishers: hframe_pubs,
-        hframe_panel_config: &mut hframe_panel_config,
-        view_mode: &mut view_mode,
-        current_time: time.elapsed_secs(),
+        hframe_panel_config: &mut core_ui.hframe_panel_config,
+        view_mode: &mut core_ui.view_mode,
+        current_time: core_ui.time.elapsed_secs(),
+        // Panel resources from bundled SystemParam
+        physics_params: &mut panel_resources.physics_params,
+        physics_panel_config: &mut panel_resources.physics_panel_config,
+        sensor_settings: &mut panel_resources.sensor_settings,
+        sensor_panel_config: &mut panel_resources.sensor_panel_config,
+        rendering_settings: &mut panel_resources.rendering_settings,
+        rendering_panel_config: &mut panel_resources.rendering_panel_config,
+        recording_settings: &mut panel_resources.recording_settings,
+        recording_panel_config: &mut panel_resources.recording_panel_config,
     };
 
     // Create tab viewer
@@ -569,6 +668,7 @@ pub fn dock_ui_system(
         ctx: render_ctx,
         console_messages: &mut console.messages,
         pending_events: Vec::new(),
+        pending_recording_events: Vec::new(),
     };
 
     // Render dock area in a side panel (left side) to preserve viewport
@@ -588,6 +688,11 @@ pub fn dock_ui_system(
     // Send any pending events from the controls UI
     for event in viewer.pending_events {
         sim_events.send(event);
+    }
+
+    // Send any pending recording events
+    for event in viewer.pending_recording_events {
+        panel_resources.recording_events.send(event);
     }
 }
 

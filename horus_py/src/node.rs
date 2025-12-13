@@ -231,7 +231,7 @@ impl PyNodeInfo {
             let _ = io::stdout().flush();
         }
 
-        // Write to global log buffer for dashboard (always, regardless of enable_logging)
+        // Write to global log buffer for monitor (always, regardless of enable_logging)
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,
@@ -278,7 +278,7 @@ impl PyNodeInfo {
             let _ = io::stdout().flush();
         }
 
-        // Write to global log buffer for dashboard (always, regardless of enable_logging)
+        // Write to global log buffer for monitor (always, regardless of enable_logging)
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,

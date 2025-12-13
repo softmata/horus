@@ -1,4 +1,4 @@
-// Terminal UI Dashboard for HORUS
+// Terminal UI Monitor for HORUS
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
@@ -2282,7 +2282,7 @@ impl TuiDashboard {
         let help_text = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "HORUS Terminal Dashboard - Help",
+                "HORUS Terminal Monitor - Help",
                 Style::default().add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
@@ -2302,7 +2302,7 @@ impl TuiDashboard {
                 Style::default().fg(Color::Cyan),
             )]),
             Line::from("  p          - Pause/Resume updates"),
-            Line::from("  q          - Quit dashboard"),
+            Line::from("  q          - Quit monitor"),
             Line::from("  ?/h        - Show this help"),
             Line::from(""),
             Line::from(vec![Span::styled(

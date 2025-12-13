@@ -1,6 +1,6 @@
 name: robot_fleet_rust
 version: 0.1.6
-description: Complete robot fleet management system for dashboard testing
+description: Complete robot fleet management system for monitor testing
 author: neos-builder
 license: MIT
 language: rust

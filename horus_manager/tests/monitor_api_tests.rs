@@ -1,4 +1,4 @@
-// Comprehensive Dashboard API Tests
+// Comprehensive Monitor API Tests
 // Tests all API endpoints: status, nodes, topics, graph, logs, packages, auth
 
 use axum::{

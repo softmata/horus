@@ -60,7 +60,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 rand = "0.8"
 
-# Web dashboard dependencies
+# Web monitor dependencies
 axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.6", features = ["tls-rustls"] }
 hyper = "=1.5.1"  # Pin to compatible version with axum-server 0.6

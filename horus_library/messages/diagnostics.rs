@@ -562,7 +562,7 @@ impl HealthStatus {
         }
     }
 
-    /// Get color code for dashboard display
+    /// Get color code for monitor display
     pub fn color(&self) -> &'static str {
         match self {
             Self::Healthy => "green",

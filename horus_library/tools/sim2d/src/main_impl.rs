@@ -1525,6 +1525,38 @@ pub fn telemetry_system(
     }
 }
 
+/// Performance metrics update system - tracks path, speed, collisions
+pub fn metrics_update_system(
+    robot_query: Query<&Robot>,
+    physics_world: Res<PhysicsWorld>,
+    collision_state: Res<CollisionState>,
+    time: Res<Time>,
+    ui_state: Res<ui::UiState>,
+    mut perf_metrics: ResMut<crate::metrics::PerformanceMetrics>,
+) {
+    // Don't update metrics if paused
+    if ui_state.paused {
+        return;
+    }
+
+    for robot in robot_query.iter() {
+        if let Some(rigid_body) = physics_world.rigid_body_set.get(robot.rigid_body_handle) {
+            let pos = rigid_body.translation();
+            let vel = rigid_body.linvel();
+
+            // Update metrics with current robot state
+            perf_metrics.update(
+                bevy::math::Vec2::new(pos.x, pos.y),
+                bevy::math::Vec2::new(vel.x, vel.y),
+                time.delta_secs(),
+            );
+        }
+    }
+
+    // Sync collision count from collision detection system
+    perf_metrics.collision_count = collision_state.collision_count as u32;
+}
+
 /// Odometry publishing system - publishes robot state to HORUS
 pub fn odometry_publish_system(
     robot_query: Query<&Robot>,
@@ -3296,6 +3328,7 @@ pub fn run_simulation(args: Args) -> Result<()> {
                 collision_detection_system,
                 collision_indicator_system,
                 dynamic_obstacle_system,
+                metrics_update_system,
             ),
         )
         .add_systems(

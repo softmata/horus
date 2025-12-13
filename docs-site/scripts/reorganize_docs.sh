@@ -52,7 +52,7 @@ update_order "message-types.mdx" 8
 # Developer Tools (10-13)
 echo "Developer Tools Section..."
 update_order "node-macro.mdx" 10
-update_order "dashboard.mdx" 11
+update_order "monitor.mdx" 11
 update_order "troubleshooting.mdx" 12  # Will enhance later
 # Note: will create testing.mdx as order 13
 

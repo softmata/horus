@@ -334,6 +334,12 @@ fn run_visual_mode(cli: Cli) {
         app.add_plugins(ui::dock::DockPlugin);
         app.add_plugins(ui::plugin_panel::PluginPanelPlugin);
 
+        // New simulation control panels
+        app.add_plugins(ui::physics_panel::PhysicsPanelPlugin);
+        app.add_plugins(ui::sensor_panel::SensorPanelPlugin);
+        app.add_plugins(ui::rendering_panel::RenderingPanelPlugin);
+        app.add_plugins(ui::recording_panel::RecordingPanelPlugin);
+
         // Editor plugins (EditorPlugin already includes undo internally)
         app.add_plugins(editor::EditorPlugin);
 

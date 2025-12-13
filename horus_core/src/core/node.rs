@@ -89,7 +89,7 @@ impl HealthStatus {
         }
     }
 
-    /// Get color code for dashboard display
+    /// Get color code for monitor display
     pub fn color(&self) -> &'static str {
         match self {
             Self::Healthy => "green",
@@ -151,7 +151,7 @@ impl NodeHeartbeat {
 
     /// Write heartbeat to file
     pub fn write_to_file(&self, node_name: &str) -> crate::error::HorusResult<()> {
-        // Heartbeats are intentionally global (not session-isolated) so dashboard can monitor all nodes
+        // Heartbeats are intentionally global (not session-isolated) so monitor can see all nodes
         let dir = shm_heartbeats_dir();
         std::fs::create_dir_all(&dir)?;
 
@@ -407,7 +407,7 @@ pub struct NodeInfo {
     published_topics: HashMap<String, u64>, // topic -> message count
     subscribed_topics: HashMap<String, u64>, // topic -> message count
 
-    // Runtime-discovered pub/sub (for monitor/dashboard)
+    // Runtime-discovered pub/sub (for monitor)
     registered_publishers: HashMap<String, String>, // topic_name -> type_name
     registered_subscribers: HashMap<String, String>, // topic_name -> type_name
 
@@ -644,7 +644,7 @@ impl NodeInfo {
         }
     }
 
-    // Runtime Pub/Sub Registration (for monitor/dashboard discovery)
+    // Runtime Pub/Sub Registration (for monitor discovery)
     // Called by Hub::send()/recv() when ctx is provided
 
     /// Register this node as a publisher to a topic (called automatically by Hub::send)
@@ -795,7 +795,7 @@ impl NodeInfo {
             );
         }
 
-        // Write to global log buffer for dashboard
+        // Write to global log buffer for monitor
         use crate::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp: now.format("%H:%M:%S%.3f").to_string(),
@@ -828,7 +828,7 @@ impl NodeInfo {
             let _ = io::stdout().flush();
         }
 
-        // Write to global log buffer for dashboard
+        // Write to global log buffer for monitor
         use crate::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp: now.format("%H:%M:%S%.3f").to_string(),
@@ -868,7 +868,7 @@ impl NodeInfo {
             let _ = io::stdout().flush();
         }
 
-        // Write to global log buffer for dashboard
+        // Write to global log buffer for monitor
         use crate::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp: now.format("%H:%M:%S%.3f").to_string(),
@@ -908,7 +908,7 @@ impl NodeInfo {
             let _ = io::stdout().flush();
         }
 
-        // Write to global log buffer for dashboard
+        // Write to global log buffer for monitor
         use crate::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp: now.format("%H:%M:%S%.3f").to_string(),

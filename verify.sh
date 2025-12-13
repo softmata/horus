@@ -668,7 +668,7 @@ if command -v horus &>/dev/null || [ -x "$INSTALL_DIR/horus" ]; then
         "check --help:Validation"
         "pkg --help:Package manager"
         "env --help:Environment"
-        "dashboard --help:Dashboard"
+        "monitor --help:Monitor"
         "auth --help:Authentication"
         "sim2d --help:2D Simulator"
         "sim3d --help:3D Simulator"

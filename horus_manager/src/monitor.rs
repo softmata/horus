@@ -106,8 +106,8 @@ fn display_qr_code(url: &str) {
     }
 }
 
-/// Session validation middleware for dashboard using AppState
-async fn dashboard_session_middleware(
+/// Session validation middleware for monitor using AppState
+async fn monitor_session_middleware(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
@@ -117,7 +117,7 @@ async fn dashboard_session_middleware(
         .await
 }
 
-/// Run the web dashboard server
+/// Run the web monitor server
 pub async fn run(port: u16) -> anyhow::Result<()> {
     // Check if password is configured, if not prompt for setup
     let password_hash = if !crate::security::auth::is_password_configured() {
@@ -235,7 +235,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     if !auth_disabled {
         api_routes = api_routes.layer(middleware::from_fn_with_state(
             state.clone(),
-            dashboard_session_middleware,
+            monitor_session_middleware,
         ));
     }
 
@@ -284,7 +284,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     // Get local IP addresses
     let local_ip = get_local_ip();
 
-    println!("{}", "HORUS Web Dashboard is running!".green().bold());
+    println!("{}", "HORUS Web Monitor is running!".green().bold());
 
     println!("\n{}:", "Access URLs".cyan().bold());
     println!(
@@ -448,14 +448,14 @@ pub async fn logout_handler(
 }
 
 // ============================================================================
-// Dashboard Handlers
+// Monitor Handlers
 // ============================================================================
 
 async fn index_handler(
     State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
-    // If authentication is disabled, go straight to dashboard
+    // If authentication is disabled, go straight to monitor
     let is_authenticated = if state.auth_disabled {
         true // Skip authentication entirely
     } else {
@@ -483,7 +483,7 @@ async fn index_handler(
     };
 
     if is_authenticated {
-        // User is logged in - show dashboard
+        // User is logged in - show monitor
         Html(generate_html(state.port)).into_response()
     } else {
         // User is not logged in - show login page
@@ -2705,7 +2705,7 @@ fn generate_login_html() -> String {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HORUS Dashboard - Login</title>
+    <title>HORUS Monitor - Login</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
 
@@ -2974,7 +2974,7 @@ fn generate_login_html() -> String {
     <div class="login-container">
         <div class="logo">
             <h1>HORUS</h1>
-            <p>Robotics Dashboard</p>
+            <p>Robotics Monitor</p>
         </div>
 
         <div id="error" class="error"></div>
@@ -3039,7 +3039,7 @@ fn generate_html(port: u16) -> String {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HORUS Dashboard</title>
+    <title>HORUS Monitor</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
@@ -4189,7 +4189,7 @@ fn generate_html(port: u16) -> String {
     <div class="help-modal" id="help-modal">
         <div class="help-modal-content">
             <div class="help-modal-header">
-                <h2>HORUS Dashboard Guide</h2>
+                <h2>HORUS Monitor Guide</h2>
                 <button class="help-close" onclick="toggleHelp()">&times;</button>
             </div>
             <div class="help-modal-body">
@@ -4262,9 +4262,9 @@ fn generate_html(port: u16) -> String {
                     </div>
                 </div>
 
-                <!-- Dashboard Features Section -->
+                <!-- Monitor Features Section -->
                 <div class="help-section">
-                    <h3>[#] Dashboard Features</h3>
+                    <h3>[#] Monitor Features</h3>
 
                     <div class="help-item">
                         <strong>Status Bar</strong>
@@ -4272,7 +4272,7 @@ fn generate_html(port: u16) -> String {
                         <ul>
                             <li><strong>Active Nodes</strong> - Hover to see node list with health indicators</li>
                             <li><strong>Active Topics</strong> - Hover to see all topic names</li>
-                            <li><strong>Port</strong> - Dashboard server port number</li>
+                            <li><strong>Port</strong> - Monitor server port number</li>
                         </ul>
                     </div>
 
@@ -4315,7 +4315,7 @@ fn generate_html(port: u16) -> String {
 
                     <div class="help-item">
                         <strong>Real-time Updates</strong>
-                        <p>Dashboard updates automatically via WebSocket (20 FPS). No refresh needed!</p>
+                        <p>Monitor updates automatically via WebSocket (20 FPS). No refresh needed!</p>
                     </div>
 
                     <div class="help-item">
@@ -4368,7 +4368,7 @@ fn generate_html(port: u16) -> String {
         <!-- Left Sidebar Navigation -->
         <nav class="sidebar">
             <div class="logo">
-                <h1>HORUS DASHBOARD</h1>
+                <h1>HORUS MONITOR</h1>
             </div>
 
             <ul class="nav">

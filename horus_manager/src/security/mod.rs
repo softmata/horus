@@ -1,4 +1,4 @@
-//! Security module for HORUS dashboard
+//! Security module for HORUS monitor
 //!
 //! Provides password-based authentication and security middleware.
 

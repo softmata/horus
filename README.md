@@ -176,7 +176,7 @@ See [Built-in Nodes Documentation](horus_library/nodes/README.md) for complete c
 - **Memory-Safe Messaging**: Fixed-size structures prevent corruption
 - **Cross-Process Communication**: POSIX shared memory
 - **Performance Benchmarks**: Comprehensive latency testing
-- **Dashboard Monitoring**: Web UI for real-time system monitoring
+- **Monitor**: Web UI for real-time system monitoring
 
 ## Network Communication
 

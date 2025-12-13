@@ -174,9 +174,9 @@ def analyze_deadline_performance(scheduler):
                 print(f"   Deadline: {node.get('deadline_ms')}ms")
 ```
 
-### 4. Real-Time Dashboard
+### 4. Real-Time Monitor
 
-Create a live monitoring dashboard:
+Create a live monitoring display:
 
 ```python
 import time

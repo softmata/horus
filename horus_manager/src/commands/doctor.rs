@@ -51,10 +51,10 @@ pub fn run_doctor(verbose: bool) -> HorusResult<()> {
     let (status, msg) = check_registry(verbose);
     print_check("Registry", status, &msg, &mut warnings, &mut errors);
 
-    // Node.js (for dashboard)
+    // Node.js (for monitor)
     let (status, msg) = check_nodejs(verbose);
     print_check(
-        "Node.js (dashboard)",
+        "Node.js (monitor)",
         status,
         &msg,
         &mut warnings,

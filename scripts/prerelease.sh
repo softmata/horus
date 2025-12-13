@@ -480,10 +480,10 @@ if [ "$QUICK_MODE" = true ]; then
     skip "Integration tests (quick mode)"
 else
     # Test horus run with a simple test project
-    if [ -d "tests/dashboard/1pub" ]; then
+    if [ -d "tests/monitor/1pub" ]; then
         info "Testing horus run with test project..."
 
-        cd tests/dashboard/1pub
+        cd tests/monitor/1pub
 
         # Build but don't run (would need to be killed)
         if $ROOT_DIR/target/release/horus check horus.yaml >/dev/null 2>&1; then

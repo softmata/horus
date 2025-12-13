@@ -277,8 +277,8 @@ horus_manager/
 │   │   ├── run.rs          # Build and execution
 │   │   ├── github_auth.rs  # GitHub authentication
 │   │   └── monitor.rs      # System monitoring
-│   ├── dashboard.rs         # Web dashboard (Axum)
-│   ├── dashboard_tui.rs     # Terminal UI dashboard
+│   ├── monitor.rs           # Web monitor (Axum)
+│   ├── monitor_tui.rs       # Terminal UI monitor
 │   ├── registry.rs          # Package registry client
 │   ├── workspace.rs         # Workspace detection
 │   ├── graph.rs            # Dependency graph visualization

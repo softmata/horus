@@ -1,4 +1,4 @@
-//! Password-based authentication for HORUS dashboard
+//! Password-based authentication for HORUS monitor
 //!
 //! Security through password authentication with Argon2 hashing and session tokens.
 
@@ -215,13 +215,13 @@ pub fn prompt_for_password_setup() -> Result<String> {
     use std::io::{self, Write};
 
     println!(
-        "\n{} HORUS Dashboard - First Time Setup",
+        "\n{} HORUS Monitor - First Time Setup",
         "[SECURITY]".cyan().bold()
     );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Set a dashboard password (or press Enter for no password):");
+    println!("Set a monitor password (or press Enter for no password):");
     println!(
-        "{} Without a password, anyone on your network can access the dashboard",
+        "{} Without a password, anyone on your network can access the monitor",
         "[NOTE]".yellow()
     );
 
@@ -233,7 +233,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
         // Allow empty password (no authentication)
         if password.is_empty() {
             println!(
-                "{} No password set - dashboard will be accessible without login",
+                "{} No password set - monitor will be accessible without login",
                 "[WARNING]".yellow().bold()
             );
             println!(
@@ -284,7 +284,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
 pub fn prompt_for_password() -> Result<String> {
     use std::io::{self, Write};
 
-    print!("Dashboard password: ");
+    print!("Monitor password: ");
     io::stdout().flush()?;
     Ok(rpassword::read_password()?)
 }
@@ -295,13 +295,13 @@ pub fn reset_password() -> Result<String> {
     use std::io::{self, Write};
 
     println!(
-        "\n{} HORUS Dashboard - Password Reset",
+        "\n{} HORUS Monitor - Password Reset",
         "[SECURITY]".cyan().bold()
     );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Enter a new dashboard password (or press Enter to disable password):");
+    println!("Enter a new monitor password (or press Enter to disable password):");
     println!(
-        "{} Without a password, anyone on your network can access the dashboard",
+        "{} Without a password, anyone on your network can access the monitor",
         "[NOTE]".yellow()
     );
 
@@ -313,7 +313,7 @@ pub fn reset_password() -> Result<String> {
         // Allow empty password (no authentication)
         if password.is_empty() {
             println!(
-                "{} Password removed - dashboard will be accessible without login",
+                "{} Password removed - monitor will be accessible without login",
                 "[WARNING]".yellow().bold()
             );
             println!();

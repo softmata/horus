@@ -974,7 +974,7 @@ else
     fi
 fi
 
-# GUI/Graphics libraries (required for sim2d and dashboard)
+# GUI/Graphics libraries (required for sim2d and monitor)
 if [ "$(uname -s)" = "Linux" ]; then
     if ! pkg-config --exists x11 2>/dev/null; then
         echo -e "${YELLOW}${NC}  X11 development library not found"

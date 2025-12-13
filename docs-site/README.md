@@ -33,7 +33,7 @@ content/
    ── installation.mdx
    ── quick-start.mdx
    ── node-macro.mdx
-   ── dashboard.mdx
+   ── monitor.mdx
    ── parameters.mdx
    ── cli-reference.mdx
    ── package-management.mdx        # Package install/publish
@@ -66,7 +66,7 @@ content/
 - Nodes, Hub (MPMC), Scheduler, Shared Memory
 
 **Guides**
-- Dashboard, Parameters, CLI Reference
+- Monitor, Parameters, CLI Reference
 - Package Management, Environment Management
 - Marketplace & Registry, Authentication
 - Remote Deployment, Library Reference

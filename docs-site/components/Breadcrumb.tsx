@@ -55,7 +55,7 @@ const segmentLabels: Record<string, string> = {
 
   // Development
   "cli-reference": "CLI Reference",
-  "dashboard": "Dashboard",
+  "monitor": "Monitor",
   "simulation": "Simulation",
   "testing": "Testing",
   "parameters": "Parameters",

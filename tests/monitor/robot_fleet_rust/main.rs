@@ -332,8 +332,8 @@ node! {
 
 fn main() -> HorusResult<()> {
     println!(" Starting Robot Fleet Management System (Rust)");
-    println!(" Dashboard available at: http://localhost:8080");
-    println!(" Run 'horus monitor' in another terminal to monitor\n");
+    println!(" Monitor available at: http://localhost:8080");
+    println!(" Run 'horus monitor' in another terminal to view\n");
 
     let mut scheduler = Scheduler::new();
 

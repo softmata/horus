@@ -184,16 +184,16 @@ if [ -f "horus_manager/src/registry.rs" ]; then
     echo -e "  ${GREEN}+${NC} horus_manager/src/registry.rs"
 fi
 
-# dashboard.rs - JSON version
-if [ -f "horus_manager/src/dashboard.rs" ]; then
-    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/g" horus_manager/src/dashboard.rs
-    echo -e "  ${GREEN}+${NC} horus_manager/src/dashboard.rs"
+# monitor.rs - JSON version
+if [ -f "horus_manager/src/monitor.rs" ]; then
+    sed -i "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/g" horus_manager/src/monitor.rs
+    echo -e "  ${GREEN}+${NC} horus_manager/src/monitor.rs"
 fi
 
-# dashboard_tui.rs - TUI version display
-if [ -f "horus_manager/src/dashboard_tui.rs" ]; then
-    sed -i "s/v$CURRENT_VERSION/v$NEW_VERSION/g" horus_manager/src/dashboard_tui.rs
-    echo -e "  ${GREEN}+${NC} horus_manager/src/dashboard_tui.rs"
+# monitor_tui.rs - TUI version display
+if [ -f "horus_manager/src/monitor_tui.rs" ]; then
+    sed -i "s/v$CURRENT_VERSION/v$NEW_VERSION/g" horus_manager/src/monitor_tui.rs
+    echo -e "  ${GREEN}+${NC} horus_manager/src/monitor_tui.rs"
 fi
 
 # workspace.rs - workspace template
@@ -216,9 +216,9 @@ YAML_FILES=(
     "tests/env/user_a/horus.yaml"
     "tests/env/user_a/horus-freeze.yaml"
     "tests/env/user_b/horus.yaml"
-    "tests/dashboard/robot_fleet_rust/horus.yaml"
-    "tests/dashboard/robot_fleet_python/horus.yaml"
-    "tests/dashboard/1pub/horus.yaml"
+    "tests/monitor/robot_fleet_rust/horus.yaml"
+    "tests/monitor/robot_fleet_python/horus.yaml"
+    "tests/monitor/1pub/horus.yaml"
     "tests/multi_language_example/horus.yaml"
     "horus_core/tests/horus.yaml"
     "horus_library/apps/snakesim/horus.yaml"

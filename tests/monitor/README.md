@@ -1,6 +1,6 @@
-# HORUS Dashboard Test Applications
+# HORUS Monitor Test Applications
 
-This directory contains two complete robotics applications designed to test the HORUS dashboard, monitoring, and package management features.
+This directory contains two complete robotics applications designed to test the HORUS monitor and package management features.
 
 ## Applications
 
@@ -87,15 +87,15 @@ system.performance       dict (uptime, tick_rate, cpu, memory)
 ### Rust Application
 
 ```bash
-cd tests/dashboard/robot_fleet_rust
+cd tests/monitor/robot_fleet_rust
 horus run
 ```
 
 Expected output:
 ```
  Starting Robot Fleet Management System (Rust)
- Dashboard available at: http://localhost:8080
- Run 'horus monitor' in another terminal to monitor
+ Monitor available at: http://localhost:8080
+ Run 'horus monitor' in another terminal to view
 
  All nodes registered
  Starting scheduler...
@@ -104,15 +104,15 @@ Expected output:
 ### Python Application
 
 ```bash
-cd tests/dashboard/robot_fleet_python
+cd tests/monitor/robot_fleet_python
 horus run
 ```
 
 Expected output:
 ```
 🏭 Starting Warehouse Robot System (Python)
- Dashboard available at: http://localhost:8080
- Run 'horus monitor' in another terminal to monitor
+ Monitor available at: http://localhost:8080
+ Run 'horus monitor' in another terminal to view
 
  All nodes registered:
    - 2 Vision nodes
@@ -126,9 +126,9 @@ Expected output:
 
 ---
 
-## Testing the Dashboard
+## Testing the Monitor
 
-### Start Dashboard (in separate terminal)
+### Start Monitor (in separate terminal)
 
 ```bash
 horus monitor
@@ -143,7 +143,7 @@ horus monitor 8080
 ### What to Test
 
 **1. Node Monitoring:**
-- All nodes should appear in the dashboard
+- All nodes should appear in the monitor
 - Node states: Running, tick counts
 - Priority ordering visible
 - Real-time tick rate
@@ -210,7 +210,7 @@ pip3 install horus
 export PYTHONPATH=~/.horus/cache/horus@0.1.0/python:$PYTHONPATH
 ```
 
-### Dashboard not showing data
+### Monitor not showing data
 
 ```bash
 # Check /dev/shm/horus
@@ -254,10 +254,10 @@ horus run app2/main.py   # Uses topics like "app2.cmd_vel"
 -  Both apps compile/run without errors
 -  All nodes register with scheduler
 -  Messages flow between nodes
--  Dashboard shows active nodes
+-  Monitor shows active nodes
 
 ### Good (Should Work)
--  Dashboard shows all topics
+-  Monitor shows all topics
 -  Log streaming works
 -  Performance metrics visible
 -  Can run both simultaneously with session IDs
@@ -274,7 +274,7 @@ horus run app2/main.py   # Uses topics like "app2.cmd_vel"
 
 After testing:
 1. Document any bugs found
-2. Note dashboard features that don't work
+2. Note monitor features that don't work
 3. Test on different platforms (Linux, macOS)
 4. Measure IPC latency under load
 5. Create demo video for YC application

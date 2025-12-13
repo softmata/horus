@@ -1926,9 +1926,9 @@ impl Scheduler {
                 let _ = tm.export();
             }
 
-            // Clean up registry file and session (keep heartbeats for dashboards)
+            // Clean up registry file and session (keep heartbeats for monitor)
             self.cleanup_registry();
-            // Note: Don't cleanup_heartbeats() - let dashboards see final state
+            // Note: Don't cleanup_heartbeats() - let monitor see final state
             Self::cleanup_session();
 
             println!("Scheduler shutdown complete");
@@ -2077,14 +2077,14 @@ impl Scheduler {
 
     /// Create heartbeat directory
     fn setup_heartbeat_directory() {
-        // Heartbeats are intentionally global (not session-isolated) so dashboard can monitor all nodes
+        // Heartbeats are intentionally global (not session-isolated) so monitor can see all nodes
         let dir = shm_heartbeats_dir();
         let _ = fs::create_dir_all(&dir);
     }
 
     /// Clean up heartbeat directory (useful for testing/cleanup)
     ///
-    /// Note: Not called automatically during shutdown to allow dashboards
+    /// Note: Not called automatically during shutdown to allow monitor
     /// to see final node states. Call explicitly if cleanup is needed.
     pub fn cleanup_heartbeats() {
         let dir = shm_heartbeats_dir();

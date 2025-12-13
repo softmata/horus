@@ -38,7 +38,7 @@ class PyNodeInfo:
         Log an info message.
 
         Logs are written to stdout and the shared memory log buffer
-        for dashboard visibility.
+        for monitor visibility.
 
         Args:
             message: Message to log
@@ -50,7 +50,7 @@ class PyNodeInfo:
         Log a warning message.
 
         Logs are written to stdout and the shared memory log buffer
-        for dashboard visibility.
+        for monitor visibility.
 
         Args:
             message: Warning message to log
@@ -62,7 +62,7 @@ class PyNodeInfo:
         Log an error message.
 
         Logs are written to stdout and the shared memory log buffer
-        for dashboard visibility.
+        for monitor visibility.
 
         Args:
             message: Error message to log
@@ -74,7 +74,7 @@ class PyNodeInfo:
         Log a debug message.
 
         Logs are written to stdout and the shared memory log buffer
-        for dashboard visibility.
+        for monitor visibility.
 
         Args:
             message: Debug message to log

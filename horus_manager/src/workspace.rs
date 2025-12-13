@@ -302,7 +302,7 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Discovered workspace information for dashboards
+/// Discovered workspace information for monitor
 #[derive(Debug, Clone)]
 pub struct DiscoveredWorkspace {
     pub name: String,
@@ -310,7 +310,7 @@ pub struct DiscoveredWorkspace {
     pub is_current: bool,
 }
 
-/// Unified workspace discovery for both TUI and web dashboards
+/// Unified workspace discovery for both TUI and web monitor
 /// Returns all workspaces that should be visible, combining:
 /// 1. Registered workspaces from ~/.horus/workspaces.json
 /// 2. Nested workspaces within the current workspace (if running from one)
