@@ -29,19 +29,19 @@ horus sim2d --articulated my_robot.yaml
 
 Simple 2-joint planar arm:
 
-```
-     ┌───┐
-     │ J1│ (shoulder)
-     └─┬─┘
-       │ Link 1
-     ┌─┴─┐
-     │ J2│ (elbow)
-     └─┬─┘
-       │ Link 2
-     ┌─┴─┐
-     │EE │ (end effector)
-     └───┘
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    J1["<b>J1</b><br/>(shoulder)"]
+    L1["Link 1"]
+    J2["<b>J2</b><br/>(elbow)"]
+    L2["Link 2"]
+    EE["<b>EE</b><br/>(end effector)"]
+
+    J1 --> L1 --> J2 --> L2 --> EE
+`}
+  caption="2-DOF Planar Arm"
+/>
 
 - 2 revolute joints
 - Shoulder + elbow configuration

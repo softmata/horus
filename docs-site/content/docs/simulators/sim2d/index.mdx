@@ -35,29 +35,27 @@ horus sim2d --headless
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                     sim2d                            │
-├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │   Physics   │  │   Sensors   │  │     UI      │ │
-│  │  (Rapier2D) │  │  (LIDAR,    │  │   (Bevy/    │ │
-│  │             │  │   IMU, GPS) │  │    egui)    │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘ │
-│         │                │                │        │
-│         └────────┬───────┴────────────────┘        │
-│                  │                                  │
-│         ┌────────▼────────┐                        │
-│         │  HORUS Topics   │                        │
-│         │  (Shared Memory)│                        │
-│         └────────┬────────┘                        │
-└──────────────────│──────────────────────────────────┘
-                   │
-        ┌──────────▼──────────┐
-        │   Your Controller   │
-        │   (horus run ...)   │
-        └─────────────────────┘
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    subgraph SIM2D["sim2d"]
+        direction TB
+        subgraph LAYERS["Simulation Layers"]
+            direction LR
+            PHYS["<b>Physics</b><br/>(Rapier2D)"]
+            SENS["<b>Sensors</b><br/>(LIDAR, IMU, GPS)"]
+            UI["<b>UI</b><br/>(Bevy/egui)"]
+        end
+        TOPICS["<b>HORUS Topics</b><br/>(Shared Memory)"]
+        LAYERS --> TOPICS
+    end
+
+    CTRL["<b>Your Controller</b><br/>(horus run ...)"]
+
+    SIM2D --> CTRL
+`}
+  caption="Sim2D Architecture"
+/>
 
 ## Default Topics
 

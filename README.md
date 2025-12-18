@@ -63,18 +63,32 @@ HORUS includes **32 production-ready nodes** with hardware drivers integrated. U
 
 Built-in nodes connect via **topics** - just like ROS, but simpler. Here's a complete obstacle-avoiding robot:
 
-```
-┌────────────────┐    "lidar.scan"    ┌───────────────────┐    "obstacles"    ┌───────────────┐
-│   LidarNode    │ ─────────────────► │ CollisionDetector │ ────────────────► │  PathPlanner  │
-│   (Priority 1) │                    │    (Priority 2)   │                   │  (Priority 3) │
-└────────────────┘                    └───────────────────┘                   └───────┬───────┘
-                                                                                      │
-                                                                                  "cmd_vel"
-                                                                                      │
-┌────────────────┐    "motor.left"    ┌───────────────────┐                           │
-│  BldcMotorNode │ ◄───────────────── │ DifferentialDrive │ ◄─────────────────────────┘
-│  (Priority 5)  │    "motor.right"   │    (Priority 4)   │
-└────────────────┘ ◄───────────────── └───────────────────┘
+```mermaid
+flowchart LR
+    subgraph SENSORS["Sensors (Priority 1)"]
+        LIDAR["<b>LidarNode</b>"]
+    end
+
+    subgraph PERCEPTION["Perception (Priority 2)"]
+        COLLISION["<b>CollisionDetector</b>"]
+    end
+
+    subgraph PLANNING["Planning (Priority 3)"]
+        PATH["<b>PathPlanner</b>"]
+    end
+
+    subgraph CONTROL["Control (Priority 4)"]
+        DRIVE["<b>DifferentialDrive</b>"]
+    end
+
+    subgraph ACTUATORS["Actuators (Priority 5)"]
+        BLDC["<b>BldcMotorNode</b>"]
+    end
+
+    LIDAR -->|"lidar.scan"| COLLISION
+    COLLISION -->|"obstacles"| PATH
+    PATH -->|"cmd_vel"| DRIVE
+    DRIVE -->|"motor.left<br/>motor.right"| BLDC
 ```
 
 ```rust
@@ -635,62 +649,34 @@ cd snakesim_gui && horus run
 
 **Architecture:**
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        SnakeSim System                              │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph INPUTS["Input Layer"]
+        direction LR
+        KB["<b>KeyboardInputNode</b><br/>(Priority 0)<br/>Arrow keys/WASD"]
+        JS["<b>JoystickInputNode</b><br/>(Priority 1)<br/>Analog control"]
+    end
 
-    ┌────────────────────┐         ┌────────────────────┐
-    │ KeyboardInputNode  │         │ JoystickInputNode  │
-    │   (Priority 0)     │         │   (Priority 1)     │
-    │                    │         │                    │
-    │ - Arrow keys/WASD  │         │ - Joystick input   │
-    │ - Real-time input  │         │ - Analog control   │
-    └──────────┬─────────┘         └──────────┬─────────┘
-               │                              │
-               │ pub: input_events            │ pub: input_events
-               │                              │
-               └──────────────┬───────────────┘
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │    Shared Memory (IPC)       │
-               │    Topic: input_events       │
-               └──────────────┬───────────────┘
-                              │
-                              │ sub: input_events
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │   SnakeControlNode           │
-               │     (Priority 2)             │
-               │                              │
-               │  - Game state management     │
-               │  - Collision detection       │
-               │  - Score tracking            │
-               └──────────────┬───────────────┘
-                              │
-                              │ pub: game_state
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │    Shared Memory (IPC)       │
-               │    Topic: game_state         │
-               └──────────────┬───────────────┘
-                              │
-                              │ sub: game_state
-                              │
-                              ▼
-               ┌──────────────────────────────┐
-               │   GUI Node (Separate Window) │
-               │                              │
-               │  - Visual rendering          │
-               │  - Animated snake display    │
-               │  - Score display             │
-               └──────────────────────────────┘
+    T1[["input_events"]]
 
-Priority-based scheduling ensures input is processed before game logic
+    subgraph LOGIC["Game Logic"]
+        SNAKE["<b>SnakeControlNode</b><br/>(Priority 2)<br/>Game state, Collision, Score"]
+    end
+
+    T2[["game_state"]]
+
+    subgraph DISPLAY["Display"]
+        GUI["<b>GUI Node</b><br/>(Separate Window)<br/>Visual rendering"]
+    end
+
+    KB -->|"pub"| T1
+    JS -->|"pub"| T1
+    T1 -->|"sub"| SNAKE
+    SNAKE -->|"pub"| T2
+    T2 -->|"sub"| GUI
 ```
+
+*Priority-based scheduling ensures input is processed before game logic*
 
 Multi-node game demonstrating:
 - KeyboardInputNode (priority 0): Arrow key/WASD input
@@ -714,41 +700,29 @@ All nodes communicate through the same high-performance IPC layer, regardless of
   <p><i>Rust and Python nodes communicating in real-time</i></p>
 </div>
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    HORUS Multi-Language System                      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph PYTHON["🐍 Python (High-level AI/ML/CV)"]
+        PY_SENSOR["<b>sensor_node.py</b><br/>Simulates robot movement<br/>10Hz publish"]
+        PY_LOGGER["<b>logger_node.py</b><br/>Reads Rust data"]
+    end
 
-    ┌──────────────────────┐         ┌──────────────────────┐
-    │   Python Node        │         │   Rust Node          │
-    │   sensor_node.py     │         │   controller_node    │
-    │                      │         │                      │
-    │  - Simulates robot   │         │  - PID controller    │
-    │    movement          │         │  - Real-time control │
-    │  - 10Hz publish      │         │  - 20Hz processing   │
-    └──────────┬───────────┘         └──────────┬───────────┘
-               │                                 │
-               │ pub: robot_pose                 │ pub: cmd_vel
-               │ (Python→Rust)                   │ (Rust→Python)
-               │                                 │
-               ▼                                 ▼
-    ┌─────────────────────────────────────────────────────┐
-    │         Shared Memory (Lock-Free IPC)               │
-    │  Topic: robot_pose  │  Topic: cmd_vel               │
-    └─────────────────────────────────────────────────────┘
-               │                                 │
-               │ sub: robot_pose                 │ sub: cmd_vel
-               │                                 │
-               ▼                                 ▼
-    ┌──────────────────────┐         ┌──────────────────────┐
-    │   Rust Node          │         │   Python Node        │
-    │   controller_node    │         │   logger_node.py     │
-    │   (reads Python data)│         │   (reads Rust data)  │
-    └──────────────────────┘         └──────────────────────┘
+    subgraph RUST["🦀 Rust (Low-level Real-time)"]
+        RS_CTRL["<b>controller_node</b><br/>PID controller<br/>20Hz processing"]
+    end
 
-Legend: Python ≡ High-level AI/ML/CV  |  Rust ≡ Low-level Real-time
-        MessagePack serialization for cross-language compatibility
+    subgraph IPC["Shared Memory (Lock-Free IPC)"]
+        T_POSE[["robot_pose"]]
+        T_CMD[["cmd_vel"]]
+    end
+
+    PY_SENSOR -->|"pub (Python→Rust)"| T_POSE
+    T_POSE -->|"sub"| RS_CTRL
+    RS_CTRL -->|"pub (Rust→Python)"| T_CMD
+    T_CMD -->|"sub"| PY_LOGGER
 ```
+
+*MessagePack serialization for cross-language compatibility*
 
 **Run the example:**
 ```bash
@@ -820,43 +794,36 @@ horus env restore a3f9c2b7
 
 ### How It Works
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     HORUS Workspace System                          │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph GLOBAL["~/.horus/cache/ (Global Cache)"]
+        direction TB
+        G1["horus_core-0.1.6/<br/>Compiled binaries"]
+        G2["horus_library-0.1.6/<br/>Shared libraries"]
+        G3["sensor_fusion-2.1.0/<br/>Third-party packages"]
+    end
 
-┌─────────────────────────────────────────────────────────────────────┐
-│  ~/.horus/cache/                                                    │
-│  (Global cache - shared across all projects)                        │
-│                                                                     │
-│  ├── horus_core-0.1.6/         ← Compiled binaries                  │
-│  ├── horus_library-0.1.6/      ← Shared libraries                   │
-│  └── sensor_fusion-2.1.0/      ← Third-party packages               │
-└─────────────────────────────────────────────────────────────────────┘
-                            │
-                            │ symlink (when versions match)
-                            │
-┌───────────────────────────▼─────────────────────────────────────────┐
-│  my_robot/.horus/                                                   │
-│  (Local isolated environment)                                       │
-│                                                                     │
-│  Case 1: Version Match (symlink)                                    │
-│  ├── horus_core-0.1.6 → ~/.horus/cache/horus_core-0.1.6             │
-│  └── horus_library-0.1.6 → ~/.horus/cache/horus_library-0.1.6       │
-│      Fast, no duplication                                           │
-│                                                                     │
-│  Case 2: Version Mismatch (local copy on restore)                   │
-│  ├── horus_core-0.1.3/         ← Copied from freeze                 │
-│  └── sensor_fusion-2.0.5/      ← Exact version from freeze          │
-│      Isolated, reproducible                                         │
-└─────────────────────────────────────────────────────────────────────┘
+    subgraph LOCAL["my_robot/.horus/ (Local Environment)"]
+        direction TB
+        subgraph MATCH["Case 1: Version Match"]
+            L1["horus_core-0.1.6 →<br/>symlink to cache"]
+            L2["horus_library-0.1.6 →<br/>symlink to cache"]
+        end
+        subgraph MISMATCH["Case 2: Version Mismatch"]
+            L3["horus_core-0.1.3/<br/>Local copy from freeze"]
+            L4["sensor_fusion-2.0.5/<br/>Exact version from freeze"]
+        end
+    end
 
-When you run 'horus restore <freeze_id>':
-  1. HORUS downloads the exact dependency snapshot
-  2. If versions match global cache → creates symlinks (fast)
-  3. If versions differ → creates local copies in .horus/ (isolated)
-  4. Result: Exact same environment, guaranteed to work
+    G1 -.->|"symlink<br/>(fast, no duplication)"| L1
+    G2 -.->|"symlink"| L2
 ```
+
+**When you run `horus restore <freeze_id>`:**
+1. HORUS downloads the exact dependency snapshot
+2. If versions match global cache → creates symlinks (fast)
+3. If versions differ → creates local copies in `.horus/` (isolated)
+4. Result: Exact same environment, guaranteed to work
 
 ### Key Features
 

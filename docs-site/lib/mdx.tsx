@@ -16,6 +16,15 @@ import matter from 'gray-matter';
 import { compileMDX } from 'next-mdx-remote/rsc';
 import remarkGfm from 'remark-gfm';
 import CodeBlock from '@/components/CodeBlock';
+import {
+  LatencyComparisonChart,
+  LatencyScalingChart,
+  ScalabilityChart,
+  SpeedupChart,
+  ThroughputChart,
+  RealTimeChart,
+} from '@/components/BenchmarkCharts';
+import MermaidDiagram from '@/components/MermaidDiagram';
 
 const contentDirectory = path.join(process.cwd(), 'content');
 
@@ -79,6 +88,15 @@ export async function getDoc(slug: string[]): Promise<DocContent | null> {
         },
       },
       components: {
+        // Benchmark charts
+        LatencyComparisonChart,
+        LatencyScalingChart,
+        ScalabilityChart,
+        SpeedupChart,
+        ThroughputChart,
+        RealTimeChart,
+        // Diagrams
+        MermaidDiagram,
         h2: ({ children, ...props }: any) => {
           let id = typeof children === 'string'
             ? children.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')

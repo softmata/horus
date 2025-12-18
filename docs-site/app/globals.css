@@ -650,3 +650,40 @@ textarea:focus {
     -webkit-overflow-scrolling: touch;
   }
 }
+
+/* Mermaid diagram styles */
+.mermaid-svg-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.mermaid-svg-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Mermaid subgraph and node styling */
+.mermaid-svg-container .node rect,
+.mermaid-svg-container .node circle,
+.mermaid-svg-container .node polygon {
+  stroke-width: 2px;
+}
+
+.mermaid-svg-container .cluster rect {
+  stroke-width: 1.5px;
+}
+
+.mermaid-svg-container .edgePath path {
+  stroke-width: 2px;
+}
+
+/* Better text rendering in diagrams */
+.mermaid-svg-container text {
+  font-family: var(--font-sans);
+}
+
+.mermaid-svg-container .nodeLabel {
+  line-height: 1.4;
+}

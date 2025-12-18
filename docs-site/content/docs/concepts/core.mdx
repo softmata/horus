@@ -10,17 +10,27 @@ HORUS provides multiple IPC backends, each optimized for different use cases. Al
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────┐
-│         HORUS Application               │
-├─────────────────────────────────────────┤
-│    Publisher/Subscriber API             │
-├─────────────────────────────────────────┤
-│   Link (SPSC)    Hub (MPMC)             │
-├─────────────────────────────────────────┤
-│      Shared Memory (/dev/shm)           │
-└─────────────────────────────────────────┘
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    subgraph APP["HORUS Application"]
+        API["Publisher/Subscriber API"]
+    end
+
+    subgraph COMM["Communication Layer"]
+        LINK["Link (SPSC)"]
+        HUB["Hub (MPMC)"]
+    end
+
+    subgraph MEM["Shared Memory (/dev/shm)"]
+        SHM["Ring Buffers"]
+    end
+
+    APP --> COMM
+    COMM --> MEM
+`}
+  caption="HORUS Communication Stack"
+/>
 
 ## Communication System
 

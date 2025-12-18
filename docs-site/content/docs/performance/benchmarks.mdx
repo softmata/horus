@@ -39,6 +39,8 @@ category: "internals"
 | **PointCloud (1K)** | ~12 KB | **~12 μs** | 83K msg/s | 30 Hz | 2,767x |
 | **PointCloud (10K)** | ~120 KB | **~360 μs** | 4.7K msg/s | 30 Hz | 157x |
 
+<LatencyComparisonChart />
+
 
 ---
 
@@ -180,6 +182,8 @@ Range:            ~500-1200 ns
 
 **Performance Advantage**: HORUS is **230-575x faster** than ROS2 for typical message sizes.
 
+<SpeedupChart />
+
 ---
 
 ## Latency by Message Size
@@ -195,6 +199,8 @@ Range:            ~500-1200 ns
 | 1,480 B | LaserScan | ~2.2 μs | ~900 ns | **23-111x faster** |
 
 **Observation**: Near-linear scaling with message size demonstrates efficient serialization and IPC.
+
+<LatencyScalingChart />
 
 ---
 
@@ -290,6 +296,8 @@ cargo build --release --bin production_bench
 | Vision | 30 Hz | ~120 μs | ~360 μs | 5 ms | **14-42x** |
 | Planning | 100 Hz | ~600 ns | ~1.1 μs | 100 μs | **91-167x** |
 
+<ThroughputChart />
+
 ---
 
 ## Methodology
@@ -298,22 +306,20 @@ cargo build --release --bin production_bench
 
 **HORUS uses the industry-standard ping-pong benchmark pattern for IPC latency measurement:**
 
-```
-┌─────────────┐                      ┌─────────────┐
-│  Producer   │                      │  Consumer   │
-│  (Core 0)   │                      │  (Core 1)   │
-└─────────────┘                      └─────────────┘
-      │                                     │
-      │  1. Send message with RDTSC        │
-      ├────────────────────────────────────>│
-      │                                     │ 2. Read RDTSC, calc latency
-      │                                     │ 3. Send ACK
-      │<────────────────────────────────────┤
-      │ 4. Wait for ACK                     │
-      │ 5. Send next message                │
-      ├────────────────────────────────────>│
-      │                                     │
-```
+<MermaidDiagram
+  chart={`%%{init: {'sequence': {'padding': 15}}}%%
+sequenceDiagram
+    participant P as Producer (Core 0)
+    participant C as Consumer (Core 1)
+
+    P->>C: 1. Send message with RDTSC
+    Note right of C: 2. Read RDTSC, calc latency
+    C->>P: 3. Send ACK
+    Note left of P: 4. Wait for ACK
+    P->>C: 5. Send next message
+`}
+  caption="Ping-Pong Benchmark Pattern"
+/>
 
 **Why Ping-Pong?**
 - **Industry standard**: Used by ROS2, iceoryx2, ZeroMQ benchmarks
@@ -415,6 +421,8 @@ The scheduler demonstrates excellent linear scaling:
 - Maintains sub-120ms for large systems
 - Automatic tier classification optimizes execution order
 
+<ScalabilityChart />
+
 ---
 
 ## Real-Time Performance
@@ -471,6 +479,8 @@ scheduler.set_config(SchedulerConfig::safety_critical());
 | Background | 10 Hz | 10 Hz | ±200μs | &lt;0.5% |
 
 **Zero deadline misses** for critical RT nodes over 1M iterations.
+
+<RealTimeChart />
 
 ---
 

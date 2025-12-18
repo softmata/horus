@@ -1,180 +1,403 @@
 ---
 title: Architecture Overview
-description: High-level overview of how HORUS works
+description: Understanding HORUS - the node model, communication patterns, scheduling, and memory system
 order: 25
 ---
 
 # Architecture Overview
 
-This page explains how HORUS is organized at a high level. You don't need to understand these details to use HORUS - this is for those curious about how the framework works.
+HORUS is built on four foundational concepts that work together to create a high-performance robotics runtime:
 
-## The Big Picture
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph CONCEPTS["Core Concepts"]
+        direction TB
+        N["<b>Nodes</b><br/>Computational units"]
+        C["<b>Communication</b><br/>Data exchange"]
+        S["<b>Scheduler</b><br/>Orchestration"]
+        M["<b>Memory</b><br/>Zero-copy sharing"]
+    end
 
-HORUS has three main layers:
+    N <--> C
+    C <--> S
+    S <--> M
+    M <--> N
+`}
+  caption="The Four Pillars of HORUS"
+/>
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Your Application                         │
-│  (Nodes you write using the node! macro or Node trait)      │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    HORUS Framework                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │  Scheduler  │  │    Hub      │  │  Standard   │         │
-│  │ (runs your  │  │ (connects   │  │  Library    │         │
-│  │   nodes)    │  │   nodes)    │  │  (sensors,  │         │
-│  │             │  │             │  │   motors)   │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Shared Memory                              │
-│  (Fast communication between your nodes)                    │
-└─────────────────────────────────────────────────────────────┘
-```
+---
 
-## Core Components
+## The Node Model
 
-### 1. Scheduler - Runs Your Nodes
+Everything in HORUS is a **Node**. A node is an independent unit of computation with a well-defined lifecycle.
 
-The Scheduler is like a conductor - it calls each node's `tick()` method in priority order, over and over.
+### Why Nodes?
+
+Robotics systems are inherently modular. A robot has sensors, actuators, planners, and controllers - each with different timing requirements and failure modes. By making each component a node, HORUS provides:
+
+- **Isolation** - A failing camera driver doesn't crash your motion controller
+- **Composability** - Mix and match nodes to build different robots
+- **Testability** - Test each node independently before integration
+- **Hot-swapping** - Replace nodes at runtime without stopping the system
+
+### Node Lifecycle
+
+Every node follows the same lifecycle, ensuring predictable behavior:
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart LR
+    U["Created"] --> I["Initializing"]
+    I --> R["Running"]
+    R --> P["Paused"]
+    P --> R
+    R --> S["Stopping"]
+    S --> D["Stopped"]
+    R -.-> E["Error"]
+    E --> S
+`}
+  caption="Node State Machine"
+/>
+
+| State | What Happens |
+|-------|--------------|
+| **Created** | Node exists but hasn't started |
+| **Initializing** | Setting up resources, connecting to hardware |
+| **Running** | Actively processing - `tick()` called each cycle |
+| **Paused** | Temporarily suspended, can resume instantly |
+| **Stopping** | Cleaning up, releasing resources |
+| **Stopped** | Fully shut down |
+| **Error** | Something went wrong, but recoverable |
+
+### The Tick Model
+
+Nodes don't run continuously - they **tick**. Each tick is a discrete unit of work:
 
 ```rust
-// The scheduler runs your nodes automatically
-let mut scheduler = Scheduler::new();
-scheduler.add(Box::new(my_node), 5, Some(true));
-scheduler.run()?;  // Runs until Ctrl+C
-```
+fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    // Read inputs
+    let sensor_data = self.sensor_hub.recv(ctx);
 
-**Key points:**
-- Lower priority number = runs first (0 = highest priority)
-- Default tick rate is ~60 Hz (can be configured)
-- Handles graceful shutdown (Ctrl+C)
+    // Process
+    let command = self.compute_response(sensor_data);
 
-### 2. Hub - Connects Your Nodes
-
-Hub is how nodes talk to each other. Think of it like a message board - one node posts a message, another reads it.
-
-```rust
-// Publisher node
-let velocity_pub: Hub<f32> = Hub::new("velocity")?;
-velocity_pub.send(1.5, &mut ctx)?;
-
-// Subscriber node (different node, same topic name)
-let velocity_sub: Hub<f32> = Hub::new("velocity")?;
-if let Some(vel) = velocity_sub.recv(&mut ctx) {
-    // Got the velocity!
+    // Write outputs
+    self.command_hub.send(command, ctx);
 }
 ```
 
-**Key points:**
-- Same topic name = same channel
-- Multiple publishers and subscribers supported
-- Sub-microsecond latency (~400ns)
-
-### 3. Standard Library - Ready-Made Components
-
-The `horus_library` provides pre-built nodes and message types so you don't start from scratch.
-
-**Message Types:**
-- `CmdVel` - Velocity commands (linear + angular)
-- `Odometry` - Position and orientation
-- `LaserScan` - LIDAR data
-- `IMU` - Accelerometer + gyroscope data
-
-**Built-in Nodes:**
-- Motor drivers (DC, stepper, servo)
-- Sensor interfaces (camera, LIDAR, IMU)
-- Control algorithms (PID, path planning)
+This model enables:
+- **Deterministic timing** - Know exactly when each node runs
+- **Profiling** - Measure how long each tick takes
+- **Scheduling intelligence** - The scheduler can optimize execution order
 
 ---
 
-## How Data Flows
+## Communication Patterns
 
-Here's what happens when your robot runs:
+Nodes need to exchange data. HORUS provides two communication primitives, each optimized for different patterns.
 
+### Why Two Patterns?
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph HUB["Hub (Pub/Sub)"]
+        direction LR
+        P1["Publisher"] --> T["Topic"]
+        P2["Publisher"] --> T
+        T --> S1["Subscriber"]
+        T --> S2["Subscriber"]
+        T --> S3["Subscriber"]
+    end
+
+    subgraph LINK["Link (Point-to-Point)"]
+        direction LR
+        PR["Producer"] --> LK["Link"] --> CO["Consumer"]
+    end
+`}
+  caption="Two Communication Patterns for Different Needs"
+/>
+
+| Pattern | Use When | Example |
+|---------|----------|---------|
+| **Hub** | Multiple readers need the same data | Camera images → multiple vision algorithms |
+| **Link** | Strict ordering between two nodes | Sensor → filter → controller pipeline |
+
+### Hub: Broadcast to Many
+
+Hub implements **publish-subscribe** messaging. Any node can publish to a topic, and any number of nodes can subscribe.
+
+```rust
+// Camera node publishes images
+let image_pub: Hub<Image> = Hub::new("camera/image")?;
+image_pub.send(frame, ctx)?;
+
+// Multiple subscribers receive the same image
+let image_sub: Hub<Image> = Hub::new("camera/image")?;
+if let Some(frame) = image_sub.recv(ctx) {
+    // Process frame
+}
 ```
-1. Sensor Node reads hardware
-         │
-         ▼
-2. Publishes to Hub ("sensor_data")
-         │
-         ▼
-3. Control Node subscribes, processes data
-         │
-         ▼
-4. Publishes command ("motor_cmd")
-         │
-         ▼
-5. Motor Node subscribes, moves robot
+
+**Hub characteristics:**
+- Many-to-many communication
+- Latest-value semantics (subscribers get most recent)
+- ~481ns round-trip latency
+- Automatic network transport for distributed systems
+
+### Link: Fast Pipeline
+
+Link implements **point-to-point** channels. One producer, one consumer, guaranteed ordering.
+
+```rust
+// Producer side
+let link = Link::<SensorData>::producer("sensor_pipeline")?;
+link.send(&data)?;
+
+// Consumer side
+let link = Link::<SensorData>::consumer("sensor_pipeline")?;
+if let Some(data) = link.recv() {
+    // Process in order
+}
 ```
 
-**All of this happens in microseconds**, not milliseconds. That's why HORUS is fast enough for real-time control.
+**Link characteristics:**
+- One-to-one communication
+- FIFO ordering guaranteed
+- ~248ns round-trip latency
+- Ideal for processing pipelines
+
+### Cross-Process Communication
+
+Both Hub and Link work transparently across process boundaries using shared memory:
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    subgraph P1["Process A"]
+        N1["Vision Node"]
+    end
+
+    subgraph SHM["Shared Memory"]
+        T["detections"]
+    end
+
+    subgraph P2["Process B"]
+        N2["Planner Node"]
+    end
+
+    N1 -->|"publish"| T -->|"subscribe"| N2
+`}
+  caption="Transparent Cross-Process Communication"
+/>
+
+No serialization overhead for same-machine communication. Data is written once to shared memory and read directly by subscribers.
 
 ---
 
-## Why Shared Memory?
+## The Scheduler
 
-HORUS uses **shared memory** instead of network sockets for communication. This is why it's so fast:
+The scheduler is the brain of HORUS. It decides **when** and **how** nodes execute.
 
-| Method | Typical Latency |
-|--------|-----------------|
-| Network socket | 50-100 μs |
-| **HORUS shared memory** | **0.4 μs** |
+### Why a Scheduler?
 
-**100x faster** than traditional approaches.
+Without coordination, nodes would:
+- Fight for CPU resources
+- Miss real-time deadlines
+- Waste cycles waiting for data that hasn't arrived
 
-The shared memory files are stored in:
-- Linux: `/dev/shm/horus/`
-- macOS: `/tmp/horus/`
-- Windows: `%TEMP%\horus\`
+The HORUS scheduler solves these problems with intelligent orchestration.
 
-You don't need to manage these files - HORUS handles them automatically.
+### Execution Modes
+
+Different applications need different scheduling strategies:
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    AUTO["<b>AutoAdaptive</b><br/>Let HORUS decide"]
+
+    AUTO --> JIT["<b>JIT Optimized</b><br/>~37ns ticks"]
+    AUTO --> PAR["<b>Parallel</b><br/>Multi-core"]
+    AUTO --> ASYNC["<b>Async I/O</b><br/>Network/file ops"]
+    AUTO --> SEQ["<b>Sequential</b><br/>Simple & predictable"]
+`}
+  caption="Execution Mode Hierarchy"
+/>
+
+| Mode | Best For | Tick Overhead |
+|------|----------|---------------|
+| **JIT Optimized** | Ultra-fast control loops | ~37ns |
+| **Parallel** | CPU-heavy workloads | Varies by core count |
+| **Async I/O** | Network, file, database | Varies by I/O |
+| **Sequential** | Debugging, simple apps | Minimal |
+| **AutoAdaptive** | Most applications | Auto-selected |
+
+### Intelligence Layer
+
+The scheduler continuously learns about your application:
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart LR
+    PROF["<b>Profiler</b><br/>Measures tick times"]
+    CLASS["<b>Classifier</b><br/>Categorizes nodes"]
+    DEP["<b>Dependency Graph</b><br/>Finds parallelism"]
+
+    PROF --> CLASS --> DEP
+`}
+  caption="Scheduler Intelligence Pipeline"
+/>
+
+- **Runtime Profiler** - Tracks how long each node takes
+- **Tier Classifier** - Groups nodes by behavior (fast/slow, I/O-bound/CPU-bound)
+- **Dependency Graph** - Identifies which nodes can run in parallel
+
+### Safety Systems
+
+Real robots need safety guarantees. The scheduler provides:
+
+| Feature | Purpose |
+|---------|---------|
+| **WCET Monitoring** | Detect nodes exceeding time budgets |
+| **Circuit Breaker** | Isolate failing nodes automatically |
+| **Watchdog Timers** | Detect hung nodes |
+| **Checkpointing** | Periodic state snapshots for recovery |
+| **Black Box** | Flight recorder for post-mortem analysis |
 
 ---
 
-## Project Structure
+## Memory System
 
-When you create a HORUS project, you typically have:
+Large data (images, point clouds, ML tensors) needs special handling. Copying a 4K image between nodes would destroy performance.
 
+### Zero-Copy Design
+
+HORUS uses shared memory pools for large data:
+
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart LR
+    subgraph POOL["Tensor Pool (Shared Memory)"]
+        T["Image Data<br/>1920x1080x3"]
+    end
+
+    CAM["Camera"] -->|"write once"| T
+    T -->|"read"| V1["Vision 1"]
+    T -->|"read"| V2["Vision 2"]
+    T -->|"read"| V3["Vision 3"]
+`}
+  caption="Zero-Copy: Write Once, Read Many"
+/>
+
+The image data is written **once** to shared memory. Each subscriber reads directly from the same memory location - no copying.
+
+### TensorPool
+
+TensorPool manages shared memory allocation:
+
+```rust
+// Allocate space for a 1080p RGB image
+let pool = TensorPool::new(1, TensorPoolConfig::default())?;
+let tensor = pool.alloc(&[1080, 1920, 3], TensorDtype::U8)?;
+
+// Write data (only done once)
+let data = pool.data_slice_mut(&tensor);
+camera.capture_into(data);
+
+// Send through Hub - only the descriptor is copied, not the image
+image_pub.send(tensor, ctx)?;
 ```
-my_robot/
-├── main.rs          # Your application code
-├── horus.yaml       # Project configuration
-└── .horus/          # Auto-generated build files (ignore this)
-```
 
-Run with:
-```bash
-horus run
-```
+**TensorPool characteristics:**
+- Lock-free allocation (~100ns)
+- Automatic reference counting
+- Cache-aligned to prevent false sharing
+- Works across processes
+- Optional GPU support (CUDA IPC)
 
-That's it! HORUS handles compilation and execution.
+### Python Integration
+
+Python nodes share the same memory pool:
+
+```python
+import horus
+import numpy as np
+
+# Receive tensor from Rust node
+tensor = hub.recv()
+
+# Zero-copy numpy view - no data copied!
+array = np.array(tensor, copy=False)
+
+# Process with numpy/PyTorch
+result = model.predict(array)
+```
 
 ---
 
-## What You DON'T Need to Know
+## Data Flow Example
 
-As a user, you don't need to understand:
-- Internal crate organization
-- Shared memory implementation details
-- Lock-free algorithm internals
-- Memory alignment and cache optimization
+Here's how these concepts work together in a typical perception-to-action pipeline:
 
-These are handled by the framework. Focus on your robot logic!
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart LR
+    CAM["<b>Camera</b><br/>Captures frames"]
+    DET["<b>Detector</b><br/>Finds objects"]
+    NAV["<b>Planner</b><br/>Plans path"]
+    CTRL["<b>Controller</b><br/>Computes motion"]
+    MOT["<b>Motors</b><br/>Executes movement"]
+
+    CAM -->|"Image<br/>(zero-copy)"| DET
+    DET -->|"Detections<br/>(Hub)"| NAV
+    NAV -->|"Velocity<br/>(Hub)"| CTRL
+    CTRL -->|"PWM<br/>(Link)"| MOT
+`}
+  caption="Perception-Planning-Control Pipeline"
+/>
+
+| Connection | Mechanism | Why |
+|------------|-----------|-----|
+| Camera → Detector | TensorPool | Large image, zero-copy |
+| Detector → Planner | Hub | Multiple planners might subscribe |
+| Planner → Controller | Hub | Monitoring tools can observe |
+| Controller → Motors | Link | Strict ordering, lowest latency |
+
+**Total pipeline latency:** Under 2 microseconds for message passing.
+
+---
+
+## Performance Summary
+
+| Metric | Value |
+|--------|-------|
+| Hub round-trip | ~481ns |
+| Link round-trip | ~248ns |
+| JIT-compiled tick | ~37ns |
+| TensorPool allocation | ~100ns |
+| Message serialization | ~50-200ns |
+
+---
+
+## Design Philosophy
+
+HORUS is built on these principles:
+
+1. **Nodes are the unit of composition** - Build robots by connecting nodes
+2. **Communication is explicit** - No hidden data flow, everything goes through Hub or Link
+3. **The scheduler is your friend** - Let it optimize; don't fight it
+4. **Zero-copy by default** - Large data should never be copied unnecessarily
+5. **Safety is not optional** - Circuit breakers, watchdogs, and black boxes are built in
 
 ---
 
 ## Next Steps
 
 - **[Quick Start](/getting-started/quick-start)** - Build your first HORUS application
-- **[Nodes](/concepts/core-concepts-nodes)** - Understand the Node lifecycle
-- **[Hub](/concepts/core-concepts-hub)** - Learn about pub/sub communication
-- **[node! Macro](/concepts/node-macro)** - Write nodes with minimal boilerplate
-
----
-
-> **For Contributors:** If you're interested in HORUS internals for contributing or extending the framework, see the [Internal Architecture Guide](/development/internal-architecture).
+- **[Core Concepts: Nodes](/concepts/core-concepts-nodes)** - Deep dive into the node model
+- **[Core Concepts: Hub](/concepts/core-concepts-hub)** - Advanced pub/sub patterns
+- **[Scheduler Configuration](/advanced/scheduler-configuration)** - Tuning for real-time

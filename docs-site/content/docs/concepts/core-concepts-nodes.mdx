@@ -119,13 +119,25 @@ Nodes transition through well-defined states during their lifetime:
 
 ### State Transitions
 
-```
-Uninitialized  Initializing  Running  Stopping  Stopped
-                                  ->
-                               Error  Running
-                                  ->
-                              Crashed (terminal)
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart LR
+    UN["Uninitialized"]
+    INIT["Initializing"]
+    RUN["Running"]
+    STOP["Stopping"]
+    DONE["Stopped"]
+    ERR["Error"]
+    CRASH["Crashed"]
+
+    UN --> INIT --> RUN --> STOP --> DONE
+    RUN --> ERR
+    ERR --> RUN
+    RUN --> CRASH
+    ERR --> CRASH
+`}
+  caption="Node State Transitions"
+/>
 
 ### Lifecycle Example
 
@@ -841,25 +853,20 @@ When a HORUS application receives a termination signal (Ctrl+C, SIGINT, SIGTERM)
 
 The scheduler intercepts termination signals and ensures proper cleanup:
 
-```
-User presses Ctrl+C
-        │
-        ▼
-Signal Handler (SIGINT/SIGTERM)
-        │
-        ▼
-scheduler.running = false
-        │
-        ▼
-Break out of tick loop
-        │
-        ▼
-For each node (in priority order):
-    node.shutdown(&mut ctx)
-        │
-        ▼
-Application exits cleanly
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    CTRL["User presses Ctrl+C"]
+    SIG["Signal Handler<br/>(SIGINT/SIGTERM)"]
+    FLAG["scheduler.running = false"]
+    BREAK["Break out of tick loop"]
+    SHUT["For each node (priority order):<br/>node.shutdown(&mut ctx)"]
+    EXIT["Application exits cleanly"]
+
+    CTRL --> SIG --> FLAG --> BREAK --> SHUT --> EXIT
+`}
+  caption="Signal Handling Flow"
+/>
 
 ### Why shutdown() Matters for Motors
 

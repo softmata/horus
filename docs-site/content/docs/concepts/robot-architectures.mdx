@@ -18,12 +18,18 @@ This guide shows how to compose **built-in nodes** into complete robot systems. 
 
 The fundamental pattern in robotics: data flows from sensors through processing to actuators.
 
-```
-┌──────────┐    topic     ┌──────────┐    topic     ┌──────────┐    topic     ┌──────────┐
-│  Sensor  │ ───────────► │  Filter  │ ───────────► │ Control  │ ───────────► │ Actuator │
-│  (P: 0)  │              │  (P: 1)  │              │  (P: 2)  │              │  (P: 3)  │
-└──────────┘              └──────────┘              └──────────┘              └──────────┘
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart LR
+    S["<b>Sensor</b><br/>(P: 0)"]
+    F["<b>Filter</b><br/>(P: 1)"]
+    C["<b>Control</b><br/>(P: 2)"]
+    A["<b>Actuator</b><br/>(P: 3)"]
+
+    S -->|"topic"| F -->|"topic"| C -->|"topic"| A
+`}
+  caption="The Pipeline Pattern"
+/>
 
 **Key principle**: Lower priority numbers run first. Sensors (P:0) publish data before controllers (P:2) process it.
 
@@ -35,56 +41,33 @@ The most common robot configuration: two-wheeled differential drive with joystic
 
 ### Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         Mobile Robot Base System                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph TITLE["Mobile Robot Base System"]
+        direction TB
+        JOY["<b>JoystickNode</b><br/>(Priority 0)<br/>Reads gamepad/arrows"]
 
-┌───────────────────┐
-│  JoystickNode     │
-│  (Priority 0)     │
-│                   │
-│  - Reads gamepad  │
-│  - Arrow keys     │
-└─────────┬─────────┘
-          │
-          │ publishes: "joystick.input"
-          │ message: JoystickInput { axes, buttons }
-          ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "joystick.input"           │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes: "joystick.input"
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  DifferentialDriveNode (Priority 1)                                             │
-│                                                                                  │
-│  - Converts joystick input to wheel velocities                                   │
-│  - Differential drive kinematics: left = linear - angular, right = linear + ang │
-│  - Configurable wheel separation and max speed                                   │
-└─────────────────────┬───────────────────────────────┬───────────────────────────┘
-                      │                               │
-                      │ publishes: "motor.left"       │ publishes: "motor.right"
-                      │ message: f32 (speed)          │ message: f32 (speed)
-                      ▼                               ▼
-┌─────────────────────────────────┐   ┌─────────────────────────────────┐
-│      Shared Memory (IPC)        │   │       Shared Memory (IPC)       │
-│      Topic: "motor.left"        │   │       Topic: "motor.right"      │
-└─────────────────┬───────────────┘   └─────────────────┬───────────────┘
-                  │                                     │
-                  │ subscribes                          │ subscribes
-                  ▼                                     ▼
-┌─────────────────────────────────┐   ┌─────────────────────────────────┐
-│  DcMotorNode (Left)             │   │  DcMotorNode (Right)            │
-│  (Priority 2)                   │   │  (Priority 2)                   │
-│                                 │   │                                 │
-│  - GPIO PWM output              │   │  - GPIO PWM output              │
-│  - H-bridge control             │   │  - H-bridge control             │
-│  - Pin 12, 13                   │   │  - Pin 18, 19                   │
-└─────────────────────────────────┘   └─────────────────────────────────┘
-```
+        T1["joystick.input"]
+
+        DIFF["<b>DifferentialDriveNode</b><br/>(Priority 1)<br/>Converts input to wheel velocities"]
+
+        T2["motor.left"]
+        T3["motor.right"]
+
+        LMOT["<b>DcMotorNode (Left)</b><br/>(Priority 2)<br/>GPIO PWM Pin 12, 13"]
+        RMOT["<b>DcMotorNode (Right)</b><br/>(Priority 2)<br/>GPIO PWM Pin 18, 19"]
+
+        JOY -->|"JoystickInput"| T1
+        T1 --> DIFF
+        DIFF -->|"f32 speed"| T2
+        DIFF -->|"f32 speed"| T3
+        T2 --> LMOT
+        T3 --> RMOT
+    end
+`}
+  caption="Mobile Robot Base Architecture"
+/>
 
 ### Topic Connections
 
@@ -139,90 +122,56 @@ A self-driving robot that uses LiDAR to detect obstacles and navigate safely.
 
 ### Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                    Autonomous Mobile Robot System                                │
-└─────────────────────────────────────────────────────────────────────────────────┘
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph SYSTEM["Autonomous Mobile Robot System"]
+        direction TB
 
-┌───────────────────┐
-│  EmergencyStopNode│  ◄── SAFETY LAYER (Priority 0)
-│  (Priority 0)     │      - Always runs first
-│                   │      - Can override all commands
-│  - E-stop button  │      - Monitors: "cmd_vel"
-│  - Watchdog timer │
-└───────────────────┘
+        subgraph SAFETY["Safety Layer (Priority 0)"]
+            ESTOP["<b>EmergencyStopNode</b><br/>E-stop button, Watchdog<br/>Monitors: cmd_vel"]
+        end
 
-┌───────────────────┐
-│  LidarNode        │
-│  (Priority 1)     │
-│                   │
-│  - 360° scan      │
-│  - 10Hz update    │
-│  - /dev/ttyUSB0   │
-└─────────┬─────────┘
-          │
-          │ publishes: "lidar.scan"
-          │ message: LaserScan { ranges[360], angle_min, angle_max }
-          ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "lidar.scan"               │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes: "lidar.scan"
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  CollisionDetectorNode (Priority 2)                                             │
-│                                                                                  │
-│  - Scans for obstacles in front arc (±45°)                                      │
-│  - Configurable safety distance (0.5m default)                                   │
-│  - Outputs obstacle locations                                                    │
-└─────────────────────┬───────────────────────────────────────────────────────────┘
-                      │
-                      │ publishes: "obstacles"
-                      │ message: Obstacles { count, nearest_distance, nearest_angle }
-                      ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "obstacles"                │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes: "obstacles"
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  PathPlannerNode (Priority 3)                                                   │
-│                                                                                  │
-│  - Local path planning (VFH, DWA algorithms)                                     │
-│  - Avoids obstacles while moving toward goal                                     │
-│  - Outputs velocity commands                                                     │
-└─────────────────────┬───────────────────────────────────────────────────────────┘
-                      │
-                      │ publishes: "cmd_vel"
-                      │ message: CmdVel { linear, angular }
-                      ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "cmd_vel"                  │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes: "cmd_vel"
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  DifferentialDriveNode (Priority 4)                                             │
-│                                                                                  │
-│  - Converts CmdVel to wheel speeds                                               │
-│  - Differential drive kinematics                                                 │
-└─────────────────────┬───────────────────────────────────────────────────────────┘
-                      │
-                      │ publishes: "motor.left", "motor.right"
-                      ▼
-              ┌───────┴───────┐
-              ▼               ▼
-┌─────────────────┐   ┌─────────────────┐
-│  BldcMotorNode  │   │  BldcMotorNode  │
-│  (Left, P: 5)   │   │  (Right, P: 5)  │
-└─────────────────┘   └─────────────────┘
-```
+        subgraph SENSORS["Sensor Layer (Priority 1)"]
+            LIDAR["<b>LidarNode</b><br/>360° scan, 10Hz<br/>/dev/ttyUSB0"]
+        end
+
+        T1[["lidar.scan<br/><i>LaserScan</i>"]]
+
+        subgraph PERCEPTION["Perception Layer (Priority 2)"]
+            DETECT["<b>CollisionDetectorNode</b><br/>Front arc ±45°<br/>Safety distance: 0.5m"]
+        end
+
+        T2[["obstacles<br/><i>Obstacles</i>"]]
+
+        subgraph PLANNING["Planning Layer (Priority 3)"]
+            PLAN["<b>PathPlannerNode</b><br/>VFH/DWA algorithms<br/>Obstacle avoidance"]
+        end
+
+        T3[["cmd_vel<br/><i>CmdVel</i>"]]
+
+        subgraph CONTROL["Control Layer (Priority 4)"]
+            DIFF["<b>DifferentialDriveNode</b><br/>CmdVel → wheel speeds"]
+        end
+
+        T4[["motor.left"]]
+        T5[["motor.right"]]
+
+        subgraph ACTUATORS["Actuator Layer (Priority 5)"]
+            LMOT["<b>BldcMotorNode</b><br/>(Left)"]
+            RMOT["<b>BldcMotorNode</b><br/>(Right)"]
+        end
+
+        LIDAR --> T1 --> DETECT
+        DETECT --> T2 --> PLAN
+        PLAN --> T3 --> DIFF
+        T3 -.->|"monitors"| ESTOP
+        DIFF --> T4 --> LMOT
+        DIFF --> T5 --> RMOT
+    end
+`}
+  caption="Autonomous Mobile Robot Architecture"
+/>
 
 ### Topic Connections
 
@@ -294,55 +243,48 @@ Combine multiple sensors for accurate robot localization.
 
 ### Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        Sensor Fusion System                                      │
-└─────────────────────────────────────────────────────────────────────────────────┘
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph SYSTEM["Sensor Fusion System"]
+        direction TB
 
-    SENSORS (Priority 1 - all run in parallel)
-    ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
-    │  LidarNode        │  │  ImuNode          │  │  OdometryNode     │
-    │                   │  │                   │  │                   │
-    │  - 2D scan data   │  │  - Acceleration   │  │  - Wheel encoders │
-    │  - 10Hz           │  │  - Angular rate   │  │  - 50Hz           │
-    │                   │  │  - 100Hz          │  │                   │
-    └─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
-              │                      │                      │
-              │ "lidar.scan"         │ "imu.data"           │ "odom.twist"
-              ▼                      ▼                      ▼
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                   Shared Memory (IPC)                           │
-    │  Topics: "lidar.scan", "imu.data", "odom.twist"                 │
-    └───────────────────────────────┬─────────────────────────────────┘
-                                    │
-                                    │ subscribes all three
-                                    ▼
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │  LocalizationNode (Priority 2)                                              │
-    │                                                                              │
-    │  - Extended Kalman Filter (EKF)                                              │
-    │  - Fuses LiDAR landmarks + IMU motion + Odometry                             │
-    │  - Outputs robot pose estimate                                               │
-    │                                                                              │
-    │  State: [x, y, theta, vx, vy, omega]                                         │
-    │  Update rate: 100Hz (IMU rate)                                               │
-    └─────────────────────────────────┬───────────────────────────────────────────┘
-                                      │
-                                      │ publishes: "robot.pose"
-                                      │ message: Pose2D { x, y, theta, covariance }
-                                      ▼
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                   Shared Memory (IPC)                           │
-    │                   Topic: "robot.pose"                           │
-    └─────────────────────────────────┬───────────────────────────────┘
-                                      │
-                          ┌───────────┴───────────┐
-                          ▼                       ▼
-    ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-    │  PathPlannerNode (P: 3)         │  │  Monitor / Logger             │
-    │  - Uses pose for planning       │  │  - Visualization                │
-    └─────────────────────────────────┘  └─────────────────────────────────┘
-```
+        subgraph SENSORS["Sensor Layer (Priority 1 - parallel)"]
+            direction LR
+            LIDAR["<b>LidarNode</b><br/>2D scan, 10Hz"]
+            IMU["<b>ImuNode</b><br/>Accel/Gyro, 100Hz"]
+            ODOM["<b>OdometryNode</b><br/>Wheel encoders, 50Hz"]
+        end
+
+        T1[["lidar.scan"]]
+        T2[["imu.data"]]
+        T3[["odom.twist"]]
+
+        subgraph FUSION["Fusion Layer (Priority 2)"]
+            LOC["<b>LocalizationNode</b><br/>Extended Kalman Filter (EKF)<br/>State: [x, y, θ, vx, vy, ω]<br/>Update: 100Hz"]
+        end
+
+        T4[["robot.pose<br/><i>Pose2D</i>"]]
+
+        subgraph CONSUMERS["Consumers (Priority 3+)"]
+            direction LR
+            PLAN["<b>PathPlannerNode</b><br/>Uses pose for planning"]
+            MON["<b>Monitor/Logger</b><br/>Visualization"]
+        end
+
+        LIDAR --> T1
+        IMU --> T2
+        ODOM --> T3
+        T1 --> LOC
+        T2 --> LOC
+        T3 --> LOC
+        LOC --> T4
+        T4 --> PLAN
+        T4 --> MON
+    end
+`}
+  caption="Sensor Fusion Architecture"
+/>
 
 ### Topic Connections
 
@@ -395,73 +337,56 @@ A robot that uses computer vision for object detection and tracking.
 
 ### Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                      Vision-Based Robot System                                   │
-└─────────────────────────────────────────────────────────────────────────────────┘
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph SYSTEM["Vision-Based Robot System"]
+        direction TB
 
-┌───────────────────┐
-│  CameraNode       │
-│  (Priority 1)     │
-│                   │
-│  - USB/CSI camera │
-│  - 30 FPS         │
-│  - 640x480 RGB    │
-└─────────┬─────────┘
-          │
-          │ publishes: "camera.image"
-          │ message: Image { width, height, data, encoding }
-          ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "camera.image"             │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes: "camera.image"
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  YOLOv8DetectorNode (Priority 2)                                                │
-│                                                                                  │
-│  - Real-time object detection                                                    │
-│  - 80 COCO classes (person, car, bottle, etc.)                                   │
-│  - GPU acceleration (CUDA/TensorRT)                                              │
-│  - ~30ms inference time                                                          │
-└─────────────────────┬───────────────────────────────────────────────────────────┘
-                      │
-                      │ publishes: "detections"
-                      │ message: Detections { objects: [{ class, confidence, bbox }] }
-                      ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "detections"               │
-└─────────────────────┬─────────────────────┘
-                      │
-          ┌───────────┴───────────┐
-          │                       │
-          ▼                       ▼
-┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-│  ObjectTrackerNode (P: 3)       │  │  SafetyMonitorNode (P: 3)       │
-│                                 │  │                                 │
-│  - Tracks objects over time     │  │  - Detects "person" class       │
-│  - Assigns unique IDs           │  │  - Triggers slow/stop if close  │
-│  - Predicts future positions    │  │                                 │
-└─────────────────────────────────┘  └─────────────────────────────────┘
-          │                                       │
-          │ "tracked_objects"                     │ monitors: "cmd_vel"
-          ▼                                       │
-┌─────────────────────────────────┐              │
-│  FollowBehaviorNode (P: 4)      │              │
-│                                 │              │
-│  - Follows specific object      │              │
-│  - Maintains safe distance      │              │
-└─────────────────┬───────────────┘              │
-                  │                               │
-                  │ publishes: "cmd_vel"          │
-                  ▼                               │
-┌─────────────────────────────────────────────────┘
-│  DifferentialDriveNode (P: 5) ──► Motors
-└─────────────────────────────────────────────────
-```
+        subgraph SAFETY["Safety Layer (Priority 0)"]
+            SAFE["<b>SafetyMonitorNode</b><br/>Detects 'person' class<br/>Triggers slow/stop if close"]
+        end
+
+        subgraph SENSOR["Sensor Layer (Priority 1)"]
+            CAM["<b>CameraNode</b><br/>USB/CSI, 30 FPS<br/>640×480 RGB"]
+        end
+
+        T1[["camera.image<br/><i>Image</i>"]]
+
+        subgraph PERCEPTION["Perception Layer (Priority 2)"]
+            YOLO["<b>YOLOv8DetectorNode</b><br/>80 COCO classes<br/>GPU: CUDA/TensorRT<br/>~30ms inference"]
+        end
+
+        T2[["detections<br/><i>Detections</i>"]]
+
+        subgraph TRACKING["Tracking Layer (Priority 3)"]
+            direction LR
+            TRACK["<b>ObjectTrackerNode</b><br/>Assigns unique IDs<br/>Predicts positions"]
+        end
+
+        T3[["tracked_objects"]]
+
+        subgraph BEHAVIOR["Behavior Layer (Priority 4)"]
+            FOLLOW["<b>FollowBehaviorNode</b><br/>Follows target object<br/>Maintains safe distance"]
+        end
+
+        T4[["cmd_vel<br/><i>CmdVel</i>"]]
+
+        subgraph CONTROL["Control Layer (Priority 5)"]
+            DIFF["<b>DifferentialDriveNode</b> → Motors"]
+        end
+
+        CAM --> T1 --> YOLO
+        YOLO --> T2
+        T2 --> TRACK
+        T2 -.->|"monitors"| SAFE
+        TRACK --> T3 --> FOLLOW
+        FOLLOW --> T4 --> DIFF
+        T4 -.->|"monitors"| SAFE
+    end
+`}
+  caption="Vision-Based Robot Architecture"
+/>
 
 ### Topic Connections
 
@@ -522,68 +447,45 @@ A robot arm with multiple Dynamixel servos for precise manipulation.
 
 ### Architecture Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     Industrial Robot Arm System                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 20}}}%%
+flowchart TB
+    subgraph SYSTEM["Industrial Robot Arm System"]
+        direction TB
 
-┌───────────────────┐
-│  TrajectoryNode   │
-│  (Priority 1)     │
-│                   │
-│  - Generates      │
-│    smooth paths   │
-│  - Interpolation  │
-└─────────┬─────────┘
-          │
-          │ publishes: "arm.trajectory"
-          │ message: JointTrajectory { positions[6], velocities[6], time }
-          ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "arm.trajectory"           │
-└─────────────────────┬─────────────────────┘
-                      │
-                      │ subscribes
-                      ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  DynamixelNode (Priority 2)                                                     │
-│                                                                                  │
-│  - Controls 6 Dynamixel servos (XM430-W350)                                      │
-│  - Position, velocity, torque control modes                                       │
-│  - Reads joint feedback (position, velocity, current, temperature)                │
-│                                                                                  │
-│  Servo IDs: [1, 2, 3, 4, 5, 6] (base to gripper)                                 │
-│  Protocol: Dynamixel Protocol 2.0                                                │
-│  Baudrate: 1Mbps                                                                 │
-└─────────────────────┬───────────────────────────────────────────────────────────┘
-                      │
-                      │ publishes: "arm.joint_states"
-                      │ message: JointState { positions[6], velocities[6], efforts[6] }
-                      ▼
-┌───────────────────────────────────────────┐
-│         Shared Memory (IPC)               │
-│         Topic: "arm.joint_states"         │
-└─────────────────────┬─────────────────────┘
-                      │
-          ┌───────────┴───────────┐
-          ▼                       ▼
-┌─────────────────────────────────┐  ┌─────────────────────────────────┐
-│  ForwardKinematicsNode (P: 3)   │  │  CollisionCheckNode (P: 3)      │
-│                                 │  │                                 │
-│  - Calculates end-effector pose │  │  - Self-collision detection     │
-│  - DH parameters                │  │  - Workspace limits             │
-└─────────────────────────────────┘  └─────────────────────────────────┘
-          │
-          │ "arm.end_effector_pose"
-          ▼
-┌─────────────────────────────────┐
-│  GripperNode (Priority 4)       │
-│                                 │
-│  - Open/close gripper           │
-│  - Force feedback               │
-└─────────────────────────────────┘
-```
+        subgraph PLANNING["Planning Layer (Priority 1)"]
+            TRAJ["<b>TrajectoryNode</b><br/>Smooth path generation<br/>Interpolation"]
+        end
+
+        T1[["arm.trajectory<br/><i>JointTrajectory</i>"]]
+
+        subgraph CONTROL["Control Layer (Priority 2)"]
+            DYN["<b>DynamixelNode</b><br/>6× XM430-W350 servos<br/>Position/velocity/torque modes<br/>Protocol 2.0, 1Mbps"]
+        end
+
+        T2[["arm.joint_states<br/><i>JointState</i>"]]
+
+        subgraph FEEDBACK["Feedback Layer (Priority 3)"]
+            direction LR
+            FK["<b>ForwardKinematicsNode</b><br/>End-effector pose<br/>DH parameters"]
+            COL["<b>CollisionCheckNode</b><br/>Self-collision detection<br/>Workspace limits"]
+        end
+
+        T3[["arm.end_effector_pose<br/><i>Pose3D</i>"]]
+
+        subgraph EFFECTOR["End Effector (Priority 4)"]
+            GRIP["<b>GripperNode</b><br/>Open/close control<br/>Force feedback"]
+        end
+
+        TRAJ --> T1 --> DYN
+        DYN --> T2
+        T2 --> FK
+        T2 --> COL
+        FK --> T3 --> GRIP
+    end
+`}
+  caption="Industrial Robot Arm Architecture"
+/>
 
 ### Topic Connections
 

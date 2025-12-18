@@ -37,23 +37,29 @@ You'll see a window with:
 
 The main view shows a top-down view of the simulation:
 
-```
-┌────────────────────────────────────────────┐
-│  [Robot Panel]          [World Panel]      │
-│                                            │
-│         ┌───────────────────┐              │
-│         │                   │              │
-│         │      WORLD        │              │
-│         │                   │              │
-│         │   ┌───┐           │              │
-│         │   │ R │  ← Robot  │              │
-│         │   └───┘           │              │
-│         │                   │              │
-│         └───────────────────┘              │
-│                                            │
-│  [Sensors Panel]      [Performance Panel]  │
-└────────────────────────────────────────────┘
-```
+<MermaidDiagram
+  chart={`%%{init: {'flowchart': {'padding': 15}}}%%
+flowchart TB
+    subgraph WINDOW["Sim2D Window"]
+        direction TB
+        subgraph TOP["Top Panels"]
+            direction LR
+            RP["Robot Panel"]
+            WP["World Panel"]
+        end
+        subgraph MAIN["Main View"]
+            WORLD["World View<br/>with Robot"]
+        end
+        subgraph BOTTOM["Bottom Panels"]
+            direction LR
+            SP["Sensors Panel"]
+            PP["Performance Panel"]
+        end
+        TOP --> MAIN --> BOTTOM
+    end
+`}
+  caption="Sim2D Interface Layout"
+/>
 
 ### UI Panels
 
