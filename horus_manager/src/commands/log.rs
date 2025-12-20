@@ -51,6 +51,7 @@ struct LogEntry {
     level: LogLevel,
     node: String,
     message: String,
+    #[allow(dead_code)]
     raw: String,
 }
 
@@ -473,10 +474,10 @@ fn follow_logs(log_path: &Path, node_filter: Option<&str>, min_level: LogLevel) 
             }
             Ok(_) => {
                 if let Some(entry) = parse_log_line(&line) {
-                    if entry.level >= min_level {
-                        if node_filter.map(|n| entry.node.contains(n)).unwrap_or(true) {
-                            print_log_entry(&entry);
-                        }
+                    if entry.level >= min_level
+                        && node_filter.map(|n| entry.node.contains(n)).unwrap_or(true)
+                    {
+                        print_log_entry(&entry);
                     }
                 }
             }

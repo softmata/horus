@@ -343,32 +343,33 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
         if topic_path.exists() {
             if let Ok(mut file) = std::fs::File::open(&topic_path) {
                 let mut content = Vec::new();
-                if file.read_to_end(&mut content).is_ok() && !content.is_empty() {
-                    if last_content.as_ref() != Some(&content) {
-                        timestamps.push(Instant::now());
-                        last_content = Some(content);
+                if file.read_to_end(&mut content).is_ok()
+                    && !content.is_empty()
+                    && last_content.as_ref() != Some(&content)
+                {
+                    timestamps.push(Instant::now());
+                    last_content = Some(content);
 
-                        // Keep only window_size timestamps
-                        if timestamps.len() > window_size {
-                            timestamps.remove(0);
-                        }
+                    // Keep only window_size timestamps
+                    if timestamps.len() > window_size {
+                        timestamps.remove(0);
+                    }
 
-                        // Calculate rate
-                        if timestamps.len() >= 2 {
-                            let duration = timestamps
-                                .last()
-                                .unwrap()
-                                .duration_since(*timestamps.first().unwrap());
-                            let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
+                    // Calculate rate
+                    if timestamps.len() >= 2 {
+                        let duration = timestamps
+                            .last()
+                            .unwrap()
+                            .duration_since(*timestamps.first().unwrap());
+                        let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
 
-                            print!(
-                                "\r  {} {:.2} Hz (window: {})    ",
-                                "Rate:".cyan(),
-                                rate,
-                                timestamps.len()
-                            );
-                            std::io::stdout().flush().ok();
-                        }
+                        print!(
+                            "\r  {} {:.2} Hz (window: {})    ",
+                            "Rate:".cyan(),
+                            rate,
+                            timestamps.len()
+                        );
+                        std::io::stdout().flush().ok();
                     }
                 }
             }

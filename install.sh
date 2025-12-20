@@ -460,14 +460,14 @@ select_platform_profile
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐
 # │ RUST VERSION REQUIREMENTS                                                   │
-# │ - MSRV defined in Cargo.toml: rust-version = "1.85"                        │
+# │ - MSRV defined in Cargo.toml: rust-version = "1.92"                        │
 # │ - Max tested: Update after CI passes on new Rust releases                  │
 # └─────────────────────────────────────────────────────────────────────────────┘
 REQUIRED_RUST_MAJOR=1
-REQUIRED_RUST_MINOR=85
+REQUIRED_RUST_MINOR=92
 REQUIRED_RUST_VERSION="${REQUIRED_RUST_MAJOR}.${REQUIRED_RUST_MINOR}"
 MAX_TESTED_RUST_MAJOR=1
-MAX_TESTED_RUST_MINOR=87
+MAX_TESTED_RUST_MINOR=92
 MAX_TESTED_RUST_VERSION="${MAX_TESTED_RUST_MAJOR}.${MAX_TESTED_RUST_MINOR}"
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐

@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(received.unwrap(), SimpleValue(1.0));
 
         // Second recv without new send returns None (already seen this sequence)
-        let received = hub.recv(&mut None);
+        let _received = hub.recv(&mut None);
         // Hub may return the same value again OR None depending on implementation
         // The key behavior is: recv() should see new data when send() is called
 

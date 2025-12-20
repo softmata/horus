@@ -686,7 +686,7 @@ impl ZeroCopyReplayer {
     }
 
     /// Advance to next tick
-    pub fn next(&mut self) -> Option<TickData> {
+    pub fn next_tick(&mut self) -> Option<TickData> {
         if self.current_index >= self.index.len() {
             return None;
         }
@@ -1080,16 +1080,16 @@ mod tests {
         // Test replay
         let mut replayer = recording.replayer()?;
 
-        let tick0 = replayer.next().unwrap();
+        let tick0 = replayer.next_tick().unwrap();
         assert_eq!(tick0.tick, 0);
         assert_eq!(tick0.entries.len(), 2);
         assert_eq!(tick0.entries[0].data, vec![1, 2, 3, 4]);
 
-        let tick1 = replayer.next().unwrap();
+        let tick1 = replayer.next_tick().unwrap();
         assert_eq!(tick1.tick, 1);
         assert_eq!(tick1.entries.len(), 1);
 
-        assert!(replayer.next().is_none());
+        assert!(replayer.next_tick().is_none());
 
         // Cleanup
         fs::remove_dir_all(&recording.path).ok();

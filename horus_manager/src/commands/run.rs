@@ -2913,6 +2913,7 @@ fn split_dependencies_with_context(
 }
 
 /// Backward-compatible wrapper without language context
+#[allow(dead_code)]
 fn split_dependencies(deps: HashSet<String>) -> (Vec<String>, Vec<PipPackage>, Vec<CargoPackage>) {
     split_dependencies_with_context(deps, None)
 }

@@ -2276,7 +2276,7 @@ impl Scheduler {
         if let Ok(entries) = fs::read_dir(&control_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "cmd") {
+                if path.extension().is_some_and(|ext| ext == "cmd") {
                     // Extract node name from filename (e.g., "my_node.cmd" -> "my_node")
                     if let Some(stem) = path.file_stem() {
                         let node_name = stem.to_string_lossy().to_string();
@@ -3631,6 +3631,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn tick_count(&self) -> usize {
             self.tick_count.load(Ordering::SeqCst)
         }

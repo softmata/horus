@@ -469,6 +469,7 @@ pub fn create_keyboard_driver(config: &SingleDriverConfig) -> HorusResult<Keyboa
 use horus_core::driver::DriversConfig;
 
 /// Result of creating all drivers from a config file
+#[derive(Default)]
 pub struct CreatedDrivers {
     pub imu: Option<ImuDriver>,
     pub camera: Option<CameraDriver>,
@@ -482,25 +483,6 @@ pub struct CreatedDrivers {
     pub force_torque: Option<ForceTorqueDriver>,
     pub joystick: Option<JoystickDriver>,
     pub keyboard: Option<KeyboardDriver>,
-}
-
-impl Default for CreatedDrivers {
-    fn default() -> Self {
-        Self {
-            imu: None,
-            camera: None,
-            lidar: None,
-            gps: None,
-            encoder: None,
-            motor: None,
-            servo: None,
-            ultrasonic: None,
-            battery: None,
-            force_torque: None,
-            joystick: None,
-            keyboard: None,
-        }
-    }
 }
 
 /// Create all drivers from a DriversConfig

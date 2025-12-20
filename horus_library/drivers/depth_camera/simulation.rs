@@ -117,7 +117,7 @@ impl SimulationDepthCameraDriver {
         let mut data = vec![0u16; size];
         let cx = width as f32 / 2.0;
         let cy = height as f32 / 2.0;
-        let max_dist = ((cx * cx + cy * cy).sqrt()) as f32;
+        let max_dist = (cx * cx + cy * cy).sqrt();
 
         for y in 0..height {
             for x in 0..width {

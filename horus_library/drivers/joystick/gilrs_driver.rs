@@ -16,7 +16,7 @@ use crate::JoystickInput;
 use std::collections::HashMap;
 
 /// Gilrs driver configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GilrsConfig {
     /// Base joystick configuration
     pub joystick: JoystickConfig,
@@ -24,16 +24,6 @@ pub struct GilrsConfig {
     pub axis_deadzones: HashMap<u32, f32>,
     /// Axis calibrations
     pub axis_calibrations: HashMap<u32, AxisCalibration>,
-}
-
-impl Default for GilrsConfig {
-    fn default() -> Self {
-        Self {
-            joystick: JoystickConfig::default(),
-            axis_deadzones: HashMap::new(),
-            axis_calibrations: HashMap::new(),
-        }
-    }
 }
 
 /// Gilrs-based Joystick driver

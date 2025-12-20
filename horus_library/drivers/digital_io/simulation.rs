@@ -171,13 +171,9 @@ impl SimulationDigitalIoDriver {
         self.pin_modes.insert(pin, mode);
 
         // Initialize value based on mode
-        if !self.pin_values.contains_key(&pin) {
-            let initial = match mode {
-                PinMode::InputPullUp => true,
-                _ => false,
-            };
-            self.pin_values.insert(pin, initial);
-        }
+        self.pin_values
+            .entry(pin)
+            .or_insert_with(|| matches!(mode, PinMode::InputPullUp));
 
         Ok(())
     }

@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn test_generic_message_clone() {
         let msg = GenericMessage::new(vec![1, 2, 3]).unwrap();
-        let cloned = msg.clone();
+        let cloned = msg; // GenericMessage implements Copy
         assert_eq!(cloned.data(), msg.data());
     }
 

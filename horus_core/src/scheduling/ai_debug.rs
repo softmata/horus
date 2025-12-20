@@ -834,8 +834,8 @@ mod tests {
             .collect();
 
         // Add violations at ticks 50-60
-        for i in 50..60 {
-            timings[i].1 = 50_000_000; // 50ms violation
+        for timing in timings.iter_mut().take(60).skip(50) {
+            timing.1 = 50_000_000; // 50ms violation
         }
 
         let result = assistant.analyze_timings(&timings);

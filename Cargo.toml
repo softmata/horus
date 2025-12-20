@@ -25,6 +25,9 @@ exclude = [
     "horus_marketplace/*",
 ]
 
+[workspace.package]
+rust-version = "1.92"
+
 [workspace.dependencies]
 # HORUS dependencies
 horus = { path = "horus" }

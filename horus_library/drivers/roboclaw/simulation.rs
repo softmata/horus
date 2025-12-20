@@ -20,6 +20,7 @@ struct MotorState {
 ///
 /// Simulates RoboClaw motor controller behavior without hardware.
 pub struct SimulationRoboclawDriver {
+    #[allow(dead_code)]
     config: RoboclawConfig,
     status: DriverStatus,
     /// Motor 1 state

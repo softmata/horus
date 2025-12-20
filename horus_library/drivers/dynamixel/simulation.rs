@@ -15,15 +15,18 @@ struct ServoState {
     target: f64,   // Target value
     mode: DynamixelMode,
     torque_enabled: bool,
+    #[allow(dead_code)]
     temperature: f32, // Simulated temperature
-    voltage: f32,     // Simulated voltage
-    load: f32,        // Simulated load percentage
+    #[allow(dead_code)]
+    voltage: f32, // Simulated voltage
+    load: f32, // Simulated load percentage
 }
 
 /// Simulation Dynamixel driver
 ///
 /// Simulates Dynamixel servo behavior without hardware.
 pub struct SimulationDynamixelDriver {
+    #[allow(dead_code)]
     config: DynamixelConfig,
     status: DriverStatus,
     /// Servo states by ID

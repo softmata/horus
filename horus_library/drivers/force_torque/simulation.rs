@@ -258,9 +258,11 @@ mod tests {
 
     #[test]
     fn test_tool_gravity_simulation() {
-        let mut config = SimulationFtConfig::default();
-        config.tool_mass = 1.0; // 1kg tool
-        config.noise_amplitude = 0.0; // No noise for predictable testing
+        let config = SimulationFtConfig {
+            tool_mass: 1.0,       // 1kg tool
+            noise_amplitude: 0.0, // No noise for predictable testing
+            ..Default::default()
+        };
 
         let mut driver = SimulationForceTorqueDriver::with_config(config);
         driver.init().unwrap();

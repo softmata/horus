@@ -852,7 +852,7 @@ mod tests {
         // Create events with causality
         let e1 = recorder1.record_local(&[1])?;
         let e2 = recorder2.record_receive(&[2], &e1.vector_clock)?;
-        let e3 = recorder1.record_receive(&[3], &e2.vector_clock)?;
+        let _e3 = recorder1.record_receive(&[3], &e2.vector_clock)?;
 
         let merged = coordinator.merge_timelines(&[recorder1.events(), recorder2.events()]);
 

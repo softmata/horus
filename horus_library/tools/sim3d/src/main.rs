@@ -222,7 +222,13 @@ impl Default for ScreenshotCameraConfig {
 fn screenshot_camera_setup_system(
     mut config: ResMut<ScreenshotCameraConfig>,
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
-    robot_query: Query<&Transform, (With<physics::diff_drive::DifferentialDrive>, Without<Camera3d>)>,
+    robot_query: Query<
+        &Transform,
+        (
+            With<physics::diff_drive::DifferentialDrive>,
+            Without<Camera3d>,
+        ),
+    >,
 ) {
     if config.positioned {
         return;
@@ -250,12 +256,13 @@ fn screenshot_camera_setup_system(
             let height = 0.4 * config.distance_multiplier;
 
             let offset = match config.angle.as_str() {
-                "front" => Vec3::new(0.0, height, base_dist),      // Front view (Z+)
-                "back" => Vec3::new(0.0, height, -base_dist),     // Back view (Z-)
-                "left" => Vec3::new(-base_dist, height, 0.0),     // Left view (X-)
-                "right" => Vec3::new(base_dist, height, 0.0),     // Right view (X+)
-                "top" => Vec3::new(0.0, base_dist * 1.5, 0.1),    // Top-down view
-                "isometric" | _ => Vec3::new(                      // 3/4 isometric view
+                "front" => Vec3::new(0.0, height, base_dist), // Front view (Z+)
+                "back" => Vec3::new(0.0, height, -base_dist), // Back view (Z-)
+                "left" => Vec3::new(-base_dist, height, 0.0), // Left view (X-)
+                "right" => Vec3::new(base_dist, height, 0.0), // Right view (X+)
+                "top" => Vec3::new(0.0, base_dist * 1.5, 0.1), // Top-down view
+                "isometric" | _ => Vec3::new(
+                    // 3/4 isometric view
                     base_dist * 0.7,
                     height,
                     base_dist * 0.7,
@@ -276,10 +283,7 @@ fn screenshot_camera_setup_system(
 }
 
 /// System to capture screenshot after N frames using Bevy 0.15 observer pattern
-fn auto_screenshot_system(
-    mut commands: Commands,
-    mut screenshot: ResMut<AutoScreenshot>,
-) {
+fn auto_screenshot_system(mut commands: Commands, mut screenshot: ResMut<AutoScreenshot>) {
     if screenshot.captured {
         return;
     }
@@ -291,8 +295,9 @@ fn auto_screenshot_system(
         info!("Capturing screenshot to: {:?}", path);
 
         // Use Bevy 0.15's observer-based screenshot API
-        use bevy::render::view::screenshot::{Screenshot, save_to_disk};
-        commands.spawn(Screenshot::primary_window())
+        use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+        commands
+            .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path.clone()));
 
         screenshot.captured = true;
@@ -332,7 +337,11 @@ fn run_visual_mode(cli: Cli) {
     let mut app = App::new();
 
     // Adjust window size for screenshot mode
-    let (width, height) = if screenshot_mode { (1280.0, 720.0) } else { (1920.0, 1080.0) };
+    let (width, height) = if screenshot_mode {
+        (1280.0, 720.0)
+    } else {
+        (1920.0, 1080.0)
+    };
 
     app.add_plugins(
         DefaultPlugins
@@ -364,12 +373,19 @@ fn run_visual_mode(cli: Cli) {
             world_view: cli.screenshot_world,
         });
         // Camera setup runs first, then screenshot capture, then exit check
-        app.add_systems(Update, (
-            screenshot_camera_setup_system,
-            auto_screenshot_system,
-            screenshot_exit_system,
-        ).chain());
-        info!("Screenshot mode: will capture after {} frames", screenshot_frames);
+        app.add_systems(
+            Update,
+            (
+                screenshot_camera_setup_system,
+                auto_screenshot_system,
+                screenshot_exit_system,
+            )
+                .chain(),
+        );
+        info!(
+            "Screenshot mode: will capture after {} frames",
+            screenshot_frames
+        );
     }
 
     // Only add UI plugins if not in screenshot mode

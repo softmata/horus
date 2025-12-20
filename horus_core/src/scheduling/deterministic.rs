@@ -401,8 +401,10 @@ impl DeterministicScheduler {
 
     /// Create with default config
     pub fn with_seed(seed: u64) -> Self {
-        let mut config = DeterministicConfig::default();
-        config.seed = seed;
+        let config = DeterministicConfig {
+            seed,
+            ..Default::default()
+        };
         Self::new(config)
     }
 

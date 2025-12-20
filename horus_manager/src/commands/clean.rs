@@ -66,7 +66,7 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
                 "target/".white(),
                 format_size(size)
             );
-            std::fs::remove_dir_all(target_dir).map_err(|e| HorusError::Io(e))?;
+            std::fs::remove_dir_all(target_dir).map_err(HorusError::Io)?;
         }
         return Ok(true);
     } else {
@@ -106,7 +106,7 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
                 format_size(size),
                 file_count
             );
-            std::fs::remove_dir_all(shm_path).map_err(|e| HorusError::Io(e))?;
+            std::fs::remove_dir_all(shm_path).map_err(HorusError::Io)?;
         }
         return Ok(true);
     } else {
@@ -141,7 +141,7 @@ fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
                 format_size(size),
                 file_count
             );
-            std::fs::remove_dir_all(&cache_dir).map_err(|e| HorusError::Io(e))?;
+            std::fs::remove_dir_all(&cache_dir).map_err(HorusError::Io)?;
         }
         return Ok(true);
     } else {
