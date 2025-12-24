@@ -368,61 +368,197 @@ pub async fn discover_ros2_topics(_domain_id: u32) -> HorusResult<DiscoveryResul
 // Single Topic Bridge
 // ============================================================================
 
+/// Map bridge QoS profile to Zenoh QoS settings
+#[cfg(feature = "zenoh-transport")]
+fn map_qos_profile(profile: QosProfile) -> horus_core::communication::network::zenoh_config::ZenohQos {
+    use horus_core::communication::network::zenoh_config::ZenohQos;
+
+    match profile {
+        QosProfile::SensorData => ZenohQos::sensor_data(),
+        QosProfile::Default => ZenohQos::default(),
+        QosProfile::Services => ZenohQos::services(),
+        QosProfile::Parameters => ZenohQos::parameters(),
+        QosProfile::SystemDefault => ZenohQos::system_default(),
+    }
+}
+
 /// Bridge a single topic between ROS2 (via Zenoh) and HORUS (via shared memory)
 #[cfg(feature = "zenoh-transport")]
 async fn bridge_single_topic(
     topic_name: &str,
     direction: BridgeDirection,
     domain_id: u32,
+    qos_profile: QosProfile,
     running: Arc<AtomicBool>,
-    stats: BridgeStats,
+    stats: Arc<TopicStats>,
 ) -> HorusResult<()> {
     use horus_core::communication::network::zenoh_config::ZenohConfig;
-    use std::sync::atomic::Ordering;
 
-    log::info!("Starting bridge for topic: {} (direction: {:?})", topic_name, direction);
-
-    // Build Zenoh config for ROS2 communication
-    let zenoh_config = ZenohConfig::ros2(domain_id);
-
-    // ROS2 key expression for this topic
-    let ros2_key = zenoh_config.topic_to_key_expr(topic_name);
-    log::debug!("ROS2 key expression: {}", ros2_key);
+    log::info!("Starting bridge for topic: {} (direction: {:?}, qos: {:?})", topic_name, direction, qos_profile);
 
     // HORUS shared memory topic name (strip leading slash if present)
     let horus_topic = topic_name.trim_start_matches('/');
     log::debug!("HORUS topic: {}", horus_topic);
 
-    // Bridge loop
-    while running.load(Ordering::SeqCst) {
-        // Direction-specific bridging
-        match direction {
-            BridgeDirection::In => {
-                // ROS2 -> HORUS: Subscribe to Zenoh, publish to shared memory
-                // TODO: Implement actual subscription and forwarding
-                // For now, just sleep to avoid busy loop
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            BridgeDirection::Out => {
-                // HORUS -> ROS2: Subscribe to shared memory, publish to Zenoh
-                // TODO: Implement actual subscription and forwarding
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            BridgeDirection::Both => {
-                // Bidirectional: Forward messages in both directions
-                // TODO: Implement actual bidirectional bridging
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
+    // Build Zenoh config for ROS2 communication with QoS settings
+    let mut zenoh_config = ZenohConfig::ros2(domain_id);
+    zenoh_config.qos = map_qos_profile(qos_profile);
+    log::debug!("Applied QoS profile: {:?}", qos_profile);
 
-        // Update stats (placeholder - increment for demo purposes)
-        if let Some(topic_stats) = stats.topic_stats.lock().get_mut(topic_name) {
-            // Stats would be updated when actual messages are bridged
-            let _ = topic_stats;
+    match direction {
+        BridgeDirection::In => {
+            // ROS2 -> HORUS: Subscribe to Zenoh, publish to shared memory
+            bridge_ros2_to_horus(topic_name, horus_topic, zenoh_config, running, stats).await
+        }
+        BridgeDirection::Out => {
+            // HORUS -> ROS2: Subscribe to shared memory, publish to Zenoh
+            bridge_horus_to_ros2(topic_name, horus_topic, zenoh_config, running, stats).await
+        }
+        BridgeDirection::Both => {
+            // Bidirectional: Run both directions concurrently
+            let stats_in = stats.clone();
+            let stats_out = stats.clone();
+            let running_in = running.clone();
+            let running_out = running.clone();
+            let topic_name_in = topic_name.to_string();
+            let topic_name_out = topic_name.to_string();
+            let horus_topic_in = horus_topic.to_string();
+            let horus_topic_out = horus_topic.to_string();
+            let config_in = zenoh_config.clone();
+            let config_out = zenoh_config;
+
+            // Spawn both directions as separate tasks
+            let in_handle = tokio::spawn(async move {
+                if let Err(e) = bridge_ros2_to_horus(
+                    &topic_name_in,
+                    &horus_topic_in,
+                    config_in,
+                    running_in,
+                    stats_in,
+                ).await {
+                    log::error!("ROS2->HORUS bridge error for {}: {}", topic_name_in, e);
+                }
+            });
+
+            let out_handle = tokio::spawn(async move {
+                if let Err(e) = bridge_horus_to_ros2(
+                    &topic_name_out,
+                    &horus_topic_out,
+                    config_out,
+                    running_out,
+                    stats_out,
+                ).await {
+                    log::error!("HORUS->ROS2 bridge error for {}: {}", topic_name_out, e);
+                }
+            });
+
+            // Wait for both to complete (they run until shutdown)
+            let _ = tokio::join!(in_handle, out_handle);
+            log::info!("Bridge stopped for topic: {}", topic_name);
+            Ok(())
+        }
+    }
+}
+
+/// Bridge ROS2 -> HORUS direction
+#[cfg(feature = "zenoh-transport")]
+async fn bridge_ros2_to_horus(
+    ros2_topic: &str,
+    horus_topic: &str,
+    zenoh_config: horus_core::communication::network::zenoh_config::ZenohConfig,
+    running: Arc<AtomicBool>,
+    stats: Arc<TopicStats>,
+) -> HorusResult<()> {
+    use horus_core::communication::network::zenoh_backend::ZenohBackend;
+    use horus_core::communication::Link;
+    use std::sync::atomic::Ordering;
+
+    log::info!("Starting ROS2 -> HORUS bridge for {}", ros2_topic);
+
+    // Create Zenoh subscriber for ROS2 topic
+    let mut zenoh_sub: ZenohBackend<Vec<u8>> = ZenohBackend::new(ros2_topic, zenoh_config).await?;
+    zenoh_sub.init_subscriber().await?;
+
+    // Create HORUS shared memory producer
+    let horus_pub: Link<Vec<u8>> = Link::producer(horus_topic)?;
+
+    log::info!("ROS2 -> HORUS bridge ready: {} -> {}", ros2_topic, horus_topic);
+
+    // Bridge loop: forward messages from ROS2 to HORUS
+    while running.load(Ordering::SeqCst) {
+        // Try to receive from Zenoh (non-blocking)
+        if let Some(data) = zenoh_sub.recv() {
+            let bytes_len = data.len() as u64;
+
+            // Forward to HORUS shared memory
+            match horus_pub.send(data, &mut None) {
+                Ok(()) => {
+                    stats.record_in(bytes_len);
+                    log::trace!("Forwarded {} bytes: {} -> {}", bytes_len, ros2_topic, horus_topic);
+                }
+                Err(_) => {
+                    stats.record_error();
+                    log::warn!("Failed to forward to HORUS topic: {}", horus_topic);
+                }
+            }
+        } else {
+            // No message available, yield to avoid busy loop
+            tokio::time::sleep(Duration::from_micros(100)).await;
         }
     }
 
-    log::info!("Bridge stopped for topic: {}", topic_name);
+    log::info!("ROS2 -> HORUS bridge stopped for {}", ros2_topic);
+    Ok(())
+}
+
+/// Bridge HORUS -> ROS2 direction
+#[cfg(feature = "zenoh-transport")]
+async fn bridge_horus_to_ros2(
+    ros2_topic: &str,
+    horus_topic: &str,
+    zenoh_config: horus_core::communication::network::zenoh_config::ZenohConfig,
+    running: Arc<AtomicBool>,
+    stats: Arc<TopicStats>,
+) -> HorusResult<()> {
+    use horus_core::communication::network::zenoh_backend::ZenohBackend;
+    use horus_core::communication::Link;
+    use std::sync::atomic::Ordering;
+
+    log::info!("Starting HORUS -> ROS2 bridge for {}", horus_topic);
+
+    // Create HORUS shared memory consumer
+    let horus_sub: Link<Vec<u8>> = Link::consumer(horus_topic)?;
+
+    // Create Zenoh publisher for ROS2 topic
+    let mut zenoh_pub: ZenohBackend<Vec<u8>> = ZenohBackend::new(ros2_topic, zenoh_config).await?;
+    zenoh_pub.init_publisher().await?;
+
+    log::info!("HORUS -> ROS2 bridge ready: {} -> {}", horus_topic, ros2_topic);
+
+    // Bridge loop: forward messages from HORUS to ROS2
+    while running.load(Ordering::SeqCst) {
+        // Try to receive from HORUS shared memory (non-blocking)
+        if let Some(data) = horus_sub.recv(&mut None) {
+            let bytes_len = data.len() as u64;
+
+            // Forward to ROS2 via Zenoh
+            match zenoh_pub.send(&data) {
+                Ok(()) => {
+                    stats.record_out(bytes_len);
+                    log::trace!("Forwarded {} bytes: {} -> {}", bytes_len, horus_topic, ros2_topic);
+                }
+                Err(e) => {
+                    stats.record_error();
+                    log::warn!("Failed to forward to ROS2 topic {}: {}", ros2_topic, e);
+                }
+            }
+        } else {
+            // No message available, yield to avoid busy loop
+            tokio::time::sleep(Duration::from_micros(100)).await;
+        }
+    }
+
+    log::info!("HORUS -> ROS2 bridge stopped for {}", horus_topic);
     Ok(())
 }
 
@@ -432,8 +568,9 @@ async fn bridge_single_topic(
     _topic_name: &str,
     _direction: BridgeDirection,
     _domain_id: u32,
+    _qos_profile: QosProfile,
     _running: Arc<AtomicBool>,
-    _stats: BridgeStats,
+    _stats: Arc<TopicStats>,
 ) -> HorusResult<()> {
     Err(HorusError::config(
         "ROS2 bridge requires 'zenoh-transport' feature"
@@ -498,13 +635,33 @@ impl Ros2Bridge {
 
         // Filter topics based on config
         let topics_to_bridge: Vec<_> = if self.config.bridge_all {
+            // Bridge all discovered topics
+            if discovery.topics.is_empty() {
+                println!(
+                    "{}",
+                    "No topics discovered. Ensure ROS2 nodes are running with rmw_zenoh.".yellow()
+                );
+                return Ok(());
+            }
             discovery.topics
         } else if !self.config.topics.is_empty() {
-            discovery
-                .topics
-                .into_iter()
-                .filter(|t| self.config.topics.iter().any(|f| t.name.contains(f)))
-                .collect()
+            // Explicit topics specified - use them directly (don't require discovery)
+            // This allows bridging even when discovery isn't working
+            self.config.topics.iter().map(|name| {
+                // Ensure topic starts with /
+                let topic_name = if name.starts_with('/') {
+                    name.clone()
+                } else {
+                    format!("/{}", name)
+                };
+                DiscoveredTopic {
+                    name: topic_name,
+                    msg_type: None, // Unknown until messages flow
+                    publishers: 0,
+                    subscribers: 0,
+                    reliable: true, // Assume reliable by default
+                }
+            }).collect()
         } else {
             println!(
                 "{}",
@@ -565,8 +722,9 @@ impl Ros2Bridge {
             let topic_name = topic.name.clone();
             let direction = self.config.direction;
             let domain_id = self.config.domain_id;
+            let qos_profile = self.config.qos_profile;
             let running = self.running.clone();
-            let stats = self.stats.clone();
+            let topic_stats = self.stats.get_or_create_topic(&topic.name);
 
             // Spawn a task for each topic bridge
             let handle = tokio::spawn(async move {
@@ -574,8 +732,9 @@ impl Ros2Bridge {
                     &topic_name,
                     direction,
                     domain_id,
+                    qos_profile,
                     running,
-                    stats,
+                    topic_stats,
                 )
                 .await
                 {

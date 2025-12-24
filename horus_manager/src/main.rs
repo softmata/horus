@@ -263,6 +263,12 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Hardware discovery and platform detection
+    Hardware {
+        #[command(subcommand)]
+        command: HardwareCommands,
+    },
+
     /// Clean build artifacts and shared memory
     Clean {
         /// Only clean shared memory
@@ -1045,6 +1051,58 @@ enum BridgeCommands {
 
     /// Show bridge information and capabilities
     Info,
+}
+
+#[derive(Subcommand)]
+enum HardwareCommands {
+    /// Scan for connected hardware devices
+    Scan {
+        /// Scan USB devices
+        #[arg(long = "usb")]
+        usb: bool,
+
+        /// Scan serial ports
+        #[arg(long = "serial")]
+        serial: bool,
+
+        /// Scan I2C buses (Linux only)
+        #[arg(long = "i2c")]
+        i2c: bool,
+
+        /// Probe I2C addresses to detect devices (requires root)
+        #[arg(long = "probe-i2c")]
+        probe_i2c: bool,
+
+        /// Scan GPIO chips (Linux only)
+        #[arg(long = "gpio")]
+        gpio: bool,
+
+        /// Scan cameras (Linux only)
+        #[arg(long = "cameras")]
+        cameras: bool,
+
+        /// Scan all device types (default if no flags specified)
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Show platform information
+    Platform {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Suggest HORUS node configuration based on detected hardware
+    Suggest {
+        /// Show detailed configuration
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2788,6 +2846,34 @@ except ImportError as e:
                 commands::bridge::list_ros2_topics(domain_id, json)
             }
             BridgeCommands::Info => commands::bridge::bridge_info(),
+        },
+
+        Commands::Hardware { command } => match command {
+            HardwareCommands::Scan {
+                usb,
+                serial,
+                i2c,
+                probe_i2c,
+                gpio,
+                cameras,
+                all,
+                verbose,
+            } => {
+                // If no specific flags are set, default to scanning all
+                let scan_all = all || (!usb && !serial && !i2c && !gpio && !cameras);
+                let options = commands::hardware::HardwareScanOptions {
+                    usb: scan_all || usb,
+                    serial: scan_all || serial,
+                    i2c: scan_all || i2c,
+                    probe_i2c,
+                    gpio: scan_all || gpio,
+                    cameras: scan_all || cameras,
+                    verbose,
+                };
+                commands::hardware::run_scan(options)
+            }
+            HardwareCommands::Platform { verbose } => commands::hardware::run_platform(verbose),
+            HardwareCommands::Suggest { verbose } => commands::hardware::run_suggest(verbose),
         },
 
         Commands::Doctor { verbose } => commands::doctor::run_doctor(verbose),

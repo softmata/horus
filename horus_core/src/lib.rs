@@ -34,6 +34,7 @@ pub mod communication;
 pub mod core;
 pub mod driver;
 pub mod error;
+pub mod hardware;
 pub mod memory;
 pub mod ml;
 pub mod params;
