@@ -35,6 +35,7 @@ Thank you for your interest in contributing to HORUS! This document provides gui
 cargo build --release
 
 # Build Python bindings (optional)
+# First install maturin: cargo install maturin
 cd horus_py
 maturin develop --release
 

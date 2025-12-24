@@ -7,6 +7,10 @@ This directory contains Python examples for training RL agents using sim3d.
 ### 1. Build sim3d Python bindings
 
 ```bash
+# Install maturin (if not already installed)
+cargo install maturin
+
+# Build Python bindings
 cd horus_library/tools/sim3d
 maturin develop --release --features python
 ```

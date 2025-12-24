@@ -350,7 +350,7 @@ if command -v python3 &>/dev/null; then
         fi
         cd "$ROOT_DIR"
     else
-        skip "maturin not installed (pip install maturin)"
+        skip "maturin not installed (cargo install maturin)"
     fi
 else
     skip "Python3 not available"

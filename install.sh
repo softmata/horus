@@ -523,7 +523,6 @@ declare -A CARGO_MIN_VERSIONS=(
 # └─────────────────────────────────────────────────────────────────────────────┘
 declare -A PYTHON_MIN_VERSIONS=(
     ["numpy"]="1.21.0"        # Array operations
-    ["maturin"]="1.0.0"       # Rust-Python build tool
     ["setuptools"]="65.0.0"   # Build backend
 )
 
@@ -925,8 +924,8 @@ OLD_LIBS=""
 NEW_LIBS=""
 
 # Core libraries with version requirements
-display_lib_result "openssl" "OpenSSL" "$(check_lib_version_full openssl)"
-display_lib_result "libudev" "libudev" "$(check_lib_version_full libudev)"
+display_lib_result "openssl" "OpenSSL" "$(check_lib_version_full openssl || true)"
+display_lib_result "libudev" "libudev" "$(check_lib_version_full libudev || true)"
 
 # ALSA check
 if ! pkg-config --exists alsa 2>/dev/null; then
@@ -1166,7 +1165,7 @@ check_python_version() {
         echo -e "${YELLOW}   HORUS horus_py is tested with Python $REQUIRED_PYTHON_VERSION - $MAX_TESTED_PYTHON_VERSION${NC}"
         echo ""
         echo -e "${YELLOW}   Newer Python versions may have incompatible C API changes.${NC}"
-        echo -e "${YELLOW}   PyO3/maturin wheel builds might fail.${NC}"
+        echo -e "${YELLOW}   Pre-built wheels may not be available for this version.${NC}"
         echo ""
         echo -e "   Options:"
         echo -e "     1. ${GREEN}Continue${NC} with Python $PYTHON_VERSION (may work, but untested)"
@@ -1272,7 +1271,7 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
     PY_PKG_ISSUES=""
 
     for pkg in "${!PYTHON_MIN_VERSIONS[@]}"; do
-        result=$(check_python_package "$pkg")
+        result=$(check_python_package "$pkg" || true)
         min_ver="${PYTHON_MIN_VERSIONS[$pkg]}"
 
         case "$result" in
@@ -2431,17 +2430,15 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
     echo -e "${CYAN}${STATUS_INFO} Installing horus_py@$HORUS_PY_VERSION (Python bindings)...${NC}"
 
     HORUS_PY_INSTALLED=false
-    HORUS_PY_SOURCE=""  # "pypi" or "source"
 
-    # Try to install from PyPI first (pre-built wheel - fastest)
-    echo -e "${CYAN}   Trying PyPI (pre-built wheel)...${NC}"
+    # Try to install from PyPI (pre-built wheel)
+    echo -e "${CYAN}   Installing from PyPI...${NC}"
 
     PIP_OUTPUT=$(pip3 install horus-robotics --user 2>&1)
     PIP_EXIT_CODE=$?
 
     if [ $PIP_EXIT_CODE -eq 0 ]; then
         HORUS_PY_INSTALLED=true
-        HORUS_PY_SOURCE="pypi"
     else
         # Parse the error and try auto-fix
         echo -e "${YELLOW}   PyPI install failed - analyzing error...${NC}"
@@ -2452,52 +2449,11 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
 
         if [ "$PIP_FIX_STATUS" = "fixed" ]; then
             HORUS_PY_INSTALLED=true
-            HORUS_PY_SOURCE="pypi"
         else
             # Show relevant error lines (filter out noise)
             echo "$PIP_OUTPUT" | grep -E "(ERROR|error:|Could not|No matching|requires|glibc)" | head -3
             echo ""
-
-            # Fall back to building from source
-            echo -e "${CYAN}   Falling back to source build...${NC}"
-
-            # Check if maturin is installed, install if not
-            if ! command -v maturin &> /dev/null; then
-                echo -e "${CYAN}   Installing maturin (Rust-Python build tool)...${NC}"
-                pip3 install maturin --user --quiet 2>/dev/null || \
-                pip3 install maturin --quiet 2>/dev/null || \
-                pip3 install maturin --user --break-system-packages --quiet 2>/dev/null
-            fi
-
-            # Build from source
-            if command -v maturin &> /dev/null; then
-                echo -e "${CYAN}   Building from source (this may take a minute)...${NC}"
-                cd horus_py
-
-                # Try maturin develop with release profile
-                MATURIN_OUTPUT=$(maturin develop --release 2>&1)
-                MATURIN_EXIT=$?
-
-                if [ $MATURIN_EXIT -eq 0 ]; then
-                    HORUS_PY_INSTALLED=true
-                    HORUS_PY_SOURCE="source"
-                else
-                    # Check for common maturin errors
-                    if echo "$MATURIN_OUTPUT" | grep -qi "patchelf"; then
-                        echo -e "${YELLOW}${STATUS_WARN} patchelf warning (wheel still usable)${NC}"
-                        HORUS_PY_INSTALLED=true
-                        HORUS_PY_SOURCE="source"
-                    else
-                        echo -e "${YELLOW}[-]${NC} Source build failed"
-                        echo "$MATURIN_OUTPUT" | grep -E "(error|Error|ERROR)" | head -3
-                    fi
-                fi
-                cd ..
-            else
-                echo -e "${YELLOW}[-]${NC} Could not install maturin - skipping horus_py"
-                echo -e "  ${CYAN}Install manually later:${NC}"
-                echo -e "    pip install maturin && cd horus_py && maturin develop --release"
-            fi
+            echo -e "${YELLOW}[-]${NC} Could not install horus_py from PyPI"
         fi
     fi
 
@@ -2505,11 +2461,7 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
     if [ "$HORUS_PY_INSTALLED" = true ]; then
         if python3 -c "import horus; print(f'horus {horus.__version__}')" 2>/dev/null; then
             INSTALLED_VERSION=$(python3 -c "import horus; print(horus.__version__)" 2>/dev/null)
-            if [ "$HORUS_PY_SOURCE" = "pypi" ]; then
-                echo -e "${GREEN}${STATUS_OK} horus_py installed from PyPI (v$INSTALLED_VERSION)${NC}"
-            else
-                echo -e "${GREEN}${STATUS_OK} horus_py built from source (v$INSTALLED_VERSION)${NC}"
-            fi
+            echo -e "${GREEN}${STATUS_OK} horus_py installed from PyPI (v$INSTALLED_VERSION)${NC}"
         else
             echo -e "${YELLOW}[-]${NC} Python bindings installed but import failed"
             echo -e "  ${CYAN}Try: python3 -c 'import horus'${NC} to see the error"

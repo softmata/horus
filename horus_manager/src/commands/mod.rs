@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod clean;
 pub mod deploy;
 pub mod doctor;

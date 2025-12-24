@@ -21,7 +21,9 @@ cargo build --release --no-default-features --features headless
 For RL training with Python:
 
 ```bash
-pip install maturin numpy
+# Install maturin via Cargo (recommended for Ubuntu 24.04+)
+cargo install maturin
+pip install numpy
 maturin develop --release --features python
 ```
 

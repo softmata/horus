@@ -95,8 +95,10 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
         }
 
         // Duration and Time (from builtin_interfaces)
-        "duration" | "builtin_interfaces/Duration" => "Duration".to_string(),
-        "time" | "builtin_interfaces/Time" => "u64".to_string(), // nanoseconds since epoch
+        "duration" | "builtin_interfaces/Duration" | "builtin_interfaces/msg/Duration" => {
+            "std::time::Duration".to_string()
+        }
+        "time" | "builtin_interfaces/Time" | "builtin_interfaces/msg/Time" => "u64".to_string(), // nanoseconds since epoch
 
         // Common ROS2 message types → HORUS equivalents
         "geometry_msgs/Twist" | "geometry_msgs/msg/Twist" => "Twist".to_string(),
@@ -116,7 +118,36 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
         "nav_msgs/Odometry" | "nav_msgs/msg/Odometry" => "Odometry".to_string(),
         "nav_msgs/Path" | "nav_msgs/msg/Path" => "Path".to_string(),
         "nav_msgs/OccupancyGrid" | "nav_msgs/msg/OccupancyGrid" => "OccupancyGrid".to_string(),
-        "std_msgs/Header" | "std_msgs/msg/Header" => "Header".to_string(),
+
+        // Header and Stamped types - use GenericMessage since HORUS doesn't have Header
+        "std_msgs/Header" | "std_msgs/msg/Header" | "Header" => "GenericMessage".to_string(),
+        "geometry_msgs/TransformStamped" | "geometry_msgs/msg/TransformStamped" | "TransformStamped" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/PoseStamped" | "geometry_msgs/msg/PoseStamped" | "PoseStamped" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/PointStamped" | "geometry_msgs/msg/PointStamped" | "PointStamped" => {
+            "GenericMessage".to_string()
+        }
+
+        // Action/Service types from actionlib_msgs
+        "actionlib_msgs/GoalStatusArray" | "actionlib_msgs/msg/GoalStatusArray" | "GoalStatusArray" => {
+            "GenericMessage".to_string()
+        }
+        "actionlib_msgs/GoalStatus" | "actionlib_msgs/msg/GoalStatus" | "GoalStatus" => {
+            "GenericMessage".to_string()
+        }
+        "actionlib_msgs/GoalID" | "actionlib_msgs/msg/GoalID" | "GoalID" => {
+            "GenericMessage".to_string()
+        }
+
+        // TF2 types
+        "tf2_msgs/TF2Error" | "tf2_msgs/msg/TF2Error" | "TF2Error" => "GenericMessage".to_string(),
+        "tf2_msgs/TFMessage" | "tf2_msgs/msg/TFMessage" | "TFMessage" => "GenericMessage".to_string(),
+
+        // Entity types that don't exist in HORUS
+        "Entity" | "entity" => "GenericMessage".to_string(),
 
         // For unknown types, assume it's a custom message - convert to PascalCase
         other => {
@@ -160,6 +191,25 @@ fn to_snake_case(s: &str) -> String {
         }
     }
     result
+}
+
+/// Sanitize a field name to be a valid Rust identifier
+/// Replaces dots, slashes, and other special characters with underscores
+fn sanitize_field_name(name: &str) -> String {
+    let sanitized = name
+        .replace('/', "_")
+        .replace('.', "_")
+        .replace('-', "_")
+        .replace(' ', "_");
+
+    // Ensure it starts with a letter or underscore (not a digit)
+    if sanitized.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        format!("_{}", sanitized)
+    } else if sanitized.is_empty() {
+        "unnamed".to_string()
+    } else {
+        sanitized
+    }
 }
 
 /// Parsed ROS2 message field
@@ -756,8 +806,9 @@ fn is_copy_type(ros2_type: &str) -> bool {
 pub fn msg_to_rust(msg: &RosMessage) -> String {
     let mut output = String::new();
 
-    // Add serde import at the top of the file
-    output.push_str("use serde::{Serialize, Deserialize};\n\n");
+    // Add imports at the top of the file
+    output.push_str("use serde::{Serialize, Deserialize};\n");
+    output.push_str("use horus::prelude::*;\n\n");
 
     // Add doc comment
     output.push_str(&format!(
@@ -814,8 +865,9 @@ pub fn msg_to_rust(msg: &RosMessage) -> String {
 pub fn srv_to_rust(srv: &RosService) -> String {
     let mut output = String::new();
 
-    // Add serde import at the top of the file
-    output.push_str("use serde::{Serialize, Deserialize};\n\n");
+    // Add imports at the top of the file
+    output.push_str("use serde::{Serialize, Deserialize};\n");
+    output.push_str("use horus::prelude::*;\n\n");
 
     // Request struct
     output.push_str(&format!(
@@ -850,8 +902,9 @@ pub fn srv_to_rust(srv: &RosService) -> String {
 pub fn action_to_rust(action: &RosAction) -> String {
     let mut output = String::new();
 
-    // Add serde import at the top of the file
-    output.push_str("use serde::{Serialize, Deserialize};\n\n");
+    // Add imports at the top of the file
+    output.push_str("use serde::{Serialize, Deserialize};\n");
+    output.push_str("use horus::prelude::*;\n\n");
 
     // Goal struct
     output.push_str(&format!(
@@ -5080,10 +5133,14 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
         "Pose" | "PoseStamped" | "PoseWithCovariance" | "PoseWithCovarianceStamped" => {
             "Pose".to_string()
         }
-        "Point" | "Point32" | "PointStamped" => "Point3".to_string(),
-        "Vector3" | "Vector3Stamped" => "Vector3".to_string(),
-        "Quaternion" | "QuaternionStamped" => "Quaternion".to_string(),
-        "Transform" | "TransformStamped" => "Transform".to_string(),
+        "Point" | "Point32" => "Point3".to_string(),
+        "PointStamped" => "GenericMessage".to_string(), // No PointStamped in HORUS
+        "Vector3" => "Vector3".to_string(),
+        "Vector3Stamped" => "GenericMessage".to_string(), // No Vector3Stamped in HORUS
+        "Quaternion" => "Quaternion".to_string(),
+        "QuaternionStamped" => "GenericMessage".to_string(), // No QuaternionStamped in HORUS
+        "Transform" => "Transform".to_string(),
+        "TransformStamped" => "GenericMessage".to_string(), // No TransformStamped in HORUS
         "Wrench" | "WrenchStamped" => "WrenchStamped".to_string(), // HORUS has WrenchStamped
         "Accel" | "AccelStamped" | "AccelWithCovariance" | "AccelWithCovarianceStamped" => {
             "GenericMessage".to_string()
@@ -5123,7 +5180,7 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
         "Int8" | "Int16" | "Int32" | "Int64" => "i64".to_string(),
         "UInt8" | "UInt16" | "UInt32" | "UInt64" => "u64".to_string(),
         "Float32" | "Float64" => "f64".to_string(),
-        "Duration" => "Duration".to_string(), // std::time::Duration in prelude
+        "Duration" => "std::time::Duration".to_string(), // Use fully qualified path
         "Time" => "u64".to_string(),          // Use u64 timestamp (nanoseconds)
         "Empty" => "()".to_string(),
         "ColorRGBA" => "GenericMessage".to_string(), // No Color type in HORUS
@@ -5155,6 +5212,21 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
 
         // Clock - use GenericMessage
         "Clock" => "GenericMessage".to_string(),
+
+        // Handle "Unknown" which appears when type couldn't be parsed
+        "Unknown" | "unknown" | "" => "GenericMessage".to_string(),
+
+        // TF2 types
+        "TF2Error" => "GenericMessage".to_string(),
+
+        // Actionlib types
+        "GoalStatusArray" | "GoalStatus" | "GoalID" => "GenericMessage".to_string(),
+
+        // Entity type
+        "Entity" => "GenericMessage".to_string(),
+
+        // FeedbackMessage (action feedback wrapper)
+        "FeedbackMessage" => "GenericMessage".to_string(),
 
         // Unknown types - convert to PascalCase and add TODO marker
         other => {
@@ -5301,6 +5373,13 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
         ));
     }
     for param in &info.parameters {
+        let field_name = sanitize_field_name(&param.name);
+        // Skip duplicate field names
+        if used_fields.contains(&field_name) {
+            continue;
+        }
+        used_fields.insert(field_name.clone());
+
         let rust_type = match param.param_type.as_str() {
             "int" | "int64_t" => "i64",
             "double" | "float" => "f64",
@@ -5311,7 +5390,7 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
         fields.push_str(&format!("    /// Parameter: {}\n", param.name));
         fields.push_str(&format!(
             "    pub {}: {},\n",
-            param.name.replace('.', "_"),
+            field_name,
             rust_type
         ));
     }
@@ -5322,19 +5401,36 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
 
     // Generate new() initialization
     let mut init_fields = String::new();
+    let mut init_used_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
     for sub in &info.subscribers {
+        // Skip duplicate field names in initialization
+        if init_used_fields.contains(&sub.field_name) {
+            continue;
+        }
+        init_used_fields.insert(sub.field_name.clone());
         init_fields.push_str(&format!(
             "            {}: Link::consumer(\"{}\").expect(\"failed to create link\"),\n",
             sub.field_name, sub.topic
         ));
     }
     for pub_ in &info.publishers {
+        // Skip duplicate field names in initialization
+        if init_used_fields.contains(&pub_.field_name) {
+            continue;
+        }
+        init_used_fields.insert(pub_.field_name.clone());
         init_fields.push_str(&format!(
             "            {}: Hub::new(\"{}\").expect(\"failed to create hub\"),\n",
             pub_.field_name, pub_.topic
         ));
     }
     for param in &info.parameters {
+        let field_name = sanitize_field_name(&param.name);
+        // Skip duplicate field names in initialization
+        if init_used_fields.contains(&field_name) {
+            continue;
+        }
+        init_used_fields.insert(field_name.clone());
         let default = match param.param_type.as_str() {
             "int" | "int64_t" => "0",
             "double" | "float" => "0.0",
@@ -5343,7 +5439,7 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
         };
         init_fields.push_str(&format!(
             "            {}: {},\n",
-            param.name.replace('.', "_"),
+            field_name,
             default
         ));
     }

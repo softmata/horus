@@ -249,7 +249,7 @@ fn create_horus_yaml(
         }
         "python" => {
             r#"dependencies:
-  - horus_py
+  - pip:horus-robotics
   # Add Python packages as needed
 
   # For path dependencies (local development):

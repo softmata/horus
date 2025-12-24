@@ -2836,6 +2836,26 @@ fn split_dependencies_with_context(
 
         // Auto-detect: if starts with "horus"  HORUS registry
         if dep.starts_with("horus") {
+            // Special handling for horus_py: ALWAYS map to 'horus-robotics' pip package
+            // This is because horus_py is not a HORUS registry package - it's the Python bindings
+            // installed via pip as 'horus-robotics'. This fixes Issue #25.
+            if dep == "horus_py" || dep.starts_with("horus_py@") {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
+            // For bare "horus" in Python context, also map to horus-robotics pip package
+            if context_language == Some("python") && dep == "horus" {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
             horus_packages.push(dep.to_string());
             continue;
         }
@@ -3077,6 +3097,26 @@ fn split_dependencies_with_path_context(
 
         // Auto-detect: if starts with "horus"  HORUS registry
         if dep.starts_with("horus") {
+            // Special handling for horus_py: ALWAYS map to 'horus-robotics' pip package
+            // This is because horus_py is not a HORUS registry package - it's the Python bindings
+            // installed via pip as 'horus-robotics'. This fixes Issue #25.
+            if dep == "horus_py" || dep.starts_with("horus_py@") {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
+            // For bare "horus" in Python context, also map to horus-robotics pip package
+            if context_language == Some("python") && dep == "horus" {
+                pip_packages.push(PipPackage {
+                    name: "horus-robotics".to_string(),
+                    version: None,
+                });
+                continue;
+            }
+
             horus_packages.push(dep.to_string());
             continue;
         }
@@ -3261,6 +3301,12 @@ fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
     for pkg in &packages {
         // Check if package exists in system first
         if let Ok(Some(system_version)) = detect_system_python_package(&pkg.name) {
+            // Auto-use system package for horus-robotics (core dependency)
+            if pkg.name == "horus-robotics" {
+                create_system_reference_python_run(&pkg.name, &system_version)?;
+                continue;
+            }
+
             let local_link = local_packages.join(&pkg.name);
 
             // Skip if already handled
@@ -4057,8 +4103,8 @@ import sys
 import os
 
 # HORUS Python bindings are available via the 'horus' package
-# Install with: pip install maturin && maturin develop (from horus_py directory)
-# Or: pip install -e horus_py/
+# Install with: cargo install maturin && maturin develop (from horus_py directory)
+# Or: pip install horus-robotics
 
 class HorusSchedulerIntegration:
     def __init__(self):

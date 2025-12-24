@@ -43,7 +43,11 @@ If you prefer to install manually or need to rebuild:
 
 ```bash
 # Install maturin (Python/Rust build tool)
-pip install maturin
+# Option A: Via Cargo (recommended for Ubuntu 24.04+)
+cargo install maturin
+
+# Option B: Via pip (if not blocked by PEP 668)
+# pip install maturin
 
 # Build and install from source
 cd horus_py

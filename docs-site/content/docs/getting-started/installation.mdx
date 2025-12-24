@@ -259,7 +259,11 @@ python3 -c "import horus; print('Python bindings installed successfully')"
 **Manual installation** (if automatic installation was skipped):
 ```bash
 # 1. Install maturin (Python build tool)
-pip install maturin
+# Option A: Via Cargo (recommended for Ubuntu 24.04+)
+cargo install maturin
+
+# Option B: Via pip (if not blocked by PEP 668)
+# pip install maturin
 
 # 2. Navigate to Python bindings
 cd horus_py

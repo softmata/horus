@@ -11,7 +11,7 @@
 # Build headless mode
 cargo build --release --no-default-features --features headless
 
-# Build Python bindings
+# Build Python bindings (requires maturin: cargo install maturin)
 cd /path/to/sim3d
 maturin develop --release --features python
 ```

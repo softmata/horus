@@ -66,6 +66,7 @@ impl SimulationBldcDriver {
     }
 
     /// Calculate PWM value from throttle
+    #[allow(dead_code)]
     fn throttle_to_pwm(&self, throttle: f64) -> u16 {
         let range = (self.config.pwm_max_us - self.config.pwm_min_us) as f64;
         let pwm = self.config.pwm_min_us as f64 + (throttle * range);

@@ -1632,7 +1632,7 @@ impl CloudUploader {
     }
 
     /// Start streaming upload for a recording session
-    pub fn start_streaming_upload(&self, session_id: &str) -> Result<StreamingUploader> {
+    pub fn start_streaming_upload(&self, session_id: &str) -> Result<StreamingUploader<'_>> {
         let cloud_path = format!("{}/{}/data.bin", self.config.prefix, session_id);
         let upload_id = self.backend.start_multipart(&cloud_path)?;
 
