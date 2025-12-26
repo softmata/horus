@@ -59,6 +59,8 @@ hostname = "0.4"
 semver = "1.0"
 libc = "0.2"
 syn = { version = "2.0", features = ["full", "visit"] }
+rayon = "1.10"
+notify = "6.1"
 
 # TUI dependencies
 ratatui = "0.29"
@@ -76,6 +78,13 @@ webbrowser = "0.8"
 futures = "0.3"
 qrcode = "0.14"
 
+# Zenoh for ROS2 bridge discovery
+zenoh = { version = "1.0", optional = true }
+
+# CDR serialization for ROS2 bridge
+cdr-encoding = { version = "0.10", optional = true }
+byteorder = { version = "1.5", optional = true }
+
 # Security dependencies
 rustls = "0.21"
 tokio-rustls = "0.24"
@@ -86,7 +95,7 @@ rpassword = "7.3"
 
 [features]
 default = []
-zenoh-transport = ["horus_core/zenoh-transport"]
+zenoh-transport = ["horus_core/zenoh-transport", "dep:zenoh", "dep:cdr-encoding", "dep:byteorder"]
 zenoh-ros2 = ["horus_core/zenoh-ros2"]
 
 [dev-dependencies]
