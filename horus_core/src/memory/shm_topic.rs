@@ -3,7 +3,7 @@ use crate::error::HorusResult;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 // Safety constants to prevent dangerous configurations
@@ -13,16 +13,24 @@ const MAX_ELEMENT_SIZE: usize = 1_000_000; // Maximum size per element in bytes
 const MAX_TOTAL_SIZE: usize = 100_000_000; // Maximum total shared memory size (100MB)
 const MAX_CONSUMERS: usize = 16; // Maximum number of consumers per topic (MPMC support)
 
+// Magic number to indicate header is fully initialized (prevents race condition)
+// This value is written LAST by the owner with Release ordering
+const MAGIC_INITIALIZED: u64 = 0x484F5255535F4F4B; // "HORUS_OK" in ASCII hex
+
+// Maximum time to wait for initialization (in spin iterations)
+const MAX_INIT_WAIT_ITERS: u32 = 1_000_000; // ~100ms on typical hardware
+
 /// Header for shared memory ring buffer with cache-line alignment
 #[repr(C, align(64))] // Cache-line aligned for optimal performance (x86_64 cache line = 64 bytes)
 struct RingBufferHeader {
+    magic: AtomicU64, // Magic number - written LAST to signal initialization complete
     capacity: AtomicUsize,
     head: AtomicUsize,
     tail: AtomicUsize, // This is now unused - kept for compatibility
     element_size: AtomicUsize,
     consumer_count: AtomicUsize,
     sequence_number: AtomicUsize, // Global sequence counter
-    _padding: [u8; 16],           // Pad to 64-byte cache line boundary (6 * 8 + 16 = 64)
+    _padding: [u8; 8],            // Pad to 64-byte cache line boundary (1*8 + 6*8 + 8 = 64)
 }
 
 /// Lock-free ring buffer in real shared memory using mmap with cache optimization
@@ -234,6 +242,7 @@ impl<T> ShmTopic<T> {
         // Otherwise, we would reset consumer_count causing duplicate consumer IDs!
         let actual_capacity = if is_owner {
             unsafe {
+                // Initialize all fields BEFORE setting magic (prevents race condition)
                 (*header.as_ptr())
                     .capacity
                     .store(capacity, Ordering::Relaxed);
@@ -249,18 +258,57 @@ impl<T> ShmTopic<T> {
                     .sequence_number
                     .store(0, Ordering::Relaxed);
                 // MPMC OPTIMIZED: Consumer tails now tracked in local memory (not in header)
-                (*header.as_ptr())._padding = [0; 16]; // Initialize padding for cache alignment
+                (*header.as_ptr())._padding = [0; 8]; // Initialize padding for cache alignment
+
+                // CRITICAL: Write magic number LAST with Release ordering
+                // This ensures all previous writes are visible before magic is set
+                // Non-owners will spin-wait on this value before reading other fields
+                std::sync::atomic::fence(Ordering::Release);
+                (*header.as_ptr())
+                    .magic
+                    .store(MAGIC_INITIALIZED, Ordering::Release);
             }
             capacity
         } else {
-            // Not owner - read capacity from existing header
-            let existing_capacity = unsafe { (*header.as_ptr()).capacity.load(Ordering::Relaxed) };
+            // Not owner - wait for initialization to complete by spinning on magic number
+            // This prevents the race condition where we read capacity before it's initialized
+            let mut wait_iters = 0u32;
+            loop {
+                let magic = unsafe { (*header.as_ptr()).magic.load(Ordering::Acquire) };
+                if magic == MAGIC_INITIALIZED {
+                    // Header is fully initialized, safe to read
+                    break;
+                }
+                if magic != 0 && magic != MAGIC_INITIALIZED {
+                    // Invalid magic - corrupted or incompatible version
+                    return Err(format!(
+                        "Topic '{}' has invalid magic number 0x{:X} (corrupted or incompatible version). \
+                         Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
+                        name, magic
+                    )
+                    .into());
+                }
+                // Magic is 0 - owner is still initializing, spin-wait
+                wait_iters += 1;
+                if wait_iters > MAX_INIT_WAIT_ITERS {
+                    return Err(format!(
+                        "Topic '{}' initialization timeout: owner process may have crashed during setup. \
+                         Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
+                        name
+                    )
+                    .into());
+                }
+                std::hint::spin_loop();
+            }
+
+            // Now safe to read capacity with Acquire ordering (synchronized with owner's Release)
+            let existing_capacity = unsafe { (*header.as_ptr()).capacity.load(Ordering::Acquire) };
 
             // CRITICAL: Validate existing capacity is power of 2 for bitwise AND optimization
             if !existing_capacity.is_power_of_two() {
                 return Err(format!(
-                    "Topic '{}' has non-power-of-2 capacity {} (created with old version). \
-                     Please delete shared memory files in the horus directory and recreate topics.",
+                    "Topic '{}' has invalid capacity {} (corrupted shared memory). \
+                     Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                     name, existing_capacity
                 )
                 .into());
@@ -387,7 +435,39 @@ impl<T> ShmTopic<T> {
 
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
-        let capacity = unsafe { (*header.as_ptr()).capacity.load(Ordering::Relaxed) };
+        // Wait for initialization to complete by spinning on magic number
+        // This prevents reading uninitialized data if owner is still setting up
+        let mut wait_iters = 0u32;
+        loop {
+            let magic = unsafe { (*header.as_ptr()).magic.load(Ordering::Acquire) };
+            if magic == MAGIC_INITIALIZED {
+                // Header is fully initialized, safe to read
+                break;
+            }
+            if magic != 0 && magic != MAGIC_INITIALIZED {
+                // Invalid magic - corrupted or incompatible version
+                return Err(format!(
+                    "Topic '{}' has invalid magic number 0x{:X} (corrupted or incompatible version). \
+                     Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
+                    name, magic
+                )
+                .into());
+            }
+            // Magic is 0 - owner is still initializing, spin-wait
+            wait_iters += 1;
+            if wait_iters > MAX_INIT_WAIT_ITERS {
+                return Err(format!(
+                    "Topic '{}' initialization timeout: owner process may have crashed during setup. \
+                     Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
+                    name
+                )
+                .into());
+            }
+            std::hint::spin_loop();
+        }
+
+        // Now safe to read with Acquire ordering (synchronized with owner's Release)
+        let capacity = unsafe { (*header.as_ptr()).capacity.load(Ordering::Acquire) };
 
         // Validate capacity is within safe bounds
         if !(MIN_CAPACITY..=MAX_CAPACITY).contains(&capacity) {
@@ -400,7 +480,7 @@ impl<T> ShmTopic<T> {
 
         // Validate element size matches
         let stored_element_size =
-            unsafe { (*header.as_ptr()).element_size.load(Ordering::Relaxed) };
+            unsafe { (*header.as_ptr()).element_size.load(Ordering::Acquire) };
         let expected_element_size = mem::size_of::<T>();
         if stored_element_size != expected_element_size {
             return Err(format!(
@@ -837,6 +917,25 @@ impl<T> ShmTopic<T> {
                 Ok(())
             }
             Err(_) => Err(value),
+        }
+    }
+}
+
+impl<T> Drop for ShmTopic<T> {
+    fn drop(&mut self) {
+        // MPMC FIX: Decrement consumer count when this consumer is dropped
+        // This prevents the "Maximum number of consumers exceeded" error
+        // when consumers exit without proper cleanup
+        let prev_count = unsafe {
+            (*self.header.as_ptr())
+                .consumer_count
+                .fetch_sub(1, Ordering::AcqRel)
+        };
+
+        // If we were the last consumer (prev_count was 1), clean up the topic file
+        // This ensures stale topic files don't accumulate
+        if prev_count == 1 {
+            self._region.force_cleanup();
         }
     }
 }

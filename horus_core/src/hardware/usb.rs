@@ -133,10 +133,7 @@ impl UsbDiscovery {
 
     /// Find all devices by vendor
     pub fn find_by_vendor(&self, vid: u16) -> Vec<&UsbDevice> {
-        self.devices
-            .iter()
-            .filter(|d| d.vendor_id == vid)
-            .collect()
+        self.devices.iter().filter(|d| d.vendor_id == vid).collect()
     }
 
     /// Find devices with serial ports
@@ -204,15 +201,17 @@ impl UsbDiscovery {
         let serial = self.read_string_file(path, "serial");
 
         // Read USB speed
-        let speed_mbps = self.read_string_file(path, "speed").and_then(|s| s.parse().ok());
+        let speed_mbps = self
+            .read_string_file(path, "speed")
+            .and_then(|s| s.parse().ok());
 
         // Read USB version
-        let usb_version = self.read_string_file(path, "version").map(|s| s.trim().to_string());
+        let usb_version = self
+            .read_string_file(path, "version")
+            .map(|s| s.trim().to_string());
 
         // Read number of interfaces
-        let num_interfaces = self
-            .read_decimal_file(path, "bNumInterfaces")
-            .unwrap_or(0) as u8;
+        let num_interfaces = self.read_decimal_file(path, "bNumInterfaces").unwrap_or(0) as u8;
 
         // Find associated tty device
         let tty_path = self.find_tty_for_device(path);

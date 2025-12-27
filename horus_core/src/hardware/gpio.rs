@@ -154,7 +154,8 @@ impl GpioDiscovery {
             lines: 0,
         };
 
-        let result = unsafe { libc::ioctl(fd, GPIO_GET_CHIPINFO_IOCTL as libc::c_ulong, &mut info) };
+        let result =
+            unsafe { libc::ioctl(fd, GPIO_GET_CHIPINFO_IOCTL as libc::c_ulong, &mut info) };
 
         if result < 0 {
             // Fallback: try to read from sysfs

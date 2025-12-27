@@ -1088,6 +1088,18 @@ enum HardwareCommands {
         /// Show detailed information
         #[arg(short = 'v', long = "verbose")]
         verbose: bool,
+
+        /// Output as JSON for machine-readable results
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Filter by category (comma-separated: usb,serial,i2c,gpio,cameras,sensors,motors,all)
+        #[arg(long = "filter", short = 'f')]
+        filter: Option<String>,
+
+        /// Timeout per device probe in milliseconds (default: 500)
+        #[arg(long = "timeout", short = 't')]
+        timeout_ms: Option<u64>,
     },
 
     /// Show platform information
@@ -1102,6 +1114,58 @@ enum HardwareCommands {
         /// Show detailed configuration
         #[arg(short = 'v', long = "verbose")]
         verbose: bool,
+    },
+
+    /// Get detailed information about a specific device
+    Info {
+        /// Device path (e.g., /dev/ttyUSB0, /dev/video0)
+        device: String,
+
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Export hardware configuration to a TOML file
+    Export {
+        /// Output file path (prints to stdout if not specified)
+        #[arg(short = 'o', long = "output")]
+        output: Option<String>,
+
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Watch for hardware connect/disconnect events (hotplug monitoring)
+    Watch {
+        /// Watch USB devices
+        #[arg(long = "usb")]
+        usb: bool,
+
+        /// Watch serial ports
+        #[arg(long = "serial")]
+        serial: bool,
+
+        /// Watch I2C buses (Linux only)
+        #[arg(long = "i2c")]
+        i2c: bool,
+
+        /// Watch GPIO chips (Linux only)
+        #[arg(long = "gpio")]
+        gpio: bool,
+
+        /// Watch cameras (Linux only)
+        #[arg(long = "cameras")]
+        cameras: bool,
+
+        /// Watch all device types (default if no flags specified)
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+
+        /// Timeout per device probe in milliseconds (default: 500)
+        #[arg(long = "timeout", short = 't')]
+        timeout_ms: Option<u64>,
     },
 }
 
@@ -2858,6 +2922,9 @@ except ImportError as e:
                 cameras,
                 all,
                 verbose,
+                json,
+                filter,
+                timeout_ms,
             } => {
                 // If no specific flags are set, default to scanning all
                 let scan_all = all || (!usb && !serial && !i2c && !gpio && !cameras);
@@ -2869,11 +2936,47 @@ except ImportError as e:
                     gpio: scan_all || gpio,
                     cameras: scan_all || cameras,
                     verbose,
+                    json,
+                    filter,
+                    timeout_ms,
+                    watch: false,
                 };
                 commands::hardware::run_scan(options)
             }
             HardwareCommands::Platform { verbose } => commands::hardware::run_platform(verbose),
             HardwareCommands::Suggest { verbose } => commands::hardware::run_suggest(verbose),
+            HardwareCommands::Info { device, verbose } => {
+                commands::hardware::run_device_info(&device, verbose)
+            }
+            HardwareCommands::Export { output, verbose } => {
+                commands::hardware::run_export(output, verbose)
+            }
+            HardwareCommands::Watch {
+                usb,
+                serial,
+                i2c,
+                gpio,
+                cameras,
+                all,
+                timeout_ms,
+            } => {
+                // If no specific flags are set, default to watching all
+                let watch_all = all || (!usb && !serial && !i2c && !gpio && !cameras);
+                let options = commands::hardware::HardwareScanOptions {
+                    usb: watch_all || usb,
+                    serial: watch_all || serial,
+                    i2c: watch_all || i2c,
+                    probe_i2c: false, // Don't probe I2C in watch mode
+                    gpio: watch_all || gpio,
+                    cameras: watch_all || cameras,
+                    verbose: false,
+                    json: false,
+                    filter: None,
+                    timeout_ms,
+                    watch: true,
+                };
+                commands::hardware::run_watch(options)
+            }
         },
 
         Commands::Doctor { verbose } => commands::doctor::run_doctor(verbose),

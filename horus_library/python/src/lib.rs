@@ -8,15 +8,25 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
 mod control_messages;
+mod coordination_messages;
 mod diagnostics_messages;
+mod force_messages;
 mod input_messages;
 mod io_messages;
+mod navigation_messages;
+mod perception_messages;
 mod sensor_messages;
+mod vision_messages;
 
 use control_messages::*;
+pub use coordination_messages::*;
 use diagnostics_messages::*;
+pub use force_messages::*;
 use input_messages::*;
 use io_messages::*;
+pub use navigation_messages::*;
+pub use perception_messages::*;
+pub use vision_messages::*;
 
 /// Python wrapper for Pose2D
 #[pyclass(module = "horus.library._library", name = "Pose2D")]
@@ -1397,6 +1407,60 @@ fn _library(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // I/O messages
     m.add_class::<PyDigitalIO>()?;
     m.add_class::<PyAnalogIO>()?;
+
+    // Vision messages
+    m.add_class::<PyImageEncoding>()?;
+    m.add_class::<PyImage>()?;
+    m.add_class::<PyCompressedImage>()?;
+    m.add_class::<PyCameraInfo>()?;
+    m.add_class::<PyRegionOfInterest>()?;
+    m.add_class::<PyDetection>()?;
+    m.add_class::<PyDetectionArray>()?;
+    m.add_class::<PyStereoInfo>()?;
+
+    // Navigation messages
+    m.add_class::<PyGoalStatus>()?;
+    m.add_class::<PyGoal>()?;
+    m.add_class::<PyGoalResult>()?;
+    m.add_class::<PyWaypoint>()?;
+    m.add_class::<PyPath>()?;
+    m.add_class::<PyOccupancyGrid>()?;
+    m.add_class::<PyCostMap>()?;
+    m.add_class::<PyVelocityObstacle>()?;
+    m.add_class::<PyVelocityObstacles>()?;
+    m.add_class::<PyPathPlan>()?;
+
+    // Perception messages
+    m.add_class::<PyPointFieldType>()?;
+    m.add_class::<PyPointField>()?;
+    m.add_class::<PyPointCloud>()?;
+    m.add_class::<PyBoundingBox3D>()?;
+    m.add_class::<PyBoundingBoxArray3D>()?;
+    m.add_class::<PyDepthImage>()?;
+    m.add_class::<PyPlaneDetection>()?;
+    m.add_class::<PyPlaneArray>()?;
+
+    // Force/Tactile messages
+    m.add_class::<PyContactState>()?;
+    m.add_class::<PyWrenchStamped>()?;
+    m.add_class::<PyTactileArray>()?;
+    m.add_class::<PyImpedanceParameters>()?;
+    m.add_class::<PyForceCommand>()?;
+    m.add_class::<PyContactInfo>()?;
+    m.add_class::<PyHapticFeedback>()?;
+
+    // Coordination messages
+    m.add_class::<PyRobotType>()?;
+    m.add_class::<PyCoordinationMode>()?;
+    m.add_class::<PyTaskType>()?;
+    m.add_class::<PyTaskStatus>()?;
+    m.add_class::<PyFormationType>()?;
+    m.add_class::<PyBidStatus>()?;
+    m.add_class::<PyRobotState>()?;
+    m.add_class::<PyFleetStatus>()?;
+    m.add_class::<PyTaskAssignment>()?;
+    m.add_class::<PyFormationControl>()?;
+    m.add_class::<PyAuctionBid>()?;
 
     // Register simulation submodules
     register_sim2d(py, m)?;

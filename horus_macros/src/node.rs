@@ -11,7 +11,7 @@ struct TopicDef {
     name: Ident,
     _colon: Token![:],
     ty: Type,
-    _arrow: Token![->], // or Token![<-] for subscribers
+    _arrow: Token![->], // Both pub and sub use -> (section keyword differentiates them)
     topic: Expr,        // The topic string
 }
 

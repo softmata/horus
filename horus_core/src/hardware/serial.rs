@@ -290,9 +290,7 @@ impl SerialDiscovery {
 
     #[cfg(target_os = "linux")]
     fn read_usb_info(&self, sysfs_path: &Path) -> Option<UsbInfo> {
-        let vendor_id = self
-            .read_hex_file(sysfs_path, "idVendor")
-            .map(|v| v as u16);
+        let vendor_id = self.read_hex_file(sysfs_path, "idVendor").map(|v| v as u16);
         let product_id = self
             .read_hex_file(sysfs_path, "idProduct")
             .map(|v| v as u16);

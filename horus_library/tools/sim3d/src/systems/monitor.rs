@@ -30,7 +30,8 @@ impl SimMonitor {
             node_name: node_name.into(),
             state: NodeState::Initializing,
             metrics: NodeMetrics::default(),
-            last_heartbeat_time: 0.0,
+            // Initialize to negative infinity so the first heartbeat is always written
+            last_heartbeat_time: f64::NEG_INFINITY,
             heartbeat_interval: 1.0, // Write heartbeat every 1 second
         }
     }
@@ -151,9 +152,18 @@ mod tests {
 
     #[test]
     fn test_heartbeat_throttling() {
-        let monitor = SimMonitor::new("test_sim3d");
-        assert!(monitor.should_write_heartbeat(0.0)); // First time always true
-        assert!(!monitor.should_write_heartbeat(0.5)); // Under interval
-        assert!(monitor.should_write_heartbeat(1.5)); // Over interval
+        let mut monitor = SimMonitor::new("test_sim3d");
+
+        // First time always returns true (regardless of time)
+        assert!(monitor.should_write_heartbeat(0.0));
+
+        // Mark it as written at time 0.0
+        monitor.mark_heartbeat_written(0.0);
+
+        // Under interval (0.5 - 0.0 = 0.5 < 1.0) - should return false
+        assert!(!monitor.should_write_heartbeat(0.5));
+
+        // Over interval (1.5 - 0.0 = 1.5 >= 1.0) - should return true
+        assert!(monitor.should_write_heartbeat(1.5));
     }
 }

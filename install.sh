@@ -531,21 +531,42 @@ version_gt() {
     local v1="$1"
     local v2="$2"
 
+    # Validate inputs - handle empty or invalid version strings gracefully
+    if [ -z "$v1" ] || [ -z "$v2" ]; then
+        echo -e "${YELLOW}${STATUS_WARN} version_gt: empty version string (v1='$v1', v2='$v2')${NC}" >&2
+        return 1
+    fi
+
+    # Strip any non-version characters (e.g., 'v' prefix, trailing text)
+    v1=$(echo "$v1" | grep -oE '^[0-9]+(\.[0-9]+)*' | head -1)
+    v2=$(echo "$v2" | grep -oE '^[0-9]+(\.[0-9]+)*' | head -1)
+
+    if [ -z "$v1" ] || [ -z "$v2" ]; then
+        echo -e "${YELLOW}${STATUS_WARN} version_gt: invalid version format${NC}" >&2
+        return 1
+    fi
+
+    # Extract major.minor.patch (default to 0 if missing)
     local v1_major=$(echo "$v1" | cut -d'.' -f1)
     local v1_minor=$(echo "$v1" | cut -d'.' -f2)
     local v1_patch=$(echo "$v1" | cut -d'.' -f3)
+    v1_major=${v1_major:-0}
+    v1_minor=${v1_minor:-0}
     v1_patch=${v1_patch:-0}
 
     local v2_major=$(echo "$v2" | cut -d'.' -f1)
     local v2_minor=$(echo "$v2" | cut -d'.' -f2)
     local v2_patch=$(echo "$v2" | cut -d'.' -f3)
+    v2_major=${v2_major:-0}
+    v2_minor=${v2_minor:-0}
     v2_patch=${v2_patch:-0}
 
-    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
-    if [ "$v1_major" -lt "$v2_major" ]; then return 1; fi
-    if [ "$v1_minor" -gt "$v2_minor" ]; then return 0; fi
-    if [ "$v1_minor" -lt "$v2_minor" ]; then return 1; fi
-    if [ "$v1_patch" -gt "$v2_patch" ]; then return 0; fi
+    # Use arithmetic expansion with default to 0 for safety
+    if [ "${v1_major:-0}" -gt "${v2_major:-0}" ] 2>/dev/null; then return 0; fi
+    if [ "${v1_major:-0}" -lt "${v2_major:-0}" ] 2>/dev/null; then return 1; fi
+    if [ "${v1_minor:-0}" -gt "${v2_minor:-0}" ] 2>/dev/null; then return 0; fi
+    if [ "${v1_minor:-0}" -lt "${v2_minor:-0}" ] 2>/dev/null; then return 1; fi
+    if [ "${v1_patch:-0}" -gt "${v2_patch:-0}" ] 2>/dev/null; then return 0; fi
     return 1
 }
 
@@ -554,22 +575,42 @@ version_gte() {
     local v1="$1"
     local v2="$2"
 
-    # Extract major.minor.patch (default patch to 0)
+    # Validate inputs - handle empty or invalid version strings gracefully
+    if [ -z "$v1" ] || [ -z "$v2" ]; then
+        echo -e "${YELLOW}${STATUS_WARN} version_gte: empty version string (v1='$v1', v2='$v2')${NC}" >&2
+        return 1
+    fi
+
+    # Strip any non-version characters (e.g., 'v' prefix, trailing text)
+    v1=$(echo "$v1" | grep -oE '^[0-9]+(\.[0-9]+)*' | head -1)
+    v2=$(echo "$v2" | grep -oE '^[0-9]+(\.[0-9]+)*' | head -1)
+
+    if [ -z "$v1" ] || [ -z "$v2" ]; then
+        echo -e "${YELLOW}${STATUS_WARN} version_gte: invalid version format${NC}" >&2
+        return 1
+    fi
+
+    # Extract major.minor.patch (default to 0 if missing)
     local v1_major=$(echo "$v1" | cut -d'.' -f1)
     local v1_minor=$(echo "$v1" | cut -d'.' -f2)
     local v1_patch=$(echo "$v1" | cut -d'.' -f3)
+    v1_major=${v1_major:-0}
+    v1_minor=${v1_minor:-0}
     v1_patch=${v1_patch:-0}
 
     local v2_major=$(echo "$v2" | cut -d'.' -f1)
     local v2_minor=$(echo "$v2" | cut -d'.' -f2)
     local v2_patch=$(echo "$v2" | cut -d'.' -f3)
+    v2_major=${v2_major:-0}
+    v2_minor=${v2_minor:-0}
     v2_patch=${v2_patch:-0}
 
-    if [ "$v1_major" -gt "$v2_major" ]; then return 0; fi
-    if [ "$v1_major" -lt "$v2_major" ]; then return 1; fi
-    if [ "$v1_minor" -gt "$v2_minor" ]; then return 0; fi
-    if [ "$v1_minor" -lt "$v2_minor" ]; then return 1; fi
-    if [ "$v1_patch" -ge "$v2_patch" ]; then return 0; fi
+    # Use arithmetic expansion with default to 0 for safety
+    if [ "${v1_major:-0}" -gt "${v2_major:-0}" ] 2>/dev/null; then return 0; fi
+    if [ "${v1_major:-0}" -lt "${v2_major:-0}" ] 2>/dev/null; then return 1; fi
+    if [ "${v1_minor:-0}" -gt "${v2_minor:-0}" ] 2>/dev/null; then return 0; fi
+    if [ "${v1_minor:-0}" -lt "${v2_minor:-0}" ] 2>/dev/null; then return 1; fi
+    if [ "${v1_patch:-0}" -ge "${v2_patch:-0}" ] 2>/dev/null; then return 0; fi
     return 1
 }
 
@@ -752,35 +793,42 @@ install_system_deps() {
                 debian-based)
                     sudo apt-get update
                     # Note: gcc is sufficient, g++/build-essential not needed for Rust
+                    # Note: pipx is for Python CLI tools (Ubuntu 24+ recommended)
                     sudo apt-get install -y gcc libc6-dev pkg-config libssl-dev libudev-dev libasound2-dev \
                         libclang-dev libopencv-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
-                        libxinerama-dev libwayland-dev wayland-protocols libxkbcommon-dev
+                        libxinerama-dev libwayland-dev wayland-protocols libxkbcommon-dev pipx
+                    # Ensure pipx path is available
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 fedora-based)
                     # Note: gcc is sufficient, Development Tools group includes C++ which is not needed
                     sudo dnf install -y gcc glibc-devel pkg-config openssl-devel systemd-devel alsa-lib-devel \
                         clang-devel opencv-devel libX11-devel libXrandr-devel libXi-devel \
                         libXcursor-devel libXinerama-devel wayland-devel wayland-protocols-devel \
-                        libxkbcommon-devel
+                        libxkbcommon-devel pipx
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 arch-based)
                     # Note: gcc is sufficient, base-devel includes C++ which is not needed
                     sudo pacman -Sy --noconfirm gcc pkg-config openssl systemd alsa-lib \
                         clang opencv libx11 libxrandr libxi libxcursor libxinerama \
-                        wayland wayland-protocols libxkbcommon
+                        wayland wayland-protocols libxkbcommon python-pipx
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 opensuse)
                     # Note: gcc is sufficient, devel_basis includes C++ which is not needed
                     sudo zypper install -y gcc glibc-devel pkg-config libopenssl-devel libudev-devel alsa-devel \
                         clang-devel opencv-devel libX11-devel libXrandr-devel libXi-devel \
                         libXcursor-devel libXinerama-devel wayland-devel wayland-protocols-devel \
-                        libxkbcommon-devel
+                        libxkbcommon-devel python3-pipx
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 alpine)
                     # Note: gcc and musl-dev are sufficient for Rust
                     sudo apk add --no-cache gcc musl-dev pkgconfig openssl-dev eudev-dev alsa-lib-dev \
                         clang-dev opencv-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
-                        libxinerama-dev wayland-dev wayland-protocols libxkbcommon-dev
+                        libxinerama-dev wayland-dev wayland-protocols libxkbcommon-dev py3-pipx
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 macos)
                     # Check for Xcode Command Line Tools
@@ -796,7 +844,8 @@ install_system_deps() {
                         echo "Please install from https://brew.sh then re-run this script"
                         exit 1
                     fi
-                    brew install pkg-config opencv
+                    brew install pkg-config opencv pipx
+                    pipx ensurepath 2>/dev/null || true
                     ;;
                 *)
                     echo -e "${YELLOW} Cannot auto-install for $OS_DISTRO${NC}"
@@ -2454,6 +2503,125 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
             echo "$PIP_OUTPUT" | grep -E "(ERROR|error:|Could not|No matching|requires|glibc)" | head -3
             echo ""
             echo -e "${YELLOW}[-]${NC} Could not install horus_py from PyPI"
+
+            # Fallback: Try building from source with maturin
+            if [ -d "horus_py" ]; then
+                echo -e "${CYAN}${STATUS_INFO} Attempting to build from source with maturin...${NC}"
+
+                # Check if maturin is available, install if not
+                MATURIN_AVAILABLE=false
+                if command -v maturin &> /dev/null; then
+                    MATURIN_AVAILABLE=true
+                    echo -e "${GREEN}${STATUS_OK} maturin found${NC}"
+                else
+                    echo -e "${CYAN}   Installing maturin...${NC}"
+
+                    # Check if we can use sudo without password (for non-interactive install)
+                    CAN_SUDO=false
+                    if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+                        CAN_SUDO=true
+                    fi
+
+                    # Try multiple installation methods (OS-aware, ordered by speed)
+                    # 1. Try non-sudo methods first (pipx, pip, brew on macOS)
+                    if command -v brew &> /dev/null && brew install maturin 2>/dev/null; then
+                        # Homebrew doesn't need sudo
+                        MATURIN_AVAILABLE=true
+                        echo -e "${GREEN}${STATUS_OK} maturin installed via Homebrew${NC}"
+                    elif command -v pipx &> /dev/null && pipx install maturin 2>/dev/null; then
+                        # pipx doesn't need sudo
+                        MATURIN_AVAILABLE=true
+                        export PATH="$HOME/.local/bin:$PATH"
+                        echo -e "${GREEN}${STATUS_OK} maturin installed via pipx${NC}"
+                    elif pip3 install maturin --user --break-system-packages 2>/dev/null; then
+                        # pip --user doesn't need sudo
+                        MATURIN_AVAILABLE=true
+                        echo -e "${GREEN}${STATUS_OK} maturin installed via pip${NC}"
+                    elif pip3 install maturin --user 2>/dev/null; then
+                        # pip --user doesn't need sudo (older systems)
+                        MATURIN_AVAILABLE=true
+                        echo -e "${GREEN}${STATUS_OK} maturin installed via pip${NC}"
+                    # 2. Try OS package manager if sudo available without password
+                    elif [ "$CAN_SUDO" = true ]; then
+                        if command -v apt-get &> /dev/null && sudo apt-get install -y python3-maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via apt${NC}"
+                        elif command -v dnf &> /dev/null && sudo dnf install -y python3-maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via dnf${NC}"
+                        elif command -v pacman &> /dev/null && sudo pacman -S --noconfirm python-maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via pacman${NC}"
+                        elif command -v zypper &> /dev/null && sudo zypper install -y python3-maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via zypper${NC}"
+                        elif command -v apk &> /dev/null && sudo apk add py3-maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via apk${NC}"
+                        fi
+                    fi
+
+                    # 3. cargo install as last resort (slow but universal, no sudo needed)
+                    if [ "$MATURIN_AVAILABLE" != true ]; then
+                        echo -e "${CYAN}   Trying cargo install (this may take a few minutes)...${NC}"
+                        if cargo install maturin 2>/dev/null; then
+                            MATURIN_AVAILABLE=true
+                            echo -e "${GREEN}${STATUS_OK} maturin installed via cargo${NC}"
+                        fi
+                    fi
+
+                    # 4. If still not available, show manual options
+                    if [ "$MATURIN_AVAILABLE" != true ]; then
+                        echo -e "${YELLOW}${STATUS_WARN} Could not install maturin automatically${NC}"
+                        echo -e "   ${CYAN}Manual fix options (choose one):${NC}"
+                        echo -e "   ${CYAN}  Debian/Ubuntu: sudo apt install python3-maturin${NC}"
+                        echo -e "   ${CYAN}  Fedora/RHEL:   sudo dnf install python3-maturin${NC}"
+                        echo -e "   ${CYAN}  Arch:          sudo pacman -S python-maturin${NC}"
+                        echo -e "   ${CYAN}  macOS:         brew install maturin${NC}"
+                        echo -e "   ${CYAN}  Any OS:        pipx install maturin${NC}"
+                        echo -e "   ${CYAN}  Any OS:        cargo install maturin${NC}"
+                    fi
+                fi
+
+                # Build with maturin if available
+                if [ "$MATURIN_AVAILABLE" = true ]; then
+                    echo -e "${CYAN}   Building horus_py from source...${NC}"
+                    CURRENT_DIR=$(pwd)
+                    cd horus_py
+
+                    # Build the wheel
+                    if maturin build --release 2>/dev/null; then
+                        # Try to install the wheel (handle PEP 668 systems)
+                        WHEEL_FILE=$(ls target/wheels/*.whl 2>/dev/null | head -1)
+                        if [ -n "$WHEEL_FILE" ]; then
+                            if pip3 install "$WHEEL_FILE" --user --force-reinstall 2>/dev/null; then
+                                HORUS_PY_INSTALLED=true
+                                echo -e "${GREEN}${STATUS_OK} horus_py built and installed from source${NC}"
+                            elif pip3 install "$WHEEL_FILE" --user --force-reinstall --break-system-packages 2>/dev/null; then
+                                HORUS_PY_INSTALLED=true
+                                echo -e "${GREEN}${STATUS_OK} horus_py built and installed from source${NC}"
+                            elif command -v pipx &> /dev/null && pipx install "$WHEEL_FILE" --force 2>/dev/null; then
+                                HORUS_PY_INSTALLED=true
+                                echo -e "${GREEN}${STATUS_OK} horus_py built and installed via pipx${NC}"
+                            fi
+                        fi
+                    fi
+
+                    # Fallback: Try maturin develop if build+install failed
+                    if [ "$HORUS_PY_INSTALLED" != true ]; then
+                        # maturin develop respects virtual environments and handles PEP 668
+                        if maturin develop --release 2>/dev/null; then
+                            HORUS_PY_INSTALLED=true
+                            echo -e "${GREEN}${STATUS_OK} horus_py installed in development mode${NC}"
+                        else
+                            echo -e "${YELLOW}[-]${NC} maturin build failed"
+                            echo -e "   ${CYAN}Try: cd horus_py && maturin develop --release${NC}"
+                        fi
+                    fi
+
+                    cd "$CURRENT_DIR"
+                fi
+            fi
         fi
     fi
 

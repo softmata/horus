@@ -3,11 +3,12 @@
 //! Detects the host platform (Raspberry Pi, Jetson, BeagleBone, etc.)
 //! and provides platform-specific capabilities information.
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
 /// Detected platform type
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Platform {
     // Raspberry Pi family
     RaspberryPi3,
@@ -180,6 +181,18 @@ impl Platform {
         )
     }
 
+    /// Check if this is a BeagleBone variant
+    pub fn is_beaglebone(&self) -> bool {
+        matches!(
+            self,
+            Platform::BeagleBoneBlack
+                | Platform::BeagleBoneAi
+                | Platform::BeagleBoneAi64
+                | Platform::BeaglePlay
+                | Platform::PocketBeagle
+        )
+    }
+
     /// Check if this platform has CUDA support
     pub fn has_cuda(&self) -> bool {
         self.is_jetson()
@@ -196,9 +209,9 @@ pub enum GpuType {
     VideoCore7,
 
     // NVIDIA
-    Maxwell,    // Jetson Nano
-    Volta,      // Xavier
-    Ampere,     // Orin
+    Maxwell, // Jetson Nano
+    Volta,   // Xavier
+    Ampere,  // Orin
 
     // Mali
     MaliG52,
@@ -322,7 +335,8 @@ impl PlatformDetector {
         if model.contains("raspberry pi 4") {
             return Some(Platform::RaspberryPi4);
         }
-        if model.contains("raspberry pi 3 model b+") || model.contains("raspberry pi 3 model b plus")
+        if model.contains("raspberry pi 3 model b+")
+            || model.contains("raspberry pi 3 model b plus")
         {
             return Some(Platform::RaspberryPi3BPlus);
         }
@@ -672,7 +686,12 @@ impl PlatformDetector {
                 ..Default::default()
             },
             Platform::BeagleBoneBlack => PlatformCapabilities {
-                gpio_chips: vec!["gpiochip0".into(), "gpiochip1".into(), "gpiochip2".into(), "gpiochip3".into()],
+                gpio_chips: vec![
+                    "gpiochip0".into(),
+                    "gpiochip1".into(),
+                    "gpiochip2".into(),
+                    "gpiochip3".into(),
+                ],
                 gpio_pins: 92,
                 i2c_buses: vec![1, 2],
                 spi_buses: vec![0, 1],
@@ -696,10 +715,7 @@ impl PlatformDetector {
                 gpio_pins: 92,
                 i2c_buses: vec![1, 2, 3, 4, 5, 6],
                 spi_buses: vec![0, 1, 2, 3],
-                uart_ports: vec![
-                    "/dev/ttyS2".into(),
-                    "/dev/ttyS3".into(),
-                ],
+                uart_ports: vec!["/dev/ttyS2".into(), "/dev/ttyS3".into()],
                 can_interfaces: vec!["can0".into(), "can1".into()],
                 pwm_chips: vec![0, 1, 2],
                 adc_channels: 7,
@@ -762,13 +778,14 @@ impl PlatformDetector {
                 ..Default::default()
             },
             // Generic x86_64
-            Platform::GenericX86_64 | Platform::IntelNuc | Platform::UpBoard | Platform::LattePanda => {
-                PlatformCapabilities {
-                    cpu_arch: "x86_64".into(),
-                    cpu_cores: num_cpus(),
-                    ram_mb: total_ram_mb(),
-                    ..Default::default()
-                }
+            Platform::GenericX86_64
+            | Platform::IntelNuc
+            | Platform::UpBoard
+            | Platform::LattePanda => PlatformCapabilities {
+                cpu_arch: "x86_64".into(),
+                cpu_cores: num_cpus(),
+                ram_mb: total_ram_mb(),
+                ..Default::default()
             },
             // Default for unknown platforms
             _ => PlatformCapabilities {

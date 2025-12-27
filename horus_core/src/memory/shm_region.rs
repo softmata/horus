@@ -145,6 +145,14 @@ impl ShmRegion {
     pub fn is_owner(&self) -> bool {
         self.owner
     }
+
+    /// Force cleanup of the shared memory file (for use when last consumer exits)
+    /// This bypasses the owner check and removes the file unconditionally
+    pub fn force_cleanup(&self) {
+        if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -315,6 +323,14 @@ impl ShmRegion {
     pub fn is_owner(&self) -> bool {
         self.owner
     }
+
+    /// Force cleanup of the shared memory (for use when last consumer exits)
+    /// This bypasses the owner check and removes the shm unconditionally
+    pub fn force_cleanup(&self) {
+        if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
+            unsafe { libc::shm_unlink(c_name.as_ptr()) };
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -480,6 +496,13 @@ impl ShmRegion {
     pub fn is_owner(&self) -> bool {
         self.owner
     }
+
+    /// Force cleanup of the shared memory (for use when last consumer exits)
+    /// On Windows, cleanup is automatic when all handles are closed, so this is a no-op
+    pub fn force_cleanup(&self) {
+        // Windows automatically cleans up named file mappings when all handles are closed
+        // No explicit cleanup needed
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -580,6 +603,13 @@ impl ShmRegion {
     }
     pub fn is_owner(&self) -> bool {
         self.owner
+    }
+
+    /// Force cleanup of the shared memory file (for use when last consumer exits)
+    pub fn force_cleanup(&self) {
+        if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 

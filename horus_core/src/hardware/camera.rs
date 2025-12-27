@@ -79,9 +79,7 @@ pub struct Camera {
 impl Camera {
     /// Get display name
     pub fn display_name(&self) -> String {
-        self.card
-            .clone()
-            .unwrap_or_else(|| self.name.clone())
+        self.card.clone().unwrap_or_else(|| self.name.clone())
     }
 
     /// Get device number
@@ -137,7 +135,8 @@ impl CameraDiscovery {
         }
 
         // Sort by device number
-        self.cameras.sort_by_key(|c| c.device_number().unwrap_or(999));
+        self.cameras
+            .sort_by_key(|c| c.device_number().unwrap_or(999));
         self.cameras.clone()
     }
 
@@ -148,9 +147,9 @@ impl CameraDiscovery {
 
     /// Find camera by name
     pub fn find_by_name(&self, name: &str) -> Option<&Camera> {
-        self.cameras
-            .iter()
-            .find(|c| c.name.contains(name) || c.card.as_ref().map_or(false, |card| card.contains(name)))
+        self.cameras.iter().find(|c| {
+            c.name.contains(name) || c.card.as_ref().map_or(false, |card| card.contains(name))
+        })
     }
 
     /// Find cameras by type
@@ -225,8 +224,8 @@ impl CameraDiscovery {
             cap.capabilities
         };
 
-        let is_capture =
-            (actual_caps & V4L2_CAP_VIDEO_CAPTURE) != 0 || (actual_caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0;
+        let is_capture = (actual_caps & V4L2_CAP_VIDEO_CAPTURE) != 0
+            || (actual_caps & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0;
 
         let is_metadata = (actual_caps & V4L2_CAP_META_CAPTURE) != 0;
 
@@ -389,7 +388,10 @@ mod tests {
             if let Some(bus) = &camera.bus_info {
                 println!("    Bus: {}", bus);
             }
-            println!("    Formats: {:?}", camera.formats.iter().map(|f| &f.fourcc).collect::<Vec<_>>());
+            println!(
+                "    Formats: {:?}",
+                camera.formats.iter().map(|f| &f.fourcc).collect::<Vec<_>>()
+            );
         }
     }
 

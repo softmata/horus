@@ -13,14 +13,35 @@
 use horus::communication::hub::Hub;
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::geometry::Pose2D;
+use horus_library::messages::sensor::{Imu, LaserScan, Odometry};
 use horus_library::messages::GenericMessage;
 use pyo3::prelude::*;
+use serde::{de::DeserializeOwned, Serialize};
 use std::sync::{Arc, Mutex};
+
+/// Convert a Python object to a Rust type using serde
+fn from_python<T: DeserializeOwned>(py: Python, obj: &PyObject) -> PyResult<T> {
+    pythonize::depythonize(obj.bind(py)).map_err(|e| {
+        pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert from Python: {}", e))
+    })
+}
+
+/// Convert a Rust type to a Python object using serde
+fn to_python<T: Serialize>(py: Python, value: &T) -> PyResult<PyObject> {
+    pythonize::pythonize(py, value)
+        .map(|o| o.into())
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to convert to Python: {}", e))
+        })
+}
 
 /// Internal enum tracking which Rust type the Hub wraps
 enum HubType {
     CmdVel(Arc<Mutex<Hub<CmdVel>>>),
     Pose2D(Arc<Mutex<Hub<Pose2D>>>),
+    Imu(Arc<Mutex<Hub<Imu>>>),
+    Odometry(Arc<Mutex<Hub<Odometry>>>),
+    LaserScan(Arc<Mutex<Hub<LaserScan>>>),
     Generic(Arc<Mutex<Hub<GenericMessage>>>),
 }
 
@@ -127,6 +148,35 @@ impl PyHub {
                     })?;
                 HubType::Pose2D(Arc::new(Mutex::new(hub)))
             }
+            "Imu" => {
+                let hub = Hub::<Imu>::new_with_capacity(&effective_endpoint, cap).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "Failed to create Hub<Imu>: {}",
+                        e
+                    ))
+                })?;
+                HubType::Imu(Arc::new(Mutex::new(hub)))
+            }
+            "Odometry" => {
+                let hub =
+                    Hub::<Odometry>::new_with_capacity(&effective_endpoint, cap).map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "Failed to create Hub<Odometry>: {}",
+                            e
+                        ))
+                    })?;
+                HubType::Odometry(Arc::new(Mutex::new(hub)))
+            }
+            "LaserScan" => {
+                let hub =
+                    Hub::<LaserScan>::new_with_capacity(&effective_endpoint, cap).map_err(|e| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "Failed to create Hub<LaserScan>: {}",
+                            e
+                        ))
+                    })?;
+                HubType::LaserScan(Arc::new(Mutex::new(hub)))
+            }
             _ => {
                 // Fallback to GenericMessage for unknown types
                 let hub = Hub::<GenericMessage>::new_with_capacity(&effective_endpoint, cap)
@@ -167,77 +217,130 @@ impl PyHub {
 
         let result = match &self.hub_type {
             HubType::CmdVel(hub) => {
-                // Extract fields from Python CmdVel object
-                let linear: f32 = message.getattr(py, "linear")?.extract(py)?;
-                let angular: f32 = message.getattr(py, "angular")?.extract(py)?;
-                let stamp_nanos: u64 = message.getattr(py, "timestamp")?.extract(py)?;
-
-                // Create Rust CmdVel - zero-copy!
-                let cmd = CmdVel::with_timestamp(linear, angular, stamp_nanos);
-
-                // Send via typed Hub<CmdVel>
+                // Extract Rust CmdVel from Python object via serde
+                let cmd: CmdVel = from_python(py, &message)?;
                 let hub = hub.lock().unwrap();
                 let success = hub.send(cmd, &mut None).is_ok();
 
-                // Log if node provided (use LogSummary trait!)
                 if let Some(node_obj) = &node {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            // Register publisher for runtime discovery
                             let _ = info.call_method1(
                                 py,
                                 "register_publisher",
                                 (&self.topic, "CmdVel"),
                             );
                             use horus::core::LogSummary;
-                            let log_msg = cmd.log_summary();
-                            let _ =
-                                info.call_method1(py, "log_pub", (&self.topic, log_msg, ipc_ns));
+                            let _ = info.call_method1(
+                                py,
+                                "log_pub",
+                                (&self.topic, cmd.log_summary(), ipc_ns),
+                            );
                         }
                     }
                 }
-
                 success
             }
             HubType::Pose2D(hub) => {
-                // Extract fields from Python Pose2D object
-                let x: f64 = message.getattr(py, "x")?.extract(py)?;
-                let y: f64 = message.getattr(py, "y")?.extract(py)?;
-                let theta: f64 = message.getattr(py, "theta")?.extract(py)?;
-                let timestamp: u64 = message.getattr(py, "timestamp")?.extract(py)?;
-
-                // Create Rust Pose2D - zero-copy!
-                let pose = Pose2D {
-                    x,
-                    y,
-                    theta,
-                    timestamp,
-                };
-
-                // Send via typed Hub<Pose2D>
+                // Extract Rust Pose2D from Python object via serde
+                let pose: Pose2D = from_python(py, &message)?;
                 let hub = hub.lock().unwrap();
                 let success = hub.send(pose, &mut None).is_ok();
 
-                // Log if node provided (use LogSummary trait!)
                 if let Some(node_obj) = &node {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            // Register publisher for runtime discovery
                             let _ = info.call_method1(
                                 py,
                                 "register_publisher",
                                 (&self.topic, "Pose2D"),
                             );
                             use horus::core::LogSummary;
-                            let log_msg = pose.log_summary();
-                            let _ =
-                                info.call_method1(py, "log_pub", (&self.topic, log_msg, ipc_ns));
+                            let _ = info.call_method1(
+                                py,
+                                "log_pub",
+                                (&self.topic, pose.log_summary(), ipc_ns),
+                            );
                         }
                     }
                 }
+                success
+            }
+            HubType::Imu(hub) => {
+                // Extract Rust Imu from Python object via serde
+                let imu: Imu = from_python(py, &message)?;
+                let hub = hub.lock().unwrap();
+                let success = hub.send(imu, &mut None).is_ok();
 
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            let _ =
+                                info.call_method1(py, "register_publisher", (&self.topic, "Imu"));
+                            use horus::core::LogSummary;
+                            let _ = info.call_method1(
+                                py,
+                                "log_pub",
+                                (&self.topic, imu.log_summary(), ipc_ns),
+                            );
+                        }
+                    }
+                }
+                success
+            }
+            HubType::Odometry(hub) => {
+                // Extract Rust Odometry from Python object via serde
+                let odom: Odometry = from_python(py, &message)?;
+                let hub = hub.lock().unwrap();
+                let success = hub.send(odom, &mut None).is_ok();
+
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            let _ = info.call_method1(
+                                py,
+                                "register_publisher",
+                                (&self.topic, "Odometry"),
+                            );
+                            use horus::core::LogSummary;
+                            let _ = info.call_method1(
+                                py,
+                                "log_pub",
+                                (&self.topic, odom.log_summary(), ipc_ns),
+                            );
+                        }
+                    }
+                }
+                success
+            }
+            HubType::LaserScan(hub) => {
+                // Extract Rust LaserScan from Python object via serde
+                let scan: LaserScan = from_python(py, &message)?;
+                let hub = hub.lock().unwrap();
+                let success = hub.send(scan.clone(), &mut None).is_ok();
+
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            let _ = info.call_method1(
+                                py,
+                                "register_publisher",
+                                (&self.topic, "LaserScan"),
+                            );
+                            use horus::core::LogSummary;
+                            let _ = info.call_method1(
+                                py,
+                                "log_pub",
+                                (&self.topic, scan.log_summary(), ipc_ns),
+                            );
+                        }
+                    }
+                }
                 success
             }
             HubType::Generic(hub) => {
@@ -313,33 +416,25 @@ impl PyHub {
                 let hub = hub.lock().unwrap();
                 if let Some(cmd) = hub.recv(&mut None) {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
-
-                    // Log if node provided (use LogSummary trait!)
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                // Register subscriber for runtime discovery
                                 let _ = info.call_method1(
                                     py,
                                     "register_subscriber",
                                     (&self.topic, "CmdVel"),
                                 );
                                 use horus::core::LogSummary;
-                                let log_msg = cmd.log_summary();
                                 let _ = info.call_method1(
                                     py,
                                     "log_sub",
-                                    (&self.topic, log_msg, ipc_ns),
+                                    (&self.topic, cmd.log_summary(), ipc_ns),
                                 );
                             }
                         }
                     }
-
-                    // Create Python CmdVel object
-                    let horus_module = py.import("horus")?;
-                    let cmdvel_class = horus_module.getattr("CmdVel")?;
-                    let py_cmd = cmdvel_class.call1((cmd.linear, cmd.angular, cmd.stamp_nanos))?;
-                    Ok(Some(py_cmd.into()))
+                    // Convert Rust CmdVel to Python object via serde
+                    Ok(Some(to_python(py, &cmd)?))
                 } else {
                     Ok(None)
                 }
@@ -348,34 +443,106 @@ impl PyHub {
                 let hub = hub.lock().unwrap();
                 if let Some(pose) = hub.recv(&mut None) {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
-
-                    // Log if node provided (use LogSummary trait!)
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                // Register subscriber for runtime discovery
                                 let _ = info.call_method1(
                                     py,
                                     "register_subscriber",
                                     (&self.topic, "Pose2D"),
                                 );
                                 use horus::core::LogSummary;
-                                let log_msg = pose.log_summary();
                                 let _ = info.call_method1(
                                     py,
                                     "log_sub",
-                                    (&self.topic, log_msg, ipc_ns),
+                                    (&self.topic, pose.log_summary(), ipc_ns),
                                 );
                             }
                         }
                     }
-
-                    // Create Python Pose2D object
-                    let horus_module = py.import("horus")?;
-                    let pose2d_class = horus_module.getattr("Pose2D")?;
-                    let py_pose =
-                        pose2d_class.call1((pose.x, pose.y, pose.theta, pose.timestamp))?;
-                    Ok(Some(py_pose.into()))
+                    // Convert Rust Pose2D to Python object via serde
+                    Ok(Some(to_python(py, &pose)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            HubType::Imu(hub) => {
+                let hub = hub.lock().unwrap();
+                if let Some(imu) = hub.recv(&mut None) {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                let _ = info.call_method1(
+                                    py,
+                                    "register_subscriber",
+                                    (&self.topic, "Imu"),
+                                );
+                                use horus::core::LogSummary;
+                                let _ = info.call_method1(
+                                    py,
+                                    "log_sub",
+                                    (&self.topic, imu.log_summary(), ipc_ns),
+                                );
+                            }
+                        }
+                    }
+                    // Convert Rust Imu to Python object via serde
+                    Ok(Some(to_python(py, &imu)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            HubType::Odometry(hub) => {
+                let hub = hub.lock().unwrap();
+                if let Some(odom) = hub.recv(&mut None) {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                let _ = info.call_method1(
+                                    py,
+                                    "register_subscriber",
+                                    (&self.topic, "Odometry"),
+                                );
+                                use horus::core::LogSummary;
+                                let _ = info.call_method1(
+                                    py,
+                                    "log_sub",
+                                    (&self.topic, odom.log_summary(), ipc_ns),
+                                );
+                            }
+                        }
+                    }
+                    // Convert Rust Odometry to Python object via serde
+                    Ok(Some(to_python(py, &odom)?))
+                } else {
+                    Ok(None)
+                }
+            }
+            HubType::LaserScan(hub) => {
+                let hub = hub.lock().unwrap();
+                if let Some(scan) = hub.recv(&mut None) {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                let _ = info.call_method1(
+                                    py,
+                                    "register_subscriber",
+                                    (&self.topic, "LaserScan"),
+                                );
+                                use horus::core::LogSummary;
+                                let _ = info.call_method1(
+                                    py,
+                                    "log_sub",
+                                    (&self.topic, scan.log_summary(), ipc_ns),
+                                );
+                            }
+                        }
+                    }
+                    // Convert Rust LaserScan to Python object via serde
+                    Ok(Some(to_python(py, &scan)?))
                 } else {
                     Ok(None)
                 }
@@ -742,6 +909,36 @@ impl PyHub {
                     )
                 }
                 HubType::Pose2D(hub) => {
+                    let h = hub.lock().unwrap();
+                    let m = h.get_metrics();
+                    (
+                        m.messages_sent,
+                        m.messages_received,
+                        m.send_failures,
+                        m.recv_failures,
+                    )
+                }
+                HubType::Imu(hub) => {
+                    let h = hub.lock().unwrap();
+                    let m = h.get_metrics();
+                    (
+                        m.messages_sent,
+                        m.messages_received,
+                        m.send_failures,
+                        m.recv_failures,
+                    )
+                }
+                HubType::Odometry(hub) => {
+                    let h = hub.lock().unwrap();
+                    let m = h.get_metrics();
+                    (
+                        m.messages_sent,
+                        m.messages_received,
+                        m.send_failures,
+                        m.recv_failures,
+                    )
+                }
+                HubType::LaserScan(hub) => {
                     let h = hub.lock().unwrap();
                     let m = h.get_metrics();
                     (

@@ -1,7 +1,9 @@
 pub mod hframe_update;
 pub mod horus_comm;
 pub mod horus_sync;
+pub mod monitor;
 pub mod physics_step;
 pub mod sensor_update;
 pub mod sync_visual;
+pub mod test_commands;
 pub mod topic_discovery;

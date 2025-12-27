@@ -459,6 +459,11 @@ fn run_visual_mode(cli: Cli) {
     // Plugin system (for dynamic plugin loading and example plugins)
     app.add_plugins(PluginSystemPlugin);
 
+    // Test command infrastructure (for automation and CI/CD)
+    app.add_plugins(systems::test_commands::TestCommandPlugin::new(
+        &cli.robot_name,
+    ));
+
     app.insert_resource(PhysicsWorld::default())
         .insert_resource(HFrameTree::with_root("world"))
         .insert_resource(SpawnedObjects::default())
@@ -615,6 +620,9 @@ fn run_headless_mode(cli: Cli) {
 
     // Plugin system (for dynamic plugin loading)
     app.add_plugins(PluginSystemPlugin);
+
+    // Test command infrastructure (for automation and CI/CD)
+    app.add_plugins(systems::test_commands::TestCommandPlugin::new(&robot_name));
 
     // Physics systems (same as visual mode)
     app.add_systems(

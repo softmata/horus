@@ -51,7 +51,10 @@ mod camera;
 
 // Re-export main types
 pub use database::{DeviceCategory, DeviceDatabase, DeviceInfo, DriverMatch, MatchConfidence};
-pub use discovery::{DiscoveredDevice, DiscoveryReport, HardwareDiscovery};
+pub use discovery::{
+    CategoryFilter, DiscoveredDevice, DiscoveryOptions, DiscoveryReport, DiscoverySummary,
+    HardwareDiscovery, ProgressCallback,
+};
 pub use platform::{GpuType, Platform, PlatformCapabilities, PlatformDetector};
 pub use serial::{SerialDiscovery, SerialPort, SerialPortType};
 pub use usb::{UsbDevice, UsbDiscovery};

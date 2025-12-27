@@ -3,11 +3,11 @@
 # HORUS Comprehensive Release Script
 #
 # Updates ALL version references across the entire HORUS ecosystem:
-#   - Cargo.toml package versions (17+ files)
+#   - Cargo.toml package versions (13 files)
 #   - pyproject.toml Python packages (3 files)
 #   - Python __version__ in __init__.py (3 files)
 #   - Rust source hardcoded versions (8 files)
-#   - YAML config files (11+ files)
+#   - YAML config files (14+ files)
 #   - Documentation (.md, .mdx files)
 #   - package.json (docs-site)
 #   - Test files
@@ -95,23 +95,26 @@ fi
 echo ""
 echo -e "${CYAN}[1/10] Updating Cargo.toml package versions...${NC}"
 
-# All Cargo.toml files with version
+# All Cargo.toml files with version (13 files)
+# Note: Root Cargo.toml is workspace-only, no version field
 CARGO_FILES=(
+    # Core crates
     "horus/Cargo.toml"
     "horus_core/Cargo.toml"
     "horus_macros/Cargo.toml"
-    "horus_library/Cargo.toml"
-    "horus_py/Cargo.toml"
     "horus_manager/Cargo.toml"
     "horus_router/Cargo.toml"
-    "benchmarks/Cargo.toml"
+    # Library crates
+    "horus_library/Cargo.toml"
     "horus_library/python/Cargo.toml"
     "horus_library/tools/Cargo.toml"
     "horus_library/tools/sim2d/Cargo.toml"
     "horus_library/tools/sim3d/Cargo.toml"
     "horus_library/apps/tanksim/Cargo.toml"
-    "tests/horus_run/Cargo.toml"
-    "tests/horus_run/cargo_test/Cargo.toml"
+    # Python bindings
+    "horus_py/Cargo.toml"
+    # Benchmarks
+    "benchmarks/Cargo.toml"
 )
 
 for file in "${CARGO_FILES[@]}"; do
@@ -317,11 +320,11 @@ echo ""
 git commit -m "Release v$NEW_VERSION
 
 - Bump version from $CURRENT_VERSION to $NEW_VERSION
-- Update all Cargo.toml files (17 files)
+- Update all Cargo.toml files (13 files)
 - Update pyproject.toml files (3 files)
 - Update Python __version__ (3 files)
 - Update Rust source hardcoded versions (8 files)
-- Update YAML config files
+- Update YAML config files (14+ files)
 - Update documentation and README files
 - Update GitHub templates
 

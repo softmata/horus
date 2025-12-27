@@ -86,12 +86,23 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
             format!("Vec<{}>", ros2_to_rust_type(inner))
         }
         // Fixed size arrays like float32[3]
+        // For arrays > 32 elements, use Vec since serde doesn't support large arrays by default
         t if t.contains('[') && t.contains(']') => {
             let bracket_start = t.find('[').unwrap();
             let bracket_end = t.find(']').unwrap();
             let inner = &t[..bracket_start];
-            let size = &t[bracket_start + 1..bracket_end];
-            format!("[{}; {}]", ros2_to_rust_type(inner), size)
+            let size_str = &t[bracket_start + 1..bracket_end];
+            if let Ok(size) = size_str.parse::<usize>() {
+                if size > 32 {
+                    // Large arrays use Vec for serde compatibility
+                    format!("Vec<{}>", ros2_to_rust_type(inner))
+                } else {
+                    format!("[{}; {}]", ros2_to_rust_type(inner), size)
+                }
+            } else {
+                // If we can't parse size, fall back to Vec
+                format!("Vec<{}>", ros2_to_rust_type(inner))
+            }
         }
 
         // Duration and Time (from builtin_interfaces)
@@ -117,13 +128,16 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
         "sensor_msgs/CameraInfo" | "sensor_msgs/msg/CameraInfo" => "CameraInfo".to_string(),
         "nav_msgs/Odometry" | "nav_msgs/msg/Odometry" => "Odometry".to_string(),
         "nav_msgs/Path" | "nav_msgs/msg/Path" => "Path".to_string(),
-        "nav_msgs/OccupancyGrid" | "nav_msgs/msg/OccupancyGrid" => "OccupancyGrid".to_string(),
+        // OccupancyGrid - use GenericMessage until HORUS OccupancyGrid implements required traits
+        "nav_msgs/OccupancyGrid" | "nav_msgs/msg/OccupancyGrid" | "OccupancyGrid" => {
+            "GenericMessage".to_string()
+        }
 
         // Header and Stamped types - use GenericMessage since HORUS doesn't have Header
         "std_msgs/Header" | "std_msgs/msg/Header" | "Header" => "GenericMessage".to_string(),
-        "geometry_msgs/TransformStamped" | "geometry_msgs/msg/TransformStamped" | "TransformStamped" => {
-            "GenericMessage".to_string()
-        }
+        "geometry_msgs/TransformStamped"
+        | "geometry_msgs/msg/TransformStamped"
+        | "TransformStamped" => "GenericMessage".to_string(),
         "geometry_msgs/PoseStamped" | "geometry_msgs/msg/PoseStamped" | "PoseStamped" => {
             "GenericMessage".to_string()
         }
@@ -132,9 +146,9 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
         }
 
         // Action/Service types from actionlib_msgs
-        "actionlib_msgs/GoalStatusArray" | "actionlib_msgs/msg/GoalStatusArray" | "GoalStatusArray" => {
-            "GenericMessage".to_string()
-        }
+        "actionlib_msgs/GoalStatusArray"
+        | "actionlib_msgs/msg/GoalStatusArray"
+        | "GoalStatusArray" => "GenericMessage".to_string(),
         "actionlib_msgs/GoalStatus" | "actionlib_msgs/msg/GoalStatus" | "GoalStatus" => {
             "GenericMessage".to_string()
         }
@@ -144,116 +158,332 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
 
         // TF2 types
         "tf2_msgs/TF2Error" | "tf2_msgs/msg/TF2Error" | "TF2Error" => "GenericMessage".to_string(),
-        "tf2_msgs/TFMessage" | "tf2_msgs/msg/TFMessage" | "TFMessage" => "GenericMessage".to_string(),
+        "tf2_msgs/TFMessage" | "tf2_msgs/msg/TFMessage" | "TFMessage" => {
+            "GenericMessage".to_string()
+        }
 
         // Entity types that don't exist in HORUS
         "Entity" | "entity" => "GenericMessage".to_string(),
 
         // Additional geometry types
         "geometry_msgs/Point32" | "geometry_msgs/msg/Point32" | "Point32" => "Point3".to_string(),
-        "geometry_msgs/Wrench" | "geometry_msgs/msg/Wrench" | "Wrench" => "GenericMessage".to_string(),
-        "geometry_msgs/WrenchStamped" | "geometry_msgs/msg/WrenchStamped" | "WrenchStamped" => "GenericMessage".to_string(),
+        "geometry_msgs/Wrench" | "geometry_msgs/msg/Wrench" | "Wrench" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/WrenchStamped" | "geometry_msgs/msg/WrenchStamped" | "WrenchStamped" => {
+            "GenericMessage".to_string()
+        }
         "geometry_msgs/Accel" | "geometry_msgs/msg/Accel" | "Accel" => "GenericMessage".to_string(),
-        "geometry_msgs/AccelStamped" | "geometry_msgs/msg/AccelStamped" | "AccelStamped" => "GenericMessage".to_string(),
-        "geometry_msgs/TwistStamped" | "geometry_msgs/msg/TwistStamped" | "TwistStamped" => "GenericMessage".to_string(),
-        "geometry_msgs/PoseWithCovariance" | "geometry_msgs/msg/PoseWithCovariance" | "PoseWithCovariance" => "GenericMessage".to_string(),
-        "geometry_msgs/TwistWithCovariance" | "geometry_msgs/msg/TwistWithCovariance" | "TwistWithCovariance" => "GenericMessage".to_string(),
-        "geometry_msgs/Polygon" | "geometry_msgs/msg/Polygon" | "Polygon" => "GenericMessage".to_string(),
-        "geometry_msgs/PolygonStamped" | "geometry_msgs/msg/PolygonStamped" | "PolygonStamped" => "GenericMessage".to_string(),
-        "geometry_msgs/Inertia" | "geometry_msgs/msg/Inertia" | "Inertia" => "GenericMessage".to_string(),
-        "geometry_msgs/InertiaStamped" | "geometry_msgs/msg/InertiaStamped" | "InertiaStamped" => "GenericMessage".to_string(),
+        "geometry_msgs/AccelStamped" | "geometry_msgs/msg/AccelStamped" | "AccelStamped" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/TwistStamped" | "geometry_msgs/msg/TwistStamped" | "TwistStamped" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/PoseWithCovariance"
+        | "geometry_msgs/msg/PoseWithCovariance"
+        | "PoseWithCovariance" => "GenericMessage".to_string(),
+        "geometry_msgs/PoseWithCovarianceStamped"
+        | "geometry_msgs/msg/PoseWithCovarianceStamped"
+        | "PoseWithCovarianceStamped" => "GenericMessage".to_string(),
+        "geometry_msgs/TwistWithCovariance"
+        | "geometry_msgs/msg/TwistWithCovariance"
+        | "TwistWithCovariance" => "GenericMessage".to_string(),
+        "geometry_msgs/TwistWithCovarianceStamped"
+        | "geometry_msgs/msg/TwistWithCovarianceStamped"
+        | "TwistWithCovarianceStamped" => "GenericMessage".to_string(),
+        "geometry_msgs/Polygon" | "geometry_msgs/msg/Polygon" | "Polygon" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/PolygonStamped" | "geometry_msgs/msg/PolygonStamped" | "PolygonStamped" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/Inertia" | "geometry_msgs/msg/Inertia" | "Inertia" => {
+            "GenericMessage".to_string()
+        }
+        "geometry_msgs/InertiaStamped" | "geometry_msgs/msg/InertiaStamped" | "InertiaStamped" => {
+            "GenericMessage".to_string()
+        }
 
         // Standard message types
         "std_msgs/Empty" | "std_msgs/msg/Empty" | "Empty" => "()".to_string(),
-        "std_msgs/ColorRGBA" | "std_msgs/msg/ColorRGBA" | "ColorRGBA" => "GenericMessage".to_string(),
+        "std_msgs/ColorRGBA" | "std_msgs/msg/ColorRGBA" | "ColorRGBA" => {
+            "GenericMessage".to_string()
+        }
+        // std_msgs primitive wrappers
+        "std_msgs/Bool" | "std_msgs/msg/Bool" => "bool".to_string(),
+        "std_msgs/String" | "std_msgs/msg/String" => "String".to_string(),
+        "std_msgs/Int8" | "std_msgs/msg/Int8" => "i8".to_string(),
+        "std_msgs/Int16" | "std_msgs/msg/Int16" => "i16".to_string(),
+        "std_msgs/Int32" | "std_msgs/msg/Int32" => "i32".to_string(),
+        "std_msgs/Int64" | "std_msgs/msg/Int64" => "i64".to_string(),
+        "std_msgs/UInt8" | "std_msgs/msg/UInt8" => "u8".to_string(),
+        "std_msgs/UInt16" | "std_msgs/msg/UInt16" => "u16".to_string(),
+        "std_msgs/UInt32" | "std_msgs/msg/UInt32" => "u32".to_string(),
+        "std_msgs/UInt64" | "std_msgs/msg/UInt64" => "u64".to_string(),
+        "std_msgs/Float32" | "std_msgs/msg/Float32" => "f32".to_string(),
+        "std_msgs/Float64" | "std_msgs/msg/Float64" => "f64".to_string(),
 
         // UUID types
-        "unique_identifier_msgs/UUID" | "unique_identifier_msgs/msg/UUID" | "UUID" => "String".to_string(),
+        "unique_identifier_msgs/UUID" | "unique_identifier_msgs/msg/UUID" | "UUID" => {
+            "String".to_string()
+        }
 
         // Nav/Map types
-        "nav_msgs/MapMetaData" | "nav_msgs/msg/MapMetaData" | "MapMetaData" => "GenericMessage".to_string(),
-        "map_msgs/OccupancyGridUpdate" | "map_msgs/msg/OccupancyGridUpdate" | "OccupancyGridUpdate" => "GenericMessage".to_string(),
+        "nav_msgs/MapMetaData" | "nav_msgs/msg/MapMetaData" | "MapMetaData" => {
+            "GenericMessage".to_string()
+        }
+        "map_msgs/OccupancyGridUpdate"
+        | "map_msgs/msg/OccupancyGridUpdate"
+        | "OccupancyGridUpdate" => "GenericMessage".to_string(),
         "costmap_2d/VoxelGrid" | "VoxelGrid" => "GenericMessage".to_string(),
 
+        // Geographic/GPS types
+        "geographic_msgs/GeoPose" | "geographic_msgs/msg/GeoPose" | "GeoPose" => {
+            "GenericMessage".to_string()
+        }
+        "geographic_msgs/GeoPoint" | "geographic_msgs/msg/GeoPoint" | "GeoPoint" => {
+            "GenericMessage".to_string()
+        }
+        "geographic_msgs/GeoPoseStamped"
+        | "geographic_msgs/msg/GeoPoseStamped"
+        | "GeoPoseStamped" => "GenericMessage".to_string(),
+        "geographic_msgs/GeoPath" | "geographic_msgs/msg/GeoPath" | "GeoPath" => {
+            "GenericMessage".to_string()
+        }
+
+        // Nav2 specific types
+        "nav_2d_msgs/Twist2D" | "nav2_util/Twist2D" | "nav2_msgs/Twist2D" | "Twist2D" => {
+            "GenericMessage".to_string()
+        }
+        "nav_2d_msgs/msg/Twist2D" => "GenericMessage".to_string(),
+        "nav_2d_msgs/Path2D" | "nav_2d_msgs/msg/Path2D" | "Path2D" => "GenericMessage".to_string(),
+        "nav_2d_msgs/Pose2DStamped" | "nav_2d_msgs/msg/Pose2DStamped" | "Pose2DStamped" => {
+            "GenericMessage".to_string()
+        }
+        "nav2_msgs/BehaviorTreeLog" | "BehaviorTreeLog" => "GenericMessage".to_string(),
+        "nav2_msgs/BehaviorTreeStatusChange" | "BehaviorTreeStatusChange" => {
+            "GenericMessage".to_string()
+        }
+        "nav2_msgs/Costmap" | "Costmap" => "GenericMessage".to_string(),
+        // Goals is used in nav2 actions as an array of poses
+        "Goals" | "nav_msgs/Goals" | "nav_msgs/msg/Goals" | "nav2_msgs/Goals" => {
+            "Vec<GenericMessage>".to_string()
+        }
+        "nav2_msgs/CostmapMetaData" | "CostmapMetaData" => "GenericMessage".to_string(),
+        "nav2_msgs/Particle" | "Particle" => "GenericMessage".to_string(),
+        "nav2_msgs/ParticleCloud" | "ParticleCloud" => "GenericMessage".to_string(),
+        "nav2_msgs/SpeedLimit" | "SpeedLimit" => "GenericMessage".to_string(),
+
         // Sensor types
-        "sensor_msgs/JointState" | "sensor_msgs/msg/JointState" | "JointState" => "JointState".to_string(),
+        "sensor_msgs/JointState" | "sensor_msgs/msg/JointState" | "JointState" => {
+            "GenericMessage".to_string()
+        }
         "sensor_msgs/Joy" | "sensor_msgs/msg/Joy" | "Joy" => "GenericMessage".to_string(),
-        "sensor_msgs/Temperature" | "sensor_msgs/msg/Temperature" | "Temperature" => "GenericMessage".to_string(),
-        "sensor_msgs/FluidPressure" | "sensor_msgs/msg/FluidPressure" | "FluidPressure" => "GenericMessage".to_string(),
-        "sensor_msgs/Illuminance" | "sensor_msgs/msg/Illuminance" | "Illuminance" => "GenericMessage".to_string(),
-        "sensor_msgs/RelativeHumidity" | "sensor_msgs/msg/RelativeHumidity" | "RelativeHumidity" => "GenericMessage".to_string(),
-        "sensor_msgs/MagneticField" | "sensor_msgs/msg/MagneticField" | "MagneticField" => "GenericMessage".to_string(),
-        "sensor_msgs/CompressedImage" | "sensor_msgs/msg/CompressedImage" | "CompressedImage" => "GenericMessage".to_string(),
-        "sensor_msgs/PointField" | "sensor_msgs/msg/PointField" | "PointField" => "GenericMessage".to_string(),
-        "sensor_msgs/RegionOfInterest" | "sensor_msgs/msg/RegionOfInterest" | "RegionOfInterest" => "GenericMessage".to_string(),
-        "sensor_msgs/TimeReference" | "sensor_msgs/msg/TimeReference" | "TimeReference" => "GenericMessage".to_string(),
-        "sensor_msgs/MultiDOFJointState" | "sensor_msgs/msg/MultiDOFJointState" | "MultiDOFJointState" => "GenericMessage".to_string(),
-        "sensor_msgs/MultiEchoLaserScan" | "sensor_msgs/msg/MultiEchoLaserScan" | "MultiEchoLaserScan" => "GenericMessage".to_string(),
-        "sensor_msgs/LaserEcho" | "sensor_msgs/msg/LaserEcho" | "LaserEcho" => "GenericMessage".to_string(),
-        "sensor_msgs/ChannelFloat32" | "sensor_msgs/msg/ChannelFloat32" | "ChannelFloat32" => "GenericMessage".to_string(),
+        "sensor_msgs/Temperature" | "sensor_msgs/msg/Temperature" | "Temperature" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/FluidPressure" | "sensor_msgs/msg/FluidPressure" | "FluidPressure" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/Illuminance" | "sensor_msgs/msg/Illuminance" | "Illuminance" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/RelativeHumidity"
+        | "sensor_msgs/msg/RelativeHumidity"
+        | "RelativeHumidity" => "GenericMessage".to_string(),
+        "sensor_msgs/MagneticField" | "sensor_msgs/msg/MagneticField" | "MagneticField" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/CompressedImage" | "sensor_msgs/msg/CompressedImage" | "CompressedImage" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/PointField" | "sensor_msgs/msg/PointField" | "PointField" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/RegionOfInterest"
+        | "sensor_msgs/msg/RegionOfInterest"
+        | "RegionOfInterest" => "GenericMessage".to_string(),
+        "sensor_msgs/TimeReference" | "sensor_msgs/msg/TimeReference" | "TimeReference" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/MultiDOFJointState"
+        | "sensor_msgs/msg/MultiDOFJointState"
+        | "MultiDOFJointState" => "GenericMessage".to_string(),
+        "sensor_msgs/MultiEchoLaserScan"
+        | "sensor_msgs/msg/MultiEchoLaserScan"
+        | "MultiEchoLaserScan" => "GenericMessage".to_string(),
+        "sensor_msgs/LaserEcho" | "sensor_msgs/msg/LaserEcho" | "LaserEcho" => {
+            "GenericMessage".to_string()
+        }
+        "sensor_msgs/ChannelFloat32" | "sensor_msgs/msg/ChannelFloat32" | "ChannelFloat32" => {
+            "GenericMessage".to_string()
+        }
         "sensor_msgs/PointCloud" | "sensor_msgs/msg/PointCloud" => "PointCloud".to_string(),
 
         // Trajectory/Control types
-        "trajectory_msgs/JointTrajectory" | "trajectory_msgs/msg/JointTrajectory" | "JointTrajectory" => "GenericMessage".to_string(),
-        "trajectory_msgs/JointTrajectoryPoint" | "trajectory_msgs/msg/JointTrajectoryPoint" | "JointTrajectoryPoint" => "GenericMessage".to_string(),
-        "trajectory_msgs/MultiDOFJointTrajectory" | "trajectory_msgs/msg/MultiDOFJointTrajectory" | "MultiDOFJointTrajectory" => "GenericMessage".to_string(),
-        "trajectory_msgs/MultiDOFJointTrajectoryPoint" | "trajectory_msgs/msg/MultiDOFJointTrajectoryPoint" | "MultiDOFJointTrajectoryPoint" => "GenericMessage".to_string(),
-        "control_msgs/JointTolerance" | "control_msgs/msg/JointTolerance" | "JointTolerance" => "GenericMessage".to_string(),
+        "trajectory_msgs/JointTrajectory"
+        | "trajectory_msgs/msg/JointTrajectory"
+        | "JointTrajectory" => "GenericMessage".to_string(),
+        "trajectory_msgs/JointTrajectoryPoint"
+        | "trajectory_msgs/msg/JointTrajectoryPoint"
+        | "JointTrajectoryPoint" => "GenericMessage".to_string(),
+        "trajectory_msgs/MultiDOFJointTrajectory"
+        | "trajectory_msgs/msg/MultiDOFJointTrajectory"
+        | "MultiDOFJointTrajectory" => "GenericMessage".to_string(),
+        "trajectory_msgs/MultiDOFJointTrajectoryPoint"
+        | "trajectory_msgs/msg/MultiDOFJointTrajectoryPoint"
+        | "MultiDOFJointTrajectoryPoint" => "GenericMessage".to_string(),
+        "control_msgs/JointTolerance" | "control_msgs/msg/JointTolerance" | "JointTolerance" => {
+            "GenericMessage".to_string()
+        }
 
         // Diagnostic types
-        "diagnostic_msgs/DiagnosticStatus" | "diagnostic_msgs/msg/DiagnosticStatus" | "DiagnosticStatus" => "GenericMessage".to_string(),
-        "diagnostic_msgs/DiagnosticArray" | "diagnostic_msgs/msg/DiagnosticArray" | "DiagnosticArray" => "GenericMessage".to_string(),
-        "diagnostic_msgs/KeyValue" | "diagnostic_msgs/msg/KeyValue" | "KeyValue" => "GenericMessage".to_string(),
+        "diagnostic_msgs/DiagnosticStatus"
+        | "diagnostic_msgs/msg/DiagnosticStatus"
+        | "DiagnosticStatus" => "GenericMessage".to_string(),
+        "diagnostic_msgs/DiagnosticArray"
+        | "diagnostic_msgs/msg/DiagnosticArray"
+        | "DiagnosticArray" => "GenericMessage".to_string(),
+        "diagnostic_msgs/KeyValue" | "diagnostic_msgs/msg/KeyValue" | "KeyValue" => {
+            "GenericMessage".to_string()
+        }
 
         // Shape types
-        "shape_msgs/SolidPrimitive" | "shape_msgs/msg/SolidPrimitive" | "SolidPrimitive" => "GenericMessage".to_string(),
+        "shape_msgs/SolidPrimitive" | "shape_msgs/msg/SolidPrimitive" | "SolidPrimitive" => {
+            "GenericMessage".to_string()
+        }
         "shape_msgs/Mesh" | "shape_msgs/msg/Mesh" | "Mesh" => "GenericMessage".to_string(),
-        "shape_msgs/MeshTriangle" | "shape_msgs/msg/MeshTriangle" | "MeshTriangle" => "GenericMessage".to_string(),
+        "shape_msgs/MeshTriangle" | "shape_msgs/msg/MeshTriangle" | "MeshTriangle" => {
+            "GenericMessage".to_string()
+        }
         "shape_msgs/Plane" | "shape_msgs/msg/Plane" | "Plane" => "GenericMessage".to_string(),
 
         // Visualization types
-        "visualization_msgs/Marker" | "visualization_msgs/msg/Marker" | "Marker" => "GenericMessage".to_string(),
-        "visualization_msgs/MarkerArray" | "visualization_msgs/msg/MarkerArray" | "MarkerArray" => "GenericMessage".to_string(),
-        "visualization_msgs/InteractiveMarker" | "visualization_msgs/msg/InteractiveMarker" | "InteractiveMarker" => "GenericMessage".to_string(),
-        "visualization_msgs/InteractiveMarkerControl" | "visualization_msgs/msg/InteractiveMarkerControl" | "InteractiveMarkerControl" => "GenericMessage".to_string(),
-        "visualization_msgs/InteractiveMarkerFeedback" | "visualization_msgs/msg/InteractiveMarkerFeedback" | "InteractiveMarkerFeedback" => "GenericMessage".to_string(),
-        "visualization_msgs/MenuEntry" | "visualization_msgs/msg/MenuEntry" | "MenuEntry" => "GenericMessage".to_string(),
+        "visualization_msgs/Marker" | "visualization_msgs/msg/Marker" | "Marker" => {
+            "GenericMessage".to_string()
+        }
+        "visualization_msgs/MarkerArray" | "visualization_msgs/msg/MarkerArray" | "MarkerArray" => {
+            "GenericMessage".to_string()
+        }
+        "visualization_msgs/InteractiveMarker"
+        | "visualization_msgs/msg/InteractiveMarker"
+        | "InteractiveMarker" => "GenericMessage".to_string(),
+        "visualization_msgs/InteractiveMarkerControl"
+        | "visualization_msgs/msg/InteractiveMarkerControl"
+        | "InteractiveMarkerControl" => "GenericMessage".to_string(),
+        "visualization_msgs/InteractiveMarkerFeedback"
+        | "visualization_msgs/msg/InteractiveMarkerFeedback"
+        | "InteractiveMarkerFeedback" => "GenericMessage".to_string(),
+        "visualization_msgs/MenuEntry" | "visualization_msgs/msg/MenuEntry" | "MenuEntry" => {
+            "GenericMessage".to_string()
+        }
 
         // Object recognition
-        "object_recognition_msgs/ObjectType" | "object_recognition_msgs/msg/ObjectType" | "ObjectType" => "GenericMessage".to_string(),
-        "object_recognition_msgs/RecognizedObject" | "object_recognition_msgs/msg/RecognizedObject" | "RecognizedObject" => "GenericMessage".to_string(),
-        "object_recognition_msgs/RecognizedObjectArray" | "object_recognition_msgs/msg/RecognizedObjectArray" | "RecognizedObjectArray" => "GenericMessage".to_string(),
+        "object_recognition_msgs/ObjectType"
+        | "object_recognition_msgs/msg/ObjectType"
+        | "ObjectType" => "GenericMessage".to_string(),
+        "object_recognition_msgs/RecognizedObject"
+        | "object_recognition_msgs/msg/RecognizedObject"
+        | "RecognizedObject" => "GenericMessage".to_string(),
+        "object_recognition_msgs/RecognizedObjectArray"
+        | "object_recognition_msgs/msg/RecognizedObjectArray"
+        | "RecognizedObjectArray" => "GenericMessage".to_string(),
 
         // MoveIt types
-        "moveit_msgs/RobotState" | "moveit_msgs/msg/RobotState" | "RobotState" => "GenericMessage".to_string(),
-        "moveit_msgs/RobotTrajectory" | "moveit_msgs/msg/RobotTrajectory" | "RobotTrajectory" => "GenericMessage".to_string(),
-        "moveit_msgs/AttachedCollisionObject" | "moveit_msgs/msg/AttachedCollisionObject" | "AttachedCollisionObject" => "GenericMessage".to_string(),
-        "moveit_msgs/CollisionObject" | "moveit_msgs/msg/CollisionObject" | "CollisionObject" => "GenericMessage".to_string(),
-        "moveit_msgs/Constraints" | "moveit_msgs/msg/Constraints" | "Constraints" => "GenericMessage".to_string(),
-        "moveit_msgs/MotionPlanRequest" | "moveit_msgs/msg/MotionPlanRequest" | "MotionPlanRequest" => "GenericMessage".to_string(),
-        "moveit_msgs/MotionPlanResponse" | "moveit_msgs/msg/MotionPlanResponse" | "MotionPlanResponse" => "GenericMessage".to_string(),
-        "moveit_msgs/PlanningScene" | "moveit_msgs/msg/PlanningScene" | "PlanningScene" => "GenericMessage".to_string(),
-        "moveit_msgs/WorkspaceParameters" | "moveit_msgs/msg/WorkspaceParameters" | "WorkspaceParameters" => "GenericMessage".to_string(),
-        "moveit_msgs/PositionConstraint" | "moveit_msgs/msg/PositionConstraint" | "PositionConstraint" => "GenericMessage".to_string(),
-        "moveit_msgs/OrientationConstraint" | "moveit_msgs/msg/OrientationConstraint" | "OrientationConstraint" => "GenericMessage".to_string(),
-        "moveit_msgs/JointConstraint" | "moveit_msgs/msg/JointConstraint" | "JointConstraint" => "GenericMessage".to_string(),
-        "moveit_msgs/BoundingVolume" | "moveit_msgs/msg/BoundingVolume" | "BoundingVolume" => "GenericMessage".to_string(),
+        "moveit_msgs/RobotState" | "moveit_msgs/msg/RobotState" | "RobotState" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/RobotTrajectory" | "moveit_msgs/msg/RobotTrajectory" | "RobotTrajectory" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/AttachedCollisionObject"
+        | "moveit_msgs/msg/AttachedCollisionObject"
+        | "AttachedCollisionObject" => "GenericMessage".to_string(),
+        "moveit_msgs/CollisionObject" | "moveit_msgs/msg/CollisionObject" | "CollisionObject" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/Constraints" | "moveit_msgs/msg/Constraints" | "Constraints" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/MotionPlanRequest"
+        | "moveit_msgs/msg/MotionPlanRequest"
+        | "MotionPlanRequest" => "GenericMessage".to_string(),
+        "moveit_msgs/MotionPlanResponse"
+        | "moveit_msgs/msg/MotionPlanResponse"
+        | "MotionPlanResponse" => "GenericMessage".to_string(),
+        "moveit_msgs/PlanningScene" | "moveit_msgs/msg/PlanningScene" | "PlanningScene" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/WorkspaceParameters"
+        | "moveit_msgs/msg/WorkspaceParameters"
+        | "WorkspaceParameters" => "GenericMessage".to_string(),
+        "moveit_msgs/PositionConstraint"
+        | "moveit_msgs/msg/PositionConstraint"
+        | "PositionConstraint" => "GenericMessage".to_string(),
+        "moveit_msgs/OrientationConstraint"
+        | "moveit_msgs/msg/OrientationConstraint"
+        | "OrientationConstraint" => "GenericMessage".to_string(),
+        "moveit_msgs/JointConstraint" | "moveit_msgs/msg/JointConstraint" | "JointConstraint" => {
+            "GenericMessage".to_string()
+        }
+        "moveit_msgs/BoundingVolume" | "moveit_msgs/msg/BoundingVolume" | "BoundingVolume" => {
+            "GenericMessage".to_string()
+        }
 
         // Controller manager types
-        "controller_manager_msgs/ControllerState" | "controller_manager_msgs/msg/ControllerState" | "ControllerState" => "GenericMessage".to_string(),
-        "controller_manager_msgs/HardwareInterface" | "controller_manager_msgs/msg/HardwareInterface" | "HardwareInterface" => "GenericMessage".to_string(),
-        "controller_manager_msgs/HardwareComponentState" | "controller_manager_msgs/msg/HardwareComponentState" | "HardwareComponentState" => "GenericMessage".to_string(),
+        "controller_manager_msgs/ControllerState"
+        | "controller_manager_msgs/msg/ControllerState"
+        | "ControllerState" => "GenericMessage".to_string(),
+        "controller_manager_msgs/HardwareInterface"
+        | "controller_manager_msgs/msg/HardwareInterface"
+        | "HardwareInterface" => "GenericMessage".to_string(),
+        "controller_manager_msgs/HardwareComponentState"
+        | "controller_manager_msgs/msg/HardwareComponentState"
+        | "HardwareComponentState" => "GenericMessage".to_string(),
 
         // RCL interfaces
-        "rcl_interfaces/Parameter" | "rcl_interfaces/msg/Parameter" | "Parameter" => "GenericMessage".to_string(),
-        "rcl_interfaces/ParameterDescriptor" | "rcl_interfaces/msg/ParameterDescriptor" | "ParameterDescriptor" => "GenericMessage".to_string(),
-        "rcl_interfaces/ParameterValue" | "rcl_interfaces/msg/ParameterValue" | "ParameterValue" => "GenericMessage".to_string(),
-        "rcl_interfaces/ParameterType" | "rcl_interfaces/msg/ParameterType" | "ParameterType" => "GenericMessage".to_string(),
-        "rcl_interfaces/SetParametersResult" | "rcl_interfaces/msg/SetParametersResult" | "SetParametersResult" => "GenericMessage".to_string(),
-        "rcl_interfaces/ListParametersResult" | "rcl_interfaces/msg/ListParametersResult" | "ListParametersResult" => "GenericMessage".to_string(),
-        "rcl_interfaces/ParameterEvent" | "rcl_interfaces/msg/ParameterEvent" | "ParameterEvent" => "GenericMessage".to_string(),
-        "rcl_interfaces/FloatingPointRange" | "rcl_interfaces/msg/FloatingPointRange" | "FloatingPointRange" => "GenericMessage".to_string(),
-        "rcl_interfaces/IntegerRange" | "rcl_interfaces/msg/IntegerRange" | "IntegerRange" => "GenericMessage".to_string(),
+        "rcl_interfaces/Parameter" | "rcl_interfaces/msg/Parameter" | "Parameter" => {
+            "GenericMessage".to_string()
+        }
+        "rcl_interfaces/ParameterDescriptor"
+        | "rcl_interfaces/msg/ParameterDescriptor"
+        | "ParameterDescriptor" => "GenericMessage".to_string(),
+        "rcl_interfaces/ParameterValue"
+        | "rcl_interfaces/msg/ParameterValue"
+        | "ParameterValue" => "GenericMessage".to_string(),
+        "rcl_interfaces/ParameterType" | "rcl_interfaces/msg/ParameterType" | "ParameterType" => {
+            "GenericMessage".to_string()
+        }
+        "rcl_interfaces/SetParametersResult"
+        | "rcl_interfaces/msg/SetParametersResult"
+        | "SetParametersResult" => "GenericMessage".to_string(),
+        "rcl_interfaces/ListParametersResult"
+        | "rcl_interfaces/msg/ListParametersResult"
+        | "ListParametersResult" => "GenericMessage".to_string(),
+        "rcl_interfaces/ParameterEvent"
+        | "rcl_interfaces/msg/ParameterEvent"
+        | "ParameterEvent" => "GenericMessage".to_string(),
+        "rcl_interfaces/FloatingPointRange"
+        | "rcl_interfaces/msg/FloatingPointRange"
+        | "FloatingPointRange" => "GenericMessage".to_string(),
+        "rcl_interfaces/IntegerRange" | "rcl_interfaces/msg/IntegerRange" | "IntegerRange" => {
+            "GenericMessage".to_string()
+        }
+
+        // Lifecycle interface types
+        "lifecycle_msgs/State" | "lifecycle_msgs/msg/State" | "State" => {
+            "GenericMessage".to_string()
+        }
+        "lifecycle_msgs/Transition" | "lifecycle_msgs/msg/Transition" | "Transition" => {
+            "GenericMessage".to_string()
+        }
+        "lifecycle_msgs/TransitionDescription"
+        | "lifecycle_msgs/msg/TransitionDescription"
+        | "TransitionDescription" => "GenericMessage".to_string(),
+        "lifecycle_msgs/TransitionEvent"
+        | "lifecycle_msgs/msg/TransitionEvent"
+        | "TransitionEvent" => "GenericMessage".to_string(),
 
         // For unknown types, assume it's a custom message - convert to PascalCase
         other => {
@@ -265,7 +495,8 @@ fn ros2_to_rust_type(ros2_type: &str) -> String {
             } else {
                 type_name
             };
-            to_pascal_case(type_name)
+            // Apply struct name sanitization to handle reserved names like "Node"
+            sanitize_struct_name(&to_pascal_case(type_name))
         }
     }
 }
@@ -299,39 +530,109 @@ fn to_snake_case(s: &str) -> String {
     result
 }
 
+/// Built-in types that don't implement Default
+const BUILTIN_NON_DEFAULT_TYPES: &[&str] = &[
+    "GenericMessage",
+    "OccupancyGrid",
+    "Pose",
+    "Image",
+    "PointCloud",
+    "LaserScan",
+    "Imu",
+    "Odometry",
+    "Path",
+    "CameraInfo",
+    "NavSatFix",
+    "BatteryState",
+    "Range",
+    "JointState",
+    "Twist",
+    "Transform",
+    "Point3",
+    "Vector3",
+    "Quaternion",
+];
+
 /// Check if a Rust type supports the Default trait
 /// GenericMessage, OccupancyGrid, and some other types don't implement Default
 fn type_supports_default(rust_type: &str) -> bool {
-    // Types that don't implement Default
-    let non_default_types = [
-        "GenericMessage",
-        "OccupancyGrid",
-        "Pose",
-        "Image",
-        "PointCloud",
-        "LaserScan",
-        "Imu",
-        "Odometry",
-        "Path",
-        "CameraInfo",
-        "NavSatFix",
-        "BatteryState",
-        "Range",
-        "JointState",
-        "Twist",
-        "Transform",
-        "Point3",
-        "Vector3",
-        "Quaternion",
-    ];
+    type_supports_default_with_local(rust_type, &std::collections::HashSet::new())
+}
 
-    // Check if the type itself or if it's a Vec/Option containing the type
-    for t in &non_default_types {
-        if rust_type == *t || rust_type.contains(&format!("<{}>", t)) || rust_type.contains(&format!("<{},", t)) {
+/// Check if a Rust type supports the Default trait, considering package-local types
+fn type_supports_default_with_local(
+    rust_type: &str,
+    local_non_default: &std::collections::HashSet<String>,
+) -> bool {
+    // Check built-in non-default types
+    for t in BUILTIN_NON_DEFAULT_TYPES {
+        if rust_type == *t
+            || rust_type.contains(&format!("<{}>", t))
+            || rust_type.contains(&format!("<{},", t))
+        {
             return false;
         }
     }
+
+    // Check package-local non-default types
+    for t in local_non_default {
+        if rust_type == t
+            || rust_type.contains(&format!("<{}>", t))
+            || rust_type.contains(&format!("<{},", t))
+        {
+            return false;
+        }
+    }
+
     true
+}
+
+/// Build a set of types that don't support Default within a package
+/// This includes types that directly use non-default fields, and transitively
+/// types that reference those types.
+fn build_non_default_types(messages: &[RosMessage]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut non_default: HashSet<String> = HashSet::new();
+
+    // First pass: find types that directly use non-default fields
+    for msg in messages {
+        let struct_name = sanitize_struct_name(&msg.name);
+        for field in &msg.fields {
+            let rust_type = ros2_to_rust_type(&field.field_type);
+            if !type_supports_default(&rust_type) {
+                non_default.insert(struct_name.clone());
+                break;
+            }
+        }
+    }
+
+    // Iterative pass: propagate non-default status to types that reference non-default types
+    loop {
+        let mut changed = false;
+        for msg in messages {
+            let struct_name = sanitize_struct_name(&msg.name);
+            if non_default.contains(&struct_name) {
+                continue; // Already marked
+            }
+
+            for field in &msg.fields {
+                let rust_type = ros2_to_rust_type(&field.field_type);
+                // Check if this field references a local non-default type
+                if !type_supports_default_with_local(&rust_type, &non_default) {
+                    non_default.insert(struct_name.clone());
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    non_default
 }
 
 /// Sanitize a field name to be a valid Rust identifier
@@ -344,12 +645,37 @@ fn sanitize_field_name(name: &str) -> String {
         .replace(' ', "_");
 
     // Ensure it starts with a letter or underscore (not a digit)
-    if sanitized.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+    if sanitized
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(false)
+    {
         format!("_{}", sanitized)
     } else if sanitized.is_empty() {
         "unnamed".to_string()
     } else {
         sanitized
+    }
+}
+
+/// Sanitize a struct name to avoid conflicts with HORUS reserved names
+/// Renames types like "Node" to "RosNode" to avoid conflict with horus::Node trait
+fn sanitize_struct_name(name: &str) -> String {
+    // Reserved names that would conflict with horus::prelude
+    let reserved = [
+        "Node",            // horus::Node trait
+        "Link",            // horus::Link
+        "Hub",             // horus::Hub
+        "Message",         // generic Message trait
+        "Scheduler",       // horus::Scheduler
+        "TrajectoryPoint", // horus::TrajectoryPoint message type
+    ];
+
+    if reserved.contains(&name) {
+        format!("Ros{}", name)
+    } else {
+        name.to_string()
     }
 }
 
@@ -602,8 +928,17 @@ pub fn parse_msg_file(path: &Path, package: &str) -> HorusResult<RosMessage> {
             (field_name.to_string(), Some(value.to_string()), is_const)
         } else {
             // Handle possible inline comment
-            let field_name = rest.split('#').next().unwrap_or(rest).trim();
-            (field_name.to_string(), None, false)
+            let rest_no_comment = rest.split('#').next().unwrap_or(rest).trim();
+            // ROS2 allows space-separated default values: "type field_name default_value"
+            // e.g., "bool use_dock_id True" or "float32 max_time 1000.0"
+            let parts: Vec<&str> = rest_no_comment.split_whitespace().collect();
+            let field_name = parts[0];
+            let default_val = if parts.len() > 1 {
+                Some(parts[1..].join(" "))
+            } else {
+                None
+            };
+            (field_name.to_string(), default_val, false)
         };
 
         let field = RosField {
@@ -654,15 +989,44 @@ pub fn parse_srv_file(path: &Path, package: &str) -> HorusResult<RosService> {
             let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
             if parts.len() >= 2 {
                 let field_type = parts[0].trim();
-                let field_name = parts[1].split('#').next().unwrap_or(parts[1]).trim();
+                let rest = parts[1].split('#').next().unwrap_or(parts[1]).trim();
 
-                fields.push(RosField {
-                    name: field_name.to_string(),
-                    field_type: field_type.to_string(),
-                    default_value: None,
-                    comment: None,
-                    is_constant: false,
-                });
+                // Check for constant (NAME=value) - skip them as they go in impl block
+                if rest.contains('=') {
+                    let eq_parts: Vec<&str> = rest.splitn(2, '=').collect();
+                    let field_name = eq_parts[0].trim();
+                    // Constants have ALL_CAPS names - skip them for struct fields
+                    if field_name
+                        .chars()
+                        .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+                    {
+                        continue;
+                    }
+                    // Otherwise it's a default value, extract just the name
+                    fields.push(RosField {
+                        name: field_name.to_string(),
+                        field_type: field_type.to_string(),
+                        default_value: Some(eq_parts.get(1).unwrap_or(&"").trim().to_string()),
+                        comment: None,
+                        is_constant: false,
+                    });
+                } else {
+                    // Handle space-separated default values: "type field_name default_value"
+                    let parts: Vec<&str> = rest.split_whitespace().collect();
+                    let field_name = parts[0];
+                    let default_val = if parts.len() > 1 {
+                        Some(parts[1..].join(" "))
+                    } else {
+                        None
+                    };
+                    fields.push(RosField {
+                        name: field_name.to_string(),
+                        field_type: field_type.to_string(),
+                        default_value: default_val,
+                        comment: None,
+                        is_constant: false,
+                    });
+                }
             }
         }
         fields
@@ -720,15 +1084,44 @@ pub fn parse_action_file(path: &Path, package: &str) -> HorusResult<RosAction> {
             let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
             if parts.len() >= 2 {
                 let field_type = parts[0].trim();
-                let field_name = parts[1].split('#').next().unwrap_or(parts[1]).trim();
+                let rest = parts[1].split('#').next().unwrap_or(parts[1]).trim();
 
-                fields.push(RosField {
-                    name: field_name.to_string(),
-                    field_type: field_type.to_string(),
-                    default_value: None,
-                    comment: current_comment.take(),
-                    is_constant: false,
-                });
+                // Check for constant (NAME=value) - skip them as they go in impl block
+                if rest.contains('=') {
+                    let eq_parts: Vec<&str> = rest.splitn(2, '=').collect();
+                    let field_name = eq_parts[0].trim();
+                    // Constants have ALL_CAPS names - skip them for struct fields
+                    if field_name
+                        .chars()
+                        .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+                    {
+                        continue;
+                    }
+                    // Otherwise it's a default value, extract just the name
+                    fields.push(RosField {
+                        name: field_name.to_string(),
+                        field_type: field_type.to_string(),
+                        default_value: Some(eq_parts.get(1).unwrap_or(&"").trim().to_string()),
+                        comment: current_comment.take(),
+                        is_constant: false,
+                    });
+                } else {
+                    // Handle space-separated default values: "type field_name default_value"
+                    let field_parts: Vec<&str> = rest.split_whitespace().collect();
+                    let field_name = field_parts[0];
+                    let default_val = if field_parts.len() > 1 {
+                        Some(field_parts[1..].join(" "))
+                    } else {
+                        None
+                    };
+                    fields.push(RosField {
+                        name: field_name.to_string(),
+                        field_type: field_type.to_string(),
+                        default_value: default_val,
+                        comment: current_comment.take(),
+                        is_constant: false,
+                    });
+                }
             }
         }
         fields
@@ -919,6 +1312,22 @@ pub fn parse_package_xml(path: &Path) -> HorusResult<RosPackage> {
     })
 }
 
+/// Escape Rust reserved keywords for use as field names
+fn escape_rust_keyword(name: &str) -> String {
+    const RESERVED: &[&str] = &[
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait",
+        "true", "type", "unsafe", "use", "where", "while", "abstract", "become", "box", "do",
+        "final", "macro", "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
+    ];
+    if RESERVED.contains(&name) {
+        format!("r#{}", name)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Check if a ROS2 type can be Copy in Rust
 fn is_copy_type(ros2_type: &str) -> bool {
     match ros2_type.trim() {
@@ -929,10 +1338,18 @@ fn is_copy_type(ros2_type: &str) -> bool {
         "string" | "wstring" => false,
         // Arrays (dynamic) are not Copy
         t if t.ends_with("[]") => false,
-        // Fixed size arrays of Copy types are Copy
+        // Fixed size arrays of Copy types are Copy (but only if <=32 elements due to serde limits)
         t if t.contains('[') && t.contains(']') => {
             let bracket_start = t.find('[').unwrap();
+            let bracket_end = t.find(']').unwrap();
             let inner = &t[..bracket_start];
+            let size_str = &t[bracket_start + 1..bracket_end];
+            // Large arrays (>32) become Vec which is not Copy
+            if let Ok(size) = size_str.parse::<usize>() {
+                if size > 32 {
+                    return false;
+                }
+            }
             is_copy_type(inner)
         }
         // Duration and Time are typically not Copy (depends on impl)
@@ -945,11 +1362,21 @@ fn is_copy_type(ros2_type: &str) -> bool {
 
 /// Convert a ROS2 message to a Rust struct definition
 pub fn msg_to_rust(msg: &RosMessage) -> String {
+    msg_to_rust_with_non_default(msg, &std::collections::HashSet::new())
+}
+
+/// Convert a ROS2 message to a Rust struct definition, with knowledge of package-local non-default types
+pub fn msg_to_rust_with_non_default(
+    msg: &RosMessage,
+    local_non_default: &std::collections::HashSet<String>,
+) -> String {
     let mut output = String::new();
 
     // Add imports at the top of the file
     output.push_str("use serde::{Serialize, Deserialize};\n");
-    output.push_str("use horus::prelude::*;\n\n");
+    output.push_str("use horus::prelude::*;\n");
+    // Import sibling message types from the same package
+    output.push_str("use super::*;\n\n");
 
     // Add doc comment
     output.push_str(&format!(
@@ -960,13 +1387,17 @@ pub fn msg_to_rust(msg: &RosMessage) -> String {
     // Check if all fields are Copy-able
     let all_copy = msg.fields.iter().all(|f| is_copy_type(&f.field_type));
 
-    // Check if all fields support Default trait
+    // Sanitize struct name to avoid conflicts with HORUS reserved names
+    let struct_name = sanitize_struct_name(&msg.name);
+
+    // Check if all field types support Default trait
+    // This is needed because some HORUS types (like GenericMessage) don't implement Default
+    // Also check against package-local types that don't support Default
     let all_default = msg.fields.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
-    // Add derive attributes - only include Default if all types support it
     if all_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
@@ -975,7 +1406,7 @@ pub fn msg_to_rust(msg: &RosMessage) -> String {
     if all_copy && !msg.fields.is_empty() {
         output.push_str("#[derive(Copy)]\n");
     }
-    output.push_str(&format!("pub struct {} {{\n", msg.name));
+    output.push_str(&format!("pub struct {} {{\n", struct_name));
 
     // Add fields
     for field in &msg.fields {
@@ -983,22 +1414,29 @@ pub fn msg_to_rust(msg: &RosMessage) -> String {
             output.push_str(&format!("    /// {}\n", comment));
         }
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
 
     output.push_str("}\n");
 
     // Add constants as impl block
     if !msg.constants.is_empty() {
-        output.push_str(&format!("\nimpl {} {{\n", msg.name));
+        output.push_str(&format!("\nimpl {} {{\n", struct_name));
         for constant in &msg.constants {
             let rust_type = ros2_to_rust_type(&constant.field_type);
             if let Some(ref value) = constant.default_value {
+                // Strip inline comments (ROS2 format: "value # comment")
+                let clean_value = value.split('#').next().unwrap_or(value).trim();
+
                 // Convert value based on type
                 let rust_value = if rust_type == "String" {
-                    format!("\"{}\"", value)
+                    format!("\"{}\"", clean_value)
                 } else {
-                    value.clone()
+                    clean_value.to_string()
                 };
                 output.push_str(&format!(
                     "    pub const {}: {} = {};\n",
@@ -1014,16 +1452,25 @@ pub fn msg_to_rust(msg: &RosMessage) -> String {
 
 /// Convert a ROS2 service to Rust request/response structs
 pub fn srv_to_rust(srv: &RosService) -> String {
+    srv_to_rust_with_non_default(srv, &std::collections::HashSet::new())
+}
+
+/// Convert a ROS2 service to Rust request/response structs, with knowledge of package-local non-default types
+pub fn srv_to_rust_with_non_default(
+    srv: &RosService,
+    local_non_default: &std::collections::HashSet<String>,
+) -> String {
     let mut output = String::new();
 
     // Add imports at the top of the file
     output.push_str("use serde::{Serialize, Deserialize};\n");
-    output.push_str("use horus::prelude::*;\n\n");
+    output.push_str("use horus::prelude::*;\n");
+    output.push_str("use super::*;\n\n");
 
-    // Check if request fields support Default
-    let req_default = srv.request.iter().all(|f| {
+    // Check if all request field types support Default
+    let request_supports_default = srv.request.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
     // Request struct
@@ -1031,7 +1478,7 @@ pub fn srv_to_rust(srv: &RosService) -> String {
         "/// Request for ROS2 service: {}/{}\n",
         srv.package, srv.name
     ));
-    if req_default {
+    if request_supports_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
         output.push_str("#[derive(Clone, Debug, Serialize, Deserialize)]\n");
@@ -1039,14 +1486,18 @@ pub fn srv_to_rust(srv: &RosService) -> String {
     output.push_str(&format!("pub struct {}Request {{\n", srv.name));
     for field in &srv.request {
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
     output.push_str("}\n\n");
 
-    // Check if response fields support Default
-    let resp_default = srv.response.iter().all(|f| {
+    // Check if all response field types support Default
+    let response_supports_default = srv.response.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
     // Response struct
@@ -1054,7 +1505,7 @@ pub fn srv_to_rust(srv: &RosService) -> String {
         "/// Response for ROS2 service: {}/{}\n",
         srv.package, srv.name
     ));
-    if resp_default {
+    if response_supports_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
         output.push_str("#[derive(Clone, Debug, Serialize, Deserialize)]\n");
@@ -1062,7 +1513,11 @@ pub fn srv_to_rust(srv: &RosService) -> String {
     output.push_str(&format!("pub struct {}Response {{\n", srv.name));
     for field in &srv.response {
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
     output.push_str("}\n");
 
@@ -1071,16 +1526,25 @@ pub fn srv_to_rust(srv: &RosService) -> String {
 
 /// Convert a ROS action to Rust Goal/Result/Feedback structs
 pub fn action_to_rust(action: &RosAction) -> String {
+    action_to_rust_with_non_default(action, &std::collections::HashSet::new())
+}
+
+/// Convert a ROS action to Rust Goal/Result/Feedback structs, with knowledge of package-local non-default types
+pub fn action_to_rust_with_non_default(
+    action: &RosAction,
+    local_non_default: &std::collections::HashSet<String>,
+) -> String {
     let mut output = String::new();
 
     // Add imports at the top of the file
     output.push_str("use serde::{Serialize, Deserialize};\n");
-    output.push_str("use horus::prelude::*;\n\n");
+    output.push_str("use horus::prelude::*;\n");
+    output.push_str("use super::*;\n\n");
 
-    // Check if goal fields support Default
-    let goal_default = action.goal.iter().all(|f| {
+    // Check if Goal field types support Default
+    let goal_supports_default = action.goal.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
     // Goal struct
@@ -1088,7 +1552,7 @@ pub fn action_to_rust(action: &RosAction) -> String {
         "/// Goal for ROS action: {}/{}\n",
         action.package, action.name
     ));
-    if goal_default {
+    if goal_supports_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
         output.push_str("#[derive(Clone, Debug, Serialize, Deserialize)]\n");
@@ -1099,14 +1563,18 @@ pub fn action_to_rust(action: &RosAction) -> String {
             output.push_str(&format!("    /// {}\n", comment));
         }
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
     output.push_str("}\n\n");
 
-    // Check if result fields support Default
-    let result_default = action.result.iter().all(|f| {
+    // Check if Result field types support Default
+    let result_supports_default = action.result.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
     // Result struct
@@ -1114,7 +1582,7 @@ pub fn action_to_rust(action: &RosAction) -> String {
         "/// Result for ROS action: {}/{}\n",
         action.package, action.name
     ));
-    if result_default {
+    if result_supports_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
         output.push_str("#[derive(Clone, Debug, Serialize, Deserialize)]\n");
@@ -1125,14 +1593,18 @@ pub fn action_to_rust(action: &RosAction) -> String {
             output.push_str(&format!("    /// {}\n", comment));
         }
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
     output.push_str("}\n\n");
 
-    // Check if feedback fields support Default
-    let feedback_default = action.feedback.iter().all(|f| {
+    // Check if Feedback field types support Default
+    let feedback_supports_default = action.feedback.iter().all(|f| {
         let rust_type = ros2_to_rust_type(&f.field_type);
-        type_supports_default(&rust_type)
+        type_supports_default_with_local(&rust_type, local_non_default)
     });
 
     // Feedback struct
@@ -1140,7 +1612,7 @@ pub fn action_to_rust(action: &RosAction) -> String {
         "/// Feedback for ROS action: {}/{}\n",
         action.package, action.name
     ));
-    if feedback_default {
+    if feedback_supports_default {
         output.push_str("#[derive(Clone, Debug, Default, Serialize, Deserialize)]\n");
     } else {
         output.push_str("#[derive(Clone, Debug, Serialize, Deserialize)]\n");
@@ -1151,7 +1623,11 @@ pub fn action_to_rust(action: &RosAction) -> String {
             output.push_str(&format!("    /// {}\n", comment));
         }
         let rust_type = ros2_to_rust_type(&field.field_type);
-        output.push_str(&format!("    pub {}: {},\n", field.name, rust_type));
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            escape_rust_keyword(&field.name),
+            rust_type
+        ));
     }
     output.push_str("}\n");
 
@@ -2111,7 +2587,10 @@ pub fn parse_cmake_dependencies(cmake_path: &Path) -> Vec<ExternalDep> {
     };
 
     let mut deps = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    // Track seen Rust crate names to avoid duplicates when different CMake packages
+    // map to the same crate (e.g., "Eigen", "Eigen3", "eigen" all map to nalgebra)
+    let mut seen_crates = std::collections::HashSet::new();
+    let mut seen_cmake = std::collections::HashSet::new();
 
     // Look for find_package() calls
     for line in content.lines() {
@@ -2133,7 +2612,7 @@ pub fn parse_cmake_dependencies(cmake_path: &Path) -> Vec<ExternalDep> {
                     .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                     .collect();
 
-                if !pkg_name.is_empty() && !seen.contains(&pkg_name) {
+                if !pkg_name.is_empty() && !seen_cmake.contains(&pkg_name.to_lowercase()) {
                     // Skip ROS-specific packages that don't need mapping
                     let ros_packages = [
                         "catkin",
@@ -2149,8 +2628,17 @@ pub fn parse_cmake_dependencies(cmake_path: &Path) -> Vec<ExternalDep> {
                     ];
 
                     if !ros_packages.contains(&pkg_name.to_lowercase().as_str()) {
-                        seen.insert(pkg_name.clone());
-                        deps.push(map_cmake_to_rust_crate(&pkg_name));
+                        seen_cmake.insert(pkg_name.to_lowercase());
+                        let dep = map_cmake_to_rust_crate(&pkg_name);
+                        // Only add if this Rust crate hasn't been seen yet
+                        let crate_key = dep.rust_crate.clone().unwrap_or_default();
+                        if !crate_key.is_empty() && !seen_crates.contains(&crate_key) {
+                            seen_crates.insert(crate_key);
+                            deps.push(dep);
+                        } else if dep.rust_crate.is_none() {
+                            // Always include deps with no rust_crate (just notes)
+                            deps.push(dep);
+                        }
                     }
                 }
             }
@@ -5331,8 +5819,9 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
         "Twist" | "TwistStamped" | "TwistWithCovariance" | "TwistWithCovarianceStamped" => {
             "Twist".to_string()
         }
+        // Pose types - use GenericMessage until HORUS Pose implements LogSummary
         "Pose" | "PoseStamped" | "PoseWithCovariance" | "PoseWithCovarianceStamped" => {
-            "Pose".to_string()
+            "GenericMessage".to_string()
         }
         "Point" | "Point32" => "Point3".to_string(),
         "PointStamped" => "GenericMessage".to_string(), // No PointStamped in HORUS
@@ -5348,8 +5837,8 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
         } // No Acceleration type
         "Inertia" | "InertiaStamped" => "GenericMessage".to_string(), // No Inertia type
         "Polygon" | "PolygonStamped" => "GenericMessage".to_string(), // No Polygon type
-        "Path" => "Path".to_string(),                              // HORUS has Path
-        "PoseArray" => "PoseArray".to_string(),                    // HORUS has PoseArray
+        "Path" => "Path".to_string(),                       // HORUS has Path
+        "PoseArray" => "PoseArray".to_string(),             // HORUS has PoseArray
 
         // Sensor types
         "LaserScan" => "LaserScan".to_string(), // EXISTS
@@ -5371,7 +5860,8 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
 
         // Navigation types
         "Odometry" => "Odometry".to_string(), // EXISTS
-        "OccupancyGrid" | "MapMetaData" => "OccupancyGrid".to_string(), // EXISTS
+        // OccupancyGrid - use GenericMessage until HORUS OccupancyGrid implements required traits
+        "OccupancyGrid" | "MapMetaData" => "GenericMessage".to_string(),
         "GridCells" => "GenericMessage".to_string(), // No GridCells type
 
         // Standard types - map to Rust primitives or GenericMessage
@@ -5382,7 +5872,7 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
         "UInt8" | "UInt16" | "UInt32" | "UInt64" => "u64".to_string(),
         "Float32" | "Float64" => "f64".to_string(),
         "Duration" => "std::time::Duration".to_string(), // Use fully qualified path
-        "Time" => "u64".to_string(),          // Use u64 timestamp (nanoseconds)
+        "Time" => "u64".to_string(),                     // Use u64 timestamp (nanoseconds)
         "Empty" => "()".to_string(),
         "ColorRGBA" => "GenericMessage".to_string(), // No Color type in HORUS
 
@@ -5428,6 +5918,48 @@ fn cpp_msg_to_rust(cpp_type: &str) -> String {
 
         // FeedbackMessage (action feedback wrapper)
         "FeedbackMessage" => "GenericMessage".to_string(),
+
+        // SLAM/Navigation types
+        "LoopClosureEvent" | "NewNodeEvent" | "GraphEdge" | "GraphNode" | "PoseGraph" => {
+            "GenericMessage".to_string()
+        }
+        "TransformArray" => "GenericMessage".to_string(),
+        "RecoveryStatus" => "GenericMessage".to_string(),
+        "NodeStatus" => "GenericMessage".to_string(),
+        "State" => "GenericMessage".to_string(),
+        "CostmapMetaData" => "GenericMessage".to_string(),
+        "VoxelGrid" => "GenericMessage".to_string(),
+        "Goals" => "GenericMessage".to_string(),
+        "NamedLifecycleState" => "GenericMessage".to_string(),
+        "PoseWithCovarianceStamped" => "GenericMessage".to_string(),
+        "CircleObject" | "PolygonObject" => "GenericMessage".to_string(),
+
+        // Velodyne types
+        "VelodynePacket" | "VelodyneScan" => "GenericMessage".to_string(),
+
+        // Controller types
+        "ControllerStatistics" => "GenericMessage".to_string(),
+        "HardwareInterfaceResources" => "GenericMessage".to_string(),
+
+        // Gazebo/Sim types
+        "Contact" | "WorldControl" | "EntityFactory" | "EntityMsg" | "Pose_V" => {
+            "GenericMessage".to_string()
+        }
+
+        // Micro-ROS types
+        "Graph" => "GenericMessage".to_string(),
+
+        // BehaviorTree types
+        "Node" | "TreeNode" | "NodeStatus" | "TreeStatus" => "GenericMessage".to_string(),
+
+        // Float/Int arrays - map to GenericMessage instead of trying to parse
+        "Float64MultiArray" | "Float32MultiArray" | "Int32MultiArray" | "Int64MultiArray" => {
+            "GenericMessage".to_string()
+        }
+        "UInt8MultiArray" | "UInt16MultiArray" | "UInt32MultiArray" | "UInt64MultiArray" => {
+            "GenericMessage".to_string()
+        }
+        "Int8MultiArray" | "Int16MultiArray" | "ByteMultiArray" => "GenericMessage".to_string(),
 
         // Unknown types - convert to PascalCase and add TODO marker
         other => {
@@ -5511,11 +6043,11 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             pub_.field_name, rust_type
         ));
     }
-    // Service servers
+    // Service servers (commented out - TODO: implement)
     for srv in &info.service_servers {
         let rust_type = cpp_msg_to_rust(&srv.srv_type);
         fields.push_str(&format!(
-            "    /// Service server: {} (type: {})\n",
+            "    // Service server: {} (type: {})\n",
             srv.service_name, srv.srv_type
         ));
         fields.push_str(&format!(
@@ -5527,11 +6059,11 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             srv.field_name, rust_type
         ));
     }
-    // Service clients
+    // Service clients (commented out - TODO: implement)
     for srv in &info.service_clients {
         let rust_type = cpp_msg_to_rust(&srv.srv_type);
         fields.push_str(&format!(
-            "    /// Service client: {} (type: {})\n",
+            "    // Service client: {} (type: {})\n",
             srv.service_name, srv.srv_type
         ));
         fields.push_str(&format!(
@@ -5543,10 +6075,10 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             srv.field_name, rust_type
         ));
     }
-    // Action servers
+    // Action servers (commented out - TODO: implement)
     for action in &info.action_servers {
         fields.push_str(&format!(
-            "    /// Action server: {} (type: {})\n",
+            "    // Action server: {} (type: {})\n",
             action.action_name, action.action_type
         ));
         fields.push_str(&format!(
@@ -5554,10 +6086,10 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             action.action_name
         ));
     }
-    // Action clients
+    // Action clients (commented out - TODO: implement)
     for action in &info.action_clients {
         fields.push_str(&format!(
-            "    /// Action client: {} (type: {})\n",
+            "    // Action client: {} (type: {})\n",
             action.action_name, action.action_type
         ));
         fields.push_str(&format!(
@@ -5565,9 +6097,9 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             action.action_name
         ));
     }
-    // TF broadcasters
+    // TF broadcasters (commented out - TODO: implement)
     for tf in &info.tf_broadcasters {
-        fields.push_str(&format!("    /// TF {} broadcaster\n", tf.broadcaster_type));
+        fields.push_str(&format!("    // TF {} broadcaster\n", tf.broadcaster_type));
         fields.push_str(&format!(
             "    // TODO: Implement TF broadcasting (was {})\n",
             tf.broadcaster_type
@@ -5589,11 +6121,7 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             _ => "f64",
         };
         fields.push_str(&format!("    /// Parameter: {}\n", param.name));
-        fields.push_str(&format!(
-            "    pub {}: {},\n",
-            field_name,
-            rust_type
-        ));
+        fields.push_str(&format!("    pub {}: {},\n", field_name, rust_type));
     }
 
     if fields.is_empty() {
@@ -5638,11 +6166,7 @@ pub fn generate_node_skeleton_from_source(node_name: &str, info: &ParsedNodeInfo
             "bool" => "false",
             _ => "Default::default()",
         };
-        init_fields.push_str(&format!(
-            "            {}: {},\n",
-            field_name,
-            default
-        ));
+        init_fields.push_str(&format!("            {}: {},\n", field_name, default));
     }
 
     if init_fields.is_empty() {
@@ -6258,31 +6782,41 @@ pub fn convert_ros2_package(
     fs::create_dir_all(output_dir.join("src/messages")).map_err(HorusError::Io)?;
     fs::create_dir_all(output_dir.join("src/nodes")).map_err(HorusError::Io)?;
 
-    // Convert message files
+    // Two-pass message conversion:
+    // 1. First parse all messages to determine which types support Default
+    // 2. Then generate Rust code with correct Default derivation
     let msg_dir = source_path.join("msg");
+    let mut parsed_messages: Vec<RosMessage> = Vec::new();
+
     if msg_dir.exists() {
         for entry in fs::read_dir(&msg_dir).map_err(HorusError::Io)? {
             let entry = entry.map_err(HorusError::Io)?;
             let path = entry.path();
             if path.extension().map(|e| e == "msg").unwrap_or(false) {
                 let msg = parse_msg_file(&path, &package.name)?;
-
-                // Collect message dependencies from fields
-                collect_message_deps(&msg.fields, &msg.name, &mut result.message_deps);
-
-                let rust_code = msg_to_rust(&msg);
-
-                let output_file =
-                    output_dir.join(format!("src/messages/{}.rs", to_snake_case(&msg.name)));
-                fs::write(&output_file, &rust_code).map_err(HorusError::Io)?;
-
-                result.messages_converted += 1;
-                result.files_created.push(output_file);
+                parsed_messages.push(msg);
             }
         }
     }
 
-    // Convert service files
+    // Build set of types that don't support Default (including transitive dependencies)
+    let non_default_types = build_non_default_types(&parsed_messages);
+
+    // Now generate Rust code with correct Default derivation
+    for msg in &parsed_messages {
+        // Collect message dependencies from fields
+        collect_message_deps(&msg.fields, &msg.name, &mut result.message_deps);
+
+        let rust_code = msg_to_rust_with_non_default(msg, &non_default_types);
+
+        let output_file = output_dir.join(format!("src/messages/{}.rs", to_snake_case(&msg.name)));
+        fs::write(&output_file, &rust_code).map_err(HorusError::Io)?;
+
+        result.messages_converted += 1;
+        result.files_created.push(output_file);
+    }
+
+    // Convert service files (also use the non_default_types set)
     let srv_dir = source_path.join("srv");
     if srv_dir.exists() {
         for entry in fs::read_dir(&srv_dir).map_err(HorusError::Io)? {
@@ -6303,7 +6837,7 @@ pub fn convert_ros2_package(
                     &mut result.message_deps,
                 );
 
-                let rust_code = srv_to_rust(&srv);
+                let rust_code = srv_to_rust_with_non_default(&srv, &non_default_types);
 
                 let output_file =
                     output_dir.join(format!("src/messages/{}_srv.rs", to_snake_case(&srv.name)));
@@ -6315,7 +6849,7 @@ pub fn convert_ros2_package(
         }
     }
 
-    // Convert action files
+    // Convert action files (also use the non_default_types set)
     let action_dir = source_path.join("action");
     if action_dir.exists() {
         for entry in fs::read_dir(&action_dir).map_err(HorusError::Io)? {
@@ -6323,7 +6857,7 @@ pub fn convert_ros2_package(
             let path = entry.path();
             if path.extension().map(|e| e == "action").unwrap_or(false) {
                 let action = parse_action_file(&path, &package.name)?;
-                let rust_code = action_to_rust(&action);
+                let rust_code = action_to_rust_with_non_default(&action, &non_default_types);
 
                 let output_file = output_dir.join(format!(
                     "src/messages/{}_action.rs",

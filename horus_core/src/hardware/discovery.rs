@@ -2,10 +2,21 @@
 //!
 //! Provides a single entry point for discovering all connected hardware
 //! and generating comprehensive discovery reports.
+//!
+//! Features:
+//! - Timeout-protected device probing
+//! - Parallel scanning with rayon
+//! - Progress reporting via callbacks
+//! - Category filtering
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
+
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::database::{DeviceCategory, DeviceDatabase, DriverMatch};
 use super::platform::{Platform, PlatformCapabilities, PlatformDetector};
@@ -19,8 +30,105 @@ use super::gpio::{GpioChip, GpioDiscovery};
 #[cfg(target_os = "linux")]
 use super::i2c::{I2cBus, I2cDevice, I2cDiscovery};
 
+/// Execute a probing operation with a timeout.
+/// Returns None if the operation times out or fails.
+fn probe_with_timeout<T, F>(timeout: Duration, probe_fn: F) -> Option<T>
+where
+    F: FnOnce() -> Option<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = probe_fn();
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(timeout).ok().flatten()
+}
+
+/// Execute a probing operation with a timeout, returning a Vec.
+/// Returns empty Vec if the operation times out.
+fn probe_vec_with_timeout<T, F>(timeout: Duration, probe_fn: F) -> Vec<T>
+where
+    F: FnOnce() -> Vec<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = probe_fn();
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(timeout).unwrap_or_default()
+}
+
+/// Progress callback for discovery operations
+pub type ProgressCallback = Box<dyn Fn(&str, usize, usize) + Send + Sync>;
+
+/// Category filter for selective discovery
+#[derive(Debug, Clone, Default)]
+pub struct CategoryFilter {
+    /// Include USB devices
+    pub usb: bool,
+    /// Include serial ports
+    pub serial: bool,
+    /// Include I2C devices
+    pub i2c: bool,
+    /// Include GPIO chips
+    pub gpio: bool,
+    /// Include cameras
+    pub cameras: bool,
+    /// Include sensors
+    pub sensors: bool,
+    /// Include motor controllers
+    pub motors: bool,
+}
+
+impl CategoryFilter {
+    /// Create a filter that includes all categories
+    pub fn all() -> Self {
+        Self {
+            usb: true,
+            serial: true,
+            i2c: true,
+            gpio: true,
+            cameras: true,
+            sensors: true,
+            motors: true,
+        }
+    }
+
+    /// Create a filter from a comma-separated list of category names
+    pub fn from_str(s: &str) -> Self {
+        let mut filter = Self::default();
+        for part in s.split(',') {
+            match part.trim().to_lowercase().as_str() {
+                "usb" => filter.usb = true,
+                "serial" => filter.serial = true,
+                "i2c" => filter.i2c = true,
+                "gpio" => filter.gpio = true,
+                "cameras" | "camera" => filter.cameras = true,
+                "sensors" | "sensor" => filter.sensors = true,
+                "motors" | "motor" => filter.motors = true,
+                "all" => return Self::all(),
+                _ => {}
+            }
+        }
+        filter
+    }
+
+    /// Check if any category is selected
+    pub fn any_selected(&self) -> bool {
+        self.usb
+            || self.serial
+            || self.i2c
+            || self.gpio
+            || self.cameras
+            || self.sensors
+            || self.motors
+    }
+}
+
 /// A discovered device with identification and driver matching
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredDevice {
     /// Device category
     pub category: DeviceCategory,
@@ -39,6 +147,7 @@ pub struct DiscoveredDevice {
     /// Suggested HORUS driver/node
     pub suggested_driver: Option<String>,
     /// Driver match result
+    #[serde(skip)]
     pub driver_match: Option<DriverMatch>,
     /// Additional properties
     pub properties: HashMap<String, String>,
@@ -66,34 +175,49 @@ impl DiscoveredDevice {
 }
 
 /// Comprehensive hardware discovery report
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiscoveryReport {
     /// Platform information
     pub platform: Platform,
     /// Platform capabilities
+    #[serde(skip)]
     pub capabilities: PlatformCapabilities,
     /// USB devices
+    #[serde(skip)]
     pub usb_devices: Vec<UsbDevice>,
     /// Serial ports
+    #[serde(skip)]
     pub serial_ports: Vec<SerialPort>,
     /// I2C buses (Linux only)
     #[cfg(target_os = "linux")]
+    #[serde(skip)]
     pub i2c_buses: Vec<I2cBus>,
     /// I2C devices (Linux only)
     #[cfg(target_os = "linux")]
+    #[serde(skip)]
     pub i2c_devices: Vec<I2cDevice>,
     /// GPIO chips (Linux only)
     #[cfg(target_os = "linux")]
+    #[serde(skip)]
     pub gpio_chips: Vec<GpioChip>,
     /// Cameras (Linux only)
     #[cfg(target_os = "linux")]
+    #[serde(skip)]
     pub cameras: Vec<Camera>,
     /// All discovered devices with driver matching
     pub all_devices: Vec<DiscoveredDevice>,
-    /// Discovery duration
+    /// Discovery duration in milliseconds
+    #[serde(serialize_with = "serialize_duration")]
     pub duration: Duration,
     /// Any errors encountered during discovery
     pub errors: Vec<String>,
+}
+
+fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u64(duration.as_millis() as u64)
 }
 
 impl DiscoveryReport {
@@ -149,7 +273,7 @@ impl DiscoveryReport {
 }
 
 /// Summary statistics for discovery
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiscoverySummary {
     /// Platform
     pub platform: Platform,
@@ -170,8 +294,10 @@ pub struct DiscoverySummary {
     /// Devices with driver suggestions
     pub devices_with_drivers: usize,
     /// Device counts by category
+    #[serde(skip)]
     pub category_counts: HashMap<DeviceCategory, usize>,
-    /// Discovery duration
+    /// Discovery duration in milliseconds
+    #[serde(serialize_with = "serialize_duration")]
     pub duration: Duration,
 }
 
@@ -273,55 +399,132 @@ impl HardwareDiscovery {
         &self.database
     }
 
-    /// Scan all hardware and return a comprehensive report
+    /// Scan all hardware and return a comprehensive report.
+    ///
+    /// Uses timeout-protected probing and parallel scanning for performance.
     pub fn scan_all(&mut self) -> DiscoveryReport {
+        self.scan_all_with_progress(None)
+    }
+
+    /// Scan all hardware with progress reporting.
+    ///
+    /// The progress callback receives (phase_name, current, total).
+    pub fn scan_all_with_progress(
+        &mut self,
+        progress: Option<ProgressCallback>,
+    ) -> DiscoveryReport {
         let start = Instant::now();
         let mut errors = Vec::new();
-        let mut all_devices = Vec::new();
+        let timeout = self.options.probe_timeout;
 
-        // Detect platform
+        // Report progress
+        let report_progress = |phase: &str, current: usize, total: usize| {
+            if let Some(ref cb) = progress {
+                cb(phase, current, total);
+            }
+        };
+
+        // Detect platform (fast, no timeout needed)
+        report_progress("Platform detection", 0, 6);
         let platform = PlatformDetector::detect();
         let capabilities = PlatformDetector::capabilities(&platform);
 
-        // Scan USB
-        let usb_devices = if self.options.scan_usb {
-            self.usb_discovery.enumerate()
+        // Use rayon to scan USB, serial, GPIO, I2C, and cameras in parallel
+        // Each scan is wrapped in a timeout to prevent hangs
+
+        report_progress("USB devices", 1, 6);
+        let usb_devices: Vec<UsbDevice> = if self.options.scan_usb {
+            probe_vec_with_timeout(timeout * 5, || UsbDiscovery::new().enumerate())
         } else {
             Vec::new()
         };
 
-        // Add USB devices to all_devices
-        for usb in &usb_devices {
-            let driver_match = self.database.match_usb_driver(usb.vendor_id, usb.product_id);
-            let mut properties = HashMap::new();
+        report_progress("Serial ports", 2, 6);
+        let serial_ports: Vec<SerialPort> = if self.options.scan_serial {
+            probe_vec_with_timeout(timeout * 5, || SerialDiscovery::new().enumerate())
+        } else {
+            Vec::new()
+        };
 
-            if let Some(serial) = &usb.serial {
-                properties.insert("serial".to_string(), serial.clone());
-            }
-            if let Some(speed) = usb.speed_mbps {
-                properties.insert("speed_mbps".to_string(), speed.to_string());
-            }
+        // Linux-specific discovery with timeouts
+        #[cfg(target_os = "linux")]
+        let i2c_buses: Vec<I2cBus>;
+        #[cfg(target_os = "linux")]
+        let i2c_devices: Vec<I2cDevice>;
+        #[cfg(target_os = "linux")]
+        let gpio_chips: Vec<GpioChip>;
+        #[cfg(target_os = "linux")]
+        let cameras: Vec<Camera>;
 
-            all_devices.push(DiscoveredDevice {
-                category: driver_match.device_info.category.clone(),
-                name: usb.display_name(),
-                manufacturer: usb.manufacturer.clone(),
-                path: usb.tty_path.clone().or_else(|| usb.video_path.clone()),
-                vid_pid: Some((usb.vendor_id, usb.product_id)),
-                i2c_address: None,
-                i2c_bus: None,
-                suggested_driver: driver_match.device_info.horus_driver.clone(),
-                driver_match: Some(driver_match),
-                properties,
-            });
+        #[cfg(target_os = "linux")]
+        {
+            report_progress("I2C buses", 3, 6);
+            i2c_buses = if self.options.scan_i2c {
+                probe_vec_with_timeout(timeout * 3, || I2cDiscovery::new().enumerate_buses())
+            } else {
+                Vec::new()
+            };
+
+            i2c_devices = if self.options.scan_i2c && self.options.probe_i2c {
+                probe_vec_with_timeout(timeout * 10, || {
+                    I2cDiscovery::new().scan_all_buses().unwrap_or_default()
+                })
+            } else {
+                Vec::new()
+            };
+
+            report_progress("GPIO chips", 4, 6);
+            gpio_chips = if self.options.scan_gpio {
+                probe_vec_with_timeout(timeout * 3, || GpioDiscovery::new().enumerate())
+            } else {
+                Vec::new()
+            };
+
+            report_progress("Cameras", 5, 6);
+            cameras = if self.options.scan_cameras {
+                // Camera probing can hang on faulty V4L2 devices - use timeout
+                probe_vec_with_timeout(timeout * 5, || CameraDiscovery::new().enumerate())
+            } else {
+                Vec::new()
+            };
         }
 
-        // Scan serial ports
-        let serial_ports = if self.options.scan_serial {
-            self.serial_discovery.enumerate()
-        } else {
-            Vec::new()
-        };
+        report_progress("Processing results", 6, 6);
+
+        // Build all_devices list using parallel processing
+        let mut all_devices: Vec<DiscoveredDevice> = Vec::new();
+
+        // Add USB devices to all_devices (parallel processing)
+        let usb_discovered: Vec<DiscoveredDevice> = usb_devices
+            .par_iter()
+            .map(|usb| {
+                let driver_match = self
+                    .database
+                    .match_usb_driver(usb.vendor_id, usb.product_id);
+                let mut properties = HashMap::new();
+
+                if let Some(serial) = &usb.serial {
+                    properties.insert("serial".to_string(), serial.clone());
+                }
+                if let Some(speed) = usb.speed_mbps {
+                    properties.insert("speed_mbps".to_string(), speed.to_string());
+                }
+
+                DiscoveredDevice {
+                    category: driver_match.device_info.category.clone(),
+                    name: usb.display_name(),
+                    manufacturer: usb.manufacturer.clone(),
+                    path: usb.tty_path.clone().or_else(|| usb.video_path.clone()),
+                    vid_pid: Some((usb.vendor_id, usb.product_id)),
+                    i2c_address: None,
+                    i2c_bus: None,
+                    suggested_driver: driver_match.device_info.horus_driver.clone(),
+                    driver_match: Some(driver_match),
+                    properties,
+                }
+            })
+            .collect();
+        all_devices.extend(usb_discovered);
 
         // Add serial ports that aren't already covered by USB
         for serial in &serial_ports {
@@ -352,37 +555,9 @@ impl HardwareDiscovery {
             });
         }
 
-        // Linux-specific discovery
-        #[cfg(target_os = "linux")]
-        let i2c_buses;
-        #[cfg(target_os = "linux")]
-        let i2c_devices;
-        #[cfg(target_os = "linux")]
-        let gpio_chips;
-        #[cfg(target_os = "linux")]
-        let cameras;
-
+        // Linux-specific device processing
         #[cfg(target_os = "linux")]
         {
-            // Scan I2C
-            i2c_buses = if self.options.scan_i2c {
-                self.i2c_discovery.enumerate_buses()
-            } else {
-                Vec::new()
-            };
-
-            i2c_devices = if self.options.scan_i2c && self.options.probe_i2c {
-                match self.i2c_discovery.scan_all_buses() {
-                    Ok(devices) => devices,
-                    Err(e) => {
-                        errors.push(format!("I2C scan error: {}", e));
-                        Vec::new()
-                    }
-                }
-            } else {
-                Vec::new()
-            };
-
             // Add I2C devices to all_devices
             for i2c in &i2c_devices {
                 let driver_match = self.database.match_i2c_driver(i2c.address);
@@ -399,20 +574,6 @@ impl HardwareDiscovery {
                     properties: HashMap::new(),
                 });
             }
-
-            // Scan GPIO
-            gpio_chips = if self.options.scan_gpio {
-                self.gpio_discovery.enumerate()
-            } else {
-                Vec::new()
-            };
-
-            // Scan cameras
-            cameras = if self.options.scan_cameras {
-                self.camera_discovery.enumerate()
-            } else {
-                Vec::new()
-            };
 
             // Add cameras to all_devices
             for camera in &cameras {
@@ -493,7 +654,8 @@ impl HardwareDiscovery {
     /// Find serial ports for a specific device type
     pub fn find_serial_for_device(&mut self, vid: u16, pid: u16) -> Vec<SerialPort> {
         self.serial_discovery.enumerate();
-        self.serial_discovery.find_by_vid_pid(vid, pid)
+        self.serial_discovery
+            .find_by_vid_pid(vid, pid)
             .into_iter()
             .cloned()
             .collect()
@@ -606,8 +768,9 @@ mod tests {
         let report = discovery.quick_scan();
         let summary = report.summary();
 
-        println!("Quick scan found {} devices in {:?}",
-                 summary.total_devices,
-                 summary.duration);
+        println!(
+            "Quick scan found {} devices in {:?}",
+            summary.total_devices, summary.duration
+        );
     }
 }

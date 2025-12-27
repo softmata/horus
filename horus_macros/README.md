@@ -45,8 +45,8 @@ node! {
 
         // Subscribers: data flowing INTO this node
         sub {
-            sensor_data: SensorData <- "sensors/lidar",
-            user_command: Command <- "user/command",
+            sensor_data: SensorData -> "sensors/lidar",
+            user_command: Command -> "user/command",
         }
 
         // Internal state (optional)
@@ -133,7 +133,7 @@ node! {
 | Section | Required | Syntax | Purpose |
 |---------|----------|--------|---------|
 | `pub {}` | No | `name: Type -> "topic"` | Publishers - data outputs |
-| `sub {}` | No | `name: Type <- "topic"` | Subscribers - data inputs |
+| `sub {}` | No | `name: Type -> "topic"` | Subscribers - data inputs |
 | `data {}` | No | `name: Type = default` | Internal state fields |
 | `tick {}` | **YES** | `tick(ctx) { ... }` | Main execution loop |
 | `init(ctx) {}` | No | `init(ctx) { ... }` | Initialization logic |
@@ -285,7 +285,7 @@ impl Default for MyNode {
 node! {
     MyNode {
         pub { pub_topic: String -> "output" }
-        sub { sub_topic: i32 <- "input" }
+        sub { sub_topic: i32 -> "input" }
         data { counter: u32 = 0 }
         tick(ctx) {
             // Implementation

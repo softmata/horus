@@ -614,7 +614,7 @@ horus run my_controller.rs
 node! {
     NavigationController {
         pub { cmd_vel: CmdVel -> "cmd_vel" }
-        sub { goal: Goal <- "navigation/goal" }
+        sub { goal: Goal -> "navigation/goal" }
 
         tick(ctx) {
             let velocity = self.compute_velocity();

@@ -3,10 +3,11 @@
 //! Maps USB VID/PID pairs and I2C addresses to known devices,
 //! providing device identification and driver matching.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Device category
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DeviceCategory {
     /// Microcontroller/development board
     Microcontroller,
@@ -287,176 +288,1007 @@ impl DeviceDatabase {
 
     fn populate_usb_devices(&mut self) {
         // Arduino devices
-        self.add_usb(0x2341, 0x0043, "Arduino Uno", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2341, 0x0042, "Arduino Mega 2560", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2341, 0x8036, "Arduino Leonardo", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2341, 0x003D, "Arduino Due (Programming)", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2341, 0x003E, "Arduino Due (Native)", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2341, 0x8053, "Arduino Nano Every", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
+        self.add_usb(
+            0x2341,
+            0x0043,
+            "Arduino Uno",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2341,
+            0x0042,
+            "Arduino Mega 2560",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2341,
+            0x8036,
+            "Arduino Leonardo",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2341,
+            0x003D,
+            "Arduino Due (Programming)",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2341,
+            0x003E,
+            "Arduino Due (Native)",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2341,
+            0x8053,
+            "Arduino Nano Every",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
 
         // Arduino alternate VID
-        self.add_usb(0x2A03, 0x0043, "Arduino Uno (clone)", "Arduino", DeviceCategory::Microcontroller, Some("Serial"), true);
+        self.add_usb(
+            0x2A03,
+            0x0043,
+            "Arduino Uno (clone)",
+            "Arduino",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
 
         // ESP32 devices
-        self.add_usb(0x303A, 0x0002, "ESP32-S2", "Espressif", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x303A, 0x1001, "ESP32-S3", "Espressif", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x303A, 0x80D1, "ESP32-C3", "Espressif", DeviceCategory::Microcontroller, Some("Serial"), true);
+        self.add_usb(
+            0x303A,
+            0x0002,
+            "ESP32-S2",
+            "Espressif",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x303A,
+            0x1001,
+            "ESP32-S3",
+            "Espressif",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x303A,
+            0x80D1,
+            "ESP32-C3",
+            "Espressif",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
 
         // STM32 devices
-        self.add_usb(0x0483, 0x5740, "STM32 Virtual COM Port", "STMicroelectronics", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x0483, 0xDF11, "STM32 Bootloader", "STMicroelectronics", DeviceCategory::Microcontroller, None, true);
+        self.add_usb(
+            0x0483,
+            0x5740,
+            "STM32 Virtual COM Port",
+            "STMicroelectronics",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x0483,
+            0xDF11,
+            "STM32 Bootloader",
+            "STMicroelectronics",
+            DeviceCategory::Microcontroller,
+            None,
+            true,
+        );
 
         // Teensy
-        self.add_usb(0x16C0, 0x0483, "Teensy", "PJRC", DeviceCategory::Microcontroller, Some("Serial"), true);
+        self.add_usb(
+            0x16C0,
+            0x0483,
+            "Teensy",
+            "PJRC",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
 
         // Raspberry Pi Pico
-        self.add_usb(0x2E8A, 0x000A, "Raspberry Pi Pico", "Raspberry Pi", DeviceCategory::Microcontroller, Some("Serial"), true);
-        self.add_usb(0x2E8A, 0x0005, "Raspberry Pi Pico Bootloader", "Raspberry Pi", DeviceCategory::Microcontroller, None, true);
+        self.add_usb(
+            0x2E8A,
+            0x000A,
+            "Raspberry Pi Pico",
+            "Raspberry Pi",
+            DeviceCategory::Microcontroller,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x2E8A,
+            0x0005,
+            "Raspberry Pi Pico Bootloader",
+            "Raspberry Pi",
+            DeviceCategory::Microcontroller,
+            None,
+            true,
+        );
 
         // Serial adapters
-        self.add_usb(0x0403, 0x6001, "FT232R", "FTDI", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x0403, 0x6010, "FT2232D", "FTDI", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x0403, 0x6011, "FT4232H", "FTDI", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x0403, 0x6014, "FT232H", "FTDI", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x0403, 0x6015, "FT231X", "FTDI", DeviceCategory::SerialAdapter, Some("Serial"), true);
+        self.add_usb(
+            0x0403,
+            0x6001,
+            "FT232R",
+            "FTDI",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x0403,
+            0x6010,
+            "FT2232D",
+            "FTDI",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x0403,
+            0x6011,
+            "FT4232H",
+            "FTDI",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x0403,
+            0x6014,
+            "FT232H",
+            "FTDI",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x0403,
+            0x6015,
+            "FT231X",
+            "FTDI",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
 
-        self.add_usb(0x10C4, 0xEA60, "CP2102/CP2109", "Silicon Labs", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x10C4, 0xEA61, "CP2104", "Silicon Labs", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x10C4, 0xEA70, "CP2105", "Silicon Labs", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x10C4, 0xEA80, "CP2108", "Silicon Labs", DeviceCategory::SerialAdapter, Some("Serial"), true);
+        self.add_usb(
+            0x10C4,
+            0xEA60,
+            "CP2102/CP2109",
+            "Silicon Labs",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x10C4,
+            0xEA61,
+            "CP2104",
+            "Silicon Labs",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x10C4,
+            0xEA70,
+            "CP2105",
+            "Silicon Labs",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x10C4,
+            0xEA80,
+            "CP2108",
+            "Silicon Labs",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
 
-        self.add_usb(0x1A86, 0x7523, "CH340", "WCH", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x1A86, 0x5523, "CH341", "WCH", DeviceCategory::SerialAdapter, Some("Serial"), true);
+        self.add_usb(
+            0x1A86,
+            0x7523,
+            "CH340",
+            "WCH",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x1A86,
+            0x5523,
+            "CH341",
+            "WCH",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
 
-        self.add_usb(0x067B, 0x2303, "PL2303", "Prolific", DeviceCategory::SerialAdapter, Some("Serial"), true);
-        self.add_usb(0x067B, 0x23A3, "PL2303HXD", "Prolific", DeviceCategory::SerialAdapter, Some("Serial"), true);
+        self.add_usb(
+            0x067B,
+            0x2303,
+            "PL2303",
+            "Prolific",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
+        self.add_usb(
+            0x067B,
+            0x23A3,
+            "PL2303HXD",
+            "Prolific",
+            DeviceCategory::SerialAdapter,
+            Some("Serial"),
+            true,
+        );
 
         // Motor controllers
-        self.add_usb(0x1209, 0x0D32, "ODrive", "ODrive Robotics", DeviceCategory::MotorController, Some("DcMotor"), true);
-        self.add_usb(0x1FFB, 0x00B3, "Pololu Jrk G2", "Pololu", DeviceCategory::MotorController, Some("DcMotor"), true);
-        self.add_usb(0x1FFB, 0x0089, "Pololu Tic T825", "Pololu", DeviceCategory::MotorController, Some("DcMotor"), true);
+        self.add_usb(
+            0x1209,
+            0x0D32,
+            "ODrive",
+            "ODrive Robotics",
+            DeviceCategory::MotorController,
+            Some("DcMotor"),
+            true,
+        );
+        self.add_usb(
+            0x1FFB,
+            0x00B3,
+            "Pololu Jrk G2",
+            "Pololu",
+            DeviceCategory::MotorController,
+            Some("DcMotor"),
+            true,
+        );
+        self.add_usb(
+            0x1FFB,
+            0x0089,
+            "Pololu Tic T825",
+            "Pololu",
+            DeviceCategory::MotorController,
+            Some("DcMotor"),
+            true,
+        );
 
         // Servo controllers
-        self.add_usb(0x1FFB, 0x0089, "Pololu Maestro 6", "Pololu", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_usb(0x1FFB, 0x008A, "Pololu Maestro 12", "Pololu", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_usb(0x1FFB, 0x008B, "Pololu Maestro 18", "Pololu", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_usb(0x1FFB, 0x008C, "Pololu Maestro 24", "Pololu", DeviceCategory::ServoController, Some("ServoController"), true);
+        self.add_usb(
+            0x1FFB,
+            0x0089,
+            "Pololu Maestro 6",
+            "Pololu",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_usb(
+            0x1FFB,
+            0x008A,
+            "Pololu Maestro 12",
+            "Pololu",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_usb(
+            0x1FFB,
+            0x008B,
+            "Pololu Maestro 18",
+            "Pololu",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_usb(
+            0x1FFB,
+            0x008C,
+            "Pololu Maestro 24",
+            "Pololu",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
 
         // LiDAR sensors
         // Note: Many LiDARs use generic serial chips, so VID/PID may not identify them uniquely
         // RPLidar uses CP2102 (0x10C4:0xEA60) - handled in config hints
 
         // Depth cameras
-        self.add_usb(0x8086, 0x0AD1, "Intel RealSense D400", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0AD2, "Intel RealSense D410", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0AD3, "Intel RealSense D415", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0AD4, "Intel RealSense D430", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0AD5, "Intel RealSense D435", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0AD6, "Intel RealSense D435i", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0B3A, "Intel RealSense D455", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0B07, "Intel RealSense D405", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x8086, 0x0B4D, "Intel RealSense L515", "Intel", DeviceCategory::DepthCamera, Some("Camera"), true);
+        self.add_usb(
+            0x8086,
+            0x0AD1,
+            "Intel RealSense D400",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0AD2,
+            "Intel RealSense D410",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0AD3,
+            "Intel RealSense D415",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0AD4,
+            "Intel RealSense D430",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0AD5,
+            "Intel RealSense D435",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0AD6,
+            "Intel RealSense D435i",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0B3A,
+            "Intel RealSense D455",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0B07,
+            "Intel RealSense D405",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x8086,
+            0x0B4D,
+            "Intel RealSense L515",
+            "Intel",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
 
-        self.add_usb(0x2BC5, 0x0401, "Orbbec Astra", "Orbbec", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x2BC5, 0x0402, "Orbbec Astra Pro", "Orbbec", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x2BC5, 0x0636, "Orbbec Femto", "Orbbec", DeviceCategory::DepthCamera, Some("Camera"), true);
+        self.add_usb(
+            0x2BC5,
+            0x0401,
+            "Orbbec Astra",
+            "Orbbec",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x2BC5,
+            0x0402,
+            "Orbbec Astra Pro",
+            "Orbbec",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x2BC5,
+            0x0636,
+            "Orbbec Femto",
+            "Orbbec",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
 
-        self.add_usb(0x2B03, 0xF580, "Stereolabs ZED", "Stereolabs", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x2B03, 0xF582, "Stereolabs ZED 2", "Stereolabs", DeviceCategory::DepthCamera, Some("Camera"), true);
-        self.add_usb(0x2B03, 0xF680, "Stereolabs ZED 2i", "Stereolabs", DeviceCategory::DepthCamera, Some("Camera"), true);
+        self.add_usb(
+            0x2B03,
+            0xF580,
+            "Stereolabs ZED",
+            "Stereolabs",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x2B03,
+            0xF582,
+            "Stereolabs ZED 2",
+            "Stereolabs",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
+        self.add_usb(
+            0x2B03,
+            0xF680,
+            "Stereolabs ZED 2i",
+            "Stereolabs",
+            DeviceCategory::DepthCamera,
+            Some("Camera"),
+            true,
+        );
 
         // GPS receivers
-        self.add_usb(0x1546, 0x01A5, "u-blox 5", "u-blox", DeviceCategory::Gps, Some("Gps"), true);
-        self.add_usb(0x1546, 0x01A6, "u-blox 6", "u-blox", DeviceCategory::Gps, Some("Gps"), true);
-        self.add_usb(0x1546, 0x01A7, "u-blox 7", "u-blox", DeviceCategory::Gps, Some("Gps"), true);
-        self.add_usb(0x1546, 0x01A8, "u-blox 8", "u-blox", DeviceCategory::Gps, Some("Gps"), true);
-        self.add_usb(0x1546, 0x01A9, "u-blox 9", "u-blox", DeviceCategory::Gps, Some("Gps"), true);
+        self.add_usb(
+            0x1546,
+            0x01A5,
+            "u-blox 5",
+            "u-blox",
+            DeviceCategory::Gps,
+            Some("Gps"),
+            true,
+        );
+        self.add_usb(
+            0x1546,
+            0x01A6,
+            "u-blox 6",
+            "u-blox",
+            DeviceCategory::Gps,
+            Some("Gps"),
+            true,
+        );
+        self.add_usb(
+            0x1546,
+            0x01A7,
+            "u-blox 7",
+            "u-blox",
+            DeviceCategory::Gps,
+            Some("Gps"),
+            true,
+        );
+        self.add_usb(
+            0x1546,
+            0x01A8,
+            "u-blox 8",
+            "u-blox",
+            DeviceCategory::Gps,
+            Some("Gps"),
+            true,
+        );
+        self.add_usb(
+            0x1546,
+            0x01A9,
+            "u-blox 9",
+            "u-blox",
+            DeviceCategory::Gps,
+            Some("Gps"),
+            true,
+        );
 
         // CAN adapters
-        self.add_usb(0x0C72, 0x000C, "PEAK PCAN-USB", "Peak Systems", DeviceCategory::CanAdapter, Some("CanBus"), true);
-        self.add_usb(0x0C72, 0x0014, "PEAK PCAN-USB Pro", "Peak Systems", DeviceCategory::CanAdapter, Some("CanBus"), true);
-        self.add_usb(0x0BFD, 0x0120, "Kvaser Leaf Light v2", "Kvaser", DeviceCategory::CanAdapter, Some("CanBus"), true);
-        self.add_usb(0x1D50, 0x606F, "CANable/candlelight", "OpenMoko", DeviceCategory::CanAdapter, Some("CanBus"), true);
-        self.add_usb(0x1D50, 0x60CA, "CANABLE 2.0", "CANABLE", DeviceCategory::CanAdapter, Some("CanBus"), true);
+        self.add_usb(
+            0x0C72,
+            0x000C,
+            "PEAK PCAN-USB",
+            "Peak Systems",
+            DeviceCategory::CanAdapter,
+            Some("CanBus"),
+            true,
+        );
+        self.add_usb(
+            0x0C72,
+            0x0014,
+            "PEAK PCAN-USB Pro",
+            "Peak Systems",
+            DeviceCategory::CanAdapter,
+            Some("CanBus"),
+            true,
+        );
+        self.add_usb(
+            0x0BFD,
+            0x0120,
+            "Kvaser Leaf Light v2",
+            "Kvaser",
+            DeviceCategory::CanAdapter,
+            Some("CanBus"),
+            true,
+        );
+        self.add_usb(
+            0x1D50,
+            0x606F,
+            "CANable/candlelight",
+            "OpenMoko",
+            DeviceCategory::CanAdapter,
+            Some("CanBus"),
+            true,
+        );
+        self.add_usb(
+            0x1D50,
+            0x60CA,
+            "CANABLE 2.0",
+            "CANABLE",
+            DeviceCategory::CanAdapter,
+            Some("CanBus"),
+            true,
+        );
 
         // Joysticks/Gamepads
-        self.add_usb(0x045E, 0x028E, "Xbox 360 Controller", "Microsoft", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x045E, 0x02D1, "Xbox One Controller", "Microsoft", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x054C, 0x05C4, "DualShock 4", "Sony", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x054C, 0x09CC, "DualShock 4 v2", "Sony", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x054C, 0x0CE6, "DualSense", "Sony", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x046D, 0xC21D, "Logitech F310", "Logitech", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x046D, 0xC21E, "Logitech F510", "Logitech", DeviceCategory::Joystick, Some("Joystick"), true);
-        self.add_usb(0x046D, 0xC21F, "Logitech F710", "Logitech", DeviceCategory::Joystick, Some("Joystick"), true);
+        self.add_usb(
+            0x045E,
+            0x028E,
+            "Xbox 360 Controller",
+            "Microsoft",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x045E,
+            0x02D1,
+            "Xbox One Controller",
+            "Microsoft",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x054C,
+            0x05C4,
+            "DualShock 4",
+            "Sony",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x054C,
+            0x09CC,
+            "DualShock 4 v2",
+            "Sony",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x054C,
+            0x0CE6,
+            "DualSense",
+            "Sony",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x046D,
+            0xC21D,
+            "Logitech F310",
+            "Logitech",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x046D,
+            0xC21E,
+            "Logitech F510",
+            "Logitech",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
+        self.add_usb(
+            0x046D,
+            0xC21F,
+            "Logitech F710",
+            "Logitech",
+            DeviceCategory::Joystick,
+            Some("Joystick"),
+            true,
+        );
     }
 
     fn populate_i2c_devices(&mut self) {
         // IMUs
-        self.add_i2c(0x68, "MPU-6050/6500/9250", "InvenSense", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x69, "MPU-6050/6500/9250 (alt)", "InvenSense", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x6A, "LSM6DS3", "STMicroelectronics", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x6B, "LSM6DS3 (alt)", "STMicroelectronics", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x28, "BNO055", "Bosch", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x29, "BNO055 (alt)", "Bosch", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x4A, "BNO085/BNO086", "Bosch", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x4B, "BNO085/BNO086 (alt)", "Bosch", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x1C, "LIS3DH", "STMicroelectronics", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x1D, "ADXL345", "Analog Devices", DeviceCategory::Imu, Some("Imu"), true);
+        self.add_i2c(
+            0x68,
+            "MPU-6050/6500/9250",
+            "InvenSense",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x69,
+            "MPU-6050/6500/9250 (alt)",
+            "InvenSense",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x6A,
+            "LSM6DS3",
+            "STMicroelectronics",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x6B,
+            "LSM6DS3 (alt)",
+            "STMicroelectronics",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x28,
+            "BNO055",
+            "Bosch",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x29,
+            "BNO055 (alt)",
+            "Bosch",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x4A,
+            "BNO085/BNO086",
+            "Bosch",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x4B,
+            "BNO085/BNO086 (alt)",
+            "Bosch",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x1C,
+            "LIS3DH",
+            "STMicroelectronics",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x1D,
+            "ADXL345",
+            "Analog Devices",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
 
         // Magnetometers
-        self.add_i2c(0x0C, "AK8963", "AKM", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x0D, "QMC5883L", "QST", DeviceCategory::Imu, Some("Imu"), true);
-        self.add_i2c(0x1E, "HMC5883L", "Honeywell", DeviceCategory::Imu, Some("Imu"), true);
+        self.add_i2c(
+            0x0C,
+            "AK8963",
+            "AKM",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x0D,
+            "QMC5883L",
+            "QST",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
+        self.add_i2c(
+            0x1E,
+            "HMC5883L",
+            "Honeywell",
+            DeviceCategory::Imu,
+            Some("Imu"),
+            true,
+        );
 
         // Pressure/altitude sensors
-        self.add_i2c(0x76, "BMP280/BME280", "Bosch", DeviceCategory::Other, None, true);
-        self.add_i2c(0x77, "BMP280/BME280 (alt)", "Bosch", DeviceCategory::Other, None, true);
-        self.add_i2c(0x5C, "LPS22HB", "STMicroelectronics", DeviceCategory::Other, None, true);
-        self.add_i2c(0x5D, "LPS22HB (alt)", "STMicroelectronics", DeviceCategory::Other, None, true);
+        self.add_i2c(
+            0x76,
+            "BMP280/BME280",
+            "Bosch",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x77,
+            "BMP280/BME280 (alt)",
+            "Bosch",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x5C,
+            "LPS22HB",
+            "STMicroelectronics",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x5D,
+            "LPS22HB (alt)",
+            "STMicroelectronics",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
 
         // PWM/Servo controllers
-        self.add_i2c(0x40, "PCA9685", "NXP", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_i2c(0x41, "PCA9685 (A0)", "NXP", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_i2c(0x42, "PCA9685 (A1)", "NXP", DeviceCategory::ServoController, Some("ServoController"), true);
-        self.add_i2c(0x43, "PCA9685 (A0+A1)", "NXP", DeviceCategory::ServoController, Some("ServoController"), true);
+        self.add_i2c(
+            0x40,
+            "PCA9685",
+            "NXP",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_i2c(
+            0x41,
+            "PCA9685 (A0)",
+            "NXP",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_i2c(
+            0x42,
+            "PCA9685 (A1)",
+            "NXP",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
+        self.add_i2c(
+            0x43,
+            "PCA9685 (A0+A1)",
+            "NXP",
+            DeviceCategory::ServoController,
+            Some("ServoController"),
+            true,
+        );
 
         // Motor drivers
-        self.add_i2c(0x60, "TB6612/DRV8830", "Various", DeviceCategory::MotorController, Some("DcMotor"), true);
-        self.add_i2c(0x64, "Adafruit Motor Shield v2", "Adafruit", DeviceCategory::MotorController, Some("DcMotor"), true);
+        self.add_i2c(
+            0x60,
+            "TB6612/DRV8830",
+            "Various",
+            DeviceCategory::MotorController,
+            Some("DcMotor"),
+            true,
+        );
+        self.add_i2c(
+            0x64,
+            "Adafruit Motor Shield v2",
+            "Adafruit",
+            DeviceCategory::MotorController,
+            Some("DcMotor"),
+            true,
+        );
 
         // ADC
-        self.add_i2c(0x48, "ADS1115", "Texas Instruments", DeviceCategory::Other, None, true);
-        self.add_i2c(0x49, "ADS1115 (ADDR)", "Texas Instruments", DeviceCategory::Other, None, true);
-        self.add_i2c(0x4A, "ADS1115 (ADDR)", "Texas Instruments", DeviceCategory::Other, None, false);
-        self.add_i2c(0x4B, "ADS1115 (ADDR)", "Texas Instruments", DeviceCategory::Other, None, false);
+        self.add_i2c(
+            0x48,
+            "ADS1115",
+            "Texas Instruments",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x49,
+            "ADS1115 (ADDR)",
+            "Texas Instruments",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x4A,
+            "ADS1115 (ADDR)",
+            "Texas Instruments",
+            DeviceCategory::Other,
+            None,
+            false,
+        );
+        self.add_i2c(
+            0x4B,
+            "ADS1115 (ADDR)",
+            "Texas Instruments",
+            DeviceCategory::Other,
+            None,
+            false,
+        );
 
         // DAC
-        self.add_i2c(0x62, "MCP4725", "Microchip", DeviceCategory::Other, None, true);
-        self.add_i2c(0x63, "MCP4725 (A0)", "Microchip", DeviceCategory::Other, None, true);
+        self.add_i2c(
+            0x62,
+            "MCP4725",
+            "Microchip",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x63,
+            "MCP4725 (A0)",
+            "Microchip",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
 
         // Display
-        self.add_i2c(0x3C, "SSD1306 OLED", "Solomon Systech", DeviceCategory::Display, None, true);
-        self.add_i2c(0x3D, "SSD1306 OLED (alt)", "Solomon Systech", DeviceCategory::Display, None, true);
+        self.add_i2c(
+            0x3C,
+            "SSD1306 OLED",
+            "Solomon Systech",
+            DeviceCategory::Display,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x3D,
+            "SSD1306 OLED (alt)",
+            "Solomon Systech",
+            DeviceCategory::Display,
+            None,
+            true,
+        );
 
         // Distance sensors
-        self.add_i2c(0x29, "VL53L0X", "STMicroelectronics", DeviceCategory::Lidar, Some("Lidar"), true);
-        self.add_i2c(0x52, "VL53L1X", "STMicroelectronics", DeviceCategory::Lidar, Some("Lidar"), true);
+        self.add_i2c(
+            0x29,
+            "VL53L0X",
+            "STMicroelectronics",
+            DeviceCategory::Lidar,
+            Some("Lidar"),
+            true,
+        );
+        self.add_i2c(
+            0x52,
+            "VL53L1X",
+            "STMicroelectronics",
+            DeviceCategory::Lidar,
+            Some("Lidar"),
+            true,
+        );
 
         // RTC
         self.add_i2c(0x68, "DS3231", "Maxim", DeviceCategory::Other, None, false);
         self.add_i2c(0x51, "PCF8563", "NXP", DeviceCategory::Other, None, true);
 
         // GPIO expanders
-        self.add_i2c(0x20, "PCF8574/MCP23017", "Various", DeviceCategory::Other, None, true);
-        self.add_i2c(0x21, "PCF8574/MCP23017 (A0)", "Various", DeviceCategory::Other, None, true);
-        self.add_i2c(0x22, "PCF8574/MCP23017 (A1)", "Various", DeviceCategory::Other, None, true);
-        self.add_i2c(0x23, "PCF8574/MCP23017 (A0+A1)", "Various", DeviceCategory::Other, None, true);
-        self.add_i2c(0x27, "PCF8574 (default LCD)", "NXP", DeviceCategory::Display, None, true);
+        self.add_i2c(
+            0x20,
+            "PCF8574/MCP23017",
+            "Various",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x21,
+            "PCF8574/MCP23017 (A0)",
+            "Various",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x22,
+            "PCF8574/MCP23017 (A1)",
+            "Various",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x23,
+            "PCF8574/MCP23017 (A0+A1)",
+            "Various",
+            DeviceCategory::Other,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x27,
+            "PCF8574 (default LCD)",
+            "NXP",
+            DeviceCategory::Display,
+            None,
+            true,
+        );
 
         // Current sensors
-        self.add_i2c(0x40, "INA219/INA226", "Texas Instruments", DeviceCategory::Power, None, false);
-        self.add_i2c(0x44, "INA219/INA226 (A0)", "Texas Instruments", DeviceCategory::Power, None, true);
-        self.add_i2c(0x45, "INA219/INA226 (A1)", "Texas Instruments", DeviceCategory::Power, None, true);
+        self.add_i2c(
+            0x40,
+            "INA219/INA226",
+            "Texas Instruments",
+            DeviceCategory::Power,
+            None,
+            false,
+        );
+        self.add_i2c(
+            0x44,
+            "INA219/INA226 (A0)",
+            "Texas Instruments",
+            DeviceCategory::Power,
+            None,
+            true,
+        );
+        self.add_i2c(
+            0x45,
+            "INA219/INA226 (A1)",
+            "Texas Instruments",
+            DeviceCategory::Power,
+            None,
+            true,
+        );
     }
 
     fn populate_vendors(&mut self) {

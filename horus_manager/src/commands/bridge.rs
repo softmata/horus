@@ -50,8 +50,8 @@ use std::time::{Duration, Instant};
 pub mod cdr {
     #[allow(unused_imports)]
     use super::*;
-    use cdr_encoding::{from_bytes, to_vec, Error as CdrError};
     use byteorder::LittleEndian;
+    use cdr_encoding::{from_bytes, to_vec, Error as CdrError};
     use serde::{Deserialize, Serialize};
 
     /// Result type for CDR operations
@@ -183,7 +183,12 @@ pub mod cdr {
 
     impl Quaternion {
         pub fn identity() -> Self {
-            Quaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+            Quaternion {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            }
         }
     }
 
@@ -340,11 +345,15 @@ pub mod cdr {
                 "std_msgs/msg/Bool" | "std_msgs/Bool" => Ros2MessageType::StdMsgsBool,
                 "std_msgs/msg/Int32" | "std_msgs/Int32" => Ros2MessageType::StdMsgsInt32,
                 "std_msgs/msg/Float64" | "std_msgs/Float64" => Ros2MessageType::StdMsgsFloat64,
-                "geometry_msgs/msg/Twist" | "geometry_msgs/Twist" => Ros2MessageType::GeometryMsgsTwist,
+                "geometry_msgs/msg/Twist" | "geometry_msgs/Twist" => {
+                    Ros2MessageType::GeometryMsgsTwist
+                }
                 "geometry_msgs/msg/TwistStamped" | "geometry_msgs/TwistStamped" => {
                     Ros2MessageType::GeometryMsgsTwistStamped
                 }
-                "geometry_msgs/msg/Pose" | "geometry_msgs/Pose" => Ros2MessageType::GeometryMsgsPose,
+                "geometry_msgs/msg/Pose" | "geometry_msgs/Pose" => {
+                    Ros2MessageType::GeometryMsgsPose
+                }
                 "geometry_msgs/msg/PoseStamped" | "geometry_msgs/PoseStamped" => {
                     Ros2MessageType::GeometryMsgsPoseStamped
                 }
@@ -406,7 +415,7 @@ pub mod cdr {
         Time,
         Duration,
         Array(Box<FieldType>, Option<usize>), // type, optional fixed size
-        Nested(String),                        // nested message type name
+        Nested(String),                       // nested message type name
     }
 
     impl FieldType {
@@ -437,8 +446,12 @@ pub mod cdr {
                 "float32" => FieldType::Float32,
                 "float64" => FieldType::Float64,
                 "string" => FieldType::String,
-                "builtin_interfaces/Time" | "builtin_interfaces/msg/Time" | "time" => FieldType::Time,
-                "builtin_interfaces/Duration" | "builtin_interfaces/msg/Duration" | "duration" => FieldType::Duration,
+                "builtin_interfaces/Time" | "builtin_interfaces/msg/Time" | "time" => {
+                    FieldType::Time
+                }
+                "builtin_interfaces/Duration" | "builtin_interfaces/msg/Duration" | "duration" => {
+                    FieldType::Duration
+                }
                 other => FieldType::Nested(other.to_string()),
             }
         }
@@ -500,11 +513,7 @@ pub mod cdr {
 
                     let parts: Vec<&str> = before_eq.split_whitespace().collect();
                     if parts.len() >= 2 {
-                        constants.push((
-                            parts[1].to_string(),
-                            parts[0].to_string(),
-                            value,
-                        ));
+                        constants.push((parts[1].to_string(), parts[0].to_string(), value));
                     }
                     continue;
                 }
@@ -555,54 +564,75 @@ pub mod cdr {
         fn register_standard_types(&self) {
             // std_msgs
             self.register_definition(MessageDefinition::parse_msg_content(
-                "std_msgs", "String", "string data"
+                "std_msgs",
+                "String",
+                "string data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "std_msgs", "Bool", "bool data"
+                "std_msgs",
+                "Bool",
+                "bool data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "std_msgs", "Int32", "int32 data"
+                "std_msgs",
+                "Int32",
+                "int32 data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "std_msgs", "Float64", "float64 data"
+                "std_msgs",
+                "Float64",
+                "float64 data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "std_msgs", "Header", "builtin_interfaces/Time stamp\nstring frame_id"
+                "std_msgs",
+                "Header",
+                "builtin_interfaces/Time stamp\nstring frame_id",
             ));
 
             // geometry_msgs
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "Vector3", "float64 x\nfloat64 y\nfloat64 z"
+                "geometry_msgs",
+                "Vector3",
+                "float64 x\nfloat64 y\nfloat64 z",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "Point", "float64 x\nfloat64 y\nfloat64 z"
+                "geometry_msgs",
+                "Point",
+                "float64 x\nfloat64 y\nfloat64 z",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "Quaternion", "float64 x\nfloat64 y\nfloat64 z\nfloat64 w"
+                "geometry_msgs",
+                "Quaternion",
+                "float64 x\nfloat64 y\nfloat64 z\nfloat64 w",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "Pose",
-                "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation"
+                "geometry_msgs",
+                "Pose",
+                "geometry_msgs/Point position\ngeometry_msgs/Quaternion orientation",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "Twist",
-                "geometry_msgs/Vector3 linear\ngeometry_msgs/Vector3 angular"
+                "geometry_msgs",
+                "Twist",
+                "geometry_msgs/Vector3 linear\ngeometry_msgs/Vector3 angular",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "PoseStamped",
-                "std_msgs/Header header\ngeometry_msgs/Pose pose"
+                "geometry_msgs",
+                "PoseStamped",
+                "std_msgs/Header header\ngeometry_msgs/Pose pose",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "TwistStamped",
-                "std_msgs/Header header\ngeometry_msgs/Twist twist"
+                "geometry_msgs",
+                "TwistStamped",
+                "std_msgs/Header header\ngeometry_msgs/Twist twist",
             ));
 
             // sensor_msgs
             self.register_definition(MessageDefinition::parse_msg_content(
-                "sensor_msgs", "LaserScan",
+                "sensor_msgs",
+                "LaserScan",
                 "std_msgs/Header header\nfloat32 angle_min\nfloat32 angle_max\n\
                  float32 angle_increment\nfloat32 time_increment\nfloat32 scan_time\n\
-                 float32 range_min\nfloat32 range_max\nfloat32[] ranges\nfloat32[] intensities"
+                 float32 range_min\nfloat32 range_max\nfloat32[] ranges\nfloat32[] intensities",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
                 "sensor_msgs", "Imu",
@@ -612,49 +642,58 @@ pub mod cdr {
                  float64[9] linear_acceleration_covariance"
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "sensor_msgs", "Image",
+                "sensor_msgs",
+                "Image",
                 "std_msgs/Header header\nuint32 height\nuint32 width\nstring encoding\n\
-                 uint8 is_bigendian\nuint32 step\nuint8[] data"
+                 uint8 is_bigendian\nuint32 step\nuint8[] data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "sensor_msgs", "PointCloud2",
+                "sensor_msgs",
+                "PointCloud2",
                 "std_msgs/Header header\nuint32 height\nuint32 width\n\
                  sensor_msgs/PointField[] fields\nbool is_bigendian\nuint32 point_step\n\
-                 uint32 row_step\nuint8[] data\nbool is_dense"
+                 uint32 row_step\nuint8[] data\nbool is_dense",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "sensor_msgs", "PointField",
-                "string name\nuint32 offset\nuint8 datatype\nuint32 count"
+                "sensor_msgs",
+                "PointField",
+                "string name\nuint32 offset\nuint8 datatype\nuint32 count",
             ));
 
             // nav_msgs
             self.register_definition(MessageDefinition::parse_msg_content(
-                "nav_msgs", "Odometry",
+                "nav_msgs",
+                "Odometry",
                 "std_msgs/Header header\nstring child_frame_id\n\
-                 geometry_msgs/PoseWithCovariance pose\ngeometry_msgs/TwistWithCovariance twist"
+                 geometry_msgs/PoseWithCovariance pose\ngeometry_msgs/TwistWithCovariance twist",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "nav_msgs", "Path",
-                "std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses"
+                "nav_msgs",
+                "Path",
+                "std_msgs/Header header\ngeometry_msgs/PoseStamped[] poses",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "nav_msgs", "OccupancyGrid",
-                "std_msgs/Header header\nnav_msgs/MapMetaData info\nint8[] data"
+                "nav_msgs",
+                "OccupancyGrid",
+                "std_msgs/Header header\nnav_msgs/MapMetaData info\nint8[] data",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "nav_msgs", "MapMetaData",
+                "nav_msgs",
+                "MapMetaData",
                 "builtin_interfaces/Time map_load_time\nfloat32 resolution\n\
-                 uint32 width\nuint32 height\ngeometry_msgs/Pose origin"
+                 uint32 width\nuint32 height\ngeometry_msgs/Pose origin",
             ));
 
             // geometry_msgs covariance types
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "PoseWithCovariance",
-                "geometry_msgs/Pose pose\nfloat64[36] covariance"
+                "geometry_msgs",
+                "PoseWithCovariance",
+                "geometry_msgs/Pose pose\nfloat64[36] covariance",
             ));
             self.register_definition(MessageDefinition::parse_msg_content(
-                "geometry_msgs", "TwistWithCovariance",
-                "geometry_msgs/Twist twist\nfloat64[36] covariance"
+                "geometry_msgs",
+                "TwistWithCovariance",
+                "geometry_msgs/Twist twist\nfloat64[36] covariance",
             ));
         }
 
@@ -759,10 +798,8 @@ pub mod cdr {
                     serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect())
                 }
                 DynamicValue::Message(map) => {
-                    let obj: serde_json::Map<String, serde_json::Value> = map
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.to_json()))
-                        .collect();
+                    let obj: serde_json::Map<String, serde_json::Value> =
+                        map.iter().map(|(k, v)| (k.clone(), v.to_json())).collect();
                     serde_json::Value::Object(obj)
                 }
             }
@@ -779,7 +816,9 @@ pub mod cdr {
 
         #[test]
         fn test_cdr_roundtrip_string() {
-            let msg = StdString { data: "Hello ROS2!".to_string() };
+            let msg = StdString {
+                data: "Hello ROS2!".to_string(),
+            };
             let bytes = serialize(&msg).unwrap();
             let decoded: StdString = deserialize(&bytes).unwrap();
             assert_eq!(msg.data, decoded.data);
@@ -788,8 +827,16 @@ pub mod cdr {
         #[test]
         fn test_cdr_roundtrip_twist() {
             let msg = Twist {
-                linear: Vector3 { x: 1.0, y: 2.0, z: 3.0 },
-                angular: Vector3 { x: 0.1, y: 0.2, z: 0.3 },
+                linear: Vector3 {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                angular: Vector3 {
+                    x: 0.1,
+                    y: 0.2,
+                    z: 0.3,
+                },
             };
             let bytes = serialize(&msg).unwrap();
             let decoded: Twist = deserialize(&bytes).unwrap();
@@ -886,7 +933,7 @@ pub mod cdr {
                 "Twist",
                 "# This is a comment\n\
                  geometry_msgs/Vector3 linear\n\
-                 geometry_msgs/Vector3 angular\n"
+                 geometry_msgs/Vector3 angular\n",
             );
 
             assert_eq!(def.package, "geometry_msgs");
@@ -908,11 +955,14 @@ pub mod cdr {
                  string name\n\
                  uint32 offset\n\
                  uint8 datatype\n\
-                 uint32 count"
+                 uint32 count",
             );
 
             assert_eq!(def.constants.len(), 3);
-            assert_eq!(def.constants[0], ("INT8".to_string(), "uint8".to_string(), "1".to_string()));
+            assert_eq!(
+                def.constants[0],
+                ("INT8".to_string(), "uint8".to_string(), "1".to_string())
+            );
             assert_eq!(def.fields.len(), 4);
         }
 
@@ -1170,10 +1220,7 @@ impl RecoveryState {
     pub fn record_success(&mut self) {
         if self.attempt > 0 {
             self.total_recoveries += 1;
-            log::info!(
-                "Connection recovered after {} attempts",
-                self.attempt
-            );
+            log::info!("Connection recovered after {} attempts", self.attempt);
         }
         self.attempt = 0;
         self.consecutive_failures = 0;
@@ -1221,7 +1268,10 @@ impl RecoveryState {
         log::warn!(
             "Connection failed (attempt {}/{}), retrying in {:?}",
             self.attempt,
-            config.max_retries.map(|n| n.to_string()).unwrap_or_else(|| "∞".to_string()),
+            config
+                .max_retries
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "∞".to_string()),
             self.current_delay
         );
 
@@ -1287,13 +1337,15 @@ impl TopicStats {
     pub fn record_in(&self, bytes: u64) {
         self.msgs_in.fetch_add(1, Ordering::Relaxed);
         self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
-        self.last_msg_time.store(Self::now_millis(), Ordering::Relaxed);
+        self.last_msg_time
+            .store(Self::now_millis(), Ordering::Relaxed);
     }
 
     pub fn record_out(&self, bytes: u64) {
         self.msgs_out.fetch_add(1, Ordering::Relaxed);
         self.bytes_transferred.fetch_add(bytes, Ordering::Relaxed);
-        self.last_msg_time.store(Self::now_millis(), Ordering::Relaxed);
+        self.last_msg_time
+            .store(Self::now_millis(), Ordering::Relaxed);
     }
 
     pub fn record_error(&self) {
@@ -1369,7 +1421,8 @@ impl TopicStats {
 
     /// Get message rate (messages per second) based on recent activity
     pub fn message_rate(&self, duration_secs: f64) -> f64 {
-        let total_msgs = self.msgs_in.load(Ordering::Relaxed) + self.msgs_out.load(Ordering::Relaxed);
+        let total_msgs =
+            self.msgs_in.load(Ordering::Relaxed) + self.msgs_out.load(Ordering::Relaxed);
         if duration_secs > 0.0 {
             total_msgs as f64 / duration_secs
         } else {
@@ -1495,12 +1548,11 @@ impl RateLimiter {
         }
 
         // Try to update last_refill
-        if self.last_refill.compare_exchange(
-            last,
-            now,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ).is_ok() {
+        if self
+            .last_refill
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
             // Add tokens (capped at capacity)
             loop {
                 let current = self.tokens.load(Ordering::Relaxed);
@@ -1565,10 +1617,7 @@ impl Default for RateLimitConfig {
             default_rate: 1000.0, // 1000 msgs/sec default
             default_burst: 100,
             topic_rates: HashMap::new(),
-            exempt_topics: vec![
-                "/rosout".to_string(),
-                "/parameter_events".to_string(),
-            ],
+            exempt_topics: vec!["/rosout".to_string(), "/parameter_events".to_string()],
         }
     }
 }
@@ -1581,10 +1630,7 @@ impl RateLimitConfig {
             default_rate: 10000.0,
             default_burst: 1000,
             topic_rates: HashMap::new(),
-            exempt_topics: vec![
-                "/rosout".to_string(),
-                "/parameter_events".to_string(),
-            ],
+            exempt_topics: vec!["/rosout".to_string(), "/parameter_events".to_string()],
         }
     }
 
@@ -1592,7 +1638,7 @@ impl RateLimitConfig {
     pub fn constrained() -> Self {
         let mut topic_rates = HashMap::new();
         topic_rates.insert("/camera/*".to_string(), 30.0); // Limit camera to 30 fps
-        topic_rates.insert("/lidar/*".to_string(), 20.0);  // Limit lidar to 20 Hz
+        topic_rates.insert("/lidar/*".to_string(), 20.0); // Limit lidar to 20 Hz
 
         Self {
             enabled: true,
@@ -1611,7 +1657,7 @@ impl RateLimitConfig {
     pub fn is_exempt(&self, topic: &str) -> bool {
         self.exempt_topics.iter().any(|t| {
             if t.ends_with('*') {
-                topic.starts_with(&t[..t.len()-1])
+                topic.starts_with(&t[..t.len() - 1])
             } else {
                 topic == t
             }
@@ -1623,7 +1669,7 @@ impl RateLimitConfig {
         // Check specific topic rates first (with wildcard matching)
         for (pattern, rate) in &self.topic_rates {
             if pattern.ends_with('*') {
-                if topic.starts_with(&pattern[..pattern.len()-1]) {
+                if topic.starts_with(&pattern[..pattern.len() - 1]) {
                     return *rate;
                 }
             } else if topic == pattern {
@@ -1710,11 +1756,7 @@ impl BridgeStats {
         println!();
         println!("{}", "Bridge Statistics".green().bold());
         println!("{}", "=".repeat(60).dimmed());
-        println!(
-            "  {} {}",
-            "Uptime:".cyan(),
-            format_duration(uptime).white()
-        );
+        println!("  {} {}", "Uptime:".cyan(), format_duration(uptime).white());
         println!(
             "  {} {}",
             "Topics Discovered:".cyan(),
@@ -1930,7 +1972,11 @@ pub async fn discover_ros2_topics(domain_id: u32) -> HorusResult<DiscoveryResult
     // Format: rt/{topic_name} (domain is handled by zenoh config)
     let topic_key = format!("rt/**");
 
-    log::info!("ROS2 discovery on domain {} (key pattern: {})", domain_id, topic_key);
+    log::info!(
+        "ROS2 discovery on domain {} (key pattern: {})",
+        domain_id,
+        topic_key
+    );
 
     // Open a Zenoh session for discovery
     let zenoh_config = zenoh::Config::default();
@@ -1960,12 +2006,13 @@ pub async fn discover_ros2_topics(domain_id: u32) -> HorusResult<DiscoveryResult
                         if let Some(topic_name) = key.strip_prefix("rt/") {
                             discovered_topics.insert(format!("/{}", topic_name));
                         } else if let Some(topic_name) = key.strip_prefix("rt") {
-                            discovered_topics.insert(format!("/{}", topic_name.trim_start_matches('/')));
+                            discovered_topics
+                                .insert(format!("/{}", topic_name.trim_start_matches('/')));
                         }
                     }
                 }
                 Ok(Err(_)) => break, // Channel closed
-                Err(_) => continue, // Timeout, try again
+                Err(_) => continue,  // Timeout, try again
             }
         }
     }
@@ -1986,7 +2033,8 @@ pub async fn discover_ros2_topics(domain_id: u32) -> HorusResult<DiscoveryResult
                             if let Some(idx) = key.find("/rt/") {
                                 let topic_part = &key[idx + 3..];
                                 if let Some(end_idx) = topic_part.find('/') {
-                                    discovered_topics.insert(format!("/{}", &topic_part[..end_idx]));
+                                    discovered_topics
+                                        .insert(format!("/{}", &topic_part[..end_idx]));
                                 } else {
                                     discovered_topics.insert(format!("/{}", topic_part));
                                 }
@@ -2227,16 +2275,25 @@ async fn bridge_ros2_service(
     let horus_request_pub: Link<Vec<u8>> = Link::producer(&horus_request_topic)?;
     let horus_response_sub: Link<Vec<u8>> = Link::consumer(&horus_response_topic)?;
 
-    log::debug!("HORUS service links created: {} -> {}", horus_request_topic, horus_response_topic);
+    log::debug!(
+        "HORUS service links created: {} -> {}",
+        horus_request_topic,
+        horus_response_topic
+    );
 
     // Open Zenoh session for service handling
     let zenoh_config = zenoh::Config::default();
     let session: zenoh::Session = match zenoh::open(zenoh_config).await {
         Ok(s) => s,
         Err(e) => {
-            log::error!("Failed to open Zenoh session for service {}: {}", service_name, e);
+            log::error!(
+                "Failed to open Zenoh session for service {}: {}",
+                service_name,
+                e
+            );
             return Err(HorusError::communication(format!(
-                "Failed to open Zenoh session: {}", e
+                "Failed to open Zenoh session: {}",
+                e
             )));
         }
     };
@@ -2247,20 +2304,23 @@ async fn bridge_ros2_service(
         Err(e) => {
             log::error!("Failed to create queryable for {}: {}", request_key, e);
             return Err(HorusError::communication(format!(
-                "Failed to create queryable: {}", e
+                "Failed to create queryable: {}",
+                e
             )));
         }
     };
 
-    log::info!("Service bridge ready: {} (key: {})", service_name, request_key);
+    log::info!(
+        "Service bridge ready: {} (key: {})",
+        service_name,
+        request_key
+    );
 
     // Service request handling loop
     while running.load(Ordering::SeqCst) {
         // Wait for incoming query with timeout
-        let query_result = tokio::time::timeout(
-            Duration::from_millis(100),
-            queryable.recv_async()
-        ).await;
+        let query_result =
+            tokio::time::timeout(Duration::from_millis(100), queryable.recv_async()).await;
 
         match query_result {
             Ok(Ok(query)) => {
@@ -2268,7 +2328,8 @@ async fn bridge_ros2_service(
                 log::debug!("Received service request on {}", query.key_expr());
 
                 // Extract request payload
-                let request_data = query.payload()
+                let request_data = query
+                    .payload()
                     .map(|p| p.to_bytes().to_vec())
                     .unwrap_or_default();
 
@@ -2292,10 +2353,7 @@ async fn bridge_ros2_service(
                         log::trace!("Got response: {} bytes", response_data.len());
 
                         // Send response back via Zenoh
-                        if let Err(e) = query.reply(
-                            query.key_expr().clone(),
-                            response_data
-                        ).await {
+                        if let Err(e) = query.reply(query.key_expr().clone(), response_data).await {
                             log::warn!("Failed to send Zenoh reply: {}", e);
                             stats.errors.fetch_add(1, Ordering::Relaxed);
                         } else {
@@ -2347,7 +2405,10 @@ async fn bridge_horus_service_client(
     use horus_core::communication::Link;
     use std::sync::atomic::Ordering;
 
-    log::info!("Starting HORUS -> ROS2 service client bridge for: {}", service_name);
+    log::info!(
+        "Starting HORUS -> ROS2 service client bridge for: {}",
+        service_name
+    );
 
     // HORUS topics for request/response
     let horus_request_topic = format!("{}/client_request", service_name.trim_start_matches('/'));
@@ -2366,7 +2427,8 @@ async fn bridge_horus_service_client(
         Ok(s) => s,
         Err(e) => {
             return Err(HorusError::communication(format!(
-                "Failed to open Zenoh session: {}", e
+                "Failed to open Zenoh session: {}",
+                e
             )));
         }
     };
@@ -2378,8 +2440,11 @@ async fn bridge_horus_service_client(
         // Check for outgoing service requests from HORUS
         if let Some(request_data) = horus_request_sub.recv(&mut None) {
             stats.requests.fetch_add(1, Ordering::Relaxed);
-            log::debug!("Forwarding service request to ROS2: {} ({} bytes)",
-                service_name, request_data.len());
+            log::debug!(
+                "Forwarding service request to ROS2: {} ({} bytes)",
+                service_name,
+                request_data.len()
+            );
 
             // Query the ROS2 service via Zenoh
             if let Ok(receiver) = session.get(&request_key).payload(request_data).await {
@@ -2389,7 +2454,9 @@ async fn bridge_horus_service_client(
                 let mut response_received = false;
 
                 while start.elapsed() < timeout {
-                    match tokio::time::timeout(Duration::from_millis(100), receiver.recv_async()).await {
+                    match tokio::time::timeout(Duration::from_millis(100), receiver.recv_async())
+                        .await
+                    {
                         Ok(Ok(reply)) => {
                             if let Ok(sample) = reply.into_result() {
                                 let response_data = sample.payload().to_bytes().to_vec();
@@ -2406,7 +2473,7 @@ async fn bridge_horus_service_client(
                             }
                         }
                         Ok(Err(_)) => break, // Channel closed
-                        Err(_) => continue, // Timeout, try again
+                        Err(_) => continue,  // Timeout, try again
                     }
                 }
 
@@ -2477,7 +2544,11 @@ pub async fn bridge_ros2_action(
     let horus_feedback_topic = format!("{}/feedback", action_base);
     let horus_status_topic = format!("{}/status", action_base);
 
-    log::debug!("Action bridge keys: send_goal={}, feedback={}", send_goal_key, feedback_key);
+    log::debug!(
+        "Action bridge keys: send_goal={}, feedback={}",
+        send_goal_key,
+        feedback_key
+    );
 
     // Create HORUS links for action communication
     let goal_pub: Link<Vec<u8>> = Link::producer(&horus_goal_topic)?;
@@ -2494,40 +2565,62 @@ pub async fn bridge_ros2_action(
     let session: zenoh::Session = match zenoh::open(zenoh_config).await {
         Ok(s) => s,
         Err(e) => {
-            log::error!("Failed to open Zenoh session for action {}: {}", action_name, e);
+            log::error!(
+                "Failed to open Zenoh session for action {}: {}",
+                action_name,
+                e
+            );
             return Err(HorusError::communication(format!(
-                "Failed to open Zenoh session: {}", e
+                "Failed to open Zenoh session: {}",
+                e
             )));
         }
     };
 
     // Create queryables for action services
-    let send_goal_queryable = session.declare_queryable(&send_goal_key).await
-        .map_err(|e| HorusError::communication(format!("Failed to create send_goal queryable: {}", e)))?;
-    let cancel_goal_queryable = session.declare_queryable(&cancel_goal_key).await
-        .map_err(|e| HorusError::communication(format!("Failed to create cancel_goal queryable: {}", e)))?;
-    let get_result_queryable = session.declare_queryable(&get_result_key).await
-        .map_err(|e| HorusError::communication(format!("Failed to create get_result queryable: {}", e)))?;
+    let send_goal_queryable = session
+        .declare_queryable(&send_goal_key)
+        .await
+        .map_err(|e| {
+            HorusError::communication(format!("Failed to create send_goal queryable: {}", e))
+        })?;
+    let cancel_goal_queryable = session
+        .declare_queryable(&cancel_goal_key)
+        .await
+        .map_err(|e| {
+            HorusError::communication(format!("Failed to create cancel_goal queryable: {}", e))
+        })?;
+    let get_result_queryable = session
+        .declare_queryable(&get_result_key)
+        .await
+        .map_err(|e| {
+            HorusError::communication(format!("Failed to create get_result queryable: {}", e))
+        })?;
 
     // Create subscribers for feedback and status topics
-    let feedback_subscriber = session.declare_subscriber(&feedback_key).await
-        .map_err(|e| HorusError::communication(format!("Failed to create feedback subscriber: {}", e)))?;
-    let status_subscriber = session.declare_subscriber(&status_key).await
-        .map_err(|e| HorusError::communication(format!("Failed to create status subscriber: {}", e)))?;
+    let feedback_subscriber = session
+        .declare_subscriber(&feedback_key)
+        .await
+        .map_err(|e| {
+            HorusError::communication(format!("Failed to create feedback subscriber: {}", e))
+        })?;
+    let status_subscriber = session.declare_subscriber(&status_key).await.map_err(|e| {
+        HorusError::communication(format!("Failed to create status subscriber: {}", e))
+    })?;
 
     log::info!("Action bridge ready: {}", action_name);
 
     // Main action handling loop
     while running.load(Ordering::SeqCst) {
         // Handle send_goal requests
-        if let Ok(Ok(query)) = tokio::time::timeout(
-            Duration::from_millis(10),
-            send_goal_queryable.recv_async()
-        ).await {
+        if let Ok(Ok(query)) =
+            tokio::time::timeout(Duration::from_millis(10), send_goal_queryable.recv_async()).await
+        {
             stats.record_goal();
             log::debug!("Received send_goal request for {}", action_name);
 
-            let request_data = query.payload()
+            let request_data = query
+                .payload()
                 .map(|p| p.to_bytes().to_vec())
                 .unwrap_or_default();
 
@@ -2559,11 +2652,14 @@ pub async fn bridge_ros2_action(
         // Handle cancel_goal requests
         if let Ok(Ok(query)) = tokio::time::timeout(
             Duration::from_millis(10),
-            cancel_goal_queryable.recv_async()
-        ).await {
+            cancel_goal_queryable.recv_async(),
+        )
+        .await
+        {
             log::debug!("Received cancel_goal request for {}", action_name);
 
-            let request_data = query.payload()
+            let request_data = query
+                .payload()
                 .map(|p| p.to_bytes().to_vec())
                 .unwrap_or_default();
 
@@ -2592,13 +2688,13 @@ pub async fn bridge_ros2_action(
         }
 
         // Handle get_result requests
-        if let Ok(Ok(query)) = tokio::time::timeout(
-            Duration::from_millis(10),
-            get_result_queryable.recv_async()
-        ).await {
+        if let Ok(Ok(query)) =
+            tokio::time::timeout(Duration::from_millis(10), get_result_queryable.recv_async()).await
+        {
             log::debug!("Received get_result request for {}", action_name);
 
-            let request_data = query.payload()
+            let request_data = query
+                .payload()
                 .map(|p| p.to_bytes().to_vec())
                 .unwrap_or_default();
 
@@ -2627,10 +2723,9 @@ pub async fn bridge_ros2_action(
         }
 
         // Bridge feedback topic (ROS2 -> HORUS)
-        if let Ok(Ok(sample)) = tokio::time::timeout(
-            Duration::from_millis(10),
-            feedback_subscriber.recv_async()
-        ).await {
+        if let Ok(Ok(sample)) =
+            tokio::time::timeout(Duration::from_millis(10), feedback_subscriber.recv_async()).await
+        {
             stats.record_feedback();
             let feedback_data = sample.payload().to_bytes().to_vec();
             if let Err(e) = feedback_pub.send(feedback_data, &mut None) {
@@ -2640,10 +2735,9 @@ pub async fn bridge_ros2_action(
         }
 
         // Bridge status topic (ROS2 -> HORUS)
-        if let Ok(Ok(sample)) = tokio::time::timeout(
-            Duration::from_millis(10),
-            status_subscriber.recv_async()
-        ).await {
+        if let Ok(Ok(sample)) =
+            tokio::time::timeout(Duration::from_millis(10), status_subscriber.recv_async()).await
+        {
             let status_data = sample.payload().to_bytes().to_vec();
             if let Err(e) = status_pub.send(status_data, &mut None) {
                 log::warn!("Failed to forward status to HORUS: {:?}", e);
@@ -2681,7 +2775,11 @@ pub async fn discover_ros2_services(domain_id: u32) -> HorusResult<Vec<Discovere
     use std::time::Instant;
 
     let service_key = format!("rq/**");
-    log::info!("ROS2 service discovery on domain {} (key pattern: {})", domain_id, service_key);
+    log::info!(
+        "ROS2 service discovery on domain {} (key pattern: {})",
+        domain_id,
+        service_key
+    );
 
     // Open a Zenoh session for discovery
     let zenoh_config = zenoh::Config::default();
@@ -2780,7 +2878,8 @@ pub async fn discover_ros2_actions(domain_id: u32) -> HorusResult<Vec<Discovered
         Ok(s) => s,
         Err(e) => {
             return Err(HorusError::communication(format!(
-                "Failed to open Zenoh session for action discovery: {}", e
+                "Failed to open Zenoh session for action discovery: {}",
+                e
             )));
         }
     };
@@ -2814,8 +2913,10 @@ pub async fn discover_ros2_actions(domain_id: u32) -> HorusResult<Vec<Discovered
             while start.elapsed() < timeout {
                 match tokio::time::timeout(
                     std::time::Duration::from_millis(100),
-                    receiver.recv_async()
-                ).await {
+                    receiver.recv_async(),
+                )
+                .await
+                {
                     Ok(Ok(reply)) => {
                         if let Ok(sample) = reply.into_result() {
                             let key = sample.key_expr().as_str();
@@ -2905,14 +3006,21 @@ pub async fn discover_ros2_parameters(domain_id: u32) -> HorusResult<Vec<Discove
     // Look for parameter services - key pattern for list_parameters service
     let param_key = format!("rq/**/list_parameters");
 
-    log::info!("ROS2 parameter discovery on domain {} (key pattern: {})", domain_id, param_key);
+    log::info!(
+        "ROS2 parameter discovery on domain {} (key pattern: {})",
+        domain_id,
+        param_key
+    );
 
     // Open Zenoh session for discovery
     let zenoh_config = zenoh::Config::default();
     let session: zenoh::Session = match zenoh::open(zenoh_config).await {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("Failed to open Zenoh session for parameter discovery: {}", e);
+            log::warn!(
+                "Failed to open Zenoh session for parameter discovery: {}",
+                e
+            );
             return Ok(nodes);
         }
     };
@@ -3019,7 +3127,9 @@ fn parse_node_name_from_param_service(key: &str) -> Option<String> {
 
 /// Fallback when zenoh-transport feature is not enabled
 #[cfg(not(feature = "zenoh-transport"))]
-pub async fn discover_ros2_parameters(_domain_id: u32) -> HorusResult<Vec<DiscoveredParameterNode>> {
+pub async fn discover_ros2_parameters(
+    _domain_id: u32,
+) -> HorusResult<Vec<DiscoveredParameterNode>> {
     Err(HorusError::config(
         "ROS2 parameter discovery requires 'zenoh-transport' feature. Rebuild with: cargo build --features zenoh-transport"
     ))
@@ -3061,9 +3171,14 @@ pub async fn bridge_ros2_parameters(
     let session: zenoh::Session = match zenoh::open(zenoh_config).await {
         Ok(s) => s,
         Err(e) => {
-            log::error!("Failed to open Zenoh session for parameters {}: {}", node_name, e);
+            log::error!(
+                "Failed to open Zenoh session for parameters {}: {}",
+                node_name,
+                e
+            );
             return Err(HorusError::communication(format!(
-                "Failed to open Zenoh session: {}", e
+                "Failed to open Zenoh session: {}",
+                e
             )));
         }
     };
@@ -3071,7 +3186,8 @@ pub async fn bridge_ros2_parameters(
     // Create HORUS links for parameter communication
     let horus_param_topic = format!("params/{}", node_clean);
     let horus_param_req: Link<Vec<u8>> = Link::producer(&format!("{}/request", horus_param_topic))?;
-    let horus_param_resp: Link<Vec<u8>> = Link::consumer(&format!("{}/response", horus_param_topic))?;
+    let horus_param_resp: Link<Vec<u8>> =
+        Link::consumer(&format!("{}/response", horus_param_topic))?;
 
     log::debug!("HORUS param links created for: {}", horus_param_topic);
 
@@ -3328,7 +3444,9 @@ pub async fn bridge_ros2_parameters(
 
 /// Map bridge QoS profile to Zenoh QoS settings
 #[cfg(feature = "zenoh-transport")]
-fn map_qos_profile(profile: QosProfile) -> horus_core::communication::network::zenoh_config::ZenohQos {
+fn map_qos_profile(
+    profile: QosProfile,
+) -> horus_core::communication::network::zenoh_config::ZenohQos {
     use horus_core::communication::network::zenoh_config::ZenohQos;
 
     match profile {
@@ -3352,7 +3470,12 @@ async fn bridge_single_topic(
 ) -> HorusResult<()> {
     use horus_core::communication::network::zenoh_config::ZenohConfig;
 
-    log::info!("Starting bridge for topic: {} (direction: {:?}, qos: {:?})", topic_name, direction, qos_profile);
+    log::info!(
+        "Starting bridge for topic: {} (direction: {:?}, qos: {:?})",
+        topic_name,
+        direction,
+        qos_profile
+    );
 
     // HORUS shared memory topic name (strip leading slash if present)
     let horus_topic = topic_name.trim_start_matches('/');
@@ -3393,7 +3516,9 @@ async fn bridge_single_topic(
                     config_in,
                     running_in,
                     stats_in,
-                ).await {
+                )
+                .await
+                {
                     log::error!("ROS2->HORUS bridge error for {}: {}", topic_name_in, e);
                 }
             });
@@ -3405,7 +3530,9 @@ async fn bridge_single_topic(
                     config_out,
                     running_out,
                     stats_out,
-                ).await {
+                )
+                .await
+                {
                     log::error!("HORUS->ROS2 bridge error for {}: {}", topic_name_out, e);
                 }
             });
@@ -3440,7 +3567,11 @@ async fn bridge_ros2_to_horus(
     // Create HORUS shared memory producer
     let horus_pub: Link<Vec<u8>> = Link::producer(horus_topic)?;
 
-    log::info!("ROS2 -> HORUS bridge ready: {} -> {}", ros2_topic, horus_topic);
+    log::info!(
+        "ROS2 -> HORUS bridge ready: {} -> {}",
+        ros2_topic,
+        horus_topic
+    );
 
     // Bridge loop: forward messages from ROS2 to HORUS
     while running.load(Ordering::SeqCst) {
@@ -3452,7 +3583,12 @@ async fn bridge_ros2_to_horus(
             match horus_pub.send(data, &mut None) {
                 Ok(()) => {
                     stats.record_in(bytes_len);
-                    log::trace!("Forwarded {} bytes: {} -> {}", bytes_len, ros2_topic, horus_topic);
+                    log::trace!(
+                        "Forwarded {} bytes: {} -> {}",
+                        bytes_len,
+                        ros2_topic,
+                        horus_topic
+                    );
                 }
                 Err(_) => {
                     stats.record_error();
@@ -3491,7 +3627,11 @@ async fn bridge_horus_to_ros2(
     let mut zenoh_pub: ZenohBackend<Vec<u8>> = ZenohBackend::new(ros2_topic, zenoh_config).await?;
     zenoh_pub.init_publisher().await?;
 
-    log::info!("HORUS -> ROS2 bridge ready: {} -> {}", horus_topic, ros2_topic);
+    log::info!(
+        "HORUS -> ROS2 bridge ready: {} -> {}",
+        horus_topic,
+        ros2_topic
+    );
 
     // Bridge loop: forward messages from HORUS to ROS2
     while running.load(Ordering::SeqCst) {
@@ -3503,7 +3643,12 @@ async fn bridge_horus_to_ros2(
             match zenoh_pub.send(&data) {
                 Ok(()) => {
                     stats.record_out(bytes_len);
-                    log::trace!("Forwarded {} bytes: {} -> {}", bytes_len, horus_topic, ros2_topic);
+                    log::trace!(
+                        "Forwarded {} bytes: {} -> {}",
+                        bytes_len,
+                        horus_topic,
+                        ros2_topic
+                    );
                 }
                 Err(e) => {
                     stats.record_error();
@@ -3532,7 +3677,7 @@ async fn bridge_single_topic(
     _stats: Arc<TopicStats>,
 ) -> HorusResult<()> {
     Err(HorusError::config(
-        "ROS2 bridge requires 'zenoh-transport' feature"
+        "ROS2 bridge requires 'zenoh-transport' feature",
     ))
 }
 
@@ -3571,16 +3716,8 @@ impl Ros2Bridge {
             "Domain ID:".cyan(),
             self.config.domain_id.to_string().white()
         );
-        println!(
-            "  {} {:?}",
-            "Direction:".cyan(),
-            self.config.direction
-        );
-        println!(
-            "  {} {:?}",
-            "QoS Profile:".cyan(),
-            self.config.qos_profile
-        );
+        println!("  {} {:?}", "Direction:".cyan(), self.config.direction);
+        println!("  {} {:?}", "QoS Profile:".cyan(), self.config.qos_profile);
 
         // Discover ROS2 topics
         print!("\n{}", "Discovering ROS2 topics...".yellow());
@@ -3592,7 +3729,10 @@ impl Ros2Bridge {
             .topics_discovered
             .store(discovery.topics.len() as u64, Ordering::Relaxed);
 
-        println!(" {} topics found", discovery.topics.len().to_string().green());
+        println!(
+            " {} topics found",
+            discovery.topics.len().to_string().green()
+        );
 
         // Filter topics based on config
         let topics_to_bridge: Vec<_> = if self.config.bridge_all {
@@ -3608,26 +3748,27 @@ impl Ros2Bridge {
         } else if !self.config.topics.is_empty() {
             // Explicit topics specified - use them directly (don't require discovery)
             // This allows bridging even when discovery isn't working
-            self.config.topics.iter().map(|name| {
-                // Ensure topic starts with /
-                let topic_name = if name.starts_with('/') {
-                    name.clone()
-                } else {
-                    format!("/{}", name)
-                };
-                DiscoveredTopic {
-                    name: topic_name,
-                    msg_type: None, // Unknown until messages flow
-                    publishers: 0,
-                    subscribers: 0,
-                    reliable: true, // Assume reliable by default
-                }
-            }).collect()
+            self.config
+                .topics
+                .iter()
+                .map(|name| {
+                    // Ensure topic starts with /
+                    let topic_name = if name.starts_with('/') {
+                        name.clone()
+                    } else {
+                        format!("/{}", name)
+                    };
+                    DiscoveredTopic {
+                        name: topic_name,
+                        msg_type: None, // Unknown until messages flow
+                        publishers: 0,
+                        subscribers: 0,
+                        reliable: true, // Assume reliable by default
+                    }
+                })
+                .collect()
         } else {
-            println!(
-                "{}",
-                "No topics specified. Use --topics or --all".yellow()
-            );
+            println!("{}", "No topics specified. Use --topics or --all".yellow());
             return Ok(());
         };
 
@@ -3753,10 +3894,7 @@ impl Ros2Bridge {
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "{}",
-                        format!("  Service discovery failed: {}", e).yellow()
-                    );
+                    println!("{}", format!("  Service discovery failed: {}", e).yellow());
                 }
             }
         }
@@ -3774,11 +3912,7 @@ impl Ros2Bridge {
                     if actions.is_empty() {
                         println!("{}", "  No ROS2 actions found.".yellow());
                     } else {
-                        println!(
-                            "\n{} {} actions:",
-                            "Bridging".green().bold(),
-                            actions.len()
-                        );
+                        println!("\n{} {} actions:", "Bridging".green().bold(), actions.len());
 
                         for action in &actions {
                             println!("  {} {}", "→".green(), action.name);
@@ -3809,10 +3943,7 @@ impl Ros2Bridge {
                     }
                 }
                 Err(e) => {
-                    println!(
-                        "{}",
-                        format!("  Action discovery failed: {}", e).yellow()
-                    );
+                    println!("{}", format!("  Action discovery failed: {}", e).yellow());
                 }
             }
         }
@@ -3853,7 +3984,11 @@ impl Ros2Bridge {
                                 )
                                 .await
                                 {
-                                    log::error!("Bridge error for parameter node {}: {}", node_name, e);
+                                    log::error!(
+                                        "Bridge error for parameter node {}: {}",
+                                        node_name,
+                                        e
+                                    );
                                 }
                             });
                             bridge_handles.push(handle);
@@ -3988,15 +4123,16 @@ pub fn list_ros2_topics(domain_id: Option<u32>, json: bool) -> HorusResult<()> {
                 })
             }).collect::<Vec<_>>()
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
     println!(
         "{}",
-        format!("ROS2 Topics (Domain {})", domain_id)
-            .green()
-            .bold()
+        format!("ROS2 Topics (Domain {})", domain_id).green().bold()
     );
     println!();
 
@@ -4059,8 +4195,14 @@ pub fn bridge_info() -> HorusResult<()> {
     println!("    {} QoS policy mapping", "→".dimmed());
     println!();
     println!("  {}", "Usage:".cyan());
-    println!("    {} horus bridge ros2 --topics /scan,/odom", "$".dimmed());
-    println!("    {} horus bridge ros2 --all --namespace /robot1", "$".dimmed());
+    println!(
+        "    {} horus bridge ros2 --topics /scan,/odom",
+        "$".dimmed()
+    );
+    println!(
+        "    {} horus bridge ros2 --all --namespace /robot1",
+        "$".dimmed()
+    );
     println!("    {} horus bridge list --domain 0", "$".dimmed());
 
     #[cfg(not(feature = "zenoh-transport"))]
@@ -4128,19 +4270,46 @@ mod tests {
 
     #[test]
     fn test_direction_parsing() {
-        assert_eq!("in".parse::<BridgeDirection>().unwrap(), BridgeDirection::In);
-        assert_eq!("out".parse::<BridgeDirection>().unwrap(), BridgeDirection::Out);
-        assert_eq!("both".parse::<BridgeDirection>().unwrap(), BridgeDirection::Both);
-        assert_eq!("ros2-to-horus".parse::<BridgeDirection>().unwrap(), BridgeDirection::In);
-        assert_eq!("horus-to-ros2".parse::<BridgeDirection>().unwrap(), BridgeDirection::Out);
+        assert_eq!(
+            "in".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::In
+        );
+        assert_eq!(
+            "out".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::Out
+        );
+        assert_eq!(
+            "both".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::Both
+        );
+        assert_eq!(
+            "ros2-to-horus".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::In
+        );
+        assert_eq!(
+            "horus-to-ros2".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::Out
+        );
     }
 
     #[test]
     fn test_direction_parsing_case_insensitive() {
-        assert_eq!("IN".parse::<BridgeDirection>().unwrap(), BridgeDirection::In);
-        assert_eq!("Out".parse::<BridgeDirection>().unwrap(), BridgeDirection::Out);
-        assert_eq!("BOTH".parse::<BridgeDirection>().unwrap(), BridgeDirection::Both);
-        assert_eq!("ROS2-TO-HORUS".parse::<BridgeDirection>().unwrap(), BridgeDirection::In);
+        assert_eq!(
+            "IN".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::In
+        );
+        assert_eq!(
+            "Out".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::Out
+        );
+        assert_eq!(
+            "BOTH".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::Both
+        );
+        assert_eq!(
+            "ROS2-TO-HORUS".parse::<BridgeDirection>().unwrap(),
+            BridgeDirection::In
+        );
     }
 
     #[test]
@@ -4152,16 +4321,34 @@ mod tests {
 
     #[test]
     fn test_qos_parsing() {
-        assert_eq!("sensor".parse::<QosProfile>().unwrap(), QosProfile::SensorData);
-        assert_eq!("default".parse::<QosProfile>().unwrap(), QosProfile::Default);
-        assert_eq!("services".parse::<QosProfile>().unwrap(), QosProfile::Services);
+        assert_eq!(
+            "sensor".parse::<QosProfile>().unwrap(),
+            QosProfile::SensorData
+        );
+        assert_eq!(
+            "default".parse::<QosProfile>().unwrap(),
+            QosProfile::Default
+        );
+        assert_eq!(
+            "services".parse::<QosProfile>().unwrap(),
+            QosProfile::Services
+        );
     }
 
     #[test]
     fn test_qos_parsing_all_variants() {
-        assert_eq!("sensor_data".parse::<QosProfile>().unwrap(), QosProfile::SensorData);
-        assert_eq!("parameters".parse::<QosProfile>().unwrap(), QosProfile::Parameters);
-        assert_eq!("system_default".parse::<QosProfile>().unwrap(), QosProfile::SystemDefault);
+        assert_eq!(
+            "sensor_data".parse::<QosProfile>().unwrap(),
+            QosProfile::SensorData
+        );
+        assert_eq!(
+            "parameters".parse::<QosProfile>().unwrap(),
+            QosProfile::Parameters
+        );
+        assert_eq!(
+            "system_default".parse::<QosProfile>().unwrap(),
+            QosProfile::SystemDefault
+        );
     }
 
     #[test]
@@ -4444,8 +4631,12 @@ mod tests {
     fn test_bridge_stats_add_topics() {
         let mut stats = BridgeStats::default();
 
-        stats.topics.insert("/cmd_vel".to_string(), Arc::new(TopicStats::new()));
-        stats.topics.insert("/odom".to_string(), Arc::new(TopicStats::new()));
+        stats
+            .topics
+            .insert("/cmd_vel".to_string(), Arc::new(TopicStats::new()));
+        stats
+            .topics
+            .insert("/odom".to_string(), Arc::new(TopicStats::new()));
 
         assert_eq!(stats.topics.len(), 2);
         assert!(stats.topics.contains_key("/cmd_vel"));
@@ -4456,8 +4647,12 @@ mod tests {
     fn test_bridge_stats_add_services() {
         let mut stats = BridgeStats::default();
 
-        stats.services.insert("/set_params".to_string(), Arc::new(ServiceStats::new()));
-        stats.services.insert("/get_state".to_string(), Arc::new(ServiceStats::new()));
+        stats
+            .services
+            .insert("/set_params".to_string(), Arc::new(ServiceStats::new()));
+        stats
+            .services
+            .insert("/get_state".to_string(), Arc::new(ServiceStats::new()));
 
         assert_eq!(stats.services.len(), 2);
         assert!(stats.services.contains_key("/set_params"));
@@ -5010,8 +5205,8 @@ mod tests {
 
         // Simulate traffic
         for _ in 0..100 {
-            cmd_vel_stats.record_in(64);  // Twist message ~64 bytes
-            odom_stats.record_out(256);   // Odometry message ~256 bytes
+            cmd_vel_stats.record_in(64); // Twist message ~64 bytes
+            odom_stats.record_out(256); // Odometry message ~256 bytes
         }
 
         stats.topics.insert("/cmd_vel".to_string(), cmd_vel_stats);
@@ -5109,11 +5304,11 @@ mod tests {
         let stats = ActionStats::new();
 
         // Simulate a successful action goal lifecycle
-        stats.record_goal();        // Client sends goal
-        stats.record_accepted();    // Server accepts goal
-        stats.record_feedback();    // Feedback during execution
+        stats.record_goal(); // Client sends goal
+        stats.record_accepted(); // Server accepts goal
+        stats.record_feedback(); // Feedback during execution
         stats.record_feedback();
-        stats.record_succeeded();   // Goal succeeds
+        stats.record_succeeded(); // Goal succeeds
 
         assert_eq!(stats.goals.load(Ordering::Relaxed), 1);
         assert_eq!(stats.goals_accepted.load(Ordering::Relaxed), 1);
@@ -5201,7 +5396,7 @@ mod tests {
         let stats = ParameterStats::new();
 
         // Simulate typical parameter usage: list, get several, set a few
-        stats.record_list();  // First, list all parameters
+        stats.record_list(); // First, list all parameters
 
         // Get some parameters
         for _ in 0..5 {
@@ -5328,11 +5523,8 @@ mod tests {
         );
         assert_eq!(
             parse_node_name_from_param_service("rq/set_parameters"),
-            None  // Invalid - no node name
+            None // Invalid - no node name
         );
-        assert_eq!(
-            parse_node_name_from_param_service("invalid_key"),
-            None
-        );
+        assert_eq!(parse_node_name_from_param_service("invalid_key"), None);
     }
 }
