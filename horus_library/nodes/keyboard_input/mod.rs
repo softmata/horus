@@ -1,7 +1,7 @@
 use crate::KeyboardInput;
 use horus_core::error::HorusResult;
 use horus_core::terminal::set_raw_mode;
-use horus_core::{Hub, Node, NodeInfo, terminal_println};
+use horus_core::{terminal_println, Hub, Node, NodeInfo};
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
@@ -516,7 +516,10 @@ where
                     // Handle Ctrl+C to quit
                     if key_input.has_modifier("Ctrl") && key_input.code == keycodes::KEY_C {
                         use colored::Colorize;
-                        terminal_println!("{}", "\nReceived Ctrl+C, shutting down gracefully...".red());
+                        terminal_println!(
+                            "{}",
+                            "\nReceived Ctrl+C, shutting down gracefully...".red()
+                        );
                         let _ = disable_raw_mode();
                         set_raw_mode(false);
                         self.terminal_enabled = false;

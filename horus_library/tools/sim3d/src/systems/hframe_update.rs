@@ -327,7 +327,9 @@ impl HFrameShmPublisher {
     }
 
     /// Initialize or get the tf topic
-    fn get_or_create_tf_topic(&self) -> Option<std::sync::MutexGuard<Option<ShmTopic<TFMessage>>>> {
+    fn get_or_create_tf_topic(
+        &self,
+    ) -> Option<std::sync::MutexGuard<'_, Option<ShmTopic<TFMessage>>>> {
         let mut guard = self.tf_topic.lock().ok()?;
         if guard.is_none() {
             match ShmTopic::<TFMessage>::new("tf", 16) {
@@ -347,7 +349,7 @@ impl HFrameShmPublisher {
     /// Initialize or get the tf_static topic
     fn get_or_create_tf_static_topic(
         &self,
-    ) -> Option<std::sync::MutexGuard<Option<ShmTopic<TFMessage>>>> {
+    ) -> Option<std::sync::MutexGuard<'_, Option<ShmTopic<TFMessage>>>> {
         let mut guard = self.tf_static_topic.lock().ok()?;
         if guard.is_none() {
             match ShmTopic::<TFMessage>::new("tf_static", 16) {

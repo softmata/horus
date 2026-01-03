@@ -732,6 +732,12 @@ pub struct RosAction {
     pub goal: Vec<RosField>,
     pub result: Vec<RosField>,
     pub feedback: Vec<RosField>,
+    /// Constants defined in goal section
+    pub goal_constants: Vec<RosField>,
+    /// Constants defined in result section
+    pub result_constants: Vec<RosField>,
+    /// Constants defined in feedback section
+    pub feedback_constants: Vec<RosField>,
     pub source_file: PathBuf,
 }
 
@@ -1080,8 +1086,9 @@ pub fn parse_action_file(path: &Path, package: &str) -> HorusResult<RosAction> {
     // Split by separator line "---" (3 sections: goal, result, feedback)
     let parts: Vec<&str> = content.split("---").collect();
 
-    let parse_fields = |section: &str| -> Vec<RosField> {
+    let parse_fields_and_constants = |section: &str| -> (Vec<RosField>, Vec<RosField>) {
         let mut fields = Vec::new();
+        let mut constants = Vec::new();
         let mut current_comment = None;
 
         for line in section.lines() {
@@ -1101,15 +1108,22 @@ pub fn parse_action_file(path: &Path, package: &str) -> HorusResult<RosAction> {
                 let field_type = parts[0].trim();
                 let rest = parts[1].split('#').next().unwrap_or(parts[1]).trim();
 
-                // Check for constant (NAME=value) - skip them as they go in impl block
+                // Check for constant (NAME=value)
                 if rest.contains('=') {
                     let eq_parts: Vec<&str> = rest.splitn(2, '=').collect();
                     let field_name = eq_parts[0].trim();
-                    // Constants have ALL_CAPS names - skip them for struct fields
+                    // Constants have ALL_CAPS names - store them separately
                     if field_name
                         .chars()
                         .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
                     {
+                        constants.push(RosField {
+                            name: field_name.to_string(),
+                            field_type: field_type.to_string(),
+                            default_value: Some(eq_parts.get(1).unwrap_or(&"").trim().to_string()),
+                            comment: current_comment.take(),
+                            is_constant: true,
+                        });
                         continue;
                     }
                     // Otherwise it's a default value, extract just the name
@@ -1139,23 +1153,23 @@ pub fn parse_action_file(path: &Path, package: &str) -> HorusResult<RosAction> {
                 }
             }
         }
-        fields
+        (fields, constants)
     };
 
-    let goal = if !parts.is_empty() {
-        parse_fields(parts[0])
+    let (goal, goal_constants) = if !parts.is_empty() {
+        parse_fields_and_constants(parts[0])
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    let result = if parts.len() > 1 {
-        parse_fields(parts[1])
+    let (result, result_constants) = if parts.len() > 1 {
+        parse_fields_and_constants(parts[1])
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    let feedback = if parts.len() > 2 {
-        parse_fields(parts[2])
+    let (feedback, feedback_constants) = if parts.len() > 2 {
+        parse_fields_and_constants(parts[2])
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     Ok(RosAction {
@@ -1164,6 +1178,9 @@ pub fn parse_action_file(path: &Path, package: &str) -> HorusResult<RosAction> {
         goal,
         result,
         feedback,
+        goal_constants,
+        result_constants,
+        feedback_constants,
         source_file: path.to_path_buf(),
     })
 }
@@ -1584,7 +1601,29 @@ pub fn action_to_rust_with_non_default(
             rust_type
         ));
     }
-    output.push_str("}\n\n");
+    output.push_str("}\n");
+
+    // Goal constants
+    if !action.goal_constants.is_empty() {
+        output.push_str(&format!("\nimpl {}Goal {{\n", action.name));
+        for constant in &action.goal_constants {
+            let rust_type = ros2_to_rust_type(&constant.field_type);
+            if let Some(ref value) = constant.default_value {
+                let clean_value = value.split('#').next().unwrap_or(value).trim();
+                let rust_value = if rust_type == "String" {
+                    format!("\"{}\"", clean_value)
+                } else {
+                    clean_value.to_string()
+                };
+                output.push_str(&format!(
+                    "    pub const {}: {} = {};\n",
+                    constant.name, rust_type, rust_value
+                ));
+            }
+        }
+        output.push_str("}\n");
+    }
+    output.push_str("\n");
 
     // Check if Result field types support Default
     let result_supports_default = action.result.iter().all(|f| {
@@ -1614,7 +1653,29 @@ pub fn action_to_rust_with_non_default(
             rust_type
         ));
     }
-    output.push_str("}\n\n");
+    output.push_str("}\n");
+
+    // Result constants
+    if !action.result_constants.is_empty() {
+        output.push_str(&format!("\nimpl {}Result {{\n", action.name));
+        for constant in &action.result_constants {
+            let rust_type = ros2_to_rust_type(&constant.field_type);
+            if let Some(ref value) = constant.default_value {
+                let clean_value = value.split('#').next().unwrap_or(value).trim();
+                let rust_value = if rust_type == "String" {
+                    format!("\"{}\"", clean_value)
+                } else {
+                    clean_value.to_string()
+                };
+                output.push_str(&format!(
+                    "    pub const {}: {} = {};\n",
+                    constant.name, rust_type, rust_value
+                ));
+            }
+        }
+        output.push_str("}\n");
+    }
+    output.push_str("\n");
 
     // Check if Feedback field types support Default
     let feedback_supports_default = action.feedback.iter().all(|f| {
@@ -1645,6 +1706,27 @@ pub fn action_to_rust_with_non_default(
         ));
     }
     output.push_str("}\n");
+
+    // Feedback constants
+    if !action.feedback_constants.is_empty() {
+        output.push_str(&format!("\nimpl {}Feedback {{\n", action.name));
+        for constant in &action.feedback_constants {
+            let rust_type = ros2_to_rust_type(&constant.field_type);
+            if let Some(ref value) = constant.default_value {
+                let clean_value = value.split('#').next().unwrap_or(value).trim();
+                let rust_value = if rust_type == "String" {
+                    format!("\"{}\"", clean_value)
+                } else {
+                    clean_value.to_string()
+                };
+                output.push_str(&format!(
+                    "    pub const {}: {} = {};\n",
+                    constant.name, rust_type, rust_value
+                ));
+            }
+        }
+        output.push_str("}\n");
+    }
 
     output
 }
