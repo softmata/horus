@@ -1,17 +1,17 @@
 use horus_core::scheduling::Scheduler;
-use horus_core::{HorusResult, Hub, Link, Node, NodeInfo, NodeInfoExt};
+use horus_core::{HorusResult, Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::Duration;
 
 // Node that publishes telemetry data using Hub (multiple subscribers can consume)
 pub struct TelemetryNode {
-    telemetry_hub: Hub<f32>,
+    telemetry_hub: Topic<f32>,
     counter: f32,
 }
 
 impl TelemetryNode {
     pub fn new() -> HorusResult<Self> {
         Ok(Self {
-            telemetry_hub: Hub::new("telemetry")?,
+            telemetry_hub: Topic::new("telemetry")?,
             counter: 0.0,
         })
     }
@@ -38,15 +38,15 @@ impl Node for TelemetryNode {
 
 // Control node that uses Link for real-time control (single producer/consumer, lowest latency)
 pub struct ControlNode {
-    command_link: Link<f32>,
-    response_link: Link<f32>,
+    command_link: Topic<f32>,
+    response_link: Topic<f32>,
 }
 
 impl ControlNode {
     pub fn new() -> HorusResult<Self> {
         Ok(Self {
-            command_link: Link::producer("command")?,
-            response_link: Link::consumer("response")?,
+            command_link: Topic::new("command")?,
+            response_link: Topic::new("response")?,
         })
     }
 }
@@ -77,16 +77,16 @@ impl Node for ControlNode {
 
 // Actuator node that receives commands via Link (for low latency)
 pub struct ActuatorNode {
-    command_link: Link<f32>,
-    response_link: Link<f32>,
+    command_link: Topic<f32>,
+    response_link: Topic<f32>,
     processed: u32,
 }
 
 impl ActuatorNode {
     pub fn new() -> HorusResult<Self> {
         Ok(Self {
-            command_link: Link::consumer("command")?,
-            response_link: Link::producer("response")?,
+            command_link: Topic::new("command")?,
+            response_link: Topic::new("response")?,
             processed: 0,
         })
     }
@@ -114,14 +114,14 @@ impl Node for ActuatorNode {
 
 // Logger node that subscribes to telemetry Hub (one of many possible subscribers)
 pub struct LoggerNode {
-    telemetry_hub: Hub<f32>,
+    telemetry_hub: Topic<f32>,
     logs_received: u32,
 }
 
 impl LoggerNode {
     pub fn new() -> HorusResult<Self> {
         Ok(Self {
-            telemetry_hub: Hub::new("telemetry")?,
+            telemetry_hub: Topic::new("telemetry")?,
             logs_received: 0,
         })
     }
@@ -152,7 +152,7 @@ impl Node for LoggerNode {
 
 // Analytics node that also subscribes to telemetry Hub (demonstrating multiple subscribers)
 pub struct AnalyticsNode {
-    telemetry_hub: Hub<f32>,
+    telemetry_hub: Topic<f32>,
     sum: f32,
     count: u32,
 }
@@ -160,7 +160,7 @@ pub struct AnalyticsNode {
 impl AnalyticsNode {
     pub fn new() -> HorusResult<Self> {
         Ok(Self {
-            telemetry_hub: Hub::new("telemetry")?,
+            telemetry_hub: Topic::new("telemetry")?,
             sum: 0.0,
             count: 0,
         })

@@ -1,7 +1,7 @@
 use crate::KeyboardInput;
 use horus_core::error::HorusResult;
 use horus_core::terminal::set_raw_mode;
-use horus_core::{terminal_println, Hub, Node, NodeInfo};
+use horus_core::{terminal_println, Node, NodeInfo, Topic};
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
@@ -171,7 +171,7 @@ pub struct KeyboardInputNode<P = PassThrough<KeyboardInput>>
 where
     P: Processor<KeyboardInput>,
 {
-    publisher: Hub<KeyboardInput>,
+    publisher: Topic<KeyboardInput>,
     /// Custom key mapping: maps from input string/char to (key_name, keycode)
     custom_mapping: Arc<Mutex<HashMap<String, (String, u32)>>>,
     /// Flag to indicate if terminal mode is enabled
@@ -190,7 +190,7 @@ impl KeyboardInputNode {
     /// Create a new keyboard input node with custom topic
     pub fn new_with_topic(topic: &str) -> Result<Self> {
         let mut node = Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             custom_mapping: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "crossterm")]
             terminal_enabled: false,
@@ -673,7 +673,7 @@ where
     /// Build the node
     pub fn build(self) -> Result<KeyboardInputNode<P>> {
         let mut node = KeyboardInputNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             custom_mapping: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "crossterm")]
             terminal_enabled: false,

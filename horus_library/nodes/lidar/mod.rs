@@ -9,7 +9,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -105,7 +105,7 @@ where
     D: Sensor<Output = LaserScan>,
     P: Processor<LaserScan>,
 {
-    publisher: Hub<LaserScan>,
+    publisher: Topic<LaserScan>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -153,7 +153,7 @@ impl LidarNode<LidarDriver, PassThrough<LaserScan>> {
         };
 
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,
@@ -193,7 +193,7 @@ where
     /// ```
     pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,
@@ -480,7 +480,7 @@ where
         };
 
         Ok(LidarNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,
@@ -522,7 +522,7 @@ where
         let driver = self.driver.unwrap_or_default();
 
         Ok(LidarNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "laser_frame".to_string(),
             scan_frequency: 10.0,

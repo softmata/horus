@@ -45,6 +45,34 @@ pub struct CircuitBreaker {
     last_failure_time: Arc<parking_lot::Mutex<Option<Instant>>>,
 }
 
+impl Clone for CircuitBreaker {
+    fn clone(&self) -> Self {
+        // Clone creates a new instance with same config but fresh state
+        Self {
+            state: Arc::new(AtomicU8::new(self.state.load(Ordering::SeqCst))),
+            failure_count: Arc::new(AtomicU32::new(self.failure_count.load(Ordering::SeqCst))),
+            success_count: Arc::new(AtomicU32::new(self.success_count.load(Ordering::SeqCst))),
+            failure_threshold: self.failure_threshold,
+            success_threshold: self.success_threshold,
+            timeout: self.timeout,
+            last_failure_time: Arc::new(parking_lot::Mutex::new(*self.last_failure_time.lock())),
+        }
+    }
+}
+
+impl std::fmt::Debug for CircuitBreaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CircuitBreaker")
+            .field("state", &self.get_state())
+            .field("failure_count", &self.failure_count.load(Ordering::SeqCst))
+            .field("success_count", &self.success_count.load(Ordering::SeqCst))
+            .field("failure_threshold", &self.failure_threshold)
+            .field("success_threshold", &self.success_threshold)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
 impl CircuitBreaker {
     /// Create new circuit breaker
     ///

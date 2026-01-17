@@ -16,7 +16,7 @@
 //! ```
 
 use horus_core::memory::shm_topics_dir;
-use horus_core::{Link, Node, NodeInfo, Scheduler};
+use horus_core::{Node, Topic, NodeInfo, Scheduler};
 use serde::{Deserialize, Serialize};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -81,9 +81,9 @@ impl MotorCommand {
 /// Receives commands and sends encoder feedback
 struct MotorDriverNode {
     // Receives commands from controller
-    cmd_link: Link<MotorCommand>,
+    cmd_link: Topic<MotorCommand>,
     // Sends encoder readings to controller
-    encoder_link: Link<EncoderReading>,
+    encoder_link: Topic<EncoderReading>,
 
     // Simulated motor state
     position: f64,
@@ -95,8 +95,8 @@ struct MotorDriverNode {
 impl MotorDriverNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            cmd_link: Link::consumer("motor_cmd")?,
-            encoder_link: Link::producer("encoder_feedback")?,
+            cmd_link: Topic::new("motor_cmd")?,
+            encoder_link: Topic::new("encoder_feedback")?,
             position: 0.0,
             velocity: 0.0,
             voltage: 0.0,
@@ -156,9 +156,9 @@ impl Node for MotorDriverNode {
 /// PID Controller node - implements position control
 struct MotorControllerNode {
     // Receives encoder readings
-    encoder_link: Link<EncoderReading>,
+    encoder_link: Topic<EncoderReading>,
     // Sends motor commands
-    cmd_link: Link<MotorCommand>,
+    cmd_link: Topic<MotorCommand>,
 
     // Control parameters
     target_position: f64,
@@ -173,8 +173,8 @@ struct MotorControllerNode {
 impl MotorControllerNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            encoder_link: Link::consumer("encoder_feedback")?,
-            cmd_link: Link::producer("motor_cmd")?,
+            encoder_link: Topic::new("encoder_feedback")?,
+            cmd_link: Topic::new("motor_cmd")?,
             target_position: 0.0,
             kp: 5.0,
             kd: 0.5,

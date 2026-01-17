@@ -97,6 +97,8 @@ rpassword = "7.3"
 default = []
 zenoh-transport = ["horus_core/zenoh-transport", "dep:zenoh", "dep:cdr-encoding", "dep:byteorder"]
 zenoh-ros2 = ["horus_core/zenoh-ros2"]
+mdns = ["horus_core/mdns"]
+signaling-server = ["horus_core/signaling-server"]
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

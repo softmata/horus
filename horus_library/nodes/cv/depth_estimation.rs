@@ -39,7 +39,7 @@ use ort::value::Tensor;
 
 use crate::messages::ml::InferenceMetrics;
 use crate::messages::{DepthImage, Image};
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 
 #[cfg(feature = "onnx")]
 use ndarray::{Array, ArrayD, IxDyn};
@@ -225,13 +225,13 @@ impl Default for DepthConfig {
 #[cfg(feature = "onnx")]
 pub struct DepthEstimationNode {
     /// Image input subscriber
-    image_sub: Hub<Image>,
+    image_sub: Topic<Image>,
     /// Depth image publisher
-    depth_pub: Hub<DepthImage>,
+    depth_pub: Topic<DepthImage>,
     /// Visualization publisher (optional)
-    vis_pub: Option<Hub<Image>>,
+    vis_pub: Option<Topic<Image>>,
     /// Metrics publisher
-    metrics_pub: Hub<InferenceMetrics>,
+    metrics_pub: Topic<InferenceMetrics>,
     /// ONNX Runtime session
     session: Session,
     /// Configuration
@@ -260,16 +260,16 @@ impl DepthEstimationNode {
             .to_string();
 
         let vis_pub = if config.enable_visualization {
-            Some(Hub::new(&format!("{}.visualization", output_topic))?)
+            Some(Topic::new(&format!("{}.visualization", output_topic))?)
         } else {
             None
         };
 
         Ok(Self {
-            image_sub: Hub::new(input_topic)?,
-            depth_pub: Hub::new(output_topic)?,
+            image_sub: Topic::new(input_topic)?,
+            depth_pub: Topic::new(output_topic)?,
             vis_pub,
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_name,

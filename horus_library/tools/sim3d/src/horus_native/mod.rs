@@ -21,7 +21,7 @@
 //! ```
 
 use bevy::prelude::*;
-use horus_core::communication::Hub;
+use horus_core::communication::Topic;
 use horus_library::messages::{
     control::JointCommand,
     geometry::Twist,
@@ -86,12 +86,12 @@ impl HorusTopicConfig {
 
 /// Per-robot HORUS communication hubs
 pub struct RobotHubs {
-    pub cmd_vel_sub: Option<Hub<Twist>>,
-    pub odom_pub: Option<Hub<Odometry>>,
-    pub scan_pub: Option<Hub<LaserScan>>,
-    pub imu_pub: Option<Hub<Imu>>,
-    pub joint_cmd_sub: Option<Hub<JointCommand>>,
-    pub joint_state_pub: Option<Hub<JointCommand>>, // Reuse JointCommand for states
+    pub cmd_vel_sub: Option<Topic<Twist>>,
+    pub odom_pub: Option<Topic<Odometry>>,
+    pub scan_pub: Option<Topic<LaserScan>>,
+    pub imu_pub: Option<Topic<Imu>>,
+    pub joint_cmd_sub: Option<Topic<JointCommand>>,
+    pub joint_state_pub: Option<Topic<JointCommand>>, // Reuse JointCommand for states
 }
 
 impl RobotHubs {
@@ -101,32 +101,32 @@ impl RobotHubs {
 
         Self {
             cmd_vel_sub: if config.cmd_vel {
-                Hub::new(&format!("{}.cmd_vel", prefix)).ok()
+                Topic::new(&format!("{}.cmd_vel", prefix)).ok()
             } else {
                 None
             },
             odom_pub: if config.odom {
-                Hub::new(&format!("{}.odom", prefix)).ok()
+                Topic::new(&format!("{}.odom", prefix)).ok()
             } else {
                 None
             },
             scan_pub: if config.scan {
-                Hub::new(&format!("{}.scan", prefix)).ok()
+                Topic::new(&format!("{}.scan", prefix)).ok()
             } else {
                 None
             },
             imu_pub: if config.imu {
-                Hub::new(&format!("{}.imu", prefix)).ok()
+                Topic::new(&format!("{}.imu", prefix)).ok()
             } else {
                 None
             },
             joint_cmd_sub: if config.joint_cmd {
-                Hub::new(&format!("{}.joint_cmd", prefix)).ok()
+                Topic::new(&format!("{}.joint_cmd", prefix)).ok()
             } else {
                 None
             },
             joint_state_pub: if config.joint_states {
-                Hub::new(&format!("{}.joint_states", prefix)).ok()
+                Topic::new(&format!("{}.joint_states", prefix)).ok()
             } else {
                 None
             },
@@ -268,7 +268,7 @@ pub mod prelude {
     pub use super::{
         HorusComm, HorusNativePlugin, HorusTopicConfig, RobotCommandHandler, RobotHubs,
     };
-    pub use horus_core::communication::Hub;
+    pub use horus_core::communication::Topic;
     pub use horus_library::messages::{
         control::JointCommand,
         geometry::Twist,

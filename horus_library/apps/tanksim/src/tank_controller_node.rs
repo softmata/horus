@@ -6,8 +6,8 @@ use horus::prelude::*;
 use horus_library::messages::{CmdVel, KeyboardInput};
 
 pub struct TankControllerNode {
-    keyboard_sub: Hub<KeyboardInput>,
-    cmd_vel_pub: Hub<CmdVel>,
+    keyboard_sub: Topic<KeyboardInput>,
+    cmd_vel_pub: Topic<CmdVel>,
     tank_id: String,
 
     // Tank control parameters
@@ -33,9 +33,9 @@ impl TankControllerNode {
         tank_id: &str,
     ) -> std::result::Result<Self, String> {
         Ok(Self {
-            keyboard_sub: Hub::new(keyboard_topic)
+            keyboard_sub: Topic::new(keyboard_topic)
                 .map_err(|e| format!("Failed to create keyboard subscriber: {}", e))?,
-            cmd_vel_pub: Hub::new(cmd_vel_topic)
+            cmd_vel_pub: Topic::new(cmd_vel_topic)
                 .map_err(|e| format!("Failed to create cmd_vel publisher: {}", e))?,
             tank_id: tank_id.to_string(),
             max_linear_speed: 3.0,  // 3 m/s max

@@ -2,9 +2,9 @@ name: Benchmark CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
   schedule:
     # Run weekly on Monday at 00:00 UTC
     - cron: '0 0 * * 1'
@@ -12,6 +12,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Regression threshold: fail if latency increases by more than this percentage
+  REGRESSION_THRESHOLD: 10
 
 jobs:
   benchmark:
@@ -20,11 +22,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history for baseline comparison
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
     - name: Install system dependencies
       run: |
@@ -54,15 +63,29 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Download baseline (if exists)
+      uses: actions/cache@v4
+      with:
+        path: benchmarks/baseline.json
+        key: benchmark-baseline-${{ github.base_ref || 'main' }}
+        restore-keys: |
+          benchmark-baseline-main
+          benchmark-baseline-
+
     - name: Build benchmarks
       run: |
         cd benchmarks
         cargo build --release --benches
 
-    - name: Run benchmarks
+    - name: Run Link performance benchmarks
       run: |
         cd benchmarks
-        cargo bench --no-fail-fast -- --save-baseline current
+        cargo bench --bench link_performance -- --noplot
+
+    - name: Run production message benchmarks
+      run: |
+        cd benchmarks
+        cargo bench --bench production_messages -- --noplot
 
     - name: Generate benchmark report
       run: |
@@ -71,6 +94,33 @@ jobs:
         mkdir -p benchmark-report
         cp -r target/criterion/* ./benchmark-report/ || true
 
+    - name: Check for performance regression
+      id: regression-check
+      run: |
+        cd benchmarks
+        # Run regression check with threshold
+        python3 scripts/check_regression.py \
+          target/criterion \
+          --threshold ${{ env.REGRESSION_THRESHOLD }} \
+          --baseline-file baseline.json \
+          --output-markdown /tmp/benchmark-report.md
+
+    - name: Save new baseline (on main branch)
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        cd benchmarks
+        python3 scripts/check_regression.py \
+          target/criterion \
+          --save-baseline \
+          --baseline-file baseline.json
+
+    - name: Update baseline cache (on main)
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: actions/cache/save@v4
+      with:
+        path: benchmarks/baseline.json
+        key: benchmark-baseline-main
+
     - name: Upload benchmark results
       uses: actions/upload-artifact@v4
       with:
@@ -78,13 +128,7 @@ jobs:
         path: |
           benchmarks/benchmark-report
           benchmarks/target/criterion
-
-    - name: Check for performance regression
-      if: github.event_name == 'pull_request'
-      run: |
-        cd benchmarks
-        # Compare against baseline
-        cargo bench -- --baseline main --save-baseline pr || true
+          benchmarks/baseline.json
 
     - name: Comment PR with results
       if: github.event_name == 'pull_request'
@@ -93,18 +137,45 @@ jobs:
         script: |
           const fs = require('fs');
 
-          let summary = "## Benchmark Results\n\n";
-          summary += "| Test | Latency (ns) | Change |\n";
-          summary += "|------|-------------|--------|\n";
-          summary += "| Hub 1KB | ~38 | baseline |\n";
-          summary += "| Link 1KB | ~35 | baseline |\n";
+          let summary = "";
+          try {
+            summary = fs.readFileSync('/tmp/benchmark-report.md', 'utf8');
+          } catch (e) {
+            summary = "## Benchmark Results\n\n:warning: Could not parse benchmark results.";
+          }
 
-          github.rest.issues.createComment({
+          // Add footer
+          summary += "\n\n---\n";
+          summary += `*Regression threshold: ${{ env.REGRESSION_THRESHOLD }}%*\n`;
+          summary += `*Commit: ${{ github.sha }}*`;
+
+          // Find and update existing comment or create new one
+          const { data: comments } = await github.rest.issues.listComments({
             issue_number: context.issue.number,
             owner: context.repo.owner,
             repo: context.repo.repo,
-            body: summary
           });
+
+          const botComment = comments.find(comment =>
+            comment.user.type === 'Bot' &&
+            comment.body.includes('Benchmark Results')
+          );
+
+          if (botComment) {
+            await github.rest.issues.updateComment({
+              comment_id: botComment.id,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+          } else {
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+          }
 
   benchmark-compare:
     name: Compare with ROS2

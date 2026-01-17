@@ -53,9 +53,9 @@ struct TrackMemory {
 
 pub struct F1TenthRacer {
     // HORUS communication
-    cmd_vel: Hub<CmdVel>,
-    odom_sub: Hub<Odometry>,
-    lidar_sub: Hub<LaserScan>,
+    cmd_vel: Topic<CmdVel>,
+    odom_sub: Topic<Odometry>,
+    lidar_sub: Topic<LaserScan>,
 
     // State
     phase: RacingPhase,
@@ -103,9 +103,9 @@ impl F1TenthRacer {
         println!("Phase 1: Exploration - Learning the track");
 
         Ok(Self {
-            cmd_vel: Hub::new("f1tenth.cmd_vel")?,
-            odom_sub: Hub::new("f1tenth.odom")?,
-            lidar_sub: Hub::new("f1tenth.scan")?,
+            cmd_vel: Topic::new("f1tenth.cmd_vel")?,
+            odom_sub: Topic::new("f1tenth.odom")?,
+            lidar_sub: Topic::new("f1tenth.scan")?,
 
             phase: RacingPhase::Exploration,
             current_pose: (0.0, 0.0, 0.0),

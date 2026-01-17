@@ -39,7 +39,7 @@ use ort::value::Tensor;
 
 use crate::messages::ml::InferenceMetrics;
 use crate::messages::{Detection, DetectionArray, Image, RegionOfInterest};
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 use std::path::Path;
 use std::time::Instant;
 
@@ -179,14 +179,14 @@ impl YOLOConfig {
 #[cfg(feature = "onnx")]
 pub struct YOLOv8DetectorNode {
     /// Input hub for images
-    image_sub: Hub<Image>,
+    image_sub: Topic<Image>,
     /// Output hub for detections
-    detections_pub: Hub<DetectionArray>,
+    detections_pub: Topic<DetectionArray>,
     /// Output hub for annotated images (optional)
     #[allow(dead_code)]
-    annotated_pub: Option<Hub<Image>>,
+    annotated_pub: Option<Topic<Image>>,
     /// Output hub for metrics
-    metrics_pub: Hub<InferenceMetrics>,
+    metrics_pub: Topic<InferenceMetrics>,
     /// ONNX Runtime session
     session: Session,
     /// YOLO configuration
@@ -215,16 +215,16 @@ impl YOLOv8DetectorNode {
             .to_string();
 
         let annotated_pub = if config.enable_visualization {
-            Some(Hub::new(&format!("{}.annotated", output_topic))?)
+            Some(Topic::new(&format!("{}.annotated", output_topic))?)
         } else {
             None
         };
 
         Ok(Self {
-            image_sub: Hub::new(input_topic)?,
-            detections_pub: Hub::new(output_topic)?,
+            image_sub: Topic::new(input_topic)?,
+            detections_pub: Topic::new(output_topic)?,
             annotated_pub,
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_name,

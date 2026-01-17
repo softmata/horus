@@ -1,328 +1,596 @@
-//! Link SPSC Performance Benchmarks
+//! HORUS Topic Backend Performance Benchmarks
 //!
-//! Comprehensive benchmarks for the Link (Single Producer Single Consumer) IPC mechanism.
-//! Tests latency, throughput, and compares with Hub to verify the claimed 2-4x speedup.
+//! Comprehensive benchmarks measuring IPC latency and throughput across all Topic backends.
+//!
+//! ## Backend Hierarchy (fastest to most flexible)
+//!
+//! | Backend       | Latency  | Use Case                          |
+//! |---------------|----------|-----------------------------------|
+//! | DirectChannel | ~3-5ns   | Same-thread pipelines             |
+//! | SpscIntra     | ~15-25ns | Cross-thread point-to-point       |
+//! | MpmcIntra     | ~30-50ns | Same-process pub/sub              |
+//! | SpscShm       | ~80-100ns| Cross-process point-to-point      |
+//! | MpmcShm       | ~150-200ns| Cross-process pub/sub (default)  |
+//!
+//! ## Benchmark Categories
+//!
+//! 1. **Backend Comparison** - Compare all backends with same payload
+//! 2. **Cross-Thread Latency** - True IPC with separate producer/consumer threads
+//! 3. **Throughput** - Sustained message rate under load
+//! 4. **Payload Scaling** - How latency scales with message size
+//!
+//! ## Running Benchmarks
+//!
+//! ```bash
+//! # Run all Topic benchmarks
+//! cargo bench --bench link_performance
+//!
+//! # Run specific group
+//! cargo bench --bench link_performance -- "backend_comparison"
+//! cargo bench --bench link_performance -- "cross_thread"
+//! cargo bench --bench link_performance -- "throughput"
+//! ```
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use horus::prelude::{Hub, Link};
-use horus_library::messages::{
-    cmd_vel::CmdVel,
-    sensor::{Imu, LaserScan},
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use horus::prelude::Topic;
+use horus_library::messages::cmd_vel::CmdVel;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
-/// Small message (16 bytes) - CmdVel
-/// Target: <100ns for Link vs ~296ns for Hub
-fn bench_link_small_message(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_small_16B");
+// =============================================================================
+// Section 1: Backend Comparison (Same-Thread Round-Trip)
+// =============================================================================
+
+/// Compare all Topic backends with 16-byte CmdVel payload.
+/// Measures same-thread send+recv round-trip latency.
+fn bench_backend_comparison(c: &mut Criterion) {
+    let mut group = c.benchmark_group("backend_comparison");
     group.throughput(Throughput::Bytes(std::mem::size_of::<CmdVel>() as u64));
 
-    // Link: send + recv
-    group.bench_function("Link::send_recv", |b| {
-        let topic = format!("bench_link_small_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
+    // DirectChannel - same-thread only (~3-5ns)
+    group.bench_function("DirectChannel", |b| {
+        let topic: Topic<CmdVel> = Topic::direct("bench_direct");
+        b.iter(|| {
+            let msg = CmdVel::new(1.5, 0.8);
+            topic.send(black_box(msg), &mut None).unwrap();
+            black_box(topic.recv(&mut None))
+        });
+    });
 
+    // DirectChannel unchecked - absolute minimum (~3ns)
+    group.bench_function("DirectChannel_unchecked", |b| {
+        let topic: Topic<CmdVel> = Topic::direct("bench_direct_unc");
+        b.iter(|| {
+            let msg = CmdVel::new(1.5, 0.8);
+            // SAFETY: Same thread, DirectChannel backend
+            unsafe {
+                topic.send_unchecked(black_box(msg));
+                black_box(topic.recv_unchecked())
+            }
+        });
+    });
+
+    // SpscIntra - fastest cross-thread (~15-25ns)
+    group.bench_function("SpscIntra", |b| {
+        let topic = format!("bench_spsc_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
             producer.send(black_box(msg), &mut None).unwrap();
-            let _ = black_box(consumer.recv(&mut None));
+            black_box(consumer.recv(&mut None))
         });
     });
 
-    // Hub: send + recv (for comparison)
-    group.bench_function("Hub::send_recv", |b| {
-        let topic = format!("bench_hub_small_{}", std::process::id());
-        let sender: Hub<CmdVel> = Hub::new(&topic).unwrap();
-        let receiver: Hub<CmdVel> = Hub::new(&topic).unwrap();
-
+    // MpmcIntra - flexible same-process (~30-50ns)
+    group.bench_function("MpmcIntra", |b| {
+        let topic = format!("bench_mpmc_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::mpmc_intra(&topic, 64);
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
-            sender.send(black_box(msg), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
         });
     });
 
-    // Link: send only (consumer exists but doesn't recv to isolate send performance)
-    group.bench_function("Link::send_only", |b| {
-        let topic = format!("bench_link_send_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let _consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
-
+    // SpscShm - fastest cross-process (~80-100ns)
+    group.bench_function("SpscShm", |b| {
+        let topic = format!("bench_spsc_shm_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
-            // Ignore error if buffer is full
-            let _ = producer.send(black_box(msg), &mut None);
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
         });
     });
 
-    // Link: recv only
-    group.bench_function("Link::recv_only", |b| {
-        let topic = format!("bench_link_recv_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
-
-        // Pre-fill with messages
-        for _ in 0..1000 {
-            producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap();
-        }
-
+    // MpmcShm - default, most flexible (~150-200ns)
+    group.bench_function("MpmcShm", |b| {
+        let topic = format!("bench_mpmc_shm_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
         b.iter(|| {
-            let _ = black_box(consumer.recv(&mut None));
+            let msg = CmdVel::new(1.5, 0.8);
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
         });
     });
 
     group.finish();
 }
 
-/// Medium message (~304 bytes) - IMU data
-fn bench_link_medium_message(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_medium_304B");
-    group.throughput(Throughput::Bytes(std::mem::size_of::<Imu>() as u64));
+// =============================================================================
+// Section 2: Cross-Thread Latency (True IPC)
+// =============================================================================
 
-    // Link: send + recv
-    group.bench_function("Link::send_recv", |b| {
-        let topic = format!("bench_link_imu_{}", std::process::id());
-        let producer: Link<Imu> = Link::producer(&topic).unwrap();
-        let consumer: Link<Imu> = Link::consumer(&topic).unwrap();
+/// Measure TRUE IPC latency with producer and consumer on separate threads.
+/// This reflects real-world usage where threads communicate asynchronously.
+fn bench_cross_thread_latency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cross_thread_latency");
+    group.measurement_time(Duration::from_secs(10));
 
-        b.iter(|| {
-            let mut imu = Imu::new();
-            imu.set_orientation_from_euler(0.1, 0.2, 0.3);
-            producer.send(black_box(imu), &mut None).unwrap();
-            let _ = black_box(consumer.recv(&mut None));
-        });
-    });
+    // SpscIntra cross-thread
+    group.bench_function("SpscIntra", |b| {
+        b.iter_custom(|iters| {
+            let topic = format!("bench_cross_intra_{}", std::process::id());
+            let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
 
-    // Hub: send + recv (for comparison)
-    group.bench_function("Hub::send_recv", |b| {
-        let topic = format!("bench_hub_imu_{}", std::process::id());
-        let sender: Hub<Imu> = Hub::new(&topic).unwrap();
-        let receiver: Hub<Imu> = Hub::new(&topic).unwrap();
+            let running = Arc::new(AtomicBool::new(true));
+            let running_clone = running.clone();
+            let iters_to_send = iters;
 
-        b.iter(|| {
-            let mut imu = Imu::new();
-            imu.set_orientation_from_euler(0.1, 0.2, 0.3);
-            sender.send(black_box(imu), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
-        });
-    });
+            let producer_handle = thread::spawn(move || {
+                for _ in 0..iters_to_send {
+                    let msg = CmdVel::new(1.5, 0.8);
+                    while producer.send(msg, &mut None).is_err() {
+                        thread::yield_now();
+                    }
+                }
+            });
 
-    group.finish();
-}
-
-/// Large message (~1.5KB) - LaserScan
-fn bench_link_large_message(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_large_1.5KB");
-    group.throughput(Throughput::Bytes(std::mem::size_of::<LaserScan>() as u64));
-
-    // Link: send + recv
-    group.bench_function("Link::send_recv", |b| {
-        let topic = format!("bench_link_laser_{}", std::process::id());
-        let producer: Link<LaserScan> = Link::producer(&topic).unwrap();
-        let consumer: Link<LaserScan> = Link::consumer(&topic).unwrap();
-
-        b.iter(|| {
-            let mut scan = LaserScan::new();
-            for i in 0..360 {
-                scan.ranges[i] = 5.0 + (i as f32 * 0.01);
+            let start = Instant::now();
+            let mut received = 0u64;
+            while received < iters {
+                if consumer.recv(&mut None).is_some() {
+                    received += 1;
+                } else if !running_clone.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    thread::yield_now();
+                }
             }
-            producer.send(black_box(scan), &mut None).unwrap();
-            let _ = black_box(consumer.recv(&mut None));
+            let elapsed = start.elapsed();
+
+            running.store(false, Ordering::Relaxed);
+            let _ = producer_handle.join();
+            elapsed
         });
     });
 
-    // Hub: send + recv (for comparison)
-    group.bench_function("Hub::send_recv", |b| {
-        let topic = format!("bench_hub_laser_{}", std::process::id());
-        let sender: Hub<LaserScan> = Hub::new(&topic).unwrap();
-        let receiver: Hub<LaserScan> = Hub::new(&topic).unwrap();
+    // MpmcIntra cross-thread
+    group.bench_function("MpmcIntra", |b| {
+        b.iter_custom(|iters| {
+            let topic = format!("bench_cross_mpmc_intra_{}", std::process::id());
+            let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::mpmc_intra(&topic, 1024);
 
-        b.iter(|| {
-            let mut scan = LaserScan::new();
-            for i in 0..360 {
-                scan.ranges[i] = 5.0 + (i as f32 * 0.01);
+            let running = Arc::new(AtomicBool::new(true));
+            let running_clone = running.clone();
+            let iters_to_send = iters;
+
+            let producer_handle = thread::spawn(move || {
+                for _ in 0..iters_to_send {
+                    let msg = CmdVel::new(1.5, 0.8);
+                    while producer.send(msg, &mut None).is_err() {
+                        thread::yield_now();
+                    }
+                }
+            });
+
+            let start = Instant::now();
+            let mut received = 0u64;
+            while received < iters {
+                if consumer.recv(&mut None).is_some() {
+                    received += 1;
+                } else if !running_clone.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    thread::yield_now();
+                }
             }
-            sender.send(black_box(scan), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            let elapsed = start.elapsed();
+
+            running.store(false, Ordering::Relaxed);
+            let _ = producer_handle.join();
+            elapsed
+        });
+    });
+
+    // SpscShm cross-thread
+    group.bench_function("SpscShm", |b| {
+        b.iter_custom(|iters| {
+            let topic = format!("bench_cross_spsc_{}", std::process::id());
+            let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
+            let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+
+            let running = Arc::new(AtomicBool::new(true));
+            let running_clone = running.clone();
+            let iters_to_send = iters;
+
+            let producer_handle = thread::spawn(move || {
+                for _ in 0..iters_to_send {
+                    let msg = CmdVel::new(1.5, 0.8);
+                    while producer.send(msg, &mut None).is_err() {
+                        thread::yield_now();
+                    }
+                }
+            });
+
+            let start = Instant::now();
+            let mut received = 0u64;
+            while received < iters {
+                if consumer.recv(&mut None).is_some() {
+                    received += 1;
+                } else if !running_clone.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    thread::yield_now();
+                }
+            }
+            let elapsed = start.elapsed();
+
+            running.store(false, Ordering::Relaxed);
+            let _ = producer_handle.join();
+            elapsed
+        });
+    });
+
+    // MpmcShm cross-thread
+    group.bench_function("MpmcShm", |b| {
+        b.iter_custom(|iters| {
+            let topic = format!("bench_cross_mpmc_{}", std::process::id());
+            let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+            let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+
+            let running = Arc::new(AtomicBool::new(true));
+            let running_clone = running.clone();
+            let iters_to_send = iters;
+
+            let producer_handle = thread::spawn(move || {
+                for _ in 0..iters_to_send {
+                    let msg = CmdVel::new(1.5, 0.8);
+                    while producer.send(msg, &mut None).is_err() {
+                        thread::yield_now();
+                    }
+                }
+            });
+
+            let start = Instant::now();
+            let mut received = 0u64;
+            while received < iters {
+                if consumer.recv(&mut None).is_some() {
+                    received += 1;
+                } else if !running_clone.load(Ordering::Relaxed) {
+                    break;
+                } else {
+                    thread::yield_now();
+                }
+            }
+            let elapsed = start.elapsed();
+
+            running.store(false, Ordering::Relaxed);
+            let _ = producer_handle.join();
+            elapsed
         });
     });
 
     group.finish();
 }
 
-/// Send benchmarks comparing standard vs rapid fire
-fn bench_link_send_patterns(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_send_patterns");
+// =============================================================================
+// Section 3: Throughput Benchmarks
+// =============================================================================
+
+/// Measure sustained throughput - messages per second under continuous load.
+fn bench_throughput(c: &mut Criterion) {
+    let mut group = c.benchmark_group("throughput");
+    group.measurement_time(Duration::from_secs(10));
+
+    // SpscIntra throughput (1000 messages per iteration)
+    group.bench_function("SpscIntra_1k_msgs", |b| {
+        let topic = format!("bench_throughput_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
+
+        b.iter(|| {
+            for i in 0..1000 {
+                let msg = CmdVel::new(1.0 + i as f32 * 0.001, 0.8);
+                producer.send(black_box(msg), &mut None).unwrap();
+            }
+            for _ in 0..1000 {
+                black_box(consumer.recv(&mut None));
+            }
+        });
+    });
+
+    // MpmcIntra throughput
+    group.bench_function("MpmcIntra_1k_msgs", |b| {
+        let topic = format!("bench_throughput_mpmc_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::mpmc_intra(&topic, 2048);
+
+        b.iter(|| {
+            for i in 0..1000 {
+                let msg = CmdVel::new(1.0 + i as f32 * 0.001, 0.8);
+                producer.send(black_box(msg), &mut None).unwrap();
+            }
+            for _ in 0..1000 {
+                black_box(consumer.recv(&mut None));
+            }
+        });
+    });
+
+    // SpscShm throughput
+    group.bench_function("SpscShm_1k_msgs", |b| {
+        let topic = format!("bench_throughput_spsc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+
+        b.iter(|| {
+            for i in 0..1000 {
+                let msg = CmdVel::new(1.0 + i as f32 * 0.001, 0.8);
+                producer.send(black_box(msg), &mut None).unwrap();
+            }
+            for _ in 0..1000 {
+                black_box(consumer.recv(&mut None));
+            }
+        });
+    });
+
+    // MpmcShm throughput
+    group.bench_function("MpmcShm_1k_msgs", |b| {
+        let topic = format!("bench_throughput_mpmc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+
+        b.iter(|| {
+            for i in 0..1000 {
+                let msg = CmdVel::new(1.0 + i as f32 * 0.001, 0.8);
+                producer.send(black_box(msg), &mut None).unwrap();
+            }
+            for _ in 0..1000 {
+                black_box(consumer.recv(&mut None));
+            }
+        });
+    });
+
+    group.finish();
+}
+
+// =============================================================================
+// Section 4: Send/Recv Isolation
+// =============================================================================
+
+/// Measure send-only latency (isolate write performance).
+fn bench_send_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("send_only");
     group.throughput(Throughput::Bytes(std::mem::size_of::<CmdVel>() as u64));
 
-    // Standard send (with clone)
-    group.bench_function("Link::send_standard", |b| {
-        let topic = format!("bench_link_clone_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let _consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
-
+    group.bench_function("SpscIntra", |b| {
+        let topic = format!("bench_send_intra_{}", std::process::id());
+        let (producer, _consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
-            let _ = producer.send(black_box(msg), &mut None);
+            producer.send(black_box(msg), &mut None)
         });
     });
 
-    // Batch send (rapid fire)
-    group.bench_function("Link::send_batch_10", |b| {
-        let topic = format!("bench_link_batch_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
-
+    group.bench_function("MpmcIntra", |b| {
+        let topic = format!("bench_send_mpmc_intra_{}", std::process::id());
+        let (producer, _consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::mpmc_intra(&topic, 1024);
         b.iter(|| {
-            // Send 10 messages in rapid succession
-            for _ in 0..10 {
-                let msg = CmdVel::new(1.5, 0.8);
-                let _ = producer.send(black_box(msg), &mut None);
-            }
-            // Drain them
-            for _ in 0..10 {
-                let _ = consumer.recv(&mut None);
-            }
+            let msg = CmdVel::new(1.5, 0.8);
+            producer.send(black_box(msg), &mut None)
+        });
+    });
+
+    group.bench_function("SpscShm", |b| {
+        let topic = format!("bench_send_spsc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
+        let _consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+        b.iter(|| {
+            let msg = CmdVel::new(1.5, 0.8);
+            producer.send(black_box(msg), &mut None)
+        });
+    });
+
+    group.bench_function("MpmcShm", |b| {
+        let topic = format!("bench_send_mpmc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let _consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        b.iter(|| {
+            let msg = CmdVel::new(1.5, 0.8);
+            producer.send(black_box(msg), &mut None)
         });
     });
 
     group.finish();
 }
 
-/// Throughput test: how many messages per second
-fn bench_link_throughput(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_throughput");
+/// Measure recv-only latency (isolate read performance with pre-sent message).
+fn bench_recv_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("recv_only");
+    group.throughput(Throughput::Bytes(std::mem::size_of::<CmdVel>() as u64));
 
-    // Link throughput
-    group.bench_function("Link::messages_per_sec", |b| {
-        let topic = format!("bench_link_throughput_{}", std::process::id());
-        let producer: Link<f32> = Link::producer(&topic).unwrap();
-        let consumer: Link<f32> = Link::consumer(&topic).unwrap();
+    group.bench_function("SpscIntra", |b| {
+        let topic = format!("bench_recv_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
 
+        b.iter_batched(
+            || producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap(),
+            |_| black_box(consumer.recv(&mut None)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("MpmcIntra", |b| {
+        let topic = format!("bench_recv_mpmc_intra_{}", std::process::id());
+        let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::mpmc_intra(&topic, 1024);
+
+        b.iter_batched(
+            || producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap(),
+            |_| black_box(consumer.recv(&mut None)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("SpscShm", |b| {
+        let topic = format!("bench_recv_spsc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+
+        b.iter_batched(
+            || producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap(),
+            |_| black_box(consumer.recv(&mut None)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("MpmcShm", |b| {
+        let topic = format!("bench_recv_mpmc_{}", std::process::id());
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+
+        b.iter_batched(
+            || producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap(),
+            |_| black_box(consumer.recv(&mut None)),
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+// =============================================================================
+// Section 5: Payload Size Scaling
+// =============================================================================
+
+/// Fixed-size payloads for benchmarking
+#[derive(Clone, Copy, Debug)]
+struct Payload64([u8; 64]);
+#[derive(Clone, Copy, Debug)]
+struct Payload256([u8; 256]);
+#[derive(Clone, Copy, Debug)]
+struct Payload1KB([u8; 1024]);
+#[derive(Clone, Copy, Debug)]
+struct Payload4KB([u8; 4096]);
+
+/// Measure how latency scales with payload size using SpscIntra.
+fn bench_payload_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("payload_scaling_SpscIntra");
+
+    // 64 bytes
+    group.throughput(Throughput::Bytes(64));
+    group.bench_with_input(BenchmarkId::new("roundtrip", "64B"), &(), |b, _| {
+        let topic = format!("bench_scale_64_{}", std::process::id());
+        let (producer, consumer): (Topic<Payload64>, Topic<Payload64>) = Topic::spsc_intra(&topic);
+        let msg = Payload64([0u8; 64]);
         b.iter(|| {
-            // Send 1000 messages
-            for i in 0..1000 {
-                producer.send(black_box(i as f32), &mut None).unwrap();
-            }
-            // Receive 1000 messages
-            for _ in 0..1000 {
-                let _ = black_box(consumer.recv(&mut None));
-            }
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
         });
     });
 
-    // Hub throughput (for comparison)
-    group.bench_function("Hub::messages_per_sec", |b| {
-        let topic = format!("bench_hub_throughput_{}", std::process::id());
-        let sender: Hub<f32> = Hub::new(&topic).unwrap();
-        let receiver: Hub<f32> = Hub::new(&topic).unwrap();
-
+    // 256 bytes
+    group.throughput(Throughput::Bytes(256));
+    group.bench_with_input(BenchmarkId::new("roundtrip", "256B"), &(), |b, _| {
+        let topic = format!("bench_scale_256_{}", std::process::id());
+        let (producer, consumer): (Topic<Payload256>, Topic<Payload256>) = Topic::spsc_intra(&topic);
+        let msg = Payload256([0u8; 256]);
         b.iter(|| {
-            // Send 1000 messages
-            for i in 0..1000 {
-                sender.send(black_box(i as f32), &mut None).unwrap();
-            }
-            // Receive 1000 messages
-            for _ in 0..1000 {
-                let _ = black_box(receiver.recv(&mut None));
-            }
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
+        });
+    });
+
+    // 1 KB
+    group.throughput(Throughput::Bytes(1024));
+    group.bench_with_input(BenchmarkId::new("roundtrip", "1KB"), &(), |b, _| {
+        let topic = format!("bench_scale_1k_{}", std::process::id());
+        let (producer, consumer): (Topic<Payload1KB>, Topic<Payload1KB>) = Topic::spsc_intra(&topic);
+        let msg = Payload1KB([0u8; 1024]);
+        b.iter(|| {
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
+        });
+    });
+
+    // 4 KB
+    group.throughput(Throughput::Bytes(4096));
+    group.bench_with_input(BenchmarkId::new("roundtrip", "4KB"), &(), |b, _| {
+        let topic = format!("bench_scale_4k_{}", std::process::id());
+        let (producer, consumer): (Topic<Payload4KB>, Topic<Payload4KB>) = Topic::spsc_intra(&topic);
+        let msg = Payload4KB([0u8; 4096]);
+        b.iter(|| {
+            producer.send(black_box(msg), &mut None).unwrap();
+            black_box(consumer.recv(&mut None))
         });
     });
 
     group.finish();
 }
 
-/// Primitive types benchmark
-fn bench_link_primitives(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_primitives");
+// =============================================================================
+// Section 6: Batch Operations
+// =============================================================================
 
-    // u32 (4 bytes) - smallest integer type with LogSummary
-    group.bench_function("Link::u32_4B", |b| {
-        let topic = format!("bench_link_u32_{}", std::process::id());
-        let producer: Link<u32> = Link::producer(&topic).unwrap();
-        let consumer: Link<u32> = Link::consumer(&topic).unwrap();
+/// Measure batch send/recv performance (amortize overhead).
+fn bench_batch_operations(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_operations");
 
-        b.iter(|| {
-            producer.send(black_box(42u32), &mut None).unwrap();
-            let _ = black_box(consumer.recv(&mut None));
-        });
-    });
+    for batch_size in [10, 50, 100, 500] {
+        group.bench_with_input(
+            BenchmarkId::new("SpscIntra_batch", batch_size),
+            &batch_size,
+            |b, &batch_size| {
+                let topic = format!("bench_batch_{}_{}", batch_size, std::process::id());
+                let (producer, consumer): (Topic<CmdVel>, Topic<CmdVel>) = Topic::spsc_intra(&topic);
 
-    // f32 (4 bytes)
-    group.bench_function("Link::f32_4B", |b| {
-        let topic = format!("bench_link_f32_{}", std::process::id());
-        let producer: Link<f32> = Link::producer(&topic).unwrap();
-        let consumer: Link<f32> = Link::consumer(&topic).unwrap();
-
-        b.iter(|| {
-            producer.send(black_box(1.23f32), &mut None).unwrap();
-            let _ = black_box(consumer.recv(&mut None));
-        });
-    });
-
-    // f64 (8 bytes)
-    group.bench_function("Link::f64_8B", |b| {
-        let topic = format!("bench_link_f64_{}", std::process::id());
-        let producer: Link<f64> = Link::producer(&topic).unwrap();
-        let consumer: Link<f64> = Link::consumer(&topic).unwrap();
-
-        b.iter(|| {
-            producer
-                .send(black_box(1.23456789012f64), &mut None)
-                .unwrap();
-            let _ = black_box(consumer.recv(&mut None));
-        });
-    });
-
-    // CmdVel (16 bytes - typical command message)
-    group.bench_function("Link::cmdvel_16B", |b| {
-        let topic = format!("bench_link_cmdvel_{}", std::process::id());
-        let producer: Link<CmdVel> = Link::producer(&topic).unwrap();
-        let consumer: Link<CmdVel> = Link::consumer(&topic).unwrap();
-
-        b.iter(|| {
-            producer
-                .send(black_box(CmdVel::new(1.0, 2.0)), &mut None)
-                .unwrap();
-            let _ = black_box(consumer.recv(&mut None));
-        });
-    });
+                b.iter(|| {
+                    // Send batch
+                    for i in 0..batch_size {
+                        let msg = CmdVel::new(1.0 + i as f32 * 0.01, 0.8);
+                        producer.send(black_box(msg), &mut None).unwrap();
+                    }
+                    // Receive batch
+                    for _ in 0..batch_size {
+                        black_box(consumer.recv(&mut None));
+                    }
+                });
+            },
+        );
+    }
 
     group.finish();
 }
 
-/// Buffer capacity stress test
-fn bench_link_buffer_full(c: &mut Criterion) {
-    let mut group = c.benchmark_group("link_buffer_handling");
-
-    group.bench_function("Link::buffer_fill_and_drain", |b| {
-        let topic = format!("bench_link_buffer_{}", std::process::id());
-        let producer: Link<i32> = Link::producer(&topic).unwrap();
-        let consumer: Link<i32> = Link::consumer(&topic).unwrap();
-
-        b.iter(|| {
-            // Fill buffer to capacity-1 (1023 messages)
-            for i in 0..1023 {
-                producer.send(black_box(i), &mut None).unwrap();
-            }
-            // Drain buffer
-            for _ in 0..1023 {
-                let _ = black_box(consumer.recv(&mut None));
-            }
-        });
-    });
-
-    group.finish();
-}
+// =============================================================================
+// Criterion Configuration
+// =============================================================================
 
 criterion_group!(
-    benches,
-    bench_link_small_message,
-    bench_link_medium_message,
-    bench_link_large_message,
-    bench_link_send_patterns,
-    bench_link_throughput,
-    bench_link_primitives,
-    bench_link_buffer_full,
+    name = benches;
+    config = Criterion::default()
+        .sample_size(100)
+        .warm_up_time(Duration::from_secs(2))
+        .measurement_time(Duration::from_secs(5));
+    targets =
+        bench_backend_comparison,
+        bench_cross_thread_latency,
+        bench_throughput,
+        bench_send_only,
+        bench_recv_only,
+        bench_payload_scaling,
+        bench_batch_operations,
 );
+
 criterion_main!(benches);

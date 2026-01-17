@@ -38,7 +38,7 @@ use crate::actions::types::{
     GoalId, GoalPriority, GoalRequest, GoalResponse, GoalStatus, GoalStatusUpdate,
     PreemptionPolicy,
 };
-use crate::communication::Link;
+use crate::communication::Topic;
 use crate::core::{LogSummary, Node, NodeInfo};
 use crate::HorusResult;
 
@@ -198,7 +198,7 @@ impl<A: Action> Debug for ServerGoalHandle<A> {
 /// Internal feedback sender that handles rate limiting.
 #[allow(clippy::type_complexity)]
 struct FeedbackSender<A: Action> {
-    link: Arc<RwLock<Option<Link<ActionFeedback<A::Feedback>>>>>,
+    link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>,
     last_send: Arc<RwLock<Instant>>,
     min_interval: Duration,
 }
@@ -208,7 +208,7 @@ where
     A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
 {
     #[allow(clippy::type_complexity)]
-    fn new(link: Arc<RwLock<Option<Link<ActionFeedback<A::Feedback>>>>>, rate_hz: f64) -> Self {
+    fn new(link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>, rate_hz: f64) -> Self {
         let min_interval = if rate_hz > 0.0 {
             Duration::from_secs_f64(1.0 / rate_hz)
         } else {
@@ -400,11 +400,11 @@ pub struct ActionServerNode<A: Action> {
     config: ActionServerConfig,
 
     // Communication Links (lazily initialized in init())
-    goal_link: Option<Link<GoalRequest<A::Goal>>>,
-    cancel_link: Option<Link<CancelRequest>>,
-    result_link: Option<Link<ActionResult<A::Result>>>,
-    feedback_link: Arc<RwLock<Option<Link<ActionFeedback<A::Feedback>>>>>,
-    status_link: Option<Link<GoalStatusUpdate>>,
+    goal_link: Option<Topic<GoalRequest<A::Goal>>>,
+    cancel_link: Option<Topic<CancelRequest>>,
+    result_link: Option<Topic<ActionResult<A::Result>>>,
+    feedback_link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>,
+    status_link: Option<Topic<GoalStatusUpdate>>,
 
     // Active goals
     active_goals: HashMap<GoalId, GoalState<A>>,
@@ -843,11 +843,11 @@ where
         let action_name = A::name();
 
         // Create communication links
-        self.goal_link = Some(Link::consumer(&A::goal_topic())?);
-        self.cancel_link = Some(Link::consumer(&A::cancel_topic())?);
-        self.result_link = Some(Link::producer(&A::result_topic())?);
-        *self.feedback_link.write() = Some(Link::producer(&A::feedback_topic())?);
-        self.status_link = Some(Link::producer(&A::status_topic())?);
+        self.goal_link = Some(Topic::consumer(&A::goal_topic())?);
+        self.cancel_link = Some(Topic::consumer(&A::cancel_topic())?);
+        self.result_link = Some(Topic::producer(&A::result_topic())?);
+        *self.feedback_link.write() = Some(Topic::producer(&A::feedback_topic())?);
+        self.status_link = Some(Topic::producer(&A::status_topic())?);
 
         log::info!(
             "ActionServer '{}': Initialized with topics: {}/{{goal,cancel,result,feedback,status}}",

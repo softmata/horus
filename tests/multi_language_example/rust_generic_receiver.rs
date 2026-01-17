@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "=".repeat(70));
 
     // Create generic hub (same topic as Python)
-    let hub = Hub::<GenericMessage>::new("generic_cross_lang")?;
+    let hub = Topic::<GenericMessage>::new("generic_cross_lang")?;
 
     println!("\nWaiting for data from Python...");
     println!("(Run 'python_generic_sender.py' in another terminal)");

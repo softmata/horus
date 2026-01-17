@@ -18,6 +18,7 @@
 pub mod log_buffer;
 pub mod node;
 pub mod node_info_ext;
+pub mod rt_config;
 pub mod rt_node;
 
 pub use log_buffer::{LogEntry, LogType, SharedLogBuffer, GLOBAL_LOG_BUFFER};
@@ -26,6 +27,11 @@ pub use node::{
     NodeMetrics, NodeState, TopicMetadata,
 };
 pub use node_info_ext::NodeInfoExt;
+pub use rt_config::{
+    detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
+    prefault_stack, prefault_stack_linear, RtApplyResult, RtConfig, RtConfigBuilder,
+    RtCpuInfo, RtDegradation, RtKernelInfo, RtScheduler,
+};
 pub use rt_node::{
-    DeadlineMissPolicy, RTClass, RTNode, RTNodeWrapper, RTPriority, RTStats, WCETViolation,
+    DeadlineMissPolicy, RtClass, RtNode, RtNodeWrapper, RtPriority, RtStats, WCETViolation,
 };

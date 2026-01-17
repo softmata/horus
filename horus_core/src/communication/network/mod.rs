@@ -18,6 +18,10 @@
 /// - Real io_uring zero-copy (3-5µs latency)
 /// - QUIC transport (0-RTT, reliable)
 /// - Smart transport selection (auto-picks best backend)
+
+// Developer-friendly network error handling
+pub mod network_error;
+
 pub mod backend;
 pub mod batching;
 pub mod caching;
@@ -46,14 +50,61 @@ pub mod unix_socket;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+// Certificate management for auto-generation and persistence
+#[cfg(feature = "tls")]
+pub mod certificate_manager;
+
 // QUIC transport (requires quic feature)
 #[cfg(feature = "quic")]
 pub mod quic;
+
+// WebRTC data channels (requires webrtc-transport feature)
+#[cfg(feature = "webrtc-transport")]
+pub mod webrtc;
+
+// Built-in signaling server for P2P connection coordination
+#[cfg(feature = "signaling-server")]
+pub mod signaling_server;
+
+// Signaling server re-exports
+#[cfg(feature = "signaling-server")]
+pub use signaling_server::{
+    SignalingServer, SignalingServerBuilder, SignalingServerConfig, SignalingServerStats,
+    SignalingStatsSnapshot, WireIceCandidate, WireMessage, DEFAULT_SIGNAL_PORT,
+};
+
+// Husarnet VPN integration for WAN connectivity
+#[cfg(feature = "husarnet")]
+pub mod husarnet;
+
+// P2P connectivity with NAT traversal
+pub mod p2p;
+
+// Hybrid discovery (LAN multicast + Husarnet unicast)
+pub mod hybrid_discovery;
+
+// STUN client for NAT traversal
+pub mod stun;
+
+// ICE-lite for NAT hole punching
+pub mod ice;
+
+// Cloud connectivity patterns
+pub mod cloud;
 
 // io_uring backend (real implementation using io-uring crate, Linux only)
 // Requires the `io-uring-net` feature flag
 #[cfg(target_os = "linux")]
 pub mod io_uring;
+
+// mDNS/DNS-SD for zero-config networking
+// Requires the `mdns` feature flag
+#[cfg(feature = "mdns")]
+pub mod mdns;
+#[cfg(feature = "mdns")]
+pub mod mdns_discovery;
+#[cfg(feature = "mdns")]
+pub mod mdns_registration;
 
 // Zenoh transport for multi-robot mesh, cloud connectivity, and ROS2 interop
 // Requires the `zenoh-transport` feature flag
@@ -83,7 +134,11 @@ pub use discovery::{DiscoveryService, PeerInfo};
 pub use endpoint::{parse_endpoint, Endpoint, DEFAULT_PORT, MULTICAST_ADDR, MULTICAST_PORT};
 pub use fragmentation::{Fragment, FragmentManager};
 pub use protocol::{HorusPacket, MessageType};
-pub use reconnect::{ConnectionHealth, ReconnectContext, ReconnectStrategy};
+pub use reconnect::{
+    retry, retry_with_logging, CancellationToken, ConnectionHealth, ConnectionQuality,
+    ConnectionState, ConnectionStateMachine, FailureReason, ReconnectContext, ReconnectStrategy,
+    RetryCallback, RetryEvent, RetryExecutor, RetryResult, StateChangeCallback, StateTransition,
+};
 pub use router::RouterBackend;
 pub use udp_direct::UdpDirectBackend;
 pub use udp_multicast::UdpMulticastBackend;
@@ -109,6 +164,12 @@ pub use unix_socket::UnixSocketBackend;
 #[cfg(feature = "tls")]
 pub use tls::{TlsCertConfig, TlsStream};
 
+#[cfg(feature = "tls")]
+pub use certificate_manager::{
+    CertificateConfig, CertificateInfo, CertificateManager, CertificateManagerBuilder,
+    CertificateStatus, DEFAULT_CERT_DIR, DEFAULT_CERT_FILE, DEFAULT_KEY_FILE,
+};
+
 // Network v2 re-exports
 pub use batch_udp::{
     BatchUdpConfig, BatchUdpReceiver, BatchUdpSender, BatchUdpStats, ReceivedPacket,
@@ -130,15 +191,90 @@ pub use io_uring::{
 };
 
 #[cfg(feature = "quic")]
-pub use quic::{generate_self_signed_cert, QuicConfig, QuicStats, QuicTransport};
+pub use quic::{
+    generate_self_signed_cert, QuicBackend, QuicConfig, QuicCongestionControl, QuicQosProfile,
+    QuicStats, QuicStreamPriority, QuicTransport,
+};
+
+
+#[cfg(all(feature = "quic", feature = "tls"))]
+pub use quic::{get_or_create_cert, get_or_create_cert_with_config};
+
+// WebRTC re-exports
+#[cfg(feature = "webrtc-transport")]
+pub use webrtc::{
+    parse_webrtc_location, DataChannelHandle, DataChannelMode, IceServerConfig,
+    WebRtcConfig, WebRtcSignal, WebRtcStats, WebRtcTransport,
+};
+
+// P2P re-exports
+pub use p2p::{
+    parse_p2p_location, IceCandidate, IceCandidateType, IceProtocol, P2pConfig,
+    P2pConnectionResult, P2pConnectionState, P2pStats, P2pStrategy, PeerId,
+    SignalingClientConfig, SignalingErrorCode, SignalingMessage, TurnServer,
+};
+
+// Hybrid discovery re-exports (LAN multicast + Husarnet unicast)
+pub use hybrid_discovery::{
+    DiscoverySource, DiscoverySummary, HybridDiscovery, HybridDiscoveryConfig, HybridPeerInfo,
+};
+
+// STUN re-exports
+pub use stun::{
+    discover_external_address, full_stun_discovery, NatType, StunClient, StunConfig,
+    StunDiscoveryResult,
+};
+
+// ICE re-exports
+pub use ice::{
+    CandidatePair, CandidatePairState, IceAgent, IceCandidateInfo, IceConfig,
+    IceConnectionState, IceGatheringState, IceRole, IceStats, ICE_CONNECTIVITY_CHECK_INTERVAL,
+    ICE_CONSENT_INTERVAL, ICE_DEFAULT_TIMEOUT, ICE_KEEPALIVE_INTERVAL,
+};
+
+// Cloud re-exports
+pub use cloud::{
+    parse_cloud_location, CloudConfig, CloudMode, CloudRoom, CloudStats, VpnType,
+};
+
+// mDNS re-exports
+#[cfg(feature = "mdns")]
+pub use mdns::{
+    resolve_mdns_hostname, resolve_mdns_hostname_with_timeout, HorusMdns, MdnsCacheStats,
+    ServiceInfo as MdnsServiceInfo, BROWSE_TIMEOUT, HORUS_SERVICE_TYPE, MDNS_TIMEOUT,
+};
+#[cfg(feature = "mdns")]
+pub use mdns_discovery::{
+    discover, discover_full, discover_full_with_options, discover_with_options, find_node,
+    find_nodes_with_topic, nodes_to_json, to_json, watch, watch_with_interval, DiscoveredNode,
+    DiscoveryEvent, DiscoveryOptions, DiscoveryResult, DiscoveryWatcher,
+};
+#[cfg(feature = "mdns")]
+pub use mdns_registration::{
+    sanitize_hostname, GlobalMdnsManager, MdnsNodeRegistration, MdnsRegistrationBuilder,
+    MdnsRegistrationConfig, DEFAULT_HORUS_PORT,
+};
+
+// Husarnet re-exports
+#[cfg(feature = "husarnet")]
+pub use husarnet::{
+    get_hnet0_address, is_husarnet_address, HusarnetConfig, HusarnetDiscovery,
+    HusarnetDiscoveryBuilder, HusarnetError, HusarnetPeer, HusarnetStatus, DEFAULT_HUSARNET_PORT,
+    HUSARNET_API_HOST, HUSARNET_API_PORT, HUSARNET_PREFIX, PEER_REFRESH_INTERVAL,
+};
 
 // Zenoh re-exports
 #[cfg(feature = "zenoh-transport")]
 pub use zenoh_backend::{ZenohBackend, ZenohSessionInfo};
 pub use zenoh_config::{
-    CongestionControl, Durability, HistoryPolicy, Liveliness, Reliability, SerializationFormat,
-    ZenohConfig, ZenohMode, ZenohQos,
+    CongestionControl, ConnectionQualityState, Durability, HistoryPolicy, Liveliness, Reliability,
+    SerializationFormat, ZenohCloudConfig, ZenohConfig, ZenohConnectionQuality, ZenohMode,
+    ZenohQos, HORUS_CLOUD_ROUTER, HORUS_CLOUD_ROUTERS,
 };
+
+// Zenoh router discovery via mDNS (requires mdns feature)
+#[cfg(feature = "mdns")]
+pub use zenoh_config::discover_zenoh_routers_mdns;
 
 // ROS2 services re-exports
 #[cfg(feature = "zenoh-transport")]
@@ -198,6 +334,12 @@ pub use zenoh_ros2_actions::{
     SendGoalRequest,
     SendGoalResponse,
     ServerGoalHandle,
+};
+
+// Network error re-exports - developer-friendly error handling
+pub use network_error::{
+    colors as net_colors, errors as net_errors, format_error_report, format_error_report_colored,
+    NetworkError, NetworkErrorCode, NetworkErrorContext,
 };
 
 // ROS2 parameters re-exports

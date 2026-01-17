@@ -263,6 +263,30 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Discover HORUS nodes on the local network via mDNS
+    #[cfg(feature = "mdns")]
+    Discover {
+        /// Scan duration in seconds (default: 2)
+        #[arg(short = 't', long = "timeout", default_value = "2")]
+        timeout: u64,
+
+        /// Filter by topic name
+        #[arg(long = "topic")]
+        topic: Option<String>,
+
+        /// Filter by node name (partial match)
+        #[arg(long = "name")]
+        name: Option<String>,
+
+        /// Watch for nodes joining/leaving (continuous mode)
+        #[arg(short = 'w', long = "watch")]
+        watch: bool,
+
+        /// Output format: table, json, or simple
+        #[arg(short = 'f', long = "format", default_value = "table")]
+        format: String,
+    },
+
     /// Hardware discovery and platform detection
     Hardware {
         #[command(subcommand)]
@@ -526,6 +550,18 @@ enum Commands {
         command: RecordCommands,
     },
 
+    /// Network diagnostics (connectivity, latency, troubleshooting)
+    Net {
+        #[command(subcommand)]
+        command: NetCommands,
+    },
+
+    /// Husarnet VPN integration (status, peers, connectivity)
+    Husarnet {
+        #[command(subcommand)]
+        command: HusarnetCommands,
+    },
+
     /// Generate shell completion scripts
     #[command(hide = true)]
     Completion {
@@ -533,6 +569,101 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+}
+
+#[derive(Subcommand)]
+enum NetCommands {
+    /// Full connectivity check (local, external, NAT)
+    Check {
+        /// Show detailed diagnostic output
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// Measure latency to an endpoint
+    Ping {
+        /// Target endpoint (hostname, IP, or hostname:port)
+        endpoint: String,
+
+        /// Number of pings to send
+        #[arg(short = 'c', long = "count", default_value = "5")]
+        count: u32,
+
+        /// Interval between pings in milliseconds
+        #[arg(short = 'i', long = "interval", default_value = "1000")]
+        interval: u64,
+    },
+
+    /// Trace network path to endpoint
+    Trace {
+        /// Target endpoint
+        endpoint: String,
+
+        /// Maximum number of hops
+        #[arg(short = 'm', long = "max-hops", default_value = "30")]
+        max_hops: u32,
+    },
+
+    /// Network troubleshooting with fix suggestions
+    Doctor,
+
+    /// Start a WebSocket signaling server for P2P connection coordination
+    #[cfg(feature = "signaling-server")]
+    SignalServer {
+        /// Port to listen on (default: 8765)
+        #[arg(short = 'p', long = "port", default_value = "8765")]
+        port: u16,
+
+        /// Bind address (default: 0.0.0.0)
+        #[arg(short = 'b', long = "bind", default_value = "0.0.0.0")]
+        bind: String,
+
+        /// Shared secret for authentication (optional)
+        #[arg(short = 's', long = "secret")]
+        secret: Option<String>,
+
+        /// Maximum number of peers (default: 10000)
+        #[arg(long = "max-peers", default_value = "10000")]
+        max_peers: usize,
+
+        /// Enable verbose logging
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HusarnetCommands {
+    /// Check Husarnet daemon status and configuration
+    Status {
+        /// Show detailed diagnostic output
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
+
+    /// List Husarnet network peers
+    Peers {
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Test connectivity to Husarnet peers
+    Test {
+        /// Target hostname (optional, tests all peers if not specified)
+        target: Option<String>,
+
+        /// Number of test packets to send
+        #[arg(short = 'c', long = "count", default_value = "5")]
+        count: u32,
+
+        /// Timeout per packet in milliseconds
+        #[arg(short = 't', long = "timeout", default_value = "1000")]
+        timeout: u64,
+    },
+
+    /// Diagnose Husarnet configuration and provide recommendations
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -602,6 +733,31 @@ enum PluginCommands {
         /// Show all plugins including disabled
         #[arg(short = 'a', long = "all")]
         all: bool,
+    },
+
+    /// Search for available plugins
+    Search {
+        /// Search query (e.g., "camera", "lidar", "motor")
+        query: String,
+        /// Filter by category
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+    },
+
+    /// Show all available plugins from registry
+    Available {
+        /// Filter by category (camera, lidar, motor, servo, bus, gps, simulation)
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+        /// Include local development plugins
+        #[arg(short = 'l', long = "local")]
+        include_local: bool,
+    },
+
+    /// Show detailed info about a plugin
+    Info {
+        /// Plugin name (e.g., "horus-realsense")
+        name: String,
     },
 
     /// Enable a disabled plugin
@@ -2999,6 +3155,15 @@ except ImportError as e:
 
         Commands::Doctor { verbose } => commands::doctor::run_doctor(verbose),
 
+        #[cfg(feature = "mdns")]
+        Commands::Discover {
+            timeout,
+            topic,
+            name,
+            watch,
+            format,
+        } => commands::discover::run_discover(timeout, topic, name, watch, &format),
+
         Commands::Clean { shm, all, dry_run } => commands::clean::run_clean(shm, all, dry_run),
 
         Commands::Launch {
@@ -4180,7 +4345,22 @@ except ImportError as e:
                 })
                 .unwrap_or_else(|| ".".to_string());
 
-            let sim2d_path = format!("{}/horus_library/tools/sim2d", horus_source);
+            // Check for sim2d source path - standalone package or workspace location
+            let sim2d_path = env::var("SIM2D_SOURCE")
+                .ok()
+                .or_else(|| {
+                    // Try standalone package location relative to horus source parent
+                    let standalone = std::path::Path::new(&horus_source)
+                        .parent()
+                        .map(|p| p.join("horus-sim2d"));
+                    if let Some(ref p) = standalone {
+                        if p.exists() {
+                            return Some(p.to_string_lossy().to_string());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_else(|| format!("{}/horus_library/tools/sim2d", horus_source));
 
             // Try to run pre-built binary first (fast path) - cross-platform
             let sim2d_binary = dirs::home_dir()
@@ -4331,7 +4511,22 @@ except ImportError as e:
                 })
                 .unwrap_or_else(|| ".".to_string());
 
-            let sim3d_path = format!("{}/horus_library/tools/sim3d", horus_source);
+            // Check for sim3d source path - standalone package or workspace location
+            let sim3d_path = env::var("SIM3D_SOURCE")
+                .ok()
+                .or_else(|| {
+                    // Try standalone package location relative to horus source parent
+                    let standalone = std::path::Path::new(&horus_source)
+                        .parent()
+                        .map(|p| p.join("horus-sim3d"));
+                    if let Some(ref p) = standalone {
+                        if p.exists() {
+                            return Some(p.to_string_lossy().to_string());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_else(|| format!("{}/horus_library/tools/sim3d", horus_source));
 
             // Try to run pre-built binary first (cross-platform)
             let sim3d_binary = dirs::home_dir()
@@ -5212,6 +5407,206 @@ except ImportError as e:
             PluginCommands::List { all } => commands::pkg::list_plugins(true, all)
                 .map_err(|e| HorusError::Config(e.to_string())),
 
+            PluginCommands::Search { query, category } => {
+                use horus_manager::plugins::{PluginCategory, PluginDiscovery};
+
+                let mut discovery = PluginDiscovery::new();
+
+                // Add softmata workspace for local plugins
+                if let Ok(cwd) = std::env::current_dir() {
+                    // Check if we're in softmata workspace
+                    if cwd.join("horus").exists() {
+                        discovery.add_workspace_path(cwd);
+                    } else if let Some(parent) = cwd.parent() {
+                        if parent.join("horus").exists() {
+                            discovery.add_workspace_path(parent.to_path_buf());
+                        }
+                    }
+                }
+
+                let results = discovery
+                    .search(&query)
+                    .map_err(|e| HorusError::Config(e.to_string()))?;
+
+                if results.is_empty() {
+                    println!("{}", format!("No plugins found matching '{}'", query).yellow());
+                } else {
+                    println!(
+                        "{}",
+                        format!("Found {} plugins matching '{}':", results.len(), query)
+                            .cyan()
+                            .bold()
+                    );
+                    println!();
+                    for plugin in results {
+                        let source_badge = match plugin.source {
+                            horus_manager::plugins::PluginSourceType::Local => "[LOCAL]".yellow(),
+                            horus_manager::plugins::PluginSourceType::Registry => "[REGISTRY]".green(),
+                            horus_manager::plugins::PluginSourceType::CratesIo => "[CRATES.IO]".blue(),
+                            horus_manager::plugins::PluginSourceType::Git => "[GIT]".magenta(),
+                        };
+                        println!(
+                            "  {} {} {} {}",
+                            plugin.name.white().bold(),
+                            format!("v{}", plugin.version).dimmed(),
+                            source_badge,
+                            if plugin.has_prebuilt {
+                                "[prebuilt]".green()
+                            } else {
+                                "".normal()
+                            }
+                        );
+                        println!("    {}", plugin.description.dimmed());
+                        if !plugin.features.is_empty() {
+                            println!(
+                                "    Features: {}",
+                                plugin.features.join(", ").cyan()
+                            );
+                        }
+                        println!();
+                    }
+                }
+                Ok(())
+            }
+
+            PluginCommands::Available { category, include_local } => {
+                use horus_manager::plugins::PluginDiscovery;
+
+                let mut discovery = PluginDiscovery::new();
+
+                if include_local {
+                    if let Ok(cwd) = std::env::current_dir() {
+                        if cwd.join("horus").exists() {
+                            discovery.add_workspace_path(cwd);
+                        } else if let Some(parent) = cwd.parent() {
+                            if parent.join("horus").exists() {
+                                discovery.add_workspace_path(parent.to_path_buf());
+                            }
+                        }
+                    }
+                }
+
+                let all_plugins = discovery
+                    .discover_all()
+                    .map_err(|e| HorusError::Config(e.to_string()))?;
+
+                println!("{}", "Available HORUS Plugins".cyan().bold());
+                println!("{}", "=".repeat(50).dimmed());
+                println!();
+
+                // Group by category
+                let mut by_category: std::collections::HashMap<
+                    String,
+                    Vec<horus_manager::plugins::AvailablePlugin>,
+                > = std::collections::HashMap::new();
+
+                for plugin in all_plugins {
+                    let cat_name = format!("{:?}", plugin.category);
+                    by_category.entry(cat_name).or_default().push(plugin);
+                }
+
+                for (cat, plugins) in by_category.iter() {
+                    println!("{}", format!("  {} ({} plugins)", cat, plugins.len()).yellow().bold());
+                    for plugin in plugins {
+                        let source = match plugin.source {
+                            horus_manager::plugins::PluginSourceType::Local => "local".yellow(),
+                            horus_manager::plugins::PluginSourceType::Registry => "registry".green(),
+                            horus_manager::plugins::PluginSourceType::CratesIo => "crates.io".blue(),
+                            horus_manager::plugins::PluginSourceType::Git => "git".magenta(),
+                        };
+                        println!(
+                            "    {} {} ({})",
+                            plugin.name.white(),
+                            format!("v{}", plugin.version).dimmed(),
+                            source
+                        );
+                    }
+                    println!();
+                }
+
+                println!(
+                    "{}",
+                    "Use 'horus plugins info <name>' for details".dimmed()
+                );
+                Ok(())
+            }
+
+            PluginCommands::Info { name } => {
+                use horus_manager::plugins::PluginDiscovery;
+
+                let mut discovery = PluginDiscovery::new();
+
+                // Add local workspace
+                if let Ok(cwd) = std::env::current_dir() {
+                    if cwd.join("horus").exists() {
+                        discovery.add_workspace_path(cwd);
+                    }
+                }
+
+                match discovery
+                    .get_plugin(&name)
+                    .map_err(|e| HorusError::Config(e.to_string()))?
+                {
+                    Some(plugin) => {
+                        println!("{}", plugin.name.cyan().bold());
+                        println!("{}", "=".repeat(plugin.name.len()).dimmed());
+                        println!();
+                        println!("  Version:     {}", plugin.version.white());
+                        println!("  Category:    {:?}", plugin.category);
+                        println!("  Source:      {:?}", plugin.source);
+                        println!("  Description: {}", plugin.description);
+                        println!();
+                        println!("  {}", "Compatibility".yellow());
+                        println!("    HORUS:     {}", plugin.horus_compat);
+                        println!(
+                            "    Platforms: {}",
+                            plugin.platforms.join(", ")
+                        );
+                        println!(
+                            "    Prebuilt:  {}",
+                            if plugin.has_prebuilt { "Yes" } else { "No" }
+                        );
+                        println!();
+                        if !plugin.system_deps.is_empty() {
+                            println!("  {}", "System Dependencies".yellow());
+                            for dep in &plugin.system_deps {
+                                println!("    - {}", dep);
+                            }
+                            println!();
+                        }
+                        if !plugin.features.is_empty() {
+                            println!("  {}", "Features".yellow());
+                            for feature in &plugin.features {
+                                println!("    - {}", feature);
+                            }
+                            println!();
+                        }
+                        println!("  {}", "Installation".yellow());
+                        println!(
+                            "{}",
+                            discovery
+                                .get_install_instructions(&plugin)
+                                .lines()
+                                .map(|l| format!("    {}", l))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        );
+                    }
+                    None => {
+                        println!(
+                            "{}",
+                            format!("Plugin '{}' not found", name).red()
+                        );
+                        println!(
+                            "{}",
+                            "Use 'horus plugins search <query>' to find plugins"
+                                .dimmed()
+                        );
+                    }
+                }
+                Ok(())
+            }
+
             PluginCommands::Enable { command } => commands::pkg::enable_plugin(&command)
                 .map_err(|e| HorusError::Config(e.to_string())),
 
@@ -6049,6 +6444,38 @@ except ImportError as e:
                 }
             }
         }
+
+        Commands::Net { command } => match command {
+            NetCommands::Check { verbose } => commands::net::run_check(verbose),
+            NetCommands::Ping {
+                endpoint,
+                count,
+                interval,
+            } => commands::net::run_ping(&endpoint, count, interval),
+            NetCommands::Trace { endpoint, max_hops } => {
+                commands::net::run_trace(&endpoint, max_hops)
+            }
+            NetCommands::Doctor => commands::net::run_doctor(),
+            #[cfg(feature = "signaling-server")]
+            NetCommands::SignalServer {
+                port,
+                bind,
+                secret,
+                max_peers,
+                verbose,
+            } => commands::net::run_signal_server(&bind, port, secret, max_peers, verbose),
+        },
+
+        Commands::Husarnet { command } => match command {
+            HusarnetCommands::Status { verbose } => commands::husarnet::run_status(verbose),
+            HusarnetCommands::Peers { json } => commands::husarnet::run_peers(json),
+            HusarnetCommands::Test {
+                target,
+                count,
+                timeout,
+            } => commands::husarnet::run_test(target, count, timeout),
+            HusarnetCommands::Doctor => commands::husarnet::run_doctor(),
+        },
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

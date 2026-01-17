@@ -9,7 +9,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -89,7 +89,7 @@ where
     D: Sensor<Output = Odometry>,
     P: Processor<Odometry>,
 {
-    publisher: Hub<Odometry>,
+    publisher: Topic<Odometry>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -124,7 +124,7 @@ impl EncoderNode<EncoderDriver, PassThrough<Odometry>> {
         let driver = EncoderDriver::new(driver_backend)?;
 
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),
@@ -161,7 +161,7 @@ where
     /// ```
     pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),
@@ -406,7 +406,7 @@ where
         let driver = EncoderDriver::new(driver_backend)?;
 
         Ok(EncoderNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),
@@ -445,7 +445,7 @@ where
         let driver = self.driver.unwrap_or_default();
 
         Ok(EncoderNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "odom".to_string(),
             child_frame_id: "base_link".to_string(),

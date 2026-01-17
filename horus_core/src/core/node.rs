@@ -1,5 +1,6 @@
 use crate::memory::platform::shm_heartbeats_dir;
 use crate::params::RuntimeParams;
+use crate::scheduling::fault_tolerance::CircuitBreaker;
 use crate::terminal::is_raw_mode;
 use std::collections::HashMap;
 use std::fmt;
@@ -369,6 +370,9 @@ pub struct NodeConfig {
     pub enable_logging: bool,
     pub log_level: String,
     pub custom_params: HashMap<String, String>,
+    /// Optional per-node circuit breaker configuration
+    /// If set, overrides the scheduler-level circuit breaker settings for this node
+    pub circuit_breaker: Option<CircuitBreaker>,
 }
 
 impl Default for NodeConfig {
@@ -381,6 +385,7 @@ impl Default for NodeConfig {
             enable_logging: true,
             log_level: "INFO".to_string(), // Development default: includes info logging
             custom_params: HashMap::new(),
+            circuit_breaker: None,
         }
     }
 }

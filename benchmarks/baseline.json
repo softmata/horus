@@ -1,0 +1,19 @@
+{
+  "link_small_16B/Link::send_recv": 100.0,
+  "link_small_16B/Hub::send_recv": 400.0,
+  "link_small_16B/Link::send_only": 50.0,
+  "link_small_16B/Link::recv_only": 50.0,
+  "link_medium_304B/Link::send_recv": 150.0,
+  "link_medium_304B/Hub::send_recv": 500.0,
+  "link_large_1.5KB/Link::send_recv": 300.0,
+  "link_large_1.5KB/Hub::send_recv": 800.0,
+  "link_primitives/Link::u32_4B": 80.0,
+  "link_primitives/Link::f32_4B": 80.0,
+  "link_primitives/Link::f64_8B": 80.0,
+  "link_primitives/Link::cmdvel_16B": 100.0,
+  "link_send_patterns/Link::send_standard": 50.0,
+  "link_send_patterns/Link::send_batch_10": 500.0,
+  "link_throughput/Link::messages_per_sec": 100000.0,
+  "link_throughput/Hub::messages_per_sec": 400000.0,
+  "link_buffer_handling/Link::buffer_fill_and_drain": 50000.0
+}

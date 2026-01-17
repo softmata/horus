@@ -17,6 +17,7 @@ mod node;
 mod router;
 mod scheduler;
 mod tensor;
+mod topic;
 // mod typed_hub;  // Old separate typed hubs - replaced by polymorphic Hub
 mod types;
 
@@ -27,6 +28,7 @@ use link::PyLink;
 use node::{PyNode, PyNodeInfo, PyNodeState};
 use router::{PyRouterClient, PyRouterServer};
 use scheduler::PyScheduler;
+use topic::PyTopic;
 use types::Priority;
 
 /// HORUS Python Bindings
@@ -38,8 +40,9 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     //  USER-FACING: Core classes that users interact with
     m.add_class::<PyNode>()?;
     m.add_class::<PyNodeInfo>()?;
-    m.add_class::<PyHub>()?;
-    m.add_class::<PyLink>()?; // Point-to-point SPSC communication with network support
+    m.add_class::<PyTopic>()?; // Unified communication API (preferred)
+    m.add_class::<PyHub>()?; // Deprecated: use Topic instead
+    m.add_class::<PyLink>()?; // Deprecated: use Topic instead
     m.add_class::<PyRouterClient>()?; // Explicit router connection management
     m.add_class::<PyRouterServer>()?; // Router server management
     m.add_class::<PyScheduler>()?;

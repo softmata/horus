@@ -66,7 +66,11 @@ pub mod async_io {
     pub use super::executors::async_io::AsyncNode;
 }
 
-pub use config::{ConfigValue, ExecutionMode, RecordingConfigYaml, RobotPreset, SchedulerConfig};
+pub use config::{
+    ConfigValue, DeadlineMissPolicy, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig,
+    RecordingConfigYaml, ResourceConfig, RobotPreset, SchedulerConfig, TimeSyncSource,
+    TimingConfig,
+};
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::{Scheduler, SchedulerNodeMetrics};
 
@@ -77,10 +81,15 @@ pub use runtime::{
 };
 
 // Re-export fault tolerance
-pub use blackbox::{BlackBox, BlackBoxEvent};
-pub use checkpoint::{Checkpoint, CheckpointManager};
-pub use redundancy::{RedundancyManager, VoteResult, VotingStrategy};
-pub use telemetry::{TelemetryEndpoint, TelemetryManager};
+pub use blackbox::{create_shared_blackbox, BlackBox, BlackBoxEvent, SharedBlackBox};
+pub use checkpoint::{Checkpoint, CheckpointManager, CheckpointMetadata, NodeCheckpoint};
+pub use redundancy::{
+    FaultStats, RedundancyManager, RedundantValue, VoteResult, Voter, VotingStrategy,
+};
+pub use telemetry::{
+    create_shared_telemetry, Metric, MetricValue, SharedTelemetry, TelemetryEndpoint,
+    TelemetryManager, TelemetrySnapshot,
+};
 
 // Re-export record/replay
 pub use record_replay::{
@@ -116,9 +125,10 @@ pub use record_replay::{
     WatchValue,
 };
 
-// Re-export offline profiling (deterministic alternative to learning phase)
+// Re-export intelligence (profiling, classification, dependency analysis)
 pub use intelligence::{
-    ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError,
+    DependencyGraph, ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData,
+    ProfileError, RuntimeProfiler, TierClassifier,
 };
 
 // Re-export executors
@@ -153,6 +163,7 @@ pub use deterministic::{
     TimingStatistics,
     TimingViolation,
     TraceEntry,
+    TraceEntryType,
     ViolationSeverity,
 };
 

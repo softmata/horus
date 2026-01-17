@@ -50,6 +50,8 @@ rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2.1", optional = true }
 rcgen = { version = "0.13", optional = true }  # For self-signed certs
+x509-parser = { version = "0.16", optional = true }  # Certificate parsing for validity checks
+hex = { version = "0.4", optional = true }  # Hex encoding for certificate fingerprints
 
 # QUIC transport (optional)
 quinn = { version = "0.11", optional = true }
@@ -57,8 +59,8 @@ quinn = { version = "0.11", optional = true }
 # Macros (optional)
 horus_macros = { path = "../horus_macros", optional = true }
 
-# HTTP client for model downloading (optional)
-reqwest = { version = "0.11", features = ["blocking"], optional = true }
+# HTTP client for model downloading and Husarnet API (optional)
+reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
 
 # Cloud storage providers (optional)
 aws-sdk-s3 = { version = "1.0", optional = true }
@@ -70,6 +72,17 @@ futures = { version = "0.3", optional = true }
 
 # Zenoh transport (optional)
 zenoh = { version = "1.0", optional = true }
+
+# mDNS service discovery (optional)
+mdns-sd = { version = "0.11", optional = true }
+
+# WebRTC data channels (optional)
+webrtc = { version = "0.13", optional = true }
+bytes = { version = "1.0", optional = true }
+
+# WebSocket signaling server (optional)
+tokio-tungstenite = { version = "0.24", optional = true }
+dashmap = { version = "6.0", optional = true }  # Concurrent hashmap for peer tracking
 
 # Dynamic plugin loading (optional)
 libloading = { workspace = true, optional = true }
@@ -96,10 +109,14 @@ name = "cuda_ipc_benchmark"
 harness = false
 required-features = ["cuda"]
 
+[[bench]]
+name = "network_bench"
+harness = false
+
 [features]
 default = ["macros"]
 macros = ["horus_macros"]
-tls = ["rustls", "tokio-rustls", "rustls-pemfile", "rcgen"]
+tls = ["rustls", "tokio-rustls", "rustls-pemfile", "rcgen", "x509-parser", "hex"]
 quic = ["quinn", "rustls", "rcgen"]
 io-uring-net = ["io-uring"]
 ultra-low-latency = ["io-uring-net"]  # Enable io_uring for lowest latency
@@ -118,3 +135,15 @@ zenoh-ros2 = ["zenoh-transport", "cdr-encoding", "byteorder"]  # Zenoh with ROS2
 
 # Dynamic driver plugin loading
 dynamic-plugins = ["libloading"]
+
+# mDNS/DNS-SD for zero-config networking
+mdns = ["mdns-sd"]
+
+# WebRTC data channels for browser connectivity and P2P
+webrtc-transport = ["webrtc", "bytes"]
+
+# Built-in signaling server for P2P connection coordination
+signaling-server = ["tokio-tungstenite", "dashmap", "futures"]
+
+# Husarnet VPN integration for WAN connectivity
+husarnet = ["reqwest"]

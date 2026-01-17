@@ -20,6 +20,7 @@
 pub mod platform;
 pub mod shm_region;
 pub mod shm_topic;
+pub mod simd;
 pub mod tensor_handle;
 pub mod tensor_pool;
 
@@ -32,6 +33,13 @@ pub mod cuda_pool;
 pub use platform::*;
 pub use shm_region::ShmRegion;
 pub use shm_topic::ShmTopic;
+pub use simd::{
+    is_avx2_available, is_avx512_available, simd_copy_from_shm, simd_copy_to_shm,
+    simd_zero_memory, SimdCapabilities, SIMD_ALIGNMENT, SIMD_COPY_THRESHOLD,
+    // Prefetch functions for non-contiguous access patterns
+    prefetch, prefetch_range, prefetch_ring_segment, prefetch_scatter, prefetch_stride,
+    PrefetchHint,
+};
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{
     HorusTensor, TensorDevice, TensorDtype, TensorPool, TensorPoolConfig, TensorPoolStats,

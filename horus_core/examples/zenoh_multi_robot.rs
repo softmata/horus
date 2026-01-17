@@ -77,10 +77,10 @@ fn run_robot(robot_id: &str, start_x: f64, start_y: f64) -> Result<(), Box<dyn s
 
     // Create publisher hub for poses using endpoint string format
     // Format: topic@zenoh
-    let pose_hub: Hub<RobotPose> = Hub::new("robot_poses@zenoh")?;
+    let pose_hub: Topic<RobotPose> = Topic::new("robot_poses@zenoh")?;
 
     // Subscribe to poses from other robots
-    let peer_hub: Hub<RobotPose> = Hub::new("robot_poses@zenoh")?;
+    let peer_hub: Topic<RobotPose> = Topic::new("robot_poses@zenoh")?;
 
     println!("Topology:");
     println!(
@@ -141,7 +141,7 @@ fn run_monitor() -> Result<(), Box<dyn std::error::Error>> {
     println!("Subscribing to all robot poses via Zenoh mesh\n");
 
     // Create subscriber hub for all poses
-    let pose_hub: Hub<RobotPose> = Hub::new("robot_poses@zenoh")?;
+    let pose_hub: Topic<RobotPose> = Topic::new("robot_poses@zenoh")?;
 
     println!("Listening for robot poses... (Ctrl+C to stop)\n");
 

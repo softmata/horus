@@ -8,17 +8,17 @@ use horus::prelude::*;  // Includes KeyboardInputNode, JoystickInputNode, and al
 // Snake control node that converts input codes to SnakeState
 // Supports both keyboard and joystick input
 struct SnakeControlNode {
-    keyboard_subscriber: Hub<KeyboardInput>,
-    joystick_subscriber: Hub<JoystickInput>,
+    keyboard_subscriber: Topic<KeyboardInput>,
+    joystick_subscriber: Topic<JoystickInput>,
     snake_publisher: Hub<u32>,
 }
 
 impl SnakeControlNode {
     fn new() -> Result<Self> {
         Ok(Self {
-            keyboard_subscriber: Hub::new("keyboard_input")?,
-            joystick_subscriber: Hub::new("joystick_input")?,
-            snake_publisher: Hub::new("snakestate")?,
+            keyboard_subscriber: Topic::new("keyboard_input")?,
+            joystick_subscriber: Topic::new("joystick_input")?,
+            snake_publisher: Topic::new("snakestate")?,
         })
     }
 }

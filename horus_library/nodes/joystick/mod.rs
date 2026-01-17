@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 
 // Processor imports for hybrid pattern
 use crate::nodes::processor::{
@@ -73,7 +73,7 @@ pub struct JoystickInputNode<P = PassThrough<JoystickInput>>
 where
     P: Processor<JoystickInput>,
 {
-    publisher: Hub<JoystickInput>,
+    publisher: Topic<JoystickInput>,
     #[cfg(feature = "gilrs")]
     gilrs: Gilrs,
     #[cfg(not(feature = "gilrs"))]
@@ -120,7 +120,7 @@ impl JoystickInputNode {
             })?;
 
             Ok(Self {
-                publisher: Hub::new(topic)?,
+                publisher: Topic::new(topic)?,
                 gilrs,
                 device_id: 0,
                 deadzone: 0.1,
@@ -140,7 +140,7 @@ impl JoystickInputNode {
         #[cfg(not(feature = "gilrs"))]
         {
             Ok(Self {
-                publisher: Hub::new(topic)?,
+                publisher: Topic::new(topic)?,
                 last_input_time: 0,
                 device_id: 0,
                 deadzone: 0.1,
@@ -705,7 +705,7 @@ where
             })?;
 
             Ok(JoystickInputNode {
-                publisher: Hub::new(&self.topic)?,
+                publisher: Topic::new(&self.topic)?,
                 gilrs,
                 device_id: 0,
                 deadzone: 0.1,
@@ -725,7 +725,7 @@ where
         #[cfg(not(feature = "gilrs"))]
         {
             Ok(JoystickInputNode {
-                publisher: Hub::new(&self.topic)?,
+                publisher: Topic::new(&self.topic)?,
                 last_input_time: 0,
                 device_id: 0,
                 deadzone: 0.1,

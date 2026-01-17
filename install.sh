@@ -1837,7 +1837,7 @@ build_with_recovery() {
             echo -e "${YELLOW}   Profile: Embedded - Skipping sim2d/sim3d (saves ~1GB RAM during build)${NC}"
             ;;
         full|*)
-            # All packages including simulators and Python bindings
+            # All core packages - simulators are now standalone packages
             BUILD_PACKAGES=(
                 "horus_macros"
                 "horus_core"
@@ -1845,15 +1845,15 @@ build_with_recovery() {
                 "horus_manager"
                 "horus_library"
                 "horus_py"
-                "sim2d"
-                "sim3d"
             )
-            echo -e "${GREEN}   Profile: Full - Building all packages including simulators${NC}"
+            echo -e "${GREEN}   Profile: Full - Building core packages${NC}"
+            echo -e "${CYAN}   Note: sim2d/sim3d are standalone packages (built separately)${NC}"
             ;;
     esac
 
     # Estimated crate counts for each package (for progress calculation)
     # Based on actual dependency counts from cargo tree (fresh build)
+    # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
     declare -A PACKAGE_CRATES=(
         ["horus_macros"]=10
         ["horus_core"]=350
@@ -1861,8 +1861,6 @@ build_with_recovery() {
         ["horus_manager"]=150
         ["horus_library"]=50
         ["horus_py"]=20
-        ["sim2d"]=300
-        ["sim3d"]=400
     )
 
     # Calculate total crates for overall progress
@@ -2196,23 +2194,45 @@ chmod +x "$INSTALL_DIR/horus"
 
 echo -e "${GREEN}${NC} CLI installed to $INSTALL_DIR/horus"
 
-# Install sim2d binary (only for full profile)
+# Install sim2d binary from standalone package (only for full profile)
 if [ "${INSTALL_PROFILE:-full}" = "full" ]; then
-    if [ -f "target/release/sim2d" ]; then
-        cp target/release/sim2d "$INSTALL_DIR/sim2d"
-        chmod +x "$INSTALL_DIR/sim2d"
-        echo -e "${GREEN}${NC} sim2d binary installed to $INSTALL_DIR/sim2d"
+    SIM2D_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../horus-sim2d"
+    if [ -d "$SIM2D_DIR" ]; then
+        echo -e "${CYAN}${STATUS_INFO}${NC} Building sim2d from standalone package..."
+        if (cd "$SIM2D_DIR" && cargo build --release 2>/dev/null); then
+            if [ -f "$SIM2D_DIR/target/release/sim2d" ]; then
+                cp "$SIM2D_DIR/target/release/sim2d" "$INSTALL_DIR/sim2d"
+                chmod +x "$INSTALL_DIR/sim2d"
+                echo -e "${GREEN}${NC} sim2d binary installed to $INSTALL_DIR/sim2d"
+            fi
+        else
+            echo -e "${YELLOW}[-]${NC} sim2d: Build failed (check ../horus-sim2d)"
+        fi
+    else
+        echo -e "${CYAN}[-]${NC} sim2d: Standalone package not found at ../horus-sim2d"
+        echo -e "    Install separately: cd ../horus-sim2d && cargo install --path ."
     fi
 else
     echo -e "${YELLOW}[-]${NC} sim2d: Skipped (${INSTALL_PROFILE} profile)"
 fi
 
-# Install sim3d binary (only for full profile)
+# Install sim3d binary from standalone package (only for full profile)
 if [ "${INSTALL_PROFILE:-full}" = "full" ]; then
-    if [ -f "target/release/sim3d" ]; then
-        cp target/release/sim3d "$INSTALL_DIR/sim3d"
-        chmod +x "$INSTALL_DIR/sim3d"
-        echo -e "${GREEN}${NC} sim3d binary installed to $INSTALL_DIR/sim3d"
+    SIM3D_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../horus-sim3d"
+    if [ -d "$SIM3D_DIR" ]; then
+        echo -e "${CYAN}${STATUS_INFO}${NC} Building sim3d from standalone package..."
+        if (cd "$SIM3D_DIR" && cargo build --release 2>/dev/null); then
+            if [ -f "$SIM3D_DIR/target/release/sim3d" ]; then
+                cp "$SIM3D_DIR/target/release/sim3d" "$INSTALL_DIR/sim3d"
+                chmod +x "$INSTALL_DIR/sim3d"
+                echo -e "${GREEN}${NC} sim3d binary installed to $INSTALL_DIR/sim3d"
+            fi
+        else
+            echo -e "${YELLOW}[-]${NC} sim3d: Build failed (check ../horus-sim3d)"
+        fi
+    else
+        echo -e "${CYAN}[-]${NC} sim3d: Standalone package not found at ../horus-sim3d"
+        echo -e "    Install separately: cd ../horus-sim3d && cargo install --path ."
     fi
 else
     echo -e "${YELLOW}[-]${NC} sim3d: Skipped (${INSTALL_PROFILE} profile)"

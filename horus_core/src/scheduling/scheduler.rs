@@ -343,6 +343,75 @@ impl Scheduler {
         self
     }
 
+    /// Add a critical node to the safety monitor with a watchdog timeout.
+    ///
+    /// Critical nodes are monitored more strictly:
+    /// - Watchdog expiration triggers emergency stop
+    /// - WCET violations trigger emergency stop
+    /// - Deadline misses trigger emergency stop
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::time::Duration;
+    ///
+    /// let mut scheduler = Scheduler::new()
+    ///     .with_safety_monitor(10);
+    /// scheduler.add_critical_node("motor_controller", Duration::from_millis(100))?;
+    /// # Ok::<(), horus_core::error::HorusError>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Returns an error if the safety monitor is not enabled.
+    pub fn add_critical_node(
+        &mut self,
+        node_name: &str,
+        watchdog_timeout: std::time::Duration,
+    ) -> crate::error::HorusResult<&mut Self> {
+        if let Some(ref mut monitor) = self.safety_monitor {
+            monitor.add_critical_node(node_name.to_string(), watchdog_timeout);
+            Ok(self)
+        } else {
+            Err(crate::error::HorusError::Config(
+                "Safety monitor not enabled. Call with_safety_monitor() first.".to_string(),
+            ))
+        }
+    }
+
+    /// Set the WCET (Worst-Case Execution Time) budget for a node.
+    ///
+    /// When a node exceeds its WCET budget:
+    /// - Regular nodes: Warning logged, counter incremented
+    /// - Critical nodes: Emergency stop triggered
+    ///
+    /// # Example
+    /// ```no_run
+    /// use horus_core::Scheduler;
+    /// use std::time::Duration;
+    ///
+    /// let mut scheduler = Scheduler::new()
+    ///     .with_safety_monitor(10);
+    /// scheduler.set_wcet_budget("motor_controller", Duration::from_micros(500))?;
+    /// # Ok::<(), horus_core::error::HorusError>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Returns an error if the safety monitor is not enabled.
+    pub fn set_wcet_budget(
+        &mut self,
+        node_name: &str,
+        budget: std::time::Duration,
+    ) -> crate::error::HorusResult<&mut Self> {
+        if let Some(ref mut monitor) = self.safety_monitor {
+            monitor.set_wcet_budget(node_name.to_string(), budget);
+            Ok(self)
+        } else {
+            Err(crate::error::HorusError::Config(
+                "Safety monitor not enabled. Call with_safety_monitor() first.".to_string(),
+            ))
+        }
+    }
+
     /// Set scheduler name (for debugging/logging)
     pub fn with_name(mut self, name: &str) -> Self {
         self.scheduler_name = name.to_string();
@@ -1229,7 +1298,7 @@ impl Scheduler {
 
     /// Add a node with given priority (lower number = higher priority).
     /// If users only use add(node, priority) then logging defaults to false
-    /// Automatically detects and wraps RTNode types for real-time support
+    /// Automatically detects and wraps RtNode types for real-time support
     ///
     /// # Example
     /// ```ignore
@@ -1339,7 +1408,7 @@ impl Scheduler {
             || node_name.contains("critical");
 
         // For RT nodes, extract WCET and deadline if available
-        // This would normally come from the RTNode trait methods
+        // This would normally come from the RtNode trait methods
         let (wcet_budget, deadline) = if is_rt_node {
             // Default RT constraints for demonstration
             (

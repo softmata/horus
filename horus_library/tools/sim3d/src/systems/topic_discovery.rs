@@ -4,7 +4,7 @@
 //! Reuses horus_core's shm_topics_dir() for platform-agnostic paths.
 
 use bevy::prelude::*;
-use horus_core::communication::Hub;
+use horus_core::communication::Topic;
 use horus_core::core::NodeInfo;
 use horus_core::memory::shm_topics_dir;
 use horus_library::messages::{
@@ -203,23 +203,23 @@ pub struct TopicSubscription {
 
 /// Type-erased hub holder
 enum SubscriptionHub {
-    Twist(Hub<Twist>),
-    Odometry(Hub<Odometry>),
-    Imu(Hub<Imu>),
-    LaserScan(Hub<LaserScan>),
-    JointCommand(Hub<JointCommand>),
+    Twist(Topic<Twist>),
+    Odometry(Topic<Odometry>),
+    Imu(Topic<Imu>),
+    LaserScan(Topic<LaserScan>),
+    JointCommand(Topic<JointCommand>),
 }
 
 impl TopicSubscription {
     /// Create a new subscription for the given topic
     pub fn new(topic_name: &str, message_type: MessageType) -> Option<Self> {
         let hub = match message_type {
-            MessageType::Twist => Hub::new(topic_name).ok().map(SubscriptionHub::Twist),
-            MessageType::Odometry => Hub::new(topic_name).ok().map(SubscriptionHub::Odometry),
-            MessageType::Imu => Hub::new(topic_name).ok().map(SubscriptionHub::Imu),
-            MessageType::LaserScan => Hub::new(topic_name).ok().map(SubscriptionHub::LaserScan),
+            MessageType::Twist => Topic::new(topic_name).ok().map(SubscriptionHub::Twist),
+            MessageType::Odometry => Topic::new(topic_name).ok().map(SubscriptionHub::Odometry),
+            MessageType::Imu => Topic::new(topic_name).ok().map(SubscriptionHub::Imu),
+            MessageType::LaserScan => Topic::new(topic_name).ok().map(SubscriptionHub::LaserScan),
             MessageType::JointCommand => {
-                Hub::new(topic_name).ok().map(SubscriptionHub::JointCommand)
+                Topic::new(topic_name).ok().map(SubscriptionHub::JointCommand)
             }
             MessageType::Unknown => None,
         }?;

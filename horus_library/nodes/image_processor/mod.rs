@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 
 // Processor imports for hybrid pattern
 use crate::nodes::processor::{
@@ -48,8 +48,8 @@ pub struct ImageProcessorNode<P = PassThrough<Image>>
 where
     P: Processor<Image>,
 {
-    subscriber: Hub<Image>,
-    publisher: Hub<Image>,
+    subscriber: Topic<Image>,
+    publisher: Topic<Image>,
 
     // Configuration
     target_width: u32,
@@ -92,8 +92,8 @@ impl ImageProcessorNode {
         backend: ImageBackend,
     ) -> Result<Self> {
         Ok(Self {
-            subscriber: Hub::new(input_topic)?,
-            publisher: Hub::new(output_topic)?,
+            subscriber: Topic::new(input_topic)?,
+            publisher: Topic::new(output_topic)?,
             target_width: 640,
             target_height: 480,
             resize_enabled: false,
@@ -603,8 +603,8 @@ where
     /// Build the node
     pub fn build(self) -> Result<ImageProcessorNode<P>> {
         Ok(ImageProcessorNode {
-            subscriber: Hub::new(&self.input_topic)?,
-            publisher: Hub::new(&self.output_topic)?,
+            subscriber: Topic::new(&self.input_topic)?,
+            publisher: Topic::new(&self.output_topic)?,
             target_width: 640,
             target_height: 480,
             resize_enabled: false,

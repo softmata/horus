@@ -22,66 +22,145 @@ harness = false
 name = "network_transport"
 harness = false
 
+[[bench]]
+name = "latency_matrix"
+harness = false
+
+# =============================================================================
+# PERFORMANCE BENCHMARKS
+# Run with: cargo run --release --bin <name>
+# =============================================================================
+
 [[bin]]
 name = "ipc_benchmark"
-path = "src/bin/ipc_benchmark.rs"
+path = "src/bin/performance/ipc_benchmark.rs"
 doc = true
 
-# Production qualification test binaries
+[[bin]]
+name = "pod_benchmark"
+path = "src/bin/performance/pod_benchmark.rs"
+doc = true
+
+# =============================================================================
+# FUNCTIONAL TESTS
+# Tests that verify API correctness and basic functionality
+# =============================================================================
+
 [[bin]]
 name = "test_api_compatibility"
-path = "src/bin/test_api_compatibility.rs"
+path = "src/bin/functional/test_api_compatibility.rs"
 doc = false
 
 [[bin]]
 name = "test_ipc_functionality"
-path = "src/bin/test_ipc_functionality.rs"
+path = "src/bin/functional/test_ipc_functionality.rs"
 doc = false
 
 [[bin]]
 name = "test_memory_safety"
-path = "src/bin/test_memory_safety.rs"
+path = "src/bin/functional/test_memory_safety.rs"
 doc = false
 
 [[bin]]
 name = "test_robotics_usage"
-path = "src/bin/test_robotics_usage.rs"
+path = "src/bin/functional/test_robotics_usage.rs"
 doc = false
 
 [[bin]]
 name = "test_logging"
-path = "src/bin/test_logging.rs"
+path = "src/bin/functional/test_logging.rs"
 doc = false
+
+[[bin]]
+name = "test_framework_api"
+path = "src/bin/functional/test_framework_api.rs"
+doc = false
+
+[[bin]]
+name = "test_message_macro"
+path = "src/bin/functional/test_message_macro.rs"
+doc = false
+
+# =============================================================================
+# STRESS TESTS
+# High-load tests for reliability under pressure
+# =============================================================================
 
 [[bin]]
 name = "test_stress"
-path = "src/bin/test_stress.rs"
+path = "src/bin/stress/test_stress.rs"
 doc = false
 
 [[bin]]
+name = "test_multi_process_stress"
+path = "src/bin/stress/test_multi_process_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_many_topics_stress"
+path = "src/bin/stress/test_many_topics_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_message_sizes_stress"
+path = "src/bin/stress/test_message_sizes_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_data_types_stress"
+path = "src/bin/stress/test_data_types_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_high_frequency_stress"
+path = "src/bin/stress/test_high_frequency_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_pubsub_patterns_stress"
+path = "src/bin/stress/test_pubsub_patterns_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_chaos_stress"
+path = "src/bin/stress/test_chaos_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_connect_disconnect_stress"
+path = "src/bin/stress/test_connect_disconnect_stress.rs"
+doc = false
+
+[[bin]]
+name = "test_memory_pressure_stress"
+path = "src/bin/stress/test_memory_pressure_stress.rs"
+doc = false
+
+# =============================================================================
+# PRODUCTION QUALIFICATION TESTS
+# Long-running tests for production readiness validation
+# =============================================================================
+
+[[bin]]
 name = "test_robotics_production"
-path = "src/bin/test_robotics_production.rs"
+path = "src/bin/production/test_robotics_production.rs"
 doc = false
 
 [[bin]]
 name = "test_critical_production"
-path = "src/bin/test_critical_production.rs"
+path = "src/bin/production/test_critical_production.rs"
 doc = false
 
 [[bin]]
-name = "comparison_runner"
-path = "src/bin/comparison_runner.rs"
+name = "test_soak_24h"
+path = "src/bin/production/test_soak_24h.rs"
 doc = false
-
-[[bin]]
-name = "pod_benchmark"
-path = "src/bin/pod_benchmark.rs"
-doc = true
 
 [dependencies]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
+bytemuck = { version = "1.24", features = ["derive"] }
 serde.workspace = true
 serde_json = "1.0"
 serde_bytes = "0.11"

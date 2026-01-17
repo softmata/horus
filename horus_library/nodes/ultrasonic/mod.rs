@@ -8,7 +8,7 @@ use horus_core::driver::{Driver, Sensor};
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -96,7 +96,7 @@ where
     D: Sensor<Output = Range>,
     P: Processor<Range>,
 {
-    publisher: Hub<Range>,
+    publisher: Topic<Range>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -127,7 +127,7 @@ impl UltrasonicNode<UltrasonicDriver, PassThrough<Range>> {
         let driver = UltrasonicDriver::new(driver_backend)?;
 
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             processor: PassThrough::new(),
             is_initialized: false,
@@ -162,7 +162,7 @@ where
     /// ```
     pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             processor: PassThrough::new(),
             is_initialized: false,
@@ -396,7 +396,7 @@ where
         let driver = UltrasonicDriver::new(driver_backend)?;
 
         Ok(UltrasonicNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             processor: self.processor,
             is_initialized: false,
@@ -433,7 +433,7 @@ where
         let driver = self.driver.unwrap_or_default();
 
         Ok(UltrasonicNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             processor: self.processor,
             is_initialized: false,

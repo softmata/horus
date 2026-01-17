@@ -42,7 +42,7 @@ use ort::value::Tensor as OrtTensor;
 
 use crate::messages::ml::{InferenceMetrics, ModelFormat, ModelInfo, Predictions, Tensor};
 use crate::messages::Image;
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 use std::path::Path;
 use std::time::Instant;
 
@@ -95,15 +95,15 @@ impl Default for InferenceConfig {
 #[cfg(feature = "onnx")]
 pub struct ONNXInferenceNode {
     /// Input hub for images
-    image_sub: Option<Hub<Image>>,
+    image_sub: Option<Topic<Image>>,
     /// Input hub for tensors
-    tensor_sub: Option<Hub<Tensor>>,
+    tensor_sub: Option<Topic<Tensor>>,
     /// Output hub for predictions
-    predictions_pub: Hub<Predictions>,
+    predictions_pub: Topic<Predictions>,
     /// Output hub for raw tensors
-    tensor_pub: Option<Hub<Tensor>>,
+    tensor_pub: Option<Topic<Tensor>>,
     /// Output hub for metrics
-    metrics_pub: Hub<InferenceMetrics>,
+    metrics_pub: Topic<InferenceMetrics>,
     /// ONNX Runtime session
     session: Session,
     /// Inference configuration
@@ -127,11 +127,11 @@ impl ONNXInferenceNode {
         let model_info = Self::extract_model_info(&session, model_path)?;
 
         Ok(Self {
-            image_sub: Some(Hub::new(input_topic)?),
+            image_sub: Some(Topic::new(input_topic)?),
             tensor_sub: None,
-            predictions_pub: Hub::new(output_topic)?,
+            predictions_pub: Topic::new(output_topic)?,
             tensor_pub: None,
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_info,
@@ -151,10 +151,10 @@ impl ONNXInferenceNode {
 
         Ok(Self {
             image_sub: None,
-            tensor_sub: Some(Hub::new(input_topic)?),
-            predictions_pub: Hub::new(output_topic)?,
-            tensor_pub: Some(Hub::new(&format!("{}.tensor", output_topic))?),
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            tensor_sub: Some(Topic::new(input_topic)?),
+            predictions_pub: Topic::new(output_topic)?,
+            tensor_pub: Some(Topic::new(&format!("{}.tensor", output_topic))?),
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_info,

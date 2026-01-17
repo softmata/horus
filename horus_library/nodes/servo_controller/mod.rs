@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Controls multiple servo motors with position, velocity, and torque commands.
 /// Supports both individual servo commands and coordinated joint control.
 pub struct ServoControllerNode {
-    servo_subscriber: Hub<ServoCommand>,
-    joint_subscriber: Hub<JointCommand>,
-    status_publisher: Hub<JointCommand>, // Publishes current servo states
+    servo_subscriber: Topic<ServoCommand>,
+    joint_subscriber: Topic<JointCommand>,
+    status_publisher: Topic<JointCommand>, // Publishes current servo states
 
     // Configuration
     servo_count: u8,
@@ -47,9 +47,9 @@ impl ServoControllerNode {
         status_topic: &str,
     ) -> Result<Self> {
         Ok(Self {
-            servo_subscriber: Hub::new(servo_topic)?,
-            joint_subscriber: Hub::new(joint_topic)?,
-            status_publisher: Hub::new(status_topic)?,
+            servo_subscriber: Topic::new(servo_topic)?,
+            joint_subscriber: Topic::new(joint_topic)?,
+            status_publisher: Topic::new(status_topic)?,
 
             servo_count: 6, // Default 6-DOF robot arm
             position_limits: HashMap::new(),

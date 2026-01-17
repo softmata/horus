@@ -44,7 +44,7 @@ impl Figure8State {
 }
 
 struct Figure8Racer {
-    cmd_vel: Hub<CmdVel>,
+    cmd_vel: Topic<CmdVel>,
 
     // State machine
     state: Figure8State,
@@ -68,7 +68,7 @@ impl Figure8Racer {
         println!("Connecting to robot.cmd_vel...");
 
         Ok(Self {
-            cmd_vel: Hub::new("robot.cmd_vel")?,
+            cmd_vel: Topic::new("robot.cmd_vel")?,
 
             state: Figure8State::RightLoop,
             state_ticks: 0,

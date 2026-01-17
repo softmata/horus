@@ -3,13 +3,13 @@
 use horus::prelude::*;
 
 struct Controller {
-    cmd_vel: Hub<CmdVel>,
+    cmd_vel: Topic<CmdVel>,
 }
 
 impl Controller {
     fn new() -> HorusResult<Self> {
         Ok(Self {
-            cmd_vel: Hub::new("motors.cmd_vel")?,
+            cmd_vel: Topic::new("motors.cmd_vel")?,
         })
     }
 }

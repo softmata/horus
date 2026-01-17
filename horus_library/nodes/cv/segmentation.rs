@@ -39,7 +39,7 @@ use ort::value::Tensor;
 
 use crate::messages::ml::{InferenceMetrics, SegmentationMask};
 use crate::messages::Image;
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 
 #[cfg(feature = "onnx")]
 use ndarray::{Array, ArrayD, IxDyn};
@@ -170,13 +170,13 @@ impl Default for SegmentationConfig {
 #[cfg(feature = "onnx")]
 pub struct SemanticSegmentationNode {
     /// Image input subscriber
-    image_sub: Hub<Image>,
+    image_sub: Topic<Image>,
     /// Segmentation mask publisher
-    mask_pub: Hub<SegmentationMask>,
+    mask_pub: Topic<SegmentationMask>,
     /// Colored visualization publisher (optional)
-    vis_pub: Option<Hub<Image>>,
+    vis_pub: Option<Topic<Image>>,
     /// Metrics publisher
-    metrics_pub: Hub<InferenceMetrics>,
+    metrics_pub: Topic<InferenceMetrics>,
     /// ONNX Runtime session
     session: Session,
     /// Configuration
@@ -205,16 +205,16 @@ impl SemanticSegmentationNode {
             .to_string();
 
         let vis_pub = if config.output_colored {
-            Some(Hub::new(&format!("{}.visualization", output_topic))?)
+            Some(Topic::new(&format!("{}.visualization", output_topic))?)
         } else {
             None
         };
 
         Ok(Self {
-            image_sub: Hub::new(input_topic)?,
-            mask_pub: Hub::new(output_topic)?,
+            image_sub: Topic::new(input_topic)?,
+            mask_pub: Topic::new(output_topic)?,
             vis_pub,
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_name,

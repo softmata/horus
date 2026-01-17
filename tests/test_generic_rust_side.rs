@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "=".repeat(70));
 
     // Create generic hub (same topic as Python)
-    let hub = Hub::<GenericMessage>::new("cross_lang_topic")?;
+    let hub = Topic::<GenericMessage>::new("cross_lang_topic")?;
 
     // Send data from Rust
     let mut rust_data = HashMap::new();

@@ -18,10 +18,10 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use horus_core::{Node, NodeInfo, Scheduler, Hub};
+//! use horus_core::{Node, NodeInfo, Scheduler, Topic};
 //!
 //! struct ExampleNode {
-//!     output: Hub<String>,
+//!     output: Topic<String>,
 //! }
 //!
 //! impl Node for ExampleNode {
@@ -68,10 +68,15 @@ pub mod state_machines;
 pub mod terminal;
 
 // Re-export commonly used types for easy access
-pub use communication::{Hub, Link, LinkMetrics, PodLink, PodMessage};
+// Unified Topic API - the single way to create IPC channels
+pub use communication::{PodMessage, Topic};
+// LinkMetrics is still useful for diagnostics
+pub use communication::LinkMetrics;
 pub use core::{
+    detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
     HealthStatus, LogSummary, Node, NodeConfig, NodeHeartbeat, NodeInfo, NodeInfoExt, NodeMetrics,
-    NodeState, TopicMetadata,
+    NodeState, RtApplyResult, RtConfig, RtConfigBuilder, RtCpuInfo, RtDegradation, RtKernelInfo,
+    RtScheduler, TopicMetadata,
 };
 pub use error::{HorusError, HorusResult};
 // Clean aliases for user-facing API

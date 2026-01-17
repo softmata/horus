@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,8 +19,8 @@ use i2cdev::linux::LinuxI2CDevice;
 /// EEPROMs, and other I2C peripherals. Supports multiple I2C buses
 /// and device addressing.
 pub struct I2cBusNode {
-    request_subscriber: Hub<I2cMessage>, // I2C transaction requests
-    response_publisher: Hub<I2cMessage>, // I2C transaction responses
+    request_subscriber: Topic<I2cMessage>, // I2C transaction requests
+    response_publisher: Topic<I2cMessage>, // I2C transaction responses
 
     // Hardware devices (per I2C address)
     #[cfg(feature = "i2c-hardware")]
@@ -57,8 +57,8 @@ impl I2cBusNode {
         response_topic: &str,
     ) -> Result<Self> {
         Ok(Self {
-            request_subscriber: Hub::new(request_topic)?,
-            response_publisher: Hub::new(response_topic)?,
+            request_subscriber: Topic::new(request_topic)?,
+            response_publisher: Topic::new(response_topic)?,
             #[cfg(feature = "i2c-hardware")]
             i2c_devices: HashMap::new(),
             hardware_enabled: false,

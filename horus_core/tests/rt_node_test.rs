@@ -1,5 +1,5 @@
 // Test real-time node functionality
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RTClass, RTNode, RTPriority};
+use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RtClass, RtNode, RtPriority};
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,7 +67,7 @@ impl Node for MotorControlNode {
     }
 }
 
-impl RTNode for MotorControlNode {
+impl RtNode for MotorControlNode {
     fn wcet_budget(&self) -> Duration {
         Duration::from_micros(100) // 100μs budget for motor control
     }
@@ -76,12 +76,12 @@ impl RTNode for MotorControlNode {
         Duration::from_millis(1) // 1ms deadline for 1kHz control
     }
 
-    fn rt_priority(&self) -> RTPriority {
-        RTPriority::Critical // Highest priority
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::Critical // Highest priority
     }
 
-    fn rt_class(&self) -> RTClass {
-        RTClass::Hard // Must never miss deadline
+    fn rt_class(&self) -> RtClass {
+        RtClass::Hard // Must never miss deadline
     }
 
     fn pre_condition(&self) -> bool {
@@ -147,7 +147,7 @@ impl Node for SensorFusionNode {
     }
 }
 
-impl RTNode for SensorFusionNode {
+impl RtNode for SensorFusionNode {
     fn wcet_budget(&self) -> Duration {
         Duration::from_micros(500) // 500μs budget
     }
@@ -156,12 +156,12 @@ impl RTNode for SensorFusionNode {
         Duration::from_millis(10) // 10ms deadline for 100Hz
     }
 
-    fn rt_priority(&self) -> RTPriority {
-        RTPriority::High
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::High
     }
 
-    fn rt_class(&self) -> RTClass {
-        RTClass::Firm // Can tolerate occasional misses
+    fn rt_class(&self) -> RtClass {
+        RtClass::Firm // Can tolerate occasional misses
     }
 }
 
@@ -206,7 +206,7 @@ impl Node for LoggingNode {
     }
 }
 
-impl RTNode for LoggingNode {
+impl RtNode for LoggingNode {
     fn wcet_budget(&self) -> Duration {
         Duration::from_millis(5) // 5ms budget
     }
@@ -215,12 +215,12 @@ impl RTNode for LoggingNode {
         Duration::from_millis(100) // 100ms deadline
     }
 
-    fn rt_priority(&self) -> RTPriority {
-        RTPriority::Low
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::Low
     }
 
-    fn rt_class(&self) -> RTClass {
-        RTClass::Soft // Best effort
+    fn rt_class(&self) -> RtClass {
+        RtClass::Soft // Best effort
     }
 }
 
@@ -229,7 +229,7 @@ fn test_rt_node_basic() {
     // Use standard config (RT features disabled)
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
-    // Add RT nodes as regular nodes (RTNodeWrapper handles the conversion)
+    // Add RT nodes as regular nodes (RtNodeWrapper handles the conversion)
     scheduler
         .add(Box::new(MotorControlNode::new("motor_ctrl")), 0, Some(true))
         .add(
@@ -299,7 +299,7 @@ fn test_rt_node_wcet_budget() {
     let node = MotorControlNode::new("test_motor");
     assert_eq!(node.wcet_budget(), Duration::from_micros(100));
     assert_eq!(node.deadline(), Duration::from_millis(1));
-    assert_eq!(node.rt_class(), RTClass::Hard);
+    assert_eq!(node.rt_class(), RtClass::Hard);
 }
 
 #[test]
@@ -321,10 +321,10 @@ fn test_rt_node_formal_verification() {
 
 #[test]
 fn test_rt_priority_values() {
-    assert!(RTPriority::Critical.value() < RTPriority::High.value());
-    assert!(RTPriority::High.value() < RTPriority::Medium.value());
-    assert!(RTPriority::Medium.value() < RTPriority::Low.value());
-    assert_eq!(RTPriority::Custom(42).value(), 42);
+    assert!(RtPriority::Critical.value() < RtPriority::High.value());
+    assert!(RtPriority::High.value() < RtPriority::Medium.value());
+    assert!(RtPriority::Medium.value() < RtPriority::Low.value());
+    assert_eq!(RtPriority::Custom(42).value(), 42);
 }
 
 #[test]

@@ -615,32 +615,38 @@ else
     info "No horus_manager examples found"
 fi
 
-# Check sim3d examples
+# Check sim3d examples (now in separate package)
 info "Checking sim3d examples..."
+SIM3D_EXAMPLES_DIR="$ROOT_DIR/../horus-sim3d/examples"
 EXAMPLE_COUNT=0
 EXAMPLE_PASS=0
 
-for example in horus_library/tools/sim3d/examples/*.rs; do
-    if [ -f "$example" ]; then
-        EXAMPLE_NAME=$(basename "$example" .rs)
-        EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
+if [ -d "$SIM3D_EXAMPLES_DIR" ]; then
+    for example in "$SIM3D_EXAMPLES_DIR"/*.rs; do
+        if [ -f "$example" ]; then
+            EXAMPLE_NAME=$(basename "$example" .rs)
+            EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
 
-        if cargo build --release --example "$EXAMPLE_NAME" -p sim3d >/dev/null 2>&1; then
-            EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
-        else
-            warn "sim3d example failed: $EXAMPLE_NAME"
+            # Build from the standalone horus-sim3d package
+            if (cd "$ROOT_DIR/../horus-sim3d" && cargo build --release --example "$EXAMPLE_NAME" >/dev/null 2>&1); then
+                EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
+            else
+                warn "sim3d example failed: $EXAMPLE_NAME"
+            fi
         fi
-    fi
-done
+    done
 
-if [ "$EXAMPLE_COUNT" -gt 0 ]; then
-    if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
-        pass "All $EXAMPLE_COUNT sim3d examples compile"
+    if [ "$EXAMPLE_COUNT" -gt 0 ]; then
+        if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
+            pass "All $EXAMPLE_COUNT sim3d examples compile"
+        else
+            fail "$EXAMPLE_PASS/$EXAMPLE_COUNT sim3d examples compile"
+        fi
     else
-        fail "$EXAMPLE_PASS/$EXAMPLE_COUNT sim3d examples compile"
+        info "No sim3d examples found"
     fi
 else
-    info "No sim3d examples found"
+    info "sim3d package not found at ../horus-sim3d (standalone package)"
 fi
 fi  # End of quick mode check for section 12
 
@@ -829,6 +835,8 @@ if [ -n "$MAIN_VERSION" ]; then
     VERSION_MISMATCH=0
 
     # Check all Cargo.toml files that should have matching versions
+    # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
+    # They have independent versioning
     CARGO_FILES=(
         "horus/Cargo.toml"
         "horus_core/Cargo.toml"
@@ -837,8 +845,6 @@ if [ -n "$MAIN_VERSION" ]; then
         "horus_manager/Cargo.toml"
         "horus_py/Cargo.toml"
         "horus_router/Cargo.toml"
-        "horus_library/tools/sim2d/Cargo.toml"
-        "horus_library/tools/sim3d/Cargo.toml"
         "benchmarks/Cargo.toml"
     )
 

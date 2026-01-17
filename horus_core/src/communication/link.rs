@@ -2,6 +2,7 @@ use crate::communication::network::smart_transport::NetworkLocation;
 use crate::core::node::NodeInfo;
 use crate::error::HorusResult;
 use crate::memory::shm_region::ShmRegion;
+use crate::memory::simd::{prefetch, PrefetchHint};
 use std::marker::PhantomData;
 use std::mem;
 use std::net::{SocketAddr, UdpSocket};
@@ -596,6 +597,32 @@ where
 /// - Standard UDP for cross-platform compatibility
 /// - Unix domain sockets for localhost optimization
 /// - TCP fallback for reliability when needed
+///
+/// # Deprecation Notice
+///
+/// `Link<T>` is deprecated in favor of `Topic<T>`. The Topic API provides a unified
+/// interface with automatic backend selection based on your communication pattern.
+///
+/// ## Migration Guide
+///
+/// ```rust,ignore
+/// // Before (deprecated):
+/// let (producer, consumer) = Link::channel("sensor");
+/// producer.send(&msg)?;
+/// let received = consumer.recv();
+///
+/// // After (recommended):
+/// let producer: Topic<MyMessage> = Topic::spsc("sensor", true)?;
+/// let consumer: Topic<MyMessage> = Topic::spsc("sensor", false)?;
+/// producer.send(msg, &mut None)?;
+/// let received = consumer.recv(&mut None);
+/// ```
+///
+/// For SPSC cross-process communication, Topic::spsc() provides equivalent functionality.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use Topic<T>::spsc() instead. See Link documentation for migration guide."
+)]
 #[repr(align(64))]
 pub struct Link<T>
 where
@@ -1371,6 +1398,11 @@ where
         let header = unsafe { self.header.as_ref().unwrap().as_ref() };
         let data_ptr = self.data_ptr.unwrap();
 
+        // PREFETCH OPTIMIZATION: Start loading data into L1 cache BEFORE we check
+        // if there's new data. This hides memory latency behind the atomic sequence check.
+        // By the time we know there's data and read it, it should already be in cache.
+        prefetch(data_ptr.as_ptr() as *const u8, PrefetchHint::T0);
+
         // TIME ONLY THE ACTUAL IPC OPERATION
         let ipc_start = Instant::now();
 
@@ -1383,7 +1415,7 @@ where
             return None;
         }
 
-        // Read the message
+        // Read the message (data should already be in L1 cache from prefetch above)
         let msg = unsafe {
             let slot = data_ptr.as_ptr() as *const T;
             std::ptr::read(slot)

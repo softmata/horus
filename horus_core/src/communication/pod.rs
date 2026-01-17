@@ -131,6 +131,29 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
 ///
 /// This is a specialized version of Link that only works with POD messages,
 /// bypassing all serialization for minimum latency.
+///
+/// # Deprecation Notice
+///
+/// `PodLink<T>` is deprecated in favor of `PodTopic<T>`. The PodTopic API provides
+/// the same zero-copy performance with a cleaner interface.
+///
+/// ## Migration Guide
+///
+/// ```rust,ignore
+/// // Before (deprecated):
+/// let producer: PodLink<MotorCommand> = PodLink::producer("motor_cmd")?;
+/// producer.send(&cmd)?;
+///
+/// // After (recommended):
+/// let producer: PodTopic<MotorCommand> = PodTopic::producer("motor_cmd")?;
+/// producer.send(cmd)?;
+/// ```
+///
+/// PodTopic provides equivalent performance (~50ns) with simpler semantics.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use PodTopic<T> instead. See PodLink documentation for migration guide."
+)]
 pub struct PodLink<T: PodMessage> {
     /// Shared memory region
     shm_ptr: *mut u8,

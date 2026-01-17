@@ -10,7 +10,7 @@
 //! use horus::library::messages::cmd_vel::CmdVel;
 //!
 //! pub struct MyNode {
-//!     publisher: Hub<CmdVel>,
+//!     publisher: Topic<CmdVel>,
 //! }
 //!
 //! impl Node for MyNode {
@@ -55,9 +55,10 @@ pub mod prelude {
     pub use horus_core::core::{LogSummary, Node, NodeInfo, NodeInfoExt, NodeState};
 
     // ============================================
-    // Communication (IPC)
+    // Communication (IPC) - Unified Topic API
     // ============================================
-    pub use horus_core::communication::{Hub, Link};
+    pub use horus_core::communication::Topic;
+    pub use horus_core::communication::PodMessage;
 
     // ============================================
     // Scheduling
@@ -65,26 +66,41 @@ pub mod prelude {
     pub use horus_core::scheduling::{ExecutionMode, RobotPreset, Scheduler, SchedulerConfig};
 
     // ============================================
+    // Scheduler Configuration Types
+    // ============================================
+    pub use horus_core::scheduling::{
+        ConfigValue, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
+        ResourceConfig, TimeSyncSource, TimingConfig,
+    };
+
+    // ============================================
     // Safety & Fault Tolerance
     // ============================================
     pub use horus_core::scheduling::{
         // BlackBox flight recorder
+        create_shared_blackbox,
         BlackBox,
         BlackBoxEvent,
+        SharedBlackBox,
         // Checkpointing
         Checkpoint,
         CheckpointManager,
+        CheckpointMetadata,
+        NodeCheckpoint,
         // Circuit breaker
         CircuitBreaker,
         CircuitState,
         // Redundancy/TMR voting
+        FaultStats,
         RedundancyManager,
+        RedundantValue,
+        VoteResult,
+        Voter,
+        VotingStrategy,
         // Safety monitoring
         SafetyMonitor,
         SafetyState,
         SafetyStats,
-        VoteResult,
-        VotingStrategy,
         WCETEnforcer,
         Watchdog,
     };
@@ -100,7 +116,8 @@ pub mod prelude {
     // Profiling & Intelligence
     // ============================================
     pub use horus_core::scheduling::{
-        ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError,
+        DependencyGraph, ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData,
+        ProfileError, RuntimeProfiler, TierClassifier,
     };
 
     // ============================================
@@ -114,7 +131,10 @@ pub mod prelude {
     // ============================================
     // Telemetry
     // ============================================
-    pub use horus_core::scheduling::{TelemetryEndpoint, TelemetryManager};
+    pub use horus_core::scheduling::{
+        create_shared_telemetry, Metric, MetricValue, SharedTelemetry, TelemetryEndpoint,
+        TelemetryManager, TelemetrySnapshot,
+    };
 
     // ============================================
     // Runtime (OS-level features)
@@ -125,9 +145,28 @@ pub mod prelude {
     };
 
     // ============================================
+    // Real-Time Configuration & Nodes
+    // ============================================
+    pub use horus_core::core::{
+        // RtConfig - System-level RT configuration
+        prefault_stack, prefault_stack_linear, RtApplyResult, RtConfig, RtConfigBuilder,
+        RtDegradation, RtKernelInfo, RtScheduler,
+        // CPU affinity and isolation helpers
+        detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
+        RtCpuInfo,
+        // RtNode - Node-level RT constraints
+        DeadlineMissPolicy, RtClass, RtNode, RtNodeWrapper, RtPriority, RtStats, WCETViolation,
+    };
+
+    // ============================================
     // JIT Compilation
     // ============================================
     pub use horus_core::scheduling::JITCompiler;
+
+    // ============================================
+    // ML Model Registry
+    // ============================================
+    pub use horus_core::ml::{ModelEntry, ModelRegistry};
 
     // ============================================
     // Memory & Tensors

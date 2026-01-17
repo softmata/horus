@@ -108,13 +108,13 @@ CARGO_FILES=(
     "horus_library/Cargo.toml"
     "horus_library/python/Cargo.toml"
     "horus_library/tools/Cargo.toml"
-    "horus_library/tools/sim2d/Cargo.toml"
-    "horus_library/tools/sim3d/Cargo.toml"
     "horus_library/apps/tanksim/Cargo.toml"
     # Python bindings
     "horus_py/Cargo.toml"
     # Benchmarks
     "benchmarks/Cargo.toml"
+    # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
+    # They have their own versioning and release process
 )
 
 for file in "${CARGO_FILES[@]}"; do
@@ -132,7 +132,7 @@ echo -e "${CYAN}[2/10] Updating pyproject.toml files...${NC}"
 PYPROJECT_FILES=(
     "horus_py/pyproject.toml"
     "horus_library/python/pyproject.toml"
-    "horus_library/tools/sim3d/pyproject.toml"
+    # NOTE: sim3d is now a standalone package at ../horus-sim3d
 )
 
 for file in "${PYPROJECT_FILES[@]}"; do
@@ -148,7 +148,7 @@ echo -e "${CYAN}[3/10] Updating Python __version__...${NC}"
 PYTHON_INIT_FILES=(
     "horus_py/horus/__init__.py"
     "horus_library/python/horus/library/__init__.py"
-    "horus_library/tools/sim3d/python/sim3d_rl/__init__.py"
+    # NOTE: sim3d Python bindings are now at ../horus-sim3d
 )
 
 for file in "${PYTHON_INIT_FILES[@]}"; do
@@ -273,11 +273,7 @@ if [ -d "docs-site/content" ]; then
     done
 fi
 
-# Sim3d spec
-if [ -f "horus_library/tools/sim3d/SIM3D_SPEC.md" ]; then
-    sed -i "s/$CURRENT_VERSION/$NEW_VERSION/g" horus_library/tools/sim3d/SIM3D_SPEC.md
-    echo -e "  ${GREEN}+${NC} horus_library/tools/sim3d/SIM3D_SPEC.md"
-fi
+# NOTE: SIM3D_SPEC.md is now at ../horus-sim3d/docs/SIM3D_SPEC.md (separate versioning)
 
 echo ""
 echo -e "${CYAN}[8/10] Updating GitHub templates and CI...${NC}"

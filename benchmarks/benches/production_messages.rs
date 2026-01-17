@@ -1,86 +1,92 @@
-//! Production-realistic benchmarks using actual HORUS message types
+//! Production Message Benchmarks
 //!
-//! Tests latency and throughput with real message structures:
-//! - CmdVel (control commands)
-//! - LaserScan (lidar data)
-//! - IMU (inertial measurement)
-//! - Odometry (pose + velocity)
-//! - PointCloud (3D perception)
-//! - BatteryState (status monitoring)
+//! Benchmarks using actual HORUS robotics message types to measure
+//! real-world performance with production data structures.
+//!
+//! ## Message Types
+//!
+//! | Message      | Size       | Use Case                    |
+//! |--------------|------------|-----------------------------|
+//! | CmdVel       | 16B        | Velocity commands           |
+//! | BatteryState | ~64B       | Status monitoring           |
+//! | IMU          | ~500B      | Inertial measurement        |
+//! | Odometry     | ~700B      | Pose + velocity             |
+//! | LaserScan    | ~1.5KB     | 2D lidar (360 rays)         |
+//! | PointCloud   | Variable   | 3D perception               |
+//!
+//! ## Running Benchmarks
+//!
+//! ```bash
+//! cargo bench --bench production_messages
+//! cargo bench --bench production_messages -- "small_messages"
+//! cargo bench --bench production_messages -- "pointcloud"
+//! ```
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use horus::communication::Hub;
+use horus::communication::Topic;
 use horus_library::messages::{
     cmd_vel::CmdVel,
     geometry::Point3,
     perception::PointCloud,
     sensor::{BatteryState, Imu, LaserScan, Odometry},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Benchmark CmdVel (16 bytes - control command)
-fn bench_cmdvel_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cmdvel");
+// =============================================================================
+// Section 1: Small Messages (Control & Status)
+// =============================================================================
+
+/// Benchmark small control messages (CmdVel: 16 bytes)
+fn bench_small_messages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("small_messages");
+    group.measurement_time(Duration::from_secs(5));
+
+    // CmdVel - velocity command (16 bytes)
     group.throughput(Throughput::Bytes(std::mem::size_of::<CmdVel>() as u64));
-
-    group.bench_function("send_recv", |b| {
+    group.bench_function("CmdVel_16B", |b| {
         let topic = format!("bench_cmdvel_{}", std::process::id());
-        let sender: Hub<CmdVel> = Hub::new(&topic).unwrap();
-        let receiver: Hub<CmdVel> = Hub::new(&topic).unwrap();
+        let sender: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let receiver: Topic<CmdVel> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
             sender.send(black_box(msg), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            black_box(receiver.recv(&mut None))
         });
     });
 
-    group.bench_function("send_only", |b| {
-        let topic = format!("bench_cmdvel_send_{}", std::process::id());
-        let sender: Hub<CmdVel> = Hub::new(&topic).unwrap();
+    // BatteryState - status monitoring
+    group.throughput(Throughput::Bytes(std::mem::size_of::<BatteryState>() as u64));
+    group.bench_function("BatteryState", |b| {
+        let topic = format!("bench_battery_{}", std::process::id());
+        let sender: Topic<BatteryState> = Topic::new(&topic).unwrap();
+        let receiver: Topic<BatteryState> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
-            let msg = CmdVel::new(1.5, 0.8);
-            sender.send(black_box(msg), &mut None).unwrap();
+            let battery = BatteryState::new(12.6, 75.0);
+            sender.send(black_box(battery), &mut None).unwrap();
+            black_box(receiver.recv(&mut None))
         });
     });
 
     group.finish();
 }
 
-/// Benchmark LaserScan (~1.5KB - 360 floats + metadata)
-fn bench_laserscan_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("laserscan");
-    group.throughput(Throughput::Bytes(std::mem::size_of::<LaserScan>() as u64));
+// =============================================================================
+// Section 2: Medium Messages (Sensor Data)
+// =============================================================================
 
-    group.bench_function("send_recv", |b| {
-        let topic = format!("bench_laser_{}", std::process::id());
-        let sender: Hub<LaserScan> = Hub::new(&topic).unwrap();
-        let receiver: Hub<LaserScan> = Hub::new(&topic).unwrap();
+/// Benchmark medium-sized sensor messages
+fn bench_medium_messages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("medium_messages");
+    group.measurement_time(Duration::from_secs(5));
 
-        b.iter(|| {
-            let mut scan = LaserScan::new();
-            // Populate with realistic data
-            for i in 0..360 {
-                scan.ranges[i] = 5.0 + (i as f32 * 0.01);
-            }
-            sender.send(black_box(scan), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
-        });
-    });
-
-    group.finish();
-}
-
-/// Benchmark IMU (~500 bytes - orientation, angular velocity, linear acceleration + covariances)
-fn bench_imu_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("imu");
+    // IMU - inertial measurement (~500 bytes)
     group.throughput(Throughput::Bytes(std::mem::size_of::<Imu>() as u64));
-
-    group.bench_function("send_recv", |b| {
+    group.bench_function("IMU_500B", |b| {
         let topic = format!("bench_imu_{}", std::process::id());
-        let sender: Hub<Imu> = Hub::new(&topic).unwrap();
-        let receiver: Hub<Imu> = Hub::new(&topic).unwrap();
+        let sender: Topic<Imu> = Topic::new(&topic).unwrap();
+        let receiver: Topic<Imu> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
             let mut imu = Imu::new();
@@ -88,75 +94,85 @@ fn bench_imu_latency(c: &mut Criterion) {
             imu.angular_velocity = [0.01, 0.02, 0.03];
             imu.linear_acceleration = [9.8, 0.1, 0.1];
             sender.send(black_box(imu), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            black_box(receiver.recv(&mut None))
         });
     });
 
-    group.finish();
-}
-
-/// Benchmark Odometry (~700 bytes - pose, twist, covariances)
-fn bench_odometry_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("odometry");
+    // Odometry - pose + velocity (~700 bytes)
     group.throughput(Throughput::Bytes(std::mem::size_of::<Odometry>() as u64));
-
-    group.bench_function("send_recv", |b| {
+    group.bench_function("Odometry_700B", |b| {
         let topic = format!("bench_odom_{}", std::process::id());
-        let sender: Hub<Odometry> = Hub::new(&topic).unwrap();
-        let receiver: Hub<Odometry> = Hub::new(&topic).unwrap();
+        let sender: Topic<Odometry> = Topic::new(&topic).unwrap();
+        let receiver: Topic<Odometry> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
             let mut odom = Odometry::new();
             odom.pose.x = 1.5;
             odom.pose.y = 2.3;
             odom.pose.theta = 0.8;
-            odom.twist.linear[0] = 0.5; // linear_x
-            odom.twist.angular[2] = 0.1; // angular_z
+            odom.twist.linear[0] = 0.5;
+            odom.twist.angular[2] = 0.1;
             sender.send(black_box(odom), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            black_box(receiver.recv(&mut None))
         });
     });
 
     group.finish();
 }
 
-/// Benchmark BatteryState (small message with arrays)
-fn bench_battery_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("battery");
-    group.throughput(Throughput::Bytes(std::mem::size_of::<BatteryState>() as u64));
+// =============================================================================
+// Section 3: Large Messages (Perception)
+// =============================================================================
 
-    group.bench_function("send_recv", |b| {
-        let topic = format!("bench_battery_{}", std::process::id());
-        let sender: Hub<BatteryState> = Hub::new(&topic).unwrap();
-        let receiver: Hub<BatteryState> = Hub::new(&topic).unwrap();
+/// Benchmark large perception messages
+fn bench_large_messages(c: &mut Criterion) {
+    let mut group = c.benchmark_group("large_messages");
+    group.measurement_time(Duration::from_secs(5));
+
+    // LaserScan - 2D lidar (~1.5KB for 360 rays)
+    group.throughput(Throughput::Bytes(std::mem::size_of::<LaserScan>() as u64));
+    group.bench_function("LaserScan_1.5KB", |b| {
+        let topic = format!("bench_laser_{}", std::process::id());
+        let sender: Topic<LaserScan> = Topic::new(&topic).unwrap();
+        let receiver: Topic<LaserScan> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
-            let battery = BatteryState::new(12.6, 75.0);
-            sender.send(black_box(battery), &mut None).unwrap();
-            let _ = black_box(receiver.recv(&mut None));
+            let mut scan = LaserScan::new();
+            for i in 0..360 {
+                scan.ranges[i] = 5.0 + (i as f32 * 0.01);
+            }
+            sender.send(black_box(scan), &mut None).unwrap();
+            black_box(receiver.recv(&mut None))
         });
     });
 
     group.finish();
 }
 
-/// Benchmark PointCloud (variable size - large messages)
-fn bench_pointcloud_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("pointcloud");
+// =============================================================================
+// Section 4: PointCloud Scaling (Variable Size)
+// =============================================================================
 
-    for (name, num_points) in &[("100pts", 100), ("1000pts", 1000), ("10000pts", 10000)] {
-        group.throughput(Throughput::Bytes((*num_points * 12) as u64)); // 3 * f32 per point
+/// Benchmark PointCloud with different point counts
+fn bench_pointcloud_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pointcloud_scaling");
+    group.measurement_time(Duration::from_secs(5));
+
+    let point_counts = [100, 1000, 10000];
+
+    for num_points in point_counts {
+        let bytes = num_points * 12; // 3 * f32 per point
+        group.throughput(Throughput::Bytes(bytes as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("send_recv", name),
-            num_points,
+            BenchmarkId::new("points", num_points),
+            &num_points,
             |b, &num_points| {
-                let topic = format!("bench_cloud_{}_{}", name, std::process::id());
-                let sender: Hub<PointCloud> = Hub::new(&topic).unwrap();
-                let receiver: Hub<PointCloud> = Hub::new(&topic).unwrap();
+                let topic = format!("bench_cloud_{}_{}", num_points, std::process::id());
+                let sender: Topic<PointCloud> = Topic::new(&topic).unwrap();
+                let receiver: Topic<PointCloud> = Topic::new(&topic).unwrap();
 
                 b.iter(|| {
-                    // Create realistic point cloud
                     let points: Vec<Point3> = (0..num_points)
                         .map(|i| {
                             let t = i as f64 * 0.1;
@@ -166,7 +182,7 @@ fn bench_pointcloud_latency(c: &mut Criterion) {
 
                     let cloud = PointCloud::xyz(&points);
                     sender.send(black_box(cloud), &mut None).unwrap();
-                    let _ = black_box(receiver.recv(&mut None));
+                    black_box(receiver.recv(&mut None))
                 });
             },
         );
@@ -175,187 +191,220 @@ fn bench_pointcloud_latency(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark sustained throughput with CmdVel at different frequencies
-fn bench_cmdvel_throughput(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cmdvel_throughput");
+// =============================================================================
+// Section 5: Throughput at Target Frequencies
+// =============================================================================
+
+/// Benchmark sustained throughput at typical robotics frequencies
+fn bench_frequency_throughput(c: &mut Criterion) {
+    let mut group = c.benchmark_group("frequency_throughput");
     group.measurement_time(Duration::from_secs(5));
 
-    for (name, hz) in &[("10Hz", 10), ("100Hz", 100), ("1000Hz", 1000)] {
-        group.bench_function(*name, |b| {
-            let topic = format!("bench_cmdvel_throughput_{}_{}", name, std::process::id());
-            let sender: Hub<CmdVel> = Hub::new(&topic).unwrap();
-            let receiver: Hub<CmdVel> = Hub::new(&topic).unwrap();
+    // CmdVel at 100Hz (typical control rate)
+    group.bench_function("CmdVel_100Hz", |b| {
+        let topic = format!("bench_cmdvel_100hz_{}", std::process::id());
+        let sender: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let receiver: Topic<CmdVel> = Topic::new(&topic).unwrap();
 
-            let cycle_time = Duration::from_secs_f64(1.0 / *hz as f64);
-
-            b.iter_custom(|iters| {
-                let mut total = Duration::ZERO;
-                for i in 0..iters {
-                    let start = Instant::now();
-
-                    let msg = CmdVel::new(1.0 + (i as f32 * 0.01), 0.5);
-                    sender.send(msg, &mut None).unwrap();
-                    let _ = receiver.recv(&mut None);
-
-                    total += start.elapsed();
-
-                    // Simulate target frequency
-                    if start.elapsed() < cycle_time {
-                        std::thread::sleep(cycle_time - start.elapsed());
-                    }
-                }
-                total
-            });
+        b.iter(|| {
+            for i in 0..100 {
+                let msg = CmdVel::new(1.0 + (i as f32 * 0.01), 0.5);
+                sender.send(black_box(msg), &mut None).unwrap();
+                let _ = black_box(receiver.recv(&mut None));
+            }
         });
-    }
+    });
 
-    group.finish();
-}
+    // IMU at 200Hz (typical IMU rate)
+    group.bench_function("IMU_200Hz", |b| {
+        let topic = format!("bench_imu_200hz_{}", std::process::id());
+        let sender: Topic<Imu> = Topic::new(&topic).unwrap();
+        let receiver: Topic<Imu> = Topic::new(&topic).unwrap();
 
-/// Benchmark LaserScan at typical lidar frequency (10Hz)
-fn bench_laserscan_throughput(c: &mut Criterion) {
-    let mut group = c.benchmark_group("laserscan_throughput");
-    group.measurement_time(Duration::from_secs(5));
+        b.iter(|| {
+            for _ in 0..200 {
+                let mut imu = Imu::new();
+                imu.angular_velocity = [0.01, 0.02, 0.03];
+                sender.send(black_box(imu), &mut None).unwrap();
+                let _ = black_box(receiver.recv(&mut None));
+            }
+        });
+    });
 
-    group.bench_function("10Hz_sustained", |b| {
-        let topic = format!("bench_laser_throughput_{}", std::process::id());
-        let sender: Hub<LaserScan> = Hub::new(&topic).unwrap();
-        let receiver: Hub<LaserScan> = Hub::new(&topic).unwrap();
+    // LaserScan at 10Hz (typical lidar rate)
+    group.bench_function("LaserScan_10Hz", |b| {
+        let topic = format!("bench_laser_10hz_{}", std::process::id());
+        let sender: Topic<LaserScan> = Topic::new(&topic).unwrap();
+        let receiver: Topic<LaserScan> = Topic::new(&topic).unwrap();
 
-        let cycle_time = Duration::from_millis(100); // 10Hz
-
-        b.iter_custom(|iters| {
-            let mut total = Duration::ZERO;
-            for i in 0..iters {
-                let start = Instant::now();
-
+        b.iter(|| {
+            for i in 0..10 {
                 let mut scan = LaserScan::new();
                 for j in 0..360 {
-                    scan.ranges[j] = 5.0 + ((i + j as u64) as f32 * 0.01);
+                    scan.ranges[j] = 5.0 + ((i + j) as f32 * 0.01);
                 }
-
-                sender.send(scan, &mut None).unwrap();
-                let _ = receiver.recv(&mut None);
-
-                total += start.elapsed();
-
-                if start.elapsed() < cycle_time {
-                    std::thread::sleep(cycle_time - start.elapsed());
-                }
+                sender.send(black_box(scan), &mut None).unwrap();
+                let _ = black_box(receiver.recv(&mut None));
             }
-            total
         });
     });
 
     group.finish();
 }
 
-/// Benchmark mixed message types (realistic robot scenario)
-fn bench_mixed_messages(c: &mut Criterion) {
-    let mut group = c.benchmark_group("mixed_messages");
+// =============================================================================
+// Section 6: Mixed Message Scenarios
+// =============================================================================
+
+/// Benchmark realistic robot control loop with multiple message types
+fn bench_robot_control_loop(c: &mut Criterion) {
+    let mut group = c.benchmark_group("robot_control_loop");
     group.measurement_time(Duration::from_secs(5));
 
-    group.bench_function("robot_loop_100Hz", |b| {
+    group.bench_function("100Hz_mixed", |b| {
         let cmd_topic = format!("bench_mix_cmd_{}", std::process::id());
         let imu_topic = format!("bench_mix_imu_{}", std::process::id());
-        let battery_topic = format!("bench_mix_battery_{}", std::process::id());
+        let odom_topic = format!("bench_mix_odom_{}", std::process::id());
 
-        let cmd_sender: Hub<CmdVel> = Hub::new(&cmd_topic).unwrap();
-        let cmd_receiver: Hub<CmdVel> = Hub::new(&cmd_topic).unwrap();
+        let cmd_tx: Topic<CmdVel> = Topic::new(&cmd_topic).unwrap();
+        let cmd_rx: Topic<CmdVel> = Topic::new(&cmd_topic).unwrap();
+        let imu_tx: Topic<Imu> = Topic::new(&imu_topic).unwrap();
+        let imu_rx: Topic<Imu> = Topic::new(&imu_topic).unwrap();
+        let odom_tx: Topic<Odometry> = Topic::new(&odom_topic).unwrap();
+        let odom_rx: Topic<Odometry> = Topic::new(&odom_topic).unwrap();
 
-        let imu_sender: Hub<Imu> = Hub::new(&imu_topic).unwrap();
-        let imu_receiver: Hub<Imu> = Hub::new(&imu_topic).unwrap();
+        b.iter(|| {
+            // Simulate one control cycle
+            // 1. Read IMU
+            let mut imu = Imu::new();
+            imu.angular_velocity = [0.01, 0.02, 0.03];
+            imu_tx.send(black_box(imu), &mut None).unwrap();
+            let _ = black_box(imu_rx.recv(&mut None));
 
-        let battery_sender: Hub<BatteryState> = Hub::new(&battery_topic).unwrap();
-        let battery_receiver: Hub<BatteryState> = Hub::new(&battery_topic).unwrap();
+            // 2. Read Odometry
+            let mut odom = Odometry::new();
+            odom.pose.x = 1.0;
+            odom.pose.y = 2.0;
+            odom_tx.send(black_box(odom), &mut None).unwrap();
+            let _ = black_box(odom_rx.recv(&mut None));
 
-        b.iter_custom(|iters| {
-            let mut total = Duration::ZERO;
-
-            for i in 0..iters {
-                let start = Instant::now();
-
-                // CmdVel at 100Hz
-                let cmd = CmdVel::new(1.0, 0.5);
-                cmd_sender.send(cmd, &mut None).unwrap();
-                let _ = cmd_receiver.recv(&mut None);
-
-                // IMU at 100Hz (every tick)
-                {
-                    let mut imu = Imu::new();
-                    imu.angular_velocity = [0.01, 0.02, 0.03];
-                    imu_sender.send(imu, &mut None).unwrap();
-                    let _ = imu_receiver.recv(&mut None);
-                }
-
-                // Battery at 1Hz (every 100 iterations at 100Hz)
-                if i % 100 == 0 {
-                    let battery = BatteryState::new(12.4, 70.0);
-                    battery_sender.send(battery, &mut None).unwrap();
-                    let _ = battery_receiver.recv(&mut None);
-                }
-
-                total += start.elapsed();
-            }
-
-            total
+            // 3. Send Command
+            let cmd = CmdVel::new(1.0, 0.5);
+            cmd_tx.send(black_box(cmd), &mut None).unwrap();
+            let _ = black_box(cmd_rx.recv(&mut None));
         });
     });
 
     group.finish();
 }
 
-/// Benchmark burst handling with LaserScan
-fn bench_burst_laserscan(c: &mut Criterion) {
-    let mut group = c.benchmark_group("burst_laserscan");
+// =============================================================================
+// Section 7: Burst Traffic Patterns
+// =============================================================================
 
-    group.bench_function("burst_10_scans", |b| {
+/// Benchmark burst traffic handling (simulates sensor data bursts)
+fn bench_burst_traffic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("burst_traffic");
+    group.measurement_time(Duration::from_secs(5));
+
+    // Burst of 10 LaserScans
+    group.bench_function("LaserScan_burst_10", |b| {
         let topic = format!("bench_burst_laser_{}", std::process::id());
-        let sender: Hub<LaserScan> = Hub::new(&topic).unwrap();
-        let receiver: Hub<LaserScan> = Hub::new(&topic).unwrap();
+        let sender: Topic<LaserScan> = Topic::new(&topic).unwrap();
+        let receiver: Topic<LaserScan> = Topic::new(&topic).unwrap();
 
-        b.iter_custom(|iters| {
-            let mut total = Duration::ZERO;
-
-            for _ in 0..iters {
-                let start = Instant::now();
-
-                // Send burst of 10 scans
-                for i in 0..10 {
-                    let mut scan = LaserScan::new();
-                    for j in 0..360 {
-                        scan.ranges[j] = 5.0 + ((i + j) as f32 * 0.01);
-                    }
-                    sender.send(scan, &mut None).unwrap();
+        b.iter(|| {
+            // Send burst
+            for i in 0..10 {
+                let mut scan = LaserScan::new();
+                for j in 0..360 {
+                    scan.ranges[j] = 5.0 + ((i + j) as f32 * 0.01);
                 }
-
-                // Receive all
-                for _ in 0..10 {
-                    let _ = receiver.recv(&mut None);
-                }
-
-                total += start.elapsed();
+                sender.send(black_box(scan), &mut None).unwrap();
             }
+            // Drain burst
+            for _ in 0..10 {
+                let _ = black_box(receiver.recv(&mut None));
+            }
+        });
+    });
 
-            total
+    // Burst of 100 CmdVel
+    group.bench_function("CmdVel_burst_100", |b| {
+        let topic = format!("bench_burst_cmd_{}", std::process::id());
+        let sender: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let receiver: Topic<CmdVel> = Topic::new(&topic).unwrap();
+
+        b.iter(|| {
+            // Send burst
+            for i in 0..100 {
+                let msg = CmdVel::new(1.0 + (i as f32 * 0.01), 0.5);
+                sender.send(black_box(msg), &mut None).unwrap();
+            }
+            // Drain burst
+            for _ in 0..100 {
+                let _ = black_box(receiver.recv(&mut None));
+            }
         });
     });
 
     group.finish();
 }
+
+// =============================================================================
+// Section 8: Send-Only Latency (Syscall Overhead)
+// =============================================================================
+
+/// Measure raw send latency without recv (isolates send overhead)
+fn bench_send_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("send_only");
+    group.measurement_time(Duration::from_secs(5));
+
+    group.bench_function("CmdVel", |b| {
+        let topic = format!("bench_send_cmdvel_{}", std::process::id());
+        let sender: Topic<CmdVel> = Topic::new(&topic).unwrap();
+
+        b.iter(|| {
+            let msg = CmdVel::new(1.5, 0.8);
+            sender.send(black_box(msg), &mut None).unwrap();
+        });
+    });
+
+    group.bench_function("LaserScan", |b| {
+        let topic = format!("bench_send_laser_{}", std::process::id());
+        let sender: Topic<LaserScan> = Topic::new(&topic).unwrap();
+
+        b.iter(|| {
+            let mut scan = LaserScan::new();
+            for i in 0..360 {
+                scan.ranges[i] = 5.0 + (i as f32 * 0.01);
+            }
+            sender.send(black_box(scan), &mut None).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
+// =============================================================================
+// Criterion Configuration
+// =============================================================================
 
 criterion_group!(
-    benches,
-    bench_cmdvel_latency,
-    bench_laserscan_latency,
-    bench_imu_latency,
-    bench_odometry_latency,
-    bench_battery_latency,
-    bench_pointcloud_latency,
-    bench_cmdvel_throughput,
-    bench_laserscan_throughput,
-    bench_mixed_messages,
-    bench_burst_laserscan,
+    name = benches;
+    config = Criterion::default()
+        .sample_size(100)
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(5));
+    targets =
+        bench_small_messages,
+        bench_medium_messages,
+        bench_large_messages,
+        bench_pointcloud_scaling,
+        bench_frequency_throughput,
+        bench_robot_control_loop,
+        bench_burst_traffic,
+        bench_send_only,
 );
 
 criterion_main!(benches);

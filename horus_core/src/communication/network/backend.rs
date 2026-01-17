@@ -15,6 +15,9 @@ use super::zenoh_backend::ZenohBackend;
 #[cfg(feature = "zenoh-transport")]
 use super::zenoh_config::ZenohConfig;
 
+#[cfg(feature = "quic")]
+use super::quic::{QuicBackend, QuicConfig};
+
 use crate::error::HorusResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,6 +55,10 @@ pub enum NetworkBackend<T> {
     /// Zenoh transport (multi-robot mesh, cloud, ROS2 interop)
     #[cfg(feature = "zenoh-transport")]
     Zenoh(ZenohBackend<T>),
+
+    /// QUIC transport (reliable, encrypted, low-latency)
+    #[cfg(feature = "quic")]
+    Quic(QuicBackend<T>),
 }
 
 /// Wrapper for batch UDP sender/receiver pair with smart copy support
@@ -157,6 +164,84 @@ where
                 #[cfg(not(feature = "zenoh-transport"))]
                 {
                     let _ = (topic, ros2_mode, connect);
+                    Err(crate::error::HorusError::Communication(
+                        "Zenoh transport not enabled. Compile with --features zenoh-transport"
+                            .to_string(),
+                    ))
+                }
+            }
+
+            Endpoint::Mdns {
+                topic,
+                hostname,
+                port,
+            } => {
+                // mDNS resolution requires the mdns-sd feature
+                #[cfg(feature = "mdns")]
+                {
+                    // Resolve hostname via mDNS and create direct connection
+                    use crate::communication::network::mdns::resolve_mdns_hostname;
+                    let resolved_ip = resolve_mdns_hostname(&hostname)?;
+                    let resolved_port = port.unwrap_or(super::endpoint::DEFAULT_PORT);
+                    let addr = SocketAddr::new(resolved_ip, resolved_port);
+                    Self::create_for_address(&topic, addr, false)
+                }
+                #[cfg(not(feature = "mdns"))]
+                {
+                    let _ = (topic, hostname, port);
+                    Err(crate::error::HorusError::Communication(
+                        "mDNS resolution not enabled. Compile with --features mdns or use \
+                         direct IP address instead (e.g., 'topic@192.168.1.5')"
+                            .to_string(),
+                    ))
+                }
+            }
+
+            Endpoint::P2p {
+                topic,
+                peer_id,
+                strategy,
+            } => {
+                // P2P transport requires signaling server connection and NAT traversal
+                // This will be implemented with STUN/TURN support
+                let _ = (topic, peer_id, strategy);
+                Err(crate::error::HorusError::Communication(
+                    "P2P transport not yet implemented. Use direct IP addresses, mDNS (.local), \
+                     or Zenoh for multi-robot connectivity."
+                        .to_string(),
+                ))
+            }
+
+            Endpoint::Cloud { topic, mode } => {
+                // Cloud transport requires WebSocket connection to cloud/relay server
+                // or VPN address resolution
+                let _ = (topic, mode);
+                Err(crate::error::HorusError::Communication(
+                    "Cloud transport not yet implemented. Use Zenoh (topic@zenoh) for \
+                     cloud connectivity, or direct IP addresses for VPN peers."
+                        .to_string(),
+                ))
+            }
+
+            Endpoint::ZenohCloud { topic, config } => {
+                // Zenoh cloud mode with router configuration
+                #[cfg(feature = "zenoh-transport")]
+                {
+                    // Build Zenoh config from ZenohCloudConfig
+                    let mut zenoh_config = ZenohConfig::default();
+
+                    // Add primary and backup routers as connect endpoints
+                    zenoh_config = zenoh_config.connect_to(&config.primary_router);
+                    for backup in &config.backup_routers {
+                        zenoh_config = zenoh_config.connect_to(backup);
+                    }
+
+                    let backend = ZenohBackend::new_blocking(&topic, zenoh_config)?;
+                    Ok(NetworkBackend::Zenoh(backend))
+                }
+                #[cfg(not(feature = "zenoh-transport"))]
+                {
+                    let _ = (topic, config);
                     Err(crate::error::HorusError::Communication(
                         "Zenoh transport not enabled. Compile with --features zenoh-transport"
                             .to_string(),
@@ -275,13 +360,25 @@ where
             }
 
             TransportType::Quic => {
-                // QUIC requires async runtime - fall back to UDP for sync API
-                // QUIC can be used directly via QuicTransport for async use cases
-                log::debug!(
-                    "QUIC transport requested but NetworkBackend is sync; falling back to UDP"
-                );
-                let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                Ok(NetworkBackend::UdpDirect(udp_backend))
+                #[cfg(feature = "quic")]
+                {
+                    let config = QuicConfig::default();
+                    let backend = QuicBackend::new_blocking(topic, addr, config).map_err(|e| {
+                        crate::error::HorusError::Communication(format!(
+                            "Failed to create QUIC backend: {}",
+                            e
+                        ))
+                    })?;
+                    Ok(NetworkBackend::Quic(backend))
+                }
+                #[cfg(not(feature = "quic"))]
+                {
+                    log::warn!(
+                        "QUIC transport requested but feature not enabled; falling back to UDP"
+                    );
+                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
+                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                }
             }
 
             TransportType::Zenoh => {
@@ -411,6 +508,10 @@ where
             NetworkBackend::Router(backend) => backend.send(msg),
             #[cfg(feature = "zenoh-transport")]
             NetworkBackend::Zenoh(backend) => backend.send(msg),
+            #[cfg(feature = "quic")]
+            NetworkBackend::Quic(backend) => backend.send(msg).map_err(|e| {
+                crate::error::HorusError::Communication(format!("QUIC send error: {}", e))
+            }),
         }
     }
 
@@ -441,6 +542,8 @@ where
             NetworkBackend::Router(backend) => backend.recv(),
             #[cfg(feature = "zenoh-transport")]
             NetworkBackend::Zenoh(backend) => backend.recv(),
+            #[cfg(feature = "quic")]
+            NetworkBackend::Quic(backend) => backend.recv(),
         }
     }
 
@@ -456,6 +559,8 @@ where
             NetworkBackend::Router(_) => "router",
             #[cfg(feature = "zenoh-transport")]
             NetworkBackend::Zenoh(_) => "zenoh",
+            #[cfg(feature = "quic")]
+            NetworkBackend::Quic(_) => "quic",
         }
     }
 
@@ -508,6 +613,11 @@ impl<T> std::fmt::Debug for NetworkBackend<T> {
             #[cfg(feature = "zenoh-transport")]
             NetworkBackend::Zenoh(backend) => f
                 .debug_struct("NetworkBackend::Zenoh")
+                .field("backend", backend)
+                .finish(),
+            #[cfg(feature = "quic")]
+            NetworkBackend::Quic(backend) => f
+                .debug_struct("NetworkBackend::Quic")
                 .field("backend", backend)
                 .finish(),
         }

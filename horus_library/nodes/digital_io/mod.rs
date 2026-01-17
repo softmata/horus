@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,9 +36,9 @@ pub struct DigitalIONode<P = PassThrough<DigitalIO>>
 where
     P: Processor<DigitalIO>,
 {
-    input_publisher: Hub<DigitalIO>,
-    output_subscriber: Hub<DigitalIO>,
-    status_publisher: Hub<DigitalIO>,
+    input_publisher: Topic<DigitalIO>,
+    output_subscriber: Topic<DigitalIO>,
+    status_publisher: Topic<DigitalIO>,
 
     // Configuration
     input_pin_count: u8,
@@ -77,9 +77,9 @@ impl DigitalIONode {
         status_topic: &str,
     ) -> Result<Self> {
         Ok(Self {
-            input_publisher: Hub::new(input_topic)?,
-            output_subscriber: Hub::new(output_topic)?,
-            status_publisher: Hub::new(status_topic)?,
+            input_publisher: Topic::new(input_topic)?,
+            output_subscriber: Topic::new(output_topic)?,
+            status_publisher: Topic::new(status_topic)?,
 
             input_pin_count: 8,  // Default 8 input pins
             output_pin_count: 8, // Default 8 output pins
@@ -527,9 +527,9 @@ where
     /// Build the node
     pub fn build(self) -> Result<DigitalIONode<P>> {
         Ok(DigitalIONode {
-            input_publisher: Hub::new(&self.input_topic)?,
-            output_subscriber: Hub::new(&self.output_topic)?,
-            status_publisher: Hub::new(&self.status_topic)?,
+            input_publisher: Topic::new(&self.input_topic)?,
+            output_subscriber: Topic::new(&self.output_topic)?,
+            status_publisher: Topic::new(&self.status_topic)?,
 
             input_pin_count: 8,
             output_pin_count: 8,

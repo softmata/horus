@@ -23,7 +23,7 @@ use anyhow::Result;
 use bevy::prelude::*;
 use clap::Parser;
 use horus_core::core::LogSummary;
-use horus_core::{communication::Hub, core::NodeInfo};
+use horus_core::{communication::Topic, core::NodeInfo};
 use horus_library::messages::{CmdVel, Imu, LaserScan, Odometry, Pose2D, Twist};
 use rapier2d::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -498,16 +498,16 @@ pub struct RobotTread {
 
 /// Per-robot HORUS communication hubs
 pub struct RobotHubs {
-    cmd_vel_sub: Hub<CmdVel>,
-    odom_pub: Hub<Odometry>,
-    lidar_pub: Hub<LaserScan>,
-    imu_pub: Hub<Imu>,
+    cmd_vel_sub: Topic<CmdVel>,
+    odom_pub: Topic<Odometry>,
+    lidar_pub: Topic<LaserScan>,
+    imu_pub: Topic<Imu>,
 }
 
 /// Per-articulated-robot HORUS communication hubs
 pub struct ArticulatedRobotHubs {
-    pub joint_cmd_sub: Hub<JointCommand>,
-    pub joint_state_pub: Hub<JointState>,
+    pub joint_cmd_sub: Topic<JointCommand>,
+    pub joint_state_pub: Topic<JointState>,
 }
 
 /// HORUS communication system
@@ -515,7 +515,7 @@ pub struct ArticulatedRobotHubs {
 pub struct HorusComm {
     robot_hubs: std::collections::HashMap<String, RobotHubs>, // Per-robot hubs indexed by robot name
     pub articulated_robot_hubs: std::collections::HashMap<String, ArticulatedRobotHubs>, // Per-articulated robot hubs
-    obstacle_cmd_sub: Hub<ObstacleCommand>, // Shared obstacle command topic
+    obstacle_cmd_sub: Topic<ObstacleCommand>, // Shared obstacle command topic
     node_info: NodeInfo,
     /// Current topic prefixes per robot (for detecting changes)
     current_topic_prefixes: std::collections::HashMap<String, String>,
@@ -530,10 +530,10 @@ impl HorusComm {
         let imu_topic = format!("{}.imu", new_prefix);
 
         match (
-            Hub::new(&cmd_vel_topic),
-            Hub::new(&odom_topic),
-            Hub::new(&scan_topic),
-            Hub::new(&imu_topic),
+            Topic::new(&cmd_vel_topic),
+            Topic::new(&odom_topic),
+            Topic::new(&scan_topic),
+            Topic::new(&imu_topic),
         ) {
             (Ok(cmd_vel_sub), Ok(odom_pub), Ok(lidar_pub), Ok(imu_pub)) => {
                 // Replace the old hubs with new ones
@@ -991,10 +991,10 @@ pub fn setup(
         let imu_topic = format!("{}.imu", robot_config.topic_prefix);
 
         match (
-            Hub::new(&cmd_vel_topic),
-            Hub::new(&odom_topic),
-            Hub::new(&scan_topic),
-            Hub::new(&imu_topic),
+            Topic::new(&cmd_vel_topic),
+            Topic::new(&odom_topic),
+            Topic::new(&scan_topic),
+            Topic::new(&imu_topic),
         ) {
             (Ok(cmd_vel_sub), Ok(odom_pub), Ok(lidar_pub), Ok(imu_pub)) => {
                 robot_hubs.insert(
@@ -1031,7 +1031,7 @@ pub fn setup(
         let joint_cmd_topic = format!("{}.joint_cmd", artic_config.topic_prefix);
         let joint_state_topic = format!("{}.joint_state", artic_config.topic_prefix);
 
-        match (Hub::new(&joint_cmd_topic), Hub::new(&joint_state_topic)) {
+        match (Topic::new(&joint_cmd_topic), Topic::new(&joint_state_topic)) {
             (Ok(joint_cmd_sub), Ok(joint_state_pub)) => {
                 articulated_robot_hubs.insert(
                     artic_config.name.clone(),
@@ -1057,7 +1057,7 @@ pub fn setup(
     }
 
     // Create shared obstacle command hub
-    match Hub::new("sim2d.obstacle_cmd") {
+    match Topic::new("sim2d.obstacle_cmd") {
         Ok(obstacle_cmd_sub) => {
             let node_info = NodeInfo::new("sim2d".to_string(), true);
             commands.insert_resource(HorusComm {

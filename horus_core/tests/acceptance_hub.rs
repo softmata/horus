@@ -1,7 +1,7 @@
 //! Acceptance tests for Hub Communication (Pub/Sub)
 //! Tests lock-free, zero-copy shared memory communication between nodes
 
-use horus_core::communication::hub::Hub;
+use horus_core::communication::Topic;
 use serde::{Deserialize, Serialize};
 
 #[test]
@@ -13,8 +13,8 @@ fn test_scenario_1_basic_pub_sub() {
 
     let topic = format!("test_basic_{}", std::process::id());
 
-    let pub_hub = Hub::<i32>::new(&topic).expect("Failed to create publisher hub");
-    let sub_hub = Hub::<i32>::new(&topic).expect("Failed to create subscriber hub");
+    let pub_hub = Topic::<i32>::new(&topic).expect("Failed to create publisher hub");
+    let sub_hub = Topic::<i32>::new(&topic).expect("Failed to create subscriber hub");
 
     pub_hub.send(42, &mut None).expect("Failed to send message");
 
@@ -35,10 +35,10 @@ fn test_scenario_2_multiple_subscribers() {
 
     let topic = format!("test_multi_sub_{}", std::process::id());
 
-    let pub_hub = Hub::<i32>::new(&topic).expect("Failed to create publisher");
-    let sub1 = Hub::<i32>::new(&topic).expect("Failed to create subscriber 1");
-    let sub2 = Hub::<i32>::new(&topic).expect("Failed to create subscriber 2");
-    let sub3 = Hub::<i32>::new(&topic).expect("Failed to create subscriber 3");
+    let pub_hub = Topic::<i32>::new(&topic).expect("Failed to create publisher");
+    let sub1 = Topic::<i32>::new(&topic).expect("Failed to create subscriber 1");
+    let sub2 = Topic::<i32>::new(&topic).expect("Failed to create subscriber 2");
+    let sub3 = Topic::<i32>::new(&topic).expect("Failed to create subscriber 3");
 
     pub_hub
         .send(100, &mut None)
@@ -70,10 +70,10 @@ fn test_scenario_3_multiple_publishers() {
 
     let topic = format!("test_multi_pub_{}", std::process::id());
 
-    let pub1 = Hub::<i32>::new(&topic).expect("Failed to create publisher 1");
-    let pub2 = Hub::<i32>::new(&topic).expect("Failed to create publisher 2");
-    let pub3 = Hub::<i32>::new(&topic).expect("Failed to create publisher 3");
-    let sub = Hub::<i32>::new(&topic).expect("Failed to create subscriber");
+    let pub1 = Topic::<i32>::new(&topic).expect("Failed to create publisher 1");
+    let pub2 = Topic::<i32>::new(&topic).expect("Failed to create publisher 2");
+    let pub3 = Topic::<i32>::new(&topic).expect("Failed to create publisher 3");
+    let sub = Topic::<i32>::new(&topic).expect("Failed to create subscriber");
 
     pub1.send(1, &mut None).expect("Failed to send from pub1");
     pub2.send(2, &mut None).expect("Failed to send from pub2");
@@ -103,7 +103,7 @@ fn test_scenario_4_message_buffering_same_hub() {
 
     let topic = format!("test_buffered_{}", std::process::id());
 
-    let hub = Hub::<i32>::new(&topic).expect("Failed to create hub");
+    let hub = Topic::<i32>::new(&topic).expect("Failed to create hub");
 
     hub.send(1, &mut None).expect("Failed to send message 1");
     hub.send(2, &mut None).expect("Failed to send message 2");
@@ -136,7 +136,7 @@ fn test_scenario_6_empty_receive() {
 
     let topic = format!("test_empty_{}", std::process::id());
 
-    let hub = Hub::<i32>::new(&topic).expect("Failed to create hub");
+    let hub = Topic::<i32>::new(&topic).expect("Failed to create hub");
 
     assert_eq!(hub.recv(&mut None), None, "Empty hub should return None");
     assert_eq!(
@@ -166,8 +166,8 @@ fn test_scenario_7_large_messages() {
 
     let topic = format!("test_large_{}", std::process::id());
 
-    let pub_hub = Hub::<LargeMessage>::new(&topic).expect("Failed to create publisher");
-    let sub_hub = Hub::<LargeMessage>::new(&topic).expect("Failed to create subscriber");
+    let pub_hub = Topic::<LargeMessage>::new(&topic).expect("Failed to create publisher");
+    let sub_hub = Topic::<LargeMessage>::new(&topic).expect("Failed to create subscriber");
 
     let msg = LargeMessage {
         data: vec![42; 1000],
@@ -192,7 +192,7 @@ fn test_scenario_9_custom_capacity() {
 
     let topic = format!("test_capacity_{}", std::process::id());
 
-    let hub = Hub::<i32>::new_with_capacity(&topic, 4096)
+    let hub = Topic::<i32>::with_capacity(&topic, 4096)
         .expect("Failed to create hub with custom capacity");
 
     // Send multiple messages to verify capacity
@@ -216,8 +216,8 @@ fn test_scenario_high_frequency_publishing() {
 
     let topic = format!("test_high_freq_{}", std::process::id());
 
-    let pub_hub = Hub::<i32>::new(&topic).expect("Failed to create publisher");
-    let sub_hub = Hub::<i32>::new(&topic).expect("Failed to create subscriber");
+    let pub_hub = Topic::<i32>::new(&topic).expect("Failed to create publisher");
+    let sub_hub = Topic::<i32>::new(&topic).expect("Failed to create subscriber");
 
     // Send 1000 messages rapidly
     for i in 0..1000 {
@@ -244,7 +244,7 @@ fn test_edge_case_topic_name_with_special_chars() {
 
     let topic = format!("robot.sensors.lidar_{}", std::process::id());
 
-    let hub = Hub::<i32>::new(&topic).expect("Hub should handle special chars in topic name");
+    let hub = Topic::<i32>::new(&topic).expect("Hub should handle special chars in topic name");
     hub.send(42, &mut None)
         .expect("Should be able to send on topic with special chars");
 
@@ -266,7 +266,7 @@ fn test_edge_case_same_process_multiple_hubs() {
 
     for i in 0..10 {
         let topic = format!("test_multi_hub_{}_{}", std::process::id(), i);
-        let hub = Hub::<i32>::new(&topic).expect("Failed to create hub");
+        let hub = Topic::<i32>::new(&topic).expect("Failed to create hub");
         hub.send(i, &mut None).expect("Failed to send message");
         hubs.push(hub);
     }
@@ -288,13 +288,13 @@ fn test_resource_cleanup() {
     let topic = format!("test_cleanup_{}", std::process::id());
 
     {
-        let hub1 = Hub::<i32>::new(&topic).expect("Failed to create hub1");
+        let hub1 = Topic::<i32>::new(&topic).expect("Failed to create hub1");
         hub1.send(42, &mut None).expect("Failed to send message");
         // hub1 goes out of scope here
     }
 
     // Create new hub on same topic
-    let hub2 = Hub::<i32>::new(&topic).expect("Failed to create hub2 after hub1 dropped");
+    let hub2 = Topic::<i32>::new(&topic).expect("Failed to create hub2 after hub1 dropped");
     hub2.send(100, &mut None).expect("Failed to send on hub2");
 
     let msg = hub2
@@ -310,7 +310,7 @@ fn test_different_message_types() {
     let topic_vec = format!("test_vec_{}", std::process::id());
 
     // Test with String
-    let hub_string = Hub::<String>::new(&topic_string).expect("Failed to create String hub");
+    let hub_string = Topic::<String>::new(&topic_string).expect("Failed to create String hub");
     hub_string
         .send("Hello, HORUS!".to_string(), &mut None)
         .expect("Failed to send String");
@@ -320,7 +320,7 @@ fn test_different_message_types() {
     );
 
     // Test with Vec
-    let hub_vec = Hub::<Vec<i32>>::new(&topic_vec).expect("Failed to create Vec hub");
+    let hub_vec = Topic::<Vec<i32>>::new(&topic_vec).expect("Failed to create Vec hub");
     hub_vec
         .send(vec![1, 2, 3, 4, 5], &mut None)
         .expect("Failed to send Vec");
@@ -348,8 +348,8 @@ fn test_custom_struct() {
 
     let topic = format!("test_struct_{}", std::process::id());
 
-    let pub_hub = Hub::<SensorData>::new(&topic).expect("Failed to create publisher");
-    let sub_hub = Hub::<SensorData>::new(&topic).expect("Failed to create subscriber");
+    let pub_hub = Topic::<SensorData>::new(&topic).expect("Failed to create publisher");
+    let sub_hub = Topic::<SensorData>::new(&topic).expect("Failed to create subscriber");
 
     let data = SensorData {
         temperature: 23.5,

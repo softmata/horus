@@ -51,6 +51,7 @@ yarn-error.log*
 .horus/
 /dev/shm/horus/
 *.horus
+docs/
 
 
 # Environment Variables

@@ -43,7 +43,7 @@
 
 use crate::messages::{Image, ImageEncoding};
 use crate::Odometry;
-use horus_core::{HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusResult, Node, NodeInfo, Topic};
 use std::collections::VecDeque;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -245,13 +245,13 @@ where
     P: Processor<Odometry>,
 {
     /// Image subscriber
-    image_sub: Hub<Image>,
+    image_sub: Topic<Image>,
     /// Depth subscriber (for RGB-D mode)
-    depth_sub: Option<Hub<Image>>,
+    depth_sub: Option<Topic<Image>>,
     /// Stereo subscriber (for stereo mode)
-    stereo_sub: Option<Hub<Image>>,
+    stereo_sub: Option<Topic<Image>>,
     /// Odometry publisher
-    odom_pub: Hub<Odometry>,
+    odom_pub: Topic<Odometry>,
 
     /// Configuration
     config: VOConfig,
@@ -294,10 +294,10 @@ impl VisualOdometryNode {
     /// Create a new visual odometry node
     pub fn new(input_topic: &str, output_topic: &str, config: VOConfig) -> HorusResult<Self> {
         Ok(Self {
-            image_sub: Hub::new(input_topic)?,
+            image_sub: Topic::new(input_topic)?,
             depth_sub: None,
             stereo_sub: None,
-            odom_pub: Hub::new(output_topic)?,
+            odom_pub: Topic::new(output_topic)?,
             config,
             prev_frame: None,
             pose: [0.0; 6],
@@ -325,14 +325,14 @@ where
 {
     /// Create with stereo camera input
     pub fn with_stereo(mut self, stereo_topic: &str) -> HorusResult<Self> {
-        self.stereo_sub = Some(Hub::new(stereo_topic)?);
+        self.stereo_sub = Some(Topic::new(stereo_topic)?);
         self.config.mode = CameraMode::Stereo;
         Ok(self)
     }
 
     /// Create with RGB-D input
     pub fn with_depth(mut self, depth_topic: &str) -> HorusResult<Self> {
-        self.depth_sub = Some(Hub::new(depth_topic)?);
+        self.depth_sub = Some(Topic::new(depth_topic)?);
         self.config.mode = CameraMode::RgbD;
         Ok(self)
     }
@@ -972,10 +972,10 @@ where
     /// Build the node
     pub fn build(self) -> HorusResult<VisualOdometryNode<P>> {
         Ok(VisualOdometryNode {
-            image_sub: Hub::new(&self.input_topic)?,
+            image_sub: Topic::new(&self.input_topic)?,
             depth_sub: None,
             stereo_sub: None,
-            odom_pub: Hub::new(&self.output_topic)?,
+            odom_pub: Topic::new(&self.output_topic)?,
             config: self.config,
             prev_frame: None,
             pose: [0.0; 6],

@@ -82,10 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Publisher for status messages
     // In ROS2 mode, "horus_status" becomes "rt/horus_status"
-    let status_hub: Hub<StringMsg> = Hub::new("horus_status@zenoh/ros2")?;
+    let status_hub: Topic<StringMsg> = Topic::new("horus_status@zenoh/ros2")?;
 
     // Subscriber for cmd_vel (ROS2 Twist messages)
-    let cmd_vel_hub: Hub<Twist> = Hub::new("cmd_vel@zenoh/ros2")?;
+    let cmd_vel_hub: Topic<Twist> = Topic::new("cmd_vel@zenoh/ros2")?;
 
     println!("Topics:");
     println!("  Publishing to: /horus_status (String)");

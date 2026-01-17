@@ -2,7 +2,7 @@ use crate::{JointCommand, ServoCommand};
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -88,9 +88,9 @@ pub struct DynamixelNode<P = PassThrough<ServoCommand>>
 where
     P: Processor<ServoCommand>,
 {
-    command_subscriber: Hub<ServoCommand>,
-    joint_subscriber: Hub<JointCommand>,
-    feedback_publisher: Hub<ServoCommand>,
+    command_subscriber: Topic<ServoCommand>,
+    joint_subscriber: Topic<JointCommand>,
+    feedback_publisher: Topic<ServoCommand>,
 
     // Hardware serial port
     #[cfg(feature = "serial-hardware")]
@@ -280,9 +280,9 @@ impl DynamixelNode {
     /// Create a new Dynamixel controller node
     pub fn new(port: &str, protocol: DynamixelProtocol) -> Result<Self> {
         Ok(Self {
-            command_subscriber: Hub::new("dynamixel.servo_cmd")?,
-            joint_subscriber: Hub::new("dynamixel.joint_cmd")?,
-            feedback_publisher: Hub::new("dynamixel.feedback")?,
+            command_subscriber: Topic::new("dynamixel.servo_cmd")?,
+            joint_subscriber: Topic::new("dynamixel.joint_cmd")?,
+            feedback_publisher: Topic::new("dynamixel.feedback")?,
             #[cfg(feature = "serial-hardware")]
             serial_port: None,
             hardware_enabled: false,
@@ -996,9 +996,9 @@ where
     /// Build the node
     pub fn build(self) -> Result<DynamixelNode<P>> {
         Ok(DynamixelNode {
-            command_subscriber: Hub::new("dynamixel.servo_cmd")?,
-            joint_subscriber: Hub::new("dynamixel.joint_cmd")?,
-            feedback_publisher: Hub::new("dynamixel.feedback")?,
+            command_subscriber: Topic::new("dynamixel.servo_cmd")?,
+            joint_subscriber: Topic::new("dynamixel.joint_cmd")?,
+            feedback_publisher: Topic::new("dynamixel.feedback")?,
             #[cfg(feature = "serial-hardware")]
             serial_port: None,
             hardware_enabled: false,

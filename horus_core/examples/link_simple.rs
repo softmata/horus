@@ -9,13 +9,13 @@
 //! ```
 
 use horus_core::memory::shm_topics_dir;
-use horus_core::{Link, Node, NodeInfo, Scheduler};
+use horus_core::{Node, Topic, NodeInfo, Scheduler};
 use std::thread;
 use std::time::Duration;
 
 /// Producer node - sends sensor readings
 struct SensorNode {
-    data_link: Link<f32>,
+    data_link: Topic<f32>,
     counter: f32,
 }
 
@@ -23,7 +23,7 @@ impl SensorNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             // Create as producer
-            data_link: Link::producer("sensor_data")?,
+            data_link: Topic::new("sensor_data")?,
             counter: 0.0,
         })
     }
@@ -57,7 +57,7 @@ impl Node for SensorNode {
 
 /// Consumer node - receives sensor readings and processes them
 struct ControllerNode {
-    data_link: Link<f32>,
+    data_link: Topic<f32>,
     last_value: Option<f32>,
 }
 
@@ -65,7 +65,7 @@ impl ControllerNode {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             // Create as consumer
-            data_link: Link::consumer("sensor_data")?,
+            data_link: Topic::new("sensor_data")?,
             last_value: None,
         })
     }

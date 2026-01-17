@@ -144,8 +144,8 @@ impl TelemetryManager {
         self.record(name, MetricValue::Gauge(value), labels);
     }
 
-    /// Record a metric
-    fn record(&mut self, name: &str, value: MetricValue, labels: HashMap<String, String>) {
+    /// Record a metric with custom value type and labels
+    pub fn record(&mut self, name: &str, value: MetricValue, labels: HashMap<String, String>) {
         if !self.enabled {
             return;
         }

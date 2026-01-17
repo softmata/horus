@@ -29,7 +29,7 @@ use crate::actions::types::{
     Action, ActionError, ActionFeedback, ActionResult, CancelRequest, GoalId, GoalPriority,
     GoalRequest, GoalStatus, GoalStatusUpdate,
 };
-use crate::communication::Link;
+use crate::communication::Topic;
 use crate::core::{LogSummary, Node, NodeInfo};
 use crate::HorusResult;
 
@@ -290,11 +290,11 @@ struct ActionClientInner<A: Action> {
     goals: RwLock<HashMap<GoalId, Arc<RwLock<ClientGoalState<A>>>>>,
 
     /// Communication links
-    goal_link: RwLock<Option<Link<GoalRequest<A::Goal>>>>,
-    cancel_link: RwLock<Option<Link<CancelRequest>>>,
-    result_link: RwLock<Option<Link<ActionResult<A::Result>>>>,
-    feedback_link: RwLock<Option<Link<ActionFeedback<A::Feedback>>>>,
-    status_link: RwLock<Option<Link<GoalStatusUpdate>>>,
+    goal_link: RwLock<Option<Topic<GoalRequest<A::Goal>>>>,
+    cancel_link: RwLock<Option<Topic<CancelRequest>>>,
+    result_link: RwLock<Option<Topic<ActionResult<A::Result>>>>,
+    feedback_link: RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>,
+    status_link: RwLock<Option<Topic<GoalStatusUpdate>>>,
 
     /// Callbacks
     feedback_callback: RwLock<Option<FeedbackCallback<A>>>,
@@ -333,11 +333,11 @@ where
         }
 
         // Create links
-        *self.goal_link.write() = Some(Link::producer(&A::goal_topic())?);
-        *self.cancel_link.write() = Some(Link::producer(&A::cancel_topic())?);
-        *self.result_link.write() = Some(Link::consumer(&A::result_topic())?);
-        *self.feedback_link.write() = Some(Link::consumer(&A::feedback_topic())?);
-        *self.status_link.write() = Some(Link::consumer(&A::status_topic())?);
+        *self.goal_link.write() = Some(Topic::producer(&A::goal_topic())?);
+        *self.cancel_link.write() = Some(Topic::producer(&A::cancel_topic())?);
+        *self.result_link.write() = Some(Topic::consumer(&A::result_topic())?);
+        *self.feedback_link.write() = Some(Topic::consumer(&A::feedback_topic())?);
+        *self.status_link.write() = Some(Topic::consumer(&A::status_topic())?);
 
         self.initialized.store(true, Ordering::Release);
 

@@ -33,9 +33,3 @@ pub trait Channel<T>: Publisher<T> + Subscriber<T> {
     /// Create a new channel with specified capacity
     fn new(capacity: usize) -> Self;
 }
-
-/// Type alias for the default Hub implementation
-pub type DefaultHub<T> = crate::communication::Hub<T>;
-
-/// Type alias for the default Link implementation
-pub type DefaultLink<T> = crate::communication::Link<T>;

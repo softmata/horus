@@ -8,16 +8,16 @@ use horus::prelude::*;
 
 // Controller node state
 struct ControllerNode {
-    pose_hub: Hub<Pose2D>,
-    cmd_hub: Hub<CmdVel>,
+    pose_hub: Topic<Pose2D>,
+    cmd_hub: Topic<CmdVel>,
     last_pose: Option<Pose2D>,
 }
 
 impl ControllerNode {
     fn new() -> Result<Self> {
         Ok(ControllerNode {
-            pose_hub: Hub::<Pose2D>::new("robot_pose")?,
-            cmd_hub: Hub::<CmdVel>::new("cmd_vel")?,
+            pose_hub: Topic::<Pose2D>::new("robot_pose")?,
+            cmd_hub: Topic::<CmdVel>::new("cmd_vel")?,
             last_pose: None,
         })
     }

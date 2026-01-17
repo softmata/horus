@@ -70,6 +70,32 @@ pub struct HubMetrics {
 }
 
 /// Optimized Hub for pub/sub messaging with cache-aligned lock-free hot paths
+///
+/// # Deprecation Notice
+///
+/// `Hub<T>` is deprecated in favor of `Topic<T>`. The Topic API provides a unified
+/// interface with automatic backend selection based on your communication pattern.
+///
+/// ## Migration Guide
+///
+/// ```rust,ignore
+/// // Before (deprecated):
+/// let hub: Hub<MyMessage> = Hub::new("my_topic")?;
+/// hub.send(msg, &mut ctx)?;
+/// let received = hub.recv(&mut ctx);
+///
+/// // After (recommended):
+/// let topic: Topic<MyMessage> = Topic::with_capacity("my_topic", 1024);
+/// topic.send(msg, &mut None)?;
+/// let received = topic.recv(&mut None);
+/// ```
+///
+/// For MPMC cross-process communication, Topic::with_capacity() provides the same
+/// functionality with simpler API and better performance characteristics.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use Topic<T> instead. See Hub documentation for migration guide."
+)]
 #[repr(align(64))] // Cache-line aligned structure
 pub struct Hub<T> {
     shm_topic: Option<Arc<ShmTopic<T>>>, // Local shared memory (None for network-only endpoints)

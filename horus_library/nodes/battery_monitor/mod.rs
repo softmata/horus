@@ -2,7 +2,7 @@ use crate::BatteryState;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -70,7 +70,7 @@ pub struct BatteryMonitorNode<P = PassThrough<BatteryState>>
 where
     P: Processor<BatteryState>,
 {
-    publisher: Hub<BatteryState>,
+    publisher: Topic<BatteryState>,
 
     // Processor for hybrid pattern
     processor: P,
@@ -156,7 +156,7 @@ impl BatteryMonitorNode {
     /// Create a new battery monitor with custom topic
     pub fn new_with_topic(topic: &str) -> Result<Self> {
         let mut node = Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             cell_count: 3,                 // 3S default
             nominal_voltage_per_cell: 3.7, // LiPo default
             capacity_mah: 5000.0,
@@ -837,7 +837,7 @@ where
     #[cfg(feature = "i2c-hardware")]
     pub fn build(self) -> Result<BatteryMonitorNode<P>> {
         let mut node = BatteryMonitorNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             processor: self.processor,
             cell_count: 3,
             nominal_voltage_per_cell: 3.7,
@@ -882,7 +882,7 @@ where
     #[cfg(not(feature = "i2c-hardware"))]
     pub fn build(self) -> Result<BatteryMonitorNode<P>> {
         let mut node = BatteryMonitorNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             processor: self.processor,
             cell_count: 3,
             nominal_voltage_per_cell: 3.7,

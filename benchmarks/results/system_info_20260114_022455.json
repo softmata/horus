@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-01-14T02:24:55-05:00",
+  "hostname": "hellium",
+  "kernel": "6.14.0-37-generic",
+  "cpu": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+  "cores": 12,
+  "memory": "62Gi",
+  "rust_version": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+  "cargo_version": "cargo 1.92.0 (344c4567c 2025-10-21)"
+}

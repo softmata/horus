@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 
 #[cfg(feature = "serial-hardware")]
 use serialport::SerialPort;
@@ -28,8 +28,8 @@ pub enum SerialBackend {
 /// - Hardware (serialport crate for actual serial communication)
 /// - Simulation mode for testing
 pub struct SerialNode {
-    rx_publisher: Hub<SerialData>,  // Received data
-    tx_subscriber: Hub<SerialData>, // Data to transmit
+    rx_publisher: Topic<SerialData>,  // Received data
+    tx_subscriber: Topic<SerialData>, // Data to transmit
 
     // Configuration
     port_path: String,
@@ -92,8 +92,8 @@ impl SerialNode {
         backend: SerialBackend,
     ) -> Result<Self> {
         Ok(Self {
-            rx_publisher: Hub::new(rx_topic)?,
-            tx_subscriber: Hub::new(tx_topic)?,
+            rx_publisher: Topic::new(rx_topic)?,
+            tx_subscriber: Topic::new(tx_topic)?,
             port_path: port.to_string(),
             baud_rate,
             data_bits: 8,

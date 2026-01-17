@@ -9,7 +9,7 @@
 /// - Path planning and navigation
 /// - Obstacle avoidance
 /// - Battery monitoring with fault tolerance
-use horus_core::{HorusResult, Hub, Node, NodeInfo, Scheduler, TopicMetadata};
+use horus_core::{HorusResult, Node, NodeInfo, Scheduler, Topic, TopicMetadata};
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -139,8 +139,8 @@ struct MotorControllerNode {
     current_angular: f64,
 
     // Communication
-    cmd_vel_sub: Hub<Twist>,
-    odometry_sub: Hub<Odometry>,
+    cmd_vel_sub: Topic<Twist>,
+    odometry_sub: Topic<Odometry>,
     motor_speeds: Arc<Mutex<(f64, f64)>>, // (left, right) wheel speeds
 }
 
@@ -161,8 +161,8 @@ impl MotorControllerNode {
             target_angular: 0.0,
             current_linear: 0.0,
             current_angular: 0.0,
-            cmd_vel_sub: Hub::new("cmd_vel")?,
-            odometry_sub: Hub::new("odometry")?,
+            cmd_vel_sub: Topic::new("cmd_vel")?,
+            odometry_sub: Topic::new("odometry")?,
             motor_speeds: Arc::new(Mutex::new((0.0, 0.0))),
         })
     }
@@ -269,7 +269,7 @@ struct CameraPerceptionNode {
     camera_id: u32,
     resolution: (u32, u32),
     fps: u32,
-    image_pub: Hub<CompressedImage>,
+    image_pub: Topic<CompressedImage>,
     detected_obstacles: Arc<Mutex<Vec<(f64, f64)>>>, // Detected obstacle positions
 }
 
@@ -279,7 +279,7 @@ impl CameraPerceptionNode {
             camera_id,
             resolution: (640, 480),
             fps: 30,
-            image_pub: Hub::new(&format!("camera_{}/compressed", camera_id))?,
+            image_pub: Topic::new(&format!("camera_{}/compressed", camera_id))?,
             detected_obstacles: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -361,14 +361,14 @@ impl Node for CameraPerceptionNode {
 // ============ Lidar Processing Node (Heavy I/O, will use async tier) ============
 
 struct LidarProcessingNode {
-    scan_pub: Hub<LaserScan>,
+    scan_pub: Topic<LaserScan>,
     obstacle_map: Arc<Mutex<Vec<(f64, f64)>>>,
 }
 
 impl LidarProcessingNode {
     fn new() -> HorusResult<Self> {
         Ok(Self {
-            scan_pub: Hub::new("scan")?,
+            scan_pub: Topic::new("scan")?,
             obstacle_map: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -453,13 +453,13 @@ struct SensorFusionNode {
     covariance: [[f64; 6]; 6],
 
     // Sensor inputs
-    imu_sub: Hub<IMUData>,
+    imu_sub: Topic<IMUData>,
     gps_position: (f64, f64),
     #[allow(dead_code)]
     encoder_speeds: Arc<Mutex<(f64, f64)>>,
 
     // Output
-    odometry_pub: Hub<Odometry>,
+    odometry_pub: Topic<Odometry>,
 }
 
 impl SensorFusionNode {
@@ -467,10 +467,10 @@ impl SensorFusionNode {
         Ok(Self {
             state: [0.0; 6],
             covariance: [[1.0; 6]; 6],
-            imu_sub: Hub::new("imu.data")?,
+            imu_sub: Topic::new("imu.data")?,
             gps_position: (0.0, 0.0),
             encoder_speeds: Arc::new(Mutex::new((0.0, 0.0))),
-            odometry_pub: Hub::new("odometry")?,
+            odometry_pub: Topic::new("odometry")?,
         })
     }
 
@@ -570,9 +570,9 @@ struct PathPlannerNode {
     obstacles: Vec<(f64, f64)>,
     path: Path,
 
-    odometry_sub: Hub<Odometry>,
-    scan_sub: Hub<LaserScan>,
-    path_pub: Hub<Path>,
+    odometry_sub: Topic<Odometry>,
+    scan_sub: Topic<LaserScan>,
+    path_pub: Topic<Path>,
 }
 
 impl PathPlannerNode {
@@ -582,9 +582,9 @@ impl PathPlannerNode {
             current_position: (0.0, 0.0),
             obstacles: Vec::new(),
             path: Path { waypoints: vec![] },
-            odometry_sub: Hub::new("odometry")?,
-            scan_sub: Hub::new("scan")?,
-            path_pub: Hub::new("path")?,
+            odometry_sub: Topic::new("odometry")?,
+            scan_sub: Topic::new("scan")?,
+            path_pub: Topic::new("path")?,
         })
     }
 
@@ -691,9 +691,9 @@ impl Node for PathPlannerNode {
 // ============ Navigation Controller Node ============
 
 struct NavigationControllerNode {
-    path_sub: Hub<Path>,
-    odometry_sub: Hub<Odometry>,
-    cmd_vel_pub: Hub<Twist>,
+    path_sub: Topic<Path>,
+    odometry_sub: Topic<Odometry>,
+    cmd_vel_pub: Topic<Twist>,
 
     current_waypoint_index: usize,
     current_position: (f64, f64, f64), // x, y, theta
@@ -702,9 +702,9 @@ struct NavigationControllerNode {
 impl NavigationControllerNode {
     fn new() -> HorusResult<Self> {
         Ok(Self {
-            path_sub: Hub::new("path")?,
-            odometry_sub: Hub::new("odometry")?,
-            cmd_vel_pub: Hub::new("cmd_vel")?,
+            path_sub: Topic::new("path")?,
+            odometry_sub: Topic::new("odometry")?,
+            cmd_vel_pub: Topic::new("cmd_vel")?,
             current_waypoint_index: 0,
             current_position: (0.0, 0.0, 0.0),
         })
@@ -821,7 +821,7 @@ impl Node for NavigationControllerNode {
 // ============ Battery Monitor Node (with fault tolerance) ============
 
 struct BatteryMonitorNode {
-    battery_pub: Hub<BatteryStatus>,
+    battery_pub: Topic<BatteryStatus>,
     voltage: f32,
     current: f32,
     temperature: f32,
@@ -831,7 +831,7 @@ struct BatteryMonitorNode {
 impl BatteryMonitorNode {
     fn new() -> HorusResult<Self> {
         Ok(Self {
-            battery_pub: Hub::new("battery_status")?,
+            battery_pub: Topic::new("battery_status")?,
             voltage: 24.0,
             current: 5.0,
             temperature: 25.0,
@@ -913,14 +913,14 @@ impl Node for BatteryMonitorNode {
 // ============ IMU Sensor Node ============
 
 struct IMUSensorNode {
-    imu_pub: Hub<IMUData>,
+    imu_pub: Topic<IMUData>,
     tick_count: u64,
 }
 
 impl IMUSensorNode {
     fn new() -> HorusResult<Self> {
         Ok(Self {
-            imu_pub: Hub::new("imu.data")?,
+            imu_pub: Topic::new("imu.data")?,
             tick_count: 0,
         })
     }

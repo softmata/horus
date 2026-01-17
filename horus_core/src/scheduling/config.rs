@@ -790,6 +790,90 @@ impl SchedulerConfig {
     pub fn set_custom(&mut self, key: String, value: ConfigValue) {
         self.custom.insert(key, value);
     }
+
+    // ============================================
+    // Builder Methods
+    // ============================================
+
+    /// Set the execution mode
+    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution = mode;
+        self
+    }
+
+    /// Set the global tick rate in Hz
+    pub fn with_tick_rate(mut self, rate_hz: f64) -> Self {
+        self.timing.global_rate_hz = rate_hz;
+        self
+    }
+
+    /// Set the maximum allowed jitter in microseconds
+    pub fn with_max_jitter(mut self, jitter_us: u64) -> Self {
+        self.timing.max_jitter_us = jitter_us;
+        self
+    }
+
+    /// Set the deadline miss policy
+    pub fn with_deadline_policy(mut self, policy: DeadlineMissPolicy) -> Self {
+        self.timing.deadline_miss_policy = policy;
+        self
+    }
+
+    /// Enable or disable the circuit breaker
+    pub fn with_circuit_breaker(mut self, enabled: bool) -> Self {
+        self.fault.circuit_breaker_enabled = enabled;
+        self
+    }
+
+    /// Enable or disable WCET enforcement
+    pub fn with_wcet_enforcement(mut self, enabled: bool) -> Self {
+        self.realtime.wcet_enforcement = enabled;
+        self
+    }
+
+    /// Enable or disable the watchdog
+    pub fn with_watchdog(mut self, enabled: bool, timeout_ms: u64) -> Self {
+        self.realtime.watchdog_enabled = enabled;
+        self.realtime.watchdog_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set the CPU cores to use
+    pub fn with_cpu_cores(mut self, cores: Vec<usize>) -> Self {
+        self.resources.cpu_cores = Some(cores);
+        self
+    }
+
+    /// Enable or disable profiling
+    pub fn with_profiling(mut self, enabled: bool) -> Self {
+        self.monitoring.profiling_enabled = enabled;
+        self
+    }
+
+    /// Set the telemetry endpoint
+    pub fn with_telemetry_endpoint(mut self, endpoint: Option<String>) -> Self {
+        self.monitoring.telemetry_endpoint = endpoint;
+        self
+    }
+
+    /// Enable or disable black box recording
+    pub fn with_black_box(mut self, enabled: bool, size_mb: usize) -> Self {
+        self.monitoring.black_box_enabled = enabled;
+        self.monitoring.black_box_size_mb = size_mb;
+        self
+    }
+
+    /// Set the deterministic configuration
+    pub fn with_deterministic(mut self, config: Option<DeterministicConfig>) -> Self {
+        self.deterministic = config;
+        self
+    }
+
+    /// Set the recording configuration
+    pub fn with_recording(mut self, config: Option<RecordingConfigYaml>) -> Self {
+        self.recording = config;
+        self
+    }
 }
 
 /// Trait for converting from ConfigValue

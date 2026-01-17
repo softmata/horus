@@ -3,7 +3,7 @@ use horus_core::core::LogSummary;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -83,8 +83,8 @@ where
     P: Processor<WrenchStamped>,
 {
     // Output publisher
-    wrench_publisher: Hub<WrenchStamped>,
-    calibration_status_pub: Hub<CalibrationStatus>,
+    wrench_publisher: Topic<WrenchStamped>,
+    calibration_status_pub: Topic<CalibrationStatus>,
 
     // Configuration
     sensor_model: SensorModel,
@@ -255,8 +255,8 @@ impl ForceTorqueSensorNode {
     /// Create a new force/torque sensor node with specific backend
     pub fn new_with_backend(device_address: &str, backend: FtBackend) -> Result<Self> {
         Ok(Self {
-            wrench_publisher: Hub::new("force_torque.wrench")?,
-            calibration_status_pub: Hub::new("force_torque.calibration")?,
+            wrench_publisher: Topic::new("force_torque.wrench")?,
+            calibration_status_pub: Topic::new("force_torque.calibration")?,
             sensor_model: SensorModel::Generic,
             connection_type: ConnectionType::Ethernet,
             device_address: device_address.to_string(),

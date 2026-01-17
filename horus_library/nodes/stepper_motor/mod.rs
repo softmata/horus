@@ -2,7 +2,7 @@ use crate::StepperCommand;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::f64::consts::PI;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -51,9 +51,9 @@ use sysfs_gpio::{Direction, Pin};
 /// let cmd = StepperCommand::position(0, 5.0 * std::f64::consts::TAU, 800.0);
 /// ```
 pub struct StepperMotorNode {
-    subscriber: Hub<StepperCommand>,
-    publisher: Hub<StepperCommand>, // Echo commands for monitoring
-    feedback_publisher: Hub<crate::MotorCommand>, // Position/velocity feedback
+    subscriber: Topic<StepperCommand>,
+    publisher: Topic<StepperCommand>, // Echo commands for monitoring
+    feedback_publisher: Topic<crate::MotorCommand>, // Position/velocity feedback
 
     // Configuration per motor (up to 8 motors)
     num_motors: u8,
@@ -126,9 +126,9 @@ impl StepperMotorNode {
         #[cfg(feature = "gpio-hardware")]
         const NONE_PIN: Option<Pin> = None;
         Ok(Self {
-            subscriber: Hub::new(topic)?,
-            publisher: Hub::new(&format!("{}_feedback", topic))?,
-            feedback_publisher: Hub::new(&format!("{}_position", topic))?,
+            subscriber: Topic::new(topic)?,
+            publisher: Topic::new(&format!("{}_feedback", topic))?,
+            feedback_publisher: Topic::new(&format!("{}_position", topic))?,
             num_motors: 1,
             steps_per_rev: [200; 8], // NEMA 17 standard
             microsteps: [16; 8],     // Common default

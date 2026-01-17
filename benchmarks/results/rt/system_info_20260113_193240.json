@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-01-13T19:32:40-05:00",
+  "kernel_version": "6.14.0-37-generic",
+  "kernel_type": "Standard",
+  "cpu_model": "Intel(R) Core(TM) i7-10750H CPU @ 2.60GHz",
+  "cpu_cores": 12,
+  "rlimit_rtprio": "0",
+  "rlimit_memlock": "8207388",
+  "target_latency_us": 100
+}

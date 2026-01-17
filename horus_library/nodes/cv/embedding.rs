@@ -43,7 +43,7 @@ use ort::value::Tensor;
 
 use crate::messages::ml::{EmbeddingVector, InferenceMetrics};
 use crate::messages::Image;
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 
 #[cfg(feature = "onnx")]
 use ndarray::{Array, ArrayD, IxDyn};
@@ -230,11 +230,11 @@ impl Default for EmbeddingConfig {
 #[cfg(feature = "onnx")]
 pub struct EmbeddingNode {
     /// Image input subscriber
-    image_sub: Hub<Image>,
+    image_sub: Topic<Image>,
     /// Embedding output publisher
-    embedding_pub: Hub<EmbeddingVector>,
+    embedding_pub: Topic<EmbeddingVector>,
     /// Metrics publisher
-    metrics_pub: Hub<InferenceMetrics>,
+    metrics_pub: Topic<InferenceMetrics>,
     /// ONNX Runtime session
     session: Session,
     /// Configuration
@@ -263,9 +263,9 @@ impl EmbeddingNode {
             .to_string();
 
         Ok(Self {
-            image_sub: Hub::new(input_topic)?,
-            embedding_pub: Hub::new(output_topic)?,
-            metrics_pub: Hub::new(&format!("{}.metrics", output_topic))?,
+            image_sub: Topic::new(input_topic)?,
+            embedding_pub: Topic::new(output_topic)?,
+            metrics_pub: Topic::new(&format!("{}.metrics", output_topic))?,
             session,
             config,
             model_name,

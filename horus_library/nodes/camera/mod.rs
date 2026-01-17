@@ -10,7 +10,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -99,8 +99,8 @@ where
     D: Sensor<Output = Image>,
     P: Processor<Image>,
 {
-    publisher: Hub<Image>,
-    info_publisher: Hub<CameraInfo>,
+    publisher: Topic<Image>,
+    info_publisher: Topic<CameraInfo>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -140,8 +140,8 @@ impl CameraNode<CameraDriver, PassThrough<Image>> {
         let info_topic = format!("{}.camera_info", topic_prefix);
 
         Ok(Self {
-            publisher: Hub::new(&image_topic)?,
-            info_publisher: Hub::new(&info_topic)?,
+            publisher: Topic::new(&image_topic)?,
+            info_publisher: Topic::new(&info_topic)?,
             driver,
             width: 640,
             height: 480,
@@ -183,8 +183,8 @@ where
         let info_topic = format!("{}.camera_info", topic_prefix);
 
         Ok(Self {
-            publisher: Hub::new(&image_topic)?,
-            info_publisher: Hub::new(&info_topic)?,
+            publisher: Topic::new(&image_topic)?,
+            info_publisher: Topic::new(&info_topic)?,
             driver,
             width: 640,
             height: 480,
@@ -517,8 +517,8 @@ where
         let info_topic = format!("{}.camera_info", self.topic_prefix);
 
         Ok(CameraNode {
-            publisher: Hub::new(&image_topic)?,
-            info_publisher: Hub::new(&info_topic)?,
+            publisher: Topic::new(&image_topic)?,
+            info_publisher: Topic::new(&info_topic)?,
             driver,
             width: self.width,
             height: self.height,
@@ -566,8 +566,8 @@ where
         let info_topic = format!("{}.camera_info", self.topic_prefix);
 
         Ok(CameraNode {
-            publisher: Hub::new(&image_topic)?,
-            info_publisher: Hub::new(&info_topic)?,
+            publisher: Topic::new(&image_topic)?,
+            info_publisher: Topic::new(&info_topic)?,
             driver,
             width: self.width,
             height: self.height,

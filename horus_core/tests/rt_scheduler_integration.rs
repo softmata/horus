@@ -1,5 +1,5 @@
 // Integration test for real-time scheduler features
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RTClass, RTNode, RTPriority};
+use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RtClass, RtNode, RtPriority};
 use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -55,7 +55,7 @@ impl Node for CriticalControlNode {
     }
 }
 
-impl RTNode for CriticalControlNode {
+impl RtNode for CriticalControlNode {
     fn wcet_budget(&self) -> Duration {
         // Budget should be slightly higher than actual execution time
         Duration::from_micros(self.execution_time_us + 20)
@@ -65,12 +65,12 @@ impl RTNode for CriticalControlNode {
         Duration::from_millis(1) // 1ms deadline for 1kHz control
     }
 
-    fn rt_priority(&self) -> RTPriority {
-        RTPriority::Critical
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::Critical
     }
 
-    fn rt_class(&self) -> RTClass {
-        RTClass::Hard
+    fn rt_class(&self) -> RtClass {
+        RtClass::Hard
     }
 
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {

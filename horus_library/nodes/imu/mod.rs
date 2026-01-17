@@ -9,7 +9,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -110,7 +110,7 @@ where
     D: Sensor<Output = Imu>,
     P: Processor<Imu>,
 {
-    publisher: Hub<Imu>,
+    publisher: Topic<Imu>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -144,7 +144,7 @@ impl ImuNode<ImuDriver, PassThrough<Imu>> {
         let driver = ImuDriver::new(driver_backend)?;
 
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "imu_link".to_string(),
             is_initialized: false,
@@ -180,7 +180,7 @@ where
     /// ```
     pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             frame_id: "imu_link".to_string(),
             is_initialized: false,
@@ -422,7 +422,7 @@ where
         let driver = ImuDriver::new(driver_backend)?;
 
         Ok(ImuNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "imu_link".to_string(),
             is_initialized: false,
@@ -460,7 +460,7 @@ where
         let driver = self.driver.unwrap_or_default();
 
         Ok(ImuNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             frame_id: "imu_link".to_string(),
             is_initialized: false,

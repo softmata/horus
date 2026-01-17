@@ -33,7 +33,7 @@
 // ```
 
 use crate::messages::ml::{ChatMessage, LLMRequest, LLMResponse};
-use horus_core::{HorusError, HorusResult, Hub, Node, NodeInfo};
+use horus_core::{HorusError, HorusResult, Node, NodeInfo, Topic};
 use std::time::Duration;
 
 /// LLM Provider
@@ -153,9 +153,9 @@ impl Default for LLMConfig {
 
 pub struct CloudLLMNode {
     /// LLM request input subscriber
-    request_sub: Hub<LLMRequest>,
+    request_sub: Topic<LLMRequest>,
     /// LLM response publisher
-    response_pub: Hub<LLMResponse>,
+    response_pub: Topic<LLMResponse>,
     /// Configuration
     config: LLMConfig,
     /// HTTP client
@@ -193,8 +193,8 @@ impl CloudLLMNode {
             .map_err(|e| HorusError::config(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
-            request_sub: Hub::new(input_topic)?,
-            response_pub: Hub::new(output_topic)?,
+            request_sub: Topic::new(input_topic)?,
+            response_pub: Topic::new(output_topic)?,
             config,
             client,
             conversation_history: Vec::new(),

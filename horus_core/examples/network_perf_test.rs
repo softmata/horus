@@ -6,7 +6,7 @@
 /// - UDP direct (localhost loopback)
 ///
 /// Run with: cargo run --example network_perf_test --release
-use horus_core::communication::Hub;
+use horus_core::communication::Topic;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -25,7 +25,7 @@ impl horus_core::core::LogSummary for TestMessage {
 fn bench_local_shm() {
     println!("\n=== Local Shared Memory (baseline) ===");
 
-    let hub: Hub<TestMessage> = Hub::new("bench_local").unwrap();
+    let hub: Topic<TestMessage> = Topic::new("bench_local").unwrap();
     let iterations = 10000;
 
     // Warmup

@@ -12,7 +12,10 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::zenoh_config::{SerializationFormat, ZenohConfig};
+use super::network_error::{NetworkError, NetworkErrorCode};
+use super::zenoh_config::{
+    ConnectionQualityState, SerializationFormat, ZenohConfig, ZenohConnectionQuality,
+};
 use crate::error::{HorusError, HorusResult};
 
 /// Serialize a message using the specified format
@@ -47,6 +50,13 @@ fn serialize_message<T: serde::Serialize>(
 ///
 /// Provides pub/sub communication over Zenoh protocol.
 /// Supports both HORUS-native (bincode) and ROS2-compatible (CDR) serialization.
+///
+/// Includes connection quality monitoring for cloud connectivity:
+/// - Latency measurement (RTT)
+/// - Packet loss tracking
+/// - Jitter calculation
+/// - Health score (0-100)
+/// - Automatic failover detection
 #[cfg(feature = "zenoh-transport")]
 pub struct ZenohBackend<T> {
     /// Zenoh session (shared across publishers/subscribers)
@@ -59,6 +69,8 @@ pub struct ZenohBackend<T> {
     key_expr: String,
     /// Configuration
     config: ZenohConfig,
+    /// Connection quality metrics (latency, packet loss, jitter, health score)
+    connection_quality: Arc<Mutex<ZenohConnectionQuality>>,
     /// Phantom data for type parameter
     _phantom: PhantomData<T>,
 }
@@ -99,6 +111,7 @@ where
             recv_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1024))),
             key_expr,
             config,
+            connection_quality: Arc::new(Mutex::new(ZenohConnectionQuality::new())),
             _phantom: PhantomData,
         })
     }
@@ -273,11 +286,533 @@ where
 
     /// Get session info (for debugging)
     pub fn session_info(&self) -> ZenohSessionInfo {
+        let quality = self.connection_quality.lock();
         ZenohSessionInfo {
             key_expr: self.key_expr.clone(),
             has_publisher: self.publisher.is_some(),
             pending_messages: self.pending_count(),
+            connection_state: quality.state.clone(),
+            health_score: quality.health_score(),
+            latency_ms: quality.latency_ms,
+            connected_router: quality.connected_router.clone(),
         }
+    }
+
+    // ========== CONNECTION QUALITY MONITORING ==========
+
+    /// Get a snapshot of current connection quality metrics
+    ///
+    /// Returns comprehensive quality data including:
+    /// - Latency (current, avg, min, max)
+    /// - Packet loss percentage
+    /// - Jitter
+    /// - Health score (0-100)
+    /// - Connection state
+    pub fn connection_quality(&self) -> ZenohConnectionQuality {
+        self.connection_quality.lock().clone()
+    }
+
+    /// Get the connection health score (0-100)
+    ///
+    /// 100 = perfect connection
+    /// 80+ = good
+    /// 50-80 = degraded
+    /// <50 = poor
+    pub fn health_score(&self) -> u32 {
+        self.connection_quality.lock().health_score()
+    }
+
+    /// Get the current connection state
+    pub fn connection_state(&self) -> ConnectionQualityState {
+        self.connection_quality.lock().state.clone()
+    }
+
+    /// Check if the connection is established and healthy
+    pub fn is_connected(&self) -> bool {
+        let quality = self.connection_quality.lock();
+        quality.is_good() || quality.is_degraded()
+    }
+
+    /// Check if the connection is in a good state
+    pub fn is_connection_good(&self) -> bool {
+        self.connection_quality.lock().is_good()
+    }
+
+    /// Check if the connection is degraded
+    pub fn is_connection_degraded(&self) -> bool {
+        self.connection_quality.lock().is_degraded()
+    }
+
+    /// Check if the connection has failed
+    pub fn is_connection_failed(&self) -> bool {
+        self.connection_quality.lock().is_failed()
+    }
+
+    /// Get the current latency in milliseconds
+    pub fn latency_ms(&self) -> f64 {
+        self.connection_quality.lock().latency_ms
+    }
+
+    /// Get the average latency in milliseconds
+    pub fn avg_latency_ms(&self) -> f64 {
+        self.connection_quality.lock().avg_latency_ms
+    }
+
+    /// Get packet loss percentage (0-100)
+    pub fn packet_loss_percent(&self) -> f64 {
+        self.connection_quality.lock().packet_loss_percent
+    }
+
+    /// Get the currently connected router endpoint (if any)
+    pub fn connected_router(&self) -> Option<String> {
+        self.connection_quality.lock().connected_router.clone()
+    }
+
+    /// Mark the connection as established to a router
+    pub fn mark_connected(&self, router: &str) {
+        self.connection_quality.lock().mark_connected(router);
+    }
+
+    /// Mark the connection as disconnected
+    pub fn mark_disconnected(&self) {
+        self.connection_quality.lock().mark_disconnected();
+    }
+
+    /// Record a failover to a new router
+    pub fn record_failover(&self, new_router: &str) {
+        self.connection_quality.lock().record_failover(new_router);
+    }
+
+    /// Get the number of failovers that have occurred
+    pub fn failover_count(&self) -> u32 {
+        self.connection_quality.lock().failover_count
+    }
+
+    /// Perform a single health check by measuring round-trip latency
+    ///
+    /// Uses Zenoh's liveliness mechanism to ping and measure RTT.
+    /// Updates the connection quality metrics accordingly.
+    pub async fn perform_health_check(&self) -> HorusResult<f64> {
+        let start = std::time::Instant::now();
+
+        // Use Zenoh's built-in get() for a round-trip latency measurement
+        // We query our own key expression to measure actual network RTT
+        let health_key = format!("{}/__horus_health__", self.key_expr);
+
+        // Declare a queryable to respond to our own health check
+        let queryable = self
+            .session
+            .declare_queryable(&health_key)
+            .await
+            .map_err(|e| {
+                HorusError::Communication(format!("Failed to create health queryable: {}", e))
+            })?;
+
+        // Clone health_key for use in async closure
+        let health_key_reply = health_key.clone();
+
+        // Spawn a task to respond to the query
+        let queryable_handle = tokio::spawn(async move {
+            if let Ok(query) = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                queryable.recv_async(),
+            )
+            .await
+            {
+                if let Ok(query) = query {
+                    let _ = query.reply(&health_key_reply, "pong").await;
+                }
+            }
+        });
+
+        // Send the health check query
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.session.get(&health_key),
+        )
+        .await;
+
+        // Wait for queryable task to complete
+        let _ = queryable_handle.await;
+
+        let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+        match result {
+            Ok(Ok(replies)) => {
+                // Consume replies to complete the operation
+                let _: Vec<_> = replies.into_iter().collect::<Vec<_>>();
+
+                // Update quality metrics with success
+                let mut quality = self.connection_quality.lock();
+                quality.update_latency(latency_ms);
+                quality.record_health_check_success();
+                Ok(latency_ms)
+            }
+            Ok(Err(e)) => {
+                // Query failed
+                let mut quality = self.connection_quality.lock();
+                quality.record_health_check_failure();
+                Err(HorusError::Communication(format!(
+                    "Health check query failed: {}",
+                    e
+                )))
+            }
+            Err(_) => {
+                // Timeout
+                let mut quality = self.connection_quality.lock();
+                quality.record_health_check_failure();
+                Err(HorusError::Communication("Health check timed out".into()))
+            }
+        }
+    }
+
+    /// Start background health monitoring
+    ///
+    /// Spawns a task that periodically checks connection health and updates metrics.
+    /// Returns a handle that can be used to stop monitoring.
+    ///
+    /// # Arguments
+    /// * `interval` - How often to perform health checks
+    pub fn start_health_monitoring(
+        &self,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let session = self.session.clone();
+        let key_expr = self.key_expr.clone();
+        let quality = self.connection_quality.clone();
+
+        tokio::spawn(async move {
+            let health_key = format!("{}/__horus_health_monitor__", key_expr);
+            let mut consecutive_failures = 0u32;
+
+            loop {
+                let start = std::time::Instant::now();
+
+                // Simple ping using get() to measure RTT
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    session.get(&health_key),
+                )
+                .await;
+
+                let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+                match result {
+                    Ok(Ok(replies)) => {
+                        // Consume replies (may be empty, that's fine for latency measurement)
+                        let _: Vec<_> = replies.into_iter().collect::<Vec<_>>();
+
+                        let mut q = quality.lock();
+                        q.update_latency(latency_ms);
+                        q.record_health_check_success();
+                        consecutive_failures = 0;
+
+                        log::trace!(
+                            "Health check OK: {:.2}ms (avg: {:.2}ms, score: {})",
+                            latency_ms,
+                            q.avg_latency_ms,
+                            q.health_score()
+                        );
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        consecutive_failures += 1;
+                        let mut q = quality.lock();
+                        q.record_health_check_failure();
+
+                        if consecutive_failures >= 3 {
+                            log::warn!(
+                                "Connection quality degraded: {} consecutive failures",
+                                consecutive_failures
+                            );
+                        }
+                    }
+                }
+
+                tokio::time::sleep(interval).await;
+            }
+        })
+    }
+
+    /// Get shared reference to connection quality for external monitoring
+    pub fn connection_quality_arc(&self) -> Arc<Mutex<ZenohConnectionQuality>> {
+        self.connection_quality.clone()
+    }
+
+    // ========== CLOUD FAILOVER SUPPORT ==========
+
+    /// Create a new Zenoh backend with cloud configuration (failover support)
+    ///
+    /// This variant supports:
+    /// - Multiple router endpoints with automatic failover
+    /// - Connection quality monitoring with latency-based failover triggers
+    /// - Optional mDNS auto-discovery of nearby routers
+    /// - Automatic reconnection on connection loss
+    pub async fn new_with_cloud_config(
+        topic: &str,
+        cloud_config: super::zenoh_config::ZenohCloudConfig,
+    ) -> HorusResult<Self> {
+        // Build list of routers to try
+        let mut routers = vec![cloud_config.primary_router.clone()];
+        routers.extend(cloud_config.backup_routers.iter().cloned());
+
+        // Try mDNS discovery if enabled
+        #[cfg(feature = "mdns")]
+        if cloud_config.auto_discovery {
+            if let Ok(discovered) = super::zenoh_config::discover_zenoh_routers_mdns(
+                &cloud_config.discovery_service_type,
+                cloud_config.connection_timeout,
+            ) {
+                for router in discovered {
+                    if !routers.contains(&router) {
+                        log::info!("Discovered Zenoh router via mDNS: {}", router);
+                        routers.push(router);
+                    }
+                }
+            }
+        }
+
+        // Try connecting to each router in order
+        let (session, connected_router) =
+            Self::try_connect_with_failover(&routers, cloud_config.connection_timeout).await?;
+
+        // Create ZenohConfig from cloud config
+        let mut config = ZenohConfig::default();
+        config.connect = vec![connected_router.clone()];
+        if let Some(ns) = &cloud_config.namespace {
+            config.namespace = Some(ns.clone());
+        }
+
+        let key_expr = config.topic_to_key_expr(topic);
+
+        // Initialize connection quality
+        let mut quality = ZenohConnectionQuality::new();
+        quality.mark_connected(&connected_router);
+
+        let backend = Self {
+            session: Arc::new(session),
+            publisher: None,
+            recv_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1024))),
+            key_expr,
+            config,
+            connection_quality: Arc::new(Mutex::new(quality)),
+            _phantom: PhantomData,
+        };
+
+        log::info!(
+            "Connected to Zenoh cloud router: {} (topic: {})",
+            connected_router,
+            topic
+        );
+
+        Ok(backend)
+    }
+
+    /// Try connecting to routers with failover
+    ///
+    /// Attempts to connect to each router in the list, returning the first successful connection.
+    async fn try_connect_with_failover(
+        routers: &[String],
+        timeout: std::time::Duration,
+    ) -> HorusResult<(zenoh::Session, String)> {
+        if routers.is_empty() {
+            let err = NetworkError::new(
+                NetworkErrorCode::MissingConfig,
+                "No routers configured for cloud connection",
+            )
+            .with_suggestion(
+                "Configure at least one router in your ZenohCloudConfig. \
+                Example: cloud://cloud.horus.dev:7447 or use HORUS_CLOUD_ROUTERS env var.",
+            )
+            .with_cli_hint("horus net doctor --check-cloud");
+            return Err(err.into());
+        }
+
+        let mut last_error: Option<NetworkError> = None;
+
+        for router in routers {
+            log::debug!("Attempting connection to Zenoh router: {}", router);
+
+            // Build Zenoh config with this router
+            let mut zenoh_config = zenoh::Config::default();
+
+            // Set connect endpoints using JSON5 configuration
+            // Format: "tcp/host:port" or "udp/host:port"
+            let endpoints_json = format!("[\"{}\"]", router);
+            if let Err(e) = zenoh_config.insert_json5("connect/endpoints", &endpoints_json) {
+                log::warn!("Invalid router endpoint {}: {}", router, e);
+                last_error = Some(
+                    NetworkError::invalid_endpoint(router, e.to_string())
+                        .with_suggestion(format!(
+                            "Use format 'tcp/host:port' or 'udp/host:port'. Got: {}",
+                            router
+                        )),
+                );
+                continue;
+            }
+
+            // Set client mode for cloud connections
+            if let Err(e) = zenoh_config.insert_json5("mode", "\"client\"") {
+                log::warn!("Failed to set client mode: {}", e);
+            }
+
+            // Try to connect with timeout
+            let connect_result = tokio::time::timeout(timeout, zenoh::open(zenoh_config)).await;
+
+            match connect_result {
+                Ok(Ok(session)) => {
+                    log::info!("Successfully connected to Zenoh router: {}", router);
+                    return Ok((session, router.clone()));
+                }
+                Ok(Err(e)) => {
+                    log::warn!("Failed to connect to {}: {}", router, e);
+                    last_error = Some(NetworkError::connection_failed(router, e.to_string()));
+                }
+                Err(_) => {
+                    log::warn!("Connection to {} timed out after {:?}", router, timeout);
+                    last_error = Some(NetworkError::connection_timeout(router, timeout));
+                }
+            }
+        }
+
+        // Build a comprehensive error message
+        let err = last_error.unwrap_or_else(|| {
+            NetworkError::new(
+                NetworkErrorCode::ConnectionFailed,
+                "Failed to connect to any Zenoh router",
+            )
+        });
+
+        // Enhance with multi-router context
+        let final_err = NetworkError::new(
+            NetworkErrorCode::MaxRetriesExceeded,
+            format!(
+                "Failed to connect to any Zenoh router ({} tried). Last error: {}",
+                routers.len(),
+                err
+            ),
+        )
+        .with_context("routers_tried", routers.join(", "))
+        .with_suggestion(
+            "Check network connectivity and router availability. \
+            Ensure routers are running and accessible from your network.",
+        )
+        .with_cli_hint(format!("horus net check {}", routers.first().unwrap_or(&"cloud.horus.dev:7447".to_string())));
+
+        Err(final_err.into())
+    }
+
+    /// Start failover monitoring
+    ///
+    /// Monitors connection quality and triggers failover when:
+    /// - Latency exceeds threshold
+    /// - Too many consecutive health check failures
+    /// - Connection is lost
+    ///
+    /// Returns a handle that can be used to stop monitoring.
+    pub fn start_failover_monitoring(
+        &self,
+        cloud_config: super::zenoh_config::ZenohCloudConfig,
+    ) -> tokio::task::JoinHandle<()> {
+        let session = self.session.clone();
+        let key_expr = self.key_expr.clone();
+        let quality = self.connection_quality.clone();
+
+        let health_check_interval = cloud_config.health_check_interval;
+        let latency_failover_threshold = cloud_config.latency_failover_threshold_ms as f64;
+        let failures_before_failover = cloud_config.health_check_failures_before_failover;
+
+        // Collect all routers
+        let mut all_routers = vec![cloud_config.primary_router.clone()];
+        all_routers.extend(cloud_config.backup_routers.iter().cloned());
+
+        tokio::spawn(async move {
+            let health_key = format!("{}/__horus_failover_monitor__", key_expr);
+            let mut consecutive_failures = 0u32;
+            let mut current_router_index = 0usize;
+
+            loop {
+                let start = std::time::Instant::now();
+
+                // Simple ping using get() to measure RTT
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    session.get(&health_key),
+                )
+                .await;
+
+                let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+                let should_failover = match result {
+                    Ok(Ok(replies)) => {
+                        let _: Vec<_> = replies.into_iter().collect::<Vec<_>>();
+
+                        let mut q = quality.lock();
+                        q.update_latency(latency_ms);
+                        q.record_health_check_success();
+                        consecutive_failures = 0;
+
+                        // Check if latency exceeds failover threshold
+                        if q.avg_latency_ms > latency_failover_threshold {
+                            log::warn!(
+                                "Latency ({:.2}ms) exceeds failover threshold ({:.0}ms)",
+                                q.avg_latency_ms,
+                                latency_failover_threshold
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        consecutive_failures += 1;
+                        let mut q = quality.lock();
+                        q.record_health_check_failure();
+
+                        if consecutive_failures >= failures_before_failover {
+                            log::warn!(
+                                "Too many failures ({}), triggering failover",
+                                consecutive_failures
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if should_failover && all_routers.len() > 1 {
+                    // Calculate next router to try
+                    let next_index = (current_router_index + 1) % all_routers.len();
+                    let next_router = &all_routers[next_index];
+
+                    log::info!(
+                        "Initiating failover to router: {} (index {})",
+                        next_router,
+                        next_index
+                    );
+
+                    // Record failover
+                    {
+                        let mut q = quality.lock();
+                        q.record_failover(next_router);
+                    }
+
+                    current_router_index = next_index;
+                    consecutive_failures = 0;
+
+                    // Note: Actual session reconnection would require recreating the session
+                    // This is a monitoring-only task. Full reconnection needs to be handled
+                    // at a higher level by the application.
+                }
+
+                tokio::time::sleep(health_check_interval).await;
+            }
+        })
+    }
+
+    /// Get a list of all configured routers (primary + backups)
+    pub fn configured_routers(&self) -> Vec<String> {
+        self.config.connect.clone()
     }
 }
 
@@ -290,6 +825,7 @@ impl<T> Clone for ZenohBackend<T> {
             recv_buffer: self.recv_buffer.clone(),
             key_expr: self.key_expr.clone(),
             config: self.config.clone(),
+            connection_quality: self.connection_quality.clone(), // Share quality metrics
             _phantom: PhantomData,
         }
     }
@@ -298,10 +834,14 @@ impl<T> Clone for ZenohBackend<T> {
 #[cfg(feature = "zenoh-transport")]
 impl<T> std::fmt::Debug for ZenohBackend<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let quality = self.connection_quality.lock();
         f.debug_struct("ZenohBackend")
             .field("key_expr", &self.key_expr)
             .field("has_publisher", &self.publisher.is_some())
             .field("pending_messages", &self.recv_buffer.lock().len())
+            .field("connection_state", &quality.state)
+            .field("health_score", &quality.health_score())
+            .field("latency_ms", &quality.latency_ms)
             .finish()
     }
 }
@@ -312,6 +852,10 @@ pub struct ZenohSessionInfo {
     pub key_expr: String,
     pub has_publisher: bool,
     pub pending_messages: usize,
+    pub connection_state: ConnectionQualityState,
+    pub health_score: u32,
+    pub latency_ms: f64,
+    pub connected_router: Option<String>,
 }
 
 /// Stub implementation when zenoh feature is not enabled

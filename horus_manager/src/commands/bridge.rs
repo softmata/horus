@@ -2976,7 +2976,7 @@ async fn bridge_ros2_service(
     running: Arc<AtomicBool>,
     stats: Arc<ServiceStats>,
 ) -> HorusResult<()> {
-    use horus_core::communication::Link;
+    use horus_core::Topic;
     use std::sync::atomic::Ordering;
 
     log::info!("Starting service bridge for: {}", service_name);
@@ -2994,8 +2994,8 @@ async fn bridge_ros2_service(
 
     // Create HORUS shared memory links for service communication
     // We use Vec<u8> for raw byte passthrough (CDR encoded)
-    let horus_request_pub: Link<Vec<u8>> = Link::producer(&horus_request_topic)?;
-    let horus_response_sub: Link<Vec<u8>> = Link::consumer(&horus_response_topic)?;
+    let horus_request_pub: Topic<Vec<u8>> = Topic::new(&horus_request_topic)?;
+    let horus_response_sub: Topic<Vec<u8>> = Topic::new(&horus_response_topic)?;
 
     log::debug!(
         "HORUS service links created: {} -> {}",
@@ -3124,7 +3124,7 @@ async fn bridge_horus_service_client(
     running: Arc<AtomicBool>,
     stats: Arc<ServiceStats>,
 ) -> HorusResult<()> {
-    use horus_core::communication::Link;
+    use horus_core::Topic;
     use std::sync::atomic::Ordering;
 
     log::info!(
@@ -3142,8 +3142,8 @@ async fn bridge_horus_service_client(
     let request_key = format!("rq{}", service_name.trim_start_matches('/'));
 
     // Create HORUS links
-    let horus_request_sub: Link<Vec<u8>> = Link::consumer(&horus_request_topic)?;
-    let horus_response_pub: Link<Vec<u8>> = Link::producer(&horus_response_topic)?;
+    let horus_request_sub: Topic<Vec<u8>> = Topic::new(&horus_request_topic)?;
+    let horus_response_pub: Topic<Vec<u8>> = Topic::new(&horus_response_topic)?;
 
     // Open Zenoh session
     let zenoh_config = zenoh::Config::default();
@@ -3244,7 +3244,7 @@ pub async fn bridge_ros2_action(
     running: Arc<AtomicBool>,
     stats: Arc<ActionStats>,
 ) -> HorusResult<()> {
-    use horus_core::communication::Link;
+    use horus_core::Topic;
     use std::sync::atomic::Ordering;
 
     log::info!("Starting action bridge for: {}", action_name);
@@ -3277,14 +3277,14 @@ pub async fn bridge_ros2_action(
     );
 
     // Create HORUS links for action communication
-    let goal_pub: Link<Vec<u8>> = Link::producer(&horus_goal_topic)?;
-    let goal_response_sub: Link<Vec<u8>> = Link::consumer(&horus_goal_response_topic)?;
-    let cancel_pub: Link<Vec<u8>> = Link::producer(&horus_cancel_topic)?;
-    let cancel_response_sub: Link<Vec<u8>> = Link::consumer(&horus_cancel_response_topic)?;
-    let result_request_pub: Link<Vec<u8>> = Link::producer(&horus_result_request_topic)?;
-    let result_sub: Link<Vec<u8>> = Link::consumer(&horus_result_topic)?;
-    let feedback_pub: Link<Vec<u8>> = Link::producer(&horus_feedback_topic)?;
-    let status_pub: Link<Vec<u8>> = Link::producer(&horus_status_topic)?;
+    let goal_pub: Topic<Vec<u8>> = Topic::new(&horus_goal_topic)?;
+    let goal_response_sub: Topic<Vec<u8>> = Topic::new(&horus_goal_response_topic)?;
+    let cancel_pub: Topic<Vec<u8>> = Topic::new(&horus_cancel_topic)?;
+    let cancel_response_sub: Topic<Vec<u8>> = Topic::new(&horus_cancel_response_topic)?;
+    let result_request_pub: Topic<Vec<u8>> = Topic::new(&horus_result_request_topic)?;
+    let result_sub: Topic<Vec<u8>> = Topic::new(&horus_result_topic)?;
+    let feedback_pub: Topic<Vec<u8>> = Topic::new(&horus_feedback_topic)?;
+    let status_pub: Topic<Vec<u8>> = Topic::new(&horus_status_topic)?;
 
     // Open Zenoh session for action handling
     let zenoh_config = zenoh::Config::default();
@@ -3886,7 +3886,7 @@ pub async fn bridge_ros2_parameters(
     running: Arc<AtomicBool>,
     stats: Arc<ParameterStats>,
 ) -> HorusResult<()> {
-    use horus_core::communication::Link;
+    use horus_core::Topic;
 
     log::info!("Starting parameter bridge for node: {}", node_name);
 
@@ -3911,9 +3911,9 @@ pub async fn bridge_ros2_parameters(
 
     // Create HORUS links for parameter communication
     let horus_param_topic = format!("params/{}", node_clean);
-    let horus_param_req: Link<Vec<u8>> = Link::producer(&format!("{}/request", horus_param_topic))?;
-    let horus_param_resp: Link<Vec<u8>> =
-        Link::consumer(&format!("{}/response", horus_param_topic))?;
+    let horus_param_req: Topic<Vec<u8>> = Topic::new(&format!("{}/request", horus_param_topic))?;
+    let horus_param_resp: Topic<Vec<u8>> =
+        Topic::new(&format!("{}/response", horus_param_topic))?;
 
     log::debug!("HORUS param links created for: {}", horus_param_topic);
 
@@ -4287,7 +4287,7 @@ async fn bridge_ros2_to_horus(
     stats: Arc<TopicStats>,
 ) -> HorusResult<()> {
     use horus_core::communication::network::zenoh_backend::ZenohBackend;
-    use horus_core::communication::Link;
+    use horus_core::Topic;
     use std::sync::atomic::Ordering;
 
     log::info!("Starting ROS2 -> HORUS bridge for {}", ros2_topic);
@@ -4297,7 +4297,7 @@ async fn bridge_ros2_to_horus(
     zenoh_sub.init_subscriber().await?;
 
     // Create HORUS shared memory producer
-    let horus_pub: Link<Vec<u8>> = Link::producer(horus_topic)?;
+    let horus_pub: Topic<Vec<u8>> = Topic::new(horus_topic)?;
 
     log::info!(
         "ROS2 -> HORUS bridge ready: {} -> {}",
@@ -4347,13 +4347,13 @@ async fn bridge_horus_to_ros2(
     stats: Arc<TopicStats>,
 ) -> HorusResult<()> {
     use horus_core::communication::network::zenoh_backend::ZenohBackend;
-    use horus_core::communication::Link;
+    use horus_core::Topic;
     use std::sync::atomic::Ordering;
 
     log::info!("Starting HORUS -> ROS2 bridge for {}", horus_topic);
 
     // Create HORUS shared memory consumer
-    let horus_sub: Link<Vec<u8>> = Link::consumer(horus_topic)?;
+    let horus_sub: Topic<Vec<u8>> = Topic::new(horus_topic)?;
 
     // Create Zenoh publisher for ROS2 topic
     let mut zenoh_pub: ZenohBackend<Vec<u8>> = ZenohBackend::new(ros2_topic, zenoh_config).await?;

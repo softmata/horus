@@ -3,7 +3,7 @@ use horus_core::core::LogSummary;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -84,13 +84,13 @@ where
     P: Processor<RoboclawFeedback>,
 {
     // Motor command subscribers
-    motor1_cmd_sub: Hub<MotorCommand>,
-    motor2_cmd_sub: Hub<MotorCommand>,
+    motor1_cmd_sub: Topic<MotorCommand>,
+    motor2_cmd_sub: Topic<MotorCommand>,
 
     // Status publishers
-    motor1_feedback_pub: Hub<RoboclawFeedback>,
-    motor2_feedback_pub: Hub<RoboclawFeedback>,
-    diagnostic_pub: Hub<RoboclawDiagnostics>,
+    motor1_feedback_pub: Topic<RoboclawFeedback>,
+    motor2_feedback_pub: Topic<RoboclawFeedback>,
+    diagnostic_pub: Topic<RoboclawDiagnostics>,
 
     // Configuration
     device_address: u8, // Roboclaw address (0x80-0x87)
@@ -252,11 +252,11 @@ impl RoboclawMotorNode {
         }
 
         Ok(Self {
-            motor1_cmd_sub: Hub::new("roboclaw.motor1.cmd")?,
-            motor2_cmd_sub: Hub::new("roboclaw.motor2.cmd")?,
-            motor1_feedback_pub: Hub::new("roboclaw.motor1.feedback")?,
-            motor2_feedback_pub: Hub::new("roboclaw.motor2.feedback")?,
-            diagnostic_pub: Hub::new("roboclaw.diagnostics")?,
+            motor1_cmd_sub: Topic::new("roboclaw.motor1.cmd")?,
+            motor2_cmd_sub: Topic::new("roboclaw.motor2.cmd")?,
+            motor1_feedback_pub: Topic::new("roboclaw.motor1.feedback")?,
+            motor2_feedback_pub: Topic::new("roboclaw.motor2.feedback")?,
+            diagnostic_pub: Topic::new("roboclaw.diagnostics")?,
             device_address: address,
             baud_rate: 38400,
             serial_port: serial_port.to_string(),
@@ -1117,11 +1117,11 @@ where
         }
 
         Ok(RoboclawMotorNode {
-            motor1_cmd_sub: Hub::new("roboclaw.motor1.cmd")?,
-            motor2_cmd_sub: Hub::new("roboclaw.motor2.cmd")?,
-            motor1_feedback_pub: Hub::new("roboclaw.motor1.feedback")?,
-            motor2_feedback_pub: Hub::new("roboclaw.motor2.feedback")?,
-            diagnostic_pub: Hub::new("roboclaw.diagnostics")?,
+            motor1_cmd_sub: Topic::new("roboclaw.motor1.cmd")?,
+            motor2_cmd_sub: Topic::new("roboclaw.motor2.cmd")?,
+            motor1_feedback_pub: Topic::new("roboclaw.motor1.feedback")?,
+            motor2_feedback_pub: Topic::new("roboclaw.motor2.feedback")?,
+            diagnostic_pub: Topic::new("roboclaw.diagnostics")?,
             device_address: self.device_address,
             baud_rate: self.baud_rate,
             serial_port: self.serial_port,

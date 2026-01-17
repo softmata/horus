@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,9 +31,9 @@ pub enum ModbusBackend {
 /// - Modbus RTU (Serial-based)
 /// - Simulation mode for testing
 pub struct ModbusNode {
-    publisher: Hub<ModbusMessage>,
-    status_publisher: Hub<NetworkStatus>,
-    request_subscriber: Hub<ModbusMessage>,
+    publisher: Topic<ModbusMessage>,
+    status_publisher: Topic<NetworkStatus>,
+    request_subscriber: Topic<ModbusMessage>,
 
     // Configuration
     server_address: String,
@@ -94,9 +94,9 @@ impl ModbusNode {
         backend: ModbusBackend,
     ) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(response_topic)?,
-            status_publisher: Hub::new(status_topic)?,
-            request_subscriber: Hub::new(request_topic)?,
+            publisher: Topic::new(response_topic)?,
+            status_publisher: Topic::new(status_topic)?,
+            request_subscriber: Topic::new(request_topic)?,
 
             server_address: "127.0.0.1".to_string(),
             server_port: 502,

@@ -9,7 +9,7 @@ use colored::Colorize;
 ///
 /// Run with: cargo run --example network_production --release
 use horus_core::communication::network::{ReconnectContext, ReconnectStrategy};
-use horus_core::communication::Hub;
+use horus_core::communication::Topic;
 use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -42,10 +42,10 @@ fn run_publisher() -> Result<(), Box<dyn std::error::Error>> {
     let mut reconnect_ctx = ReconnectContext::new(reconnect_strategy);
 
     // Attempt connection with reconnection logic
-    let hub: Hub<SensorData> = loop {
+    let hub: Topic<SensorData> = loop {
         println!("Attempt {}: Connecting...", reconnect_ctx.attempt + 1);
 
-        match Hub::new("sensors@router") {
+        match Topic::new("sensors@router") {
             Ok(hub) => {
                 reconnect_ctx.mark_connected();
                 println!("{}", "Connected successfully!".green().bold());
@@ -107,10 +107,10 @@ fn run_subscriber() -> Result<(), Box<dyn std::error::Error>> {
     let reconnect_strategy = ReconnectStrategy::production();
     let mut reconnect_ctx = ReconnectContext::new(reconnect_strategy);
 
-    let hub: Hub<SensorData> = loop {
+    let hub: Topic<SensorData> = loop {
         println!("Attempt {}: Connecting...", reconnect_ctx.attempt + 1);
 
-        match Hub::new("sensors@router") {
+        match Topic::new("sensors@router") {
             Ok(hub) => {
                 reconnect_ctx.mark_connected();
                 println!("{}", "Connected successfully!".green().bold());

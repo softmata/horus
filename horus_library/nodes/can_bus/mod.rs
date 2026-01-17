@@ -2,7 +2,7 @@ use crate::CanFrame;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // SocketCAN hardware support
@@ -53,9 +53,9 @@ use std::os::unix::io::AsRawFd;
 /// can.send_frame(frame);
 /// ```
 pub struct CanBusNode {
-    tx_subscriber: Hub<CanFrame>,   // Frames to transmit
-    rx_publisher: Hub<CanFrame>,    // Received frames
-    error_publisher: Hub<CanFrame>, // Error frames
+    tx_subscriber: Topic<CanFrame>,   // Frames to transmit
+    rx_publisher: Topic<CanFrame>,    // Received frames
+    error_publisher: Topic<CanFrame>, // Error frames
 
     // Hardware socket (Linux SocketCAN)
     #[cfg(feature = "can-hardware")]
@@ -144,9 +144,9 @@ impl CanBusNode {
     /// Create a new CAN bus node
     pub fn new(interface: &str) -> Result<Self> {
         Ok(Self {
-            tx_subscriber: Hub::new(&format!("can.{}.tx", interface))?,
-            rx_publisher: Hub::new(&format!("can.{}.rx", interface))?,
-            error_publisher: Hub::new(&format!("can.{}.error", interface))?,
+            tx_subscriber: Topic::new(&format!("can.{}.tx", interface))?,
+            rx_publisher: Topic::new(&format!("can.{}.rx", interface))?,
+            error_publisher: Topic::new(&format!("can.{}.error", interface))?,
             #[cfg(feature = "can-hardware")]
             socket: None,
             hardware_enabled: false,

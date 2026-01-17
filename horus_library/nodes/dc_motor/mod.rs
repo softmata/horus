@@ -3,7 +3,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // GPIO/PWM hardware support (Raspberry Pi)
@@ -57,8 +57,8 @@ pub enum MotorDriver {
 /// motor.set_pwm_frequency(20000); // 20kHz
 /// ```
 pub struct DcMotorNode {
-    subscriber: Hub<PwmCommand>,
-    publisher: Hub<PwmCommand>, // Echo commands for monitoring
+    subscriber: Topic<PwmCommand>,
+    publisher: Topic<PwmCommand>, // Echo commands for monitoring
 
     // Configuration
     num_channels: u8,
@@ -102,8 +102,8 @@ impl DcMotorNode {
         #[cfg(feature = "gpio-hardware")]
         const NONE_PIN: Option<OutputPin> = None;
         Ok(Self {
-            subscriber: Hub::new(topic)?,
-            publisher: Hub::new(&format!("{}_feedback", topic))?,
+            subscriber: Topic::new(topic)?,
+            publisher: Topic::new(&format!("{}_feedback", topic))?,
             num_channels: 2, // Default to 2 motors (typical robot)
             driver: MotorDriver::Simulation,
             max_duty_cycle: 1.0,

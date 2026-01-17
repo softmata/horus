@@ -2,7 +2,7 @@ use crate::MotorCommand;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // GPIO/PWM hardware support (Raspberry Pi)
@@ -53,9 +53,9 @@ use rppal::pwm::{Channel, Polarity, Pwm};
 /// let cmd = MotorCommand::velocity(0, 2000.0); // 2000 RPM
 /// ```
 pub struct BldcMotorNode {
-    subscriber: Hub<MotorCommand>,
-    publisher: Hub<MotorCommand>, // Echo commands
-    telemetry_publisher: Hub<BldcTelemetry>,
+    subscriber: Topic<MotorCommand>,
+    publisher: Topic<MotorCommand>, // Echo commands
+    telemetry_publisher: Topic<BldcTelemetry>,
 
     // Configuration
     num_motors: u8,
@@ -150,9 +150,9 @@ impl BldcMotorNode {
         #[cfg(feature = "gpio-hardware")]
         const NONE_PWM: Option<Pwm> = None;
         Ok(Self {
-            subscriber: Hub::new(topic)?,
-            publisher: Hub::new(&format!("{}_feedback", topic))?,
-            telemetry_publisher: Hub::new(&format!("{}_telemetry", topic))?,
+            subscriber: Topic::new(topic)?,
+            publisher: Topic::new(&format!("{}_feedback", topic))?,
+            telemetry_publisher: Topic::new(&format!("{}_telemetry", topic))?,
             num_motors: 1,
             protocol: BldcProtocol::DShot600,
             pwm_min: [1000; 8],

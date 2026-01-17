@@ -2,7 +2,7 @@ use crate::{CameraInfo, DepthImage, Image, PointCloud};
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -76,10 +76,10 @@ where
     P: Processor<DepthImage>,
 {
     // Output publishers
-    rgb_publisher: Hub<Image>,
-    depth_publisher: Hub<DepthImage>,
-    pointcloud_publisher: Hub<PointCloud>,
-    camera_info_publisher: Hub<CameraInfo>,
+    rgb_publisher: Topic<Image>,
+    depth_publisher: Topic<DepthImage>,
+    pointcloud_publisher: Topic<PointCloud>,
+    camera_info_publisher: Topic<CameraInfo>,
 
     // Configuration
     camera_model: CameraModel,
@@ -197,10 +197,10 @@ impl DepthCameraNode {
     /// Create a new depth camera node with specific backend
     pub fn new_with_backend(model: CameraModel, backend: DepthBackend) -> Result<Self> {
         let mut node = Self {
-            rgb_publisher: Hub::new("depth_camera.rgb.image")?,
-            depth_publisher: Hub::new("depth_camera.depth.image")?,
-            pointcloud_publisher: Hub::new("depth_camera.pointcloud")?,
-            camera_info_publisher: Hub::new("depth_camera.camera_info")?,
+            rgb_publisher: Topic::new("depth_camera.rgb.image")?,
+            depth_publisher: Topic::new("depth_camera.depth.image")?,
+            pointcloud_publisher: Topic::new("depth_camera.pointcloud")?,
+            camera_info_publisher: Topic::new("depth_camera.camera_info")?,
             camera_model: model,
             device_serial: String::new(),
             resolution: (640, 480),

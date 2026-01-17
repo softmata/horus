@@ -4,7 +4,7 @@ use std::time::Duration;
 
 /// Priority levels for real-time scheduling
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RTPriority {
+pub enum RtPriority {
     /// Highest priority - critical control loops
     Critical,
     /// High priority - important sensors
@@ -17,21 +17,21 @@ pub enum RTPriority {
     Custom(u32),
 }
 
-impl RTPriority {
+impl RtPriority {
     pub fn value(&self) -> u32 {
         match self {
-            RTPriority::Critical => 0,
-            RTPriority::High => 10,
-            RTPriority::Medium => 50,
-            RTPriority::Low => 100,
-            RTPriority::Custom(v) => *v,
+            RtPriority::Critical => 0,
+            RtPriority::High => 10,
+            RtPriority::Medium => 50,
+            RtPriority::Low => 100,
+            RtPriority::Custom(v) => *v,
         }
     }
 }
 
 /// Real-time class for deadline handling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RTClass {
+pub enum RtClass {
     /// Must never miss deadline (safety-critical, surgical robots)
     Hard,
     /// Occasional miss tolerated (video streaming, VR)
@@ -66,7 +66,7 @@ pub struct WCETViolation {
 
 /// Real-time statistics for a node
 #[derive(Debug, Clone, Default)]
-pub struct RTStats {
+pub struct RtStats {
     /// Number of deadline misses
     pub deadline_misses: u64,
     /// Number of WCET violations
@@ -83,7 +83,7 @@ pub struct RTStats {
     pub total_ticks: u64,
 }
 
-impl RTStats {
+impl RtStats {
     /// Update statistics with new execution time
     pub fn record_execution(&mut self, duration: Duration) {
         let duration_us = duration.as_micros() as f64;
@@ -149,7 +149,7 @@ impl RTStats {
 ///
 /// # Example
 /// ```ignore
-/// impl RTNode for MotorControlNode {
+/// impl RtNode for MotorControlNode {
 ///     fn wcet_budget(&self) -> Duration {
 ///         Duration::from_micros(100) // 100μs max execution
 ///     }
@@ -159,7 +159,7 @@ impl RTStats {
 ///     }
 /// }
 /// ```
-pub trait RTNode: Node {
+pub trait RtNode: Node {
     /// Worst-case execution time budget
     fn wcet_budget(&self) -> Duration;
 
@@ -169,21 +169,21 @@ pub trait RTNode: Node {
     }
 
     /// Real-time priority (lower value = higher priority)
-    fn rt_priority(&self) -> RTPriority {
-        RTPriority::Medium
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::Medium
     }
 
     /// Real-time class (Hard/Firm/Soft)
-    fn rt_class(&self) -> RTClass {
-        RTClass::Soft
+    fn rt_class(&self) -> RtClass {
+        RtClass::Soft
     }
 
     /// What to do if deadline is missed
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         match self.rt_class() {
-            RTClass::Hard => DeadlineMissPolicy::EmergencyStop,
-            RTClass::Firm => DeadlineMissPolicy::Skip,
-            RTClass::Soft => DeadlineMissPolicy::Warn,
+            RtClass::Hard => DeadlineMissPolicy::EmergencyStop,
+            RtClass::Firm => DeadlineMissPolicy::Skip,
+            RtClass::Soft => DeadlineMissPolicy::Warn,
         }
     }
 
@@ -223,7 +223,7 @@ pub trait RTNode: Node {
     }
 
     /// Get fallback node for redundancy (N-version programming)
-    fn fallback_node(&self) -> Option<Box<dyn RTNode>> {
+    fn fallback_node(&self) -> Option<Box<dyn RtNode>> {
         None // Default: no fallback
     }
 
@@ -238,23 +238,23 @@ pub trait RTNode: Node {
     }
 }
 
-/// Wrapper to make RTNode work with existing Node-based scheduler
-pub struct RTNodeWrapper {
-    node: Box<dyn RTNode>,
-    stats: RTStats,
+/// Wrapper to make RtNode work with existing Node-based scheduler
+pub struct RtNodeWrapper {
+    node: Box<dyn RtNode>,
+    stats: RtStats,
     degraded: bool,
 }
 
-impl RTNodeWrapper {
-    pub fn new(node: Box<dyn RTNode>) -> Self {
+impl RtNodeWrapper {
+    pub fn new(node: Box<dyn RtNode>) -> Self {
         Self {
             node,
-            stats: RTStats::default(),
+            stats: RtStats::default(),
             degraded: false,
         }
     }
 
-    pub fn stats(&self) -> &RTStats {
+    pub fn stats(&self) -> &RtStats {
         &self.stats
     }
 
@@ -267,7 +267,7 @@ impl RTNodeWrapper {
     }
 }
 
-impl Node for RTNodeWrapper {
+impl Node for RtNodeWrapper {
     fn name(&self) -> &'static str {
         self.node.name()
     }

@@ -2,7 +2,7 @@ use crate::SpiMessage;
 use horus_core::error::HorusResult;
 
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo, NodeInfoExt};
+use horus_core::{Node, NodeInfo, NodeInfoExt, Topic};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -60,8 +60,8 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions, SpidevTransfer};
 /// spi.transfer(&mut msg);
 /// ```
 pub struct SpiBusNode {
-    request_subscriber: Hub<SpiMessage>,
-    response_publisher: Hub<SpiMessage>,
+    request_subscriber: Topic<SpiMessage>,
+    response_publisher: Topic<SpiMessage>,
 
     // Hardware devices (per chip select)
     #[cfg(feature = "spi-hardware")]
@@ -118,8 +118,8 @@ impl SpiBusNode {
     /// Create a new SPI bus node
     pub fn new(bus: u8) -> Result<Self> {
         Ok(Self {
-            request_subscriber: Hub::new(&format!("spi{}.request", bus))?,
-            response_publisher: Hub::new(&format!("spi{}.response", bus))?,
+            request_subscriber: Topic::new(&format!("spi{}.request", bus))?,
+            response_publisher: Topic::new(&format!("spi{}.response", bus))?,
             #[cfg(feature = "spi-hardware")]
             spi_devices: HashMap::new(),
             hardware_enabled: false,

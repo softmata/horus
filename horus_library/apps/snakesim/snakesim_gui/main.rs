@@ -40,7 +40,7 @@ impl SnakesimNode {
             snake: vec![(5, 5), (4, 5), (3, 5)],
             last_update: Instant::now(),
             turn: (1, 0),
-            sub: Hub::new("snakestate")?,
+            sub: Topic::new("snakestate")?,
         })
     }
     pub fn control(&mut self, mut ctx: Option<&mut NodeInfo>) {

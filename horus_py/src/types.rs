@@ -184,6 +184,7 @@ impl From<PyNodeConfig> for CoreNodeConfig {
             enable_logging: py_config.enable_logging,
             log_level: py_config.log_level,
             custom_params: py_config.custom_params,
+            circuit_breaker: None, // Use scheduler-level circuit breaker settings
         }
     }
 }

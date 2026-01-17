@@ -4,99 +4,59 @@
 //! All nodes follow the same simple API pattern: `NodeName::new()` for default configuration
 //! or `NodeName::new_with_topic()` for custom topic names.
 //!
-//! # MVP Node Categories
+//! # Node Organization
 //!
-//! ## Safety & Monitoring (Critical for Industrial Use)
-//! - `EmergencyStopNode` - Hardware emergency stop handler
-//! - `SafetyMonitorNode` - Critical safety system monitoring
+//! ## Core Nodes (Always Available)
+//! 8 hardware-independent nodes in `core/`:
+//! - `EmergencyStopNode`, `SafetyMonitorNode` - Safety & monitoring
+//! - `DifferentialDriveNode`, `OdometryNode`, `PidControllerNode` - Motion control
+//! - `PathPlannerNode`, `LocalizationNode`, `CollisionDetectorNode` - Navigation
 //!
-//! ## Sensor Interfaces (Essential Building Blocks)
-//! - `CameraNode` - Vision input from cameras
-//! - `DepthCameraNode` - RGB-D cameras (RealSense, ZED, Kinect, etc.)
-//! - `LidarNode` - LiDAR scanning for mapping/obstacles
-//! - `ImuNode` - Inertial measurement unit for orientation
-//! - `EncoderNode` - Wheel encoder feedback
-//! - `GpsNode` - GPS/GNSS positioning for outdoor navigation
-//! - `UltrasonicNode` - Ultrasonic distance sensors (HC-SR04, JSN-SR04T, etc.)
-//! - `BatteryMonitorNode` - Battery voltage, current, and health monitoring
-//! - `ForceTorqueSensorNode` - 6-axis force/torque sensors (ATI, Robotiq, OnRobot, etc.)
-//!
-//! ## Control & Actuation (Movement and Control)
-//! - `DcMotorNode` - DC motor control with PWM (L298N, TB6612, etc.)
-//! - `BldcMotorNode` - Brushless DC motor control (ESC protocols: PWM, DShot, OneShot, CAN)
-//! - `StepperMotorNode` - Stepper motor control (A4988, DRV8825, TMC2208, etc.)
-//! - `DifferentialDriveNode` - Mobile robot base control
-//! - `DynamixelNode` - Dynamixel smart servo control (Protocol 1.0/2.0)
-//! - `RoboclawMotorNode` - Roboclaw motor controller (BasicMicro 2x7A to 2x160A models)
-//! - `PidControllerNode` - Generic PID control
-//! - `ServoControllerNode` - RC/Industrial servo control
-//!
-//! ## Navigation (Path Planning and Localization)
-//! - `PathPlannerNode` - A*/RRT path planning algorithms
-//! - `LocalizationNode` - Robot position estimation
-//! - `CollisionDetectorNode` - Real-time collision avoidance
-//!
-//! ## Industrial Integration (Production Ready)
-//! - `CanBusNode` - CAN bus communication (SocketCAN, automotive, industrial)
-//! - `ModbusNode` - Modbus TCP/RTU protocol handler
-//! - `DigitalIONode` - Digital I/O interface
-//! - `SerialNode` - UART/Serial communication (GPS, Arduino, sensors)
-//! - `I2cBusNode` - I2C bus communication for sensors and peripherals
-//!
-//! ## Vision & Image Processing
-//! - `ImageProcessorNode` - Image preprocessing and filtering
-//!
-//! ## Input Devices
-//! - `KeyboardInputNode` - Keyboard input capture
-//! - `JoystickInputNode` - Gamepad/joystick input
+//! ## Optional Nodes (Feature-Gated)
+//! Additional nodes require hardware features to be enabled:
+//! - Sensors: Camera, Lidar, IMU, GPS, etc. (requires `horus-sensors`)
+//! - Actuators: DC/BLDC/Stepper motors, servos (requires `horus-actuators`)
+//! - Industrial: CAN, Modbus, I2C, SPI, Serial (requires `horus-industrial`)
 //!
 //! # Usage Examples
 //!
 //! ```rust,ignore
 //! use horus_library::nodes::*;
 //!
-//! // Create nodes with simple constructors
-//! let camera = CameraNode::new();                    // Uses "camera.image" topic
-//! let lidar = LidarNode::new();                      // Uses "scan" topic
+//! // Core nodes - always available
 //! let drive = DifferentialDriveNode::new();          // Subscribes to "cmd_vel"
 //! let pid = PidControllerNode::new();                // Generic PID control
 //! let emergency = EmergencyStopNode::new();          // Emergency stop handler
 //! let safety = SafetyMonitorNode::new();             // Safety monitoring
 //!
-//! // Or with custom topics
-//! let front_camera = CameraNode::new_with_topic("front_camera");
-//! let motor_pid = PidControllerNode::new_with_topics("motor_setpoint", "encoder_feedback", "motor_output", "pid_config");
-//!
-//! // Configure as needed
-//! let mut camera = CameraNode::new();
-//! camera.set_resolution(1920, 1080);
-//! camera.set_fps(30);
-//!
-//! let mut drive = DifferentialDriveNode::new();
-//! drive.set_wheel_base(0.5);
-//! drive.set_velocity_limits(2.0, 3.14);
+//! // Optional nodes - require features
+//! #[cfg(feature = "opencv-backend")]
+//! let camera = CameraNode::new();
 //! ```
 
-// Declare node modules (each in its own folder with README.md)
-//
-// Hardware nodes are feature-gated - they only compile when the corresponding
-// hardware feature is enabled. This ensures clear compile-time errors if users
-// try to use hardware without proper drivers installed.
-//
-// For simulation/testing, use the sim2d or sim3d tools instead.
+// =============================================================================
+// CORE NODES - Hardware Independent (8 nodes)
+// =============================================================================
+// These are fundamental to every robotics application and have no hardware deps.
 
-// Processor trait and utilities for hybrid node pattern
-pub mod processor;
+pub mod core;
 
-// Hardware-independent nodes (always available)
-pub mod collision_detector;
-pub mod differential_drive;
-pub mod emergency_stop;
-pub mod localization;
-pub mod odometry;
-pub mod path_planner;
-pub mod pid_controller;
-pub mod safety_monitor;
+// Re-export core nodes at top level for convenience
+pub use core::{
+    CollisionDetectorNode, DifferentialDriveNode, EmergencyStopNode, LocalizationNode,
+    OdometryNode, PathPlannerNode, PidControllerNode, SafetyMonitorNode,
+};
+
+// Re-export processor types from core
+pub use core::{ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor, ProcessorExt};
+
+// Re-export processor module for backwards compatibility with internal imports
+pub use core::processor;
+
+// =============================================================================
+// OPTIONAL NODES - Feature-Gated Hardware
+// =============================================================================
+// These nodes require specific hardware features to be enabled.
 
 // Vision nodes (require camera backends)
 #[cfg(any(
@@ -188,18 +148,6 @@ pub mod ml_inference;
 pub mod cv;
 
 pub mod llm;
-
-// Re-export node types for convenience
-//
-// Hardware-independent nodes (always available)
-pub use collision_detector::CollisionDetectorNode;
-pub use differential_drive::DifferentialDriveNode;
-pub use emergency_stop::EmergencyStopNode;
-pub use localization::LocalizationNode;
-pub use odometry::OdometryNode;
-pub use path_planner::PathPlannerNode;
-pub use pid_controller::PidControllerNode;
-pub use safety_monitor::SafetyMonitorNode;
 
 // Vision nodes
 #[cfg(any(
@@ -301,9 +249,4 @@ pub use cv::{
 pub use llm::{CloudLLMNode, LLMConfig, LLMProvider};
 
 // Re-export core HORUS types for convenience
-pub use horus_core::{Hub, Node, NodeInfo};
-
-// Re-export processor types for hybrid pattern
-pub use processor::{
-    ClosureProcessor, FilterProcessor, PassThrough, Pipeline, Processor, ProcessorExt,
-};
+pub use horus_core::{Node, NodeInfo, Topic};

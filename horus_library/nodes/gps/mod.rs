@@ -9,7 +9,7 @@ use horus_core::error::HorusResult;
 
 // Type alias for cleaner signatures
 type Result<T> = HorusResult<T>;
-use horus_core::{Hub, Node, NodeInfo};
+use horus_core::{Node, NodeInfo, Topic};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Processor imports for hybrid pattern
@@ -90,7 +90,7 @@ where
     D: Sensor<Output = NavSatFix>,
     P: Processor<NavSatFix>,
 {
-    publisher: Hub<NavSatFix>,
+    publisher: Topic<NavSatFix>,
 
     // Driver (handles hardware abstraction)
     driver: D,
@@ -126,7 +126,7 @@ impl GpsNode<GpsDriver, PassThrough<NavSatFix>> {
         let driver = GpsDriver::new(driver_backend)?;
 
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             min_satellites: 4,
             max_hdop: 20.0,
@@ -164,7 +164,7 @@ where
     /// ```
     pub fn with_driver(topic: &str, driver: D) -> Result<Self> {
         Ok(Self {
-            publisher: Hub::new(topic)?,
+            publisher: Topic::new(topic)?,
             driver,
             min_satellites: 4,
             max_hdop: 20.0,
@@ -465,7 +465,7 @@ where
         let driver = GpsDriver::new(driver_backend)?;
 
         Ok(GpsNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             min_satellites: 4,
             max_hdop: 20.0,
@@ -505,7 +505,7 @@ where
         let driver = self.driver.unwrap_or_default();
 
         Ok(GpsNode {
-            publisher: Hub::new(&self.topic)?,
+            publisher: Topic::new(&self.topic)?,
             driver,
             min_satellites: 4,
             max_hdop: 20.0,
