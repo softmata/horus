@@ -34,8 +34,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use super::p2p::{IceCandidate, IceCandidateType, IceProtocol};
+use super::p2p::{IceCandidate, IceCandidateType, IceProtocol, TurnServer};
 use super::stun::{NatType, StunClient, StunConfig};
+use super::turn::{TurnClient, TurnConfig};
 
 // =============================================================================
 // ICE Constants (RFC 8445)
@@ -230,6 +231,8 @@ impl CandidatePair {
 pub struct IceConfig {
     /// STUN servers for candidate gathering
     pub stun_servers: Vec<String>,
+    /// TURN servers for relay candidates
+    pub turn_servers: Vec<TurnServer>,
     /// Overall ICE timeout
     pub timeout: Duration,
     /// Connectivity check interval
@@ -240,6 +243,8 @@ pub struct IceConfig {
     pub gather_host: bool,
     /// Whether to gather server-reflexive candidates
     pub gather_srflx: bool,
+    /// Whether to gather relay candidates (requires TURN servers)
+    pub gather_relay: bool,
     /// Whether to use aggressive nomination
     pub aggressive_nomination: bool,
     /// Interface filter (None = all interfaces)
@@ -253,11 +258,13 @@ impl Default for IceConfig {
                 "stun.l.google.com:19302".to_string(),
                 "stun1.l.google.com:19302".to_string(),
             ],
+            turn_servers: Vec::new(),
             timeout: ICE_DEFAULT_TIMEOUT,
             check_interval: ICE_CONNECTIVITY_CHECK_INTERVAL,
             max_check_retries: 7,
             gather_host: true,
             gather_srflx: true,
+            gather_relay: false, // Disabled by default (requires TURN server)
             aggressive_nomination: true,
             interface_filter: None,
         }
@@ -313,6 +320,8 @@ pub struct IceAgent {
     stats: Arc<IceStats>,
     /// Transaction ID -> pair index mapping for check responses
     pending_checks: Mutex<HashMap<[u8; 12], usize>>,
+    /// TURN client for relay candidates (optional)
+    turn_client: RwLock<Option<TurnClient>>,
 }
 
 impl IceAgent {
@@ -339,6 +348,7 @@ impl IceAgent {
             nat_type: RwLock::new(None),
             stats: Arc::new(IceStats::default()),
             pending_checks: Mutex::new(HashMap::new()),
+            turn_client: RwLock::new(None),
         })
     }
 
@@ -424,6 +434,7 @@ impl IceAgent {
     /// This collects:
     /// 1. Host candidates (local addresses)
     /// 2. Server-reflexive candidates (via STUN)
+    /// 3. Relay candidates (via TURN, if configured)
     pub fn gather_candidates(&self) -> io::Result<()> {
         *self.gathering_state.write().unwrap() = IceGatheringState::Gathering;
 
@@ -435,6 +446,14 @@ impl IceAgent {
         // Gather server-reflexive candidates via STUN
         if self.config.gather_srflx && !self.config.stun_servers.is_empty() {
             self.gather_srflx_candidates()?;
+        }
+
+        // Gather relay candidates via TURN
+        if self.config.gather_relay && !self.config.turn_servers.is_empty() {
+            if let Err(e) = self.gather_relay_candidates() {
+                log::warn!("Failed to gather relay candidates: {}", e);
+                // Continue without relay candidates - they're a fallback
+            }
         }
 
         *self.gathering_state.write().unwrap() = IceGatheringState::Complete;
@@ -544,6 +563,114 @@ impl IceAgent {
         self.stats.candidates_gathered.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
+    }
+
+    /// Gather relay candidates via TURN
+    ///
+    /// Connects to configured TURN servers and creates allocations to obtain
+    /// relay addresses. These are used as a fallback when direct connectivity
+    /// and hole punching fail (e.g., symmetric NAT).
+    fn gather_relay_candidates(&self) -> io::Result<()> {
+        if self.config.turn_servers.is_empty() {
+            return Ok(());
+        }
+
+        // Try each TURN server until one succeeds
+        for turn_server in &self.config.turn_servers {
+            let turn_config = TurnConfig {
+                server: turn_server.address.clone(),
+                username: turn_server.username.clone(),
+                credential: turn_server.credential.clone(),
+                timeout: Duration::from_secs(5),
+                retries: 2,
+                ..Default::default()
+            };
+
+            match TurnClient::new(turn_config) {
+                Ok(client) => {
+                    match client.allocate() {
+                        Ok(allocation) => {
+                            log::info!(
+                                "TURN allocation successful: relay={}",
+                                allocation.relay_address
+                            );
+
+                            // Get base address (our local socket)
+                            let base_addr = self.socket.as_ref().and_then(|s| s.local_addr().ok());
+
+                            // Create relay candidate
+                            let priority =
+                                calculate_priority(IceCandidateType::Relay, allocation.relay_address);
+                            let foundation = generate_foundation(
+                                IceCandidateType::Relay,
+                                &allocation.relay_address,
+                                base_addr.as_ref(),
+                            );
+
+                            let candidate = IceCandidateInfo {
+                                candidate_type: IceCandidateType::Relay,
+                                protocol: IceProtocol::Udp,
+                                address: allocation.relay_address,
+                                priority,
+                                foundation,
+                                component: COMPONENT_RTP,
+                                base_addr,
+                                related_addr: Some(allocation.mapped_address),
+                            };
+
+                            let mut candidates = self.local_candidates.write().unwrap();
+                            candidates.push(candidate);
+                            self.stats.candidates_gathered.fetch_add(1, Ordering::Relaxed);
+
+                            // Store the TURN client for later use
+                            *self.turn_client.write().unwrap() = Some(client);
+
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "TURN allocation failed on {}: {}",
+                                turn_server.address,
+                                e
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to connect to TURN server {}: {}",
+                        turn_server.address,
+                        e
+                    );
+                    continue;
+                }
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "All TURN servers failed",
+        ))
+    }
+
+    /// Get the active TURN client (if any)
+    pub fn turn_client(&self) -> Option<std::sync::RwLockReadGuard<'_, Option<TurnClient>>> {
+        let guard = self.turn_client.read().unwrap();
+        if guard.is_some() {
+            Some(guard)
+        } else {
+            None
+        }
+    }
+
+    /// Check if we have a relay candidate
+    pub fn has_relay_candidate(&self) -> bool {
+        self.local_candidates
+            .read()
+            .unwrap()
+            .iter()
+            .any(|c| c.candidate_type == IceCandidateType::Relay)
     }
 
     // =========================================================================

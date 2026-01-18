@@ -49,13 +49,16 @@
 pub mod config;
 pub mod network;
 pub mod pod;
+pub mod smart_backend;
+pub mod smart_detect;
 pub mod storage;
 pub mod topic;
 pub mod traits;
 
 // Re-export commonly used types for convenience
 pub use config::{HorusConfig, HubConfig};
-pub use pod::PodMessage;
+pub use pod::{PodMessage, is_registered_pod, registered_pod_count, registered_pod_types};
+pub use smart_detect::{SmartTopicHeader, DetectedPattern, RecommendedBackend, DetectionResult, smart_detect};
 pub use storage::AccessMode;
 pub use topic::{
     AccessPattern, Auto, BackendHint, ConnectionState, Mpmc, MpmcIntraBackend, MpscIntraBackend,

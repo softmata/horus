@@ -19,6 +19,7 @@
 
 use proc_macro::TokenStream;
 
+mod endpoint;
 mod message;
 mod node;
 mod zero_copy;
@@ -272,5 +273,89 @@ pub fn zero_copy_message(input: TokenStream) -> TokenStream {
 pub fn fixed_string(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as zero_copy::FixedStringInput);
     let output = zero_copy::generate_fixed_string(input);
+    TokenStream::from(output)
+}
+
+/// Validate a HORUS endpoint string at compile time.
+///
+/// This macro validates endpoint syntax at compile time, catching errors before
+/// your code runs. It also provides IDE hints for valid endpoint formats.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_macros::endpoint;
+///
+/// // Local topic (same process)
+/// let ep = endpoint!("sensor_data");
+///
+/// // Multicast discovery (LAN)
+/// let ep = endpoint!("cmd_vel@*");
+///
+/// // Direct connection
+/// let ep = endpoint!("telemetry@192.168.1.50:9000");
+///
+/// // mDNS hostname
+/// let ep = endpoint!("lidar@robot-arm.local");
+///
+/// // Zenoh transport
+/// let ep = endpoint!("odom@zenoh");
+/// let ep = endpoint!("/scan@zenoh/ros2");
+///
+/// // P2P with NAT traversal
+/// let ep = endpoint!("video@p2p:a3f7-k2m9-p4n8");
+/// let ep = endpoint!("control@p2p:a3f7-k2m9-p4n8/stun");
+///
+/// // Cloud room
+/// let ep = endpoint!("fleet_status@cloud:factory-1");
+/// ```
+///
+/// # Compile-Time Validation
+///
+/// Invalid endpoints produce compile errors:
+///
+/// ```compile_fail
+/// // Error: Topic name cannot be empty
+/// let ep = endpoint!("@192.168.1.1");
+///
+/// // Error: Invalid peer ID format
+/// let ep = endpoint!("topic@p2p:invalid");
+///
+/// // Error: Invalid IPv4 address
+/// let ep = endpoint!("topic@999.0.0.1");
+/// ```
+///
+/// # Supported Formats
+///
+/// | Pattern | Description |
+/// |---------|-------------|
+/// | `topic` | Local shared memory |
+/// | `topic@localhost` | Same machine (Unix socket) |
+/// | `topic@192.168.x.x` | Direct UDP to IP |
+/// | `topic@192.168.x.x:port` | Direct UDP with port |
+/// | `topic@[ipv6]` | IPv6 address |
+/// | `topic@[ipv6]:port` | IPv6 with port |
+/// | `topic@*` | Multicast discovery |
+/// | `topic@host.local` | mDNS hostname |
+/// | `topic@router` | Central router |
+/// | `topic@zenoh` | Zenoh mesh |
+/// | `topic@zenoh/ros2` | Zenoh ROS2 mode |
+/// | `topic@zenoh:cloud` | Zenoh cloud |
+/// | `topic@p2p:xxxx-yyyy-zzzz` | P2P with peer ID |
+/// | `topic@p2p:xxxx-yyyy-zzzz/stun` | P2P with strategy |
+/// | `topic@cloud:room` | Cloud room |
+/// | `topic@relay:host` | Self-hosted relay |
+/// | `topic@vpn:peer` | VPN connection |
+///
+/// # IDE Integration
+///
+/// IDEs with rust-analyzer will show:
+/// - Autocomplete suggestions for endpoint patterns
+/// - Hover documentation for endpoint syntax
+/// - Compile-time error highlighting for invalid endpoints
+#[proc_macro]
+pub fn endpoint(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as endpoint::EndpointInput);
+    let output = endpoint::generate_endpoint_macro(input);
     TokenStream::from(output)
 }

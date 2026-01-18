@@ -35,6 +35,7 @@ pub mod protocol;
 pub mod queryable;
 pub mod reconnect;
 pub mod router;
+pub mod turn;
 pub mod udp_direct;
 pub mod udp_multicast;
 
@@ -89,6 +90,9 @@ pub mod stun;
 // ICE-lite for NAT hole punching
 pub mod ice;
 
+// Connection health monitoring
+pub mod health_monitor;
+
 // Cloud connectivity patterns
 pub mod cloud;
 
@@ -131,7 +135,9 @@ pub mod zenoh_ros2_params;
 pub use backend::NetworkBackend;
 pub use direct::{DirectBackend, DirectRole};
 pub use discovery::{DiscoveryService, PeerInfo};
-pub use endpoint::{parse_endpoint, Endpoint, DEFAULT_PORT, MULTICAST_ADDR, MULTICAST_PORT};
+pub use endpoint::{
+    parse_endpoint, Endpoint, EndpointBuilder, DEFAULT_PORT, MULTICAST_ADDR, MULTICAST_PORT,
+};
 pub use fragmentation::{Fragment, FragmentManager};
 pub use protocol::{HorusPacket, MessageType};
 pub use reconnect::{
@@ -210,8 +216,9 @@ pub use webrtc::{
 // P2P re-exports
 pub use p2p::{
     parse_p2p_location, IceCandidate, IceCandidateType, IceProtocol, P2pConfig,
-    P2pConnectionResult, P2pConnectionState, P2pStats, P2pStrategy, PeerId,
-    SignalingClientConfig, SignalingErrorCode, SignalingMessage, TurnServer,
+    P2pConnection, P2pConnectionResult, P2pConnectionState, P2pConnector, P2pError,
+    P2pResponder, P2pResult, P2pStats, P2pStrategy, PeerId, SignalingClientConfig,
+    SignalingErrorCode, SignalingMessage, TurnServer,
 };
 
 // Hybrid discovery re-exports (LAN multicast + Husarnet unicast)
@@ -232,9 +239,23 @@ pub use ice::{
     ICE_CONSENT_INTERVAL, ICE_DEFAULT_TIMEOUT, ICE_KEEPALIVE_INTERVAL,
 };
 
+// TURN re-exports (relay-based NAT traversal)
+pub use turn::{
+    AllocationState, ChannelBinding, Permission, TurnAllocation, TurnClient, TurnConfig,
+    TurnError, TurnResult, TurnStats, TurnTransport,
+};
+
+// Health monitoring re-exports
+pub use health_monitor::{
+    AlertCallback, AlertType, HealthAlert, HealthLevel, HealthMonitor, HealthMonitorConfig,
+    HealthStatus, HeartbeatRequest, HeartbeatResponse,
+};
+
 // Cloud re-exports
 pub use cloud::{
-    parse_cloud_location, CloudConfig, CloudMode, CloudRoom, CloudStats, VpnType,
+    extract_original_topic, extract_room_name, is_room_scoped, parse_cloud_location,
+    scope_topic_to_room, CloudConfig, CloudMode, CloudRoom, CloudStats, RoomError, RoomHandle,
+    RoomRegistry, VpnType,
 };
 
 // mDNS re-exports

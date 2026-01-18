@@ -31,9 +31,16 @@
 //!    - STUN: Different NATs, hole punch successful
 //!    - TURN: Fallback when hole punching fails
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::net::UdpSocket;
+use tokio::time::timeout;
+
+use super::turn::{TurnClient, TurnConfig, TurnTransport};
 
 /// Peer identity based on public key
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -565,6 +572,940 @@ pub fn parse_p2p_location(location: &str) -> Result<(PeerId, P2pStrategy), Strin
     };
 
     Ok((peer_id, strategy))
+}
+
+// =============================================================================
+// P2P Connector - Automatic Connection with Fallback
+// =============================================================================
+
+/// Error type for P2P connection failures
+#[derive(Debug)]
+pub enum P2pError {
+    /// Direct connection failed
+    DirectFailed(String),
+    /// STUN hole punch failed
+    StunFailed(String),
+    /// TURN relay failed
+    TurnFailed(String),
+    /// All connection methods failed
+    AllMethodsFailed {
+        direct_error: Option<String>,
+        stun_error: Option<String>,
+        turn_error: Option<String>,
+    },
+    /// Connection timeout
+    Timeout,
+    /// Invalid configuration
+    InvalidConfig(String),
+    /// I/O error
+    Io(std::io::Error),
+    /// Socket binding failed
+    BindFailed(String),
+}
+
+impl std::fmt::Display for P2pError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DirectFailed(e) => write!(f, "Direct connection failed: {}", e),
+            Self::StunFailed(e) => write!(f, "STUN hole punch failed: {}", e),
+            Self::TurnFailed(e) => write!(f, "TURN relay failed: {}", e),
+            Self::AllMethodsFailed {
+                direct_error,
+                stun_error,
+                turn_error,
+            } => {
+                write!(f, "All connection methods failed: ")?;
+                if let Some(e) = direct_error {
+                    write!(f, "direct={}, ", e)?;
+                }
+                if let Some(e) = stun_error {
+                    write!(f, "stun={}, ", e)?;
+                }
+                if let Some(e) = turn_error {
+                    write!(f, "turn={}", e)?;
+                }
+                Ok(())
+            }
+            Self::Timeout => write!(f, "Connection timeout"),
+            Self::InvalidConfig(e) => write!(f, "Invalid configuration: {}", e),
+            Self::Io(e) => write!(f, "I/O error: {}", e),
+            Self::BindFailed(e) => write!(f, "Socket bind failed: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for P2pError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for P2pError {
+    fn from(err: std::io::Error) -> Self {
+        P2pError::Io(err)
+    }
+}
+
+/// P2P connection result type
+pub type P2pResult<T> = Result<T, P2pError>;
+
+/// Active P2P connection with the selected transport
+pub struct P2pConnection {
+    /// Current connection state
+    pub state: P2pConnectionState,
+    /// Remote peer ID
+    pub peer_id: PeerId,
+    /// Local socket address
+    pub local_addr: SocketAddr,
+    /// Remote socket address (peer's address or relay address)
+    pub remote_addr: SocketAddr,
+    /// UDP socket for direct/STUN connections
+    socket: Option<Arc<UdpSocket>>,
+    /// TURN client for relay connections (sync, requires spawn_blocking)
+    turn_client: Option<Arc<Mutex<TurnClient>>>,
+    /// Channel number for TURN data relay (if using channel binding)
+    turn_channel: Option<u16>,
+    /// Connection established time
+    pub connected_at: Instant,
+    /// Statistics
+    pub stats: P2pStats,
+}
+
+impl P2pConnection {
+    /// Send data to the remote peer
+    pub async fn send(&self, data: &[u8]) -> P2pResult<usize> {
+        match self.state {
+            P2pConnectionState::ConnectedDirect | P2pConnectionState::ConnectedStun => {
+                // Send directly via UDP socket
+                let socket = self.socket.as_ref().ok_or_else(|| {
+                    P2pError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "Socket not available",
+                    ))
+                })?;
+                let sent = socket.send_to(data, self.remote_addr).await?;
+                self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_sent
+                    .fetch_add(sent as u64, Ordering::Relaxed);
+                Ok(sent)
+            }
+            P2pConnectionState::ConnectedTurn => {
+                // Send via TURN relay (sync client, use spawn_blocking)
+                let turn = self.turn_client.clone().ok_or_else(|| {
+                    P2pError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "TURN client not available",
+                    ))
+                })?;
+
+                let channel = self.turn_channel;
+                let remote = self.remote_addr;
+                let data_vec = data.to_vec();
+                let data_len = data_vec.len();
+
+                tokio::task::spawn_blocking(move || {
+                    let client = turn.lock().map_err(|_| {
+                        P2pError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "TURN client lock poisoned",
+                        ))
+                    })?;
+
+                    if let Some(ch) = channel {
+                        client
+                            .send_via_channel(ch, &data_vec)
+                            .map_err(|e| P2pError::TurnFailed(e.to_string()))
+                    } else {
+                        client
+                            .send(remote, &data_vec)
+                            .map_err(|e| P2pError::TurnFailed(e.to_string()))
+                    }
+                })
+                .await
+                .map_err(|e| P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("spawn_blocking failed: {}", e),
+                )))??;
+
+                self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_sent
+                    .fetch_add(data_len as u64, Ordering::Relaxed);
+                Ok(data_len)
+            }
+            _ => Err(P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Not connected",
+            ))),
+        }
+    }
+
+    /// Receive data from the remote peer
+    pub async fn recv(&self, buf: &mut [u8]) -> P2pResult<(usize, SocketAddr)> {
+        match self.state {
+            P2pConnectionState::ConnectedDirect | P2pConnectionState::ConnectedStun => {
+                let socket = self.socket.as_ref().ok_or_else(|| {
+                    P2pError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "Socket not available",
+                    ))
+                })?;
+                let (len, from) = socket.recv_from(buf).await?;
+                self.stats.messages_received.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_received
+                    .fetch_add(len as u64, Ordering::Relaxed);
+                Ok((len, from))
+            }
+            P2pConnectionState::ConnectedTurn => {
+                // Receive via TURN relay (sync client, use spawn_blocking)
+                let turn = self.turn_client.clone().ok_or_else(|| {
+                    P2pError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "TURN client not available",
+                    ))
+                })?;
+
+                let buf_len = buf.len();
+                let result = tokio::task::spawn_blocking(move || {
+                    let client = turn.lock().map_err(|_| {
+                        P2pError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "TURN client lock poisoned",
+                        ))
+                    })?;
+
+                    let mut recv_buf = vec![0u8; buf_len];
+                    match client.recv(&mut recv_buf) {
+                        Ok(Some((from, len))) => Ok((recv_buf, len, from)),
+                        Ok(None) => Err(P2pError::Io(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            "No data available",
+                        ))),
+                        Err(e) => Err(P2pError::TurnFailed(e.to_string())),
+                    }
+                })
+                .await
+                .map_err(|e| P2pError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("spawn_blocking failed: {}", e),
+                )))??;
+
+                let (recv_buf, len, from) = result;
+                buf[..len].copy_from_slice(&recv_buf[..len]);
+
+                self.stats.messages_received.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes_received
+                    .fetch_add(len as u64, Ordering::Relaxed);
+                Ok((len, from))
+            }
+            _ => Err(P2pError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "Not connected",
+            ))),
+        }
+    }
+
+    /// Get connection latency (estimated round-trip time)
+    pub fn latency(&self) -> Duration {
+        // TODO: Implement proper RTT measurement
+        match self.state {
+            P2pConnectionState::ConnectedDirect => Duration::from_micros(100),
+            P2pConnectionState::ConnectedStun => Duration::from_millis(5),
+            P2pConnectionState::ConnectedTurn => Duration::from_millis(50),
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// Close the connection
+    pub async fn close(&mut self) {
+        if let Some(turn) = self.turn_client.take() {
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(client) = turn.lock() {
+                    let _ = client.release();
+                }
+            })
+            .await;
+        }
+        self.state = P2pConnectionState::Disconnected;
+    }
+}
+
+/// P2P Connector for establishing connections with automatic fallback
+///
+/// # Example
+///
+/// ```ignore
+/// let config = P2pConfig {
+///     stun_servers: vec!["stun.l.google.com:19302".to_string()],
+///     turn_servers: vec![TurnServer {
+///         address: "turn.example.com:3478".to_string(),
+///         username: "user".to_string(),
+///         credential: "pass".to_string(),
+///     }],
+///     ..Default::default()
+/// };
+///
+/// let connector = P2pConnector::new(config);
+///
+/// // Connect with automatic fallback
+/// let connection = connector.connect(
+///     &peer_id,
+///     peer_addr,
+///     P2pStrategy::Auto,
+///     Some(status_callback),
+/// ).await?;
+///
+/// connection.send(b"Hello!").await?;
+/// ```
+pub struct P2pConnector {
+    /// Configuration
+    config: P2pConfig,
+    /// Statistics
+    stats: Arc<P2pStats>,
+}
+
+impl P2pConnector {
+    /// Create a new P2P connector with the given configuration
+    pub fn new(config: P2pConfig) -> Self {
+        Self {
+            config,
+            stats: Arc::new(P2pStats::default()),
+        }
+    }
+
+    /// Get reference to stats
+    pub fn stats(&self) -> &P2pStats {
+        &self.stats
+    }
+
+    /// Connect to a peer with the specified strategy
+    ///
+    /// # Arguments
+    /// * `peer_id` - The peer to connect to
+    /// * `peer_addr` - Known address of the peer (from signaling)
+    /// * `strategy` - Connection strategy (Auto, Direct, Stun, Turn)
+    /// * `on_status` - Optional callback for status updates
+    pub async fn connect(
+        &self,
+        peer_id: &PeerId,
+        peer_addr: SocketAddr,
+        strategy: P2pStrategy,
+        on_status: Option<impl Fn(P2pConnectionState) + Send + Sync>,
+    ) -> P2pResult<P2pConnection> {
+        let notify_status = |state: P2pConnectionState| {
+            if let Some(ref cb) = on_status {
+                cb(state);
+            }
+        };
+
+        match strategy {
+            P2pStrategy::Auto => {
+                self.connect_auto(peer_id, peer_addr, notify_status).await
+            }
+            P2pStrategy::Direct => {
+                notify_status(P2pConnectionState::TryingDirect);
+                self.try_direct(peer_id, peer_addr).await
+            }
+            P2pStrategy::Stun => {
+                notify_status(P2pConnectionState::TryingStun);
+                self.try_stun(peer_id, peer_addr).await
+            }
+            P2pStrategy::Turn => {
+                notify_status(P2pConnectionState::TryingTurn);
+                self.try_turn(peer_id, peer_addr).await
+            }
+        }
+    }
+
+    /// Connect with automatic fallback: Direct → STUN → TURN
+    async fn connect_auto(
+        &self,
+        peer_id: &PeerId,
+        peer_addr: SocketAddr,
+        notify_status: impl Fn(P2pConnectionState),
+    ) -> P2pResult<P2pConnection> {
+        let mut direct_error = None;
+        let mut stun_error = None;
+        let mut turn_error = None;
+
+        // Step 1: Try direct connection (fastest, same LAN)
+        notify_status(P2pConnectionState::TryingDirect);
+        match timeout(self.config.direct_timeout, self.try_direct(peer_id, peer_addr)).await {
+            Ok(Ok(conn)) => {
+                self.stats.record_connection(P2pConnectionState::ConnectedDirect);
+                return Ok(conn);
+            }
+            Ok(Err(e)) => {
+                direct_error = Some(e.to_string());
+                log::debug!("Direct connection failed: {}", e);
+            }
+            Err(_) => {
+                direct_error = Some("timeout".to_string());
+                log::debug!("Direct connection timed out");
+            }
+        }
+
+        // Step 2: Try STUN hole punch (if STUN servers configured)
+        if !self.config.stun_servers.is_empty() {
+            notify_status(P2pConnectionState::TryingStun);
+            match timeout(self.config.stun_timeout, self.try_stun(peer_id, peer_addr)).await {
+                Ok(Ok(conn)) => {
+                    self.stats.record_connection(P2pConnectionState::ConnectedStun);
+                    return Ok(conn);
+                }
+                Ok(Err(e)) => {
+                    stun_error = Some(e.to_string());
+                    log::debug!("STUN hole punch failed: {}", e);
+                }
+                Err(_) => {
+                    stun_error = Some("timeout".to_string());
+                    log::debug!("STUN hole punch timed out");
+                }
+            }
+        } else {
+            stun_error = Some("no STUN servers configured".to_string());
+        }
+
+        // Step 3: Fall back to TURN relay (if TURN servers configured)
+        if !self.config.turn_servers.is_empty() {
+            notify_status(P2pConnectionState::TryingTurn);
+            match timeout(
+                self.config.connection_timeout,
+                self.try_turn(peer_id, peer_addr),
+            )
+            .await
+            {
+                Ok(Ok(conn)) => {
+                    self.stats.record_connection(P2pConnectionState::ConnectedTurn);
+                    return Ok(conn);
+                }
+                Ok(Err(e)) => {
+                    turn_error = Some(e.to_string());
+                    log::debug!("TURN relay failed: {}", e);
+                }
+                Err(_) => {
+                    turn_error = Some("timeout".to_string());
+                    log::debug!("TURN relay timed out");
+                }
+            }
+        } else {
+            turn_error = Some("no TURN servers configured".to_string());
+        }
+
+        // All methods failed
+        notify_status(P2pConnectionState::Failed);
+        self.stats.record_failure();
+        Err(P2pError::AllMethodsFailed {
+            direct_error,
+            stun_error,
+            turn_error,
+        })
+    }
+
+    /// Try direct UDP connection
+    async fn try_direct(
+        &self,
+        peer_id: &PeerId,
+        peer_addr: SocketAddr,
+    ) -> P2pResult<P2pConnection> {
+        // Bind to any available port
+        let bind_addr: SocketAddr = if peer_addr.is_ipv6() {
+            "[::]:0".parse().unwrap()
+        } else {
+            "0.0.0.0:0".parse().unwrap()
+        };
+
+        let socket = UdpSocket::bind(bind_addr).await.map_err(|e| {
+            P2pError::BindFailed(format!("Failed to bind UDP socket: {}", e))
+        })?;
+
+        let local_addr = socket.local_addr()?;
+
+        // Send a ping to initiate connection
+        let ping = b"HORUS_P2P_PING";
+        socket.send_to(ping, peer_addr).await?;
+
+        // Wait for pong response
+        let mut buf = [0u8; 64];
+        let recv_timeout = Duration::from_millis(200);
+
+        match timeout(recv_timeout, socket.recv_from(&mut buf)).await {
+            Ok(Ok((len, from))) => {
+                if from == peer_addr && &buf[..len] == b"HORUS_P2P_PONG" {
+                    Ok(P2pConnection {
+                        state: P2pConnectionState::ConnectedDirect,
+                        peer_id: peer_id.clone(),
+                        local_addr,
+                        remote_addr: peer_addr,
+                        socket: Some(Arc::new(socket)),
+                        turn_client: None,
+                        turn_channel: None,
+                        connected_at: Instant::now(),
+                        stats: P2pStats::default(),
+                    })
+                } else {
+                    Err(P2pError::DirectFailed("Invalid response".to_string()))
+                }
+            }
+            Ok(Err(e)) => Err(P2pError::DirectFailed(format!("Recv failed: {}", e))),
+            Err(_) => Err(P2pError::DirectFailed("No response".to_string())),
+        }
+    }
+
+    /// Try STUN-assisted hole punch
+    async fn try_stun(
+        &self,
+        peer_id: &PeerId,
+        peer_addr: SocketAddr,
+    ) -> P2pResult<P2pConnection> {
+        // Get STUN server address
+        let stun_server = self.config.stun_servers.first().ok_or_else(|| {
+            P2pError::StunFailed("No STUN servers configured".to_string())
+        })?;
+
+        // Resolve STUN server address
+        let stun_addr: SocketAddr = tokio::net::lookup_host(stun_server)
+            .await
+            .map_err(|e| P2pError::StunFailed(format!("Failed to resolve STUN server: {}", e)))?
+            .next()
+            .ok_or_else(|| P2pError::StunFailed("STUN server address not found".to_string()))?;
+
+        // Bind to any available port
+        let bind_addr: SocketAddr = if stun_addr.is_ipv6() {
+            "[::]:0".parse().unwrap()
+        } else {
+            "0.0.0.0:0".parse().unwrap()
+        };
+
+        let socket = UdpSocket::bind(bind_addr).await.map_err(|e| {
+            P2pError::BindFailed(format!("Failed to bind STUN socket: {}", e))
+        })?;
+
+        let local_addr = socket.local_addr()?;
+
+        // Perform simple STUN binding request to discover public address
+        let public_addr = self.stun_binding_request(&socket, stun_addr).await?;
+        log::debug!("STUN discovered public address: {}", public_addr);
+
+        // Send hole punch packets to peer's public address
+        // The peer should be doing the same to our public address
+        let punch = b"HORUS_P2P_PUNCH";
+
+        // Send multiple punch packets
+        for _ in 0..5 {
+            let _ = socket.send_to(punch, peer_addr).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Wait for incoming punch or pong
+        let mut buf = [0u8; 64];
+        let punch_timeout = Duration::from_secs(2);
+
+        match timeout(punch_timeout, socket.recv_from(&mut buf)).await {
+            Ok(Ok((len, from))) => {
+                let response = &buf[..len];
+
+                // Send pong if we got a punch
+                if response == b"HORUS_P2P_PUNCH" {
+                    socket.send_to(b"HORUS_P2P_PONG", from).await?;
+                }
+
+                // Hole punch successful
+                Ok(P2pConnection {
+                    state: P2pConnectionState::ConnectedStun,
+                    peer_id: peer_id.clone(),
+                    local_addr,
+                    remote_addr: from,
+                    socket: Some(Arc::new(socket)),
+                    turn_client: None,
+                    turn_channel: None,
+                    connected_at: Instant::now(),
+                    stats: P2pStats::default(),
+                })
+            }
+            Ok(Err(e)) => Err(P2pError::StunFailed(format!("Hole punch recv failed: {}", e))),
+            Err(_) => Err(P2pError::StunFailed("Hole punch timeout".to_string())),
+        }
+    }
+
+    /// Perform a simple STUN binding request
+    async fn stun_binding_request(
+        &self,
+        socket: &UdpSocket,
+        stun_server: SocketAddr,
+    ) -> P2pResult<SocketAddr> {
+        // STUN constants
+        const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+        const STUN_BINDING_REQUEST: u16 = 0x0001;
+        const STUN_BINDING_RESPONSE: u16 = 0x0101;
+        const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
+        const ATTR_MAPPED_ADDRESS: u16 = 0x0001;
+
+        // Generate transaction ID (12 bytes) using time and local addr as entropy
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now().hash(&mut hasher);
+        socket.local_addr().ok().hash(&mut hasher);
+        let hash1 = hasher.finish();
+        hasher.write_u64(hash1);
+        let hash2 = hasher.finish();
+        let mut transaction_id = [0u8; 12];
+        transaction_id[..8].copy_from_slice(&hash1.to_le_bytes());
+        transaction_id[8..].copy_from_slice(&hash2.to_le_bytes()[..4]);
+
+        // Build STUN binding request (20 bytes header, no attributes)
+        let mut request = Vec::with_capacity(20);
+        request.extend_from_slice(&STUN_BINDING_REQUEST.to_be_bytes());
+        request.extend_from_slice(&0u16.to_be_bytes()); // Message length (no attributes)
+        request.extend_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+        request.extend_from_slice(&transaction_id);
+
+        // Send request
+        socket.send_to(&request, stun_server).await?;
+
+        // Wait for response
+        let mut buf = [0u8; 256];
+        let recv_timeout = Duration::from_secs(3);
+
+        let (len, _from) = timeout(recv_timeout, socket.recv_from(&mut buf))
+            .await
+            .map_err(|_| P2pError::StunFailed("STUN request timed out".to_string()))?
+            .map_err(|e| P2pError::StunFailed(format!("STUN recv failed: {}", e)))?;
+
+        if len < 20 {
+            return Err(P2pError::StunFailed("STUN response too short".to_string()));
+        }
+
+        // Parse response header
+        let msg_type = u16::from_be_bytes([buf[0], buf[1]]);
+        let msg_len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+
+        if msg_type != STUN_BINDING_RESPONSE {
+            return Err(P2pError::StunFailed(format!(
+                "Unexpected STUN response type: 0x{:04x}",
+                msg_type
+            )));
+        }
+
+        // Parse attributes
+        let mut offset = 20;
+        while offset + 4 <= 20 + msg_len && offset + 4 <= len {
+            let attr_type = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
+            let attr_len = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) as usize;
+            offset += 4;
+
+            if offset + attr_len > len {
+                break;
+            }
+
+            match attr_type {
+                ATTR_XOR_MAPPED_ADDRESS => {
+                    // XOR-MAPPED-ADDRESS (preferred)
+                    if attr_len >= 8 {
+                        let family = buf[offset + 1];
+                        let xor_port =
+                            u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]) ^ 0x2112;
+
+                        if family == 0x01 && attr_len >= 8 {
+                            // IPv4
+                            let xor_ip = u32::from_be_bytes([
+                                buf[offset + 4],
+                                buf[offset + 5],
+                                buf[offset + 6],
+                                buf[offset + 7],
+                            ]) ^ STUN_MAGIC_COOKIE;
+
+                            let ip = std::net::Ipv4Addr::from(xor_ip);
+                            return Ok(SocketAddr::new(ip.into(), xor_port));
+                        } else if family == 0x02 && attr_len >= 20 {
+                            // IPv6
+                            let mut xor_ip = [0u8; 16];
+                            xor_ip.copy_from_slice(&buf[offset + 4..offset + 20]);
+                            // XOR with magic cookie and transaction ID
+                            let magic_bytes = STUN_MAGIC_COOKIE.to_be_bytes();
+                            for i in 0..4 {
+                                xor_ip[i] ^= magic_bytes[i];
+                            }
+                            for i in 0..12 {
+                                xor_ip[4 + i] ^= transaction_id[i];
+                            }
+
+                            let ip = std::net::Ipv6Addr::from(xor_ip);
+                            return Ok(SocketAddr::new(ip.into(), xor_port));
+                        }
+                    }
+                }
+                ATTR_MAPPED_ADDRESS => {
+                    // MAPPED-ADDRESS (fallback)
+                    if attr_len >= 8 {
+                        let family = buf[offset + 1];
+                        let port = u16::from_be_bytes([buf[offset + 2], buf[offset + 3]]);
+
+                        if family == 0x01 {
+                            // IPv4
+                            let ip = std::net::Ipv4Addr::new(
+                                buf[offset + 4],
+                                buf[offset + 5],
+                                buf[offset + 6],
+                                buf[offset + 7],
+                            );
+                            return Ok(SocketAddr::new(ip.into(), port));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Move to next attribute (4-byte aligned)
+            offset += (attr_len + 3) & !3;
+        }
+
+        Err(P2pError::StunFailed(
+            "No mapped address in STUN response".to_string(),
+        ))
+    }
+
+    /// Connect via TURN relay
+    async fn try_turn(
+        &self,
+        peer_id: &PeerId,
+        peer_addr: SocketAddr,
+    ) -> P2pResult<P2pConnection> {
+        let turn_server = self.config.turn_servers.first().ok_or_else(|| {
+            P2pError::TurnFailed("No TURN servers configured".to_string())
+        })?;
+
+        // Parse server address
+        let server_addr: SocketAddr = turn_server
+            .address
+            .parse()
+            .or_else(|_| {
+                // Try adding default port
+                format!("{}:3478", turn_server.address).parse()
+            })
+            .map_err(|e| P2pError::TurnFailed(format!("Invalid server address: {}", e)))?;
+
+        // Create TURN configuration
+        let turn_config = TurnConfig {
+            server: server_addr.to_string(),
+            username: turn_server.username.clone(),
+            credential: turn_server.credential.clone(),
+            realm: None,
+            timeout: Duration::from_secs(5),
+            retries: 3,
+            lifetime: Duration::from_secs(600),
+            use_channel_binding: true, // More efficient for data relay
+            local_addr: None,
+            transport: TurnTransport::Udp,
+        };
+
+        // Create TURN client and allocate relay address (sync operations via spawn_blocking)
+        let peer_addr_copy = peer_addr;
+        let peer_id_copy = peer_id.clone();
+        let use_channel_binding = turn_config.use_channel_binding;
+
+        let result = tokio::task::spawn_blocking(move || {
+            // Create TURN client
+            let turn_client = TurnClient::new(turn_config)
+                .map_err(|e| P2pError::TurnFailed(format!("Failed to create TURN client: {}", e)))?;
+
+            // Allocate relay address
+            let allocation = turn_client
+                .allocate()
+                .map_err(|e| P2pError::TurnFailed(format!("Allocation failed: {}", e)))?;
+
+            let relay_addr = allocation.relay_address;
+            let local_addr = allocation.mapped_address;
+
+            log::info!(
+                "TURN allocated relay address: {}, mapped: {}",
+                relay_addr,
+                local_addr
+            );
+
+            // Create permission for the peer
+            turn_client
+                .create_permission(peer_addr_copy.ip())
+                .map_err(|e| P2pError::TurnFailed(format!("Permission failed: {}", e)))?;
+
+            // Optionally create channel binding for more efficient data relay
+            let channel = if use_channel_binding {
+                match turn_client.channel_bind(peer_addr_copy) {
+                    Ok(ch) => {
+                        log::debug!("Channel bound: {} -> {}", ch, peer_addr_copy);
+                        Some(ch)
+                    }
+                    Err(e) => {
+                        log::warn!("Channel binding failed (using Send/Data): {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Send initial message through relay
+            let hello = b"HORUS_P2P_TURN_HELLO";
+            turn_client
+                .send(peer_addr_copy, hello)
+                .map_err(|e| P2pError::TurnFailed(format!("Failed to send through relay: {}", e)))?;
+
+            Ok::<_, P2pError>((turn_client, local_addr, channel, peer_id_copy))
+        })
+        .await
+        .map_err(|e| P2pError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("spawn_blocking failed: {}", e),
+        )))??;
+
+        let (turn_client, local_addr, channel, _) = result;
+
+        Ok(P2pConnection {
+            state: P2pConnectionState::ConnectedTurn,
+            peer_id: peer_id.clone(),
+            local_addr,
+            remote_addr: peer_addr,
+            socket: None,
+            turn_client: Some(Arc::new(Mutex::new(turn_client))),
+            turn_channel: channel,
+            connected_at: Instant::now(),
+            stats: P2pStats::default(),
+        })
+    }
+}
+
+/// Handle incoming P2P connection (responder side)
+///
+/// This creates a connection handler that responds to pings/punches
+/// from a peer trying to connect.
+pub struct P2pResponder {
+    /// Bound socket for listening
+    socket: Arc<UdpSocket>,
+    /// Local address
+    local_addr: SocketAddr,
+    /// Configuration
+    config: P2pConfig,
+}
+
+impl P2pResponder {
+    /// Create a new P2P responder bound to the specified address
+    pub async fn bind(addr: SocketAddr, config: P2pConfig) -> P2pResult<Self> {
+        let socket = UdpSocket::bind(addr).await.map_err(|e| {
+            P2pError::BindFailed(format!("Failed to bind responder socket: {}", e))
+        })?;
+
+        let local_addr = socket.local_addr()?;
+
+        Ok(Self {
+            socket: Arc::new(socket),
+            local_addr,
+            config,
+        })
+    }
+
+    /// Get the local address
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    /// Wait for and accept an incoming connection
+    pub async fn accept(&self) -> P2pResult<(P2pConnection, PeerId)> {
+        let mut buf = [0u8; 1024];
+
+        loop {
+            let (len, from) = self.socket.recv_from(&mut buf).await?;
+            let data = &buf[..len];
+
+            match data {
+                b"HORUS_P2P_PING" => {
+                    // Direct connection attempt - respond with pong
+                    self.socket.send_to(b"HORUS_P2P_PONG", from).await?;
+
+                    // Generate peer ID from address (temporary until signaling provides real ID)
+                    let peer_id = PeerId::from_short_id(&format!(
+                        "{:04x}-{:04x}-{:04x}",
+                        from.port(),
+                        from.ip().to_string().len() as u16,
+                        len as u16
+                    ));
+
+                    return Ok((
+                        P2pConnection {
+                            state: P2pConnectionState::ConnectedDirect,
+                            peer_id: peer_id.clone(),
+                            local_addr: self.local_addr,
+                            remote_addr: from,
+                            socket: Some(self.socket.clone()),
+                            turn_client: None,
+                            turn_channel: None,
+                            connected_at: Instant::now(),
+                            stats: P2pStats::default(),
+                        },
+                        peer_id,
+                    ));
+                }
+                b"HORUS_P2P_PUNCH" => {
+                    // Hole punch attempt - respond and establish connection
+                    self.socket.send_to(b"HORUS_P2P_PONG", from).await?;
+
+                    let peer_id = PeerId::from_short_id(&format!(
+                        "{:04x}-{:04x}-{:04x}",
+                        from.port(),
+                        from.ip().to_string().len() as u16,
+                        len as u16
+                    ));
+
+                    return Ok((
+                        P2pConnection {
+                            state: P2pConnectionState::ConnectedStun,
+                            peer_id: peer_id.clone(),
+                            local_addr: self.local_addr,
+                            remote_addr: from,
+                            socket: Some(self.socket.clone()),
+                            turn_client: None,
+                            turn_channel: None,
+                            connected_at: Instant::now(),
+                            stats: P2pStats::default(),
+                        },
+                        peer_id,
+                    ));
+                }
+                b"HORUS_P2P_TURN_HELLO" => {
+                    // TURN relay connection (we received data via relay)
+                    let peer_id = PeerId::from_short_id(&format!(
+                        "{:04x}-{:04x}-{:04x}",
+                        from.port(),
+                        from.ip().to_string().len() as u16,
+                        len as u16
+                    ));
+
+                    return Ok((
+                        P2pConnection {
+                            state: P2pConnectionState::ConnectedTurn,
+                            peer_id: peer_id.clone(),
+                            local_addr: self.local_addr,
+                            remote_addr: from,
+                            socket: Some(self.socket.clone()),
+                            turn_client: None,
+                            turn_channel: None,
+                            connected_at: Instant::now(),
+                            stats: P2pStats::default(),
+                        },
+                        peer_id,
+                    ));
+                }
+                _ => {
+                    // Ignore unknown messages
+                    log::trace!("Ignoring unknown P2P message from {}", from);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

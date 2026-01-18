@@ -45,6 +45,9 @@ sha2 = "0.10"   # SHA256 checksums for model verification
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Smart detection - distributed type registration
+inventory = "0.3"
+
 # TLS/Security (optional)
 rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }

@@ -271,6 +271,12 @@ pub struct HorusTensor {
 unsafe impl Pod for HorusTensor {}
 unsafe impl Zeroable for HorusTensor {}
 
+// Enable ultra-fast POD messaging (~50ns vs ~250ns with bincode)
+unsafe impl horus_core::communication::PodMessage for HorusTensor {}
+
+// Register for smart detection - Topic::new() will auto-select POD backend
+horus_core::register_pod_type!(HorusTensor);
+
 // Custom Serialize/Deserialize to handle large arrays
 impl Serialize for HorusTensor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

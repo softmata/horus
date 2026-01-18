@@ -327,17 +327,33 @@ mod tests {
     #[test]
     fn test_measure_n() {
         let timer = PrecisionTimer::new();
-        let mut counter = 0u64;
 
-        let latencies = timer.measure_n(100, || {
-            counter += 1;
+        // Use spin-wait to ensure measurable time (at least a few hundred ns)
+        // This avoids sleep() overhead while being reliably measurable
+        let latencies = timer.measure_n(20, || {
+            let start = std::time::Instant::now();
+            while start.elapsed().as_nanos() < 100 {
+                std::hint::spin_loop();
+            }
         });
 
-        assert_eq!(latencies.len(), 100);
-        assert_eq!(counter, 100);
+        assert_eq!(latencies.len(), 20);
 
-        // All measurements should be positive
-        assert!(latencies.iter().all(|&l| l > 0));
+        // All measurements should be positive since we spin for at least 100ns
+        let positive_count = latencies.iter().filter(|&&l| l > 0).count();
+        assert!(
+            positive_count == 20,
+            "Expected all 20 measurements positive, got {}/20",
+            positive_count
+        );
+
+        // Each measurement should be at least ~100ns
+        let min_latency = *latencies.iter().min().unwrap();
+        assert!(
+            min_latency >= 50, // Allow some variance
+            "Minimum latency {} ns is too low",
+            min_latency
+        );
     }
 
     #[test]

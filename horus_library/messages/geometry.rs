@@ -380,6 +380,14 @@ unsafe impl horus_core::bytemuck::Pod for Quaternion {}
 unsafe impl horus_core::bytemuck::Zeroable for Quaternion {}
 unsafe impl horus_core::communication::PodMessage for Quaternion {}
 
+// Register for smart detection - Topic::new() will auto-select POD backend
+horus_core::register_pod_type!(Twist);
+horus_core::register_pod_type!(Pose2D);
+horus_core::register_pod_type!(Transform);
+horus_core::register_pod_type!(Point3);
+horus_core::register_pod_type!(Vector3);
+horus_core::register_pod_type!(Quaternion);
+
 #[cfg(test)]
 mod tests {
     use super::*;

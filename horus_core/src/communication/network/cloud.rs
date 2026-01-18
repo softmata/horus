@@ -47,7 +47,9 @@
 //! backend.publish("sensors/lidar", data).await?;
 //! ```
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// Cloud connection modes
@@ -306,6 +308,415 @@ pub struct CloudStats {
     pub reconnect_count: u32,
     /// Current latency to cloud (RTT)
     pub latency_ms: u32,
+}
+
+// ============================================================================
+// Room-Based Topic Namespacing
+// ============================================================================
+//
+// Rooms provide client-side topic isolation. Topics within a room are
+// automatically prefixed to prevent cross-room message leakage.
+//
+// Internal format: `__room::{room_name}::{topic}`
+//
+// This enables:
+// - Multiple teams sharing infrastructure without interference
+// - Development/staging/production isolation on same network
+// - Privacy between robot fleets
+//
+// Example:
+// ```
+// let registry = RoomRegistry::new();
+// let handle = registry.join_room("factory-1", Some("secret123"))?;
+//
+// // Topics are automatically scoped:
+// // "sensor/lidar" -> "__room::factory-1::sensor/lidar"
+// let scoped_topic = handle.scope_topic("sensor/lidar");
+// ```
+
+/// Room prefix used for internal topic namespacing
+const ROOM_PREFIX: &str = "__room::";
+
+/// Error types for room operations
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoomError {
+    /// Room name is invalid (empty, too long, or contains invalid characters)
+    InvalidRoomName(String),
+    /// Authentication failed (wrong password/key)
+    AuthenticationFailed,
+    /// Already joined this room
+    AlreadyJoined(String),
+    /// Not a member of this room
+    NotAMember(String),
+    /// Room not found
+    NotFound(String),
+}
+
+impl std::fmt::Display for RoomError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoomError::InvalidRoomName(name) => write!(f, "Invalid room name: '{}'", name),
+            RoomError::AuthenticationFailed => write!(f, "Room authentication failed"),
+            RoomError::AlreadyJoined(name) => write!(f, "Already joined room: '{}'", name),
+            RoomError::NotAMember(name) => write!(f, "Not a member of room: '{}'", name),
+            RoomError::NotFound(name) => write!(f, "Room not found: '{}'", name),
+        }
+    }
+}
+
+impl std::error::Error for RoomError {}
+
+/// Room membership entry
+#[derive(Debug, Clone)]
+struct RoomMembership {
+    /// Room name
+    name: String,
+    /// Hashed auth key (if password-protected)
+    auth_hash: Option<u64>,
+    /// When the room was joined
+    joined_at: std::time::Instant,
+    /// Topics published in this room
+    topics: Vec<String>,
+}
+
+/// Registry for managing room memberships and topic scoping
+///
+/// The RoomRegistry provides client-side room isolation by automatically
+/// prefixing topics with room identifiers. This enables multiple robot fleets
+/// or development environments to share the same infrastructure without
+/// message interference.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_core::communication::network::cloud::RoomRegistry;
+///
+/// // Create a registry
+/// let registry = RoomRegistry::new();
+///
+/// // Join a room (with optional password)
+/// let handle = registry.join_room("production-fleet", Some("secret123"))?;
+///
+/// // Topics are automatically scoped
+/// let scoped = handle.scope_topic("sensor/lidar");
+/// assert_eq!(scoped, "__room::production-fleet::sensor/lidar");
+///
+/// // Unscope received topics
+/// let original = handle.unscope_topic(&scoped)?;
+/// assert_eq!(original, "sensor/lidar");
+/// ```
+///
+/// # Thread Safety
+///
+/// RoomRegistry is thread-safe and can be shared across threads using `Arc`.
+#[derive(Debug, Clone)]
+pub struct RoomRegistry {
+    inner: Arc<RwLock<RoomRegistryInner>>,
+}
+
+#[derive(Debug, Default)]
+struct RoomRegistryInner {
+    /// Active room memberships (room_name -> membership)
+    rooms: HashMap<String, RoomMembership>,
+    /// Default room (if set)
+    default_room: Option<String>,
+}
+
+impl Default for RoomRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RoomRegistry {
+    /// Create a new room registry
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(RoomRegistryInner::default())),
+        }
+    }
+
+    /// Join a room with optional authentication
+    ///
+    /// Returns a `RoomHandle` for scoping topics to this room.
+    ///
+    /// # Arguments
+    ///
+    /// * `room_name` - Name of the room (alphanumeric, hyphens, underscores)
+    /// * `auth_key` - Optional password/authentication key
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::InvalidRoomName` if the room name is invalid.
+    /// Returns `RoomError::AlreadyJoined` if already in this room.
+    pub fn join_room(
+        &self,
+        room_name: &str,
+        auth_key: Option<&str>,
+    ) -> Result<RoomHandle, RoomError> {
+        // Validate room name
+        if !is_valid_room_name(room_name) {
+            return Err(RoomError::InvalidRoomName(room_name.to_string()));
+        }
+
+        let mut inner = self.inner.write().unwrap();
+
+        // Check if already joined
+        if inner.rooms.contains_key(room_name) {
+            return Err(RoomError::AlreadyJoined(room_name.to_string()));
+        }
+
+        // Hash the auth key for storage (simple hash for comparison)
+        let auth_hash = auth_key.map(simple_hash);
+
+        // Create membership
+        let membership = RoomMembership {
+            name: room_name.to_string(),
+            auth_hash,
+            joined_at: std::time::Instant::now(),
+            topics: Vec::new(),
+        };
+
+        inner.rooms.insert(room_name.to_string(), membership);
+
+        // Set as default if first room
+        if inner.default_room.is_none() {
+            inner.default_room = Some(room_name.to_string());
+        }
+
+        Ok(RoomHandle {
+            room_name: room_name.to_string(),
+            registry: self.clone(),
+        })
+    }
+
+    /// Leave a room
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::NotAMember` if not in this room.
+    pub fn leave_room(&self, room_name: &str) -> Result<(), RoomError> {
+        let mut inner = self.inner.write().unwrap();
+
+        if inner.rooms.remove(room_name).is_none() {
+            return Err(RoomError::NotAMember(room_name.to_string()));
+        }
+
+        // Clear default if leaving default room
+        if inner.default_room.as_deref() == Some(room_name) {
+            inner.default_room = inner.rooms.keys().next().cloned();
+        }
+
+        Ok(())
+    }
+
+    /// Get a handle to an existing room membership
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::NotAMember` if not in this room.
+    pub fn get_room(&self, room_name: &str) -> Result<RoomHandle, RoomError> {
+        let inner = self.inner.read().unwrap();
+
+        if !inner.rooms.contains_key(room_name) {
+            return Err(RoomError::NotAMember(room_name.to_string()));
+        }
+
+        Ok(RoomHandle {
+            room_name: room_name.to_string(),
+            registry: self.clone(),
+        })
+    }
+
+    /// Get handle to the default room
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::NotFound` if no rooms have been joined.
+    pub fn default_room(&self) -> Result<RoomHandle, RoomError> {
+        let inner = self.inner.read().unwrap();
+
+        match &inner.default_room {
+            Some(name) => Ok(RoomHandle {
+                room_name: name.clone(),
+                registry: self.clone(),
+            }),
+            None => Err(RoomError::NotFound("No default room set".to_string())),
+        }
+    }
+
+    /// Set the default room
+    ///
+    /// # Errors
+    ///
+    /// Returns `RoomError::NotAMember` if not in this room.
+    pub fn set_default_room(&self, room_name: &str) -> Result<(), RoomError> {
+        let mut inner = self.inner.write().unwrap();
+
+        if !inner.rooms.contains_key(room_name) {
+            return Err(RoomError::NotAMember(room_name.to_string()));
+        }
+
+        inner.default_room = Some(room_name.to_string());
+        Ok(())
+    }
+
+    /// List all joined rooms
+    pub fn list_rooms(&self) -> Vec<String> {
+        let inner = self.inner.read().unwrap();
+        inner.rooms.keys().cloned().collect()
+    }
+
+    /// Check if a topic belongs to any joined room
+    ///
+    /// Returns the room name if the topic is room-scoped and we're a member.
+    pub fn topic_room(&self, topic: &str) -> Option<String> {
+        if !topic.starts_with(ROOM_PREFIX) {
+            return None;
+        }
+
+        let rest = &topic[ROOM_PREFIX.len()..];
+        let room_end = rest.find("::")?;
+        let room_name = &rest[..room_end];
+
+        let inner = self.inner.read().unwrap();
+        if inner.rooms.contains_key(room_name) {
+            Some(room_name.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Validate auth key against a room's stored hash
+    ///
+    /// Returns true if the room has no auth or the key matches.
+    pub fn validate_auth(&self, room_name: &str, auth_key: Option<&str>) -> bool {
+        let inner = self.inner.read().unwrap();
+
+        match inner.rooms.get(room_name) {
+            Some(membership) => match (&membership.auth_hash, auth_key) {
+                (None, _) => true, // No auth required
+                (Some(stored), Some(provided)) => *stored == simple_hash(provided),
+                (Some(_), None) => false, // Auth required but not provided
+            },
+            None => false, // Not a member
+        }
+    }
+}
+
+/// Handle to a joined room for topic scoping
+///
+/// RoomHandle provides methods to scope and unscope topics for a specific room.
+/// It's obtained from `RoomRegistry::join_room` or `RoomRegistry::get_room`.
+#[derive(Debug, Clone)]
+pub struct RoomHandle {
+    room_name: String,
+    registry: RoomRegistry,
+}
+
+impl RoomHandle {
+    /// Get the room name
+    pub fn name(&self) -> &str {
+        &self.room_name
+    }
+
+    /// Scope a topic to this room
+    ///
+    /// Adds the room prefix to create an isolated topic name.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let handle = registry.join_room("fleet-1", None)?;
+    /// let scoped = handle.scope_topic("sensor/lidar");
+    /// assert_eq!(scoped, "__room::fleet-1::sensor/lidar");
+    /// ```
+    pub fn scope_topic(&self, topic: &str) -> String {
+        format!("{}{}{}{}", ROOM_PREFIX, self.room_name, "::", topic)
+    }
+
+    /// Unscope a topic from this room
+    ///
+    /// Removes the room prefix if present and matches this room.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if topic doesn't belong to this room.
+    pub fn unscope_topic(&self, topic: &str) -> Result<String, RoomError> {
+        let expected_prefix = format!("{}{}{}", ROOM_PREFIX, self.room_name, "::");
+
+        if let Some(rest) = topic.strip_prefix(&expected_prefix) {
+            Ok(rest.to_string())
+        } else {
+            Err(RoomError::NotAMember(format!(
+                "Topic '{}' doesn't belong to room '{}'",
+                topic, self.room_name
+            )))
+        }
+    }
+
+    /// Check if a topic belongs to this room
+    pub fn owns_topic(&self, topic: &str) -> bool {
+        let expected_prefix = format!("{}{}{}", ROOM_PREFIX, self.room_name, "::");
+        topic.starts_with(&expected_prefix)
+    }
+
+    /// Leave this room
+    pub fn leave(self) -> Result<(), RoomError> {
+        self.registry.leave_room(&self.room_name)
+    }
+
+    /// Get a reference to the registry
+    pub fn registry(&self) -> &RoomRegistry {
+        &self.registry
+    }
+}
+
+/// Simple hash function for auth key comparison
+///
+/// This is NOT cryptographically secure - it's only for local comparison.
+/// For production, use proper password hashing (argon2, bcrypt, etc.)
+fn simple_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Check if a topic is room-scoped
+pub fn is_room_scoped(topic: &str) -> bool {
+    topic.starts_with(ROOM_PREFIX)
+}
+
+/// Extract room name from a scoped topic
+///
+/// Returns None if the topic is not room-scoped.
+pub fn extract_room_name(topic: &str) -> Option<&str> {
+    if !topic.starts_with(ROOM_PREFIX) {
+        return None;
+    }
+
+    let rest = &topic[ROOM_PREFIX.len()..];
+    rest.find("::").map(|pos| &rest[..pos])
+}
+
+/// Extract the original topic from a room-scoped topic
+///
+/// Returns None if the topic is not room-scoped.
+pub fn extract_original_topic(topic: &str) -> Option<&str> {
+    if !topic.starts_with(ROOM_PREFIX) {
+        return None;
+    }
+
+    let rest = &topic[ROOM_PREFIX.len()..];
+    rest.find("::").map(|pos| &rest[pos + 2..])
+}
+
+/// Scope a topic to a room without using the registry
+///
+/// Useful for one-off topic scoping when you know the room name.
+pub fn scope_topic_to_room(room_name: &str, topic: &str) -> String {
+    format!("{}{}{}{}", ROOM_PREFIX, room_name, "::", topic)
 }
 
 /// Parse cloud endpoint location string
@@ -731,5 +1142,225 @@ mod tests {
         assert!(parse_cloud_location("cloud:my-fleet").is_ok());
         assert!(parse_cloud_location("cloud:my_fleet").is_ok());
         assert!(parse_cloud_location("cloud:MyFleet123").is_ok());
+    }
+
+    // =========================================================================
+    // Room Registry Tests
+    // =========================================================================
+
+    #[test]
+    fn test_room_registry_join() {
+        let registry = RoomRegistry::new();
+
+        // Join a room
+        let handle = registry.join_room("test-room", None).unwrap();
+        assert_eq!(handle.name(), "test-room");
+
+        // List rooms
+        let rooms = registry.list_rooms();
+        assert_eq!(rooms.len(), 1);
+        assert!(rooms.contains(&"test-room".to_string()));
+    }
+
+    #[test]
+    fn test_room_registry_join_with_auth() {
+        let registry = RoomRegistry::new();
+
+        // Join with auth
+        let _handle = registry.join_room("secure-room", Some("secret123")).unwrap();
+
+        // Validate correct auth
+        assert!(registry.validate_auth("secure-room", Some("secret123")));
+
+        // Validate wrong auth
+        assert!(!registry.validate_auth("secure-room", Some("wrong")));
+        assert!(!registry.validate_auth("secure-room", None));
+    }
+
+    #[test]
+    fn test_room_registry_already_joined() {
+        let registry = RoomRegistry::new();
+
+        // Join once
+        registry.join_room("my-room", None).unwrap();
+
+        // Try to join again
+        let result = registry.join_room("my-room", None);
+        assert!(matches!(result, Err(RoomError::AlreadyJoined(_))));
+    }
+
+    #[test]
+    fn test_room_registry_leave() {
+        let registry = RoomRegistry::new();
+
+        // Join and leave
+        let handle = registry.join_room("temp-room", None).unwrap();
+        handle.leave().unwrap();
+
+        // Should be able to join again
+        let _handle = registry.join_room("temp-room", None).unwrap();
+    }
+
+    #[test]
+    fn test_room_registry_leave_not_member() {
+        let registry = RoomRegistry::new();
+
+        // Try to leave room we never joined
+        let result = registry.leave_room("never-joined");
+        assert!(matches!(result, Err(RoomError::NotAMember(_))));
+    }
+
+    #[test]
+    fn test_room_handle_scope_topic() {
+        let registry = RoomRegistry::new();
+        let handle = registry.join_room("fleet-1", None).unwrap();
+
+        // Scope a topic
+        let scoped = handle.scope_topic("sensor/lidar");
+        assert_eq!(scoped, "__room::fleet-1::sensor/lidar");
+
+        // Check ownership
+        assert!(handle.owns_topic(&scoped));
+        assert!(!handle.owns_topic("sensor/lidar"));
+        assert!(!handle.owns_topic("__room::fleet-2::sensor/lidar"));
+    }
+
+    #[test]
+    fn test_room_handle_unscope_topic() {
+        let registry = RoomRegistry::new();
+        let handle = registry.join_room("fleet-1", None).unwrap();
+
+        // Scope and unscope
+        let scoped = handle.scope_topic("cmd_vel");
+        let original = handle.unscope_topic(&scoped).unwrap();
+        assert_eq!(original, "cmd_vel");
+
+        // Try to unscope topic from different room
+        let other_room_topic = "__room::fleet-2::cmd_vel";
+        let result = handle.unscope_topic(other_room_topic);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_room_default_room() {
+        let registry = RoomRegistry::new();
+
+        // No default initially
+        assert!(registry.default_room().is_err());
+
+        // First room becomes default
+        let _handle1 = registry.join_room("room-1", None).unwrap();
+        assert_eq!(registry.default_room().unwrap().name(), "room-1");
+
+        // Adding more rooms doesn't change default
+        let _handle2 = registry.join_room("room-2", None).unwrap();
+        assert_eq!(registry.default_room().unwrap().name(), "room-1");
+
+        // Can change default
+        registry.set_default_room("room-2").unwrap();
+        assert_eq!(registry.default_room().unwrap().name(), "room-2");
+    }
+
+    #[test]
+    fn test_room_topic_helpers() {
+        // is_room_scoped
+        assert!(is_room_scoped("__room::test::topic"));
+        assert!(!is_room_scoped("regular/topic"));
+
+        // extract_room_name
+        assert_eq!(extract_room_name("__room::fleet-1::sensor"), Some("fleet-1"));
+        assert_eq!(extract_room_name("regular/topic"), None);
+
+        // extract_original_topic
+        assert_eq!(
+            extract_original_topic("__room::fleet-1::sensor/lidar"),
+            Some("sensor/lidar")
+        );
+        assert_eq!(extract_original_topic("regular/topic"), None);
+    }
+
+    #[test]
+    fn test_scope_topic_to_room() {
+        let scoped = scope_topic_to_room("my-fleet", "odometry");
+        assert_eq!(scoped, "__room::my-fleet::odometry");
+    }
+
+    #[test]
+    fn test_room_registry_topic_room() {
+        let registry = RoomRegistry::new();
+
+        // Join a room
+        let _handle = registry.join_room("production", None).unwrap();
+
+        // Check topic ownership
+        let scoped = "__room::production::sensor/data";
+        assert_eq!(registry.topic_room(scoped), Some("production".to_string()));
+
+        // Topic from different room
+        let other = "__room::staging::sensor/data";
+        assert_eq!(registry.topic_room(other), None);
+
+        // Regular topic
+        assert_eq!(registry.topic_room("sensor/data"), None);
+    }
+
+    #[test]
+    fn test_room_registry_get_room() {
+        let registry = RoomRegistry::new();
+
+        // Can't get room before joining
+        assert!(registry.get_room("my-room").is_err());
+
+        // Join and get
+        let _handle = registry.join_room("my-room", None).unwrap();
+        let handle2 = registry.get_room("my-room").unwrap();
+        assert_eq!(handle2.name(), "my-room");
+    }
+
+    #[test]
+    fn test_room_isolation_multiple_rooms() {
+        let registry = RoomRegistry::new();
+
+        // Join two rooms
+        let dev = registry.join_room("development", None).unwrap();
+        let prod = registry.join_room("production", None).unwrap();
+
+        // Same logical topic, different rooms
+        let dev_topic = dev.scope_topic("robot/status");
+        let prod_topic = prod.scope_topic("robot/status");
+
+        assert_ne!(dev_topic, prod_topic);
+        assert_eq!(dev_topic, "__room::development::robot/status");
+        assert_eq!(prod_topic, "__room::production::robot/status");
+
+        // Each handle only owns its own topics
+        assert!(dev.owns_topic(&dev_topic));
+        assert!(!dev.owns_topic(&prod_topic));
+        assert!(prod.owns_topic(&prod_topic));
+        assert!(!prod.owns_topic(&dev_topic));
+    }
+
+    #[test]
+    fn test_invalid_room_names_registry() {
+        let registry = RoomRegistry::new();
+
+        // Empty name
+        assert!(matches!(
+            registry.join_room("", None),
+            Err(RoomError::InvalidRoomName(_))
+        ));
+
+        // Invalid characters
+        assert!(matches!(
+            registry.join_room("room with spaces", None),
+            Err(RoomError::InvalidRoomName(_))
+        ));
+
+        // Too long (> 64 chars)
+        let long_name = "a".repeat(65);
+        assert!(matches!(
+            registry.join_room(&long_name, None),
+            Err(RoomError::InvalidRoomName(_))
+        ));
     }
 }
