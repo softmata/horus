@@ -3887,17 +3887,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "horus-algorithms"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "horus_ai"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "bytemuck",
+ "horus_core",
+ "parking_lot",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "horus_benchmarks"
 version = "0.1.7"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "chrono",
  "colored",
  "criterion",
+ "crossbeam-channel",
+ "flume",
  "horus",
  "horus_core",
  "horus_library",
  "libc",
+ "num_cpus",
  "rand 0.8.5",
  "serde",
  "serde_arrays",
@@ -3984,6 +4006,7 @@ dependencies = [
  "colored",
  "crossterm 0.27.0",
  "gilrs",
+ "horus-algorithms",
  "horus_core",
  "i2cdev 0.6.2",
  "icm20948",
@@ -4012,18 +4035,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio-modbus",
  "v4l",
-]
-
-[[package]]
-name = "horus_library_py"
-version = "0.1.6"
-dependencies = [
- "horus_library",
- "numpy",
- "pyo3",
- "pyo3-build-config",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -4106,6 +4117,16 @@ dependencies = [
  "walkdir",
  "webbrowser",
  "zenoh",
+]
+
+[[package]]
+name = "horus_perception"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "horus_core",
+ "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -8514,17 +8535,6 @@ checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
 dependencies = [
  "core-foundation-sys",
  "libc",
-]
-
-[[package]]
-name = "tanksim"
-version = "0.1.6"
-dependencies = [
- "horus",
- "horus_core",
- "horus_library",
- "serde",
- "tokio",
 ]
 
 [[package]]

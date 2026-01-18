@@ -85,8 +85,10 @@ pub use scheduling::Scheduler;
 // Re-export communication traits for backend-agnostic usage
 pub use communication::traits::{Channel, Publisher, Subscriber};
 
-// Re-export driver utilities (no traits - drivers are simple structs)
-pub use driver::{DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig};
+// Re-export driver utilities and traits
+pub use driver::{
+    Actuator, Driver, DriverCategory, DriverStatus, DriversConfig, Sensor, SingleDriverConfig,
+};
 
 // Re-export action types for easy access
 pub use actions::{
@@ -128,3 +130,9 @@ pub use plugin::{
 
 // Re-export the paste crate for macro usage
 pub use paste;
+
+// Re-export serde_json for consistent type usage across crates
+pub use serde_json;
+
+// Re-export bytemuck for consistent Pod/Zeroable trait usage
+pub use bytemuck;

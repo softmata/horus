@@ -1,24 +1,32 @@
+// Benchmark binary - allow clippy warnings
+#![allow(unused_imports)]
+#![allow(unused_assignments)]
+#![allow(unreachable_patterns)]
+#![allow(clippy::all)]
+#![allow(deprecated)]
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+
 //! POD Message Benchmark
 //!
 //! Compares POD messaging (~50ns) vs regular bincode-based messaging (~250ns)
 //! to demonstrate the performance gains from zero-serialization transfer.
-//!
-//! After running, generates:
-//! - Comparison bar charts
-//! - Speedup visualization
-//! - Latency histograms
-//! - Statistical analysis
 
-use horus_benchmarks::visualization::{
-    draw_grouped_bar_chart, draw_latency_histogram, draw_latency_timeline, draw_speedup_chart,
-    AnalysisSummary, BenchmarkStats,
-};
 use horus_core::communication::Topic;
 use horus_library::messages::CmdVel;
 use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 100_000;
 const WARMUP: usize = 1000;
+
+/// Benchmark statistics
+struct BenchmarkStats {
+    send_ns: f64,
+    recv_ns: f64,
+    roundtrip_ns: f64,
+    raw_latencies: Vec<f64>,
+}
 
 fn main() {
     println!("======================================================================");
@@ -28,13 +36,13 @@ fn main() {
     println!("======================================================================");
     println!();
 
-    // Benchmark POD Link
-    println!("[1/4] Setting up POD Link benchmark...");
-    let pod_stats = benchmark_pod_link();
+    // Benchmark POD Topic
+    println!("[1/3] Setting up POD Topic benchmark...");
+    let pod_stats = benchmark_pod_topic();
 
-    // Benchmark Standard Link
-    println!("[2/4] Setting up Standard Link benchmark...");
-    let std_stats = benchmark_standard_link();
+    // Benchmark Standard Topic
+    println!("[2/3] Setting up Standard Topic benchmark...");
+    let std_stats = benchmark_standard_topic();
 
     // Print results
     println!();
@@ -43,13 +51,13 @@ fn main() {
     println!("===================================================================");
     println!();
 
-    println!("POD Link (zero-serialization):");
+    println!("POD Topic (zero-serialization):");
     println!("   Send:     {:>8.1} ns/op", pod_stats.send_ns);
     println!("   Recv:     {:>8.1} ns/op", pod_stats.recv_ns);
     println!("   Roundtrip:{:>8.1} ns/op", pod_stats.roundtrip_ns);
     println!();
 
-    println!("Standard Link (bincode serialization):");
+    println!("Standard Topic (bincode serialization):");
     println!("   Send:     {:>8.1} ns/op", std_stats.send_ns);
     println!("   Recv:     {:>8.1} ns/op", std_stats.recv_ns);
     println!("   Roundtrip:{:>8.1} ns/op", std_stats.roundtrip_ns);
@@ -70,23 +78,12 @@ fn main() {
     println!();
 
     // Statistical analysis
-    println!("[3/4] Running statistical analysis...");
+    println!("[3/3] Running statistical analysis...");
     if !pod_stats.raw_latencies.is_empty() {
-        let pod_analysis = AnalysisSummary::from_latencies(&pod_stats.raw_latencies);
-        pod_analysis.print_report("POD Link Roundtrip");
+        print_stats("POD Topic Roundtrip", &pod_stats.raw_latencies);
     }
     if !std_stats.raw_latencies.is_empty() {
-        let std_analysis = AnalysisSummary::from_latencies(&std_stats.raw_latencies);
-        std_analysis.print_report("Standard Link Roundtrip");
-    }
-
-    // Generate visualizations
-    println!();
-    println!("[4/4] Generating visualizations...");
-    let output_dir = "benchmarks/results/graphs";
-
-    if let Err(e) = generate_visualizations(output_dir, &pod_stats, &std_stats) {
-        eprintln!("Warning: Failed to generate some visualizations: {}", e);
+        print_stats("Standard Topic Roundtrip", &std_stats.raw_latencies);
     }
 
     // Validate results meet expectations
@@ -114,120 +111,37 @@ fn main() {
     println!("======================================================================");
 }
 
-fn generate_visualizations(
-    output_dir: &str,
-    pod_stats: &BenchmarkStats,
-    std_stats: &BenchmarkStats,
-) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(output_dir)?;
-
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-
-    // 1. Comparison bar chart
-    println!("  -> Generating comparison chart...");
-    draw_grouped_bar_chart(
-        &format!("{}/pod_comparison_{}.png", output_dir, timestamp),
-        "POD vs Standard Link Performance",
-        &["Send", "Recv", "Roundtrip"],
-        &[pod_stats.send_ns, pod_stats.recv_ns, pod_stats.roundtrip_ns],
-        &[std_stats.send_ns, std_stats.recv_ns, std_stats.roundtrip_ns],
-        "POD Link",
-        "Standard Link",
-        "Latency (ns)",
-    )?;
-
-    // 2. Speedup chart
-    println!("  -> Generating speedup chart...");
-    let speedups = [
-        std_stats.send_ns / pod_stats.send_ns,
-        std_stats.recv_ns / pod_stats.recv_ns,
-        std_stats.roundtrip_ns / pod_stats.roundtrip_ns,
-    ];
-    draw_speedup_chart(
-        &format!("{}/pod_speedup_{}.png", output_dir, timestamp),
-        "POD Link Speedup vs Standard Link",
-        &["Send", "Recv", "Roundtrip"],
-        &speedups,
-    )?;
-
-    // 3. Latency histograms
-    if !pod_stats.raw_latencies.is_empty() {
-        println!("  -> Generating POD latency histogram...");
-        draw_latency_histogram(
-            &format!("{}/pod_histogram_{}.png", output_dir, timestamp),
-            "POD Link Latency Distribution",
-            &pod_stats.raw_latencies,
-            50,
-        )?;
+fn print_stats(name: &str, latencies: &[f64]) {
+    if latencies.is_empty() {
+        return;
     }
 
-    if !std_stats.raw_latencies.is_empty() {
-        println!("  -> Generating Standard latency histogram...");
-        draw_latency_histogram(
-            &format!("{}/std_histogram_{}.png", output_dir, timestamp),
-            "Standard Link Latency Distribution",
-            &std_stats.raw_latencies,
-            50,
-        )?;
-    }
+    let mut sorted = latencies.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    // 4. Timeline charts
-    if pod_stats.raw_latencies.len() > 100 {
-        println!("  -> Generating POD latency timeline...");
-        draw_latency_timeline(
-            &format!("{}/pod_timeline_{}.png", output_dir, timestamp),
-            "POD Link Latency Over Time",
-            &pod_stats.raw_latencies,
-            100,
-        )?;
-    }
-
-    if std_stats.raw_latencies.len() > 100 {
-        println!("  -> Generating Standard latency timeline...");
-        draw_latency_timeline(
-            &format!("{}/std_timeline_{}.png", output_dir, timestamp),
-            "Standard Link Latency Over Time",
-            &std_stats.raw_latencies,
-            100,
-        )?;
-    }
-
-    // Save JSON results for historical comparison
-    let results = serde_json::json!({
-        "timestamp": timestamp.to_string(),
-        "pod": {
-            "send_ns": pod_stats.send_ns,
-            "recv_ns": pod_stats.recv_ns,
-            "roundtrip_ns": pod_stats.roundtrip_ns,
-        },
-        "standard": {
-            "send_ns": std_stats.send_ns,
-            "recv_ns": std_stats.recv_ns,
-            "roundtrip_ns": std_stats.roundtrip_ns,
-        },
-        "speedup": {
-            "send": std_stats.send_ns / pod_stats.send_ns,
-            "recv": std_stats.recv_ns / pod_stats.recv_ns,
-            "roundtrip": std_stats.roundtrip_ns / pod_stats.roundtrip_ns,
-        }
-    });
-
-    std::fs::write(
-        format!("{}/results_{}.json", output_dir, timestamp),
-        serde_json::to_string_pretty(&results)?,
-    )?;
+    let len = sorted.len();
+    let mean = sorted.iter().sum::<f64>() / len as f64;
+    let median = if len % 2 == 0 {
+        (sorted[len / 2 - 1] + sorted[len / 2]) / 2.0
+    } else {
+        sorted[len / 2]
+    };
+    let p95 = sorted[(len as f64 * 0.95) as usize];
+    let p99 = sorted[(len as f64 * 0.99) as usize];
+    let min = sorted[0];
+    let max = sorted[len - 1];
 
     println!();
-    println!("  Graphs saved to: {}/", output_dir);
-    println!(
-        "  Results saved to: {}/results_{}.json",
-        output_dir, timestamp
-    );
-
-    Ok(())
+    println!("  {} Statistics:", name);
+    println!("    Mean:   {:>8.1} ns", mean);
+    println!("    Median: {:>8.1} ns", median);
+    println!("    P95:    {:>8.1} ns", p95);
+    println!("    P99:    {:>8.1} ns", p99);
+    println!("    Min:    {:>8.1} ns", min);
+    println!("    Max:    {:>8.1} ns", max);
 }
 
-fn benchmark_pod_link() -> BenchmarkStats {
+fn benchmark_pod_topic() -> BenchmarkStats {
     // Create producer and consumer
     let producer: Topic<CmdVel> =
         Topic::new("bench_pod_cmdvel").expect("Failed to create POD producer");
@@ -279,7 +193,7 @@ fn benchmark_pod_link() -> BenchmarkStats {
     }
 }
 
-fn benchmark_standard_link() -> BenchmarkStats {
+fn benchmark_standard_topic() -> BenchmarkStats {
     // Create producer and consumer
     let producer: Topic<CmdVel> =
         Topic::new("bench_std_cmdvel").expect("Failed to create standard producer");

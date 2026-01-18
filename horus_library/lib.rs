@@ -7,35 +7,58 @@
 //! ```text
 //! horus_library/
 //! ── messages/       # Shared memory-safe messages
-//! ── nodes/          # Reusable nodes
-//! ── algorithms/     # Common algorithms (future)
+//! ── nodes/          # Node infrastructure
+//! ── algorithms/     # Common algorithms (via horus-algorithms)
 //! ── hframe/         # HFrame - High-performance transform system
-//! ── apps/           # Complete demo applications
-//! ── tools/          # Development utilities (sim2d, sim3d)
 //! ```
+//!
+//! ## Core Nodes
+//!
+//! Core hardware-independent nodes have been moved to `horus-nodes-core`:
+//! - EmergencyStopNode, SafetyMonitorNode (Safety & monitoring)
+//! - DifferentialDriveNode, OdometryNode, PidControllerNode (Motion control)
+//! - PathPlannerNode, LocalizationNode, CollisionDetectorNode (Navigation)
+//!
+//! Use `horus-nodes-core` for these nodes.
+//!
+//! ## Sensor Nodes
+//!
+//! Sensor nodes have been moved to the `horus-sensors` crate for modularity.
+//! Use `horus-sensors` for: CameraNode, ImuNode, LidarNode, GpsNode, etc.
+//!
+//! ## Actuator Nodes
+//!
+//! Basic actuator nodes have been moved to the `horus-actuators` crate.
+//! Use `horus-actuators` for: DcMotorNode, BldcMotorNode, StepperMotorNode, ServoControllerNode.
+//!
+//! ## Industrial Nodes
+//!
+//! Industrial communication nodes have been moved to the `horus-industrial` crate.
+//! Use `horus-industrial` for: CanBusNode, I2cBusNode, SpiBusNode, SerialNode, ModbusNode, DigitalIONode.
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
-//! // Message types, traits, and nodes are re-exported at the root for convenience
+//! // Message types and traits are re-exported at the root for convenience
 //! use horus_library::{
 //!     // Core traits
 //!     LogSummary,
 //!     // Messages
 //!     KeyboardInput, JoystickInput, CmdVel, LaserScan, Image, Twist,
-//!     // Nodes (feature-gated)
-//!     CameraNode, LidarNode, DifferentialDriveNode, EmergencyStopNode
 //! };
 //!
+//! // For core nodes, import from horus-nodes-core:
+//! use horus_nodes_core::{DifferentialDriveNode, EmergencyStopNode};
+//!
+//! // For sensors, import from horus-sensors:
+//! use horus_sensors::{CameraNode, LidarNode, ImuNode};
+//!
 //! // Create and configure nodes with simple constructors
-//! let camera = CameraNode::new();              // Uses "camera/image" topic
-//! let lidar = LidarNode::new();               // Uses "scan" topic
-//! let drive = DifferentialDriveNode::new();   // Subscribes to "cmd_vel"
-//! let emergency = EmergencyStopNode::new();   // Emergency stop handler
+//! let drive = DifferentialDriveNode::new()?;   // Subscribes to "cmd_vel"
+//! let emergency = EmergencyStopNode::new()?;   // Emergency stop handler
 //!
 //! // Or import from specific modules
 //! use horus_library::messages::{Direction, SnakeState};
-//! use horus_library::nodes::{PidControllerNode, SafetyMonitorNode};
 //!
 //! // Use HFrame for coordinate transforms
 //! use horus_library::hframe::{HFrame, Transform};
@@ -45,7 +68,8 @@
 //! use sim3d::rl::{RLTask, Action, Observation};
 //! ```
 
-pub mod algorithms;
+// Re-export algorithms from horus-algorithms crate
+pub use horus_algorithms as algorithms;
 pub mod drivers;
 pub mod hframe;
 pub mod messages;
@@ -64,89 +88,18 @@ pub use horus_core::core::LogSummary;
 pub use messages::*;
 
 // Re-export driver types
-// IMU
-#[cfg(feature = "bno055-imu")]
-pub use drivers::Bno055Driver;
-#[cfg(feature = "mpu6050-imu")]
-pub use drivers::Mpu6050Driver;
-pub use drivers::{ImuDriver, SimulationImuDriver};
-
-// Camera
-#[cfg(feature = "opencv-backend")]
-pub use drivers::OpenCvCameraDriver;
-#[cfg(feature = "v4l2-backend")]
-pub use drivers::V4l2CameraDriver;
-pub use drivers::{CameraDriver, SimulationCameraDriver};
-
-// LiDAR
-#[cfg(feature = "rplidar")]
-pub use drivers::RplidarDriver;
-pub use drivers::{LidarDriver, SimulationLidarDriver};
-
-// GPS
-#[cfg(feature = "nmea-gps")]
-pub use drivers::NmeaGpsDriver;
-pub use drivers::{GpsDriver, SimulationGpsDriver};
-
-// Encoder
-#[cfg(feature = "gpio-hardware")]
-pub use drivers::GpioEncoderDriver;
-pub use drivers::{EncoderDriver, SimulationEncoderDriver};
-
-// Motor
-#[cfg(feature = "gpio-hardware")]
-pub use drivers::GpioMotorDriver;
-pub use drivers::{MotorDriver, SimulationMotorDriver};
-
-// Servo
-#[cfg(feature = "i2c-hardware")]
-pub use drivers::Pca9685ServoDriver;
-pub use drivers::{ServoDriver, SimulationServoDriver};
-
-// Bus (I2C, SPI, CAN)
-#[cfg(feature = "i2c-hardware")]
-pub use drivers::LinuxI2cDriver;
-#[cfg(feature = "spi-hardware")]
-pub use drivers::LinuxSpiDriver;
-#[cfg(feature = "can-hardware")]
-pub use drivers::SocketCanDriver;
-pub use drivers::{
-    CanDriver, I2cDriver, SimulationCanDriver, SimulationI2cDriver, SimulationSpiDriver, SpiDriver,
-};
-
-// Re-export commonly used nodes for convenience
-// Always available (hardware-independent)
-pub use nodes::{DifferentialDriveNode, EmergencyStopNode, PidControllerNode, SafetyMonitorNode};
-
-// Feature-gated hardware nodes
-#[cfg(any(
-    feature = "opencv-backend",
-    feature = "v4l2-backend",
-    feature = "realsense",
-    feature = "zed"
-))]
-pub use nodes::CameraNode;
-
-#[cfg(any(feature = "bno055-imu", feature = "mpu6050-imu"))]
-pub use nodes::ImuNode;
-
-#[cfg(feature = "gilrs")]
-pub use nodes::JoystickInputNode;
-
-#[cfg(feature = "crossterm")]
-pub use nodes::KeyboardInputNode;
-
-#[cfg(feature = "rplidar")]
-pub use nodes::LidarNode;
-
-#[cfg(feature = "modbus-hardware")]
-pub use nodes::ModbusNode;
+// Note: Motor, servo, bldc, stepper drivers moved to horus-actuators crate
+// Note: Bus, serial, modbus, digital_io drivers moved to horus-industrial crate
+// Note: Core nodes moved to horus-nodes-core crate
 
 /// Prelude module for convenient imports
 ///
 /// # Usage
 /// ```rust,ignore
 /// use horus_library::prelude::*;
+///
+/// // For core nodes, import from horus-nodes-core:
+/// use horus_nodes_core::{DifferentialDriveNode, EmergencyStopNode};
 ///
 /// // For simulation, import sim2d/sim3d directly:
 /// use sim2d::{Sim2DBuilder, RobotConfig};
@@ -169,10 +122,8 @@ pub mod prelude {
         HFrameError, StaticTransformStamped, TFMessage, Transform, TransformStamped,
     };
 
-    // Common nodes
-    pub use crate::nodes::{
-        DifferentialDriveNode, EmergencyStopNode, PidControllerNode, SafetyMonitorNode,
-    };
+    // Note: Core nodes have been moved to horus-nodes-core crate.
+    // Import them directly: use horus_nodes_core::*;
 
     // Note: sim2d and sim3d are separate crates to avoid cyclic dependencies.
     // Import them directly: use sim2d::*; or use sim3d::*;

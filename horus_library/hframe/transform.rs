@@ -4,7 +4,7 @@
 //! (translation + rotation) with full support for composition, inversion,
 //! and point/vector transformation.
 
-use bytemuck::{Pod, Zeroable};
+use horus_core::bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 /// 3D Transform (translation + rotation as quaternion)
@@ -527,7 +527,7 @@ mod tests {
     fn test_pod_safety() {
         // Ensure Transform is Pod-safe
         let tf = Transform::identity();
-        let bytes: &[u8] = bytemuck::bytes_of(&tf);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&tf);
         assert!(!bytes.is_empty());
     }
 }

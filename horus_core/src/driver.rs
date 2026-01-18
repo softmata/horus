@@ -494,3 +494,68 @@ drivers:
         assert_eq!(enabled[0].0, "active");
     }
 }
+
+// ============================================================================
+// Driver Traits
+// ============================================================================
+
+/// Base trait for all hardware drivers
+///
+/// Provides common lifecycle methods and identification.
+pub trait Driver: Send + 'static {
+    /// Initialize the driver and establish connection to hardware
+    fn init(&mut self) -> HorusResult<()>;
+
+    /// Shutdown the driver and release hardware resources
+    fn shutdown(&mut self) -> HorusResult<()>;
+
+    /// Check if the driver/hardware is available
+    fn is_available(&self) -> bool;
+
+    /// Get current driver status
+    fn status(&self) -> DriverStatus;
+
+    /// Get unique driver identifier
+    fn id(&self) -> &str;
+
+    /// Get human-readable driver name
+    fn name(&self) -> &str;
+}
+
+/// Trait for sensor drivers that produce data
+///
+/// Sensors read data from hardware and produce typed output.
+pub trait Sensor: Driver {
+    /// The type of data this sensor produces
+    type Output: Send + 'static;
+
+    /// Read the latest sensor data
+    fn read(&mut self) -> HorusResult<Self::Output>;
+
+    /// Check if new data is available
+    fn has_data(&self) -> bool;
+
+    /// Get the sensor's sample rate in Hz (if applicable)
+    fn sample_rate(&self) -> Option<f32> {
+        None
+    }
+}
+
+/// Trait for actuator drivers that accept commands
+///
+/// Actuators receive commands and control hardware.
+pub trait Actuator: Driver {
+    /// The type of command this actuator accepts
+    type Command: Send + 'static;
+
+    /// Send a command to the actuator
+    fn write(&mut self, command: Self::Command) -> HorusResult<()>;
+
+    /// Stop the actuator (emergency stop)
+    fn stop(&mut self) -> HorusResult<()>;
+
+    /// Check if the actuator is ready to accept commands
+    fn is_ready(&self) -> bool {
+        self.is_available() && matches!(self.status(), DriverStatus::Ready | DriverStatus::Running)
+    }
+}

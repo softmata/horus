@@ -8,10 +8,12 @@
 
 use pyo3::prelude::*;
 
+mod ai;
 mod config;
 mod hframe;
 mod messages;
 mod node;
+mod perception;
 mod router;
 mod scheduler;
 mod tensor;
@@ -60,6 +62,12 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Tensor system - zero-copy shared memory tensors
     tensor::register_tensor_classes(m)?;
+
+    // AI/ML utilities - DLPack, dtype, Device
+    ai::register_ai_module(m)?;
+
+    // Perception types - Detection, PointCloud, Landmark
+    perception::register_perception_module(m)?;
 
     // Message types for typed Topic communication
     messages::register_message_classes(m)?;

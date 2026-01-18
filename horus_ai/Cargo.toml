@@ -1,0 +1,27 @@
+[package]
+name = "horus_ai"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+description = "HORUS AI/ML tensor system with DLPack interop"
+license = "Apache-2.0"
+
+[features]
+default = []
+cuda = []
+
+[dependencies]
+# Core HORUS
+horus_core = { workspace = true }
+
+# Memory safety
+bytemuck = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

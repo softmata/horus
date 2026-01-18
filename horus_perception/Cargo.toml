@@ -1,0 +1,17 @@
+[package]
+name = "horus_perception"
+version = "0.1.0"
+edition = "2021"
+description = "AI-friendly perception types for HORUS - Detection, PointCloud, Landmarks"
+license = "MIT"
+
+[features]
+default = []
+# Enable serde serialization for non-IPC use cases
+serde = ["dep:serde"]
+
+[dependencies]
+horus_core = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }

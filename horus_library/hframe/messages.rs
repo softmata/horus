@@ -4,7 +4,7 @@
 //! and receiving transform updates.
 
 use super::transform::Transform;
-use bytemuck::{Pod, Zeroable};
+use horus_core::bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of transforms in a batch message
@@ -314,15 +314,15 @@ mod tests {
     fn test_pod_safety() {
         // Ensure types are Pod-safe (can be safely transmuted)
         let ts = TransformStamped::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&ts);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&ts);
         assert!(!bytes.is_empty());
 
         let sts = StaticTransformStamped::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&sts);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&sts);
         assert!(!bytes.is_empty());
 
         let msg = TFMessage::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&msg);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&msg);
         assert!(!bytes.is_empty());
     }
 

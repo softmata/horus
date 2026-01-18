@@ -326,30 +326,12 @@ pub mod prelude {
     };
 
     // ============================================
-    // Built-in Nodes (standard-nodes feature)
+    // Built-in Nodes
     // ============================================
-    pub use horus_library::nodes::{
-        DifferentialDriveNode, EmergencyStopNode, JoystickInputNode, KeyboardInputNode,
-        LocalizationNode, PathPlannerNode, PidControllerNode,
-    };
-
-    // ============================================
-    // Hardware-specific Nodes (require feature flags)
-    // ============================================
-    #[cfg(feature = "serial-hardware")]
-    pub use horus_library::nodes::SerialNode;
-
-    #[cfg(feature = "gpio-hardware")]
-    pub use horus_library::nodes::{DigitalIONode, EncoderNode, ServoControllerNode};
-
-    #[cfg(any(feature = "bno055-imu", feature = "mpu6050-imu"))]
-    pub use horus_library::nodes::ImuNode;
-
-    #[cfg(feature = "rplidar")]
-    pub use horus_library::nodes::LidarNode;
-
-    #[cfg(feature = "modbus-hardware")]
-    pub use horus_library::nodes::ModbusNode;
+    // Core node types (Node, NodeInfo, Topic) are re-exported from horus_core above.
+    // Additional standard nodes (DifferentialDriveNode, PidControllerNode, etc.)
+    // will be available via the horus-nodes-core crate once created.
+    // See horus_library::nodes module documentation for usage.
 }
 
 /// Version information

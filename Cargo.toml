@@ -6,10 +6,9 @@ members = [
     "horus_macros",
     "horus_manager",
     "horus_library",
-    "horus_library/python",  # Python bindings for horus_library
-    # Example apps (multi-node applications)
-    "horus_library/apps/tanksim",
     "horus_router",  # Router service
+    "horus_ai",         # AI/ML tensor system with DLPack
+    "horus_perception", # AI-friendly perception types
     "benchmarks",
     "horus_py",
 ]
@@ -31,6 +30,8 @@ horus = { path = "horus" }
 horus_core = { path = "horus_core" }
 horus_library = { path = "horus_library" }
 horus_macros = { path = "horus_macros" }
+horus_ai = { path = "horus_ai" }
+horus_perception = { path = "horus_perception" }
 
 # Physics and math
 rapier2d = "0.22"

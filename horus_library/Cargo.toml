@@ -15,6 +15,7 @@ path = "lib.rs"
 
 [dependencies]
 horus_core = { path = "../horus_core" }
+horus_algorithms = { path = "../../horus_packages_publish/horus-algorithms", package = "horus-algorithms" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytemuck = { workspace = true }

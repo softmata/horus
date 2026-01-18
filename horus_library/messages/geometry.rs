@@ -356,28 +356,28 @@ impl LogSummary for Quaternion {
 // for real-time robotics control loops. Topic automatically uses POD backend.
 
 // Bytemuck implementations for safe byte casting
-unsafe impl bytemuck::Pod for Twist {}
-unsafe impl bytemuck::Zeroable for Twist {}
+unsafe impl horus_core::bytemuck::Pod for Twist {}
+unsafe impl horus_core::bytemuck::Zeroable for Twist {}
 unsafe impl horus_core::communication::PodMessage for Twist {}
 
-unsafe impl bytemuck::Pod for Pose2D {}
-unsafe impl bytemuck::Zeroable for Pose2D {}
+unsafe impl horus_core::bytemuck::Pod for Pose2D {}
+unsafe impl horus_core::bytemuck::Zeroable for Pose2D {}
 unsafe impl horus_core::communication::PodMessage for Pose2D {}
 
-unsafe impl bytemuck::Pod for Transform {}
-unsafe impl bytemuck::Zeroable for Transform {}
+unsafe impl horus_core::bytemuck::Pod for Transform {}
+unsafe impl horus_core::bytemuck::Zeroable for Transform {}
 unsafe impl horus_core::communication::PodMessage for Transform {}
 
-unsafe impl bytemuck::Pod for Point3 {}
-unsafe impl bytemuck::Zeroable for Point3 {}
+unsafe impl horus_core::bytemuck::Pod for Point3 {}
+unsafe impl horus_core::bytemuck::Zeroable for Point3 {}
 unsafe impl horus_core::communication::PodMessage for Point3 {}
 
-unsafe impl bytemuck::Pod for Vector3 {}
-unsafe impl bytemuck::Zeroable for Vector3 {}
+unsafe impl horus_core::bytemuck::Pod for Vector3 {}
+unsafe impl horus_core::bytemuck::Zeroable for Vector3 {}
 unsafe impl horus_core::communication::PodMessage for Vector3 {}
 
-unsafe impl bytemuck::Pod for Quaternion {}
-unsafe impl bytemuck::Zeroable for Quaternion {}
+unsafe impl horus_core::bytemuck::Pod for Quaternion {}
+unsafe impl horus_core::bytemuck::Zeroable for Quaternion {}
 unsafe impl horus_core::communication::PodMessage for Quaternion {}
 
 #[cfg(test)]
@@ -755,8 +755,8 @@ mod tests {
     #[test]
     fn test_twist_pod_cast() {
         let twist = Twist::new_2d(1.5, 0.3);
-        let bytes: &[u8] = bytemuck::bytes_of(&twist);
-        let reconstructed: &Twist = bytemuck::from_bytes(bytes);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&twist);
+        let reconstructed: &Twist = horus_core::bytemuck::from_bytes(bytes);
         assert_eq!(twist.linear, reconstructed.linear);
         assert_eq!(twist.angular, reconstructed.angular);
     }
@@ -764,8 +764,8 @@ mod tests {
     #[test]
     fn test_pose2d_pod_cast() {
         let pose = Pose2D::new(1.0, 2.0, 0.5);
-        let bytes: &[u8] = bytemuck::bytes_of(&pose);
-        let reconstructed: &Pose2D = bytemuck::from_bytes(bytes);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&pose);
+        let reconstructed: &Pose2D = horus_core::bytemuck::from_bytes(bytes);
         assert_eq!(pose.x, reconstructed.x);
         assert_eq!(pose.y, reconstructed.y);
         assert_eq!(pose.theta, reconstructed.theta);
@@ -774,8 +774,8 @@ mod tests {
     #[test]
     fn test_vector3_pod_cast() {
         let v = Vector3::new(1.0, 2.0, 3.0);
-        let bytes: &[u8] = bytemuck::bytes_of(&v);
-        let reconstructed: &Vector3 = bytemuck::from_bytes(bytes);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&v);
+        let reconstructed: &Vector3 = horus_core::bytemuck::from_bytes(bytes);
         assert_eq!(v.x, reconstructed.x);
         assert_eq!(v.y, reconstructed.y);
         assert_eq!(v.z, reconstructed.z);

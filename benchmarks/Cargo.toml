@@ -26,6 +26,14 @@ harness = false
 name = "latency_matrix"
 harness = false
 
+[[bench]]
+name = "latency_rigorous"
+harness = false
+
+[[bench]]
+name = "competitive_comparison"
+harness = false
+
 # =============================================================================
 # PERFORMANCE BENCHMARKS
 # Run with: cargo run --release --bin <name>
@@ -39,6 +47,31 @@ doc = true
 [[bin]]
 name = "pod_benchmark"
 path = "src/bin/performance/pod_benchmark.rs"
+doc = true
+
+[[bin]]
+name = "determinism_benchmark"
+path = "src/bin/performance/determinism_benchmark.rs"
+doc = true
+
+[[bin]]
+name = "scalability_benchmark"
+path = "src/bin/performance/scalability_benchmark.rs"
+doc = true
+
+[[bin]]
+name = "cross_process_benchmark"
+path = "src/bin/performance/cross_process_benchmark.rs"
+doc = true
+
+[[bin]]
+name = "robotics_messages_benchmark"
+path = "src/bin/performance/robotics_messages_benchmark.rs"
+doc = true
+
+[[bin]]
+name = "dds_comparison_benchmark"
+path = "src/bin/performance/dds_comparison_benchmark.rs"
 doc = true
 
 # =============================================================================
@@ -169,6 +202,15 @@ colored = "2.0"
 anyhow = "1.0"
 libc = "0.2"
 rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+num_cpus = "1.16"
 
 [dev-dependencies]
-criterion = { version = "0.5" }
+criterion = { version = "0.5", features = ["html_reports"] }
+crossbeam-channel = "0.5"
+flume = "0.11"
+
+[features]
+default = []
+# Enable actual DDS middleware comparisons (requires CycloneDDS/FastDDS installed)
+dds = []

@@ -33,7 +33,7 @@
 //! }
 //! ```
 
-use bytemuck::{Pod, Zeroable};
+use horus_core::bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 /// Maximum number of dimensions supported by HorusTensor
@@ -634,7 +634,7 @@ mod tests {
     fn test_tensor_is_pod() {
         // Verify HorusTensor can be safely cast to bytes
         let tensor = HorusTensor::default();
-        let bytes: &[u8] = bytemuck::bytes_of(&tensor);
+        let bytes: &[u8] = horus_core::bytemuck::bytes_of(&tensor);
         assert_eq!(bytes.len(), std::mem::size_of::<HorusTensor>());
     }
 

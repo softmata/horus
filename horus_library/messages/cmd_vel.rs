@@ -48,8 +48,8 @@ impl Default for CmdVel {
 }
 
 // Enable zero-copy serialization with bytemuck
-unsafe impl bytemuck::Pod for CmdVel {}
-unsafe impl bytemuck::Zeroable for CmdVel {}
+unsafe impl horus_core::bytemuck::Pod for CmdVel {}
+unsafe impl horus_core::bytemuck::Zeroable for CmdVel {}
 
 // Enable ultra-fast POD messaging (~50ns vs ~250ns with bincode)
 unsafe impl horus_core::communication::PodMessage for CmdVel {}
