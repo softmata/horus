@@ -209,15 +209,6 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
     // Ensure .horus directory exists
     ensure_horus_directory()?;
 
-    // Run static analysis for Rust files
-    if language == "rust" {
-        use crate::static_analysis;
-        // Non-fatal: warnings only, don't fail the build
-        if let Err(e) = static_analysis::check_link_usage(target_file) {
-            eprintln!("[WARNING] Static analysis error: {}", e);
-        }
-    }
-
     // Build based on language
     match language.as_str() {
         "python" => {
@@ -609,15 +600,6 @@ fn execute_single_file(
     // Scan imports and resolve dependencies
     eprintln!("{} Scanning imports...", "".cyan());
     let dependencies = scan_imports(&file_path, &language, &ignore)?;
-
-    // Run static analysis for Rust files
-    if language == "rust" {
-        use crate::static_analysis;
-        // Non-fatal: warnings only, don't fail the build
-        if let Err(e) = static_analysis::check_link_usage(&file_path) {
-            eprintln!("[WARNING] Static analysis error: {}", e);
-        }
-    }
 
     // Check hardware requirements
     if let Err(e) = check_hardware_requirements(&file_path, &language) {

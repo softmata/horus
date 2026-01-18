@@ -14,7 +14,6 @@ pub mod plugins;
 pub mod progress;
 pub mod registry;
 pub mod security;
-pub mod static_analysis;
 pub mod system_deps;
 pub mod version;
 pub mod workspace;

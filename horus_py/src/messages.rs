@@ -1,14 +1,14 @@
 //! Python wrapper classes for HORUS message types
 //!
 //! These Python classes mirror the Rust message types from horus_library,
-//! enabling typed Hub communication in Python:
+//! enabling typed Topic communication in Python:
 //!
 //! ```python
-//! from horus import Hub, CmdVel, Pose2D
+//! from horus import Topic, CmdVel, Pose2D
 //!
-//! hub = Hub(CmdVel)
-//! hub.send(CmdVel(1.5, 0.3))
-//! msg = hub.recv()  # Returns CmdVel instance
+//! topic = Topic(CmdVel)
+//! topic.send(CmdVel(1.5, 0.3))
+//! msg = topic.recv()  # Returns CmdVel instance
 //! ```
 
 use pyo3::prelude::*;

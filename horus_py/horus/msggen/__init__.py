@@ -34,8 +34,8 @@ TWO APPROACHES:
 
    build_messages()  # Runs maturin develop
 
-   from horus import RobotStatus, Hub
-   hub = Hub(RobotStatus)  # Full zero-copy typed hub
+   from horus import RobotStatus, Topic
+   topic = Topic(RobotStatus)  # Full zero-copy typed topic
 """
 
 from .generator import (

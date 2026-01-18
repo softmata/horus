@@ -16,7 +16,7 @@ def unique_test_prefix():
     Generate a unique prefix for test topics to prevent conflicts between tests.
 
     With the flat namespace, tests should use unique topic names like:
-    hub = Hub(f"{test_prefix}_my_topic")
+    topic = Topic(f"{test_prefix}_my_topic")
 
     This fixture provides a unique prefix for each test.
     """

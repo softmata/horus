@@ -175,8 +175,8 @@ def build_messages(force: bool = False, verbose: bool = True) -> bool:
             print("\nBuild successful! Custom messages are now available.")
             print("\nUsage:")
             for msg in messages:
-                print(f"  from horus import {msg.name}, Hub")
-                print(f"  hub = Hub({msg.name})")
+                print(f"  from horus import {msg.name}, Topic")
+                print(f"  topic = Topic({msg.name})")
 
         return True
 

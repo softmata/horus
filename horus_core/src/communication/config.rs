@@ -1,14 +1,14 @@
 /// Configuration file support for HORUS
 ///
-/// Allows Hub creation from TOML/YAML config files instead of hardcoded strings.
+/// Allows Topic creation from TOML/YAML config files instead of hardcoded strings.
 /// Supports auto-detection of file format and multiple search paths.
 use crate::error::{HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Zenoh-specific configuration for Hub/Link
+/// Zenoh-specific configuration for Topic transport
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ZenohHubConfig {
+pub struct ZenohEndpointConfig {
     /// Enable ROS2 compatibility mode
     /// When true, uses ROS2-compatible topic naming (rt/{topic})
     #[serde(default)]
@@ -57,7 +57,7 @@ fn default_true() -> bool {
     true
 }
 
-impl ZenohHubConfig {
+impl ZenohEndpointConfig {
     /// Convert to ZenohConfig from network module
     #[cfg(feature = "zenoh-transport")]
     pub fn to_zenoh_config(&self) -> crate::communication::network::ZenohConfig {
@@ -125,10 +125,10 @@ impl ZenohHubConfig {
     }
 }
 
-/// HORUS Hub configuration
+/// HORUS Topic configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HubConfig {
-    /// Hub name/topic
+pub struct EndpointConfig {
+    /// Topic name
     pub name: String,
 
     /// Endpoint string (e.g., "camera@router", "sensor@192.168.1.5:9000")
@@ -148,7 +148,7 @@ pub struct HubConfig {
     #[serde(default)]
     pub port: Option<u16>,
 
-    /// Enable TLS for this hub (router transport only)
+    /// Enable TLS for this topic (router transport only)
     #[serde(default)]
     pub tls: Option<bool>,
 
@@ -162,7 +162,7 @@ pub struct HubConfig {
 
     /// Zenoh-specific configuration (when transport = "zenoh")
     #[serde(default)]
-    pub zenoh: Option<ZenohHubConfig>,
+    pub zenoh: Option<ZenohEndpointConfig>,
 
     /// Additional options
     #[serde(flatten)]
@@ -173,10 +173,10 @@ pub struct HubConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HorusConfig {
     /// Map of hub name -> hub config
-    pub hubs: std::collections::HashMap<String, HubConfig>,
+    pub hubs: std::collections::HashMap<String, EndpointConfig>,
 }
 
-impl HubConfig {
+impl EndpointConfig {
     /// Get the endpoint string for this hub
     pub fn get_endpoint(&self) -> String {
         // If explicit endpoint is provided, use it
@@ -334,7 +334,7 @@ impl HorusConfig {
     }
 
     /// Get a hub config by name
-    pub fn get_hub(&self, name: &str) -> HorusResult<&HubConfig> {
+    pub fn get_hub(&self, name: &str) -> HorusResult<&EndpointConfig> {
         self.hubs
             .get(name)
             .ok_or_else(|| HorusError::config(format!("Hub '{}' not found in config", name)))
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_local_transport() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "local_topic".to_string(),
             endpoint: None,
             transport: Some("local".to_string()),
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_router_transport() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "my_topic".to_string(),
             endpoint: None,
             transport: Some("router".to_string()),
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_multicast_transport() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "broadcast".to_string(),
             endpoint: None,
             transport: Some("multicast".to_string()),
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_zenoh_transport_basic() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "robot_odom".to_string(),
             endpoint: None,
             transport: Some("zenoh".to_string()),
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_zenoh_transport_ros2_mode() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "cmd_vel".to_string(),
             endpoint: None,
             transport: Some("zenoh".to_string()),
@@ -476,7 +476,7 @@ mod tests {
             tls: None,
             tls_cert: None,
             tls_key: None,
-            zenoh: Some(ZenohHubConfig {
+            zenoh: Some(ZenohEndpointConfig {
                 ros2_mode: true,
                 ros2_domain_id: 0,
                 connect: vec![],
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_zenoh_transport_with_connect() {
-        let config = HubConfig {
+        let config = EndpointConfig {
             name: "cloud_telemetry".to_string(),
             endpoint: None,
             transport: Some("zenoh".to_string()),
@@ -505,7 +505,7 @@ mod tests {
             tls: None,
             tls_cert: None,
             tls_key: None,
-            zenoh: Some(ZenohHubConfig {
+            zenoh: Some(ZenohEndpointConfig {
                 ros2_mode: false,
                 ros2_domain_id: 0,
                 connect: vec!["tcp/cloud.example.com:7447".to_string()],

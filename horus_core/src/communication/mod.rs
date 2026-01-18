@@ -56,7 +56,7 @@ pub mod topic;
 pub mod traits;
 
 // Re-export commonly used types for convenience
-pub use config::{HorusConfig, HubConfig};
+pub use config::{EndpointConfig, HorusConfig};
 pub use pod::{PodMessage, is_registered_pod, registered_pod_count, registered_pod_types};
 pub use smart_detect::{SmartTopicHeader, DetectedPattern, RecommendedBackend, DetectionResult, smart_detect};
 pub use storage::AccessMode;

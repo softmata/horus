@@ -950,8 +950,8 @@ if command -v python3 &>/dev/null; then
         pass "horus_py installed: v$HORUS_PY_VERSION"
 
         # Test core imports
-        if python3 -c "from horus import Node, Hub, Link" 2>/dev/null; then
-            pass "Core classes importable (Node, Hub, Link)"
+        if python3 -c "from horus import Node, Topic" 2>/dev/null; then
+            pass "Core classes importable (Node, Topic)"
         else
             warn "Some core classes not importable"
         fi

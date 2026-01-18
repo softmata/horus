@@ -475,7 +475,7 @@ if command -v python3 &>/dev/null; then
                             pass "horus_py import successful"
 
                             # Test basic functionality
-                            if python3 -c "from horus import Node, Hub, Link; print('Core imports OK')" 2>/dev/null; then
+                            if python3 -c "from horus import Node, Topic; print('Core imports OK')" 2>/dev/null; then
                                 pass "horus_py core classes importable"
                             else
                                 warn "horus_py core classes import issue"

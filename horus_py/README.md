@@ -19,17 +19,14 @@ pip install horus-robotics
 ```python
 import horus
 
-# Create a publisher
-pub = horus.Publisher("sensor.data")
+# Create a topic for communication
+topic = horus.Topic("sensor_data")
 
-# Create a subscriber
-sub = horus.Subscriber("sensor.data")
-
-# Publish data
-pub.publish({"temperature": 25.5, "humidity": 60})
+# Send data
+topic.send({"temperature": 25.5, "humidity": 60})
 
 # Receive data
-data = sub.receive()
+data = topic.recv()
 print(data)
 ```
 
@@ -38,38 +35,45 @@ print(data)
 - **Ultra-Low Latency**: 87ns IPC latency (100x faster than ROS2)
 - **High Throughput**: 12M+ messages/second
 - **Zero-Copy**: Shared memory transport for maximum performance
-- **Type-Safe**: Strong typing with Pydantic-like validation
-- **Cross-Language**: Seamless interop with Rust and C++ nodes
+- **Type-Safe**: Strong typing with standard robotics messages
+- **Cross-Language**: Seamless interop with Rust nodes
 - **Real-Time Ready**: Priority-based scheduling with deadline guarantees
 
 ## Core Components
 
-### Publisher/Subscriber (Hub)
+### Topic (Unified Communication)
 
-Multi-producer multi-consumer pub/sub with ~481ns round-trip latency:
+The `Topic` class provides pub/sub communication with automatic backend selection:
 
 ```python
 import horus
 
-# Publisher
-pub = horus.Publisher("robot.commands")
-pub.publish({"velocity": [1.0, 0.0, 0.0]})
+# Create a topic
+topic = horus.Topic("robot_commands")
 
-# Subscriber
-sub = horus.Subscriber("robot.commands")
-msg = sub.receive(timeout_ms=100)
+# Send messages
+topic.send({"velocity": [1.0, 0.0, 0.0]})
+
+# Receive messages
+msg = topic.recv()
 ```
 
-### Point-to-Point (Link)
+### Typed Messages
 
-Single-producer single-consumer for lowest latency (~248ns):
+Use typed messages for zero-copy performance:
 
 ```python
-sender = horus.LinkSender("fast.channel")
-receiver = horus.LinkReceiver("fast.channel")
+from horus import Topic, CmdVel, Pose2D
 
-sender.send(data)
-data = receiver.recv()
+# Create typed topic
+topic = Topic("cmd_vel", CmdVel)
+
+# Send typed message
+topic.send(CmdVel(linear=1.5, angular=0.3))
+
+# Receive typed message
+msg = topic.recv()  # Returns CmdVel instance
+print(f"Linear: {msg.linear}, Angular: {msg.angular}")
 ```
 
 ### Nodes
@@ -82,15 +86,35 @@ import horus
 class SensorNode(horus.Node):
     def __init__(self):
         super().__init__("sensor_node")
-        self.pub = horus.Publisher("sensor.data")
+        self.topic = horus.Topic("sensor_data")
 
     def tick(self):
         reading = self.read_sensor()
-        self.pub.publish(reading)
+        self.topic.send(reading)
 
 # Run the node
 node = SensorNode()
 horus.run(node, rate_hz=100)
+```
+
+### Async Nodes
+
+For I/O-bound operations, use async nodes:
+
+```python
+import horus
+
+class AsyncSensorNode(horus.AsyncNode):
+    async def setup(self):
+        self.topic = horus.AsyncTopic("sensor_data")
+
+    async def tick(self):
+        data = await self.fetch_data()
+        await self.topic.send(data)
+
+    async def fetch_data(self):
+        await horus.sleep(0.01)
+        return {"value": 42}
 ```
 
 ## Message Types
@@ -98,16 +122,12 @@ horus.run(node, rate_hz=100)
 HORUS provides standard robotics message types:
 
 ```python
-from horus.messages import (
-    Twist,           # Velocity commands
-    Pose,            # Position + orientation
-    Image,           # Camera images
-    PointCloud,      # 3D point clouds
-    JointState,      # Robot joint positions
-    LaserScan,       # LIDAR data
-    Imu,             # IMU readings
-    NavSatFix,       # GPS coordinates
-    WrenchStamped,   # Force/torque sensor
+from horus import (
+    CmdVel,      # Velocity commands (linear, angular)
+    Pose2D,      # 2D position (x, y, theta)
+    Imu,         # IMU readings
+    Odometry,    # Odometry data
+    LaserScan,   # LIDAR data
 )
 ```
 
@@ -124,18 +144,12 @@ from horus.messages import (
 - **Full Documentation**: [docs.horus-registry.dev](https://docs.horus-registry.dev)
 - **Getting Started**: [Installation Guide](https://docs.horus-registry.dev/installation)
 - **API Reference**: [Python API](https://docs.horus-registry.dev/python-api)
-- **Examples**: [GitHub Examples](https://github.com/softmata/horus/tree/main/examples)
 
 ## Requirements
 
 - Python 3.9+
 - Linux (x86_64)
 - glibc 2.39+
-
-## Related Packages
-
-- `horus` - Full HORUS framework (Rust CLI + runtime)
-- `horus-library` - Standard message types and nodes
 
 ## License
 

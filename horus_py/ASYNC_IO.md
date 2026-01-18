@@ -11,8 +11,8 @@ import horus
 
 class MyNode(horus.AsyncNode):
     async def setup(self):
-        self.sub = horus.AsyncHub("input", str)
-        self.pub = horus.AsyncHub("output", str)
+        self.sub = horus.AsyncTopic("input", str)
+        self.pub = horus.AsyncTopic("output", str)
 
     async def tick(self):
         msg = await self.sub.recv()  # Non-blocking!
@@ -37,8 +37,8 @@ class DatabaseNode(horus.AsyncNode):
         # Connect to PostgreSQL
         self.db = await asyncpg.connect('postgresql://localhost/mydb')
 
-        self.query_sub = horus.AsyncHub("query", str)
-        self.result_pub = horus.AsyncHub("result", str)
+        self.query_sub = horus.AsyncTopic("query", str)
+        self.result_pub = horus.AsyncTopic("result", str)
 
     async def tick(self):
         # Get query
@@ -63,8 +63,8 @@ import aiohttp  # pip install aiohttp
 class WeatherNode(horus.AsyncNode):
     async def setup(self):
         self.session = aiohttp.ClientSession()
-        self.location_sub = horus.AsyncHub("location", str)
-        self.weather_pub = horus.AsyncHub("weather", dict)
+        self.location_sub = horus.AsyncTopic("location", str)
+        self.weather_pub = horus.AsyncTopic("weather", dict)
 
     async def tick(self):
         location = await self.location_sub.recv()
@@ -139,7 +139,7 @@ import horus
 
 # Classes
 horus.AsyncNode      # Base class for async nodes
-horus.AsyncHub       # Async wrapper for Hub
+horus.AsyncTopic       # Async wrapper for Hub
 
 # Functions
 await horus.sleep(seconds)           # Non-blocking sleep
@@ -157,6 +157,6 @@ All three phases are now complete with this simple design:
 
 - **Phase 1**: Threading patterns - Use Python's threading if needed
 - **Phase 2**: Async utilities - Use Python's asyncio + any async library
-- **Phase 3**: Full async/await - `AsyncNode` + `AsyncHub`
+- **Phase 3**: Full async/await - `AsyncNode` + `AsyncTopic`
 
 No complex helpers. No custom patterns. Just Pythonic async/await.

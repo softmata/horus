@@ -96,7 +96,7 @@ class PyTorchInferenceNode(MLNodeBase):
     Example:
         ```python
         import torch
-        from horus import Node, Hub
+        from horus import Node, Topic
         from horus.ml_utils import PyTorchInferenceNode
 
         class MyPyTorchNode(PyTorchInferenceNode):
@@ -182,7 +182,7 @@ class TensorFlowInferenceNode(MLNodeBase):
 
     Example:
         ```python
-        from horus import Node, Hub
+        from horus import Node, Topic
         from horus.ml_utils import TensorFlowInferenceNode
 
         class MyTFNode(TensorFlowInferenceNode):
@@ -264,7 +264,7 @@ class ONNXInferenceNode(MLNodeBase):
 
     Example:
         ```python
-        from horus import Node, Hub
+        from horus import Node, Topic
         from horus.ml_utils import ONNXInferenceNode
 
         class MyONNXNode(ONNXInferenceNode):

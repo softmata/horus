@@ -137,15 +137,15 @@ use serde_json;
 /// # Example (Python)
 ///
 /// ```python
-/// from horus import PyHub
+/// from horus import Topic
 ///
-/// hub = PyHub("my_topic")
+/// topic = Topic("my_topic")
 ///
 /// # Send automatically serializes to GenericMessage
-/// hub.send({"x": 1.0, "y": 2.0}, node)
+/// topic.send({"x": 1.0, "y": 2.0}, node)
 ///
 /// # Receive automatically deserializes
-/// msg_bytes = hub.recv(node)
+/// msg_bytes = topic.recv(node)
 /// if msg_bytes:
 ///     import msgpack
 ///     data = msgpack.unpackb(msg_bytes, raw=False)
