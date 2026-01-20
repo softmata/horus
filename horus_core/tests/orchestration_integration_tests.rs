@@ -14,10 +14,10 @@ use horus_core::mission_planner::{
     MissionPlanner, MissionPlannerBuilder, MissionSpec, Priority, RetryPolicy, TaskCondition,
     TaskExecutor, TaskSpec,
 };
+use horus_core::serde_json::{self, json};
 use horus_core::state_machines::{
     Event, EventPriority, SharedStateMachine, State, StateMachine, StateMachineBuilder, Transition,
 };
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

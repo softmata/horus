@@ -49,6 +49,9 @@ fn main() -> anyhow::Result<()> {
                                 }
                                 println!();
                             }
+                            DependencySource::Pip { package_name } => {
+                                println!("    Source: Pip ({})", package_name);
+                            }
                         }
                         println!();
                     }

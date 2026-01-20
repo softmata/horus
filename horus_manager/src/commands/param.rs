@@ -9,6 +9,7 @@ use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::params::RuntimeParams;
 use horus_core::serde_json::{self, Value};
+use horus_core::serde_yaml;
 use std::path::Path;
 
 /// List all parameters

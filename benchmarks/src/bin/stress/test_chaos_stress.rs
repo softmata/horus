@@ -29,8 +29,8 @@
 //!   cargo run --bin test_chaos_stress -- extended  # 30 minute test
 //!   cargo run --bin test_chaos_stress -- endurance # 1 hour test
 
-use bytemuck::{Pod, Zeroable};
 use horus::prelude::Topic;
+use horus_core::bytemuck::{Pod, Zeroable};
 use horus_core::communication::PodMessage;
 use horus_core::core::LogSummary;
 use serde::{Serialize, Deserialize};

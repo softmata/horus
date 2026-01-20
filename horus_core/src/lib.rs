@@ -134,6 +134,9 @@ pub use paste;
 // Re-export serde_json for consistent type usage across crates
 pub use serde_json;
 
+// Re-export serde_yaml for consistent type usage across crates
+pub use serde_yaml;
+
 // Re-export bytemuck for consistent Pod/Zeroable trait usage
 pub use bytemuck;
 

@@ -384,6 +384,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore] // May hang on some systems due to USB enumeration
     fn test_enumerate_usb() {
         let mut discovery = UsbDiscovery::new();
         let devices = discovery.enumerate();
@@ -409,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // May hang on some systems due to USB enumeration
     fn test_find_serial_devices() {
         let mut discovery = UsbDiscovery::new();
         discovery.enumerate();

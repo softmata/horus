@@ -357,8 +357,13 @@ mod tests {
 
     #[test]
     fn test_format_frequency() {
-        assert_eq!(format_frequency(1_000_000), "1000.00 Hz");
-        assert_eq!(format_frequency(1_000), "1000.00 kHz");
+        // period_ns=1_000_000_000 (1 second) → freq=1 Hz
+        assert_eq!(format_frequency(1_000_000_000), "1.00 Hz");
+        // period_ns=1_000_000 (1 ms) → freq=1000 Hz = 1 kHz
+        assert_eq!(format_frequency(1_000_000), "1.00 kHz");
+        // period_ns=1_000 (1 μs) → freq=1,000,000 Hz = 1 MHz
+        assert_eq!(format_frequency(1_000), "1.00 MHz");
+        // period_ns=50 → freq=20,000,000 Hz = 20 MHz
         assert_eq!(format_frequency(50), "20.00 MHz");
     }
 
