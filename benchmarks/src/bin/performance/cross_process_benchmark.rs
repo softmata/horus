@@ -339,7 +339,7 @@ fn run_producer(args: &[String]) {
 
     // Create producer based on backend
     let producer: Topic<TimestampedMsg> = match backend.as_str() {
-        "spsc" => Topic::producer(topic_name).expect("Failed to create SPSC producer"),
+        "spsc" => Topic::new(topic_name).expect("Failed to create SPSC producer"),
         _ => Topic::new(topic_name).expect("Failed to create MPMC producer"),
     };
 
@@ -397,7 +397,7 @@ fn run_consumer(args: &[String]) {
 
     // Create consumer based on backend
     let consumer: Topic<TimestampedMsg> = match backend.as_str() {
-        "spsc" => Topic::consumer(topic_name).expect("Failed to create SPSC consumer"),
+        "spsc" => Topic::new(topic_name).expect("Failed to create SPSC consumer"),
         _ => Topic::new(topic_name).expect("Failed to create MPMC consumer"),
     };
 

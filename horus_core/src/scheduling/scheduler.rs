@@ -1401,28 +1401,28 @@ impl Scheduler {
             ExecutionMode::JITOptimized => {
                 // Force JIT compilation for all nodes
                 self.profiler.force_ultra_fast_classification = true;
-                println!("JIT optimization mode selected");
+                print_line("JIT optimization mode selected");
             }
             ExecutionMode::Parallel => {
                 // Enable full parallelization
                 self.parallel_executor.set_max_threads(num_cpus::get());
-                println!("Parallel execution mode selected");
+                print_line("Parallel execution mode selected");
             }
             ExecutionMode::AsyncIO => {
                 // Force async I/O tier for all I/O operations
                 self.profiler.force_async_io_classification = true;
-                println!("Async I/O mode selected");
+                print_line("Async I/O mode selected");
             }
             ExecutionMode::Sequential => {
                 // Disable all optimizations for deterministic execution
                 self.learning_complete = true; // Skip learning phase
                 self.classifier = None;
                 self.parallel_executor.set_max_threads(1);
-                println!("Sequential execution mode selected");
+                print_line("Sequential execution mode selected");
             }
             ExecutionMode::AutoAdaptive => {
                 // Default adaptive behavior
-                println!("Auto-adaptive mode selected");
+                print_line("Auto-adaptive mode selected");
             }
         }
 
@@ -1454,7 +1454,7 @@ impl Scheduler {
             }
 
             self.safety_monitor = Some(monitor);
-            println!("Safety monitor configured for RT nodes");
+            print_line("Safety monitor configured for RT nodes");
         }
 
         // Apply timing configuration
@@ -1484,44 +1484,44 @@ impl Scheduler {
         if let Some(ref cores) = config.resources.cpu_cores {
             // Set CPU affinity
             self.parallel_executor.set_cpu_cores(cores.clone());
-            println!("CPU cores configuration: {:?}", cores);
+            print_line(&format!("CPU cores configuration: {:?}", cores));
         }
 
         // Apply monitoring configuration
         if config.monitoring.profiling_enabled {
             self.profiler.enable();
-            println!("Profiling enabled");
+            print_line("Profiling enabled");
         } else {
             self.profiler.disable();
-            println!("Profiling disabled");
+            print_line("Profiling disabled");
         }
 
         // Handle robot presets
         match config.preset {
             RobotPreset::SafetyCritical => {
-                println!("Configured for safety-critical operation");
+                print_line("Configured for safety-critical operation");
             }
             RobotPreset::HardRealTime => {
-                println!("Configured for hard real-time operation");
+                print_line("Configured for hard real-time operation");
             }
             RobotPreset::HighPerformance => {
-                println!("Configured for high-performance operation");
+                print_line("Configured for high-performance operation");
             }
             RobotPreset::Space => {
-                println!("Configured for space robotics");
+                print_line("Configured for space robotics");
             }
             RobotPreset::Swarm => {
-                println!("Configured for swarm robotics");
+                print_line("Configured for swarm robotics");
                 // Apply swarm-specific settings
                 if let Some(swarm_id) = config.get_custom::<i64>("swarm_id") {
                     self.scheduler_name = format!("Swarm_{}", swarm_id);
                 }
             }
             RobotPreset::SoftRobotics => {
-                println!("Configured for soft robotics");
+                print_line("Configured for soft robotics");
             }
             RobotPreset::Custom => {
-                println!("Using custom configuration");
+                print_line("Using custom configuration");
             }
             _ => {
                 // Standard preset
@@ -1542,10 +1542,10 @@ impl Scheduler {
                 config.fault.checkpoint_interval_ms,
             );
             self.checkpoint_manager = Some(cm);
-            println!(
+            print_line(&format!(
                 "[SCHEDULER] Checkpoint system enabled (interval: {}ms)",
                 config.fault.checkpoint_interval_ms
-            );
+            ));
         }
 
         // 3. Black box flight recorder
@@ -1557,10 +1557,10 @@ impl Scheduler {
                 config: format!("{:?}", config.preset),
             });
             self.blackbox = Some(bb);
-            println!(
+            print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
                 config.monitoring.black_box_size_mb
-            );
+            ));
         }
 
         // 4. Telemetry endpoint
@@ -1570,7 +1570,7 @@ impl Scheduler {
             let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
             tm.set_scheduler_name(&self.scheduler_name);
             self.telemetry = Some(tm);
-            println!("[SCHEDULER] Telemetry enabled (endpoint: {})", endpoint_str);
+            print_line(&format!("[SCHEDULER] Telemetry enabled (endpoint: {})", endpoint_str));
         }
 
         // 5. Redundancy (TMR)
@@ -1581,10 +1581,10 @@ impl Scheduler {
                 config.fault.redundancy_factor as usize,
                 strategy,
             ));
-            println!(
+            print_line(&format!(
                 "[SCHEDULER] Redundancy enabled (factor: {}, strategy: {:?})",
                 config.fault.redundancy_factor, strategy
-            );
+            ));
         }
 
         // 6. Real-time optimizations (Linux-specific)
@@ -1592,24 +1592,24 @@ impl Scheduler {
         {
             // Memory locking
             if config.realtime.memory_locking && super::runtime::lock_all_memory().is_ok() {
-                println!("[SCHEDULER] Memory locked (mlockall)");
+                print_line("[SCHEDULER] Memory locked (mlockall)");
             }
 
             // RT scheduling class
             if config.realtime.rt_scheduling_class {
                 let priority = 50; // Default RT priority
                 if super::runtime::set_realtime_priority(priority).is_ok() {
-                    println!(
+                    print_line(&format!(
                         "[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority {})",
                         priority
-                    );
+                    ));
                 }
             }
 
             // CPU core affinity
             if let Some(ref cores) = config.resources.cpu_cores {
                 if super::runtime::set_thread_affinity(cores).is_ok() {
-                    println!("[SCHEDULER] CPU affinity set to cores {:?}", cores);
+                    print_line(&format!("[SCHEDULER] CPU affinity set to cores {:?}", cores));
                 }
             }
 
@@ -1617,10 +1617,10 @@ impl Scheduler {
             if config.resources.numa_aware {
                 let numa_nodes = super::runtime::get_numa_node_count();
                 if numa_nodes > 1 {
-                    println!(
+                    print_line(&format!(
                         "[SCHEDULER] NUMA-aware scheduling ({} nodes detected)",
                         numa_nodes
-                    );
+                    ));
                 }
             }
         }
@@ -1668,10 +1668,10 @@ impl Scheduler {
                 self.scheduler_recording =
                     Some(SchedulerRecording::new(&scheduler_id, &session_name));
 
-                println!(
+                print_line(&format!(
                     "[SCHEDULER] Recording enabled (session: {}, compress: {})",
                     session_name, recording_yaml.compress
-                );
+                ));
             }
         }
 
@@ -1853,14 +1853,10 @@ impl Scheduler {
         self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, session_name));
         self.recording_config = Some(config);
 
-        println!(
-            "{}",
-            format!(
-                "[RECORDING] Enabled for session '{}' (scheduler@{})",
-                session_name, scheduler_id
-            )
-            .green()
-        );
+        print_line(&format!(
+            "[RECORDING] Enabled for session '{}' (scheduler@{})",
+            session_name, scheduler_id
+        ));
         self
     }
 
@@ -1895,14 +1891,10 @@ impl Scheduler {
         self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, &session_name));
         self.recording_config = Some(config);
 
-        println!(
-            "{}",
-            format!(
-                "[RECORDING] Enabled with custom config for session '{}'",
-                session_name
-            )
-            .green()
-        );
+        print_line(&format!(
+            "[RECORDING] Enabled with custom config for session '{}'",
+            session_name
+        ));
         self
     }
 
@@ -1931,16 +1923,12 @@ impl Scheduler {
         let node_name = replayer.recording().node_name.clone();
         let node_id = replayer.recording().node_id.clone();
 
-        println!(
-            "{}",
-            format!(
-                "[REPLAY] Loading '{}' from recording (ticks {}-{})",
-                node_name,
-                replayer.recording().first_tick,
-                replayer.recording().last_tick
-            )
-            .cyan()
-        );
+        print_line(&format!(
+            "[REPLAY] Loading '{}' from recording (ticks {}-{})",
+            node_name,
+            replayer.recording().first_tick,
+            replayer.recording().last_tick
+        ));
 
         // Create a ReplayNode wrapper
         let replay_node = ReplayNode::new(node_name.clone(), node_id.clone());
@@ -2002,22 +1990,18 @@ impl Scheduler {
             scheduler_path: scheduler_path.clone(),
         });
 
-        println!(
-            "{}",
-            format!(
-                "[REPLAY] Loading scheduler recording with {} nodes, {} ticks",
-                scheduler_recording.node_recordings.len(),
-                scheduler_recording.total_ticks
-            )
-            .cyan()
-        );
+        print_line(&format!(
+            "[REPLAY] Loading scheduler recording with {} nodes, {} ticks",
+            scheduler_recording.node_recordings.len(),
+            scheduler_recording.total_ticks
+        ));
 
         // Load all node recordings
         for (node_id, relative_path) in &scheduler_recording.node_recordings {
             let node_path = session_dir.join(relative_path);
             if node_path.exists() {
                 if let Err(e) = scheduler.add_replay(node_path, 0) {
-                    eprintln!("Warning: Failed to load node '{}': {}", node_id, e);
+                    print_line(&format!("Warning: Failed to load node '{}': {}", node_id, e));
                 }
             }
         }
@@ -2045,7 +2029,7 @@ impl Scheduler {
             replayer.seek(tick);
         }
 
-        println!("{}", format!("[REPLAY] Starting at tick {}", tick).cyan());
+        print_line(&format!("[REPLAY] Starting at tick {}", tick));
         self
     }
 
@@ -2067,10 +2051,7 @@ impl Scheduler {
             .or_default()
             .insert(output_name.to_string(), value);
 
-        println!(
-            "{}",
-            format!("[REPLAY] Override set: {}.{}", node_name, output_name).yellow()
-        );
+        print_line(&format!("[REPLAY] Override set: {}.{}", node_name, output_name));
         self
     }
 
@@ -2088,7 +2069,7 @@ impl Scheduler {
     /// ```
     pub fn stop_at_tick(mut self, tick: u64) -> Self {
         self.replay_stop_tick = Some(tick);
-        println!("{}", format!("[REPLAY] Will stop at tick {}", tick).cyan());
+        print_line(&format!("[REPLAY] Will stop at tick {}", tick));
         self
     }
 
@@ -2136,18 +2117,15 @@ impl Scheduler {
                 if let Some(ref mut recorder) = registered.recorder {
                     match recorder.finish() {
                         Ok(path) => {
-                            println!(
-                                "{}",
-                                format!("[RECORDING] Saved: {}", path.display()).green()
-                            );
+                            print_line(&format!("[RECORDING] Saved: {}", path.display()));
                             saved_paths.push(path);
                         }
                         Err(e) => {
-                            eprintln!(
+                            print_line(&format!(
                                 "Failed to save recording for '{}': {}",
                                 registered.node.name(),
                                 e
-                            );
+                            ));
                         }
                     }
                 }
@@ -2158,12 +2136,9 @@ impl Scheduler {
                 scheduler_rec.finish();
                 let path = config.scheduler_path(&scheduler_rec.scheduler_id);
                 if let Err(e) = scheduler_rec.save(&path) {
-                    eprintln!("Failed to save scheduler recording: {}", e);
+                    print_line(&format!("Failed to save scheduler recording: {}", e));
                 } else {
-                    println!(
-                        "{}",
-                        format!("[RECORDING] Saved scheduler: {}", path.display()).green()
-                    );
+                    print_line(&format!("[RECORDING] Saved scheduler: {}", path.display()));
                     saved_paths.push(path);
                 }
             }
@@ -2350,7 +2325,7 @@ impl Scheduler {
         // Print warnings if hardware differs
         let warnings = profile.check_compatibility();
         for warning in &warnings {
-            eprintln!("[PROFILE] Warning: {}", warning);
+            print_line(&format!("[PROFILE] Warning: {}", warning));
         }
 
         let mut scheduler = Self::new();
@@ -2370,13 +2345,13 @@ impl Scheduler {
 
         scheduler.classifier = Some(classifier);
 
-        println!(
+        print_line(&format!(
             "[OK] Loaded profile '{}' ({} nodes)",
             profile.name,
             profile.nodes.len()
-        );
-        println!("   - Determinism: ENABLED (from profile)");
-        println!("   - Execution: Optimized per-node tiers");
+        ));
+        print_line("   - Determinism: ENABLED (from profile)");
+        print_line("   - Execution: Optimized per-node tiers");
 
         Ok(scheduler)
     }
@@ -2402,8 +2377,8 @@ impl Scheduler {
     pub fn enable_learning(mut self) -> Self {
         self.learning_complete = false;
         self.classifier = None;
-        println!("[WARN] Learning phase enabled - execution will be non-deterministic");
-        println!("       For deterministic optimization, use Scheduler::with_profile() instead");
+        print_line("[WARN] Learning phase enabled - execution will be non-deterministic");
+        print_line("       For deterministic optimization, use Scheduler::with_profile() instead");
         self
     }
 
@@ -2534,10 +2509,10 @@ impl Scheduler {
     pub fn new_deterministic() -> Self {
         let sched = Self::new().enable_determinism();
 
-        println!("[OK] Deterministic scheduler initialized");
-        println!("   - Determinism: ENABLED");
-        println!("   - Execution: Reproducible, bit-exact");
-        println!("   - Use for: Simulation, testing, certification");
+        print_line("[OK] Deterministic scheduler initialized");
+        print_line("   - Determinism: ENABLED");
+        print_line("   - Execution: Reproducible, bit-exact");
+        print_line("   - Use for: Simulation, testing, certification");
 
         sched
     }
@@ -2587,7 +2562,7 @@ impl Scheduler {
                 )));
             }
 
-            println!("[OK] Real-time priority set to {} (SCHED_FIFO)", priority);
+            print_line(&format!("[OK] Real-time priority set to {} (SCHED_FIFO)", priority));
             Ok(())
         }
 
@@ -2631,7 +2606,7 @@ impl Scheduler {
                 )));
             }
 
-            println!("[OK] Scheduler pinned to CPU core {}", cpu_id);
+            print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
             Ok(())
         }
 
@@ -2674,7 +2649,7 @@ impl Scheduler {
                 )));
             }
 
-            println!("[OK] Memory locked (no page faults)");
+            print_line("[OK] Memory locked (no page faults)");
             Ok(())
         }
 
@@ -2712,7 +2687,7 @@ impl Scheduler {
             }
         }
 
-        println!("[OK] Pre-faulted {} KB of stack", stack_size / 1024);
+        print_line(&format!("[OK] Pre-faulted {} KB of stack", stack_size / 1024));
         Ok(())
     }
 
@@ -2779,10 +2754,10 @@ impl Scheduler {
                         let unique_name = format!("{}_{}", node_name, self.nodes.len());
                         match compiler.compile_arithmetic_node(&unique_name, factor, offset) {
                             Ok(func_ptr) => {
-                                println!(
+                                print_line(&format!(
                                     "[JIT] Compiled node '{}' with factor={}, offset={}",
                                     node_name, factor, offset
-                                );
+                                ));
                                 let compiled = CompiledDataflow {
                                     name: node_name.clone(),
                                     func_ptr,
@@ -2792,26 +2767,26 @@ impl Scheduler {
                                 (true, Some(compiled))
                             }
                             Err(e) => {
-                                eprintln!("[JIT] Failed to compile '{}': {}", node_name, e);
+                                print_line(&format!("[JIT] Failed to compile '{}': {}", node_name, e));
                                 (false, None)
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("[JIT] Compiler init failed for '{}': {}", node_name, e);
+                        print_line(&format!("[JIT] Compiler init failed for '{}': {}", node_name, e));
                         (false, None)
                     }
                 }
             } else if jit_compute_fn.is_some() {
                 // Node provides a direct compute function
-                println!(
+                print_line(&format!(
                     "[JIT] Node '{}' provides direct compute function",
                     node_name
-                );
+                ));
                 (true, None) // Will use get_jit_compute() at runtime
             } else {
                 // JIT capable but no compile params - track for stats only
-                println!("[JIT] Node '{}' is JIT-capable (tracking stats)", node_name);
+                print_line(&format!("[JIT] Node '{}' is JIT-capable (tracking stats)", node_name));
                 (true, Some(CompiledDataflow::new_stats_only(&node_name)))
             }
         } else {
@@ -3052,7 +3027,7 @@ impl Scheduler {
             if registered.node.name() == name {
                 registered.rate_hz = Some(rate_hz);
                 registered.last_tick = Some(Instant::now());
-                println!("Set node '{}' rate to {:.1} Hz", name, rate_hz);
+                print_line(&format!("Set node '{}' rate to {:.1} Hz", name, rate_hz));
                 break;
             }
         }
@@ -3092,22 +3067,19 @@ impl Scheduler {
             // Set up signal handling
             let running = self.running.clone();
             if let Err(e) = ctrlc::set_handler(move || {
-                eprintln!(
-                    "{}",
-                    "\nCtrl+C received! Shutting down HORUS scheduler...".red()
-                );
+                print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
                 if let Ok(mut r) = running.lock() {
                     *r = false;
                 }
                 std::thread::spawn(|| {
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    eprintln!("{}", "Force terminating - cleaning up session...".red());
+                    print_line("Force terminating - cleaning up session...");
                     // Clean up session before forced exit to prevent stale files
                     Self::cleanup_session();
                     std::process::exit(0);
                 });
             }) {
-                eprintln!("Warning: Failed to set signal handler: {}", e);
+                print_line(&format!("Warning: Failed to set signal handler: {}", e));
             }
 
             // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
@@ -3167,7 +3139,7 @@ impl Scheduler {
                 // Check if duration limit has been reached
                 if let Some(max_duration) = duration {
                     if start_time.elapsed() >= max_duration {
-                        println!("Scheduler reached time limit of {:?}", max_duration);
+                        print_line(&format!("Scheduler reached time limit of {:?}", max_duration));
                         break;
                     }
                 }
@@ -3175,20 +3147,14 @@ impl Scheduler {
                 // Check if replay stop tick has been reached
                 if let Some(stop_tick) = self.replay_stop_tick {
                     if self.current_tick >= stop_tick {
-                        println!(
-                            "{}",
-                            format!("[REPLAY] Reached stop tick {}", stop_tick).cyan()
-                        );
+                        print_line(&format!("[REPLAY] Reached stop tick {}", stop_tick));
                         break;
                     }
                 }
 
                 // Check if SIGTERM was received (e.g., from `kill` or `timeout`)
                 if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
-                    eprintln!(
-                        "{}",
-                        "\nSIGTERM received! Shutting down HORUS scheduler...".red()
-                    );
+                    print_line("\nSIGTERM received! Shutting down HORUS scheduler...");
                     break;
                 }
 
@@ -3200,7 +3166,7 @@ impl Scheduler {
 
                 // Check if learning phase is complete
                 if !self.learning_complete && self.profiler.is_learning_complete() {
-                    println!("\n{}", "=== Learning Phase Complete ===".green());
+                    print_line("\n=== Learning Phase Complete ===");
 
                     // Print profiling statistics
                     self.profiler.print_stats();
@@ -3213,35 +3179,35 @@ impl Scheduler {
                         classifier.print_classification();
 
                         let tier_stats = classifier.tier_stats();
-                        println!("\nTier Distribution:");
-                        println!(
+                        print_line("\nTier Distribution:");
+                        print_line(&format!(
                             "  Ultra-fast nodes: {:.1}%",
                             tier_stats.ultra_fast_percent()
-                        );
-                        println!(
+                        ));
+                        print_line(&format!(
                             "  Parallel-capable: {:.1}%",
                             tier_stats.parallel_capable_percent()
-                        );
+                        ));
                     }
 
                     // Print node latency percentiles
                     let summary = self.profiler.summary();
-                    println!("\nProfiler Summary:");
-                    println!("  Total nodes: {}", summary.total_nodes);
-                    println!(
+                    print_line("\nProfiler Summary:");
+                    print_line(&format!("  Total nodes: {}", summary.total_nodes));
+                    print_line(&format!(
                         "  Learning progress: {:.1}%",
                         self.profiler.learning_progress() * 100.0
-                    );
+                    ));
 
                     // Print IO-heavy and CPU-bound nodes
                     let io_nodes = self.profiler.get_io_heavy_nodes();
                     if !io_nodes.is_empty() {
-                        println!("  IO-heavy nodes: {:?}", io_nodes);
+                        print_line(&format!("  IO-heavy nodes: {:?}", io_nodes));
                     }
 
                     let cpu_nodes = self.profiler.get_cpu_bound_nodes();
                     if !cpu_nodes.is_empty() {
-                        println!("  CPU-bound nodes: {:?}", cpu_nodes);
+                        print_line(&format!("  CPU-bound nodes: {:?}", cpu_nodes));
                     }
 
                     // Setup JIT compiler for ultra-fast nodes
@@ -3267,7 +3233,7 @@ impl Scheduler {
                     self.setup_isolated_executor();
 
                     self.learning_complete = true;
-                    println!("{}", "=== Optimization Complete ===\n".green());
+                    print_line("=== Optimization Complete ===\n");
                 }
 
                 // Re-initialize nodes that need restart (set by control commands)
@@ -3278,17 +3244,13 @@ impl Scheduler {
                             match registered.node.init(ctx) {
                                 Ok(()) => {
                                     registered.initialized = true;
-                                    println!(
-                                        "{}",
-                                        format!("[CONTROL] Node '{}' re-initialized", node_name)
-                                            .green()
-                                    );
+                                    print_line(&format!("[CONTROL] Node '{}' re-initialized", node_name));
                                 }
                                 Err(e) => {
-                                    eprintln!(
+                                    print_line(&format!(
                                         "[CONTROL] Failed to re-initialize node '{}': {}",
                                         node_name, e
-                                    );
+                                    ));
                                     ctx.transition_to_error(format!(
                                         "Re-initialization failed: {}",
                                         e
@@ -3314,12 +3276,12 @@ impl Scheduler {
                     // Check all watchdogs
                     let expired_watchdogs = monitor.check_watchdogs();
                     if !expired_watchdogs.is_empty() {
-                        eprintln!(" Watchdog expired for nodes: {:?}", expired_watchdogs);
+                        print_line(&format!(" Watchdog expired for nodes: {:?}", expired_watchdogs));
                     }
 
                     // Check if emergency stop was triggered
                     if monitor.is_emergency_stop() {
-                        eprintln!(" Emergency stop activated - shutting down scheduler");
+                        print_line(" Emergency stop activated - shutting down scheduler");
                         // Record to blackbox
                         if let Some(ref mut bb) = self.blackbox {
                             bb.record(super::blackbox::BlackBoxEvent::EmergencyStop {
@@ -3343,23 +3305,23 @@ impl Scheduler {
                             || matches!(stats.state, super::fault_tolerance::CircuitState::Open)
                         {
                             if !has_breaker_issues {
-                                println!("\n{}", "Circuit Breaker Status:".yellow());
+                                print_line("\nCircuit Breaker Status:");
                                 has_breaker_issues = true;
                             }
-                            println!(
+                            print_line(&format!(
                                 "  {} - State: {:?}, Failures: {}, Successes: {}",
                                 registered.node.name(),
                                 stats.state,
                                 stats.failure_count,
                                 stats.success_count
-                            );
+                            ));
                         }
                     }
 
                     // Print dependency graph statistics if available
                     if let Some(ref graph) = self.dependency_graph {
                         if graph.has_cycles() {
-                            eprintln!("{}", "WARNING: Dependency graph contains cycles!".red());
+                            print_line("WARNING: Dependency graph contains cycles!");
                         }
                         let graph_stats = graph.stats();
                         // Print graph stats occasionally
@@ -3367,12 +3329,12 @@ impl Scheduler {
                         static GRAPH_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
                         let count = GRAPH_LOG_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                         if count.is_multiple_of(100) {
-                            println!(
+                            print_line(&format!(
                                 "Dependency Graph - Nodes: {}, Edges: {}, Levels: {}",
                                 graph_stats.total_nodes,
                                 graph_stats.total_edges,
                                 graph_stats.num_levels
-                            );
+                            ));
                         }
                     }
                 }
@@ -3469,7 +3431,7 @@ impl Scheduler {
                             }
 
                             if let Err(e) = cm.save_checkpoint(&checkpoint) {
-                                eprintln!("[CHECKPOINT] Failed to save: {}", e);
+                                print_line(&format!("[CHECKPOINT] Failed to save: {}", e));
                             }
                         }
                     }
@@ -3506,8 +3468,8 @@ impl Scheduler {
                         ctx.record_shutdown();
 
                         match registered.node.shutdown(ctx) {
-                            Ok(()) => println!("Shutdown node '{}' successfully", node_name),
-                            Err(e) => println!("Error shutting down node '{}': {}", node_name, e),
+                            Ok(()) => print_line(&format!("Shutdown node '{}' successfully", node_name)),
+                            Err(e) => print_line(&format!("Error shutting down node '{}': {}", node_name, e)),
                         }
                     }
                 }
@@ -3518,13 +3480,13 @@ impl Scheduler {
             // Shutdown background executor
             if let Some(ref mut executor) = self.background_executor {
                 executor.shutdown();
-                println!("Background executor shutdown complete");
+                print_line("Background executor shutdown complete");
             }
 
             // Shutdown isolated executor
             if let Some(ref mut executor) = self.isolated_executor {
                 executor.shutdown();
-                println!("Isolated executor shutdown complete");
+                print_line("Isolated executor shutdown complete");
             }
 
             // Get total tick count from profiler stats
@@ -3543,7 +3505,7 @@ impl Scheduler {
                     total_ticks,
                 });
                 if let Err(e) = bb.save() {
-                    eprintln!("[BLACKBOX] Failed to save: {}", e);
+                    print_line(&format!("[BLACKBOX] Failed to save: {}", e));
                 }
             }
 
@@ -3559,7 +3521,7 @@ impl Scheduler {
             // Note: Don't cleanup_heartbeats() - let monitor see final state
             Self::cleanup_session();
 
-            println!("Scheduler shutdown complete");
+            print_line("Scheduler shutdown complete");
         });
 
         Ok(())
@@ -3658,16 +3620,16 @@ impl Scheduler {
         for registered in &mut self.nodes {
             if registered.node.name() == name {
                 registered.logging_enabled = enabled;
-                println!("Set logging for node '{}' to: {}", name, enabled);
+                print_line(&format!("Set logging for node '{}' to: {}", name, enabled));
                 found = true;
                 break;
             }
         }
         if !found {
-            eprintln!(
+            print_line(&format!(
                 "Warning: Node '{}' not found for logging configuration",
                 name
-            );
+            ));
         }
         self
     }
@@ -3837,14 +3799,10 @@ impl Scheduler {
                                             registered.is_stopped = false;
                                             registered.is_paused = false;
                                             registered.initialized = false;
-                                            println!(
-                                                "{}",
-                                                format!(
-                                                    "[CONTROL] Node '{}' restarting",
-                                                    node_name
-                                                )
-                                                .cyan()
-                                            );
+                                            print_line(&format!(
+                                                "[CONTROL] Node '{}' restarting",
+                                                node_name
+                                            ));
                                             // Reset context for re-initialization
                                             if let Some(ref mut ctx) = registered.context {
                                                 ctx.reset_for_restart();
@@ -3852,29 +3810,17 @@ impl Scheduler {
                                         }
                                         "pause" => {
                                             registered.is_paused = true;
-                                            println!(
-                                                "{}",
-                                                format!("[CONTROL] Node '{}' paused", node_name)
-                                                    .yellow()
-                                            );
+                                            print_line(&format!("[CONTROL] Node '{}' paused", node_name));
                                         }
                                         "resume" => {
                                             registered.is_paused = false;
-                                            println!(
-                                                "{}",
-                                                format!("[CONTROL] Node '{}' resumed", node_name)
-                                                    .green()
-                                            );
+                                            print_line(&format!("[CONTROL] Node '{}' resumed", node_name));
                                         }
                                         _ => {
-                                            eprintln!(
-                                                "{}",
-                                                format!(
-                                                    "[CONTROL] Unknown command '{}' for node '{}'",
-                                                    cmd, node_name
-                                                )
-                                                .red()
-                                            );
+                                            print_line(&format!(
+                                                "[CONTROL] Unknown command '{}' for node '{}'",
+                                                cmd, node_name
+                                            ));
                                         }
                                     }
                                     break;
@@ -3882,10 +3828,7 @@ impl Scheduler {
                             }
 
                             if !found {
-                                eprintln!(
-                                    "{}",
-                                    format!("[CONTROL] Node '{}' not found", node_name).red()
-                                );
+                                print_line(&format!("[CONTROL] Node '{}' not found", node_name));
                             }
                         }
 
@@ -4109,7 +4052,7 @@ impl Scheduler {
                 if tick_result.is_err() {
                     // Record failure for Isolated tier classification
                     self.profiler.record_node_failure(node_name);
-                    eprintln!("Node '{}' panicked during execution", node_name);
+                    print_line(&format!("Node '{}' panicked during execution", node_name));
                 }
 
                 // Record profiling data
@@ -4119,10 +4062,10 @@ impl Scheduler {
                 if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
                     if let Some(ref monitor) = self.safety_monitor {
                         if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                            eprintln!(
+                            print_line(&format!(
                                 " WCET violation in {}: {:?} > {:?}",
                                 violation.node_name, violation.actual, violation.budget
-                            );
+                            ));
                         }
                     }
                 }
@@ -4134,10 +4077,10 @@ impl Scheduler {
                         if elapsed > deadline {
                             if let Some(ref monitor) = self.safety_monitor {
                                 monitor.record_deadline_miss(node_name);
-                                eprintln!(
+                                print_line(&format!(
                                     " Deadline miss in {}: {:?} > {:?}",
                                     node_name, elapsed, deadline
-                                );
+                                ));
                             }
                         }
                     }
@@ -4167,26 +4110,26 @@ impl Scheduler {
                         let registered = &mut self.nodes[i];
                         if let Some(ref mut context) = registered.context {
                             context.record_tick_failure(error_msg.clone()); // Node writes its own heartbeat
-                            eprintln!(" {} failed: {}", node_name, error_msg);
+                            print_line(&format!(" {} failed: {}", node_name, error_msg));
 
                             registered.node.on_error(&error_msg, context);
 
                             if context.config().restart_on_failure {
                                 match context.restart() {
                                     Ok(_) => {
-                                        println!(
+                                        print_line(&format!(
                                             " Node '{}' restarted successfully (attempt {}/{})",
                                             node_name,
                                             context.metrics().errors_count,
                                             context.config().max_restart_attempts
-                                        );
+                                        ));
                                         registered.initialized = true;
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        print_line(&format!(
                                             "Node '{}' exceeded max restart attempts: {}",
                                             node_name, e
-                                        );
+                                        ));
                                         context.transition_to_crashed(format!(
                                             "Max restarts exceeded: {}",
                                             e
@@ -4404,7 +4347,7 @@ impl Scheduler {
         if tick_result.is_err() {
             // Record failure for Isolated tier classification
             self.profiler.record_node_failure(node_name);
-            eprintln!("Node '{}' panicked during execution", node_name);
+            print_line(&format!("Node '{}' panicked during execution", node_name));
         }
 
         self.profiler.record(node_name, tick_duration);
@@ -4424,14 +4367,14 @@ impl Scheduler {
                 if jit_stats.exec_count % 1000 == 0 {
                     let avg_ns = jit_stats.avg_exec_ns();
                     let is_fast = jit_stats.is_fast_enough();
-                    println!(
+                    print_line(&format!(
                         "[JIT] Node '{}' - {} executions, avg: {:.0}ns (target: 20-50ns) {} {}",
                         node_name,
                         jit_stats.exec_count,
                         avg_ns,
                         if jit_executed { "[NATIVE]" } else { "[TICK]" },
                         if is_fast { "x" } else { "SLOW" }
-                    );
+                    ));
                 }
             }
 
@@ -4446,10 +4389,10 @@ impl Scheduler {
         if is_rt_node && wcet_budget.is_some() {
             if let Some(ref monitor) = self.safety_monitor {
                 if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                    eprintln!(
+                    print_line(&format!(
                         " WCET violation in {}: {:?} > {:?}",
                         violation.node_name, violation.actual, violation.budget
-                    );
+                    ));
                 }
             }
         }
@@ -4461,10 +4404,10 @@ impl Scheduler {
                 if elapsed > deadline_duration {
                     if let Some(ref monitor) = self.safety_monitor {
                         monitor.record_deadline_miss(node_name);
-                        eprintln!(
+                        print_line(&format!(
                             " Deadline miss in {}: {:?} > {:?}",
                             node_name, elapsed, deadline_duration
-                        );
+                        ));
                     }
                 }
             }
@@ -4493,26 +4436,26 @@ impl Scheduler {
                 let registered = &mut self.nodes[idx];
                 if let Some(ref mut context) = registered.context {
                     context.record_tick_failure(error_msg.clone()); // Node writes its own heartbeat
-                    eprintln!(" {} failed: {}", node_name, error_msg);
+                    print_line(&format!(" {} failed: {}", node_name, error_msg));
 
                     registered.node.on_error(&error_msg, context);
 
                     if context.config().restart_on_failure {
                         match context.restart() {
                             Ok(_) => {
-                                println!(
+                                print_line(&format!(
                                     " Node '{}' restarted successfully (attempt {}/{})",
                                     node_name,
                                     context.metrics().errors_count,
                                     context.config().max_restart_attempts
-                                );
+                                ));
                                 registered.initialized = true;
                             }
                             Err(e) => {
-                                eprintln!(
+                                print_line(&format!(
                                     "Node '{}' exceeded max restart attempts: {}",
                                     node_name, e
-                                );
+                                ));
                                 context
                                     .transition_to_crashed(format!("Max restarts exceeded: {}", e));
                                 registered.initialized = false;
@@ -4542,10 +4485,10 @@ impl Scheduler {
                         // Skip if already JIT-compiled at add-time with proper params
                         if self.nodes[i].is_jit_compiled && self.nodes[i].jit_stats.is_some() {
                             already_compiled_count += 1;
-                            println!(
+                            print_line(&format!(
                                 "[JIT] Node '{}' already compiled at add-time (keeping original)",
                                 node_name
-                            );
+                            ));
                             continue;
                         }
 
@@ -4563,10 +4506,10 @@ impl Scheduler {
                                         offset,
                                     ) {
                                         Ok(func_ptr) => {
-                                            println!(
+                                            print_line(&format!(
                                                 "[JIT] Learning phase compiled '{}' with factor={}, offset={}",
                                                 node_name, factor, offset
-                                            );
+                                            ));
                                             Some(CompiledDataflow {
                                                 name: node_name.to_string(),
                                                 func_ptr,
@@ -4601,20 +4544,20 @@ impl Scheduler {
                             self.nodes[i].jit_stats = Some(compiled);
 
                             jit_compiled_count += 1;
-                            println!(
+                            print_line(&format!(
                                 "[JIT] Auto-compiled node '{}' for ultra-fast execution (target: 20-50ns)",
                                 node_name
-                            );
+                            ));
                         }
                     }
                 }
             }
 
             if jit_compiled_count > 0 || already_compiled_count > 0 {
-                println!(
+                print_line(&format!(
                     "[JIT] {} nodes auto-compiled, {} already compiled at add-time",
                     jit_compiled_count, already_compiled_count
-                );
+                ));
             }
         }
     }
@@ -4658,7 +4601,7 @@ impl Scheduler {
                 if let Err(e) =
                     async_executor.spawn_node(registered.node, registered.context, tx.clone())
                 {
-                    eprintln!("Failed to move {} to async tier: {}", node_name, e);
+                    print_line(&format!("Failed to move {} to async tier: {}", node_name, e));
                     // Note: Can't put it back since we've moved ownership
                     // This is acceptable as the node would be dropped anyway
                 }
@@ -4675,7 +4618,7 @@ impl Scheduler {
             while let Ok(result) = rx.try_recv() {
                 if !result.success {
                     if let Some(ref error) = result.error {
-                        eprintln!("Async node {} failed: {}", result.node_name, error);
+                        print_line(&format!("Async node {} failed: {}", result.node_name, error));
                     }
                 }
             }
@@ -4688,7 +4631,7 @@ impl Scheduler {
         let mut bg_executor = match BackgroundExecutor::new() {
             Ok(exec) => exec,
             Err(e) => {
-                eprintln!("[Background] Failed to create executor: {}", e);
+                print_line(&format!("[Background] Failed to create executor: {}", e));
                 return;
             }
         };
@@ -4717,15 +4660,15 @@ impl Scheduler {
 
                 // Spawn in background executor
                 if let Err(e) = bg_executor.spawn_node(registered.node, registered.context) {
-                    eprintln!("Failed to move {} to background tier: {}", node_name, e);
+                    print_line(&format!("Failed to move {} to background tier: {}", node_name, e));
                 }
             }
 
             if bg_executor.node_count() > 0 {
-                println!(
+                print_line(&format!(
                     "[Background] Moved {} nodes to low-priority thread",
                     bg_executor.node_count()
-                );
+                ));
             }
         }
 
@@ -4738,7 +4681,7 @@ impl Scheduler {
             for result in executor.poll_results() {
                 if !result.success {
                     if let Some(ref error) = result.error {
-                        eprintln!("[Background] Node {} failed: {}", result.node_name, error);
+                        print_line(&format!("[Background] Node {} failed: {}", result.node_name, error));
                     }
                 }
             }
@@ -4760,7 +4703,7 @@ impl Scheduler {
         let mut iso_executor = match IsolatedExecutor::new(config) {
             Ok(exec) => exec,
             Err(e) => {
-                eprintln!("[Isolated] Failed to create executor: {}", e);
+                print_line(&format!("[Isolated] Failed to create executor: {}", e));
                 return;
             }
         };
@@ -4792,15 +4735,15 @@ impl Scheduler {
                 if let Err(e) =
                     iso_executor.spawn_node(registered.node, &node_name, registered.context)
                 {
-                    eprintln!("Failed to move {} to isolated tier: {}", node_name, e);
+                    print_line(&format!("Failed to move {} to isolated tier: {}", node_name, e));
                 }
             }
 
             if iso_executor.node_count() > 0 {
-                println!(
+                print_line(&format!(
                     "[Isolated] Moved {} nodes to process isolation",
                     iso_executor.node_count()
-                );
+                ));
 
                 // Start the watchdog for health monitoring
                 iso_executor.start_watchdog();

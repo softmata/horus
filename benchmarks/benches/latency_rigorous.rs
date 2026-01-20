@@ -104,8 +104,8 @@ fn bench_spsc_shm_size(
     group.throughput(Throughput::Bytes(size as u64));
     group.bench_with_input(BenchmarkId::new("roundtrip", name), &size, |b, &sz| {
         let topic = format!("bench_spsc_{}_{}", sz, std::process::id());
-        let producer: Topic<BenchPayload> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<BenchPayload> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
+        let consumer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
         let msg = BenchPayload::new(sz);
 
         // Warmup
@@ -272,8 +272,8 @@ fn bench_send_only_latency(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(64));
     group.bench_function("spsc_shm/64B", |b| {
         let topic = format!("bench_send_spsc_{}", std::process::id());
-        let producer: Topic<BenchPayload> = Topic::producer(&topic).unwrap();
-        let _consumer: Topic<BenchPayload> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
+        let _consumer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
         let msg = BenchPayload::new(64);
 
         b.iter(|| {
@@ -356,8 +356,8 @@ fn bench_backend_comparison(c: &mut Criterion) {
     // SpscShm
     group.bench_function("SpscShm", |b| {
         let topic = format!("bench_cmp_spsc_shm_{}", std::process::id());
-        let producer: Topic<BenchPayload> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<BenchPayload> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
+        let consumer: Topic<BenchPayload> = Topic::new(&topic).unwrap();
         b.iter(|| {
             producer.send(black_box(msg.clone()), &mut None).unwrap();
             black_box(consumer.recv(&mut None))

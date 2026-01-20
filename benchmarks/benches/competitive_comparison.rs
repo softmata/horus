@@ -236,8 +236,8 @@ fn bench_64b_comparison(c: &mut Criterion) {
     // HORUS SpscShm (cross-process capable)
     group.bench_function("horus_spsc_shm", |b| {
         let topic = format!("cmp64_spsc_shm_{}", std::process::id());
-        let tx: Topic<Payload64B> = Topic::producer(&topic).unwrap();
-        let rx: Topic<Payload64B> = Topic::consumer(&topic).unwrap();
+        let tx: Topic<Payload64B> = Topic::new(&topic).unwrap();
+        let rx: Topic<Payload64B> = Topic::new(&topic).unwrap();
 
         for _ in 0..1000 {
             tx.send(msg, &mut None).unwrap();
@@ -394,8 +394,8 @@ fn bench_1kb_comparison(c: &mut Criterion) {
 
     group.bench_function("horus_spsc_shm", |b| {
         let topic = format!("cmp1k_spsc_shm_{}", std::process::id());
-        let tx: Topic<Payload1KB> = Topic::producer(&topic).unwrap();
-        let rx: Topic<Payload1KB> = Topic::consumer(&topic).unwrap();
+        let tx: Topic<Payload1KB> = Topic::new(&topic).unwrap();
+        let rx: Topic<Payload1KB> = Topic::new(&topic).unwrap();
         let msg = Payload1KB::default();
 
         for _ in 0..1000 {
@@ -508,8 +508,8 @@ fn bench_4kb_comparison(c: &mut Criterion) {
 
     group.bench_function("horus_spsc_shm", |b| {
         let topic = format!("cmp4k_spsc_shm_{}", std::process::id());
-        let tx: Topic<Payload4KB> = Topic::producer(&topic).unwrap();
-        let rx: Topic<Payload4KB> = Topic::consumer(&topic).unwrap();
+        let tx: Topic<Payload4KB> = Topic::new(&topic).unwrap();
+        let rx: Topic<Payload4KB> = Topic::new(&topic).unwrap();
         let msg = Payload4KB::default();
 
         for _ in 0..500 {
@@ -623,8 +623,8 @@ fn bench_throughput_comparison(c: &mut Criterion) {
     // HORUS SpscShm burst
     group.bench_function("horus_spsc_shm_burst", |b| {
         let topic = format!("tput_spsc_shm_{}", std::process::id());
-        let tx: Topic<Payload64B> = Topic::producer(&topic).unwrap();
-        let rx: Topic<Payload64B> = Topic::consumer(&topic).unwrap();
+        let tx: Topic<Payload64B> = Topic::new(&topic).unwrap();
+        let rx: Topic<Payload64B> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
             for _ in 0..batch_size {

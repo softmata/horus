@@ -2423,6 +2423,12 @@ except ImportError as e:
                             DependencySource::Git { .. } => {
                                 // Git deps are cloned by horus run, skip here
                             }
+                            DependencySource::Pip { package_name } => {
+                                // Pip deps are installed to venv, check later during run
+                                // We could check if the package is in .horus/venv but that's complex
+                                // Just skip for status check - horus run will handle it
+                                let _ = package_name; // suppress unused warning
+                            }
                         }
                     }
 

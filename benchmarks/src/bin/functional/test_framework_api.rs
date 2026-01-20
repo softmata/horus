@@ -169,7 +169,7 @@ struct ActuatorNode {
 impl ActuatorNode {
     fn new(topic: &str, counter: Arc<Mutex<u32>>) -> Self {
         Self {
-            receiver: Topic::<CmdVel>::consumer(topic).expect("Failed to create Link consumer"),
+            receiver: Topic::<CmdVel>::new(topic).expect("Failed to create Link consumer"),
             counter,
         }
     }
@@ -452,7 +452,7 @@ fn test_multi_node_graph() -> bool {
 
     // Create Link producer for actuator
     let actuator_sender =
-        Topic::<CmdVel>::producer(&actuator_topic).expect("Failed to create Link producer");
+        Topic::<CmdVel>::new(&actuator_topic).expect("Failed to create Link producer");
 
     // Create node graph: Sensor  Controller  Actuator
     let sensor = Box::new(SensorNode::new(&sensor_topic, sensor_counter.clone()));

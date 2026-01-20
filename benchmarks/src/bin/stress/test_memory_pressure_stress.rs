@@ -149,7 +149,7 @@ fn test_buffer_exhaustion(config: &TestConfig) -> TestResult {
     let mut errors = Vec::new();
 
     // Create Link (SPSC, default capacity 16)
-    let producer = match Topic::<CmdVel>::producer(&topic) {
+    let producer = match Topic::<CmdVel>::new(&topic) {
         Ok(p) => p,
         Err(e) => {
             return TestResult {
@@ -161,7 +161,7 @@ fn test_buffer_exhaustion(config: &TestConfig) -> TestResult {
         }
     };
 
-    let consumer = match Topic::<CmdVel>::consumer(&topic) {
+    let consumer = match Topic::<CmdVel>::new(&topic) {
         Ok(c) => c,
         Err(e) => {
             return TestResult {
@@ -267,7 +267,7 @@ fn test_backpressure(config: &TestConfig) -> TestResult {
     let topic = format!("test_backpressure_{}", process::id());
     let mut errors = Vec::new();
 
-    let producer = match Topic::<CmdVel>::producer(&topic) {
+    let producer = match Topic::<CmdVel>::new(&topic) {
         Ok(p) => p,
         Err(e) => {
             return TestResult {
@@ -279,7 +279,7 @@ fn test_backpressure(config: &TestConfig) -> TestResult {
         }
     };
 
-    let consumer = match Topic::<CmdVel>::consumer(&topic) {
+    let consumer = match Topic::<CmdVel>::new(&topic) {
         Ok(c) => c,
         Err(e) => {
             return TestResult {
@@ -411,7 +411,7 @@ fn test_recovery_after_drain(config: &TestConfig) -> TestResult {
     let mut errors = Vec::new();
     let cycles = if config.quick_mode { 10 } else { 50 };
 
-    let producer = match Topic::<CmdVel>::producer(&topic) {
+    let producer = match Topic::<CmdVel>::new(&topic) {
         Ok(p) => p,
         Err(e) => {
             return TestResult {
@@ -423,7 +423,7 @@ fn test_recovery_after_drain(config: &TestConfig) -> TestResult {
         }
     };
 
-    let consumer = match Topic::<CmdVel>::consumer(&topic) {
+    let consumer = match Topic::<CmdVel>::new(&topic) {
         Ok(c) => c,
         Err(e) => {
             return TestResult {
@@ -501,7 +501,7 @@ fn test_data_integrity_under_pressure(config: &TestConfig) -> TestResult {
     let mut errors = Vec::new();
     let messages = if config.quick_mode { 1000 } else { 10000 };
 
-    let producer = match Topic::<CmdVel>::producer(&topic) {
+    let producer = match Topic::<CmdVel>::new(&topic) {
         Ok(p) => p,
         Err(e) => {
             return TestResult {
@@ -513,7 +513,7 @@ fn test_data_integrity_under_pressure(config: &TestConfig) -> TestResult {
         }
     };
 
-    let consumer = match Topic::<CmdVel>::consumer(&topic) {
+    let consumer = match Topic::<CmdVel>::new(&topic) {
         Ok(c) => c,
         Err(e) => {
             return TestResult {
@@ -647,9 +647,9 @@ fn test_multiple_topics_competition(config: &TestConfig) -> TestResult {
     for i in 0..num_topics {
         let topic = format!("test_multi_{}_{}", process::id(), i);
 
-        match Topic::<CmdVel>::producer(&topic) {
+        match Topic::<CmdVel>::new(&topic) {
             Ok(prod) => {
-                match Topic::<CmdVel>::consumer(&topic) {
+                match Topic::<CmdVel>::new(&topic) {
                     Ok(cons) => {
                         links.push((prod, cons));
                     }
@@ -737,7 +737,7 @@ fn test_burst_and_recovery(config: &TestConfig) -> TestResult {
     let bursts = if config.quick_mode { 5 } else { 20 };
     let burst_size = 100;
 
-    let producer = match Topic::<CmdVel>::producer(&topic) {
+    let producer = match Topic::<CmdVel>::new(&topic) {
         Ok(p) => p,
         Err(e) => {
             return TestResult {
@@ -749,7 +749,7 @@ fn test_burst_and_recovery(config: &TestConfig) -> TestResult {
         }
     };
 
-    let consumer = match Topic::<CmdVel>::consumer(&topic) {
+    let consumer = match Topic::<CmdVel>::new(&topic) {
         Ok(c) => c,
         Err(e) => {
             return TestResult {

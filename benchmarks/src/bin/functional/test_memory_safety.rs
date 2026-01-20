@@ -103,7 +103,7 @@ fn test_bounds_checking() -> bool {
     let topic = format!("test_bounds_{}", process::id());
 
     // Create a small Link to test bounds
-    let sender = match Topic::<CmdVel>::producer(&topic) {
+    let sender = match Topic::<CmdVel>::new(&topic) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create sender: {}", e);
@@ -111,7 +111,7 @@ fn test_bounds_checking() -> bool {
         }
     };
 
-    let receiver = match Topic::<CmdVel>::consumer(&topic) {
+    let receiver = match Topic::<CmdVel>::new(&topic) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to create receiver: {}", e);
@@ -374,7 +374,7 @@ fn test_overflow_protection() -> bool {
     for &size in &buffer_sizes {
         let topic = format!("test_overflow_{}_{}", process::id(), size);
 
-        let sender = match Topic::<CmdVel>::producer(&topic) {
+        let sender = match Topic::<CmdVel>::new(&topic) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to create sender: {:?}", e);
@@ -382,7 +382,7 @@ fn test_overflow_protection() -> bool {
             }
         };
 
-        let receiver = match Topic::<CmdVel>::consumer(&topic) {
+        let receiver = match Topic::<CmdVel>::new(&topic) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Failed to create receiver with size {}: {:?}", size, e);

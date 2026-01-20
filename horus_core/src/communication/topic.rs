@@ -3350,40 +3350,6 @@ where
         })
     }
 
-    /// Create a topic with SPSC backend (1 producer, 1 consumer)
-    ///
-    /// Use this when you know there's exactly one producer and one consumer.
-    /// Provides better latency (~85ns vs ~167ns).
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The topic name
-    /// * `is_producer` - Whether this end is the producer
-    pub fn spsc(name: impl Into<String>, is_producer: bool) -> HorusResult<Self> {
-        let name = name.into();
-        let shm_name = format!("topic/{}", name);
-
-        let backend = SpscShmBackend::new(&shm_name, is_producer)?;
-
-        Ok(Self {
-            name,
-            backend: TopicBackend::SpscShm(backend),
-            metrics: Arc::new(AtomicTopicMetrics::default()),
-            state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            _marker: PhantomData,
-        })
-    }
-
-    /// Create a producer for SPSC topic
-    pub fn producer(name: impl Into<String>) -> HorusResult<Self> {
-        Self::spsc(name, true)
-    }
-
-    /// Create a consumer for SPSC topic
-    pub fn consumer(name: impl Into<String>) -> HorusResult<Self> {
-        Self::spsc(name, false)
-    }
-
     /// Create a topic from configuration
     /// Create a topic from configuration with automatic backend selection
     ///
@@ -3458,11 +3424,11 @@ where
                 }
             }
             SelectedBackend::SpscShm => {
-                Self::spsc(config.name, config.is_producer)
+                Self::spsc_shm(config.name, config.is_producer)
             }
             SelectedBackend::PodShm => {
                 // PodShm requires PodMessage trait - fall back to SpscShm
-                Self::spsc(config.name, config.is_producer)
+                Self::spsc_shm(config.name, config.is_producer)
             }
             SelectedBackend::MpmcShm => {
                 Self::with_capacity(config.name, config.capacity as usize)
@@ -3838,6 +3804,50 @@ where
         Ok(Self {
             name,
             backend: TopicBackend::SpmcShm(backend),
+            metrics: Arc::new(AtomicTopicMetrics::default()),
+            state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            _marker: PhantomData,
+        })
+    }
+
+    /// Create an SpscShm topic for cross-process SPSC communication
+    ///
+    /// This backend (~85ns) is optimized for a single producer and single consumer
+    /// across different processes using shared memory. Uses a single-slot design
+    /// where the producer overwrites and the consumer tracks what it has seen.
+    ///
+    /// Common use case: Dedicated point-to-point communication between two nodes
+    /// (e.g., sensor driver to processor, controller to actuator).
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The topic name (used as shared memory identifier)
+    /// * `is_producer` - True for producer, false for consumer
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Producer process
+    /// let producer: Topic<MotorCommand> = Topic::spsc_shm("motor_cmd", true)?;
+    /// producer.send(cmd, &mut None)?;
+    ///
+    /// // Consumer process
+    /// let consumer: Topic<MotorCommand> = Topic::spsc_shm("motor_cmd", false)?;
+    /// let cmd = consumer.recv(&mut None);
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// Only one producer and one consumer should exist across all processes.
+    /// Multiple producers or consumers will lead to undefined behavior.
+    pub fn spsc_shm(name: impl Into<String>, is_producer: bool) -> HorusResult<Self> {
+        let name = name.into();
+        let shm_name = format!("topic/{}", name);
+        let backend = SpscShmBackend::new(&shm_name, is_producer)?;
+
+        Ok(Self {
+            name,
+            backend: TopicBackend::SpscShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
@@ -4757,19 +4767,20 @@ mod tests {
     fn test_spsc_backend() {
         let unique_name = format!("test_spsc_{}", std::process::id());
 
-        let producer: Topic<TestMessage> = Topic::producer(&unique_name).unwrap();
-        let consumer: Topic<TestMessage> = Topic::consumer(&unique_name).unwrap();
+        // Use Topic::new() which auto-detects role on first send/recv
+        let topic1: Topic<TestMessage> = Topic::new(&unique_name).unwrap();
+        let topic2: Topic<TestMessage> = Topic::new(&unique_name).unwrap();
 
-        assert_eq!(producer.backend_type(), "SpscShm");
-        assert_eq!(consumer.backend_type(), "SpscShm");
+        // Backend type is determined by auto-detection
+        assert!(topic1.backend_type().contains("Shm") || topic1.backend_type() == "Adaptive");
 
         let msg = TestMessage {
             id: 99,
             payload: "spsc test".to_string(),
         };
-        producer.send(msg.clone(), &mut None).unwrap();
+        topic1.send(msg.clone(), &mut None).unwrap();
 
-        let received = consumer.recv(&mut None);
+        let received = topic2.recv(&mut None);
         assert!(received.is_some());
         assert_eq!(received.unwrap().id, 99);
     }

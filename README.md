@@ -204,8 +204,8 @@ let local_topic: Topic<SensorData> = Topic::new("sensors")?;
 let network_topic: Topic<SensorData> = Topic::new("sensors@192.168.1.100:8000")?;
 
 // SPSC mode also supports network endpoints
-let producer: Topic<Command> = Topic::producer("commands@robot.local:9000")?;
-let consumer: Topic<Command> = Topic::consumer("commands@0.0.0.0:9000")?;
+let producer: Topic<Command> = Topic::new("commands@robot.local:9000")?;
+let consumer: Topic<Command> = Topic::new("commands@0.0.0.0:9000")?;
 ```
 
 ### Network Features

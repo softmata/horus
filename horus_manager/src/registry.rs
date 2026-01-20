@@ -508,6 +508,16 @@ impl RegistryClient {
                 }
                 Ok(())
             }
+            DependencySource::Pip { package_name } => {
+                // Install from PyPI
+                let version_str = if spec.requirement.to_string() != "*" {
+                    Some(spec.requirement.to_string())
+                } else {
+                    None
+                };
+                self.install_from_pypi(package_name, version_str.as_deref(), target)
+                    .map(|_| ()) // Ignore version for dependency spec
+            }
         }
     }
 

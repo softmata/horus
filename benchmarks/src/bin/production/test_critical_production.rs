@@ -480,12 +480,12 @@ fn test_large_messages_64b() -> TestResult {
     println!("Testing 64-byte messages (small sensor data)...");
 
     let topic = format!("test_64b_{}", process::id());
-    let producer = match Topic::<SmallMessage>::producer(&topic) {
+    let producer = match Topic::<SmallMessage>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<SmallMessage>::consumer(&topic) {
+    let consumer = match Topic::<SmallMessage>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -578,12 +578,12 @@ fn test_large_messages_256b() -> TestResult {
     println!("Testing 256-byte messages (camera metadata)...");
 
     let topic = format!("test_256b_{}", process::id());
-    let producer = match Topic::<CameraMetadata>::producer(&topic) {
+    let producer = match Topic::<CameraMetadata>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<CameraMetadata>::consumer(&topic) {
+    let consumer = match Topic::<CameraMetadata>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -673,12 +673,12 @@ fn test_large_messages_1kb() -> TestResult {
     println!("Testing 1KB messages (robot state)...");
 
     let topic = format!("test_1kb_{}", process::id());
-    let producer = match Topic::<LargeState>::producer(&topic) {
+    let producer = match Topic::<LargeState>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<LargeState>::consumer(&topic) {
+    let consumer = match Topic::<LargeState>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -768,12 +768,12 @@ fn test_large_messages_4kb() -> TestResult {
     println!("Testing 4KB messages (image patches)...");
 
     let topic = format!("test_4kb_{}", process::id());
-    let producer = match Topic::<ImagePatch>::producer(&topic) {
+    let producer = match Topic::<ImagePatch>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<ImagePatch>::consumer(&topic) {
+    let consumer = match Topic::<ImagePatch>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -863,12 +863,12 @@ fn test_large_messages_16kb() -> TestResult {
     println!("Testing 16KB messages (point clouds)...");
 
     let topic = format!("test_16kb_{}", process::id());
-    let producer = match Topic::<PointCloud>::producer(&topic) {
+    let producer = match Topic::<PointCloud>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<PointCloud>::consumer(&topic) {
+    let consumer = match Topic::<PointCloud>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -964,29 +964,29 @@ fn test_mixed_size_workload() -> TestResult {
     let topic_medium = format!("test_mixed_medium_{}", process::id());
     let topic_large = format!("test_mixed_large_{}", process::id());
 
-    let producer_small = match Topic::<SmallMessage>::producer(&topic_small) {
+    let producer_small = match Topic::<SmallMessage>::new(&topic_small) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create small producer: {}", e)),
     };
-    let consumer_small = match Topic::<SmallMessage>::consumer(&topic_small) {
+    let consumer_small = match Topic::<SmallMessage>::new(&topic_small) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create small consumer: {}", e)),
     };
 
-    let producer_medium = match Topic::<CameraMetadata>::producer(&topic_medium) {
+    let producer_medium = match Topic::<CameraMetadata>::new(&topic_medium) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create medium producer: {}", e)),
     };
-    let consumer_medium = match Topic::<CameraMetadata>::consumer(&topic_medium) {
+    let consumer_medium = match Topic::<CameraMetadata>::new(&topic_medium) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create medium consumer: {}", e)),
     };
 
-    let producer_large = match Topic::<ImagePatch>::producer(&topic_large) {
+    let producer_large = match Topic::<ImagePatch>::new(&topic_large) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create large producer: {}", e)),
     };
-    let consumer_large = match Topic::<ImagePatch>::consumer(&topic_large) {
+    let consumer_large = match Topic::<ImagePatch>::new(&topic_large) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create large consumer: {}", e)),
     };
@@ -1122,12 +1122,12 @@ fn test_sustained_1khz() -> TestResult {
     println!("Testing sustained 1000Hz (1ms period) operation...");
 
     let topic = format!("test_1khz_{}", process::id());
-    let producer = match Topic::<SmallMessage>::producer(&topic) {
+    let producer = match Topic::<SmallMessage>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<SmallMessage>::consumer(&topic) {
+    let consumer = match Topic::<SmallMessage>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -1244,12 +1244,12 @@ fn test_burst_throughput() -> TestResult {
     println!("Testing burst throughput (maximum rate)...");
 
     let topic = format!("test_burst_{}", process::id());
-    let producer = match Topic::<SmallMessage>::producer(&topic) {
+    let producer = match Topic::<SmallMessage>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<SmallMessage>::consumer(&topic) {
+    let consumer = match Topic::<SmallMessage>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -1350,14 +1350,14 @@ fn test_multi_producer_stress() -> TestResult {
     for i in 0..num_producers {
         let topic = format!("test_multi_prod_{}_{}", i, process::id());
 
-        let producer = match Topic::<SmallMessage>::producer(&topic) {
+        let producer = match Topic::<SmallMessage>::new(&topic) {
             Ok(p) => p,
             Err(e) => {
                 return TestResult::failure(format!("Failed to create producer {}: {}", i, e))
             }
         };
 
-        let consumer = match Topic::<SmallMessage>::consumer(&topic) {
+        let consumer = match Topic::<SmallMessage>::new(&topic) {
             Ok(c) => c,
             Err(e) => {
                 return TestResult::failure(format!("Failed to create consumer {}: {}", i, e))
@@ -1474,12 +1474,12 @@ fn test_telemetry_overhead() -> TestResult {
     println!("Testing telemetry overhead impact...");
 
     let topic = format!("test_telemetry_{}", process::id());
-    let producer = match Topic::<SmallMessage>::producer(&topic) {
+    let producer = match Topic::<SmallMessage>::new(&topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
     };
 
-    let consumer = match Topic::<SmallMessage>::consumer(&topic) {
+    let consumer = match Topic::<SmallMessage>::new(&topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
     };
@@ -1587,11 +1587,11 @@ fn test_multi_link_monitoring() -> TestResult {
     let mut consumers = vec![];
 
     for topic in &topics {
-        let producer = match Topic::<SmallMessage>::producer(topic) {
+        let producer = match Topic::<SmallMessage>::new(topic) {
             Ok(p) => p,
             Err(e) => return TestResult::failure(format!("Failed to create producer: {}", e)),
         };
-        let consumer = match Topic::<SmallMessage>::consumer(topic) {
+        let consumer = match Topic::<SmallMessage>::new(topic) {
             Ok(c) => c,
             Err(e) => return TestResult::failure(format!("Failed to create consumer: {}", e)),
         };

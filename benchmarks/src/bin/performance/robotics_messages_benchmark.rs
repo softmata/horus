@@ -249,8 +249,8 @@ fn benchmark_cmdvel(
     let (tx, rx): (Topic<CmdVel>, Topic<CmdVel>) = match backend {
         BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
         BackendType::SpscShm => (
-            Topic::producer(&topic_name).unwrap(),
-            Topic::consumer(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
         ),
         BackendType::MpmcShm => (
             Topic::new(&topic_name).unwrap(),
@@ -296,8 +296,8 @@ fn benchmark_imu(
     let (tx, rx): (Topic<Imu>, Topic<Imu>) = match backend {
         BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
         BackendType::SpscShm => (
-            Topic::producer(&topic_name).unwrap(),
-            Topic::consumer(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
         ),
         BackendType::MpmcShm => (
             Topic::new(&topic_name).unwrap(),
@@ -345,8 +345,8 @@ fn benchmark_laserscan(
     let (tx, rx): (Topic<LaserScan>, Topic<LaserScan>) = match backend {
         BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
         BackendType::SpscShm => (
-            Topic::producer(&topic_name).unwrap(),
-            Topic::consumer(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
         ),
         BackendType::MpmcShm => (
             Topic::new(&topic_name).unwrap(),
@@ -398,8 +398,8 @@ fn benchmark_jointcmd(
     let (tx, rx): (Topic<JointCommand>, Topic<JointCommand>) = match backend {
         BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
         BackendType::SpscShm => (
-            Topic::producer(&topic_name).unwrap(),
-            Topic::consumer(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
         ),
         BackendType::MpmcShm => (
             Topic::new(&topic_name).unwrap(),
@@ -458,8 +458,8 @@ fn benchmark_pointcloud(
     let (tx, rx): (Topic<PointCloud>, Topic<PointCloud>) = match backend {
         BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
         BackendType::SpscShm => (
-            Topic::producer(&topic_name).unwrap(),
-            Topic::consumer(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
+            Topic::new(&topic_name).unwrap(),
         ),
         BackendType::MpmcShm => (
             Topic::new(&topic_name).unwrap(),

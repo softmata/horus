@@ -842,12 +842,12 @@ where
     fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
         let action_name = A::name();
 
-        // Create communication links
-        self.goal_link = Some(Topic::consumer(&A::goal_topic())?);
-        self.cancel_link = Some(Topic::consumer(&A::cancel_topic())?);
-        self.result_link = Some(Topic::producer(&A::result_topic())?);
-        *self.feedback_link.write() = Some(Topic::producer(&A::feedback_topic())?);
-        self.status_link = Some(Topic::producer(&A::status_topic())?);
+        // Create communication links using Topic::new() - auto-detects role on first send/recv
+        self.goal_link = Some(Topic::new(&A::goal_topic())?);
+        self.cancel_link = Some(Topic::new(&A::cancel_topic())?);
+        self.result_link = Some(Topic::new(&A::result_topic())?);
+        *self.feedback_link.write() = Some(Topic::new(&A::feedback_topic())?);
+        self.status_link = Some(Topic::new(&A::status_topic())?);
 
         log::info!(
             "ActionServer '{}': Initialized with topics: {}/{{goal,cancel,result,feedback,status}}",

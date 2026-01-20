@@ -155,24 +155,24 @@ fn test_high_frequency_sensor_loop() -> TestResult {
     let imu_topic = format!("test_imu_{}", process::id());
     let encoder_topic = format!("test_encoder_{}", process::id());
 
-    // Create IMU link (200Hz)
-    let imu_producer = match Topic::<Imu>::producer(&imu_topic) {
+    // Create IMU link (200Hz) - Topic::new() auto-detects role
+    let imu_producer = match Topic::<Imu>::new(&imu_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create IMU producer: {}", e)),
     };
 
-    let imu_consumer = match Topic::<Imu>::consumer(&imu_topic) {
+    let imu_consumer = match Topic::<Imu>::new(&imu_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create IMU consumer: {}", e)),
     };
 
-    // Create encoder link (100Hz)
-    let encoder_producer = match Topic::<MotorCommand>::producer(&encoder_topic) {
+    // Create encoder link (100Hz) - Topic::new() auto-detects role
+    let encoder_producer = match Topic::<MotorCommand>::new(&encoder_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create encoder producer: {}", e)),
     };
 
-    let encoder_consumer = match Topic::<MotorCommand>::consumer(&encoder_topic) {
+    let encoder_consumer = match Topic::<MotorCommand>::new(&encoder_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create encoder consumer: {}", e)),
     };
@@ -319,22 +319,22 @@ fn test_control_loop() -> TestResult {
     let sensor_topic = format!("test_ctrl_sensor_{}", process::id());
     let command_topic = format!("test_ctrl_cmd_{}", process::id());
 
-    let sensor_producer = match Topic::<Imu>::producer(&sensor_topic) {
+    let sensor_producer = match Topic::<Imu>::new(&sensor_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create sensor producer: {}", e)),
     };
 
-    let sensor_consumer = match Topic::<Imu>::consumer(&sensor_topic) {
+    let sensor_consumer = match Topic::<Imu>::new(&sensor_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create sensor consumer: {}", e)),
     };
 
-    let command_producer = match Topic::<DifferentialDriveCommand>::producer(&command_topic) {
+    let command_producer = match Topic::<DifferentialDriveCommand>::new(&command_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create command producer: {}", e)),
     };
 
-    let command_consumer = match Topic::<DifferentialDriveCommand>::consumer(&command_topic) {
+    let command_consumer = match Topic::<DifferentialDriveCommand>::new(&command_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create command consumer: {}", e)),
     };
@@ -473,34 +473,34 @@ fn test_multi_rate_system() -> TestResult {
     let slow_topic = format!("test_slow_{}", process::id());
 
     // Fast sensor link (200Hz)
-    let fast_producer = match Topic::<Imu>::producer(&fast_topic) {
+    let fast_producer = match Topic::<Imu>::new(&fast_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create fast producer: {}", e)),
     };
 
-    let fast_consumer = match Topic::<Imu>::consumer(&fast_topic) {
+    let fast_consumer = match Topic::<Imu>::new(&fast_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create fast consumer: {}", e)),
     };
 
     // Medium control link (50Hz)
-    let medium_producer = match Topic::<DifferentialDriveCommand>::producer(&medium_topic) {
+    let medium_producer = match Topic::<DifferentialDriveCommand>::new(&medium_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create medium producer: {}", e)),
     };
 
-    let medium_consumer = match Topic::<DifferentialDriveCommand>::consumer(&medium_topic) {
+    let medium_consumer = match Topic::<DifferentialDriveCommand>::new(&medium_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create medium consumer: {}", e)),
     };
 
     // Slow planning link (10Hz)
-    let slow_producer = match Topic::<Transform>::producer(&slow_topic) {
+    let slow_producer = match Topic::<Transform>::new(&slow_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create slow producer: {}", e)),
     };
 
-    let slow_consumer = match Topic::<Transform>::consumer(&slow_topic) {
+    let slow_consumer = match Topic::<Transform>::new(&slow_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create slow consumer: {}", e)),
     };
@@ -645,33 +645,33 @@ fn test_realistic_robot_pipeline() -> TestResult {
     let control_topic = format!("test_robot_control_{}", process::id());
 
     // Sensor Links
-    let imu_producer = match Topic::<Imu>::producer(&imu_topic) {
+    let imu_producer = match Topic::<Imu>::new(&imu_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create IMU producer: {}", e)),
     };
 
-    let imu_consumer = match Topic::<Imu>::consumer(&imu_topic) {
+    let imu_consumer = match Topic::<Imu>::new(&imu_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create IMU consumer: {}", e)),
     };
 
-    let encoder_producer = match Topic::<MotorCommand>::producer(&encoder_topic) {
+    let encoder_producer = match Topic::<MotorCommand>::new(&encoder_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create encoder producer: {}", e)),
     };
 
-    let encoder_consumer = match Topic::<MotorCommand>::consumer(&encoder_topic) {
+    let encoder_consumer = match Topic::<MotorCommand>::new(&encoder_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create encoder consumer: {}", e)),
     };
 
     // Control Link
-    let control_producer = match Topic::<DifferentialDriveCommand>::producer(&control_topic) {
+    let control_producer = match Topic::<DifferentialDriveCommand>::new(&control_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create control producer: {}", e)),
     };
 
-    let control_consumer = match Topic::<DifferentialDriveCommand>::consumer(&control_topic) {
+    let control_consumer = match Topic::<DifferentialDriveCommand>::new(&control_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create control consumer: {}", e)),
     };
@@ -847,12 +847,12 @@ fn test_stress_burst() -> TestResult {
 
     let stress_topic = format!("test_stress_{}", process::id());
 
-    let producer = match Topic::<Imu>::producer(&stress_topic) {
+    let producer = match Topic::<Imu>::new(&stress_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create stress producer: {}", e)),
     };
 
-    let consumer = match Topic::<Imu>::consumer(&stress_topic) {
+    let consumer = match Topic::<Imu>::new(&stress_topic) {
         Ok(c) => c,
         Err(e) => return TestResult::failure(format!("Failed to create stress consumer: {}", e)),
     };
@@ -954,7 +954,7 @@ fn test_multi_process_ipc() -> TestResult {
     let ipc_topic = format!("test_ipc_{}", process::id());
 
     // Create producer in current process
-    let producer = match Topic::<MotorCommand>::producer(&ipc_topic) {
+    let producer = match Topic::<MotorCommand>::new(&ipc_topic) {
         Ok(p) => p,
         Err(e) => return TestResult::failure(format!("Failed to create IPC producer: {}", e)),
     };
@@ -968,7 +968,7 @@ fn test_multi_process_ipc() -> TestResult {
 
     let consumer_thread = thread::spawn(move || {
         // Create consumer in "separate process" (thread)
-        let consumer = match Topic::<MotorCommand>::consumer(&consumer_topic) {
+        let consumer = match Topic::<MotorCommand>::new(&consumer_topic) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Failed to create IPC consumer: {}", e);

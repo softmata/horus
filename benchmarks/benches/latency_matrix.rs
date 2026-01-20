@@ -148,8 +148,8 @@ fn bench_spsc_shm_matrix(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(64));
     group.bench_with_input(BenchmarkId::new("roundtrip", "64B"), &(), |b, _| {
         let topic = format!("bench_spsc_64b_{}", std::process::id());
-        let producer: Topic<Payload64B> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<Payload64B> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<Payload64B> = Topic::new(&topic).unwrap();
+        let consumer: Topic<Payload64B> = Topic::new(&topic).unwrap();
         let msg = Payload64B::default();
 
         b.iter(|| {
@@ -162,8 +162,8 @@ fn bench_spsc_shm_matrix(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(1024));
     group.bench_with_input(BenchmarkId::new("roundtrip", "1KB"), &(), |b, _| {
         let topic = format!("bench_spsc_1kb_{}", std::process::id());
-        let producer: Topic<Payload1KB> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<Payload1KB> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<Payload1KB> = Topic::new(&topic).unwrap();
+        let consumer: Topic<Payload1KB> = Topic::new(&topic).unwrap();
         let msg = Payload1KB::default();
 
         b.iter(|| {
@@ -176,8 +176,8 @@ fn bench_spsc_shm_matrix(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(4096));
     group.bench_with_input(BenchmarkId::new("roundtrip", "4KB"), &(), |b, _| {
         let topic = format!("bench_spsc_4kb_{}", std::process::id());
-        let producer: Topic<Payload4KB> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<Payload4KB> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<Payload4KB> = Topic::new(&topic).unwrap();
+        let consumer: Topic<Payload4KB> = Topic::new(&topic).unwrap();
         let msg = Payload4KB::default();
 
         b.iter(|| {
@@ -190,8 +190,8 @@ fn bench_spsc_shm_matrix(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(65536));
     group.bench_with_input(BenchmarkId::new("roundtrip", "64KB"), &(), |b, _| {
         let topic = format!("bench_spsc_64kb_{}", std::process::id());
-        let producer: Topic<Payload64KB> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<Payload64KB> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<Payload64KB> = Topic::new(&topic).unwrap();
+        let consumer: Topic<Payload64KB> = Topic::new(&topic).unwrap();
         let msg = Payload64KB::default();
 
         b.iter(|| {
@@ -457,8 +457,8 @@ fn bench_ipc_comparison_1kb(c: &mut Criterion) {
     // SpscShm (fastest cross-process)
     group.bench_function("SpscShm", |b| {
         let topic = format!("bench_cmp_spsc_{}", std::process::id());
-        let producer: Topic<Payload1KB> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<Payload1KB> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<Payload1KB> = Topic::new(&topic).unwrap();
+        let consumer: Topic<Payload1KB> = Topic::new(&topic).unwrap();
         b.iter(|| {
             producer.send(black_box(msg), &mut None).unwrap();
             black_box(consumer.recv(&mut None))

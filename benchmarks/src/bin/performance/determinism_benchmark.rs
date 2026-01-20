@@ -159,8 +159,8 @@ fn main() {
         &platform,
         deadline_ns,
         |name| {
-            let tx: Topic<ControlCmd> = Topic::producer(name).unwrap();
-            let rx: Topic<ControlCmd> = Topic::consumer(name).unwrap();
+            let tx: Topic<ControlCmd> = Topic::new(name).unwrap();
+            let rx: Topic<ControlCmd> = Topic::new(name).unwrap();
             (tx, rx)
         },
     );

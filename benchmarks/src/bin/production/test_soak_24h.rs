@@ -296,11 +296,11 @@ fn run_soak_test(duration_secs: u64, report_interval_secs: u64) -> bool {
     let link_cmdvel_topic = format!("soak_link_cmdvel_{}", pid);
     let link_imu_topic = format!("soak_link_imu_{}", pid);
 
-    let link_cmdvel_tx = Topic::<CmdVel>::producer(&link_cmdvel_topic).expect("Link CmdVel producer");
-    let link_cmdvel_rx = Topic::<CmdVel>::consumer(&link_cmdvel_topic).expect("Link CmdVel consumer");
+    let link_cmdvel_tx = Topic::<CmdVel>::new(&link_cmdvel_topic).expect("Link CmdVel producer");
+    let link_cmdvel_rx = Topic::<CmdVel>::new(&link_cmdvel_topic).expect("Link CmdVel consumer");
 
-    let link_imu_tx = Topic::<Imu>::producer(&link_imu_topic).expect("Link Imu producer");
-    let link_imu_rx = Topic::<Imu>::consumer(&link_imu_topic).expect("Link Imu consumer");
+    let link_imu_tx = Topic::<Imu>::new(&link_imu_topic).expect("Link Imu producer");
+    let link_imu_rx = Topic::<Imu>::new(&link_imu_topic).expect("Link Imu consumer");
 
     // Create Hub channels (MPMC - slower path)
     let hub_cmdvel_topic = format!("soak_hub_cmdvel_{}", pid);

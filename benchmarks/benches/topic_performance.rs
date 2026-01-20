@@ -97,8 +97,8 @@ fn bench_backend_comparison(c: &mut Criterion) {
     // SpscShm - fastest cross-process (~80-100ns)
     group.bench_function("SpscShm", |b| {
         let topic = format!("bench_spsc_shm_{}", std::process::id());
-        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
             producer.send(black_box(msg), &mut None).unwrap();
@@ -211,8 +211,8 @@ fn bench_cross_thread_latency(c: &mut Criterion) {
     group.bench_function("SpscShm", |b| {
         b.iter_custom(|iters| {
             let topic = format!("bench_cross_spsc_{}", std::process::id());
-            let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
-            let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+            let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+            let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
 
             let running = Arc::new(AtomicBool::new(true));
             let running_clone = running.clone();
@@ -332,8 +332,8 @@ fn bench_throughput(c: &mut Criterion) {
     // SpscShm throughput
     group.bench_function("SpscShm_1k_msgs", |b| {
         let topic = format!("bench_throughput_spsc_{}", std::process::id());
-        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
 
         b.iter(|| {
             for i in 0..1000 {
@@ -395,8 +395,8 @@ fn bench_send_only(c: &mut Criterion) {
 
     group.bench_function("SpscShm", |b| {
         let topic = format!("bench_send_spsc_{}", std::process::id());
-        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
-        let _consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let _consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
         b.iter(|| {
             let msg = CmdVel::new(1.5, 0.8);
             producer.send(black_box(msg), &mut None)
@@ -445,8 +445,8 @@ fn bench_recv_only(c: &mut Criterion) {
 
     group.bench_function("SpscShm", |b| {
         let topic = format!("bench_recv_spsc_{}", std::process::id());
-        let producer: Topic<CmdVel> = Topic::producer(&topic).unwrap();
-        let consumer: Topic<CmdVel> = Topic::consumer(&topic).unwrap();
+        let producer: Topic<CmdVel> = Topic::new(&topic).unwrap();
+        let consumer: Topic<CmdVel> = Topic::new(&topic).unwrap();
 
         b.iter_batched(
             || producer.send(CmdVel::new(1.5, 0.8), &mut None).unwrap(),

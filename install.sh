@@ -11,26 +11,56 @@ SCRIPT_VERSION="2.6.0"
 
 # Check bash version - we need bash 4+ for associative arrays
 if ((BASH_VERSINFO[0] < 4)); then
-    echo "Error: This script requires bash version 4.0 or higher."
-    echo "Your current bash version: ${BASH_VERSION}"
-    echo ""
+    # On macOS, try to auto-detect and use Homebrew's bash
     if [[ "$(uname)" == "Darwin" ]]; then
+        BREW_BASH=""
+        # Check Apple Silicon path first, then Intel path
+        if [[ -x "/opt/homebrew/bin/bash" ]]; then
+            BREW_BASH="/opt/homebrew/bin/bash"
+        elif [[ -x "/usr/local/bin/bash" ]]; then
+            BREW_BASH="/usr/local/bin/bash"
+        fi
+
+        if [[ -n "$BREW_BASH" ]]; then
+            # Verify it's bash 4+
+            BREW_BASH_VERSION=$("$BREW_BASH" -c 'echo ${BASH_VERSINFO[0]}' 2>/dev/null || echo "0")
+            if [[ "$BREW_BASH_VERSION" -ge 4 ]]; then
+                echo "[*] macOS default bash is version ${BASH_VERSION} (too old)"
+                echo "[*] Auto-detected Homebrew bash ${BREW_BASH_VERSION}.x at: $BREW_BASH"
+                echo "[*] Re-executing script with Homebrew bash..."
+                echo ""
+                # Re-execute this script with the newer bash
+                # Pass all original arguments and prevent infinite recursion with marker
+                if [[ -z "$HORUS_REEXEC" ]]; then
+                    export HORUS_REEXEC=1
+                    exec "$BREW_BASH" "$0" "$@"
+                fi
+            fi
+        fi
+
+        # If we get here, no suitable bash was found
+        echo "Error: This script requires bash version 4.0 or higher."
+        echo "Your current bash version: ${BASH_VERSION}"
+        echo ""
         echo "macOS ships with bash 3.2 by default. To fix this:"
         echo ""
         echo "  1. Install bash 4+ via Homebrew:"
         echo "     brew install bash"
         echo ""
-        echo "  2. Run this script with the new bash:"
-        echo "     /opt/homebrew/bin/bash install.sh"
-        echo "     (or /usr/local/bin/bash on Intel Macs)"
-        echo ""
-        echo "  Alternatively, add the new bash to your PATH:"
-        echo "     export PATH=\"/opt/homebrew/bin:\$PATH\""
+        echo "  2. Then run this script again - it will auto-detect Homebrew's bash"
         echo "     ./install.sh"
+        echo ""
+        echo "  Or manually run with:"
+        echo "     /opt/homebrew/bin/bash install.sh  (Apple Silicon)"
+        echo "     /usr/local/bin/bash install.sh     (Intel Mac)"
+        exit 1
     else
+        echo "Error: This script requires bash version 4.0 or higher."
+        echo "Your current bash version: ${BASH_VERSION}"
+        echo ""
         echo "Please install bash 4.0 or higher and try again."
+        exit 1
     fi
-    exit 1
 fi
 
 # Get script directory

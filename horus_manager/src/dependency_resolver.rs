@@ -27,6 +27,10 @@ pub enum DependencySource {
         tag: Option<String>,
         rev: Option<String>,
     },
+    Pip {
+        // PyPI package
+        package_name: String, // The actual PyPI package name (e.g., "horus-robotics")
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +48,22 @@ impl fmt::Display for DependencySpec {
 
 impl DependencySpec {
     pub fn parse(spec: &str) -> Result<Self> {
+        // Check for pip: prefix (e.g., "pip:horus-robotics" or "pip:numpy@^1.20")
+        if let Some(pip_spec) = spec.strip_prefix("pip:") {
+            return Self::parse_pip_spec(pip_spec);
+        }
+
+        // Special case: horus_py always maps to pip:horus-robotics
+        if spec == "horus_py" || spec.starts_with("horus_py@") {
+            return Ok(Self {
+                name: "horus_py".to_string(),
+                requirement: VersionReq::STAR,
+                source: DependencySource::Pip {
+                    package_name: "horus-robotics".to_string(),
+                },
+            });
+        }
+
         // Parse "name@constraint" or just "name" (simple string format from YAML list)
         if let Some(pos) = spec.find('@') {
             let name = spec[..pos].to_string();
@@ -71,9 +91,51 @@ impl DependencySpec {
         }
     }
 
-    /// Parse from structured YAML (supports path, git, etc.)
+    /// Parse a pip dependency spec (after stripping "pip:" prefix)
+    fn parse_pip_spec(spec: &str) -> Result<Self> {
+        if let Some(pos) = spec.find('@') {
+            let pip_package = spec[..pos].to_string();
+            let constraint = &spec[pos + 1..];
+
+            let requirement = if constraint == "latest" || constraint == "*" {
+                VersionReq::STAR
+            } else {
+                VersionReq::parse(constraint)
+                    .map_err(|e| anyhow!("Invalid pip version constraint '{}': {}", constraint, e))?
+            };
+
+            Ok(Self {
+                name: pip_package.clone(),
+                requirement,
+                source: DependencySource::Pip {
+                    package_name: pip_package,
+                },
+            })
+        } else {
+            Ok(Self {
+                name: spec.to_string(),
+                requirement: VersionReq::STAR,
+                source: DependencySource::Pip {
+                    package_name: spec.to_string(),
+                },
+            })
+        }
+    }
+
+    /// Parse from structured YAML (supports path, git, pip, etc.)
     pub fn from_yaml_value(name: String, value: &serde_yaml::Value) -> Result<Self> {
         use serde_yaml::Value;
+
+        // Special case: horus_py always maps to pip:horus-robotics
+        if name == "horus_py" {
+            return Ok(Self {
+                name: "horus_py".to_string(),
+                requirement: VersionReq::STAR,
+                source: DependencySource::Pip {
+                    package_name: "horus-robotics".to_string(),
+                },
+            });
+        }
 
         match value {
             // Simple version string: "package: '1.0.0'" or "package: '*'"
@@ -91,7 +153,7 @@ impl DependencySpec {
                 })
             }
 
-            // Structured dependency: path or registry
+            // Structured dependency: path, git, pip, or registry
             Value::Mapping(map) => {
                 // Check for path dependency
                 if let Some(Value::String(path_str)) = map.get(Value::String("path".to_string())) {
@@ -124,6 +186,26 @@ impl DependencySpec {
                             branch,
                             tag,
                             rev,
+                        },
+                    })
+                }
+                // Check for pip dependency: { pip: "package-name" } or { pip: "package-name", version: "^1.0" }
+                else if let Some(Value::String(pip_package)) =
+                    map.get(Value::String("pip".to_string()))
+                {
+                    let requirement = if let Some(Value::String(version_str)) =
+                        map.get(Value::String("version".to_string()))
+                    {
+                        VersionReq::parse(version_str)
+                            .map_err(|e| anyhow!("Invalid pip version '{}': {}", version_str, e))?
+                    } else {
+                        VersionReq::STAR
+                    };
+                    Ok(Self {
+                        name,
+                        requirement,
+                        source: DependencySource::Pip {
+                            package_name: pip_package.clone(),
                         },
                     })
                 }

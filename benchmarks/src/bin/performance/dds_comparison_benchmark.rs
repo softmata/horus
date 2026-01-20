@@ -301,8 +301,8 @@ fn benchmark_horus_spsc_shm(
     let topic_name = format!("dds_cmp_spsc_shm_{}", std::process::id());
     let timer = PrecisionTimer::new();
 
-    let tx: Topic<BenchmarkPayload> = Topic::producer(&topic_name).unwrap();
-    let rx: Topic<BenchmarkPayload> = Topic::consumer(&topic_name).unwrap();
+    let tx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
+    let rx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
 
     let latencies = run_benchmark(&tx, &rx, &timer, iterations);
     build_result("HORUS_SpscShm", latencies, iterations, platform)
