@@ -112,7 +112,7 @@ impl BackgroundExecutor {
                             // Execute node tick with panic catching
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    node.tick(context.as_mut());
+                                    node.tick();
                                 }));
 
                             let duration = start.elapsed();
@@ -256,7 +256,7 @@ mod tests {
             "TestBackgroundNode"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             self.tick_count += 1;
             // Simulate some work
             std::thread::sleep(Duration::from_millis(5));

@@ -3182,6 +3182,47 @@ if [ "$COMPLETION_INSTALLED" = true ]; then
     echo -e "  To use in this session: ${CYAN}source ~/.${SHELL_NAME}rc${NC} (bash/zsh)"
 fi
 
+# Step 12: Real-Time Setup (Optional, Linux only)
+if [ "$OS_TYPE" = "linux" ] || [ "$OS_TYPE" = "wsl" ]; then
+    echo ""
+    echo -e "${CYAN}${STATUS_INFO}${NC} Real-Time Scheduling (Optional)"
+    echo ""
+    echo "  HORUS supports real-time scheduling for deterministic robot control."
+    echo "  RT scheduling requires system configuration (needs sudo)."
+    echo ""
+    echo "  Benefits of RT scheduling:"
+    echo "    - Deterministic timing (<500ns IPC latency)"
+    echo "    - SCHED_FIFO/SCHED_RR priorities up to 99"
+    echo "    - Memory locking to prevent page faults"
+    echo ""
+
+    RT_SCRIPT="$SCRIPT_DIR/scripts/setup-realtime.sh"
+    if [ -f "$RT_SCRIPT" ]; then
+        read -p "$(echo -e ${CYAN}?${NC}) Configure real-time scheduling now? [y/N]: " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo ""
+            echo -e "${CYAN}${STATUS_INFO}${NC} Running real-time setup (requires sudo)..."
+            echo ""
+            if sudo bash "$RT_SCRIPT"; then
+                echo ""
+                echo -e "${GREEN}${STATUS_OK}${NC} Real-time configuration applied"
+                echo -e "${YELLOW}${STATUS_WARN}${NC} You must LOG OUT and LOG BACK IN for changes to take effect"
+            else
+                echo ""
+                echo -e "${YELLOW}${STATUS_WARN}${NC} Real-time setup had issues - check output above"
+            fi
+        else
+            echo ""
+            echo -e "${CYAN}${STATUS_INFO}${NC} Skipped. You can run it later:"
+            echo -e "     ${CYAN}sudo ./scripts/setup-realtime.sh${NC}"
+        fi
+    else
+        echo -e "${YELLOW}${STATUS_WARN}${NC} RT setup script not found: $RT_SCRIPT"
+        echo "  Download from: https://github.com/softmata/horus/blob/main/scripts/setup-realtime.sh"
+    fi
+fi
+
 # ============================================================================
 # INSTALLATION VERSION SUMMARY
 # ============================================================================
@@ -3268,6 +3309,18 @@ if [ "$PYTHON_AVAILABLE" = true ]; then
     echo -e "${CYAN}Python bindings:${NC}"
     echo "  Try the Python API:"
     echo -e "     ${CYAN}python3 -c 'import horus; print(horus.__doc__)'${NC}"
+    echo ""
+fi
+
+# RT setup tip (Linux only)
+if [ "$OS_TYPE" = "linux" ] || [ "$OS_TYPE" = "wsl" ]; then
+    echo -e "${CYAN}Real-time scheduling:${NC}"
+    echo "  After re-login, verify RT setup with:"
+    echo -e "     ${CYAN}ulimit -r${NC}    # Should show 99"
+    echo -e "     ${CYAN}ulimit -l${NC}    # Should show 'unlimited'"
+    echo ""
+    echo "  Or run the verification script:"
+    echo -e "     ${CYAN}/tmp/verify-horus-rt.sh${NC}"
     echo ""
 fi
 

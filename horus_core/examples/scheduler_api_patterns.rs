@@ -48,13 +48,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ========================================================================
     // Pattern 2: Convenience Constructor - Quick Start
     // ========================================================================
-    println!("Pattern 2: Convenience Constructor (Quick Start)");
-    println!("------------------------------------------------");
+    println!("Pattern 2: Hard Realtime Configuration");
+    println!("--------------------------------------");
 
-    let scheduler2 = Scheduler::new_realtime()?;
+    let scheduler2 = Scheduler::new()
+        .with_config(SchedulerConfig::hard_realtime())
+        .disable_learning();
 
-    println!("[OK] Created with new_realtime()");
-    println!("  (Internally uses builder pattern)");
+    println!("[OK] Created with hard_realtime() config");
+    println!("  (Uses builder pattern with preset config)");
     println!("  Equivalent to Pattern 1\n");
 
     // Same OS integration

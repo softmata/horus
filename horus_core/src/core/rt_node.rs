@@ -276,7 +276,7 @@ impl Node for RtNodeWrapper {
         self.node.init(ctx)
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Pre-condition check
         debug_assert!(
             self.node.pre_condition(),
@@ -285,7 +285,7 @@ impl Node for RtNodeWrapper {
         );
 
         // Execute the real-time node
-        self.node.tick(ctx);
+        self.node.tick();
 
         // Post-condition check
         debug_assert!(

@@ -34,7 +34,7 @@ impl Node for SensorNode {
         "SensorNode"
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.counter += 0.1;
 
         // Simulate sensor reading
@@ -76,7 +76,7 @@ impl Node for ControllerNode {
         "ControllerNode"
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Non-blocking receive
         if let Some(value) = self.data_link.recv() {
             self.last_value = Some(value);
@@ -115,8 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scheduler = Scheduler::new();
 
     // Add nodes with priorities
-    scheduler.add(Box::new(sensor), 0, Some(false)); // High priority, no logging
-    scheduler.add(Box::new(controller), 1, Some(false)); // Normal priority, no logging
+    scheduler.add(Box::new(sensor), 0); // High priority, no logging
+    scheduler.add(Box::new(controller), 1); // Normal priority, no logging
 
     println!("Starting nodes... (Ctrl+C to stop)\n");
 

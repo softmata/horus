@@ -893,7 +893,7 @@ pub trait Node: Send {
     }
 
     /// Main execution loop (called repeatedly)
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>);
+    fn tick(&mut self);
 
     /// Shutdown the node (called once at cleanup)
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> crate::error::HorusResult<()> {

@@ -33,7 +33,7 @@ fn test_scheduler_with_jit_node() {
     // Add a real JIT-capable ScalingNode
     // The scheduler should detect supports_jit() and compile with Cranelift
     let node = ScalingNode::new(2, 10); // output = input * 2 + 10
-    scheduler.add(Box::new(node), 0, None);
+    scheduler.add(Box::new(node), 0);
 
     // Run for a short duration - this will:
     // 1. Compile the node using Cranelift JIT
@@ -95,7 +95,7 @@ fn test_non_jit_node_default_behavior() {
             "regular_node"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut horus_core::core::NodeInfo>) {
+        fn tick(&mut self) {
             // Regular computation
         }
 
@@ -157,7 +157,7 @@ fn test_custom_jit_compute_function() {
             "custom_jit_node"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut horus_core::core::NodeInfo>) {
+        fn tick(&mut self) {
             // Fallback tick
         }
 
@@ -219,7 +219,7 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
 
     // Add a JIT-capable node
     let jit_node = ScalingNode::new(4, 1); // output = input * 4 + 1
-    scheduler.add(Box::new(jit_node), 0, None);
+    scheduler.add(Box::new(jit_node), 0);
 
     // Add a regular node
     struct RegularComputeNode {
@@ -231,7 +231,7 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
             "regular_compute"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut horus_core::core::NodeInfo>) {
+        fn tick(&mut self) {
             self.counter += 1;
         }
 
@@ -258,7 +258,7 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
         }
     }
 
-    scheduler.add(Box::new(RegularComputeNode { counter: 0 }), 1, None);
+    scheduler.add(Box::new(RegularComputeNode { counter: 0 }), 1);
 
     // Run both nodes - JIT node uses native code, regular node uses tick()
     let result = scheduler.run_for(Duration::from_millis(50));
@@ -277,7 +277,7 @@ fn test_learning_phase_with_jit() {
 
     // Add a JIT-capable node - will be compiled at add-time with factor=5, offset=2
     let jit_node = ScalingNode::new(5, 2);
-    scheduler.add(Box::new(jit_node), 0, None);
+    scheduler.add(Box::new(jit_node), 0);
 
     // Add a regular fast node - might get JIT'd during learning if ultra-fast
     struct FastNode {
@@ -289,7 +289,7 @@ fn test_learning_phase_with_jit() {
             "fast_regular_node"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut horus_core::core::NodeInfo>) {
+        fn tick(&mut self) {
             // Ultra-fast computation - likely to be classified as UltraFast
             self.counter = self.counter.wrapping_add(1);
         }
@@ -317,7 +317,7 @@ fn test_learning_phase_with_jit() {
         }
     }
 
-    scheduler.add(Box::new(FastNode { counter: 0 }), 1, None);
+    scheduler.add(Box::new(FastNode { counter: 0 }), 1);
 
     // Run long enough for learning phase to potentially complete
     // Learning phase typically needs ~100+ ticks per node

@@ -15,7 +15,7 @@ A production-grade robotics framework built in Rust for **real-time performance*
 ---
 
 > [!IMPORTANT]
-> **Having issues?** If something breaks while using HORUS, please [create an issue](https://github.com/softmata/horus/issues) on GitHub. We appreciate your feedback and will help resolve problems quickly.
+> **Having issues?** If something breaks while using HORUS, please [create an issue](https://github.com/softmata/horus/issues) on GitHub. We appreciate your feedback and will help resolve problems quickly. Current version is very vulnerable, due to architectural refactor, It will get fixed quickly
 
 ---
 
@@ -99,35 +99,35 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // SAFETY (Priority 0) - Always runs first
-    scheduler.add(Box::new(EmergencyStopNode::new("cmd_vel")?), 0, Some(true));
+    scheduler.add(Box::new(EmergencyStopNode::new("cmd_vel")?), 0);
 
     // SENSOR (Priority 1) - LiDAR publishes to "lidar/scan"
     let mut lidar = LidarNode::new()?;
     lidar.configure_serial("/dev/ttyUSB0", 115200);
-    scheduler.add(Box::new(lidar), 1, Some(true));
+    scheduler.add(Box::new(lidar), 1);
 
     // PERCEPTION (Priority 2) - Subscribes "lidar/scan", publishes "obstacles"
     let mut detector = CollisionDetectorNode::new()?;
     detector.set_safety_distance(0.5);  // 50cm
-    scheduler.add(Box::new(detector), 2, Some(true));
+    scheduler.add(Box::new(detector), 2);
 
     // PLANNING (Priority 3) - Subscribes "obstacles", publishes "cmd_vel"
-    scheduler.add(Box::new(PathPlannerNode::new()?), 3, Some(true));
+    scheduler.add(Box::new(PathPlannerNode::new()?), 3);
 
     // CONTROL (Priority 4) - Subscribes "cmd_vel", publishes "motor/*"
     let drive = DifferentialDriveNode::new("cmd_vel", "motor/left", "motor/right", 0.3)?;
-    scheduler.add(Box::new(drive), 4, Some(true));
+    scheduler.add(Box::new(drive), 4);
 
     // ACTUATORS (Priority 5) - Subscribe to motor commands
     let mut left = BldcMotorNode::new()?;
     left.configure_gpio(12, EscProtocol::DShot600);
     left.set_input_topic("motor/left");
-    scheduler.add(Box::new(left), 5, Some(true));
+    scheduler.add(Box::new(left), 5);
 
     let mut right = BldcMotorNode::new()?;
     right.configure_gpio(13, EscProtocol::DShot600);
     right.set_input_topic("motor/right");
-    scheduler.add(Box::new(right), 5, Some(true));
+    scheduler.add(Box::new(right), 5);
 
     scheduler.run()
 }
@@ -368,7 +368,7 @@ impl Node for SensorNode {
     }
 
     // tick() is required - this is your main logic that runs every cycle
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simple sensor reading
         let reading = SensorReading(self.counter as f64 * 0.1, self.counter);
 
@@ -392,8 +392,7 @@ fn main() -> Result<()> {
             publisher: Topic::new("sensor_data")?,
             counter: 0,
         }),
-        0,           // Priority (0 = highest)
-        Some(true)   // Enable logging
+        0,  // Priority (0 = highest)
     );
 
     scheduler.run()
@@ -511,8 +510,8 @@ use horus::prelude::*;
 
 let mut scheduler = Scheduler::new().name("my_app");
 
-// Add nodes with priority (0 = highest) and logging
-scheduler.add(Box::new(my_node), 0, Some(true));
+// Add nodes with priority (0 = highest)
+scheduler.add(Box::new(my_node), 0);
 
 // Run options:
 scheduler.run()?;                                  // Run continuously until Ctrl+C
@@ -557,7 +556,7 @@ pub trait Node: Send {
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {   // Optional: Setup logic
         Ok(())
     }
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>);          // Required: Main loop logic
+    fn tick(&mut self);                                      // Required: Main loop logic
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> { // Optional: Cleanup logic
         Ok(())
     }
@@ -567,13 +566,8 @@ pub trait Node: Send {
 **Method requirements:**
 - **`name()`** - Required: Returns unique node identifier
 - **`tick()`** - Required: Your main logic that runs every cycle
-- **`init()`** - Optional: Override only if you need setup logic (default: empty)
-- **`shutdown()`** - Optional: Override only if you need cleanup logic (default: empty)
-
-**About the `ctx` parameter:**
-- `ctx: Option<&mut NodeInfo>` - Use `None` for maximum performance (no logging)
-- When passing ctx to multiple calls, declare as `mut ctx` and pass `ctx` directly
-- The scheduler provides ctx based on logging settings in `scheduler.add()`
+- **`init()`** - Optional: Override only if you need setup logic (ctx provides logging)
+- **`shutdown()`** - Optional: Override only if you need cleanup logic (ctx provides logging)
 
 ### node! Macro
 
@@ -742,7 +736,7 @@ Python bindings can be installed via pip (recommended) or automatically with `./
 
 ```bash
 # Option 1: Install from PyPI (recommended - fast, pre-built)
-pip install horus
+pip install horus-robotics
 
 # Option 2: Install with main HORUS installation
 ./install.sh  # Auto-installs Python bindings if Python 3.9+ detected

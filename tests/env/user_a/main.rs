@@ -19,7 +19,7 @@ impl Node for Controller {
         "controller"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Your control logic here
         // Note: ctx is available for node metadata but send() doesn't need it
         let msg = CmdVel::new(1.0, 0.0);

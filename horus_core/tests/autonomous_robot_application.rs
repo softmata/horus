@@ -216,7 +216,7 @@ impl Node for MotorControllerNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Get velocity command
         if let Some(cmd) = self.cmd_vel_sub.recv() {
             self.target_linear = cmd.linear_x;
@@ -317,7 +317,7 @@ impl Node for CameraPerceptionNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simulate camera capture (blocking I/O - will be moved to async tier)
         std::thread::sleep(Duration::from_millis(1000 / self.fps as u64));
 
@@ -399,7 +399,7 @@ impl Node for LidarProcessingNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simulate lidar scan (blocking I/O - will be moved to async tier)
         std::thread::sleep(Duration::from_millis(100)); // 10Hz lidar
 
@@ -515,7 +515,7 @@ impl Node for SensorFusionNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         let dt = 0.01; // 100Hz fusion rate
 
         // Prediction step
@@ -636,7 +636,7 @@ impl Node for PathPlannerNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Update current position
         if let Some(odom) = self.odometry_sub.recv() {
             self.current_position = (odom.x, odom.y);
@@ -773,7 +773,7 @@ impl Node for NavigationControllerNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Update position
         if let Some(odom) = self.odometry_sub.recv() {
             self.current_position = (odom.x, odom.y, odom.theta);
@@ -873,7 +873,7 @@ impl Node for BatteryMonitorNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         match self.read_battery() {
             Ok(status) => {
                 // Check for critical conditions
@@ -936,7 +936,7 @@ impl Node for IMUSensorNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count += 1;
 
         // Simulate IMU data with some noise
@@ -985,63 +985,54 @@ fn test_autonomous_robot_complete_system() {
     // Critical control loop (highest priority - will be JIT compiled)
     scheduler.add(
         Box::new(MotorControllerNode::new().expect("Failed to create motor controller")),
-        0,           // Highest priority
-        Some(false), // No logging for performance
+        0,  // Highest priority
     );
 
     // Sensor fusion (high priority)
     scheduler.add(
         Box::new(SensorFusionNode::new().expect("Failed to create sensor fusion")),
         10,
-        Some(true),
     );
 
     // IMU sensor (high priority)
     scheduler.add(
         Box::new(IMUSensorNode::new().expect("Failed to create IMU sensor")),
         15,
-        Some(false),
     );
 
     // Navigation controller
     scheduler.add(
         Box::new(NavigationControllerNode::new().expect("Failed to create navigation controller")),
         20,
-        Some(true),
     );
 
     // Path planner
     scheduler.add(
         Box::new(PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner")), // Goal at (10, 10)
         30,
-        Some(true),
     );
 
     // Camera perception (I/O heavy - will use async tier)
     scheduler.add(
         Box::new(CameraPerceptionNode::new(0).expect("Failed to create front camera")), // Front camera
         40,
-        Some(false),
     );
 
     scheduler.add(
         Box::new(CameraPerceptionNode::new(1).expect("Failed to create rear camera")), // Rear camera
         45,
-        Some(false),
     );
 
     // Lidar processing (I/O heavy - will use async tier)
     scheduler.add(
         Box::new(LidarProcessingNode::new().expect("Failed to create lidar processor")),
         50,
-        Some(false),
     );
 
     // Battery monitor (prone to failures - will test circuit breaker)
     scheduler.add(
         Box::new(BatteryMonitorNode::new().expect("Failed to create battery monitor")),
-        100, // Lower priority
-        Some(true),
+        100,  // Lower priority
     );
 
     println!("Robot system configuration:");
@@ -1102,9 +1093,9 @@ fn test_robot_performance_metrics() {
         fn init(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
             self.inner.init(ctx)
         }
-        fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             self.counter.fetch_add(1, Ordering::Relaxed);
-            self.inner.tick(ctx);
+            self.inner.tick();
         }
         fn shutdown(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
             self.inner.shutdown(ctx)
@@ -1126,7 +1117,6 @@ fn test_robot_performance_metrics() {
             counter: Arc::clone(&motor_ticks),
         }),
         0,
-        None,
     );
 
     // Run for 2 seconds

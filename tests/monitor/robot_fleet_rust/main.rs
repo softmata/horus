@@ -338,21 +338,21 @@ fn main() -> HorusResult<()> {
     let mut scheduler = Scheduler::new();
 
     // Sensor Layer (Priority 0-9: Highest)
-    scheduler.add(Box::new(CameraNode::new()), 0, Some(true));
-    scheduler.add(Box::new(LidarNode::new()), 1, Some(true));
-    scheduler.add(Box::new(ImuNode::new()), 2, Some(true));
-    scheduler.add(Box::new(GpsNode::new()), 3, Some(true));
+    scheduler.add(Box::new(CameraNode::new()), 0);
+    scheduler.add(Box::new(LidarNode::new()), 1);
+    scheduler.add(Box::new(ImuNode::new()), 2);
+    scheduler.add(Box::new(GpsNode::new()), 3);
 
     // Control Layer (Priority 10-19: High)
-    scheduler.add(Box::new(ObstacleAvoidanceNode::new()), 10, Some(true));
-    scheduler.add(Box::new(NavigationNode::new()), 11, Some(true));
+    scheduler.add(Box::new(ObstacleAvoidanceNode::new()), 10);
+    scheduler.add(Box::new(NavigationNode::new()), 11);
 
     // Actuation Layer (Priority 20-29: Medium)
-    scheduler.add(Box::new(MotorControllerNode::new()), 20, Some(true));
+    scheduler.add(Box::new(MotorControllerNode::new()), 20);
 
     // Monitoring Layer (Priority 30-39: Low)
-    scheduler.add(Box::new(BatteryMonitorNode::new()), 30, Some(true));
-    scheduler.add(Box::new(SystemHealthNode::new()), 31, Some(true));
+    scheduler.add(Box::new(BatteryMonitorNode::new()), 30);
+    scheduler.add(Box::new(SystemHealthNode::new()), 31);
 
     println!(" All nodes registered");
     println!(" Starting scheduler...\n");

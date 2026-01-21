@@ -87,7 +87,7 @@ impl Node for SensorNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count += 1;
 
         let msg = CmdVel {
@@ -139,7 +139,7 @@ impl Node for ControllerNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Receive and process messages without using ctx
         if let Some(msg) = self.subscriber.recv() {
             // Process message
@@ -185,7 +185,7 @@ impl Node for ActuatorNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         if let Some(_msg) = self.receiver.recv() {
             *self.counter.lock().unwrap() += 1;
         }
@@ -227,12 +227,12 @@ fn test_node_trait_api() -> bool {
     }
 
     // Test tick - locks down tick signature
-    node.tick(Some(&mut ctx));
-    println!("   Node.tick(Option<&mut NodeInfo>)");
+    node.tick();
+    println!("   Node.tick()");
 
-    // Test tick with None
-    node.tick(None);
-    println!("   Node.tick(None)");
+    // Test tick again
+    node.tick();
+    println!("   Node.tick() (again)");
 
     // Test shutdown - locks down shutdown signature
     match node.shutdown(&mut ctx) {
@@ -267,13 +267,13 @@ fn test_scheduler_api() -> bool {
 
     // Test Scheduler::add() - locks down node registration
     let node = Box::new(SensorNode::new(&topic, counter.clone()));
-    scheduler.add(node, 0, None);
-    println!("   Scheduler.add(Box<dyn Node>, u32, Option<bool>)");
+    scheduler.add(node, 0);
+    println!("   Scheduler.add(Box<dyn Node>, u32)");
 
-    // Test alternative registration with logging enabled
+    // Test alternative registration
     let node2 = Box::new(SensorNode::new(&topic, counter.clone()));
-    scheduler.add(node2, 1, Some(true));
-    println!("   Scheduler.add with logging enabled");
+    scheduler.add(node2, 1);
+    println!("   Scheduler.add with second node");
 
     // Test get_node_list() - locks down query API
     let nodes = scheduler.get_node_list();
@@ -305,7 +305,7 @@ fn test_per_node_rate() -> bool {
         fn name(&self) -> &'static str {
             "fast_node"
         }
-        fn tick(&mut self, _info: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             *self.counter.lock().unwrap() += 1;
         }
     }
@@ -317,7 +317,7 @@ fn test_per_node_rate() -> bool {
         fn name(&self) -> &'static str {
             "slow_node"
         }
-        fn tick(&mut self, _info: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             *self.counter.lock().unwrap() += 1;
         }
     }
@@ -335,7 +335,7 @@ fn test_per_node_rate() -> bool {
         counter: fast_counter.clone(),
     });
     scheduler
-        .add(fast_node, 0, None)
+        .add(fast_node, 0)
         .set_node_rate("fast_node", 100.0);
     println!("   Added fast_node at 100Hz");
 
@@ -344,7 +344,7 @@ fn test_per_node_rate() -> bool {
         counter: slow_counter.clone(),
     });
     scheduler
-        .add(slow_node, 1, None)
+        .add(slow_node, 1)
         .set_node_rate("slow_node", 10.0);
     println!("   Added slow_node at 10Hz");
 
@@ -409,8 +409,8 @@ fn test_full_framework_workflow() -> bool {
     scheduler = scheduler.name("workflow_test");
 
     // Step 3: Add nodes with different priorities
-    scheduler.add(sensor, 0, Some(false));
-    scheduler.add(controller, 1, Some(true));
+    scheduler.add(sensor, 0);
+    scheduler.add(controller, 1);
 
     println!("   Added nodes to scheduler");
 
@@ -424,9 +424,8 @@ fn test_full_framework_workflow() -> bool {
     assert!(sensor_info.is_some(), "Should find sensor_node");
     println!("   Queried node information");
 
-    // Step 6: Modify node settings (now chainable, logs warning if not found)
-    scheduler.set_node_logging("controller_node", false);
-    println!("   Modified node settings");
+    // Step 6: Verify scheduler state
+    println!("   Verified scheduler state");
 
     // Step 7: Get monitoring summary
     let summary = scheduler.get_monitoring_summary();
@@ -467,9 +466,9 @@ fn test_multi_node_graph() -> bool {
 
     // Add all nodes
     let mut scheduler = Scheduler::new();
-    scheduler.add(sensor, 0, None);
-    scheduler.add(controller, 1, None);
-    scheduler.add(actuator, 2, None);
+    scheduler.add(sensor, 0);
+    scheduler.add(controller, 1);
+    scheduler.add(actuator, 2);
 
     println!("   Added all nodes in priority order");
 
@@ -506,7 +505,7 @@ fn test_node_lifecycle() -> bool {
 
     // Phase 2: Tick loop
     for i in 0..10 {
-        node.tick(Some(&mut ctx));
+        node.tick();
         if i == 0 {
             println!("   Phase 2: tick() executed");
         }

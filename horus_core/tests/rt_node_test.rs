@@ -42,7 +42,7 @@ impl Node for MotorControlNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
 
         // Simulate computation
@@ -128,7 +128,7 @@ impl Node for SensorFusionNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.samples_processed.fetch_add(1, Ordering::SeqCst);
 
         // Simulate sensor fusion computation
@@ -190,7 +190,7 @@ impl Node for LoggingNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.logs_written.fetch_add(1, Ordering::SeqCst);
         // Simulate logging (fast operation)
         std::thread::sleep(Duration::from_micros(10));
@@ -231,13 +231,9 @@ fn test_rt_node_basic() {
 
     // Add RT nodes as regular nodes (RtNodeWrapper handles the conversion)
     scheduler
-        .add(Box::new(MotorControlNode::new("motor_ctrl")), 0, Some(true))
-        .add(
-            Box::new(SensorFusionNode::new("sensor_fusion")),
-            1,
-            Some(true),
-        )
-        .add(Box::new(LoggingNode::new("logger")), 10, Some(false));
+        .add(Box::new(MotorControlNode::new("motor_ctrl")), 0)
+        .add(Box::new(SensorFusionNode::new("sensor_fusion")), 1)
+        .add(Box::new(LoggingNode::new("logger")), 10);
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -261,9 +257,9 @@ fn test_rt_node_priority_ordering() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add(Box::new(log_node), 10, Some(false)) // Low priority
-        .add(Box::new(sensor_node), 1, Some(false)) // High priority
-        .add(Box::new(motor_node), 0, Some(false)); // Critical priority
+        .add(Box::new(log_node), 10) // Low priority
+        .add(Box::new(sensor_node), 1) // High priority
+        .add(Box::new(motor_node), 0); // Critical priority
 
     scheduler.run_for(Duration::from_millis(50)).unwrap();
 
@@ -277,16 +273,8 @@ fn test_rt_node_with_safety_critical_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
     scheduler
-        .add(
-            Box::new(MotorControlNode::new("critical_motor")),
-            0,
-            Some(true),
-        )
-        .add(
-            Box::new(SensorFusionNode::new("critical_sensor")),
-            1,
-            Some(true),
-        );
+        .add(Box::new(MotorControlNode::new("critical_motor")), 0)
+        .add(Box::new(SensorFusionNode::new("critical_sensor")), 1);
 
     // Run briefly (safety-critical config runs at 1kHz)
     let result = scheduler.run_for(Duration::from_millis(50));
@@ -310,7 +298,7 @@ fn test_rt_node_formal_verification() {
     assert!(node.pre_condition());
 
     // Execute tick
-    node.tick(None);
+    node.tick();
 
     // Test post-condition
     assert!(node.post_condition());

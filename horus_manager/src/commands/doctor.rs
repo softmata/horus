@@ -187,15 +187,15 @@ fn check_shared_memory(verbose: bool) -> (CheckStatus, String) {
 }
 
 fn check_python(verbose: bool) -> (CheckStatus, String) {
-    // Check if pyhorus is installed
+    // Check if horus-robotics is installed (module name is 'horus')
     match Command::new("python3")
-        .args(["-c", "import pyhorus; print(pyhorus.__version__)"])
+        .args(["-c", "import horus; print(horus.__version__)"])
         .output()
     {
         Ok(output) => {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                (CheckStatus::Ok, format!("pyhorus {}", version.trim()))
+                (CheckStatus::Ok, format!("horus-robotics {}", version.trim()))
             } else {
                 // Try to check if maturin is available for building
                 match Command::new("pip3").args(["show", "maturin"]).output() {
@@ -207,7 +207,7 @@ fn check_python(verbose: bool) -> (CheckStatus, String) {
                         if verbose {
                             (
                                 CheckStatus::Warning,
-                                "Not installed (pip install pyhorus)".to_string(),
+                                "Not installed (pip install horus-robotics)".to_string(),
                             )
                         } else {
                             (CheckStatus::Warning, "Not installed".to_string())

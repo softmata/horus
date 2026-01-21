@@ -647,6 +647,44 @@ impl Scheduler {
         self.blackbox = Some(blackbox);
     }
 
+    /// Set the deterministic clock (used internally by SchedulerBuilder).
+    ///
+    /// This enables simulation mode with virtual time and deterministic RNG.
+    pub(crate) fn set_deterministic_clock(&mut self, clock: Arc<DeterministicClock>) {
+        self.deterministic_clock = Some(clock);
+    }
+
+    /// Set the deterministic config (used internally by SchedulerBuilder).
+    ///
+    /// This stores the configuration used to create the deterministic clock.
+    pub(crate) fn set_deterministic_config(&mut self, config: DeterministicConfig) {
+        self.deterministic_config = Some(config);
+    }
+
+    /// Clear runtime capabilities (used internally by SchedulerBuilder).
+    ///
+    /// This is called when `skip_detection()` is used to remove the
+    /// auto-detected capabilities from `Scheduler::new()`.
+    pub(crate) fn clear_capabilities(&mut self) {
+        self.runtime_capabilities = None;
+    }
+
+    /// Clear the blackbox flight recorder (used internally by SchedulerBuilder).
+    ///
+    /// This is called when the builder's `skip_detection()` is used and
+    /// no explicit blackbox was requested.
+    pub(crate) fn clear_blackbox(&mut self) {
+        self.blackbox = None;
+    }
+
+    /// Clear all RT degradations (used internally by SchedulerBuilder).
+    ///
+    /// This is called when `skip_detection()` is used to remove the
+    /// degradations recorded by `Scheduler::new()`.
+    pub(crate) fn clear_degradations(&mut self) {
+        self.rt_degradations.clear();
+    }
+
     /// Get a reference to the BlackBox flight recorder.
     ///
     /// The BlackBox automatically records critical events for post-mortem crash analysis:
@@ -715,7 +753,7 @@ impl Scheduler {
     /// use horus_core::scheduling::CircuitState;
     ///
     /// let scheduler = Scheduler::new();
-    /// scheduler.add(Box::new(my_node), 10, None);
+    /// scheduler.add(Box::new(my_node), 10);
     ///
     /// if let Some(state) = scheduler.circuit_state("my_node") {
     ///     match state {
@@ -1652,7 +1690,7 @@ impl Scheduler {
     /// use std::path::PathBuf;
     ///
     /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(Box::new(live_sensor), 0, None);  // Live node
+    /// scheduler.add(Box::new(live_sensor), 0);  // Live node
     /// scheduler.add_replay(
     ///     PathBuf::from("~/.horus/recordings/crash/motor_node@abc123.horus"),
     ///     1,  // priority
@@ -2011,8 +2049,8 @@ impl Scheduler {
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.add(Box::new(node1), 0, None);
-    /// scheduler.add(Box::new(node2), 1, None);
+    /// scheduler.add(Box::new(node1), 0);
+    /// scheduler.add(Box::new(node2), 1);
     /// scheduler.lock_topology();  // No more nodes can be added
     /// scheduler.run();
     /// ```
@@ -2097,8 +2135,8 @@ impl Scheduler {
     ) -> &mut Self {
         let node_name = node.name().to_string();
 
-        // Add node with default logging
-        self.add(node, priority, None);
+        // Add node
+        self.add(node, priority);
 
         // Set explicit tier in classifier
         if self.classifier.is_none() {
@@ -2293,20 +2331,18 @@ impl Scheduler {
     }
 
     /// Add a node with given priority (lower number = higher priority).
-    /// If users only use add(node, priority) then logging defaults to false
-    /// Automatically detects and wraps RtNode types for real-time support
+    /// Automatically detects and wraps RtNode types for real-time support.
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.add(node, 0, None);  // Highest priority
-    /// scheduler.add(node, 10, None); // Medium priority
-    /// scheduler.add(node, 100, None); // Low priority
+    /// scheduler.add(node, 0);   // Highest priority
+    /// scheduler.add(node, 10);  // Medium priority
+    /// scheduler.add(node, 100); // Low priority
     /// ```
     pub fn add(
         &mut self,
         node: Box<dyn Node>,
         priority: u32,
-        logging_enabled: Option<bool>,
     ) -> &mut Self {
         // Check if topology is locked (deterministic mode)
         if self.topology_locked {
@@ -2323,7 +2359,7 @@ impl Scheduler {
         }
 
         let node_name = node.name().to_string();
-        let logging_enabled = logging_enabled.unwrap_or(false);
+        let logging_enabled = true; // Always enable tick counting for metrics
 
         // Collect topology from node (for deterministic validation)
         for pub_meta in node.get_publishers() {
@@ -2467,20 +2503,18 @@ impl Scheduler {
 
         if let Some(rate) = node_rate {
             print_line(&format!(
-                "Added {} '{}' with priority {} at {:.1}Hz (logging: {})",
+                "Added {} '{}' with priority {} at {:.1}Hz",
                 if is_rt_node { "RT node" } else { "node" },
                 node_name,
                 priority,
-                rate,
-                logging_enabled
+                rate
             ));
         } else {
             print_line(&format!(
-                "Added {} '{}' with priority {} (logging: {})",
+                "Added {} '{}' with priority {}",
                 if is_rt_node { "RT node" } else { "node" },
                 node_name,
-                priority,
-                logging_enabled
+                priority
             ));
         }
 
@@ -2606,7 +2640,7 @@ impl Scheduler {
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.add(sensor, 0, Some(true))
+    /// scheduler.add(sensor, 0)
     ///     .set_node_rate("sensor", 100.0);  // Run sensor at 100Hz
     /// ```
     pub fn set_node_rate(&mut self, name: &str, rate_hz: f64) -> &mut Self {
@@ -3190,36 +3224,6 @@ impl Scheduler {
             .collect()
     }
 
-    /// Enable/disable logging for a specific node (chainable)
-    ///
-    /// # Returns
-    /// Returns `&mut Self` for method chaining. Logs warning if node not found.
-    ///
-    /// # Example
-    /// ```ignore
-    /// scheduler
-    ///     .set_node_logging("sensor", false)
-    ///     .set_node_logging("controller", true)
-    ///     .set_node_rate("motor", 1000.0);
-    /// ```
-    pub fn set_node_logging(&mut self, name: &str, enabled: bool) -> &mut Self {
-        let mut found = false;
-        for registered in &mut self.nodes {
-            if registered.node.name() == name {
-                registered.logging_enabled = enabled;
-                print_line(&format!("Set logging for node '{}' to: {}", name, enabled));
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            print_line(&format!(
-                "Warning: Node '{}' not found for logging configuration",
-                name
-            ));
-        }
-        self
-    }
     /// Get monitoring summary by creating temporary contexts for each node
     pub fn get_monitoring_summary(&self) -> Vec<(String, u32)> {
         self.nodes
@@ -3599,7 +3603,7 @@ impl Scheduler {
 
                         // Execute node tick with panic handling
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            registered.node.tick(Some(context));
+                            registered.node.tick();
                         }))
                     } else {
                         continue;
@@ -3870,9 +3874,9 @@ impl Scheduler {
                 (Ok(()), true)
             } else {
                 // JIT failed, fall back to regular tick
-                let tick_res = if let Some(ref mut context) = registered.context {
+                let tick_res = if registered.context.is_some() {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        registered.node.tick(Some(context));
+                        registered.node.tick();
                     }))
                 } else {
                     return;
@@ -3892,7 +3896,7 @@ impl Scheduler {
                         let _result = compute_fn(0);
                     } else {
                         // Regular tick execution
-                        registered.node.tick(Some(context));
+                        registered.node.tick();
                     }
                 }));
                 (result, false)
@@ -4354,7 +4358,7 @@ mod tests {
             self.name
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -4379,7 +4383,7 @@ mod tests {
             self.name
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {}
+        fn tick(&mut self) {}
 
         fn get_publishers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
@@ -4409,7 +4413,7 @@ mod tests {
             self.name
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {}
+        fn tick(&mut self) {}
 
         fn get_subscribers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
@@ -4459,7 +4463,7 @@ mod tests {
     #[test]
     fn test_scheduler_add_node() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("test_node")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("test_node")), 0);
 
         let nodes = scheduler.get_node_list();
         assert_eq!(nodes.len(), 1);
@@ -4469,9 +4473,9 @@ mod tests {
     #[test]
     fn test_scheduler_add_multiple_nodes() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
-        scheduler.add(Box::new(CounterNode::new("node2")), 1, None);
-        scheduler.add(Box::new(CounterNode::new("node3")), 2, None);
+        scheduler.add(Box::new(CounterNode::new("node1")), 0);
+        scheduler.add(Box::new(CounterNode::new("node2")), 1);
+        scheduler.add(Box::new(CounterNode::new("node3")), 2);
 
         let nodes = scheduler.get_node_list();
         assert_eq!(nodes.len(), 3);
@@ -4481,9 +4485,9 @@ mod tests {
     fn test_scheduler_node_priority_ordering() {
         let mut scheduler = Scheduler::new();
         // Add nodes with different priorities
-        scheduler.add(Box::new(CounterNode::new("low_priority")), 10, None);
-        scheduler.add(Box::new(CounterNode::new("high_priority")), 0, None);
-        scheduler.add(Box::new(CounterNode::new("medium_priority")), 5, None);
+        scheduler.add(Box::new(CounterNode::new("low_priority")), 10);
+        scheduler.add(Box::new(CounterNode::new("high_priority")), 0);
+        scheduler.add(Box::new(CounterNode::new("medium_priority")), 5);
 
         // After sorting by priority, high_priority should come first
         let nodes = scheduler.get_node_list();
@@ -4492,11 +4496,11 @@ mod tests {
     }
 
     #[test]
-    fn test_scheduler_add_with_logging() {
+    fn test_scheduler_add_basic() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("logged_node")), 0, Some(true));
+        scheduler.add(Box::new(CounterNode::new("basic_node")), 0);
 
-        let info = scheduler.get_node_info("logged_node");
+        let info = scheduler.get_node_info("basic_node");
         assert!(info.is_some());
     }
 
@@ -4533,7 +4537,7 @@ mod tests {
     #[test]
     fn test_scheduler_set_node_rate() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("sensor")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("sensor")), 0);
         scheduler.set_node_rate("sensor", 100.0);
 
         // Just verify it doesn't panic
@@ -4543,7 +4547,7 @@ mod tests {
     #[test]
     fn test_scheduler_set_node_rate_nonexistent() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("node1")), 0);
         // Setting rate for nonexistent node should not panic
         scheduler.set_node_rate("nonexistent", 50.0);
         assert!(scheduler.is_running());
@@ -4556,12 +4560,8 @@ mod tests {
     #[test]
     fn test_scheduler_collect_topology() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(PublisherNode::new("publisher", "topic1")), 0, None);
-        scheduler.add(
-            Box::new(SubscriberNode::new("subscriber", "topic1")),
-            1,
-            None,
-        );
+        scheduler.add(Box::new(PublisherNode::new("publisher", "topic1")), 0);
+        scheduler.add(Box::new(SubscriberNode::new("subscriber", "topic1")), 1);
 
         let (publishers, subscribers) = scheduler.get_topology();
         assert_eq!(publishers.len(), 1);
@@ -4575,8 +4575,8 @@ mod tests {
     #[test]
     fn test_scheduler_validate_topology_matching() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(PublisherNode::new("pub", "data_topic")), 0, None);
-        scheduler.add(Box::new(SubscriberNode::new("sub", "data_topic")), 1, None);
+        scheduler.add(Box::new(PublisherNode::new("pub", "data_topic")), 0);
+        scheduler.add(Box::new(SubscriberNode::new("sub", "data_topic")), 1);
 
         let errors = scheduler.validate_topology();
         // No errors when publisher and subscriber match
@@ -4586,7 +4586,7 @@ mod tests {
     #[test]
     fn test_scheduler_topology_locked() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("node1")), 0);
 
         assert!(!scheduler.is_topology_locked());
         scheduler.lock_topology();
@@ -4609,12 +4609,6 @@ mod tests {
         assert!(scheduler.is_running());
     }
 
-    #[test]
-    fn test_scheduler_new_deterministic() {
-        let scheduler = Scheduler::new_deterministic();
-        assert!(scheduler.is_running());
-    }
-
     // ============================================================================
     // Node Info Tests
     // ============================================================================
@@ -4622,7 +4616,7 @@ mod tests {
     #[test]
     fn test_scheduler_get_node_info_existing() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("info_node")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("info_node")), 0);
 
         let info = scheduler.get_node_info("info_node");
         assert!(info.is_some());
@@ -4647,33 +4641,14 @@ mod tests {
     }
 
     // ============================================================================
-    // Logging Control Tests
-    // ============================================================================
-
-    #[test]
-    fn test_scheduler_set_node_logging() {
-        let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("log_node")), 0, Some(false));
-
-        // Enable logging
-        scheduler.set_node_logging("log_node", true);
-
-        // Disable logging
-        scheduler.set_node_logging("log_node", false);
-
-        // Should not panic
-        assert!(scheduler.is_running());
-    }
-
-    // ============================================================================
     // Monitoring Summary Tests
     // ============================================================================
 
     #[test]
     fn test_scheduler_get_monitoring_summary() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("mon_node1")), 0, None);
-        scheduler.add(Box::new(CounterNode::new("mon_node2")), 1, None);
+        scheduler.add(Box::new(CounterNode::new("mon_node1")), 0);
+        scheduler.add(Box::new(CounterNode::new("mon_node2")), 1);
 
         let summary = scheduler.get_monitoring_summary();
         assert_eq!(summary.len(), 2);
@@ -4757,11 +4732,7 @@ mod tests {
     fn test_scheduler_run_for_short_duration() {
         let mut scheduler = Scheduler::new();
         let counter = Arc::new(AtomicUsize::new(0));
-        scheduler.add(
-            Box::new(CounterNode::with_counter("counter", counter.clone())),
-            0,
-            None,
-        );
+        scheduler.add(Box::new(CounterNode::with_counter("counter", counter.clone())), 0);
 
         // Run for a short duration (50ms is more reliable under parallel test load)
         let result = scheduler.run_for(Duration::from_millis(50));
@@ -4782,7 +4753,7 @@ mod tests {
             .with_capacity(10)
             .disable_learning();
 
-        scheduler.add(Box::new(CounterNode::new("chain_node")), 0, None);
+        scheduler.add(Box::new(CounterNode::new("chain_node")), 0);
 
         assert!(scheduler.is_running());
         assert_eq!(scheduler.get_node_list().len(), 1);

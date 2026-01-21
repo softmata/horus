@@ -53,7 +53,7 @@
 //! impl Node for MyRobotNode {
 //!     fn name(&self) -> &'static str { "my_robot" }
 //!
-//!     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+//!     fn tick(&mut self) {
 //!         // Node logic here
 //!     }
 //! }

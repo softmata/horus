@@ -83,11 +83,9 @@ fn main() {
             self.name
         }
 
-        fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             self.tick_count += 1;
-            if let Some(ctx) = ctx {
-                ctx.log_info(&format!("Isolated tick #{}", self.tick_count));
-            }
+            // Note: Logging moved to scheduler-internal metrics
         }
     }
 

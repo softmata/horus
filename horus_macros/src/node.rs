@@ -44,7 +44,7 @@ struct DataSection {
 /// Tick implementation
 struct TickSection {
     _tick_token: Ident, // "tick" keyword
-    ctx_arg: Option<Ident>,
+    _ctx_arg: Option<Ident>, // Parsed but not used - tick() no longer takes ctx
     body: Block,
 }
 
@@ -327,8 +327,8 @@ fn parse_data_section(input: ParseStream, data_token: Ident) -> Result<DataSecti
 }
 
 fn parse_tick_section(input: ParseStream, tick_token: Ident) -> Result<TickSection> {
-    // Check for optional (ctx) argument
-    let ctx_arg = if input.peek(syn::token::Paren) {
+    // Check for optional (ctx) argument - parsed for backwards compatibility but not used
+    let _ctx_arg = if input.peek(syn::token::Paren) {
         let args;
         parenthesized!(args in input);
         Some(args.parse::<Ident>()?)
@@ -340,7 +340,7 @@ fn parse_tick_section(input: ParseStream, tick_token: Ident) -> Result<TickSecti
 
     Ok(TickSection {
         _tick_token: tick_token,
-        ctx_arg,
+        _ctx_arg,
         body,
     })
 }
@@ -511,17 +511,9 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
 
     // Generate tick implementation
     let tick_body = &node_def.tick_section.body;
-    let tick_impl = if node_def.tick_section.ctx_arg.is_some() {
-        quote! {
-            fn tick(&mut self, mut ctx: Option<&mut horus_core::core::NodeInfo>) {
-                #tick_body
-            }
-        }
-    } else {
-        quote! {
-            fn tick(&mut self, _ctx: Option<&mut horus_core::core::NodeInfo>) {
-                #tick_body
-            }
+    let tick_impl = quote! {
+        fn tick(&mut self) {
+            #tick_body
         }
     };
 

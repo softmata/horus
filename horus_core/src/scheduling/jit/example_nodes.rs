@@ -29,7 +29,7 @@ impl Node for ScalingNode {
         "jit_scaling_test"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simple arithmetic: output = input * scale + offset
         self.current_output = self.current_input * self.scale + self.offset;
         self.current_input += 1; // Increment for next tick
@@ -105,15 +105,15 @@ mod tests {
         let mut node = ScalingNode::new(2, 1);
 
         // First tick: 0 * 2 + 1 = 1
-        node.tick(None);
+        node.tick();
         assert_eq!(node.current_output, 1);
 
         // Second tick: 1 * 2 + 1 = 3
-        node.tick(None);
+        node.tick();
         assert_eq!(node.current_output, 3);
 
         // Third tick: 2 * 2 + 1 = 5
-        node.tick(None);
+        node.tick();
         assert_eq!(node.current_output, 5);
     }
 

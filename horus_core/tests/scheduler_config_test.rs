@@ -28,7 +28,7 @@ impl Node for TestNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count += 1;
         // Logging removed - ctx is Option type
     }
@@ -48,8 +48,8 @@ fn test_standard_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
     scheduler
-        .add(Box::new(TestNode::new("sensor1")), 0, Some(true))
-        .add(Box::new(TestNode::new("controller1")), 1, Some(true));
+        .add(Box::new(TestNode::new("sensor1")), 0)
+        .add(Box::new(TestNode::new("controller1")), 1);
 
     // Run for a short duration to test
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
@@ -62,8 +62,8 @@ fn test_safety_critical_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
     scheduler
-        .add(Box::new(TestNode::new("safety_monitor")), 0, Some(true))
-        .add(Box::new(TestNode::new("emergency_stop")), 0, Some(true));
+        .add(Box::new(TestNode::new("safety_monitor")), 0)
+        .add(Box::new(TestNode::new("emergency_stop")), 0);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(50));
     assert!(result.is_ok());
@@ -75,8 +75,8 @@ fn test_high_performance_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     scheduler
-        .add(Box::new(TestNode::new("fast_sensor")), 0, Some(false))
-        .add(Box::new(TestNode::new("fast_control")), 1, Some(false));
+        .add(Box::new(TestNode::new("fast_sensor")), 0)
+        .add(Box::new(TestNode::new("fast_control")), 1);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(50));
     assert!(result.is_ok());
@@ -88,8 +88,8 @@ fn test_space_robot_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::space());
 
     scheduler
-        .add(Box::new(TestNode::new("navigation")), 0, Some(true))
-        .add(Box::new(TestNode::new("solar_panel")), 5, Some(true));
+        .add(Box::new(TestNode::new("navigation")), 0)
+        .add(Box::new(TestNode::new("solar_panel")), 5);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());
@@ -117,8 +117,8 @@ fn test_custom_exotic_robot_config() {
     let mut scheduler = Scheduler::new().with_config(config);
 
     scheduler
-        .add(Box::new(TestNode::new("bio_sensor")), 0, Some(true))
-        .add(Box::new(TestNode::new("quantum_controller")), 1, Some(true));
+        .add(Box::new(TestNode::new("bio_sensor")), 0)
+        .add(Box::new(TestNode::new("quantum_controller")), 1);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());
@@ -132,7 +132,7 @@ fn test_execution_modes() {
         config.execution = ExecutionMode::JITOptimized;
         let mut scheduler = Scheduler::new().with_config(config);
 
-        scheduler.add(Box::new(TestNode::new("jit_node")), 0, Some(false));
+        scheduler.add(Box::new(TestNode::new("jit_node")), 0);
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
         assert!(result.is_ok());
     }
@@ -143,7 +143,7 @@ fn test_execution_modes() {
         config.execution = ExecutionMode::Sequential;
         let mut scheduler = Scheduler::new().with_config(config);
 
-        scheduler.add(Box::new(TestNode::new("seq_node")), 0, Some(false));
+        scheduler.add(Box::new(TestNode::new("seq_node")), 0);
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
         assert!(result.is_ok());
     }
@@ -154,8 +154,8 @@ fn test_execution_modes() {
         config.execution = ExecutionMode::Parallel;
         let mut scheduler = Scheduler::new().with_config(config);
 
-        scheduler.add(Box::new(TestNode::new("par_node1")), 0, Some(false));
-        scheduler.add(Box::new(TestNode::new("par_node2")), 0, Some(false));
+        scheduler.add(Box::new(TestNode::new("par_node1")), 0);
+        scheduler.add(Box::new(TestNode::new("par_node2")), 0);
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
         assert!(result.is_ok());
     }
@@ -167,8 +167,8 @@ fn test_swarm_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::swarm());
 
     scheduler
-        .add(Box::new(TestNode::new("swarm_comm")), 0, Some(true))
-        .add(Box::new(TestNode::new("swarm_behavior")), 1, Some(true));
+        .add(Box::new(TestNode::new("swarm_comm")), 0)
+        .add(Box::new(TestNode::new("swarm_behavior")), 1);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());
@@ -180,8 +180,8 @@ fn test_soft_robotics_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::soft_robotics());
 
     scheduler
-        .add(Box::new(TestNode::new("pressure_sensor")), 0, Some(true))
-        .add(Box::new(TestNode::new("soft_actuator")), 1, Some(true));
+        .add(Box::new(TestNode::new("pressure_sensor")), 0)
+        .add(Box::new(TestNode::new("soft_actuator")), 1);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());
@@ -193,8 +193,8 @@ fn test_high_performance_optimizer_nodes() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     scheduler
-        .add(Box::new(TestNode::new("perf_sensor")), 0, Some(true))
-        .add(Box::new(TestNode::new("perf_optimizer")), 1, Some(true));
+        .add(Box::new(TestNode::new("perf_sensor")), 0)
+        .add(Box::new(TestNode::new("perf_optimizer")), 1);
 
     let result = scheduler.run_for(std::time::Duration::from_millis(100));
     assert!(result.is_ok());

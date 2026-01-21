@@ -741,7 +741,7 @@ where
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Process incoming messages (results, feedback, status)
         self.inner.process_messages();
 

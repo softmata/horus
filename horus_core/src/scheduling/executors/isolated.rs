@@ -1088,7 +1088,7 @@ impl InProcessIsolatedRunner {
             if let Some(ref mut ctx) = self.context {
                 ctx.start_tick();
             }
-            self.node.tick(self.context.as_mut());
+            self.node.tick();
             if let Some(ref mut ctx) = self.context {
                 ctx.record_tick();
             }
@@ -1225,7 +1225,7 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
 
                     // Execute with panic catching
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        node.tick(Some(&mut context));
+                        node.tick();
                     }));
 
                     let duration = start.elapsed();
@@ -1310,7 +1310,7 @@ mod tests {
             "TestIsolatedNode"
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             if self.should_panic && self.tick_count > 2 {
                 panic!("Intentional panic for testing");
             }

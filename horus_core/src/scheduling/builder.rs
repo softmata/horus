@@ -444,9 +444,14 @@ impl SchedulerBuilder {
         // Build base scheduler
         let mut scheduler = Scheduler::new();
 
-        // Apply name
-        if let Some(name) = &self.name {
-            scheduler = scheduler.with_name(name);
+        // If skip_detection is true, clear the auto-configured values from new()
+        if self.skip_detection {
+            scheduler.clear_capabilities();
+            scheduler.clear_degradations();
+            // Clear blackbox unless explicitly requested
+            if self.blackbox_mb.is_none() {
+                scheduler.clear_blackbox();
+            }
         }
 
         // Apply capacity
@@ -553,15 +558,31 @@ impl SchedulerBuilder {
         }
 
         // === Apply Determinism ===
-        if self.deterministic {
+        if self.deterministic || self.virtual_time {
+            // Create deterministic config
+            let mut det_config = super::deterministic::DeterministicConfig::default();
+            if let Some(seed) = self.seed {
+                det_config.seed = seed;
+            }
+            det_config.record_trace = self.enable_tracing;
+
+            // Create deterministic clock and set it on the scheduler
+            let clock = std::sync::Arc::new(super::deterministic::DeterministicClock::new(&det_config));
+            scheduler.set_deterministic_clock(clock);
+            scheduler.set_deterministic_config(det_config);
+
             scheduler = scheduler.enable_determinism();
-            print_line(&"[BUILDER] Deterministic mode enabled".cyan().to_string());
+            print_line(&"[BUILDER] Deterministic mode enabled (simulation mode)".cyan().to_string());
         }
 
-        if self.enable_tracing {
-            // Tracing is enabled via execution trace in simulation mode
-            // For non-simulation, we'd need to enable it differently
+        if self.enable_tracing && !self.deterministic && !self.virtual_time {
+            // Tracing without determinism
             print_line(&"[BUILDER] Execution tracing enabled".cyan().to_string());
+        }
+
+        // Apply name AFTER determinism (enable_determinism sets a default name)
+        if let Some(name) = &self.name {
+            scheduler = scheduler.with_name(name);
         }
 
         // === Apply Safety ===
@@ -681,9 +702,11 @@ impl SchedulerBuilder {
     /// Preset: Simulation configuration.
     ///
     /// Enables: Virtual time, determinism, tracing, blackbox
+    /// Disables: RT capability detection (conflicts with virtual time)
     pub fn simulation() -> Self {
         Self::new()
             .name("SimulationScheduler")
+            .skip_detection() // RT features conflict with virtual time
             .virtual_time()
             .seed(42)
             .enable_tracing()

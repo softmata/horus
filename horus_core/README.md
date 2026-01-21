@@ -64,7 +64,7 @@ From `horus_core/src/core/node.rs`:
 pub trait Node: Send {
     fn name(&self) -> &'static str;
     fn init(&mut self, ctx: &mut NodeInfo) -> Result<()>;
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>);
+    fn tick(&mut self);
     fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()>;
     fn get_publishers(&self) -> Vec<TopicMetadata> { Vec::new() }
     fn get_subscribers(&self) -> Vec<TopicMetadata> { Vec::new() }
@@ -73,7 +73,7 @@ pub trait Node: Send {
 
 **Key Points:**
 - `init()` takes `&mut NodeInfo` (NOT Option)
-- `tick()` takes `Option<&mut NodeInfo>` and returns nothing
+- `tick()` takes no arguments and returns nothing
 - `shutdown()` takes `&mut NodeInfo` (NOT Option)
 - All lifecycle methods use `Result<()>` for errors (via prelude alias)
 
@@ -204,7 +204,7 @@ impl Node for SensorNode {
     }
 
     // Required: Called repeatedly by scheduler
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         let reading = self.counter as f64 * 0.1;
         let _ = self.publisher.send(reading);
         self.counter += 1;
@@ -243,10 +243,10 @@ impl Node for ControlNode {
     }
 
     // Required: Called repeatedly by scheduler
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
-        if let Some(data) = self.subscriber.recv(ctx) {
+    fn tick(&mut self) {
+        if let Some(data) = self.subscriber.recv() {
             // Process the received data
-            ctx.log_info(&format!("Received: {}", data));
+            println!("[ControlNode] Received: {}", data);
         }
     }
 
@@ -382,7 +382,7 @@ struct UnsafeMessage {
 
 ```rust
 impl Node for WellDesignedNode {
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         //  Good: Bounded execution (one message per tick)
         if let Some(data) = self.input.recv() {
             let result = process_data(data);
@@ -406,7 +406,7 @@ impl Node for WellDesignedNode {
 
 ```rust
 impl Node for RobustNode {
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Handle communication errors gracefully
         match self.publisher.send(data) {
             Ok(()) => { /* Success */ }
@@ -423,16 +423,21 @@ impl Node for RobustNode {
 
 ```rust
 impl Node for MyNode {
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
-        if let Some(ctx) = ctx {
-            // Hub automatically logs via ctx.log_pub() and ctx.log_sub()
-            // when you pass ctx to send/recv
+    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        // Logging is available in init() and shutdown() via ctx
+        ctx.log_info("Node initialized");
+        Ok(())
+    }
 
-            // Manual logging for important events
-            ctx.log_info("Node processing data");
-            ctx.log_warning("Sensor timeout");
-            ctx.log_error("Critical failure");
-        }
+    fn tick(&mut self) {
+        // tick() is designed for maximum performance - no ctx overhead
+        // Use external monitoring tools (horus monitor, horus topic echo)
+        // for runtime introspection without affecting hot path performance
+    }
+
+    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
+        ctx.log_info("Node shutting down");
+        Ok(())
     }
 }
 ```

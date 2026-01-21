@@ -42,7 +42,7 @@ impl Node for LifecycleNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -69,7 +69,7 @@ impl Node for MinimalNode {
         self.name
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -91,7 +91,7 @@ impl Node for FailingInitNode {
         Err("Initialization failed".into())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_called.store(true, Ordering::SeqCst);
     }
 }
@@ -118,7 +118,7 @@ impl Node for OrderedNode {
         self.name
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         let mut log = self.execution_log.lock().unwrap();
         log.push(self.name.to_string());
     }
@@ -150,7 +150,7 @@ fn test_scenario_1_complete_node_lifecycle() {
 
     // Test tick multiple times
     for _ in 0..5 {
-        node.tick(Some(&mut ctx));
+        node.tick();
     }
     assert_eq!(
         tick_count.load(Ordering::SeqCst),
@@ -209,7 +209,7 @@ fn test_scenario_5_minimal_node() {
 
     // Tick should work
     for _ in 0..3 {
-        node.tick(None);
+        node.tick();
     }
     assert_eq!(
         tick_count.load(Ordering::SeqCst),
@@ -237,11 +237,11 @@ fn test_scenario_14_nodeinfo_in_tick() {
     let mut ctx = NodeInfo::new("test".to_string(), true);
 
     // Tick with context
-    node.tick(Some(&mut ctx));
+    node.tick();
     assert_eq!(tick_count.load(Ordering::SeqCst), 1);
 
     // Tick without context
-    node.tick(None);
+    node.tick();
     assert_eq!(tick_count.load(Ordering::SeqCst), 2);
 }
 
@@ -272,11 +272,11 @@ fn test_multiple_nodes_independent() {
 
     // Tick each node independently
     for _ in 0..3 {
-        node1.tick(None);
+        node1.tick();
     }
 
     for _ in 0..7 {
-        node2.tick(None);
+        node2.tick();
     }
 
     assert_eq!(
@@ -311,7 +311,7 @@ fn test_node_lifecycle_order() {
             Ok(())
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             let mut log = self.execution_log.lock().unwrap();
             log.push("tick".to_string());
         }
@@ -331,8 +331,8 @@ fn test_node_lifecycle_order() {
 
     // Call lifecycle methods in order
     node.init(&mut ctx).unwrap();
-    node.tick(None);
-    node.tick(None);
+    node.tick();
+    node.tick();
     node.shutdown(&mut ctx).unwrap();
 
     let log = execution_log.lock().unwrap();
@@ -351,7 +351,7 @@ fn test_tick_without_context() {
 
     // Tick repeatedly without context
     for _ in 0..10 {
-        node.tick(None);
+        node.tick();
     }
 
     assert_eq!(

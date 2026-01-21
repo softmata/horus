@@ -2,8 +2,8 @@
 //!
 //! Tests the intent-based constructors:
 //! - `Scheduler::new()` - Auto-optimizing with capability detection
-//! - `Scheduler::simulation()` - Deterministic virtual time mode
-//! - `Scheduler::prototype()` - Fast development mode
+//! - `SchedulerBuilder::simulation().build().unwrap()` - Deterministic virtual time mode
+//! - `SchedulerBuilder::prototype().build().unwrap()` - Fast development mode
 //! - `Scheduler::builder()` - Explicit configuration
 
 use horus_core::core::{Node, NodeInfo};
@@ -37,7 +37,7 @@ impl Node for TickCounterNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -56,11 +56,7 @@ fn test_new_creates_scheduler() {
     let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(
-        Box::new(TickCounterNode::new("test_node", counter.clone())),
-        0,
-        None,
-    );
+    scheduler.add(Box::new(TickCounterNode::new("test_node", counter.clone())), 0);
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok(), "Scheduler::new() should create a working scheduler");
@@ -100,11 +96,7 @@ fn test_new_with_capacity() {
     let mut scheduler = Scheduler::new().with_capacity(100);
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(
-        Box::new(TickCounterNode::new("cap_node", counter.clone())),
-        0,
-        None,
-    );
+    scheduler.add(Box::new(TickCounterNode::new("cap_node", counter.clone())), 0);
 
     // Use 100ms to be reliable under parallel test load
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -112,30 +104,26 @@ fn test_new_with_capacity() {
 }
 
 // =============================================================================
-// Scheduler::simulation() Tests - Deterministic Mode
+// SchedulerBuilder::simulation().build().unwrap() Tests - Deterministic Mode
 // =============================================================================
 
 #[test]
 fn test_simulation_creates_deterministic_scheduler() {
     // simulation() should create a deterministic scheduler
-    let mut scheduler = Scheduler::simulation();
+    let mut scheduler = SchedulerBuilder::simulation().build().unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(
-        Box::new(TickCounterNode::new("sim_node", counter.clone())),
-        0,
-        None,
-    );
+    scheduler.add(Box::new(TickCounterNode::new("sim_node", counter.clone())), 0);
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok(), "Scheduler::simulation() should create a working scheduler");
+    assert!(result.is_ok(), "SchedulerBuilder::simulation().build().unwrap() should create a working scheduler");
     assert!(counter.load(Ordering::SeqCst) > 0, "Node should have ticked");
 }
 
 #[test]
 fn test_simulation_has_no_rt_features() {
     // simulation() should not enable RT features (conflicts with virtual time)
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
 
     // Capabilities should be None (intentionally disabled for determinism)
     let caps = scheduler.capabilities();
@@ -149,8 +137,8 @@ fn test_simulation_has_no_rt_features() {
 #[test]
 fn test_simulation_with_seed_reproducibility() {
     // Two schedulers with same seed should behave identically
-    let scheduler1 = Scheduler::simulation_with_seed(12345);
-    let scheduler2 = Scheduler::simulation_with_seed(12345);
+    let scheduler1 = SchedulerBuilder::simulation().seed(12345).build().unwrap();
+    let scheduler2 = SchedulerBuilder::simulation().seed(12345).build().unwrap();
 
     // Both should have deterministic config with same seed
     assert!(scheduler1.is_simulation_mode());
@@ -163,7 +151,7 @@ fn test_simulation_with_seed_reproducibility() {
 #[test]
 fn test_simulation_has_blackbox() {
     // simulation() should enable BlackBox for debugging
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
 
     // The scheduler should have recording capabilities enabled
     assert!(scheduler.get_name().contains("Simulation"), "Should be named SimulationScheduler");
@@ -178,35 +166,31 @@ fn test_simulation_has_blackbox() {
 #[test]
 fn test_simulation_is_simulation_mode() {
     // simulation() must enable deterministic mode
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
     assert!(scheduler.is_simulation_mode(), "simulation() must enable deterministic mode");
 }
 
 // =============================================================================
-// Scheduler::prototype() Tests - Development Mode
+// SchedulerBuilder::prototype().build().unwrap() Tests - Development Mode
 // =============================================================================
 
 #[test]
 fn test_prototype_creates_dev_scheduler() {
     // prototype() should create a minimal overhead scheduler
-    let mut scheduler = Scheduler::prototype();
+    let mut scheduler = SchedulerBuilder::prototype().build().unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(
-        Box::new(TickCounterNode::new("proto_node", counter.clone())),
-        0,
-        Some(true), // Logging enabled for dev feedback
-    );
+    scheduler.add(Box::new(TickCounterNode::new("proto_node", counter.clone())), 0);
 
     let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok(), "Scheduler::prototype() should create a working scheduler");
+    assert!(result.is_ok(), "SchedulerBuilder::prototype().build().unwrap() should create a working scheduler");
     assert!(counter.load(Ordering::SeqCst) > 0, "Node should have ticked");
 }
 
 #[test]
 fn test_prototype_has_no_capability_detection() {
     // prototype() skips capability detection for fast startup
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
 
     // No capabilities detected (intentionally skipped)
     let caps = scheduler.capabilities();
@@ -216,7 +200,7 @@ fn test_prototype_has_no_capability_detection() {
 #[test]
 fn test_prototype_has_safety_monitor() {
     // prototype() should enable safety monitor for dev feedback
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
 
     // Verify by checking name
     assert!(scheduler.get_name().contains("Prototype"), "Should be named PrototypeScheduler");
@@ -226,7 +210,7 @@ fn test_prototype_has_safety_monitor() {
 fn test_prototype_fast_startup() {
     // prototype() should have fast startup (no RT checks)
     let start = Instant::now();
-    let _scheduler = Scheduler::prototype();
+    let _scheduler = SchedulerBuilder::prototype().build().unwrap();
     let elapsed = start.elapsed();
 
     // Startup should be fast (under 100ms on any system)
@@ -237,7 +221,7 @@ fn test_prototype_fast_startup() {
 #[test]
 fn test_prototype_is_not_deterministic() {
     // prototype() is NOT deterministic (uses wall clock)
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
     assert!(!scheduler.is_simulation_mode(), "prototype() should NOT be deterministic");
 }
 
@@ -256,11 +240,7 @@ fn test_builder_default_build() {
     let mut scheduler = result.unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(
-        Box::new(TickCounterNode::new("builder_node", counter.clone())),
-        0,
-        None,
-    );
+    scheduler.add(Box::new(TickCounterNode::new("builder_node", counter.clone())), 0);
 
     // Use 100ms to be reliable under parallel test load
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -289,11 +269,7 @@ fn test_builder_with_capacity() {
         .expect("build should succeed");
 
     let counter = Arc::new(AtomicU32::new(0));
-    scheduler.add(
-        Box::new(TickCounterNode::new("cap_builder_node", counter.clone())),
-        0,
-        None,
-    );
+    scheduler.add(Box::new(TickCounterNode::new("cap_builder_node", counter.clone())), 0);
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok());
@@ -323,7 +299,6 @@ fn test_builder_watchdog() {
     scheduler.add(
         Box::new(TickCounterNode::new("watchdog_node", counter.clone())),
         0,
-        None,
     );
 
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -342,7 +317,6 @@ fn test_builder_blackbox() {
     scheduler.add(
         Box::new(TickCounterNode::new("blackbox_node", counter.clone())),
         0,
-        None,
     );
 
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -406,7 +380,6 @@ fn test_builder_preset_prototype() {
     scheduler.add(
         Box::new(TickCounterNode::new("preset_proto_node", counter.clone())),
         0,
-        None,
     );
 
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -490,11 +463,11 @@ fn test_constructors_work_on_all_platforms() {
     assert!(scheduler.capabilities().is_some() || scheduler.capabilities().is_none());
 
     // simulation() - always works
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
     assert!(scheduler.is_simulation_mode());
 
     // prototype() - always works
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
     assert!(!scheduler.is_simulation_mode());
 
     // builder().build() - always works
@@ -513,11 +486,11 @@ fn test_scheduler_names() {
     let new_scheduler = Scheduler::new();
     assert!(!new_scheduler.get_name().is_empty(), "new() should have a name");
 
-    let sim_scheduler = Scheduler::simulation();
+    let sim_scheduler = SchedulerBuilder::simulation().build().unwrap();
     assert!(sim_scheduler.get_name().contains("Simulation"),
         "simulation() should have 'Simulation' in name");
 
-    let proto_scheduler = Scheduler::prototype();
+    let proto_scheduler = SchedulerBuilder::prototype().build().unwrap();
     assert!(proto_scheduler.get_name().contains("Prototype"),
         "prototype() should have 'Prototype' in name");
 
@@ -563,7 +536,7 @@ fn test_status_shows_capabilities() {
 #[test]
 fn test_status_no_capabilities_for_simulation() {
     // simulation() doesn't detect capabilities
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
     let status = scheduler.status();
 
     // Should show "capabilities not detected" since simulation skips detection
@@ -595,8 +568,8 @@ fn test_status_shows_safety_features() {
 fn test_status_different_for_each_constructor() {
     // Each constructor type should produce different status output
     let new_status = Scheduler::new().status();
-    let sim_status = Scheduler::simulation().status();
-    let proto_status = Scheduler::prototype().status();
+    let sim_status = SchedulerBuilder::simulation().build().unwrap().status();
+    let proto_status = SchedulerBuilder::prototype().build().unwrap().status();
 
     // Names should be different
     assert!(new_status.contains("AutoOptimized") || new_status.contains("SCHEDULER STATUS:"));
@@ -644,7 +617,7 @@ fn test_blackbox_mut_accessor() {
 
 #[test]
 fn test_prototype_has_no_blackbox() {
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
 
     // Prototype mode should NOT have BlackBox by default
     // (fast development mode skips overhead)
@@ -789,7 +762,7 @@ fn test_status_shows_wcet_enforcement() {
 #[test]
 fn test_prototype_has_no_safety_stats() {
     // prototype() is for development - SafetyMonitor is optional
-    let scheduler = Scheduler::prototype();
+    let scheduler = SchedulerBuilder::prototype().build().unwrap();
     // prototype() doesn't enable SafetyMonitor
     // Check that it at least doesn't crash
     let _status = scheduler.status();
@@ -798,7 +771,7 @@ fn test_prototype_has_no_safety_stats() {
 #[test]
 fn test_simulation_has_safety_monitor() {
     // simulation() should also have SafetyMonitor for WCET tracking
-    let scheduler = Scheduler::simulation();
+    let scheduler = SchedulerBuilder::simulation().build().unwrap();
     let _status = scheduler.status();
 
     // simulation mode has deterministic behavior but still tracks safety

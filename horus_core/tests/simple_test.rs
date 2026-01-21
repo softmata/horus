@@ -26,7 +26,7 @@ mod tests {
             Ok(())
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             let mut count = self.counter.lock().unwrap();
             *count += 1;
 
@@ -53,7 +53,7 @@ mod tests {
 
         // Tick the node multiple times
         for _ in 0..5 {
-            node.tick(None);
+            node.tick();
         }
 
         // Check counter was incremented
@@ -72,7 +72,7 @@ mod tests {
 
         // Tick a few times
         for _ in 0..3 {
-            node.tick(Some(&mut info));
+            node.tick();
         }
 
         assert!(node.shutdown(&mut info).is_ok());
@@ -102,8 +102,8 @@ mod tests {
 
         // Tick both nodes
         for _ in 0..10 {
-            node1.tick(None);
-            node2.tick(None);
+            node1.tick();
+            node2.tick();
         }
 
         // Both should have been ticked

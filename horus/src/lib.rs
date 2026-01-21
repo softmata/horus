@@ -16,7 +16,7 @@
 //! impl Node for MyNode {
 //!     fn name(&self) -> &'static str { "MyNode" }
 //!
-//!     fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+//!     fn tick(&mut self) {
 //!         // Node logic here
 //!     }
 //! }

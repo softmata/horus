@@ -36,7 +36,7 @@ impl Node for CriticalControlNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
 
         // Simulate computation
@@ -114,7 +114,6 @@ fn test_scheduler_with_rt_nodes() {
     scheduler.add(
         Box::new(CriticalControlNode::new("logger", 10)),
         10,
-        Some(false),
     );
 
     // Run for a short duration
@@ -209,7 +208,6 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler.add(
         Box::new(CriticalControlNode::new("normal_processing", 200)),
         5,
-        Some(true),
     );
 
     scheduler.add_rt(
@@ -222,7 +220,6 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler.add(
         Box::new(CriticalControlNode::new("background_task", 500)),
         20,
-        Some(false),
     );
 
     // RT nodes should be properly prioritized

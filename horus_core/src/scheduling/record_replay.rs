@@ -749,7 +749,7 @@ pub enum RecordingDiff {
 // ReplayNode - Node wrapper for replaying recordings
 // ============================================================================
 
-use crate::core::{Node, NodeInfo};
+use crate::core::Node;
 
 /// A node that replays recorded data instead of executing real logic.
 ///
@@ -787,18 +787,11 @@ impl Node for ReplayNode {
         self.node_name
     }
 
-    fn tick(&mut self, ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // The actual replay logic is handled by the Scheduler,
         // which looks up the NodeReplayer and publishes recorded outputs.
         // This tick just tracks the count for logging.
         self.tick_count += 1;
-
-        if let Some(ctx) = ctx {
-            ctx.log_debug(&format!(
-                "[REPLAY] {} tick {} (node_id: {})",
-                self.node_name, self.tick_count, self.node_id
-            ));
-        }
     }
 
     // Use default implementations for get_publishers and get_subscribers

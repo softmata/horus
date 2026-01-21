@@ -43,7 +43,7 @@ fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
 }
 
 // After (v0.3.0+)
-fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+fn tick(&mut self) {
     self.pub.send(data).ok();
     if let Some(msg) = self.sub.recv() {
         // process

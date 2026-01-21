@@ -27,11 +27,11 @@ impl Node for TelemetryNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.counter += 1.0;
         self.telemetry_hub.send(self.counter).ok();
         if self.counter as u32 % 100 == 0 {
-            ctx.log_info(&format!("Published: {}", self.counter));
+            println!("[TelemetryNode] Published: {}", self.counter);
         }
     }
 }
@@ -61,7 +61,7 @@ impl Node for ControlNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Send control command through Link (ultra-low latency)
         let command = 42.0;
         self.command_link.send(command).ok();
@@ -69,7 +69,7 @@ impl Node for ControlNode {
         // Check for response
         if let Some(response) = self.response_link.recv() {
             if response as u32 % 100 == 0 {
-                ctx.log_info(&format!("Got response: {}", response));
+                println!("[ControlNode] Got response: {}", response);
             }
         }
     }
@@ -102,7 +102,7 @@ impl Node for ActuatorNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         if let Some(command) = self.command_link.recv() {
             self.processed += 1;
             // Process command and send response
@@ -137,14 +137,14 @@ impl Node for LoggerNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         if let Some(telemetry) = self.telemetry_hub.recv() {
             self.logs_received += 1;
             if self.logs_received % 100 == 0 {
-                ctx.log_info(&format!(
-                    "Logged telemetry #{}: value={}",
+                println!(
+                    "[LoggerNode] Logged telemetry #{}: value={}",
                     self.logs_received, telemetry
-                ));
+                );
             }
         }
     }
@@ -177,7 +177,7 @@ impl Node for AnalyticsNode {
         Ok(())
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         if let Some(telemetry) = self.telemetry_hub.recv() {
             self.sum += telemetry;
             self.count += 1;
@@ -202,13 +202,13 @@ fn main() -> HorusResult<()> {
     let mut scheduler = Scheduler::new();
 
     // Add nodes using Link (for low-latency control)
-    scheduler.add(Box::new(ControlNode::new()?), 10, Some(true));
-    scheduler.add(Box::new(ActuatorNode::new()?), 10, Some(true));
+    scheduler.add(Box::new(ControlNode::new()?), 10);
+    scheduler.add(Box::new(ActuatorNode::new()?), 10);
 
     // Add nodes using Hub (for broadcast/multiple subscribers)
-    scheduler.add(Box::new(TelemetryNode::new()?), 20, Some(true));
-    scheduler.add(Box::new(LoggerNode::new()?), 100, Some(true));
-    scheduler.add(Box::new(AnalyticsNode::new()?), 100, Some(true));
+    scheduler.add(Box::new(TelemetryNode::new()?), 20);
+    scheduler.add(Box::new(LoggerNode::new()?), 100);
+    scheduler.add(Box::new(AnalyticsNode::new()?), 100);
 
     println!("Running scheduler with 5 nodes (2 using Link, 3 using Hub)...\n");
 

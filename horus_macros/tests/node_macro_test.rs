@@ -75,7 +75,7 @@ mod tests {
 
                     pub trait Node {
                         fn name(&self) -> &'static str;
-                        fn tick(&mut self, ctx: Option<&mut super::NodeInfo>);
+                        fn tick(&mut self);
                         fn init(
                             &mut self,
                             _ctx: &mut super::NodeInfo,

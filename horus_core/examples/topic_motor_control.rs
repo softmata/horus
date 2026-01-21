@@ -128,7 +128,7 @@ impl Node for MotorDriverNode {
         "MotorDriver"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Check for new commands (non-blocking)
         if let Some(cmd) = self.cmd_link.recv() {
             self.voltage = cmd.voltage;
@@ -195,7 +195,7 @@ impl Node for MotorControllerNode {
         "MotorController"
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         self.iteration += 1;
         self.update_target();
 
@@ -258,8 +258,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scheduler = Scheduler::new();
 
     // Add nodes with priorities (lower priority number = runs first)
-    scheduler.add(Box::new(motor_driver), 0, Some(false)); // High priority
-    scheduler.add(Box::new(controller), 1, Some(false)); // Normal priority
+    scheduler.add(Box::new(motor_driver), 0); // High priority
+    scheduler.add(Box::new(controller), 1); // Normal priority
 
     println!("Starting control loop... (Ctrl+C to stop)\n");
 

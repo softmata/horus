@@ -63,6 +63,46 @@ name = "backend_latency_benchmark"
 path = "src/bin/performance/backend_latency_benchmark.rs"
 doc = true
 
+[[bin]]
+name = "quick_latency_test"
+path = "src/bin/performance/quick_latency_test.rs"
+doc = true
+
+[[bin]]
+name = "latency_breakdown"
+path = "src/bin/performance/latency_breakdown.rs"
+doc = true
+
+[[bin]]
+name = "all_paths_latency"
+path = "src/bin/performance/all_paths_latency.rs"
+doc = true
+
+[[bin]]
+name = "mode_debug"
+path = "src/bin/performance/mode_debug.rs"
+doc = false
+
+[[bin]]
+name = "pure_path_latency"
+path = "src/bin/performance/pure_path_latency.rs"
+doc = true
+
+[[bin]]
+name = "minimal_latency"
+path = "src/bin/performance/minimal_latency.rs"
+doc = true
+
+[[bin]]
+name = "path_verify"
+path = "src/bin/performance/path_verify.rs"
+doc = true
+
+[[bin]]
+name = "direct_adaptive"
+path = "src/bin/performance/direct_adaptive.rs"
+doc = true
+
 # =============================================================================
 # FUNCTIONAL TESTS
 # Tests that verify API correctness and basic functionality

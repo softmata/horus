@@ -21,7 +21,7 @@ impl Node for CpuNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simulate CPU work
         let start = Instant::now();
         while start.elapsed().as_millis() < self.work_ms as u128 {
@@ -64,7 +64,7 @@ impl Node for IoNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Simulate blocking I/O (e.g., camera read)
         thread::sleep(Duration::from_millis(self.io_delay_ms));
         self.counter.fetch_add(1, Ordering::SeqCst);
@@ -104,7 +104,7 @@ impl Node for FlakyNode {
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         let count = self.counter.fetch_add(1, Ordering::SeqCst);
 
         // Fail based on rate
@@ -148,7 +148,6 @@ fn test_enhanced_scheduler() {
             work_ms: 1, // Very fast
         }),
         10,
-        None,
     );
 
     // Add I/O-heavy node (should move to async tier after learning)
@@ -159,7 +158,6 @@ fn test_enhanced_scheduler() {
             io_delay_ms: 50, // Blocking I/O
         }),
         20,
-        None,
     );
 
     // Add flaky node (to test circuit breaker)
@@ -170,7 +168,6 @@ fn test_enhanced_scheduler() {
             fail_rate: 0.3, // 30% failure rate
         }),
         30,
-        None,
     );
 
     // Run scheduler for 3 seconds
@@ -231,7 +228,6 @@ fn test_circuit_breaker_protection() {
             fail_rate: 1.0, // Always fails
         }),
         10,
-        None,
     );
 
     // Run for 1 second

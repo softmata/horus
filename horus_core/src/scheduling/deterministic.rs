@@ -490,7 +490,7 @@ impl DeterministicScheduler {
                 }
 
                 // Execute node
-                dn.node.tick(Some(&mut dn.node_info));
+                dn.node.tick();
 
                 let duration = start.elapsed();
 
@@ -619,7 +619,7 @@ mod tests {
             Ok(())
         }
 
-        fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+        fn tick(&mut self) {
             self.count += 1;
         }
 

@@ -92,7 +92,7 @@ impl AsyncIOExecutor {
                         let tick_result = tokio::task::spawn_blocking(move || {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    node.tick(context.as_mut());
+                                    node.tick();
                                 }));
                             (node, context, result)
                         })
@@ -219,10 +219,7 @@ impl<N: Node> AsyncNode<N> {
     /// Returns error if:
     /// - Node execution exceeds timeout
     /// - Node panics during execution
-    pub async fn tick_with_timeout(
-        &mut self,
-        context: Option<&mut NodeInfo>,
-    ) -> Result<(), String> {
+    pub async fn tick_with_timeout(&mut self) -> Result<(), String> {
         let timeout_duration = self.timeout;
 
         // Use timeout to prevent infinite blocking
@@ -230,7 +227,7 @@ impl<N: Node> AsyncNode<N> {
             // Execute node tick
             // Note: This is a simplified implementation
             // In production, this would run in spawn_blocking
-            self.inner.tick(context);
+            self.inner.tick();
             Ok::<(), String>(())
         })
         .await;

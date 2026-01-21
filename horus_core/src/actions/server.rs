@@ -858,7 +858,7 @@ where
         Ok(())
     }
 
-    fn tick(&mut self, _ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Collect incoming goals first to avoid borrow conflict
         let goals: Vec<_> = if let Some(ref link) = self.goal_link {
             std::iter::from_fn(|| link.recv()).collect()
