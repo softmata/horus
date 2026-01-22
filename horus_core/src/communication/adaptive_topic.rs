@@ -1038,6 +1038,10 @@ struct LocalState {
     local_head: u64,
     /// Locally cached tail index for DirectChannel (same-thread only, no atomics needed)
     local_tail: u64,
+    /// Cached pointer to data region (after header) - avoids Arc dereference on hot path
+    /// SAFETY: This pointer is valid for the lifetime of the AdaptiveTopic since it points
+    /// into the Arc<ShmRegion> which is kept alive by the AdaptiveTopic struct.
+    cached_data_ptr: *mut u8,
 }
 
 /// Lease refresh interval - refresh every N messages instead of every message
@@ -1059,6 +1063,7 @@ impl Default for LocalState {
             cached_capacity_mask: 0,
             local_head: 0,
             local_tail: 0,
+            cached_data_ptr: std::ptr::null_mut(),
         }
     }
 }
@@ -1256,6 +1261,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Initialize local indices from shared memory
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
+        // Cache data pointer to avoid Arc dereference on hot path
+        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
+        // Cast to mut since we may use it for both read and write operations
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
 
         // Update metrics
         self.metrics.estimated_latency_ns.store(
@@ -1295,6 +1304,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Initialize local indices from shared memory
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
+        // Cache data pointer to avoid Arc dereference on hot path
+        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
+        // Cast to mut since we may use it for both read and write operations
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
 
         // Update metrics
         self.metrics.estimated_latency_ns.store(
@@ -1389,9 +1402,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             let mask = local.cached_capacity_mask;
             let index = (seq & mask) as usize;
 
-            // Direct write to ring buffer - absolute minimum work
+            // Direct write to ring buffer - uses cached pointer (no Arc dereference!)
             unsafe {
-                let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
+                let base = local.cached_data_ptr as *mut T;
                 std::ptr::write(base.add(index), msg);
             }
 
@@ -1425,8 +1438,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             let mask = local.cached_capacity_mask;
             let index = (seq & mask) as usize;
 
+            // Use cached pointer - no Arc dereference on hot path
             unsafe {
-                let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
+                let base = local.cached_data_ptr as *mut T;
                 std::ptr::write(base.add(index), msg);
             }
             // Release ensures write is visible before sequence update
@@ -1574,8 +1588,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             let mask = local.cached_capacity_mask;
             let index = (tail & mask) as usize;
 
+            // Use cached pointer - no Arc dereference on hot path!
             let msg = unsafe {
-                let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
+                let base = local.cached_data_ptr as *const T;
                 std::ptr::read(base.add(index))
             };
 
@@ -1612,8 +1627,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             let mask = local.cached_capacity_mask;
             let index = (tail & mask) as usize;
 
+            // Use cached pointer - no Arc dereference on hot path
             let msg = unsafe {
-                let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
+                let base = local.cached_data_ptr as *const T;
                 std::ptr::read(base.add(index))
             };
             header.tail.fetch_add(1, Ordering::Release);  // Atomic on separate cache line

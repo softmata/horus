@@ -33,7 +33,6 @@ use horus_library::messages::{
     sensor::{Imu, LaserScan},
 };
 use horus_library::messages::CmdVel;
-use serde::Serialize;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;
