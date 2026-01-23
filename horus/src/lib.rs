@@ -205,14 +205,7 @@ pub mod prelude {
     pub use horus_library::messages::*;
 
     // ============================================
-    // Algorithms
-    // ============================================
-    pub use horus_library::algorithms::{
-        astar::AStar, differential_drive::DifferentialDrive, ekf::EKF, kalman_filter::KalmanFilter,
-        occupancy_grid::OccupancyGrid, pid::PID, pure_pursuit::PurePursuit, rrt::RRT,
-    };
 
-    // ============================================
     // Error Types (clean aliases - no Horus prefix)
     // ============================================
     pub use horus_core::error::{Error, Result};

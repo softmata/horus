@@ -7,7 +7,6 @@
 //! ```text
 //! horus_library/
 //! ├── messages/       # Shared memory-safe message types
-//! ├── algorithms/     # Common robotics algorithms
 //! ├── hframe/         # HFrame - High-performance transform system
 //! ├── nodes/          # Node infrastructure (traits, re-exports)
 //! └── drivers/        # Driver infrastructure (traits, re-exports)
@@ -23,12 +22,6 @@
 //! - **Vision**: `Image`, `CameraInfo`, `CompressedImage`
 //! - **Control**: `MotorCommand`, `JointState`, `ServoCommand`
 //! - **I/O**: `DigitalIO`, `AnalogIO`, `CanFrame`, `ModbusData`, `I2CData`
-//!
-//! ### Algorithms
-//! Common robotics algorithms (via horus-algorithms crate):
-//! - `PID`, `KalmanFilter`, `EKF`
-//! - `AStar`, `RRT`, `PurePursuit`
-//! - `DifferentialDrive`, `OccupancyGrid`
 //!
 //! ### HFrame Transform System
 //! High-performance coordinate transform system:
@@ -82,8 +75,6 @@
 //! use sim3d::rl::{RLTask, Action, Observation};
 //! ```
 
-// Re-export algorithms from horus-algorithms crate
-pub use horus_algorithms as algorithms;
 pub mod drivers;
 pub mod hframe;
 pub mod messages;
