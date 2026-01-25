@@ -36,29 +36,21 @@ use horus_benchmarks::{
     Statistics, ThroughputMetrics,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_ITERATIONS: usize = 100_000;
 const DEFAULT_WARMUP: usize = 10_000;
 
-/// Standard benchmark message (64 bytes)
+/// Standard benchmark message (24 bytes)
 /// Compatible with typical DDS benchmark payloads
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 struct BenchmarkPayload {
     seq: u64,
     timestamp_ns: u64,
-    #[serde(with = "serde_arrays")]
-    data: [u8; 48],
-}
-
-impl Default for BenchmarkPayload {
-    fn default() -> Self {
-        Self {
-            seq: 0,
-            timestamp_ns: 0,
-            data: [0u8; 48],
-        }
-    }
+    value: f64,
 }
 
 impl horus_core::core::LogSummary for BenchmarkPayload {
@@ -66,11 +58,6 @@ impl horus_core::core::LogSummary for BenchmarkPayload {
         format!("BenchmarkPayload(seq={})", self.seq)
     }
 }
-
-// Enable zero-copy for HORUS
-unsafe impl horus_core::bytemuck::Pod for BenchmarkPayload {}
-unsafe impl horus_core::bytemuck::Zeroable for BenchmarkPayload {}
-unsafe impl horus_core::communication::PodMessage for BenchmarkPayload {}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -127,24 +114,9 @@ fn main() {
     println!("║                     HORUS Results                                ║");
     println!("╠══════════════════════════════════════════════════════════════════╣");
 
-    // HORUS SpscIntra (fastest - intra-process channel)
-    let result = benchmark_horus_spsc_intra(iterations, &platform);
-    print_result("HORUS SpscIntra", &result);
-    report.add_result(result);
-
-    // HORUS SpscShm (shared memory SPSC)
-    let result = benchmark_horus_spsc_shm(iterations, &platform);
-    print_result("HORUS SpscShm", &result);
-    report.add_result(result);
-
-    // HORUS MpmcShm (shared memory MPMC)
-    let result = benchmark_horus_mpmc_shm(iterations, &platform);
-    print_result("HORUS MpmcShm", &result);
-    report.add_result(result);
-
-    // HORUS PodTopic (zero-copy POD)
-    let result = benchmark_horus_pod(iterations, &platform);
-    print_result("HORUS PodTopic", &result);
+    // HORUS AdaptiveTopic (auto-selects optimal backend via Topic::new())
+    let result = benchmark_horus_adaptive(iterations, &platform);
+    print_result("HORUS Adaptive", &result);
     report.add_result(result);
 
     println!("╚══════════════════════════════════════════════════════════════════╝");
@@ -280,120 +252,109 @@ fn main() {
     }
 }
 
-fn benchmark_horus_spsc_intra(
+fn benchmark_horus_adaptive(
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("dds_cmp_spsc_intra_{}", std::process::id());
+    let topic_name = format!("dds_cmp_adaptive_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<BenchmarkPayload>, Topic<BenchmarkPayload>) =
-        Topic::spsc_intra(&topic_name);
+    // Shared state
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
 
-    let latencies = run_benchmark(&tx, &rx, &timer, iterations);
-    build_result("HORUS_SpscIntra", latencies, iterations, platform)
-}
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
 
-fn benchmark_horus_spsc_shm(
-    iterations: usize,
-    platform: &horus_benchmarks::PlatformInfo,
-) -> BenchmarkResult {
-    let topic_name = format!("dds_cmp_spsc_shm_{}", std::process::id());
-    let timer = PrecisionTimer::new();
+    let total_messages = DEFAULT_WARMUP + iterations;
 
+    // Consumer thread
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<BenchmarkPayload> = Topic::new(&topic_name_clone).unwrap();
+
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Wait for consumer to be ready
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    // Producer on main thread
+    let _ = set_cpu_affinity(0);
     let tx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
-    let rx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
 
-    let latencies = run_benchmark(&tx, &rx, &timer, iterations);
-    build_result("HORUS_SpscShm", latencies, iterations, platform)
-}
-
-fn benchmark_horus_mpmc_shm(
-    iterations: usize,
-    platform: &horus_benchmarks::PlatformInfo,
-) -> BenchmarkResult {
-    let topic_name = format!("dds_cmp_mpmc_shm_{}", std::process::id());
-    let timer = PrecisionTimer::new();
-
-    let tx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
-    let rx: Topic<BenchmarkPayload> = Topic::new(&topic_name).unwrap();
-
-    let latencies = run_benchmark(&tx, &rx, &timer, iterations);
-    build_result("HORUS_MpmcShm", latencies, iterations, platform)
-}
-
-fn benchmark_horus_pod(
-    iterations: usize,
-    platform: &horus_benchmarks::PlatformInfo,
-) -> BenchmarkResult {
-    use horus_core::communication::topic::PodTopic;
-
-    let topic_name = format!("dds_cmp_pod_{}", std::process::id());
-    let timer = PrecisionTimer::new();
-
-    let tx: PodTopic<BenchmarkPayload> = PodTopic::producer(&topic_name).unwrap();
-    let rx: PodTopic<BenchmarkPayload> = PodTopic::consumer(&topic_name).unwrap();
-
-    // Warmup
+    // Warmup - send in batches to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
     for i in 0..DEFAULT_WARMUP {
         let msg = BenchmarkPayload {
             seq: i as u64,
             timestamp_ns: 0,
-            data: [0u8; 48],
+            value: 0.0,
         };
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            thread::yield_now();
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
     }
 
-    // Measurement
+    // Wait for all warmup to be consumed
+    while messages_received.load(Ordering::Acquire) < DEFAULT_WARMUP as u64 {
+        thread::yield_now();
+    }
+
+    // Measurement - measure send latency (one-way)
+    let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
     for i in 0..iterations {
         let msg = BenchmarkPayload {
-            seq: i as u64,
+            seq: (DEFAULT_WARMUP + i) as u64,
             timestamp_ns: 0,
-            data: [0u8; 48],
+            value: 0.0,
         };
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            std::hint::spin_loop();
+        }
         latencies.push(timer.elapsed_ns(start));
+
+        if (i + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (i + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
 
-    build_result("HORUS_PodTopic", latencies, iterations, platform)
-}
-
-fn run_benchmark(
-    tx: &Topic<BenchmarkPayload>,
-    rx: &Topic<BenchmarkPayload>,
-    timer: &PrecisionTimer,
-    iterations: usize,
-) -> Vec<u64> {
-    // Warmup
-    for i in 0..DEFAULT_WARMUP {
-        let msg = BenchmarkPayload {
-            seq: i as u64,
-            timestamp_ns: 0,
-            data: [0u8; 48],
-        };
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+    // Wait for all messages to be received
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
     }
 
-    // Measurement
-    let mut latencies = Vec::with_capacity(iterations);
-    for i in 0..iterations {
-        let msg = BenchmarkPayload {
-            seq: i as u64,
-            timestamp_ns: 0,
-            data: [0u8; 48],
-        };
-        let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
-        latencies.push(timer.elapsed_ns(start));
-    }
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
 
-    latencies
+    build_result("HORUS_AdaptiveTopic", latencies, iterations, platform)
 }
 
 fn build_result(

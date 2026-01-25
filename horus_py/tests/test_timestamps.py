@@ -31,8 +31,8 @@ def test_automatic_timestamps():
     sub_node = horus.Node(name="subscriber", subs="test_topic", tick=subscriber_tick)
 
     scheduler = horus.Scheduler()
-    scheduler.add(pub_node, priority=0, logging=False)
-    scheduler.add(sub_node, priority=1, logging=False)
+    scheduler.add(pub_node, order=0, logging=False)
+    scheduler.add(sub_node, order=1, logging=False)
 
     # Run for a short time
     scheduler.run(duration=0.5)
@@ -75,8 +75,8 @@ def test_message_age():
     sub_node = horus.Node(name="age_check", subs="age_topic", tick=age_checker_tick)
 
     scheduler = horus.Scheduler()
-    scheduler.add(pub_node, priority=0, logging=False)
-    scheduler.add(sub_node, priority=1, logging=False)
+    scheduler.add(pub_node, order=0, logging=False)
+    scheduler.add(sub_node, order=1, logging=False)
 
     scheduler.run(duration=0.5)
 
@@ -118,8 +118,8 @@ def test_staleness_detection():
     check_node = horus.Node(name="stale_check", subs="stale_topic", tick=staleness_checker_tick)
 
     scheduler = horus.Scheduler()
-    scheduler.add(pub_node, priority=0, logging=False)
-    scheduler.add(check_node, priority=1, logging=False)
+    scheduler.add(pub_node, order=0, logging=False)
+    scheduler.add(check_node, order=1, logging=False)
 
     # Run long enough for message to become > 100ms old
     scheduler.run(duration=0.3)
@@ -158,8 +158,8 @@ def test_get_timestamp():
     read_node = horus.Node(name="ts_read", subs="ts_topic", tick=timestamp_reader_tick)
 
     scheduler = horus.Scheduler()
-    scheduler.add(pub_node, priority=0, logging=False)
-    scheduler.add(read_node, priority=1, logging=False)
+    scheduler.add(pub_node, order=0, logging=False)
+    scheduler.add(read_node, order=1, logging=False)
 
     scheduler.run(duration=0.3)
 

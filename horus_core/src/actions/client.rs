@@ -30,7 +30,7 @@ use crate::actions::types::{
     GoalRequest, GoalStatus, GoalStatusUpdate,
 };
 use crate::communication::Topic;
-use crate::core::{LogSummary, Node, NodeInfo};
+use crate::core::{LogSummary, Node};
 use crate::HorusResult;
 
 use parking_lot::RwLock;
@@ -736,7 +736,7 @@ where
         Box::leak(self.name.clone().into_boxed_str())
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> HorusResult<()> {
         self.inner.initialize()?;
         Ok(())
     }

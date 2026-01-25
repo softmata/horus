@@ -6,7 +6,6 @@ members = [
     "horus_macros",
     "horus_manager",
     "horus_library",
-    "horus_router",  # Router service
     "horus_ai",         # AI/ML tensor system with DLPack
     "horus_perception", # AI-friendly perception types
     "benchmarks",

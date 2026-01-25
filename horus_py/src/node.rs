@@ -92,7 +92,7 @@ impl PyNodeInfo {
     #[new]
     fn new(name: String) -> Self {
         PyNodeInfo {
-            inner: Arc::new(Mutex::new(CoreNodeInfo::new(name, true))),
+            inner: Arc::new(Mutex::new(CoreNodeInfo::new(name))),
             scheduler_running: None,
         }
     }
@@ -116,42 +116,36 @@ impl PyNodeInfo {
     }
 
     fn log_info(&self, message: String) -> PyResult<()> {
-        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
-        let info = self
-            .inner
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        info.log_info(&message);
+        // Use hlog!() for logging (thread-local, no NodeInfo needed)
+        horus::hlog!(info, "{}", message);
         Ok(())
     }
 
     fn log_warning(&self, message: String) -> PyResult<()> {
-        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
+        // Use hlog!() for logging and track in metrics
+        horus::hlog!(warn, "{}", message);
         let mut info = self
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        info.log_warning(&message);
+        info.track_warning(&message);
         Ok(())
     }
 
     fn log_error(&self, message: String) -> PyResult<()> {
-        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
+        // Use hlog!() for logging and track in metrics
+        horus::hlog!(error, "{}", message);
         let mut info = self
             .inner
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        info.log_error(&message);
+        info.track_error(&message);
         Ok(())
     }
 
     fn log_debug(&self, message: String) -> PyResult<()> {
-        // Take String (owned) instead of &str (borrowed) to avoid PyO3 borrow issues
-        let mut info = self
-            .inner
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
-        info.log_debug(&message);
+        // Use hlog!() for logging (thread-local, no NodeInfo needed)
+        horus::hlog!(debug, "{}", message);
         Ok(())
     }
 
@@ -214,24 +208,7 @@ impl PyNodeInfo {
         // Calculate tick_us from tick_start_time
         let tick_us = info.tick_elapsed_us();
 
-        if info.config().enable_logging {
-            // Build the log message safely
-            let msg = format!(
-                "\r\n\x1b[36m[{}]\x1b[0m \x1b[32m[IPC: {}ns]\x1b[0m \x1b[90m[Tick: {}µs]\x1b[0m \x1b[33m{}\x1b[0m \x1b[1;32m--PUB-->\x1b[0m \x1b[35m'{}'\x1b[0m = {}\r\n",
-                timestamp,
-                ipc_ns,
-                tick_us,
-                node_name,
-                topic,
-                data_repr
-            );
-
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
-        }
-
-        // Write to global log buffer for monitor (always, regardless of enable_logging)
+        // Write to global log buffer for monitor
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,
@@ -261,24 +238,7 @@ impl PyNodeInfo {
         // Calculate tick_us from tick_start_time
         let tick_us = info.tick_elapsed_us();
 
-        if info.config().enable_logging {
-            // Build the log message safely
-            let msg = format!(
-                "\x1b[36m[{}]\x1b[0m \x1b[32m[IPC: {}ns]\x1b[0m \x1b[90m[Tick: {}µs]\x1b[0m \x1b[33m{}\x1b[0m \x1b[1;34m<--SUB--\x1b[0m \x1b[35m'{}'\x1b[0m = {}\n",
-                timestamp,
-                ipc_ns,
-                tick_us,
-                node_name,
-                topic,
-                data_repr
-            );
-
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
-        }
-
-        // Write to global log buffer for monitor (always, regardless of enable_logging)
+        // Write to global log buffer for monitor
         use horus::core::log_buffer::{publish_log, LogEntry, LogType};
         publish_log(LogEntry {
             timestamp,

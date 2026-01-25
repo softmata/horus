@@ -24,10 +24,10 @@ use super::classifier::ExecutionTier;
 /// ```ignore
 /// use horus_core::scheduling::{NodeTier, Scheduler};
 ///
-/// let scheduler = Scheduler::new()
-///     .add_with_tier(Box::new(pid_node), 0, NodeTier::Jit)
-///     .add_with_tier(Box::new(sensor_node), 1, NodeTier::Fast)
-///     .add_with_tier(Box::new(logger_node), 5, NodeTier::Background);
+/// let mut scheduler = Scheduler::new();
+/// scheduler.add(pid_node).order(0).tier(NodeTier::Jit).done();
+/// scheduler.add(sensor_node).order(1).tier(NodeTier::Fast).done();
+/// scheduler.add(logger_node).order(5).tier(NodeTier::Background).done();
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum NodeTier {

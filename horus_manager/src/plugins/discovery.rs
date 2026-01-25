@@ -8,7 +8,7 @@
 //! Plugins are runtime-loadable extensions that add hardware support,
 //! new nodes, or CLI commands without recompilation.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;

@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{Node, NodeInfo};
+use crate::Node;
 
 /// Errors in deterministic execution
 #[derive(Error, Debug)]
@@ -359,7 +359,6 @@ struct DeterministicNode {
     name: String,
     priority: u32,
     enabled: bool,
-    node_info: NodeInfo,
 }
 
 /// Deterministic scheduler that guarantees reproducible execution
@@ -410,13 +409,11 @@ impl DeterministicScheduler {
     /// Add a node to the scheduler
     pub fn add(&mut self, node: Box<dyn Node>, priority: u32) {
         let name = node.name().to_string();
-        let node_info = NodeInfo::new(name.clone(), false);
         self.nodes.push(DeterministicNode {
             node,
             name,
             priority,
             enabled: true,
-            node_info,
         });
         // Sort by priority
         self.nodes.sort_by_key(|n| n.priority);
@@ -439,7 +436,7 @@ impl DeterministicScheduler {
         // Initialize all nodes
         for (idx, dn) in self.nodes.iter_mut().enumerate() {
             let start = std::time::Instant::now();
-            let _ = dn.node.init(&mut dn.node_info);
+            let _ = dn.node.init();
             let duration = start.elapsed();
 
             if let Some(ref trace) = self.trace {
@@ -521,7 +518,7 @@ impl DeterministicScheduler {
 
         // Shutdown nodes
         for dn in self.nodes.iter_mut() {
-            let _ = dn.node.shutdown(&mut dn.node_info);
+            let _ = dn.node.shutdown();
         }
 
         Ok(())
@@ -614,7 +611,7 @@ mod tests {
             "counter"
         }
 
-        fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+        fn init(&mut self) -> HorusResult<()> {
             self.count = 0;
             Ok(())
         }
@@ -623,7 +620,7 @@ mod tests {
             self.count += 1;
         }
 
-        fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+        fn shutdown(&mut self) -> HorusResult<()> {
             Ok(())
         }
     }

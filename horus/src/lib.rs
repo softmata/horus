@@ -52,7 +52,7 @@ pub mod prelude {
     // Core Node Types
     // ============================================
     pub use horus_core::core::node::NodeConfig;
-    pub use horus_core::core::{LogSummary, Node, NodeInfo, NodeInfoExt, NodeState};
+    pub use horus_core::core::{LogSummary, Node, NodeInfo, NodeState};
 
     // ============================================
     // Communication (IPC) - Unified Topic API
@@ -63,14 +63,14 @@ pub mod prelude {
     // ============================================
     // Scheduling
     // ============================================
-    pub use horus_core::scheduling::{ExecutionMode, RobotPreset, Scheduler, SchedulerConfig};
+    pub use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
 
     // ============================================
     // Scheduler Configuration Types
     // ============================================
     pub use horus_core::scheduling::{
         ConfigValue, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
-        ResourceConfig, TimeSyncSource, TimingConfig,
+        ResourceConfig, TimingConfig,
     };
 
     // ============================================
@@ -115,10 +115,9 @@ pub mod prelude {
     // ============================================
     // Profiling & Intelligence
     // ============================================
-    pub use horus_core::scheduling::{
-        DependencyGraph, ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData,
-        ProfileError, RuntimeProfiler, TierClassifier,
-    };
+    // NOTE: Internal types (TierClassifier, RuntimeProfiler, DependencyGraph, ExecutionTier)
+    // are not exported - use horus_core::scheduling directly if needed for advanced use.
+    pub use horus_core::scheduling::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
 
     // ============================================
     // Record/Replay
@@ -141,7 +140,7 @@ pub mod prelude {
     // ============================================
     pub use horus_core::scheduling::{
         apply_rt_optimizations, get_core_count, get_max_rt_priority, get_numa_node_count,
-        lock_all_memory, set_realtime_priority, set_thread_affinity,
+        lock_all_memory, set_thread_affinity,
     };
 
     // ============================================
@@ -227,6 +226,9 @@ pub mod prelude {
     // ============================================
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
+
+    // hlog!() macro for node logging
+    pub use horus_core::hlog;
 
     // ============================================
     // Common Traits

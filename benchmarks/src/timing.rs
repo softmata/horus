@@ -125,17 +125,34 @@ pub fn calibrate_rdtsc(duration_ms: u64) -> RdtscCalibration {
     }
 }
 
-/// Measure the overhead of calling RDTSC itself
+/// Measure the overhead of our timing pattern: serialize() + rdtsc() + rdtscp()
+///
+/// This measures the EXACT pattern used in benchmarks:
+///   serialize();
+///   let start = rdtsc();
+///   // <work goes here - we measure with nothing>
+///   let end = rdtscp();
+///   end - start = overhead
+///
+/// The result is the cycles consumed by the timing infrastructure itself.
 fn measure_rdtsc_overhead() -> u64 {
-    let iterations = 1000;
+    let iterations = 10000;
     let mut min_overhead = u64::MAX;
 
+    // Warmup
+    for _ in 0..1000 {
+        serialize();
+        let start = rdtsc();
+        let end = rdtscp();
+        let _ = end.wrapping_sub(start);
+    }
+
+    // Measure minimum overhead (represents no cache misses, best case)
     for _ in 0..iterations {
         serialize();
         let start = rdtsc();
-        serialize();
-        let end = rdtsc();
-        serialize();
+        // No work - measuring pure timing overhead
+        let end = rdtscp();
 
         let overhead = end.wrapping_sub(start);
         if overhead < min_overhead {

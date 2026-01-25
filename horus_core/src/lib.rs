@@ -18,7 +18,7 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use horus_core::{Node, NodeInfo, Scheduler, Topic};
+//! use horus_core::{Node, Scheduler, Topic, hlog};
 //!
 //! struct ExampleNode {
 //!     output: Topic<String>,
@@ -49,9 +49,8 @@
 //! }
 //! ```
 
-pub mod actions; // Re-enabled after fixing compile errors
-pub mod backend;
-pub mod behavior_trees; // Re-enabled after fixing compile errors
+pub mod actions;
+pub mod behavior_trees;
 pub mod communication;
 pub mod config;
 pub mod core;
@@ -71,10 +70,11 @@ pub mod terminal;
 // Unified Topic API - the single way to create IPC channels
 pub use communication::{PodMessage, Topic};
 pub use core::{
-    detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
-    HealthStatus, LogSummary, Node, NodeConfig, NodeHeartbeat, NodeInfo, NodeInfoExt, NodeMetrics,
-    NodeState, RtApplyResult, RtConfig, RtConfigBuilder, RtCpuInfo, RtDegradation, RtKernelInfo,
-    RtScheduler, TopicMetadata,
+    announce_crashed, announce_started, announce_stopped, detect_isolated_cpus,
+    detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core, read_announcements,
+    HealthStatus, LogSummary, Node, NodeAnnouncement, NodeConfig, NodeEvent, NodeInfo,
+    NodeMetrics, NodePresence, NodeState, RtApplyResult, RtConfig, RtConfigBuilder, RtCpuInfo,
+    RtDegradation, RtKernelInfo, RtScheduler, TopicMetadata, DISCOVERY_TOPIC,
 };
 pub use error::{HorusError, HorusResult};
 // Clean aliases for user-facing API
@@ -130,6 +130,9 @@ pub use plugin::{
 
 // Re-export the paste crate for macro usage
 pub use paste;
+
+// hlog macro is available at crate root via #[macro_export]
+// No need to re-export - it's already at horus_core::hlog
 
 // Re-export serde_json for consistent type usage across crates
 pub use serde_json;

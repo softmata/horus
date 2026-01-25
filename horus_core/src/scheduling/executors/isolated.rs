@@ -1061,18 +1061,14 @@ impl InProcessIsolatedRunner {
     fn handle_init(&mut self) {
         let _ = self.ipc.write_status(IpcStatus::Processing);
 
-        if let Some(ref mut ctx) = self.context {
-            match self.node.init(ctx) {
-                Ok(_) => {
-                    let _ = self.ipc.write_status(IpcStatus::Success);
-                }
-                Err(e) => {
-                    let _ = self.ipc.write_error_message(&e.to_string());
-                    let _ = self.ipc.write_status(IpcStatus::Error);
-                }
+        match self.node.init() {
+            Ok(_) => {
+                let _ = self.ipc.write_status(IpcStatus::Success);
             }
-        } else {
-            let _ = self.ipc.write_status(IpcStatus::Success);
+            Err(e) => {
+                let _ = self.ipc.write_error_message(&e.to_string());
+                let _ = self.ipc.write_status(IpcStatus::Error);
+            }
         }
 
         let _ = self.ipc.update_heartbeat();
@@ -1129,11 +1125,7 @@ impl InProcessIsolatedRunner {
 
     fn handle_shutdown(&mut self) {
         let _ = self.ipc.write_status(IpcStatus::Processing);
-
-        if let Some(ref mut ctx) = self.context {
-            let _ = self.node.shutdown(ctx);
-        }
-
+        let _ = self.node.shutdown();
         let _ = self.ipc.write_status(IpcStatus::Success);
     }
 
@@ -1176,7 +1168,7 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
     }
 
     // Create context
-    let mut context = NodeInfo::new(node_name.clone(), true);
+    let mut context = NodeInfo::new(node_name.clone());
 
     // Signal ready
     ipc.write_pid(std::process::id())?;
@@ -1207,7 +1199,7 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
                 IpcCommand::Init => {
                     ipc.write_status(IpcStatus::Processing)?;
 
-                    match node.init(&mut context) {
+                    match node.init() {
                         Ok(_) => {
                             ipc.write_status(IpcStatus::Success)?;
                         }
@@ -1258,7 +1250,7 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
                 }
                 IpcCommand::Shutdown => {
                     ipc.write_status(IpcStatus::Processing)?;
-                    let _ = node.shutdown(&mut context);
+                    let _ = node.shutdown();
                     ipc.write_status(IpcStatus::Success)?;
                     ipc.sync()?;
 

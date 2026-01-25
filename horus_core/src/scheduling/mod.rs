@@ -62,6 +62,9 @@ pub mod capabilities;
 // Builder pattern for explicit scheduler configuration
 pub mod builder;
 
+// Node builder for fluent node configuration
+pub mod node_builder;
+
 // Distributed multi-process/robot recording
 pub mod distributed_recording;
 
@@ -74,9 +77,8 @@ pub mod async_io {
 }
 
 pub use config::{
-    ConfigValue, DeadlineMissPolicy, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig,
-    RecordingConfigYaml, ResourceConfig, RobotPreset, SchedulerConfig, TimeSyncSource,
-    TimingConfig,
+    ConfigValue, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig,
+    RecordingConfigYaml, ResourceConfig, SchedulerConfig, TimingConfig,
 };
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
@@ -85,7 +87,7 @@ pub use types::{NodeControlCommand, SchedulerNodeMetrics};
 // Re-export runtime features
 pub use runtime::{
     apply_rt_optimizations, get_core_count, get_max_rt_priority, get_numa_node_count,
-    lock_all_memory, set_realtime_priority, set_thread_affinity,
+    lock_all_memory, set_thread_affinity,
 };
 
 // Re-export fault tolerance
@@ -133,11 +135,11 @@ pub use record_replay::{
     WatchValue,
 };
 
-// Re-export intelligence (profiling, classification, dependency analysis)
-pub use intelligence::{
-    DependencyGraph, ExecutionTier, NodeProfile, NodeTier, OfflineProfiler, ProfileData,
-    ProfileError, RuntimeProfiler, TierClassifier,
-};
+// Re-export intelligence (profiling, classification)
+// NOTE: Internal types (TierClassifier, RuntimeProfiler, DependencyGraph, ExecutionTier)
+// are intentionally NOT exported - they are implementation details used by scheduler.rs.
+// Use NodeTier for developer-facing tier annotation.
+pub use intelligence::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
 
 // Re-export executors
 pub use executors::{
@@ -199,3 +201,6 @@ pub use capabilities::RuntimeCapabilities;
 
 // Re-export builder
 pub use builder::{CircuitBreakerConfig, SchedulerBuilder};
+
+// Re-export node builder
+pub use node_builder::{NodeBuilder, NodeConfig};

@@ -149,9 +149,7 @@ impl BackgroundExecutor {
                         }
                         Ok(BackgroundMessage::Shutdown) => {
                             // Shutdown the node
-                            if let Some(ref mut ctx) = context {
-                                let _ = node.shutdown(ctx);
-                            }
+                            let _ = node.shutdown();
                             break;
                         }
                         Err(TryRecvError::Empty) => {

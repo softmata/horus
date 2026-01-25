@@ -1,4 +1,4 @@
-// Comprehensive scheduler configuration for 100% robotics coverage
+// Scheduler configuration - only fields that are actually used
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -17,47 +17,13 @@ pub enum ExecutionMode {
     AutoAdaptive,
 }
 
-/// Timing configuration for different robot requirements
+/// Timing configuration
 #[derive(Debug, Clone)]
 pub struct TimingConfig {
     /// Global tick rate in Hz (default: 60)
     pub global_rate_hz: f64,
     /// Enable per-node rate control
     pub per_node_rates: bool,
-    /// Maximum allowed jitter in microseconds
-    pub max_jitter_us: u64,
-    /// Deadline miss policy
-    pub deadline_miss_policy: DeadlineMissPolicy,
-    /// Time synchronization source
-    pub time_sync_source: TimeSyncSource,
-}
-
-/// What to do when a deadline is missed
-#[derive(Debug, Clone, Copy)]
-pub enum DeadlineMissPolicy {
-    /// Log warning and continue
-    Warn,
-    /// Skip the node for this tick
-    Skip,
-    /// Terminate the scheduler
-    Panic,
-    /// Downgrade priority and continue
-    Degrade,
-}
-
-/// Time synchronization source for distributed systems
-#[derive(Debug, Clone, Copy)]
-pub enum TimeSyncSource {
-    /// System monotonic clock
-    Monotonic,
-    /// Network Time Protocol
-    NTP,
-    /// GPS time
-    GPS,
-    /// Precision Time Protocol (IEEE 1588)
-    PTP,
-    /// Custom external source
-    External,
 }
 
 /// Fault tolerance configuration
@@ -71,9 +37,7 @@ pub struct FaultConfig {
     pub recovery_threshold: u32,
     /// Circuit timeout in milliseconds
     pub circuit_timeout_ms: u64,
-    /// Enable automatic node restart
-    pub auto_restart: bool,
-    /// Redundancy factor (reserved - use RedundancyManager directly in nodes)
+    /// Redundancy factor for TMR (1 = disabled, 3 = triple modular redundancy)
     pub redundancy_factor: u32,
     /// Checkpointing frequency (0 = disabled)
     pub checkpoint_interval_ms: u64,
@@ -94,10 +58,6 @@ pub struct RealTimeConfig {
     pub safety_monitor: bool,
     /// Maximum deadline misses before emergency stop
     pub max_deadline_misses: u64,
-    /// Enable priority inheritance protocol
-    pub priority_inheritance: bool,
-    /// Enable formal verification checks (debug builds only)
-    pub formal_verification: bool,
     /// Memory locking (mlockall)
     pub memory_locking: bool,
     /// Use real-time scheduling class (SCHED_FIFO/RR)
@@ -109,18 +69,8 @@ pub struct RealTimeConfig {
 pub struct ResourceConfig {
     /// CPU cores to use (None = all cores)
     pub cpu_cores: Option<Vec<usize>>,
-    /// Memory limit in MB (0 = unlimited)
-    pub memory_limit_mb: usize,
-    /// I/O priority (0-7, 0 = highest)
-    pub io_priority: u8,
     /// Enable NUMA awareness
     pub numa_aware: bool,
-    /// GPU device IDs to use
-    pub gpu_devices: Vec<usize>,
-    /// Enable power management
-    pub power_management: bool,
-    /// Target power budget in watts (0 = unlimited)
-    pub power_budget_watts: u32,
 }
 
 /// Monitoring and telemetry configuration
@@ -128,8 +78,6 @@ pub struct ResourceConfig {
 pub struct MonitoringConfig {
     /// Enable runtime profiling
     pub profiling_enabled: bool,
-    /// Enable distributed tracing
-    pub tracing_enabled: bool,
     /// Metrics export interval in ms
     pub metrics_interval_ms: u64,
     /// Telemetry endpoint URL
@@ -208,10 +156,10 @@ impl RecordingConfigYaml {
         Self {
             enabled: true,
             session_name: Some("debug".to_string()),
-            compress: false, // Faster without compression
+            compress: false,
             interval: 1,
             output_dir: None,
-            max_size_mb: 100, // Limit size for debugging
+            max_size_mb: 100,
             include_nodes: vec![],
             exclude_nodes: vec![],
             record_inputs: true,
@@ -226,7 +174,7 @@ impl RecordingConfigYaml {
             enabled: true,
             session_name: None,
             compress: true,
-            interval: 10, // Every 10 ticks
+            interval: 10,
             output_dir: None,
             max_size_mb: 50,
             include_nodes: vec![],
@@ -238,62 +186,21 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Robot-specific presets
-///
-/// Note: Only presets with actual constructor functions are listed.
-/// Use `SchedulerConfig::standard()`, `safety_critical()`, etc.
-#[derive(Debug, Clone, Copy)]
-pub enum RobotPreset {
-    /// Standard industrial robot
-    Standard,
-    /// Safety-critical medical/surgical robot
-    SafetyCritical,
-    /// Hard real-time aerospace/defense
-    HardRealTime,
-    /// High-performance racing/competition
-    HighPerformance,
-    /// Space/satellite robot (with redundancy + checkpointing)
-    Space,
-    /// Swarm robotics (parallel execution)
-    Swarm,
-    /// Soft robotics (slower tick rate for soft materials)
-    SoftRobotics,
-    /// Quantum-assisted robotics
-    Quantum,
-    /// Educational/learning robots
-    Educational,
-    /// Mobile ground robots
-    Mobile,
-    /// Underwater/marine robots
-    Underwater,
-    /// Custom configuration
-    Custom,
-}
-
 /// Deterministic execution configuration
-///
-/// This enables strict topology validation and deterministic execution order,
-/// providing guarantees similar to compile-time scheduled systems.
 #[derive(Debug, Clone)]
 pub struct DeterministicConfig {
     /// Enforce strict topology - reject undeclared topics at runtime
     pub strict_topology: bool,
-
     /// Wait for all declared connections before first tick
     pub startup_barrier: bool,
-
-    /// Startup barrier timeout in milliseconds (fail if not all connected)
+    /// Startup barrier timeout in milliseconds
     pub barrier_timeout_ms: u64,
-
     /// Deterministic RNG seed for reproducible randomness
     pub rng_seed: Option<u64>,
-
     /// Reject dynamic node addition after startup
     pub freeze_topology_after_start: bool,
-
     /// Validate all topic producers have consumers (and vice versa)
     pub require_complete_connections: bool,
-
     /// Static execution order (computed once at startup, never changes)
     pub static_execution_order: bool,
 }
@@ -340,41 +247,26 @@ impl DeterministicConfig {
     }
 }
 
-/// Complete scheduler configuration for 100% robotics coverage
+/// Scheduler configuration
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
-    /// Execution mode configuration
+    /// Execution mode
     pub execution: ExecutionMode,
-
-    /// Timing and scheduling configuration
+    /// Timing configuration
     pub timing: TimingConfig,
-
     /// Fault tolerance configuration
     pub fault: FaultConfig,
-
     /// Real-time configuration
     pub realtime: RealTimeConfig,
-
     /// Resource management
     pub resources: ResourceConfig,
-
     /// Monitoring and telemetry
     pub monitoring: MonitoringConfig,
-
-    /// Robot preset (for quick setup)
-    pub preset: RobotPreset,
-
     /// Custom configuration for edge cases
-    /// This HashMap allows ANY custom configuration that might be needed
-    /// for exotic robot types (quantum, biological, hybrid, etc.)
     pub custom: HashMap<String, ConfigValue>,
-
     /// Deterministic execution configuration
-    /// When Some, enables strict topology validation and deterministic execution
     pub deterministic: Option<DeterministicConfig>,
-
     /// Recording configuration for record/replay system
-    /// When Some and enabled, scheduler will automatically record all node execution
     pub recording: Option<RecordingConfigYaml>,
 }
 
@@ -398,23 +290,39 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    /// Standard configuration for most robots
-    pub fn standard() -> Self {
+    /// Create a new config builder with minimal defaults.
+    ///
+    /// This is the recommended entry point for building a custom configuration
+    /// from scratch. All settings start with minimal/safe defaults.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::builder()
+    ///     .rate_hz(1000.0)
+    ///     .watchdog_ms(100)
+    ///     .memory_lock()
+    ///     .build();
+    /// ```
+    pub fn builder() -> Self {
+        Self::minimal()
+    }
+
+    /// Minimal configuration - starts with the most basic settings.
+    ///
+    /// Use this when you want to configure everything explicitly.
+    /// Most features are disabled by default.
+    pub fn minimal() -> Self {
         Self {
-            execution: ExecutionMode::AutoAdaptive,
+            execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
-                per_node_rates: true,
-                max_jitter_us: 1000,
-                deadline_miss_policy: DeadlineMissPolicy::Warn,
-                time_sync_source: TimeSyncSource::Monotonic,
+                per_node_rates: false,
             },
             fault: FaultConfig {
-                circuit_breaker_enabled: true,
+                circuit_breaker_enabled: false,
                 max_failures: 5,
                 recovery_threshold: 3,
                 circuit_timeout_ms: 5000,
-                auto_restart: true,
                 redundancy_factor: 1,
                 checkpoint_interval_ms: 0,
             },
@@ -425,61 +333,97 @@ impl SchedulerConfig {
                 watchdog_timeout_ms: 1000,
                 safety_monitor: false,
                 max_deadline_misses: 100,
-                priority_inheritance: false,
-                formal_verification: cfg!(debug_assertions),
                 memory_locking: false,
                 rt_scheduling_class: false,
             },
             resources: ResourceConfig {
                 cpu_cores: None,
-                memory_limit_mb: 0,
-                io_priority: 4,
                 numa_aware: false,
-                gpu_devices: vec![],
-                power_management: false,
-                power_budget_watts: 0,
             },
             monitoring: MonitoringConfig {
-                profiling_enabled: true,
-                tracing_enabled: false,
+                profiling_enabled: false,
                 metrics_interval_ms: 1000,
                 telemetry_endpoint: None,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
             },
-            preset: RobotPreset::Standard,
             custom: HashMap::new(),
             deterministic: None,
             recording: None,
         }
     }
 
-    /// Deterministic configuration
+    /// Finalize the configuration (no-op, for builder pattern consistency).
     ///
-    /// Enables:
-    /// - Static execution order (computed once at startup)
-    /// - Startup barrier (wait for all nodes to connect)
-    /// - Topology validation (all topics must have producers and consumers)
-    /// - Frozen topology after startup (no dynamic node addition)
-    /// - Deterministic RNG seed for reproducibility
+    /// Since SchedulerConfig uses owned self for chaining, this just returns self.
+    /// It exists for users who prefer explicit `.build()` at the end.
     ///
-    /// Use this for safety certification, debugging, and exact replay.
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::builder()
+    ///     .rate_hz(1000.0)
+    ///     .build();  // Optional, for clarity
+    /// ```
+    pub fn build(self) -> Self {
+        self
+    }
+
+    /// Standard configuration for most robots
+    pub fn standard() -> Self {
+        Self {
+            execution: ExecutionMode::AutoAdaptive,
+            timing: TimingConfig {
+                global_rate_hz: 60.0,
+                per_node_rates: true,
+            },
+            fault: FaultConfig {
+                circuit_breaker_enabled: true,
+                max_failures: 5,
+                recovery_threshold: 3,
+                circuit_timeout_ms: 5000,
+                redundancy_factor: 1,
+                checkpoint_interval_ms: 0,
+            },
+            realtime: RealTimeConfig {
+                wcet_enforcement: false,
+                deadline_monitoring: false,
+                watchdog_enabled: false,
+                watchdog_timeout_ms: 1000,
+                safety_monitor: false,
+                max_deadline_misses: 100,
+                memory_locking: false,
+                rt_scheduling_class: false,
+            },
+            resources: ResourceConfig {
+                cpu_cores: None,
+                numa_aware: false,
+            },
+            monitoring: MonitoringConfig {
+                profiling_enabled: true,
+                metrics_interval_ms: 1000,
+                telemetry_endpoint: None,
+                black_box_enabled: false,
+                black_box_size_mb: 0,
+            },
+            custom: HashMap::new(),
+            deterministic: None,
+            recording: None,
+        }
+    }
+
+    /// Deterministic configuration for safety certification and replay
     pub fn deterministic() -> Self {
         Self {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 1000.0,
                 per_node_rates: false,
-                max_jitter_us: 10,
-                deadline_miss_policy: DeadlineMissPolicy::Panic,
-                time_sync_source: TimeSyncSource::Monotonic,
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: false,
                 max_failures: 0,
                 recovery_threshold: 0,
                 circuit_timeout_ms: 0,
-                auto_restart: false,
                 redundancy_factor: 1,
                 checkpoint_interval_ms: 0,
             },
@@ -490,291 +434,133 @@ impl SchedulerConfig {
                 watchdog_timeout_ms: 1000,
                 safety_monitor: false,
                 max_deadline_misses: 3,
-                priority_inheritance: true,
-                formal_verification: true,
                 memory_locking: false,
                 rt_scheduling_class: false,
             },
             resources: ResourceConfig {
                 cpu_cores: None,
-                memory_limit_mb: 0,
-                io_priority: 4,
                 numa_aware: false,
-                gpu_devices: vec![],
-                power_management: false,
-                power_budget_watts: 0,
             },
             monitoring: MonitoringConfig {
-                profiling_enabled: false, // No profiling overhead
-                tracing_enabled: true,    // Full audit trail
+                profiling_enabled: false,
                 metrics_interval_ms: 100,
                 telemetry_endpoint: None,
                 black_box_enabled: true,
                 black_box_size_mb: 100,
             },
-            preset: RobotPreset::Custom,
             custom: HashMap::new(),
             deterministic: Some(DeterministicConfig::strict()),
-            recording: Some(RecordingConfigYaml::full()), // Deterministic mode should record for replay
+            recording: Some(RecordingConfigYaml::full()),
         }
     }
 
     /// Safety-critical configuration (medical, surgical)
     pub fn safety_critical() -> Self {
         Self {
-            execution: ExecutionMode::Sequential, // Deterministic execution
+            execution: ExecutionMode::Sequential,
             timing: TimingConfig {
-                global_rate_hz: 1000.0,                          // 1kHz for precise control
-                per_node_rates: false,                           // Fixed timing for predictability
-                max_jitter_us: 10,                               // Ultra-low jitter
-                deadline_miss_policy: DeadlineMissPolicy::Panic, // Fail-safe
-                time_sync_source: TimeSyncSource::PTP,           // Precision timing
+                global_rate_hz: 1000.0,
+                per_node_rates: false,
             },
             fault: FaultConfig {
-                circuit_breaker_enabled: false, // No automatic recovery
-                max_failures: 0,                // Zero tolerance
+                circuit_breaker_enabled: false,
+                max_failures: 0,
                 recovery_threshold: 0,
                 circuit_timeout_ms: 0,
-                auto_restart: false,         // Manual intervention required
-                redundancy_factor: 3,        // Triple redundancy
-                checkpoint_interval_ms: 100, // Frequent checkpoints
+                redundancy_factor: 3,
+                checkpoint_interval_ms: 100,
             },
             realtime: RealTimeConfig {
-                wcet_enforcement: true,     // Strict WCET enforcement
-                deadline_monitoring: true,  // Monitor all deadlines
-                watchdog_enabled: true,     // Enable watchdogs
-                watchdog_timeout_ms: 100,   // 100ms watchdog timeout
-                safety_monitor: true,       // Full safety monitoring
-                max_deadline_misses: 0,     // Zero tolerance for deadline misses
-                priority_inheritance: true, // Priority inheritance protocol
-                formal_verification: true,  // Always verify
-                memory_locking: true,       // Lock all memory (mlockall)
-                rt_scheduling_class: true,  // Use SCHED_FIFO
+                wcet_enforcement: true,
+                deadline_monitoring: true,
+                watchdog_enabled: true,
+                watchdog_timeout_ms: 100,
+                safety_monitor: true,
+                max_deadline_misses: 0,
+                memory_locking: true,
+                rt_scheduling_class: true,
             },
             resources: ResourceConfig {
-                cpu_cores: Some(vec![0, 1]), // Dedicated cores
-                memory_limit_mb: 1024,       // Fixed memory
-                io_priority: 0,              // Highest priority
+                cpu_cores: Some(vec![0, 1]),
                 numa_aware: true,
-                gpu_devices: vec![],
-                power_management: false, // No power scaling
-                power_budget_watts: 0,
             },
             monitoring: MonitoringConfig {
-                profiling_enabled: false, // No runtime overhead
-                tracing_enabled: true,    // Full audit trail
-                metrics_interval_ms: 10,  // High-frequency monitoring
+                profiling_enabled: false,
+                metrics_interval_ms: 10,
                 telemetry_endpoint: Some("local".to_string()),
-                black_box_enabled: true, // Always record
-                black_box_size_mb: 1024, // Large buffer
+                black_box_enabled: true,
+                black_box_size_mb: 1024,
             },
-            preset: RobotPreset::SafetyCritical,
             custom: HashMap::new(),
-            deterministic: Some(DeterministicConfig::strict()), // Safety-critical needs determinism
-            recording: Some(RecordingConfigYaml::full()),       // Full recording for audit trail
+            deterministic: Some(DeterministicConfig::strict()),
+            recording: Some(RecordingConfigYaml::full()),
         }
     }
 
     /// High-performance configuration (racing, competition)
     pub fn high_performance() -> Self {
         Self {
-            execution: ExecutionMode::JITOptimized, // Maximum speed
+            execution: ExecutionMode::JITOptimized,
             timing: TimingConfig {
-                global_rate_hz: 10000.0, // 10kHz ultra-high frequency
+                global_rate_hz: 10000.0,
                 per_node_rates: true,
-                max_jitter_us: 100,
-                deadline_miss_policy: DeadlineMissPolicy::Skip,
-                time_sync_source: TimeSyncSource::Monotonic,
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: true,
                 max_failures: 3,
                 recovery_threshold: 1,
-                circuit_timeout_ms: 100, // Fast recovery
-                auto_restart: true,
-                redundancy_factor: 1,      // Speed over redundancy
-                checkpoint_interval_ms: 0, // No checkpointing overhead
+                circuit_timeout_ms: 100,
+                redundancy_factor: 1,
+                checkpoint_interval_ms: 0,
             },
             realtime: RealTimeConfig {
-                wcet_enforcement: true,    // Enforce to prevent overruns
-                deadline_monitoring: true, // Track timing
-                watchdog_enabled: false,   // No watchdogs (overhead)
+                wcet_enforcement: true,
+                deadline_monitoring: true,
+                watchdog_enabled: false,
                 watchdog_timeout_ms: 0,
-                safety_monitor: false,      // No safety overhead
-                max_deadline_misses: 10,    // Some tolerance
-                priority_inheritance: true, // Prevent priority inversion
-                formal_verification: false, // No verification overhead
-                memory_locking: true,       // Lock memory for speed
-                rt_scheduling_class: true,  // Real-time scheduling
+                safety_monitor: false,
+                max_deadline_misses: 10,
+                memory_locking: true,
+                rt_scheduling_class: true,
             },
             resources: ResourceConfig {
-                cpu_cores: None,    // Use all cores
-                memory_limit_mb: 0, // Unlimited
-                io_priority: 2,
+                cpu_cores: None,
                 numa_aware: true,
-                gpu_devices: vec![0, 1, 2, 3], // All GPUs
-                power_management: false,
-                power_budget_watts: 0, // Maximum power
             },
             monitoring: MonitoringConfig {
-                profiling_enabled: false, // No overhead
-                tracing_enabled: false,
-                metrics_interval_ms: 10000, // Minimal monitoring
+                profiling_enabled: false,
+                metrics_interval_ms: 10000,
                 telemetry_endpoint: None,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
             },
-            preset: RobotPreset::HighPerformance,
             custom: HashMap::new(),
-            deterministic: None, // Performance over determinism
-            recording: None,     // No recording overhead in high-performance mode
+            deterministic: None,
+            recording: None,
         }
     }
 
-    /// Space robotics configuration
-    pub fn space() -> Self {
-        let mut config = Self::standard();
-        config.preset = RobotPreset::Space;
-        config.timing.time_sync_source = TimeSyncSource::GPS;
-        config.fault.redundancy_factor = 2;
-        config.fault.checkpoint_interval_ms = 5000;
-        config.resources.power_management = true;
-        config.resources.power_budget_watts = 100; // Limited power
-
-        // Custom space-specific settings
-        config
-            .custom
-            .insert("radiation_hardening".to_string(), ConfigValue::Bool(true));
-        config
-            .custom
-            .insert("thermal_management".to_string(), ConfigValue::Bool(true));
-        config.custom.insert(
-            "communication_delay_ms".to_string(),
-            ConfigValue::Integer(1000),
-        );
-        config
-            .custom
-            .insert("autonomous_mode".to_string(), ConfigValue::Bool(true));
-
-        config
-    }
-
-    /// Swarm robotics configuration
-    pub fn swarm() -> Self {
-        let mut config = Self::standard();
-        config.preset = RobotPreset::Swarm;
-        config.execution = ExecutionMode::Parallel;
-        config.timing.time_sync_source = TimeSyncSource::NTP;
-
-        // Custom swarm settings
-        config
-            .custom
-            .insert("swarm_id".to_string(), ConfigValue::Integer(0));
-        config
-            .custom
-            .insert("swarm_size".to_string(), ConfigValue::Integer(100));
-        config.custom.insert(
-            "consensus_algorithm".to_string(),
-            ConfigValue::String("raft".to_string()),
-        );
-        config
-            .custom
-            .insert("neighbor_discovery".to_string(), ConfigValue::Bool(true));
-        config.custom.insert(
-            "collective_behavior".to_string(),
-            ConfigValue::String("flocking".to_string()),
-        );
-
-        config
-    }
-
-    /// Soft robotics configuration
-    pub fn soft_robotics() -> Self {
-        let mut config = Self::standard();
-        config.preset = RobotPreset::SoftRobotics;
-        config.timing.global_rate_hz = 100.0; // Slower for soft materials
-
-        // Custom soft robotics settings
-        config.custom.insert(
-            "material_model".to_string(),
-            ConfigValue::String("hyperelastic".to_string()),
-        );
-        config
-            .custom
-            .insert("pneumatic_control".to_string(), ConfigValue::Bool(true));
-        config
-            .custom
-            .insert("deformation_limit".to_string(), ConfigValue::Float(0.5));
-        config
-            .custom
-            .insert("pressure_sensors".to_string(), ConfigValue::Integer(32));
-        config
-            .custom
-            .insert("adaptive_compliance".to_string(), ConfigValue::Bool(true));
-
-        config
-    }
-
     /// Hard real-time configuration for surgical robots, CNC machines
-    ///
-    /// Optimized for <20μs latency and <5μs jitter
-    ///
-    /// # Features
-    /// - WCET enforcement and deadline monitoring
-    /// - Deterministic execution (no learning phase)
-    /// - Safety monitor with watchdog
-    /// - JIT optimization for ultra-fast nodes
-    /// - High-priority scheduling
-    ///
-    /// # Use with
-    /// ```ignore
-    /// let mut scheduler = Scheduler::new_realtime()?;  // Applies this config automatically
-    /// ```
     pub fn hard_realtime() -> Self {
         let mut config = Self::standard();
-        config.preset = RobotPreset::HardRealTime;
-
-        // Execution mode: JIT optimization for minimal latency
         config.execution = ExecutionMode::JITOptimized;
-
-        // Timing: High-frequency control with strict jitter limits
-        config.timing.global_rate_hz = 1000.0; // 1 kHz default
-        config.timing.max_jitter_us = 5; // 5μs max jitter
-        config.timing.deadline_miss_policy = DeadlineMissPolicy::Panic; // Hard RT: panic on deadline miss
-
-        // Fault tolerance: Fast recovery
+        config.timing.global_rate_hz = 1000.0;
         config.fault.circuit_breaker_enabled = true;
-        config.fault.max_failures = 3; // Fail fast
-        config.fault.auto_restart = false; // No auto-restart in RT (unsafe)
-        config.fault.redundancy_factor = 2; // N-version programming
-
-        // Real-time: Maximum enforcement
+        config.fault.max_failures = 3;
+        config.fault.redundancy_factor = 2;
         config.realtime.wcet_enforcement = true;
         config.realtime.deadline_monitoring = true;
         config.realtime.watchdog_enabled = true;
-        config.realtime.watchdog_timeout_ms = 10; // 10ms watchdog
+        config.realtime.watchdog_timeout_ms = 10;
         config.realtime.safety_monitor = true;
-        config.realtime.max_deadline_misses = 3; // Strict: 3 strikes and emergency stop
-        config.realtime.priority_inheritance = true;
-        config.realtime.formal_verification = true;
+        config.realtime.max_deadline_misses = 3;
         config.realtime.memory_locking = true;
         config.realtime.rt_scheduling_class = true;
-
-        // Resources: Dedicated cores, no power management
-        config.resources.io_priority = 0; // Highest I/O priority
-        config.resources.power_management = false; // Disable power saving
-
-        // Monitoring: Minimal overhead
-        config.monitoring.profiling_enabled = false; // Disable profiling in production RT
-        config.monitoring.black_box_enabled = true; // But enable black box for forensics
+        config.monitoring.profiling_enabled = false;
+        config.monitoring.black_box_enabled = true;
         config.monitoring.black_box_size_mb = 100;
-
-        // Hard real-time needs deterministic execution
         config.deterministic = Some(DeterministicConfig::execution_only());
-
-        // Enable recording for forensics and debugging
         config.recording = Some(RecordingConfigYaml::minimal());
-
         config
     }
 
@@ -791,9 +577,7 @@ impl SchedulerConfig {
         self.custom.insert(key, value);
     }
 
-    // ============================================
     // Builder Methods
-    // ============================================
 
     /// Set the execution mode
     pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
@@ -804,18 +588,6 @@ impl SchedulerConfig {
     /// Set the global tick rate in Hz
     pub fn with_tick_rate(mut self, rate_hz: f64) -> Self {
         self.timing.global_rate_hz = rate_hz;
-        self
-    }
-
-    /// Set the maximum allowed jitter in microseconds
-    pub fn with_max_jitter(mut self, jitter_us: u64) -> Self {
-        self.timing.max_jitter_us = jitter_us;
-        self
-    }
-
-    /// Set the deadline miss policy
-    pub fn with_deadline_policy(mut self, policy: DeadlineMissPolicy) -> Self {
-        self.timing.deadline_miss_policy = policy;
         self
     }
 
@@ -872,6 +644,219 @@ impl SchedulerConfig {
     /// Set the recording configuration
     pub fn with_recording(mut self, config: Option<RecordingConfigYaml>) -> Self {
         self.recording = config;
+        self
+    }
+
+    // ========================================================================
+    // FLAT SETTERS (shorter aliases for common settings)
+    // ========================================================================
+
+    /// Set the global tick rate in Hz (alias for `with_tick_rate`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::safety_critical()
+    ///     .rate_hz(500.0);  // Override to 500 Hz
+    /// ```
+    pub fn rate_hz(self, hz: f64) -> Self {
+        self.with_tick_rate(hz)
+    }
+
+    /// Set watchdog timeout in milliseconds.
+    ///
+    /// Enables the watchdog timer with the specified timeout. If the scheduler
+    /// doesn't tick within this period, the watchdog triggers.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .watchdog_ms(50);  // 50ms watchdog
+    /// ```
+    pub fn watchdog_ms(mut self, ms: u64) -> Self {
+        self.realtime.watchdog_enabled = true;
+        self.realtime.watchdog_timeout_ms = ms;
+        self
+    }
+
+    /// Disable the watchdog timer.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::safety_critical()
+    ///     .no_watchdog();  // Disable watchdog
+    /// ```
+    pub fn no_watchdog(mut self) -> Self {
+        self.realtime.watchdog_enabled = false;
+        self
+    }
+
+    /// Enable circuit breaker with default settings (alias for `with_circuit_breaker(true)`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::deterministic()
+    ///     .circuit_breaker();  // Enable circuit breaker
+    /// ```
+    pub fn circuit_breaker(self) -> Self {
+        self.with_circuit_breaker(true)
+    }
+
+    /// Disable circuit breaker (alias for `with_circuit_breaker(false)`).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .no_circuit_breaker();  // Disable circuit breaker
+    /// ```
+    pub fn no_circuit_breaker(self) -> Self {
+        self.with_circuit_breaker(false)
+    }
+
+    /// Set black box recording buffer size in MB.
+    ///
+    /// Enables black box recording with the specified buffer size.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .blackbox_mb(256);  // 256MB black box
+    /// ```
+    pub fn blackbox_mb(self, size_mb: usize) -> Self {
+        self.with_black_box(true, size_mb)
+    }
+
+    /// Disable black box recording.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::safety_critical()
+    ///     .no_blackbox();  // Disable black box
+    /// ```
+    pub fn no_blackbox(self) -> Self {
+        self.with_black_box(false, 0)
+    }
+
+    /// Set checkpoint interval in milliseconds.
+    ///
+    /// Enables periodic checkpointing at the specified interval.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .checkpoint_ms(5000);  // Checkpoint every 5 seconds
+    /// ```
+    pub fn checkpoint_ms(mut self, ms: u64) -> Self {
+        self.fault.checkpoint_interval_ms = ms;
+        self
+    }
+
+    /// Disable checkpointing.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::safety_critical()
+    ///     .no_checkpoint();  // Disable checkpointing
+    /// ```
+    pub fn no_checkpoint(mut self) -> Self {
+        self.fault.checkpoint_interval_ms = 0;
+        self
+    }
+
+    /// Set maximum deadline misses before action.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .max_deadline_misses(10);  // Allow 10 misses
+    /// ```
+    pub fn max_deadline_misses(mut self, count: u64) -> Self {
+        self.realtime.max_deadline_misses = count;
+        self
+    }
+
+    /// Enable memory locking (mlockall).
+    ///
+    /// Locks all memory pages to prevent page faults during real-time execution.
+    /// Requires appropriate permissions (CAP_IPC_LOCK or sufficient RLIMIT_MEMLOCK).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .memory_lock();  // Enable mlockall
+    /// ```
+    pub fn memory_lock(mut self) -> Self {
+        self.realtime.memory_locking = true;
+        self
+    }
+
+    /// Enable real-time scheduling class (SCHED_FIFO).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .rt_scheduling();  // Enable SCHED_FIFO
+    /// ```
+    pub fn rt_scheduling(mut self) -> Self {
+        self.realtime.rt_scheduling_class = true;
+        self
+    }
+
+    /// Enable safety monitor.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .safety_monitor();  // Enable safety monitor
+    /// ```
+    pub fn safety_monitor(mut self) -> Self {
+        self.realtime.safety_monitor = true;
+        self
+    }
+
+    /// Enable deadline monitoring.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .deadline_monitoring();  // Enable deadline monitoring
+    /// ```
+    pub fn deadline_monitoring(mut self) -> Self {
+        self.realtime.deadline_monitoring = true;
+        self
+    }
+
+    /// Enable WCET (Worst-Case Execution Time) enforcement.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .wcet();  // Enable WCET enforcement
+    /// ```
+    pub fn wcet(self) -> Self {
+        self.with_wcet_enforcement(true)
+    }
+
+    /// Set telemetry endpoint URL.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .telemetry("udp://localhost:9999");
+    /// ```
+    pub fn telemetry(mut self, endpoint: &str) -> Self {
+        self.monitoring.telemetry_endpoint = Some(endpoint.to_string());
+        self
+    }
+
+    /// Pin to specific CPU cores.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .cpu_cores(&[2, 3]);  // Pin to cores 2 and 3
+    /// ```
+    pub fn cpu_cores(mut self, cores: &[usize]) -> Self {
+        self.resources.cpu_cores = Some(cores.to_vec());
         self
     }
 }

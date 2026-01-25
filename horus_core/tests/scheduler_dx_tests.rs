@@ -6,8 +6,8 @@
 //! - `SchedulerBuilder::prototype().build().unwrap()` - Fast development mode
 //! - `Scheduler::builder()` - Explicit configuration
 
-use horus_core::core::{Node, NodeInfo};
-use horus_core::error::HorusResult as Result;
+use horus_core::core::Node;
+use horus_core::error::Result;
 use horus_core::scheduling::{Scheduler, SchedulerBuilder};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -33,7 +33,7 @@ impl Node for TickCounterNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+    fn init(&mut self) -> Result<()> {
         Ok(())
     }
 
@@ -41,7 +41,7 @@ impl Node for TickCounterNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> Result<()> {
+    fn shutdown(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -56,7 +56,7 @@ fn test_new_creates_scheduler() {
     let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(Box::new(TickCounterNode::new("test_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("test_node", counter.clone())).order(0).done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok(), "Scheduler::new() should create a working scheduler");
@@ -96,7 +96,7 @@ fn test_new_with_capacity() {
     let mut scheduler = Scheduler::new().with_capacity(100);
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(Box::new(TickCounterNode::new("cap_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("cap_node", counter.clone())).order(0).done();
 
     // Use 100ms to be reliable under parallel test load
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -113,7 +113,7 @@ fn test_simulation_creates_deterministic_scheduler() {
     let mut scheduler = SchedulerBuilder::simulation().build().unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(Box::new(TickCounterNode::new("sim_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("sim_node", counter.clone())).order(0).done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok(), "SchedulerBuilder::simulation().build().unwrap() should create a working scheduler");
@@ -180,7 +180,7 @@ fn test_prototype_creates_dev_scheduler() {
     let mut scheduler = SchedulerBuilder::prototype().build().unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(Box::new(TickCounterNode::new("proto_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("proto_node", counter.clone())).order(0).done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok(), "SchedulerBuilder::prototype().build().unwrap() should create a working scheduler");
@@ -240,7 +240,7 @@ fn test_builder_default_build() {
     let mut scheduler = result.unwrap();
     let counter = Arc::new(AtomicU32::new(0));
 
-    scheduler.add(Box::new(TickCounterNode::new("builder_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("builder_node", counter.clone())).order(0).done();
 
     // Use 100ms to be reliable under parallel test load
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -269,7 +269,7 @@ fn test_builder_with_capacity() {
         .expect("build should succeed");
 
     let counter = Arc::new(AtomicU32::new(0));
-    scheduler.add(Box::new(TickCounterNode::new("cap_builder_node", counter.clone())), 0);
+    scheduler.add(TickCounterNode::new("cap_builder_node", counter.clone())).order(0).done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok());
@@ -296,10 +296,10 @@ fn test_builder_watchdog() {
         .expect("build should succeed");
 
     let counter = Arc::new(AtomicU32::new(0));
-    scheduler.add(
-        Box::new(TickCounterNode::new("watchdog_node", counter.clone())),
-        0,
-    );
+    scheduler
+        .add(TickCounterNode::new("watchdog_node", counter.clone()))
+        .order(0)
+        .done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok());
@@ -314,10 +314,10 @@ fn test_builder_blackbox() {
         .expect("build should succeed");
 
     let counter = Arc::new(AtomicU32::new(0));
-    scheduler.add(
-        Box::new(TickCounterNode::new("blackbox_node", counter.clone())),
-        0,
-    );
+    scheduler
+        .add(TickCounterNode::new("blackbox_node", counter.clone()))
+        .order(0)
+        .done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok());
@@ -377,10 +377,10 @@ fn test_builder_preset_prototype() {
         .expect("prototype preset should build");
 
     let counter = Arc::new(AtomicU32::new(0));
-    scheduler.add(
-        Box::new(TickCounterNode::new("preset_proto_node", counter.clone())),
-        0,
-    );
+    scheduler
+        .add(TickCounterNode::new("preset_proto_node", counter.clone()))
+        .order(0)
+        .done();
 
     let result = scheduler.run_for(Duration::from_millis(100));
     assert!(result.is_ok());

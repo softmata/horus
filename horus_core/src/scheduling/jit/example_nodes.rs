@@ -1,7 +1,7 @@
 use super::dataflow::{BinaryOp, DataflowExpr, DataflowNode};
 /// Example DataflowNode implementations for testing and demonstration
 /// These are internal nodes used by the scheduler for JIT compilation testing
-use crate::core::{Node, NodeInfo};
+use crate::core::Node;
 use crate::error::HorusResult;
 
 /// Simple scaling node: output = input * scale + offset
@@ -35,11 +35,11 @@ impl Node for ScalingNode {
         self.current_input += 1; // Increment for next tick
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> HorusResult<()> {
         Ok(())
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> HorusResult<()> {
         Ok(())
     }
 

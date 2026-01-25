@@ -35,9 +35,9 @@ def test_per_node_rate_control():
 
     # Create scheduler and register with different rates
     scheduler = horus.Scheduler()
-    scheduler.add(fast_node, priority=0, logging=False)
-    scheduler.add(medium_node, priority=1, logging=False)
-    scheduler.add(slow_node, priority=2, logging=False)
+    scheduler.add(fast_node, order=0, logging=False)
+    scheduler.add(medium_node, order=1, logging=False)
+    scheduler.add(slow_node, order=2, logging=False)
 
     # Run for 1 second
     scheduler.run(duration=1.0)
@@ -65,7 +65,7 @@ def test_runtime_rate_change():
     node = horus.Node(name="counter", tick=counter_tick, rate=10)
 
     scheduler = horus.Scheduler()
-    scheduler.add(node, priority=0, logging=False)
+    scheduler.add(node, order=0, logging=False)
 
     # Get initial stats
     stats = scheduler.get_node_stats("counter")
@@ -92,16 +92,15 @@ def test_node_statistics():
     node = horus.Node(name="test_node", tick=dummy_tick, rate=50)
 
     scheduler = horus.Scheduler()
-    scheduler.add(node, priority=5, logging=True)
+    scheduler.add(node, order=5, logging=True)
 
     stats = scheduler.get_node_stats("test_node")
 
     print(f"Node stats: {stats}")
 
     assert stats['name'] == "test_node"
-    assert stats['priority'] == 5
+    assert stats['order'] == 5
     assert stats['rate_hz'] == 50.0
-    assert stats['logging_enabled'] == True
     assert 'total_ticks' in stats
     assert 'errors_count' in stats
 

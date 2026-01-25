@@ -16,7 +16,7 @@
 //! ```
 
 use horus_core::memory::shm_topics_dir;
-use horus_core::{Node, Topic, NodeInfo, Scheduler};
+use horus_core::{Node, Topic, Scheduler};
 use serde::{Deserialize, Serialize};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -257,9 +257,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create scheduler
     let mut scheduler = Scheduler::new();
 
-    // Add nodes with priorities (lower priority number = runs first)
-    scheduler.add(Box::new(motor_driver), 0); // High priority
-    scheduler.add(Box::new(controller), 1); // Normal priority
+    // Add nodes with priorities (lower order = runs first)
+    scheduler.add(motor_driver)
+        .order(0)  // High priority
+        .done();
+    scheduler.add(controller)
+        .order(1)  // Normal priority
+        .done();
 
     println!("Starting control loop... (Ctrl+C to stop)\n");
 

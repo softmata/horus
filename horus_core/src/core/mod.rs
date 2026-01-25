@@ -3,7 +3,7 @@
 //! This module contains the fundamental building blocks of the HORUS system:
 //!
 //! - **Node**: The base trait for all computational units in HORUS
-//! - **NodeContext**: Runtime context and utilities provided to nodes during execution
+//! - **NodeInfo**: Runtime context and utilities provided to nodes during lifecycle methods (init/shutdown)
 //! - **Contracts**: Message schemas and validation for type-safe communication
 //! - **Data Fields**: Structured data types for robotics sensors and actuators
 //!
@@ -15,18 +15,24 @@
 //! 3. **Execution** - `tick()` is called repeatedly by the scheduler
 //! 4. **Shutdown** - `shutdown()` is called to clean up resources
 
+pub mod discovery;
+pub mod hlog;
 pub mod log_buffer;
 pub mod node;
-pub mod node_info_ext;
+pub mod presence;
 pub mod rt_config;
 pub mod rt_node;
 
+pub use discovery::{
+    announce_crashed, announce_started, announce_stopped, read_announcements, NodeAnnouncement,
+    NodeEvent, DISCOVERY_TOPIC,
+};
 pub use log_buffer::{LogEntry, LogType, SharedLogBuffer, GLOBAL_LOG_BUFFER};
 pub use node::{
-    HealthStatus, LogSummary, NetworkStatus, Node, NodeConfig, NodeHeartbeat, NodeInfo,
-    NodeMetrics, NodeState, TopicMetadata,
+    HealthStatus, LogSummary, NetworkStatus, Node, NodeConfig, NodeInfo, NodeMetrics, NodeState,
+    TopicMetadata,
 };
-pub use node_info_ext::NodeInfoExt;
+pub use presence::NodePresence;
 pub use rt_config::{
     detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
     prefault_stack, prefault_stack_linear, RtApplyResult, RtConfig, RtConfigBuilder,

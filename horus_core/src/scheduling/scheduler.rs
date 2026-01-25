@@ -1,6 +1,7 @@
-use crate::core::{Node, NodeHeartbeat, NodeInfo};
+use crate::core::hlog::{clear_node_context, set_node_context};
+use crate::core::{announce_started, announce_stopped, Node, NodeInfo, NodePresence};
 use crate::error::HorusResult;
-use crate::memory::platform::{shm_control_dir, shm_heartbeats_dir};
+use crate::memory::platform::shm_control_dir;
 use crate::terminal::print_line;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -502,6 +503,139 @@ impl Scheduler {
         super::builder::SchedulerBuilder::new()
     }
 
+    // ========================================================================
+    // PRESET CONSTRUCTORS
+    // ========================================================================
+
+    /// Create a scheduler configured for safety-critical systems.
+    ///
+    /// This is a convenience constructor equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new().with_config(SchedulerConfig::safety_critical())
+    /// ```
+    ///
+    /// # Configuration
+    /// - **Execution**: Sequential (deterministic)
+    /// - **Tick Rate**: 1000 Hz (1kHz)
+    /// - **Real-Time**: Full WCET enforcement, watchdogs (100ms), memory locking, SCHED_FIFO
+    /// - **Fault Tolerance**: Circuit breaker disabled, no auto-restart
+    /// - **Deadline Policy**: Panic (fail-safe)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let mut scheduler = Scheduler::safety_critical();
+    /// scheduler.add(motor_controller).order(0).done();
+    /// scheduler.run()?;
+    /// ```
+    ///
+    /// # Use Cases
+    /// - Medical devices
+    /// - Surgical robots
+    /// - Safety-critical industrial systems
+    pub fn safety_critical() -> Self {
+        Self::new().with_config(super::config::SchedulerConfig::safety_critical())
+    }
+
+    /// Create a scheduler configured for high-performance applications.
+    ///
+    /// This is a convenience constructor equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new().with_config(SchedulerConfig::high_performance())
+    /// ```
+    ///
+    /// # Configuration
+    /// - **Execution**: JITOptimized
+    /// - **Tick Rate**: 10,000 Hz (10kHz)
+    /// - **Real-Time**: WCET enforcement, memory locking, SCHED_FIFO
+    /// - **Deadline Policy**: Skip (maintain throughput)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let mut scheduler = Scheduler::high_performance();
+    /// scheduler.add(racing_controller).order(0).done();
+    /// scheduler.run()?;
+    /// ```
+    ///
+    /// # Use Cases
+    /// - Racing robots
+    /// - Competition systems
+    /// - High-speed control loops
+    pub fn high_performance() -> Self {
+        Self::new().with_config(super::config::SchedulerConfig::high_performance())
+    }
+
+    /// Create a scheduler configured for deterministic execution.
+    ///
+    /// This is a convenience constructor equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new().with_config(SchedulerConfig::deterministic())
+    /// ```
+    ///
+    /// # Configuration
+    /// - **Execution**: Sequential (deterministic)
+    /// - **Topology**: Strict validation, startup barrier, frozen after start
+    /// - **RNG**: Deterministic seed
+    /// - **Learning**: Disabled
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let mut scheduler = Scheduler::deterministic();
+    /// scheduler.add(controller).order(0).done();
+    ///
+    /// // Validate topology before running
+    /// let errors = scheduler.validate_topology();
+    /// if !errors.is_empty() {
+    ///     panic!("Topology errors: {:?}", errors);
+    /// }
+    ///
+    /// scheduler.run()?;
+    /// ```
+    ///
+    /// # Use Cases
+    /// - Formal verification
+    /// - Safety certification
+    /// - Reproducible testing
+    pub fn deterministic() -> Self {
+        Self::new().with_config(super::config::SchedulerConfig::deterministic())
+    }
+
+    /// Create a scheduler configured for hard real-time applications.
+    ///
+    /// This is a convenience constructor equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new().with_config(SchedulerConfig::hard_realtime())
+    /// ```
+    ///
+    /// # Configuration
+    /// - **Execution**: JITOptimized
+    /// - **Tick Rate**: 1000 Hz
+    /// - **Jitter**: <5μs
+    /// - **Real-Time**: Full enforcement, 10ms watchdog
+    /// - **Deadline Policy**: Panic
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let mut scheduler = Scheduler::hard_realtime();
+    /// scheduler.add(cnc_controller).order(0).done();
+    /// scheduler.run()?;
+    /// ```
+    ///
+    /// # Use Cases
+    /// - CNC machines
+    /// - Surgical robots
+    /// - Aerospace systems
+    pub fn hard_realtime() -> Self {
+        Self::new().with_config(super::config::SchedulerConfig::hard_realtime())
+    }
+
     /// Internal: Apply RT priority without error on failure.
     fn apply_rt_priority_internal(&self, priority: i32) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
@@ -752,8 +886,8 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use horus_core::scheduling::CircuitState;
     ///
-    /// let scheduler = Scheduler::new();
-    /// scheduler.add(Box::new(my_node), 10);
+    /// let mut scheduler = Scheduler::new();
+    /// scheduler.add(my_node).order(10).done();
     ///
     /// if let Some(state) = scheduler.circuit_state("my_node") {
     ///     match state {
@@ -1277,38 +1411,6 @@ impl Scheduler {
             print_line("Profiling disabled");
         }
 
-        // Handle robot presets
-        match config.preset {
-            RobotPreset::SafetyCritical => {
-                print_line("Configured for safety-critical operation");
-            }
-            RobotPreset::HardRealTime => {
-                print_line("Configured for hard real-time operation");
-            }
-            RobotPreset::HighPerformance => {
-                print_line("Configured for high-performance operation");
-            }
-            RobotPreset::Space => {
-                print_line("Configured for space robotics");
-            }
-            RobotPreset::Swarm => {
-                print_line("Configured for swarm robotics");
-                // Apply swarm-specific settings
-                if let Some(swarm_id) = config.get_custom::<i64>("swarm_id") {
-                    self.scheduler_name = format!("Swarm_{}", swarm_id);
-                }
-            }
-            RobotPreset::SoftRobotics => {
-                print_line("Configured for soft robotics");
-            }
-            RobotPreset::Custom => {
-                print_line("Using custom configuration");
-            }
-            _ => {
-                // Standard preset
-            }
-        }
-
         // === Apply new runtime features ===
 
         // 1. Global tick rate enforcement
@@ -1335,7 +1437,7 @@ impl Scheduler {
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
-                config: format!("{:?}", config.preset),
+                config: format!("rate={}Hz", config.timing.global_rate_hz),
             });
             self.blackbox = Some(bb);
             print_line(&format!(
@@ -1690,7 +1792,7 @@ impl Scheduler {
     /// use std::path::PathBuf;
     ///
     /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(Box::new(live_sensor), 0);  // Live node
+    /// scheduler.add(live_sensor).order(0).done();  // Live node
     /// scheduler.add_replay(
     ///     PathBuf::from("~/.horus/recordings/crash/motor_node@abc123.horus"),
     ///     1,  // priority
@@ -1721,7 +1823,6 @@ impl Scheduler {
         self.nodes.push(RegisteredNode {
             node: Box::new(replay_node),
             priority,
-            logging_enabled: true,
             initialized: false,
             context: None,
             rate_hz: None,
@@ -2049,8 +2150,8 @@ impl Scheduler {
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.add(Box::new(node1), 0);
-    /// scheduler.add(Box::new(node2), 1);
+    /// scheduler.add(node1).order(0).done();
+    /// scheduler.add(node2).order(1).done();
     /// scheduler.lock_topology();  // No more nodes can be added
     /// scheduler.run();
     /// ```
@@ -2108,59 +2209,14 @@ impl Scheduler {
         self
     }
 
-    /// Add a node with explicit tier annotation (deterministic optimization).
-    ///
-    /// Use this when you know a node's characteristics at compile time.
-    /// This avoids the non-deterministic runtime learning phase.
-    ///
-    /// # Arguments
-    /// * `node` - The node to add
-    /// * `priority` - Priority level (0 = highest)
-    /// * `tier` - Explicit execution tier
-    ///
-    /// # Example
-    /// ```ignore
-    /// use horus_core::{Scheduler, scheduling::NodeTier};
-    ///
-    /// let scheduler = Scheduler::new()
-    ///     .add_with_tier(Box::new(pid_controller), 0, NodeTier::Jit)
-    ///     .add_with_tier(Box::new(sensor_reader), 1, NodeTier::Fast)
-    ///     .add_with_tier(Box::new(data_logger), 5, NodeTier::Background);
-    /// ```
-    pub fn add_with_tier(
-        &mut self,
-        node: Box<dyn Node>,
-        priority: u32,
-        tier: super::intelligence::NodeTier,
-    ) -> &mut Self {
-        let node_name = node.name().to_string();
-
-        // Add node
-        self.add(node, priority);
-
-        // Set explicit tier in classifier
-        if self.classifier.is_none() {
-            self.classifier = Some(super::intelligence::TierClassifier {
-                assignments: std::collections::HashMap::new(),
-            });
-        }
-
-        if let Some(ref mut classifier) = self.classifier {
-            classifier
-                .assignments
-                .insert(node_name.clone(), tier.to_execution_tier());
-        }
-
-        println!("Added node '{}' with explicit tier: {:?}", node_name, tier);
-
-        self
-    }
-
     // ============================================================================
     // OS Integration Methods (low-level, genuinely different from config)
     // ============================================================================
 
-    /// Set real-time priority using SCHED_FIFO (Linux RT-PREEMPT required)
+    /// Set OS-level scheduling priority using SCHED_FIFO (Linux RT-PREEMPT required).
+    ///
+    /// This sets the scheduler thread's OS priority, giving it preferential
+    /// CPU scheduling over normal processes.
     ///
     /// # Arguments
     /// * `priority` - Priority level (1-99, higher = more important)
@@ -2175,9 +2231,9 @@ impl Scheduler {
     ///
     /// # Example
     /// ```ignore
-    /// scheduler.set_realtime_priority(99)?;  // Highest priority
+    /// scheduler.set_os_priority(99)?;  // Highest priority
     /// ```
-    pub fn set_realtime_priority(&self, priority: i32) -> crate::error::HorusResult<()> {
+    pub fn set_os_priority(&self, priority: i32) -> crate::error::HorusResult<()> {
         if !(1..=99).contains(&priority) {
             return Err(crate::error::HorusError::config(
                 "Priority must be between 1 and 99",
@@ -2195,20 +2251,20 @@ impl Scheduler {
             if sched_setscheduler(0, SCHED_FIFO, &param) != 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(crate::error::HorusError::Internal(format!(
-                    "Failed to set real-time priority: {}. \
+                    "Failed to set OS priority: {}. \
                      Ensure you have RT-PREEMPT kernel and CAP_SYS_NICE capability.",
                     err
                 )));
             }
 
-            print_line(&format!("[OK] Real-time priority set to {} (SCHED_FIFO)", priority));
+            print_line(&format!("[OK] OS priority set to {} (SCHED_FIFO)", priority));
             Ok(())
         }
 
         #[cfg(not(target_os = "linux"))]
         {
             Err(crate::error::HorusError::Unsupported(
-                "Real-time priority scheduling is only supported on Linux".to_string(),
+                "OS priority scheduling is only supported on Linux".to_string(),
             ))
         }
     }
@@ -2330,19 +2386,115 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Add a node with given priority (lower number = higher priority).
-    /// Automatically detects and wraps RtNode types for real-time support.
+    // ========================================================================
+    // NODE BUILDER API (Fluent Interface)
+    // ========================================================================
+
+    /// Add a node using the fluent builder API.
+    ///
+    /// This is the **recommended** way to add nodes. No `Box::new()` required!
+    /// Call `.done()` on the builder to register the node.
     ///
     /// # Example
-    /// ```ignore
-    /// scheduler.add(node, 0);   // Highest priority
-    /// scheduler.add(node, 10);  // Medium priority
-    /// scheduler.add(node, 100); // Low priority
+    /// ```rust,ignore
+    /// use horus_core::Scheduler;
+    ///
+    /// let mut scheduler = Scheduler::new();
+    ///
+    /// // Simple - just node and order
+    /// scheduler.add(MyNode::new())
+    ///     .order(0)
+    ///     .done();
+    ///
+    /// // With full RT configuration
+    /// scheduler.add(MotorController::new())
+    ///     .order(0)
+    ///     .rate_hz(1000.0)  // 1kHz
+    ///     .rt()
+    ///     .wcet_us(500)     // 500μs max execution
+    ///     .done();
+    ///
+    /// // Chain multiple nodes
+    /// scheduler.add(SensorNode::new()).order(0).done();
+    /// scheduler.add(ControlNode::new()).order(1).rt().done();
+    /// scheduler.add(LoggerNode::new()).order(100).done();
     /// ```
-    pub fn add(
+    pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
+        super::node_builder::NodeBuilder::new(self, Box::new(node))
+    }
+
+    /// Add a boxed node using the fluent builder API.
+    ///
+    /// Use this if you already have a `Box<dyn Node>`. Otherwise, prefer `add()`
+    /// which doesn't require boxing.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let node: Box<dyn Node> = factory.create_node();
+    /// scheduler.add_dyn(node).order(0).done();
+    /// ```
+    pub fn add_dyn(&mut self, node: Box<dyn Node>) -> super::node_builder::NodeBuilder<'_> {
+        super::node_builder::NodeBuilder::new(self, node)
+    }
+
+    /// Alias for `add_dyn()` - start configuring a boxed node.
+    ///
+    /// # Deprecated
+    /// Prefer using `add()` which doesn't require `Box::new()`.
+    pub fn node(&mut self, node: Box<dyn Node>) -> super::node_builder::NodeBuilder<'_> {
+        self.add_dyn(node)
+    }
+
+    /// Add a node using a pre-built NodeConfig.
+    ///
+    /// This is called internally by `NodeBuilder::done()`. You can also use it
+    /// directly with a `NodeConfig`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::scheduling::NodeConfig;
+    ///
+    /// let config = NodeConfig::new(Box::new(my_node))
+    ///     .order(0)
+    ///     .rt();
+    ///
+    /// scheduler.add_configured(config);
+    /// ```
+    pub fn add_configured(&mut self, config: super::node_builder::NodeConfig) -> &mut Self {
+        // Extract config fields
+        let node = config.node;
+        let priority = config.order;
+        let custom_rate = config.rate_hz;
+        let is_rt = config.is_rt;
+        let wcet_budget = config.wcet_budget;
+        let deadline = config.deadline;
+        let request_jit = config.request_jit;
+        let tier = config.tier;
+
+        // Use the internal add logic
+        self.add_configured_internal(
+            node,
+            priority,
+            custom_rate,
+            is_rt,
+            wcet_budget,
+            deadline,
+            request_jit,
+            tier,
+        )
+    }
+
+    /// Internal method to add a fully configured node.
+    fn add_configured_internal(
         &mut self,
         node: Box<dyn Node>,
         priority: u32,
+        custom_rate: Option<f64>,
+        is_rt_node: bool,
+        wcet_budget: Option<std::time::Duration>,
+        deadline: Option<std::time::Duration>,
+        _request_jit: bool,
+        tier: Option<super::intelligence::NodeTier>,
     ) -> &mut Self {
         // Check if topology is locked (deterministic mode)
         if self.topology_locked {
@@ -2359,7 +2511,6 @@ impl Scheduler {
         }
 
         let node_name = node.name().to_string();
-        let logging_enabled = true; // Always enable tick counting for metrics
 
         // Collect topology from node (for deterministic validation)
         for pub_meta in node.get_publishers() {
@@ -2377,14 +2528,13 @@ impl Scheduler {
             ));
         }
 
-        // Check if this node supports JIT compilation using trait methods
+        // Check if this node supports JIT compilation
         let is_jit_capable = node.supports_jit();
         let jit_arithmetic_params = node.get_jit_arithmetic_params();
         let jit_compute_fn = node.get_jit_compute();
 
         // Track the compiled JIT function if available
         let (is_jit_compiled, jit_compiled) = if is_jit_capable {
-            // Try to compile if the node provides arithmetic params
             if let Some((factor, offset)) = jit_arithmetic_params {
                 match super::jit::JITCompiler::new() {
                     Ok(mut compiler) => {
@@ -2415,14 +2565,12 @@ impl Scheduler {
                     }
                 }
             } else if jit_compute_fn.is_some() {
-                // Node provides a direct compute function
                 print_line(&format!(
                     "[JIT] Node '{}' provides direct compute function",
                     node_name
                 ));
-                (true, None) // Will use get_jit_compute() at runtime
+                (true, None)
             } else {
-                // JIT capable but no compile params - track for stats only
                 print_line(&format!("[JIT] Node '{}' is JIT-capable (tracking stats)", node_name));
                 (true, Some(CompiledDataflow::new_stats_only(&node_name)))
             }
@@ -2430,14 +2578,9 @@ impl Scheduler {
             (false, None)
         };
 
-        let context = NodeInfo::new(node_name.clone(), logging_enabled);
+        let context = NodeInfo::new(node_name.clone());
 
-        // Node starts as non-RT with no deadline
-        let is_rt_node = false;
-        let wcet_budget = None;
-        let deadline = None;
-
-        // Store JIT compiled function in the global map for fast lookup
+        // Store JIT compiled function
         if let Some(ref compiled) = jit_compiled {
             self.jit_compiled_nodes.insert(
                 node_name.clone(),
@@ -2452,7 +2595,6 @@ impl Scheduler {
 
         // Create node recorder if recording is enabled
         let recorder = if let Some(ref config) = self.recording_config {
-            // Generate unique node ID from timestamp and node index
             let node_id = format!(
                 "{:x}{:x}",
                 std::time::SystemTime::now()
@@ -2463,7 +2605,6 @@ impl Scheduler {
             );
             let recorder = NodeRecorder::new(&node_name, &node_id, config.clone());
 
-            // Register with scheduler recording
             if let Some(ref mut scheduler_rec) = self.scheduler_recording {
                 let relative_path = format!("{}@{}.horus", node_name, node_id);
                 scheduler_rec.add_node_recording(&node_id, &relative_path);
@@ -2474,32 +2615,45 @@ impl Scheduler {
             None
         };
 
-        // Get rate from node (can be overridden via set_node_rate)
-        let node_rate = node.rate_hz();
+        // Use custom rate or node's declared rate
+        let node_rate = custom_rate.or_else(|| node.rate_hz());
 
         self.nodes.push(RegisteredNode {
             node,
             priority,
-            logging_enabled,
             initialized: false,
             context: Some(context),
-            rate_hz: node_rate, // Use node's rate, or None for global rate
+            rate_hz: node_rate,
             last_tick: if node_rate.is_some() {
                 Some(Instant::now())
             } else {
                 None
             },
-            circuit_breaker: CircuitBreaker::new(5, 3, 30000), // 5 failures to open, 3 successes to close, 30s timeout
+            circuit_breaker: CircuitBreaker::new(5, 3, 30000),
             is_rt_node,
             wcet_budget,
             deadline,
             is_jit_compiled,
-            jit_stats: jit_compiled, // JIT-compiled dataflow (if available)
-            recorder,                // Node recorder (if recording enabled)
-            is_replay_node: false,   // Live node, not replay
-            is_stopped: false,       // Node starts running
-            is_paused: false,        // Node starts unpaused
+            jit_stats: jit_compiled,
+            recorder,
+            is_replay_node: false,
+            is_stopped: false,
+            is_paused: false,
         });
+
+        // Set tier if specified
+        if let Some(t) = tier {
+            if self.classifier.is_none() {
+                self.classifier = Some(super::intelligence::TierClassifier {
+                    assignments: std::collections::HashMap::new(),
+                });
+            }
+            if let Some(ref mut classifier) = self.classifier {
+                classifier
+                    .assignments
+                    .insert(node_name.clone(), t.to_execution_tier());
+            }
+        }
 
         if let Some(rate) = node_rate {
             print_line(&format!(
@@ -2516,86 +2670,6 @@ impl Scheduler {
                 node_name,
                 priority
             ));
-        }
-
-        self
-    }
-
-    /// Add a real-time node with explicit RT constraints
-    ///
-    /// This method allows precise configuration of RT nodes with WCET budgets,
-    /// deadlines, and other real-time constraints.
-    ///
-    /// # Example
-    /// ```ignore
-    /// scheduler.add_rt(
-    ///     Box::new(MotorControlNode::new("motor")),
-    ///     0,  // Highest priority
-    ///     Duration::from_micros(100),  // 100μs WCET budget
-    ///     Duration::from_millis(1),    // 1ms deadline
-    /// );
-    /// ```
-    pub fn add_rt(
-        &mut self,
-        node: Box<dyn Node>,
-        priority: u32,
-        wcet_budget: Duration,
-        deadline: Duration,
-    ) -> &mut Self {
-        let node_name = node.name().to_string();
-        let logging_enabled = false; // RT nodes typically don't need logging overhead
-
-        let context = NodeInfo::new(node_name.clone(), logging_enabled);
-
-        // Get rate from node (can be overridden via set_node_rate)
-        let node_rate = node.rate_hz();
-
-        self.nodes.push(RegisteredNode {
-            node,
-            priority,
-            logging_enabled,
-            initialized: false,
-            context: Some(context),
-            rate_hz: node_rate, // Use node's rate, or None for global rate
-            last_tick: if node_rate.is_some() {
-                Some(Instant::now())
-            } else {
-                None
-            },
-            circuit_breaker: CircuitBreaker::new(5, 3, 30000), // 5 failures, 3 successes, 30s timeout
-            is_rt_node: true,
-            wcet_budget: Some(wcet_budget),
-            deadline: Some(deadline),
-            is_jit_compiled: false, // RT nodes typically don't use JIT
-            jit_stats: None,
-            recorder: None,
-            is_replay_node: false,
-            is_stopped: false,
-            is_paused: false,
-        });
-
-        if let Some(rate) = node_rate {
-            print_line(&format!(
-                "Added RT node '{}' with priority {} at {:.1}Hz (WCET: {:?}, deadline: {:?})",
-                node_name, priority, rate, wcet_budget, deadline
-            ));
-        } else {
-            print_line(&format!(
-                "Added RT node '{}' with priority {} (WCET: {:?}, deadline: {:?})",
-                node_name, priority, wcet_budget, deadline
-            ));
-        }
-
-        // If safety monitor exists, configure it for this node
-        if let Some(ref mut monitor) = self.safety_monitor {
-            monitor.set_wcet_budget(node_name.clone(), wcet_budget);
-            if let Some(ref config) = self.config {
-                if config.realtime.watchdog_enabled {
-                    let watchdog_timeout =
-                        Duration::from_millis(config.realtime.watchdog_timeout_ms);
-                    monitor.add_critical_node(node_name, watchdog_timeout);
-                }
-            }
         }
 
         self
@@ -2716,9 +2790,35 @@ impl Scheduler {
 
                 if should_run && !registered.initialized {
                     if let Some(ref mut ctx) = registered.context {
-                        match registered.node.init(ctx) {
+                        // Set node context for hlog!() macro
+                        set_node_context(node_name, 0);
+                        let init_result = registered.node.init();
+                        clear_node_context();
+
+                        match init_result {
                             Ok(()) => {
                                 registered.initialized = true;
+                                // Announce to discovery topic
+                                let publishers = registered.node.get_publishers();
+                                let subscribers = registered.node.get_subscribers();
+                                announce_started(node_name, &publishers, &subscribers);
+
+                                // Write presence file for monitor detection
+                                let presence = NodePresence::new(
+                                    node_name,
+                                    Some(&self.scheduler_name),
+                                    publishers,
+                                    subscribers,
+                                    registered.priority,
+                                    registered.rate_hz,
+                                );
+                                if let Err(e) = presence.write() {
+                                    print_line(&format!(
+                                        "Warning: Failed to write presence file for '{}': {}",
+                                        node_name, e
+                                    ));
+                                }
+
                                 print_line(&format!("Initialized node '{}'", node_name));
                             }
                             Err(e) => {
@@ -2732,19 +2832,6 @@ impl Scheduler {
                     }
                 }
             }
-
-            // Suppress logging during learning phase for accurate profiling
-            // (I/O from logging would skew execution time measurements)
-            if !self.learning_complete {
-                for registered in self.nodes.iter_mut() {
-                    if let Some(ref mut ctx) = registered.context {
-                        ctx.set_logging_enabled(false);
-                    }
-                }
-            }
-
-            // Create heartbeat directory
-            Self::setup_heartbeat_directory();
 
             // Create control directory for per-node lifecycle commands
             Self::setup_control_directory();
@@ -2834,15 +2921,6 @@ impl Scheduler {
                     // Setup JIT compiler for ultra-fast nodes
                     self.setup_jit_compiler();
 
-                    // Restore logging for all nodes BEFORE moving to async executor
-                    // This ensures nodes moved to async tier have correct logging state
-                    // Tick counts will now start at 0 since logging was disabled during learning
-                    for registered in self.nodes.iter_mut() {
-                        if let Some(ref mut ctx) = registered.context {
-                            ctx.set_logging_enabled(registered.logging_enabled);
-                        }
-                    }
-
                     // Initialize async I/O executor and move I/O-heavy nodes
                     // (after logging is restored so moved nodes retain their logging settings)
                     self.setup_async_executor().await;
@@ -2862,7 +2940,12 @@ impl Scheduler {
                     if !registered.is_stopped && !registered.is_paused && !registered.initialized {
                         let node_name = registered.node.name();
                         if let Some(ref mut ctx) = registered.context {
-                            match registered.node.init(ctx) {
+                            // Set node context for hlog!() macro
+                            set_node_context(node_name, 0);
+                            let init_result = registered.node.init();
+                            clear_node_context();
+
+                            match init_result {
                                 Ok(()) => {
                                     registered.initialized = true;
                                     print_line(&format!("[CONTROL] Node '{}' re-initialized", node_name));
@@ -3085,12 +3168,30 @@ impl Scheduler {
 
                 if should_run && registered.initialized {
                     if let Some(ref mut ctx) = registered.context {
-                        // Write final "Stopped" heartbeat before shutdown - node self-reports
                         ctx.record_shutdown();
 
-                        match registered.node.shutdown(ctx) {
-                            Ok(()) => print_line(&format!("Shutdown node '{}' successfully", node_name)),
-                            Err(e) => print_line(&format!("Error shutting down node '{}': {}", node_name, e)),
+                        // Set node context for hlog!() macro
+                        set_node_context(node_name, ctx.metrics().total_ticks);
+                        let shutdown_result = registered.node.shutdown();
+                        clear_node_context();
+
+                        match shutdown_result {
+                            Ok(()) => {
+                                announce_stopped(node_name);
+                                // Remove presence file
+                                if let Err(e) = NodePresence::remove(node_name) {
+                                    print_line(&format!(
+                                        "Warning: Failed to remove presence file for '{}': {}",
+                                        node_name, e
+                                    ));
+                                }
+                                print_line(&format!("Shutdown node '{}' successfully", node_name));
+                            }
+                            Err(e) => {
+                                // Still try to remove presence file on error
+                                let _ = NodePresence::remove(node_name);
+                                print_line(&format!("Error shutting down node '{}': {}", node_name, e));
+                            }
                         }
                     }
                 }
@@ -3137,9 +3238,8 @@ impl Scheduler {
                 let _ = tm.export();
             }
 
-            // Clean up registry file and session (keep heartbeats for monitor)
+            // Clean up registry file and session
             self.cleanup_registry();
-            // Note: Don't cleanup_heartbeats() - let monitor see final state
             Self::cleanup_session();
 
             print_line("Scheduler shutdown complete");
@@ -3163,10 +3263,6 @@ impl Scheduler {
                 let mut info = HashMap::new();
                 info.insert("name".to_string(), registered.node.name().to_string());
                 info.insert("priority".to_string(), registered.priority.to_string());
-                info.insert(
-                    "logging_enabled".to_string(),
-                    registered.logging_enabled.to_string(),
-                );
                 return Some(info);
             }
         }
@@ -3295,24 +3391,6 @@ impl Scheduler {
         Ok(path)
     }
 
-    /// Create heartbeat directory
-    fn setup_heartbeat_directory() {
-        // Heartbeats are intentionally global (not session-isolated) so monitor can see all nodes
-        let dir = shm_heartbeats_dir();
-        let _ = fs::create_dir_all(&dir);
-    }
-
-    /// Clean up heartbeat directory (useful for testing/cleanup)
-    ///
-    /// Note: Not called automatically during shutdown to allow monitor
-    /// to see final node states. Call explicitly if cleanup is needed.
-    pub fn cleanup_heartbeats() {
-        let dir = shm_heartbeats_dir();
-        if dir.exists() {
-            let _ = fs::remove_dir_all(&dir);
-        }
-    }
-
     /// Setup control directory for node lifecycle commands
     fn setup_control_directory() {
         let dir = shm_control_dir();
@@ -3366,7 +3444,7 @@ impl Scheduler {
                                                 format!("[CONTROL] Node '{}' stopped", node_name)
                                                     .yellow()
                                             );
-                                            // Update heartbeat to show stopped state
+                                            // Update state to show stopped
                                             if let Some(ref mut ctx) = registered.context {
                                                 ctx.transition_to_error(
                                                     "Stopped via control command".to_string(),
@@ -3449,16 +3527,12 @@ impl Scheduler {
 
                 // Get state and health from context
                 let (state_str, health_str, error_count, tick_count) = if let Some(ref ctx) = registered.context {
-                    let heartbeat = NodeHeartbeat::from_metrics(
-                        ctx.state().clone(),
-                        ctx.metrics()
-                    );
-
+                    let metrics = ctx.metrics();
                     (
                         ctx.state().to_string(),
-                        heartbeat.health.as_str().to_string(),
-                        ctx.metrics().errors_count,
-                        ctx.metrics().total_ticks,
+                        metrics.calculate_health().as_str().to_string(),
+                        metrics.errors_count,
+                        metrics.total_ticks,
                     )
                 } else {
                     ("Unknown".to_string(), "Unknown".to_string(), 0, 0)
@@ -3601,10 +3675,17 @@ impl Scheduler {
                     if let Some(ref mut context) = registered.context {
                         context.start_tick();
 
+                        // Set node context for hlog!() macro
+                        let tick_number = context.metrics().total_ticks;
+                        set_node_context(node_name, tick_number);
+
                         // Execute node tick with panic handling
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             registered.node.tick();
-                        }))
+                        }));
+
+                        clear_node_context();
+                        result
                     } else {
                         continue;
                     }
@@ -3657,7 +3738,7 @@ impl Scheduler {
                         self.nodes[i].circuit_breaker.record_success();
 
                         if let Some(ref mut context) = self.nodes[i].context {
-                            context.record_tick(); // Node writes its own heartbeat
+                            context.record_tick();
                         }
                     }
                     Err(panic_err) => {
@@ -3673,10 +3754,13 @@ impl Scheduler {
 
                         let registered = &mut self.nodes[i];
                         if let Some(ref mut context) = registered.context {
-                            context.record_tick_failure(error_msg.clone()); // Node writes its own heartbeat
+                            context.record_tick_failure(error_msg.clone());
                             print_line(&format!(" {} failed: {}", node_name, error_msg));
 
-                            registered.node.on_error(&error_msg, context);
+                            // Set context for on_error handler
+                            set_node_context(node_name, context.metrics().total_ticks);
+                            registered.node.on_error(&error_msg);
+                            clear_node_context();
 
                             if context.config().restart_on_failure {
                                 match context.restart() {
@@ -3849,9 +3933,15 @@ impl Scheduler {
         let (tick_result, jit_executed) = if use_jit_path {
             // JIT EXECUTION PATH: Use compiled native code for ultra-fast execution
             let registered = &mut self.nodes[idx];
-            if let Some(ref mut context) = registered.context {
+            let tick_number = if let Some(ref mut context) = registered.context {
                 context.start_tick();
-            }
+                context.metrics().total_ticks
+            } else {
+                0
+            };
+
+            // Set node context for hlog!() macro
+            set_node_context(node_name, tick_number);
 
             // Try to execute via JIT-compiled function
             let jit_result = if let Some(ref mut jit_stats) = registered.jit_stats {
@@ -3871,14 +3961,18 @@ impl Scheduler {
 
             if jit_result {
                 // JIT execution succeeded
+                clear_node_context();
                 (Ok(()), true)
             } else {
                 // JIT failed, fall back to regular tick
                 let tick_res = if registered.context.is_some() {
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         registered.node.tick();
-                    }))
+                    }));
+                    clear_node_context();
+                    result
                 } else {
+                    clear_node_context();
                     return;
                 };
                 (tick_res, false)
@@ -3888,6 +3982,10 @@ impl Scheduler {
             let registered = &mut self.nodes[idx];
             if let Some(ref mut context) = registered.context {
                 context.start_tick();
+
+                // Set node context for hlog!() macro
+                let tick_number = context.metrics().total_ticks;
+                set_node_context(node_name, tick_number);
 
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // Check if node provides a direct JIT compute function
@@ -3899,6 +3997,7 @@ impl Scheduler {
                         registered.node.tick();
                     }
                 }));
+                clear_node_context();
                 (result, false)
             } else {
                 return;
@@ -3983,7 +4082,7 @@ impl Scheduler {
                 self.nodes[idx].circuit_breaker.record_success();
 
                 if let Some(ref mut context) = self.nodes[idx].context {
-                    context.record_tick(); // Node writes its own heartbeat
+                    context.record_tick();
                 }
             }
             Err(panic_err) => {
@@ -3999,10 +4098,13 @@ impl Scheduler {
 
                 let registered = &mut self.nodes[idx];
                 if let Some(ref mut context) = registered.context {
-                    context.record_tick_failure(error_msg.clone()); // Node writes its own heartbeat
+                    context.record_tick_failure(error_msg.clone());
                     print_line(&format!(" {} failed: {}", node_name, error_msg));
 
-                    registered.node.on_error(&error_msg, context);
+                    // Set context for on_error handler
+                    set_node_context(node_name, context.metrics().total_ticks);
+                    registered.node.on_error(&error_msg);
+                    clear_node_context();
 
                     if context.config().restart_on_failure {
                         match context.restart() {
@@ -4321,7 +4423,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Node, NodeInfo, TopicMetadata};
+    use crate::core::{Node, TopicMetadata};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -4463,7 +4565,7 @@ mod tests {
     #[test]
     fn test_scheduler_add_node() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("test_node")), 0);
+        scheduler.add(CounterNode::new("test_node")).order(0).done();
 
         let nodes = scheduler.get_node_list();
         assert_eq!(nodes.len(), 1);
@@ -4473,9 +4575,9 @@ mod tests {
     #[test]
     fn test_scheduler_add_multiple_nodes() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0);
-        scheduler.add(Box::new(CounterNode::new("node2")), 1);
-        scheduler.add(Box::new(CounterNode::new("node3")), 2);
+        scheduler.add(CounterNode::new("node1")).order(0).done();
+        scheduler.add(CounterNode::new("node2")).order(1).done();
+        scheduler.add(CounterNode::new("node3")).order(2).done();
 
         let nodes = scheduler.get_node_list();
         assert_eq!(nodes.len(), 3);
@@ -4485,9 +4587,9 @@ mod tests {
     fn test_scheduler_node_priority_ordering() {
         let mut scheduler = Scheduler::new();
         // Add nodes with different priorities
-        scheduler.add(Box::new(CounterNode::new("low_priority")), 10);
-        scheduler.add(Box::new(CounterNode::new("high_priority")), 0);
-        scheduler.add(Box::new(CounterNode::new("medium_priority")), 5);
+        scheduler.add(CounterNode::new("low_priority")).order(10).done();
+        scheduler.add(CounterNode::new("high_priority")).order(0).done();
+        scheduler.add(CounterNode::new("medium_priority")).order(5).done();
 
         // After sorting by priority, high_priority should come first
         let nodes = scheduler.get_node_list();
@@ -4498,7 +4600,7 @@ mod tests {
     #[test]
     fn test_scheduler_add_basic() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("basic_node")), 0);
+        scheduler.add(CounterNode::new("basic_node")).order(0).done();
 
         let info = scheduler.get_node_info("basic_node");
         assert!(info.is_some());
@@ -4537,7 +4639,7 @@ mod tests {
     #[test]
     fn test_scheduler_set_node_rate() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("sensor")), 0);
+        scheduler.add(CounterNode::new("sensor")).order(0).done();
         scheduler.set_node_rate("sensor", 100.0);
 
         // Just verify it doesn't panic
@@ -4547,7 +4649,7 @@ mod tests {
     #[test]
     fn test_scheduler_set_node_rate_nonexistent() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0);
+        scheduler.add(CounterNode::new("node1")).order(0).done();
         // Setting rate for nonexistent node should not panic
         scheduler.set_node_rate("nonexistent", 50.0);
         assert!(scheduler.is_running());
@@ -4560,8 +4662,8 @@ mod tests {
     #[test]
     fn test_scheduler_collect_topology() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(PublisherNode::new("publisher", "topic1")), 0);
-        scheduler.add(Box::new(SubscriberNode::new("subscriber", "topic1")), 1);
+        scheduler.add(PublisherNode::new("publisher", "topic1")).order(0).done();
+        scheduler.add(SubscriberNode::new("subscriber", "topic1")).order(1).done();
 
         let (publishers, subscribers) = scheduler.get_topology();
         assert_eq!(publishers.len(), 1);
@@ -4575,8 +4677,8 @@ mod tests {
     #[test]
     fn test_scheduler_validate_topology_matching() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(PublisherNode::new("pub", "data_topic")), 0);
-        scheduler.add(Box::new(SubscriberNode::new("sub", "data_topic")), 1);
+        scheduler.add(PublisherNode::new("pub", "data_topic")).order(0).done();
+        scheduler.add(SubscriberNode::new("sub", "data_topic")).order(1).done();
 
         let errors = scheduler.validate_topology();
         // No errors when publisher and subscriber match
@@ -4586,7 +4688,7 @@ mod tests {
     #[test]
     fn test_scheduler_topology_locked() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("node1")), 0);
+        scheduler.add(CounterNode::new("node1")).order(0).done();
 
         assert!(!scheduler.is_topology_locked());
         scheduler.lock_topology();
@@ -4616,7 +4718,7 @@ mod tests {
     #[test]
     fn test_scheduler_get_node_info_existing() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("info_node")), 0);
+        scheduler.add(CounterNode::new("info_node")).order(0).done();
 
         let info = scheduler.get_node_info("info_node");
         assert!(info.is_some());
@@ -4647,8 +4749,8 @@ mod tests {
     #[test]
     fn test_scheduler_get_monitoring_summary() {
         let mut scheduler = Scheduler::new();
-        scheduler.add(Box::new(CounterNode::new("mon_node1")), 0);
-        scheduler.add(Box::new(CounterNode::new("mon_node2")), 1);
+        scheduler.add(CounterNode::new("mon_node1")).order(0).done();
+        scheduler.add(CounterNode::new("mon_node2")).order(1).done();
 
         let summary = scheduler.get_monitoring_summary();
         assert_eq!(summary.len(), 2);
@@ -4712,12 +4814,13 @@ mod tests {
     #[test]
     fn test_scheduler_add_rt_node() {
         let mut scheduler = Scheduler::new();
-        scheduler.add_rt(
-            Box::new(CounterNode::new("rt_node")),
-            0,
-            Duration::from_micros(100),
-            Duration::from_millis(1),
-        );
+        scheduler
+            .add(CounterNode::new("rt_node"))
+            .order(0)
+            .rt()
+            .wcet_us(100)
+            .deadline_ms(1)
+            .done();
 
         let nodes = scheduler.get_node_list();
         assert_eq!(nodes.len(), 1);
@@ -4732,7 +4835,10 @@ mod tests {
     fn test_scheduler_run_for_short_duration() {
         let mut scheduler = Scheduler::new();
         let counter = Arc::new(AtomicUsize::new(0));
-        scheduler.add(Box::new(CounterNode::with_counter("counter", counter.clone())), 0);
+        scheduler
+            .add(CounterNode::with_counter("counter", counter.clone()))
+            .order(0)
+            .done();
 
         // Run for a short duration (50ms is more reliable under parallel test load)
         let result = scheduler.run_for(Duration::from_millis(50));
@@ -4753,7 +4859,7 @@ mod tests {
             .with_capacity(10)
             .disable_learning();
 
-        scheduler.add(Box::new(CounterNode::new("chain_node")), 0);
+        scheduler.add(CounterNode::new("chain_node")).order(0).done();
 
         assert!(scheduler.is_running());
         assert_eq!(scheduler.get_node_list().len(), 1);
@@ -4797,13 +4903,6 @@ mod tests {
     // ============================================================================
     // Cleanup Tests
     // ============================================================================
-
-    #[test]
-    fn test_scheduler_cleanup_heartbeats() {
-        // This is a static function that cleans up heartbeat files
-        // Just verify it doesn't panic
-        Scheduler::cleanup_heartbeats();
-    }
 
     // ============================================================================
     // Auto-Optimization Tests

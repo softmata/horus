@@ -56,7 +56,7 @@ node! {
         }
 
         // Main execution loop (REQUIRED)
-        tick(_ctx) {
+        tick {
             // Process incoming messages
             if let Some(data) = self.sensor_data.recv() {
                 let cmd = self.process_sensor_data(data);
@@ -65,13 +65,13 @@ node! {
         }
 
         // Optional initialization
-        init(ctx) {
-            ctx.log_info("Robot controller initialized");
+        init {
+            hlog!(info, "Robot controller initialized");
             Ok(())
         }
 
         // Optional cleanup
-        shutdown(ctx) {
+        shutdown {
             self.cmd_vel.send(CmdVel::stop(), None).ok();
             Ok(())
         }
@@ -92,9 +92,9 @@ node! {
 ```rust
 node! {
     SimpleNode {
-        tick(ctx) {
+        tick {
             // Just the required tick implementation
-        ctx.log_info("Node running...");
+            hlog!(info, "Node running...");
         }
     }
 }
@@ -135,15 +135,15 @@ node! {
 | `pub {}` | No | `name: Type -> "topic"` | Publishers - data outputs |
 | `sub {}` | No | `name: Type -> "topic"` | Subscribers - data inputs |
 | `data {}` | No | `name: Type = default` | Internal state fields |
-| `tick {}` | **YES** | `tick(ctx) { ... }` | Main execution loop |
-| `init(ctx) {}` | No | `init(ctx) { ... }` | Initialization logic |
-| `shutdown(ctx) {}` | No | `shutdown(ctx) { ... }` | Cleanup logic |
+| `tick {}` | **YES** | `tick { ... }` | Main execution loop |
+| `init {}` | No | `init { ... }` | Initialization logic |
+| `shutdown {}` | No | `shutdown { ... }` | Cleanup logic |
 | `impl {}` | No | `fn method(&self) { ... }` | Additional methods |
 
-**Context Parameter:**
-- `ctx` parameter is optional: `tick {}` or `tick(ctx) {}`
-- Type: `Option<&mut NodeInfo>`
-- Provides node metadata, timing info, logging capabilities
+**Logging:**
+- Use `hlog!()` macro for logging: `hlog!(info, "message")`, `hlog!(warn, "...")`, `hlog!(error, "...")`
+- The scheduler automatically sets the node context before each lifecycle call
+- Logs are published to the shared memory buffer for the HORUS monitor
 
 ## Generated API
 
@@ -166,7 +166,7 @@ impl Node for MyRobotNode {
         "my_robot_node"  // Auto-converted to snake_case
     }
 
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Your tick implementation
     }
 
@@ -268,7 +268,7 @@ impl MyNode {
 
 impl Node for MyNode {
     fn name(&self) -> &'static str { "my_node" }
-    fn tick(&mut self, mut ctx: Option<&mut NodeInfo>) {
+    fn tick(&mut self) {
         // Implementation
     }
 }
@@ -287,7 +287,7 @@ node! {
         pub { pub_topic: String -> "output" }
         sub { sub_topic: i32 -> "input" }
         data { counter: u32 = 0 }
-        tick(ctx) {
+        tick {
             // Implementation
         }
     }

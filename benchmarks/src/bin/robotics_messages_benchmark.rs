@@ -33,6 +33,10 @@ use horus_library::messages::{
     sensor::{Imu, LaserScan},
 };
 use horus_library::messages::CmdVel;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_ITERATIONS: usize = 50_000;
 const DEFAULT_WARMUP: usize = 5_000;
@@ -99,42 +103,34 @@ fn main() {
     println!("╚═════════════════════════════════════════════════════════════════════════════╝");
     println!();
 
-    // Benchmark each message type with SPSC and MPMC backends
-    let backends = [
-        ("SpscIntra", BackendType::SpscIntra),
-        ("SpscShm", BackendType::SpscShm),
-        ("MpmcShm", BackendType::MpmcShm),
-    ];
+    // Benchmark each message type with AdaptiveTopic (Topic::new() auto-selects backend)
+    println!("\n[AdaptiveTopic] Running benchmarks...");
+    println!("─────────────────────────────────────────────────");
 
-    for (backend_name, backend_type) in &backends {
-        println!("\n[{}] Running benchmarks...", backend_name);
-        println!("─────────────────────────────────────────────────");
+    // CmdVel (16 bytes) - Control commands
+    let result = benchmark_cmdvel(iterations, &platform);
+    print_result(&result);
+    report.add_result(result);
 
-        // CmdVel (16 bytes) - Control commands
-        let result = benchmark_cmdvel(backend_name, *backend_type, iterations, &platform);
-        print_result(&result);
-        report.add_result(result);
+    // Imu (296 bytes) - Sensor data
+    let result = benchmark_imu(iterations, &platform);
+    print_result(&result);
+    report.add_result(result);
 
-        // Imu (296 bytes) - Sensor data
-        let result = benchmark_imu(backend_name, *backend_type, iterations, &platform);
-        print_result(&result);
-        report.add_result(result);
+    // LaserScan (~1.5KB) - Lidar data
+    let result = benchmark_laserscan(iterations / 5, &platform);
+    print_result(&result);
+    report.add_result(result);
 
-        // LaserScan (~1.5KB) - Lidar data
-        let result = benchmark_laserscan(backend_name, *backend_type, iterations / 5, &platform);
-        print_result(&result);
-        report.add_result(result);
+    // JointCommand (~1KB) - Multi-DOF control
+    let result = benchmark_jointcmd(iterations, &platform);
+    print_result(&result);
+    report.add_result(result);
 
-        // JointCommand (~1KB) - Multi-DOF control
-        let result = benchmark_jointcmd(backend_name, *backend_type, iterations, &platform);
-        print_result(&result);
-        report.add_result(result);
-
-        // PointCloud (~48KB) - 3D perception (fewer iterations due to size)
-        let result = benchmark_pointcloud(backend_name, *backend_type, iterations / 10, &platform);
-        print_result(&result);
-        report.add_result(result);
-    }
+    // PointCloud (~48KB) - 3D perception (fewer iterations due to size)
+    let result = benchmark_pointcloud(iterations / 10, &platform);
+    print_result(&result);
+    report.add_result(result);
 
     // Summary table
     println!("\n╔══════════════════════════════════════════════════════════════════════════════════════════╗");
@@ -229,53 +225,95 @@ fn main() {
     }
 }
 
-#[derive(Clone, Copy)]
-enum BackendType {
-    SpscIntra,
-    SpscShm,
-    MpmcShm,
-}
-
 fn benchmark_cmdvel(
-    backend_name: &str,
-    backend: BackendType,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("bench_cmdvel_{}_{}", backend_name, std::process::id());
+    let topic_name = format!("bench_cmdvel_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<CmdVel>, Topic<CmdVel>) = match backend {
-        BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
-        BackendType::SpscShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-        BackendType::MpmcShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-    };
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
 
-    // Warmup
-    for _ in 0..DEFAULT_WARMUP {
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
+
+    let total_messages = DEFAULT_WARMUP + iterations;
+
+    // Consumer thread
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<CmdVel> = Topic::new(&topic_name_clone).unwrap();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
+        }
+    });
+
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    let _ = set_cpu_affinity(0);
+    let tx: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+
+    // Warmup - batch to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
+    for i in 0..DEFAULT_WARMUP {
         let msg = CmdVel::new(1.0, 0.5);
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            thread::yield_now();
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
+    }
+
+    while messages_received.load(Ordering::Acquire) < DEFAULT_WARMUP as u64 {
+        thread::yield_now();
     }
 
     // Measurement
+    let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
     for i in 0..iterations {
         let msg = CmdVel::new(1.0 + (i as f32 * 0.001), 0.5);
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            std::hint::spin_loop();
+        }
         latencies.push(timer.elapsed_ns(start));
+        if (i + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (i + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
 
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
+    }
+
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
+
     build_result(
-        &format!("{}_{}", backend_name, "CmdVel"),
+        "Adaptive_CmdVel",
         std::mem::size_of::<CmdVel>(),
         latencies,
         iterations,
@@ -284,47 +322,95 @@ fn benchmark_cmdvel(
 }
 
 fn benchmark_imu(
-    backend_name: &str,
-    backend: BackendType,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("bench_imu_{}_{}", backend_name, std::process::id());
+    let topic_name = format!("bench_imu_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<Imu>, Topic<Imu>) = match backend {
-        BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
-        BackendType::SpscShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-        BackendType::MpmcShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-    };
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
 
-    // Warmup
-    for _ in 0..DEFAULT_WARMUP {
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
+
+    let total_messages = DEFAULT_WARMUP + iterations;
+
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<Imu> = Topic::new(&topic_name_clone).unwrap();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
+        }
+    });
+
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    let _ = set_cpu_affinity(0);
+    let tx: Topic<Imu> = Topic::new(&topic_name).unwrap();
+
+    // Warmup - batch to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
+    for i in 0..DEFAULT_WARMUP {
         let msg = Imu::new();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            thread::yield_now();
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
+    }
+
+    while messages_received.load(Ordering::Acquire) < DEFAULT_WARMUP as u64 {
+        thread::yield_now();
     }
 
     // Measurement
+    let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
-    for _ in 0..iterations {
+    for i in 0..iterations {
         let mut msg = Imu::new();
         msg.linear_acceleration = [0.0, 0.0, 9.81];
         msg.angular_velocity = [0.01, 0.02, 0.0];
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        while tx.send(msg).is_err() {
+            std::hint::spin_loop();
+        }
         latencies.push(timer.elapsed_ns(start));
+        if (i + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (i + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
 
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
+    }
+
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
+
     build_result(
-        &format!("{}_{}", backend_name, "Imu"),
+        "Adaptive_Imu",
         std::mem::size_of::<Imu>(),
         latencies,
         iterations,
@@ -333,51 +419,113 @@ fn benchmark_imu(
 }
 
 fn benchmark_laserscan(
-    backend_name: &str,
-    backend: BackendType,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("bench_laser_{}_{}", backend_name, std::process::id());
+    let topic_name = format!("bench_laser_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<LaserScan>, Topic<LaserScan>) = match backend {
-        BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
-        BackendType::SpscShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-        BackendType::MpmcShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-    };
+    let warmup_count = DEFAULT_WARMUP / 5;
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
 
-    // Warmup (fewer due to size)
-    for _ in 0..DEFAULT_WARMUP / 5 {
-        let mut msg = LaserScan::new();
-        for i in 0..360 {
-            msg.ranges[i] = 5.0 + (i as f32 * 0.01);
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
+
+    let total_messages = warmup_count + iterations;
+
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<LaserScan> = Topic::new(&topic_name_clone).unwrap();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
         }
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+    });
+
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    let _ = set_cpu_affinity(0);
+    let tx: Topic<LaserScan> = Topic::new(&topic_name).unwrap();
+
+    // Warmup - batch to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
+    for i in 0..warmup_count {
+        let mut msg = LaserScan::new();
+        for j in 0..360 {
+            msg.ranges[j] = 5.0 + (j as f32 * 0.01);
+        }
+        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    thread::yield_now();
+                }
+            }
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
+    }
+
+    while messages_received.load(Ordering::Acquire) < warmup_count as u64 {
+        thread::yield_now();
     }
 
     // Measurement
+    let warmup_base = warmup_count as u64;
     let mut latencies = Vec::with_capacity(iterations);
     for seq in 0..iterations {
         let mut msg = LaserScan::new();
-        for i in 0..360 {
-            msg.ranges[i] = 5.0 + ((i + seq) as f32 * 0.01);
+        for j in 0..360 {
+            msg.ranges[j] = 5.0 + ((j + seq) as f32 * 0.01);
         }
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    std::hint::spin_loop();
+                }
+            }
+        }
         latencies.push(timer.elapsed_ns(start));
+        if (seq + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (seq + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
 
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
+    }
+
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
+
     build_result(
-        &format!("{}_{}", backend_name, "LaserScan"),
+        "Adaptive_LaserScan",
         std::mem::size_of::<LaserScan>(),
         latencies,
         iterations,
@@ -386,28 +534,51 @@ fn benchmark_laserscan(
 }
 
 fn benchmark_jointcmd(
-    backend_name: &str,
-    backend: BackendType,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("bench_joint_{}_{}", backend_name, std::process::id());
+    let topic_name = format!("bench_joint_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<JointCommand>, Topic<JointCommand>) = match backend {
-        BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
-        BackendType::SpscShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-        BackendType::MpmcShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-    };
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
 
-    // Warmup
-    for _ in 0..DEFAULT_WARMUP {
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
+
+    let total_messages = DEFAULT_WARMUP + iterations;
+
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<JointCommand> = Topic::new(&topic_name_clone).unwrap();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
+        }
+    });
+
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    let _ = set_cpu_affinity(0);
+    let tx: Topic<JointCommand> = Topic::new(&topic_name).unwrap();
+
+    // Warmup - batch to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
+    for i in 0..DEFAULT_WARMUP {
         let mut msg = JointCommand::new();
         msg.add_position("shoulder_pan", 0.5).ok();
         msg.add_position("shoulder_lift", -0.3).ok();
@@ -415,11 +586,29 @@ fn benchmark_jointcmd(
         msg.add_position("wrist_1", 0.0).ok();
         msg.add_position("wrist_2", -0.5).ok();
         msg.add_position("wrist_3", 0.1).ok();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    thread::yield_now();
+                }
+            }
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
+    }
+
+    while messages_received.load(Ordering::Acquire) < DEFAULT_WARMUP as u64 {
+        thread::yield_now();
     }
 
     // Measurement
+    let warmup_base = DEFAULT_WARMUP as u64;
     let mut latencies = Vec::with_capacity(iterations);
     for i in 0..iterations {
         let mut msg = JointCommand::new();
@@ -431,13 +620,33 @@ fn benchmark_jointcmd(
         msg.add_position("wrist_2", -0.5 + offset).ok();
         msg.add_position("wrist_3", 0.1 + offset).ok();
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    std::hint::spin_loop();
+                }
+            }
+        }
         latencies.push(timer.elapsed_ns(start));
+        if (i + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (i + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
 
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
+    }
+
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
+
     build_result(
-        &format!("{}_{}", backend_name, "JointCommand"),
+        "Adaptive_JointCommand",
         std::mem::size_of::<JointCommand>(),
         latencies,
         iterations,
@@ -446,25 +655,48 @@ fn benchmark_jointcmd(
 }
 
 fn benchmark_pointcloud(
-    backend_name: &str,
-    backend: BackendType,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("bench_pc_{}_{}", backend_name, std::process::id());
+    let topic_name = format!("bench_pc_{}", std::process::id());
+    let topic_name_clone = topic_name.clone();
     let timer = PrecisionTimer::new();
 
-    let (tx, rx): (Topic<PointCloud>, Topic<PointCloud>) = match backend {
-        BackendType::SpscIntra => Topic::spsc_intra(&topic_name),
-        BackendType::SpscShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-        BackendType::MpmcShm => (
-            Topic::new(&topic_name).unwrap(),
-            Topic::new(&topic_name).unwrap(),
-        ),
-    };
+    let warmup_count = iterations.min(100);
+    let running = Arc::new(AtomicBool::new(true));
+    let consumer_ready = Arc::new(AtomicBool::new(false));
+    let messages_received = Arc::new(AtomicU64::new(0));
+
+    let running_clone = running.clone();
+    let consumer_ready_clone = consumer_ready.clone();
+    let messages_received_clone = messages_received.clone();
+
+    let total_messages = warmup_count + iterations;
+
+    let consumer_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(1);
+        let rx: Topic<PointCloud> = Topic::new(&topic_name_clone).unwrap();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        let mut received = 0u64;
+        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+            if rx.recv().is_some() {
+                received += 1;
+                messages_received_clone.fetch_add(1, Ordering::Release);
+                if received >= total_messages as u64 {
+                    break;
+                }
+            }
+        }
+    });
+
+    while !consumer_ready.load(Ordering::Acquire) {
+        thread::yield_now();
+    }
+    thread::sleep(Duration::from_millis(10));
+
+    let _ = set_cpu_affinity(0);
+    let tx: Topic<PointCloud> = Topic::new(&topic_name).unwrap();
 
     // Create a representative point cloud (4000 points = ~48KB)
     use horus_library::messages::geometry::Point3;
@@ -477,29 +709,67 @@ fn benchmark_pointcloud(
         })
         .collect();
 
-    // Warmup
-    for _ in 0..iterations.min(100) {
-        let msg = PointCloud::xyz(&points);
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+    // Warmup - batch to avoid buffer overflow (capacity = 64)
+    const BATCH_SIZE: usize = 32;
+    for i in 0..warmup_count {
+        let mut msg = PointCloud::xyz(&points);
+        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    thread::yield_now();
+                }
+            }
+        }
+        if (i + 1) % BATCH_SIZE == 0 {
+            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                thread::yield_now();
+            }
+        }
+    }
+
+    while messages_received.load(Ordering::Acquire) < warmup_count as u64 {
+        thread::yield_now();
     }
 
     // Measurement
+    let warmup_base = warmup_count as u64;
     let mut latencies = Vec::with_capacity(iterations);
-    for _ in 0..iterations {
-        let msg = PointCloud::xyz(&points);
-        let _msg_size = msg.data.len();
+    for i in 0..iterations {
+        let mut msg = PointCloud::xyz(&points);
         let start = timer.start();
-        tx.send(msg).unwrap();
-        let _ = rx.recv();
+        loop {
+            match tx.send(msg) {
+                Ok(()) => break,
+                Err(returned_msg) => {
+                    msg = returned_msg;
+                    std::hint::spin_loop();
+                }
+            }
+        }
         latencies.push(timer.elapsed_ns(start));
+        if (i + 1) % BATCH_SIZE == 0 {
+            let target = warmup_base + (i + 1) as u64;
+            while messages_received.load(Ordering::Acquire) < target {
+                thread::yield_now();
+            }
+        }
     }
+
+    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
+        thread::yield_now();
+    }
+
+    running.store(false, Ordering::Release);
+    consumer_handle.join().ok();
 
     // PointCloud has variable size, estimate based on data
     let estimated_size = 108 + (num_points * 12); // header + xyz data
 
     build_result(
-        &format!("{}_{}", backend_name, "PointCloud"),
+        "Adaptive_PointCloud",
         estimated_size,
         latencies,
         iterations,

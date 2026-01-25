@@ -5039,8 +5039,8 @@ except ImportError as e:
             PluginCommands::List { all } => commands::pkg::list_plugins(true, all)
                 .map_err(|e| HorusError::Config(e.to_string())),
 
-            PluginCommands::Search { query, category } => {
-                use horus_manager::plugins::{PluginCategory, PluginDiscovery};
+            PluginCommands::Search { query, category: _ } => {
+                use horus_manager::plugins::PluginDiscovery;
 
                 let mut discovery = PluginDiscovery::new();
 
@@ -5101,7 +5101,7 @@ except ImportError as e:
                 Ok(())
             }
 
-            PluginCommands::Available { category, include_local } => {
+            PluginCommands::Available { category: _, include_local } => {
                 use horus_manager::plugins::PluginDiscovery;
 
                 let mut discovery = PluginDiscovery::new();

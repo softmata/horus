@@ -28,6 +28,10 @@ use horus_benchmarks::{
     BenchmarkReport, BenchmarkResult, DeterminismMetrics, Statistics, ThroughputMetrics,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_ITERATIONS: usize = 100_000;
 const DEFAULT_WARMUP: usize = 10_000;
@@ -138,46 +142,12 @@ fn main() {
     // Run benchmarks
     println!("Running benchmarks...\n");
 
-    // SpscIntra (fastest, same-process)
+    // AdaptiveTopic (auto-selects optimal backend via Topic::new())
     let result = run_determinism_benchmark(
-        "SpscIntra",
+        "AdaptiveTopic",
         &config,
         &platform,
         deadline_ns,
-        |name| {
-            let (tx, rx): (Topic<ControlCmd>, Topic<ControlCmd>) = Topic::spsc_intra(name);
-            (tx, rx)
-        },
-    );
-    print_determinism_result(&result);
-    report.add_result(result);
-
-    // SpscShm (cross-process SPSC)
-    let result = run_determinism_benchmark(
-        "SpscShm",
-        &config,
-        &platform,
-        deadline_ns,
-        |name| {
-            let tx: Topic<ControlCmd> = Topic::new(name).unwrap();
-            let rx: Topic<ControlCmd> = Topic::new(name).unwrap();
-            (tx, rx)
-        },
-    );
-    print_determinism_result(&result);
-    report.add_result(result);
-
-    // MpmcShm (cross-process MPMC)
-    let result = run_determinism_benchmark(
-        "MpmcShm",
-        &config,
-        &platform,
-        deadline_ns,
-        |name| {
-            let tx: Topic<ControlCmd> = Topic::new(name).unwrap();
-            let rx: Topic<ControlCmd> = Topic::new(name).unwrap();
-            (tx, rx)
-        },
     );
     print_determinism_result(&result);
     report.add_result(result);
@@ -225,24 +195,13 @@ fn main() {
     }
 }
 
-fn run_determinism_benchmark<F>(
+fn run_determinism_benchmark(
     name: &str,
     config: &BenchmarkConfig,
     platform: &horus_benchmarks::PlatformInfo,
     deadline_ns: u64,
-    create_topic: F,
-) -> BenchmarkResult
-where
-    F: Fn(&str) -> (Topic<ControlCmd>, Topic<ControlCmd>),
-{
+) -> BenchmarkResult {
     println!("[{}] Running {} runs of {} iterations each...", name, config.runs, config.iterations);
-
-    // Set CPU affinity if configured
-    if let Some((producer_core, _consumer_core)) = config.cpu_affinity {
-        if let Err(e) = set_cpu_affinity(producer_core) {
-            eprintln!("  Warning: Could not set CPU affinity: {}", e);
-        }
-    }
 
     // Calibrate timer
     let timer = PrecisionTimer::new();
@@ -253,9 +212,59 @@ where
 
     for run in 0..config.runs {
         let topic_name = format!("det_{}_{}_run{}", name, std::process::id(), run);
-        let (tx, rx) = create_topic(&topic_name);
+        let topic_name_clone = topic_name.clone();
 
-        // Warmup
+        // Shared state for coordination
+        let running = Arc::new(AtomicBool::new(true));
+        let consumer_ready = Arc::new(AtomicBool::new(false));
+        let messages_received = Arc::new(AtomicU64::new(0));
+
+        let running_clone = running.clone();
+        let consumer_ready_clone = consumer_ready.clone();
+        let messages_received_clone = messages_received.clone();
+
+        let total_messages = config.warmup_iterations + config.iterations;
+
+        // Consumer thread - receives messages on a different thread
+        let consumer_handle = thread::spawn(move || {
+            // Pin to CPU 1 for consumer
+            let _ = set_cpu_affinity(1);
+
+            let rx: Topic<ControlCmd> = Topic::new(&topic_name_clone).unwrap();
+
+            // Signal ready
+            consumer_ready_clone.store(true, Ordering::Release);
+
+            let mut received = 0u64;
+            while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
+                if rx.recv().is_some() {
+                    received += 1;
+                    messages_received_clone.fetch_add(1, Ordering::Release);
+                    if received >= total_messages as u64 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait for consumer to be ready
+        while !consumer_ready.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+
+        // Give consumer a moment to create the topic
+        thread::sleep(Duration::from_millis(10));
+
+        // Pin producer to CPU 0
+        if let Some((producer_core, _)) = config.cpu_affinity {
+            let _ = set_cpu_affinity(producer_core);
+        }
+
+        // Create producer topic
+        let tx: Topic<ControlCmd> = Topic::new(&topic_name).unwrap();
+
+        // Warmup - send messages in batches to avoid buffer overflow (capacity = 64)
+        const BATCH_SIZE: usize = 32;
         for i in 0..config.warmup_iterations {
             let msg = ControlCmd {
                 linear_x: 1.0,
@@ -263,28 +272,62 @@ where
                 timestamp: 0,
                 seq: i as u64,
             };
-            tx.send(msg).unwrap();
-            let _ = rx.recv();
+            // Retry with backoff if buffer is full
+            while tx.send(msg).is_err() {
+                thread::yield_now();
+            }
+            // Wait for buffer to drain periodically
+            if (i + 1) % BATCH_SIZE == 0 {
+                while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
+                    thread::yield_now();
+                }
+            }
         }
 
-        // Measured iterations
+        // Wait for all warmup to be consumed
+        while messages_received.load(Ordering::Acquire) < config.warmup_iterations as u64 {
+            thread::yield_now();
+        }
+
+        // Measured iterations - measure send latency (one-way)
         let mut run_latencies = Vec::with_capacity(config.iterations);
+        let warmup_base = config.warmup_iterations as u64;
 
         for i in 0..config.iterations {
             let msg = ControlCmd {
                 linear_x: 1.0,
                 angular_z: 0.5,
                 timestamp: 0,
-                seq: i as u64,
+                seq: (config.warmup_iterations + i) as u64,
             };
 
             let start = timer.start();
-            tx.send(msg).unwrap();
-            let _ = rx.recv();
+            // Retry if buffer is full
+            while tx.send(msg).is_err() {
+                std::hint::spin_loop();
+            }
             let elapsed = timer.elapsed_ns(start);
 
             run_latencies.push(elapsed);
+
+            // Wait for buffer to drain periodically (every 32 messages)
+            if (i + 1) % BATCH_SIZE == 0 {
+                let target = warmup_base + (i + 1) as u64;
+                while messages_received.load(Ordering::Acquire) < target {
+                    thread::yield_now();
+                }
+            }
         }
+
+        // Wait for all messages to be received
+        let total = (config.warmup_iterations + config.iterations) as u64;
+        while messages_received.load(Ordering::Acquire) < total {
+            thread::yield_now();
+        }
+
+        // Stop consumer
+        running.store(false, Ordering::Release);
+        consumer_handle.join().ok();
 
         // Calculate run median
         let mut sorted = run_latencies.clone();

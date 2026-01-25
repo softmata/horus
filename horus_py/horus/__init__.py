@@ -28,7 +28,6 @@ try:
         router_endpoint,  # Helper: "topic@host:port"
         PyScheduler as _PyScheduler,
         PyNodeState as NodeState,
-        PyRobotPreset as RobotPreset,
         PySchedulerConfig as SchedulerConfig,
         get_version,
         # sim2d Python API
@@ -70,24 +69,18 @@ except ImportError:
         ERROR = "error"
         CRASHED = "crashed"
 
-    # Mock RobotPreset for testing
-    class RobotPreset:
-        Standard = "Standard"
-        SafetyCritical = "SafetyCritical"
-        HardRealTime = "HardRealTime"
-        HighPerformance = "HighPerformance"
-        Educational = "Educational"
-        Mobile = "Mobile"
-        Underwater = "Underwater"
-        Space = "Space"
-        Swarm = "Swarm"
-        SoftRobotics = "SoftRobotics"
-        Custom = "Custom"
-
     # Mock SchedulerConfig for testing
     class SchedulerConfig:
-        def __init__(self, preset=None):
+        def __init__(self):
             pass
+        @staticmethod
+        def standard(): return SchedulerConfig()
+        @staticmethod
+        def safety_critical(): return SchedulerConfig()
+        @staticmethod
+        def high_performance(): return SchedulerConfig()
+        @staticmethod
+        def hard_realtime(): return SchedulerConfig()
 
     def get_version(): return "0.1.0-mock"
 
@@ -738,17 +731,19 @@ class Node:
 
 class Scheduler:
     """
-    Simple scheduler for running nodes.
+    Scheduler for running HORUS nodes.
 
-    Example:
+    Example (simple):
         scheduler = Scheduler()
-        scheduler.add(sensor_node, 0, True)   # priority=0, logging=True
-        scheduler.add(control_node, 1, False)  # priority=1, logging=False
-        scheduler.add(motor_node, 2, True)     # priority=2, logging=True
+        scheduler.add(sensor_node, order=0)
+        scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
         scheduler.run()
 
-        # Or chainable:
-        scheduler.add(node1, 0, True).add(node2, 1, False).run()
+    Example (fluent builder):
+        scheduler = Scheduler()
+        scheduler.node(sensor_node).order(0).rate_hz(1000.0).done()
+        scheduler.node(motor_node).order(1).rt().deadline_ms(5.0).done()
+        scheduler.run()
     """
 
     def __init__(self, config: Optional['SchedulerConfig'] = None):
@@ -777,32 +772,52 @@ class Scheduler:
         """
         return Scheduler(config=config)
 
-    def add(self, node: 'Node', priority: int, logging: bool = False) -> 'Scheduler':
+    def node(self, node: 'Node'):
         """
-        Add a node to the scheduler.
+        Start building a node configuration (fluent API).
+
+        Returns a NodeBuilder for chaining configuration.
+
+        Example:
+            scheduler.node(sensor).order(0).rate_hz(1000.0).done()
+            scheduler.node(motor).order(1).rt().deadline_ms(5.0).done()
+            scheduler.node(logger).order(100).no_logging().done()
+        """
+        if self._scheduler:
+            return self._scheduler.node(node)
+        else:
+            # Mock mode - just add the node
+            self._nodes.append(node)
+            return self
+
+    def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
+            rt: bool = False, deadline_ms: Optional[float] = None,
+            logging: bool = True) -> 'Scheduler':
+        """
+        Add a node to the scheduler (simplified API with kwargs).
 
         Args:
             node: Node instance to add
-            priority: Priority level (lower number = higher priority, 0 = highest)
-            logging: Enable logging for this node (default: False)
+            order: Execution order (lower = earlier, default: 100)
+            rate_hz: Node-specific tick rate in Hz (default: uses node.rate)
+            rt: Mark as real-time node (default: False)
+            deadline_ms: Soft deadline in milliseconds (default: None)
+            logging: Enable logging for this node (default: True)
 
         Returns:
             self (for method chaining)
 
         Example:
-            scheduler.add(sensor_node, 0, True)   # Highest priority, logging on
-            scheduler.add(control_node, 1, False)  # Medium priority, logging off
-            scheduler.add(motor_node, 2, True)     # Lowest priority, logging on
-
-            # Chainable:
-            scheduler.add(node1, 0, True).add(node2, 1, False).run()
+            scheduler.add(sensor_node, order=0, rate_hz=1000.0)
+            scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
+            scheduler.add(logger_node, order=100, logging=False)
         """
         self._nodes.append(node)
 
         if self._scheduler:
-            # Register the Python Node wrapper directly, not the internal _node
-            # The Rust scheduler will call node.tick(info) and node.init(info)
-            self._scheduler.add(node, priority, logging, node.rate)
+            # Use node.rate if rate_hz not specified
+            actual_rate = rate_hz if rate_hz is not None else node.rate
+            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, logging)
 
         return self
 
@@ -870,7 +885,6 @@ class Scheduler:
             Dictionary with node stats including:
             - name: Node name
             - priority: Priority level
-            - logging_enabled: Whether logging is enabled
             - total_ticks: Total number of ticks executed
             - errors_count: Number of errors encountered
 
@@ -914,7 +928,6 @@ class Scheduler:
             - name: Node name
             - priority: Execution priority
             - rate_hz: Node execution rate
-            - logging_enabled: Whether logging is enabled
             - total_ticks: Total number of ticks executed
             - successful_ticks: Number of successful ticks
             - failed_ticks: Number of failed ticks
@@ -1093,17 +1106,17 @@ def run(*nodes: Node, duration: Optional[float] = None, logging: bool = True) ->
             # No declared topics - add to both category (will auto-detect)
             both.append(node)
 
-    # Assign priorities: subscribers (0..N), both (N+1..M), publishers (M+1..P)
-    priority = 0
+    # Assign order: subscribers (0..N), both (N+1..M), publishers (M+1..P)
+    order = 0
     for node in subscribers:
-        scheduler.add(node, priority=priority, logging=logging)
-        priority += 1
+        scheduler.add(node, order=order, logging=logging)
+        order += 1
     for node in both:
-        scheduler.add(node, priority=priority, logging=logging)
-        priority += 1
+        scheduler.add(node, order=order, logging=logging)
+        order += 1
     for node in publishers:
-        scheduler.add(node, priority=priority, logging=logging)
-        priority += 1
+        scheduler.add(node, order=order, logging=logging)
+        order += 1
 
     scheduler.run(duration)
 

@@ -1,6 +1,7 @@
 // Test real-time node functionality
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RtClass, RtNode, RtPriority};
-use horus_core::error::HorusResult as Result;
+use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtNode, RtPriority};
+use horus_core::error::Result;
+use horus_core::hlog;
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,8 +38,8 @@ impl Node for MotorControlNode {
         Box::leak(self.name.clone().into_boxed_str())
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!("{} initialized for 1kHz control", self.name));
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "{} initialized for 1kHz control", self.name);
         Ok(())
     }
 
@@ -53,16 +54,15 @@ impl Node for MotorControlNode {
             // Normal execution within budget
             std::thread::sleep(Duration::from_micros(50));
         }
-
-        // Logging removed - ctx is Option type
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(
+            info,
             "{} shutdown after {} ticks",
             self.name,
             self.tick_count.load(Ordering::SeqCst)
-        ));
+        );
         Ok(())
     }
 }
@@ -120,11 +120,8 @@ impl Node for SensorFusionNode {
         Box::leak(self.name.clone().into_boxed_str())
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
-            "{} initialized for 100Hz sensor fusion",
-            self.name
-        ));
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "{} initialized for 100Hz sensor fusion", self.name);
         Ok(())
     }
 
@@ -133,16 +130,15 @@ impl Node for SensorFusionNode {
 
         // Simulate sensor fusion computation
         std::thread::sleep(Duration::from_micros(100));
-
-        // Logging removed - ctx is Option type
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(
+            info,
             "{} shutdown after {} samples",
             self.name,
             self.samples_processed.load(Ordering::SeqCst)
-        ));
+        );
         Ok(())
     }
 }
@@ -185,8 +181,8 @@ impl Node for LoggingNode {
         Box::leak(self.name.clone().into_boxed_str())
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!("{} initialized", self.name));
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "{} initialized", self.name);
         Ok(())
     }
 
@@ -196,12 +192,13 @@ impl Node for LoggingNode {
         std::thread::sleep(Duration::from_micros(10));
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(
+            info,
             "{} wrote {} logs",
             self.name,
             self.logs_written.load(Ordering::SeqCst)
-        ));
+        );
         Ok(())
     }
 }
@@ -230,10 +227,9 @@ fn test_rt_node_basic() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
     // Add RT nodes as regular nodes (RtNodeWrapper handles the conversion)
-    scheduler
-        .add(Box::new(MotorControlNode::new("motor_ctrl")), 0)
-        .add(Box::new(SensorFusionNode::new("sensor_fusion")), 1)
-        .add(Box::new(LoggingNode::new("logger")), 10);
+    scheduler.add(MotorControlNode::new("motor_ctrl")).order(0).done();
+    scheduler.add(SensorFusionNode::new("sensor_fusion")).order(1).done();
+    scheduler.add(LoggingNode::new("logger")).order(10).done();
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -256,10 +252,9 @@ fn test_rt_node_priority_ordering() {
     log_node.logs_written = logger.clone();
 
     let mut scheduler = Scheduler::new();
-    scheduler
-        .add(Box::new(log_node), 10) // Low priority
-        .add(Box::new(sensor_node), 1) // High priority
-        .add(Box::new(motor_node), 0); // Critical priority
+    scheduler.add(log_node).order(10).done(); // Low priority
+    scheduler.add(sensor_node).order(1).done(); // High priority
+    scheduler.add(motor_node).order(0).done(); // Critical priority
 
     scheduler.run_for(Duration::from_millis(50)).unwrap();
 
@@ -272,9 +267,8 @@ fn test_rt_node_with_safety_critical_config() {
     // Use safety-critical configuration (all RT features enabled)
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
-    scheduler
-        .add(Box::new(MotorControlNode::new("critical_motor")), 0)
-        .add(Box::new(SensorFusionNode::new("critical_sensor")), 1);
+    scheduler.add(MotorControlNode::new("critical_motor")).order(0).done();
+    scheduler.add(SensorFusionNode::new("critical_sensor")).order(1).done();
 
     // Run briefly (safety-critical config runs at 1kHz)
     let result = scheduler.run_for(Duration::from_millis(50));

@@ -3,8 +3,9 @@
 //! The Scheduler's infinite loop design makes it unsuitable for unit testing,
 //! so we test Node behavior directly
 
-use horus_core::core::{Node, NodeInfo};
-use horus_core::error::HorusResult;
+use horus_core::core::Node;
+use horus_core::error::Result;
+use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -37,8 +38,9 @@ impl Node for LifecycleNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         self.init_called.store(true, Ordering::SeqCst);
+        hlog!(info, "LifecycleNode {} initialized", self.name);
         Ok(())
     }
 
@@ -46,8 +48,9 @@ impl Node for LifecycleNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         self.shutdown_called.store(true, Ordering::SeqCst);
+        hlog!(info, "LifecycleNode {} shutdown", self.name);
         Ok(())
     }
 }
@@ -87,7 +90,7 @@ impl Node for FailingInitNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         Err("Initialization failed".into())
     }
 
@@ -142,10 +145,8 @@ fn test_scenario_1_complete_node_lifecycle() {
         shutdown_called.clone(),
     );
 
-    let mut ctx = NodeInfo::new("lifecycle_test".to_string(), true);
-
     // Test init
-    assert!(node.init(&mut ctx).is_ok(), "init should succeed");
+    assert!(node.init().is_ok(), "init should succeed");
     assert!(init_called.load(Ordering::SeqCst), "init should be called");
 
     // Test tick multiple times
@@ -159,7 +160,7 @@ fn test_scenario_1_complete_node_lifecycle() {
     );
 
     // Test shutdown
-    assert!(node.shutdown(&mut ctx).is_ok(), "shutdown should succeed");
+    assert!(node.shutdown().is_ok(), "shutdown should succeed");
     assert!(
         shutdown_called.load(Ordering::SeqCst),
         "shutdown should be called"
@@ -179,10 +180,8 @@ fn test_scenario_2_init_failure_prevents_execution() {
         tick_called: tick_called.clone(),
     };
 
-    let mut ctx = NodeInfo::new("failing".to_string(), false);
-
     // Init should fail
-    assert!(node.init(&mut ctx).is_err(), "init should return error");
+    assert!(node.init().is_err(), "init should return error");
 
     // In a real scheduler, tick would not be called after init failure
     // But we can verify the behavior is correct
@@ -202,10 +201,8 @@ fn test_scenario_5_minimal_node() {
     let tick_count = Arc::new(AtomicU32::new(0));
     let mut node = MinimalNode::new("minimal", tick_count.clone());
 
-    let mut ctx = NodeInfo::new("minimal".to_string(), false);
-
     // Default init should succeed
-    assert!(node.init(&mut ctx).is_ok(), "default init should succeed");
+    assert!(node.init().is_ok(), "default init should succeed");
 
     // Tick should work
     for _ in 0..3 {
@@ -218,47 +215,39 @@ fn test_scenario_5_minimal_node() {
     );
 
     // Default shutdown should succeed
-    assert!(
-        node.shutdown(&mut ctx).is_ok(),
-        "default shutdown should succeed"
-    );
+    assert!(node.shutdown().is_ok(), "default shutdown should succeed");
 }
 
 #[test]
-fn test_scenario_14_nodeinfo_in_tick() {
-    // Scenario 14: NodeInfo in tick()
-    // Given: tick() receives Option<&mut NodeInfo>
-    // When: Node is ticked with and without context
-    // Then: Both cases work correctly
+fn test_scenario_14_tick_works_correctly() {
+    // Scenario 14: Tick without context
+    // Given: tick() no longer receives context
+    // When: Node is ticked
+    // Then: tick works correctly
 
     let tick_count = Arc::new(AtomicU32::new(0));
     let mut node = MinimalNode::new("test", tick_count.clone());
 
-    let mut ctx = NodeInfo::new("test".to_string(), true);
-
-    // Tick with context
+    // Tick multiple times
     node.tick();
     assert_eq!(tick_count.load(Ordering::SeqCst), 1);
 
-    // Tick without context
     node.tick();
     assert_eq!(tick_count.load(Ordering::SeqCst), 2);
 }
 
 #[test]
-fn test_node_info_logging_methods() {
-    // Scenario 15: Logging Methods
-    // Given: NodeInfo is available
+fn test_hlog_macro_works() {
+    // Scenario 15: Logging with hlog!
+    // Given: hlog! macro is available
     // When: Node logs messages
     // Then: All logging methods work without panicking
 
-    let mut ctx = NodeInfo::new("logged".to_string(), true);
-
     // These should not panic
-    ctx.log_info("Test info");
-    ctx.log_warning("Test warning");
-    ctx.log_error("Test error");
-    ctx.log_debug("Test debug");
+    hlog!(info, "Test info");
+    hlog!(warn, "Test warning");
+    hlog!(error, "Test error");
+    hlog!(debug, "Test debug");
 }
 
 #[test]
@@ -305,7 +294,7 @@ fn test_node_lifecycle_order() {
             "order_test"
         }
 
-        fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+        fn init(&mut self) -> Result<()> {
             let mut log = self.execution_log.lock().unwrap();
             log.push("init".to_string());
             Ok(())
@@ -316,7 +305,7 @@ fn test_node_lifecycle_order() {
             log.push("tick".to_string());
         }
 
-        fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+        fn shutdown(&mut self) -> Result<()> {
             let mut log = self.execution_log.lock().unwrap();
             log.push("shutdown".to_string());
             Ok(())
@@ -327,13 +316,11 @@ fn test_node_lifecycle_order() {
         execution_log: execution_log.clone(),
     };
 
-    let mut ctx = NodeInfo::new("order_test".to_string(), false);
-
     // Call lifecycle methods in order
-    node.init(&mut ctx).unwrap();
+    node.init().unwrap();
     node.tick();
     node.tick();
-    node.shutdown(&mut ctx).unwrap();
+    node.shutdown().unwrap();
 
     let log = execution_log.lock().unwrap();
     assert_eq!(log.len(), 4);

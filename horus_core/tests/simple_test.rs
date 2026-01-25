@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use horus_core::core::{Node, NodeInfo, NodeState};
-    use horus_core::error::HorusResult;
+    use horus_core::error::Result;
+    use horus_core::hlog;
     use std::sync::{Arc, Mutex};
 
     // Simple test node implementation
@@ -21,20 +22,18 @@ mod tests {
             self.name
         }
 
-        fn init(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
-            ctx.log_info("Test node initializing");
+        fn init(&mut self) -> Result<()> {
+            hlog!(info, "Test node initializing");
             Ok(())
         }
 
         fn tick(&mut self) {
             let mut count = self.counter.lock().unwrap();
             *count += 1;
-
-            // Logging removed - ctx is Option type
         }
 
-        fn shutdown(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
-            ctx.log_info("Test node shutting down");
+        fn shutdown(&mut self) -> Result<()> {
+            hlog!(info, "Test node shutting down");
             Ok(())
         }
     }
@@ -65,17 +64,16 @@ mod tests {
     fn test_node_lifecycle() {
         let counter = Arc::new(Mutex::new(0));
         let mut node = TestNode::new("lifecycle_node", counter.clone());
-        let mut info = NodeInfo::new("lifecycle_node".to_string(), true);
 
         // Test full lifecycle
-        assert!(node.init(&mut info).is_ok());
+        assert!(node.init().is_ok());
 
         // Tick a few times
         for _ in 0..3 {
             node.tick();
         }
 
-        assert!(node.shutdown(&mut info).is_ok());
+        assert!(node.shutdown().is_ok());
 
         // Counter should have been incremented
         let count = counter.lock().unwrap();
@@ -113,15 +111,15 @@ mod tests {
 
     #[test]
     fn test_node_info() {
-        let mut info = NodeInfo::new("test_info_node".to_string(), true);
+        let mut info = NodeInfo::new("test_info_node".to_string());
 
-        // Test logging functions
-        info.log_debug("Debug message");
-        info.log_info("Info message");
-        info.log_warning("Warning message");
-        info.log_error("Error message");
+        // Test tracking functions (logging is now done via hlog!() macro)
+        info.track_warning("Warning message");
+        info.track_error("Error message");
 
-        // NodeInfo basic test
-        // (node_id method or similar would be tested here if available)
+        // Verify metrics were updated
+        let metrics = info.metrics();
+        assert_eq!(metrics.warnings_count, 1);
+        assert_eq!(metrics.errors_count, 1);
     }
 }

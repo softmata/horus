@@ -1,8 +1,0 @@
-name: multi_language_example
-version: 0.1.7
-language: rust
-
-dependencies:
-  - horus
-  - serde
-  - rmp-serde

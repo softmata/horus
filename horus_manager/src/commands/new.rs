@@ -320,7 +320,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // Add the controller node with priority 0 (highest)
-    scheduler.add(Box::new(Controller::new()), 0);
+    scheduler.add(Controller::new()).order(0).done();
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()
@@ -363,7 +363,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // Add the controller node with priority 0 (highest)
-    scheduler.add(Box::new(Controller::new()?), 0);
+    scheduler.add(Controller::new()?).order(0).done();
 
     // Run the scheduler (Ctrl+C to stop)
     scheduler.run()

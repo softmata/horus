@@ -1,8 +1,0 @@
-# Test artifacts
-*.log
-*.tmp
-test_output/
-.test_cache/
-
-# Docker artifacts (images are rebuilt)
-.docker_build_cache/

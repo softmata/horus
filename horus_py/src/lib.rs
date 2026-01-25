@@ -20,7 +20,7 @@ mod tensor;
 mod topic;
 mod types;
 
-use config::{PyRobotPreset, PySchedulerConfig};
+use config::PySchedulerConfig;
 use hframe::{PyHFrame, PyHFrameConfig, PyTransform};
 use node::{PyNode, PyNodeInfo, PyNodeState};
 use router::{PyRouterClient, PyRouterServer};
@@ -48,7 +48,6 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(router::router_endpoint, m)?)?;
 
     // Configuration classes
-    m.add_class::<PyRobotPreset>()?;
     m.add_class::<PySchedulerConfig>()?;
 
     // Priority constants

@@ -46,9 +46,14 @@ pub fn shm_topics_dir() -> PathBuf {
     shm_base_dir().join("topics")
 }
 
-/// Get the heartbeats directory for node health monitoring
-pub fn shm_heartbeats_dir() -> PathBuf {
-    shm_base_dir().join("heartbeats")
+/// Get the nodes directory for node presence files
+///
+/// Each running node creates a presence file here at startup and removes it at shutdown.
+/// Monitor scans this directory to discover all active nodes.
+///
+/// Structure: `/dev/shm/horus/nodes/{node_name}.json`
+pub fn shm_nodes_dir() -> PathBuf {
+    shm_base_dir().join("nodes")
 }
 
 /// Get the network status directory for transport monitoring
@@ -187,8 +192,8 @@ mod tests {
         let topics = shm_topics_dir();
         assert!(topics.starts_with(&base));
 
-        let heartbeats = shm_heartbeats_dir();
-        assert!(heartbeats.starts_with(&base));
+        let nodes = shm_nodes_dir();
+        assert!(nodes.starts_with(&base));
 
         let params = shm_params_dir();
         assert!(params.starts_with(&base));

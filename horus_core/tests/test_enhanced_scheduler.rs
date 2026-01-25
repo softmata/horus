@@ -1,4 +1,4 @@
-use horus_core::{HorusResult, Node, NodeInfo, Scheduler, TopicMetadata};
+use horus_core::{Node, Result, Scheduler, TopicMetadata};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -16,7 +16,7 @@ impl Node for CpuNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("CPU Node {} initialized", self.name);
         Ok(())
     }
@@ -30,7 +30,7 @@ impl Node for CpuNode {
         self.counter.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("CPU Node {} shutdown", self.name);
         Ok(())
     }
@@ -59,7 +59,7 @@ impl Node for IoNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("I/O Node {} initialized", self.name);
         Ok(())
     }
@@ -70,7 +70,7 @@ impl Node for IoNode {
         self.counter.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("I/O Node {} shutdown", self.name);
         Ok(())
     }
@@ -99,7 +99,7 @@ impl Node for FlakyNode {
         self.name
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Flaky Node {} initialized", self.name);
         Ok(())
     }
@@ -113,7 +113,7 @@ impl Node for FlakyNode {
         }
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Flaky Node {} shutdown", self.name);
         Ok(())
     }
@@ -141,34 +141,34 @@ fn test_enhanced_scheduler() {
     let mut scheduler = Scheduler::new();
 
     // Add CPU-intensive nodes (should stay in main tier)
-    scheduler.add(
-        Box::new(CpuNode {
+    scheduler
+        .add(CpuNode {
             name: "cpu_fast",
             counter: Arc::clone(&cpu_counter),
             work_ms: 1, // Very fast
-        }),
-        10,
-    );
+        })
+        .order(10)
+        .done();
 
     // Add I/O-heavy node (should move to async tier after learning)
-    scheduler.add(
-        Box::new(IoNode {
+    scheduler
+        .add(IoNode {
             name: "camera",
             counter: Arc::clone(&io_counter),
             io_delay_ms: 50, // Blocking I/O
-        }),
-        20,
-    );
+        })
+        .order(20)
+        .done();
 
     // Add flaky node (to test circuit breaker)
-    scheduler.add(
-        Box::new(FlakyNode {
+    scheduler
+        .add(FlakyNode {
             name: "processor",
             counter: Arc::clone(&flaky_counter),
             fail_rate: 0.3, // 30% failure rate
-        }),
-        30,
-    );
+        })
+        .order(30)
+        .done();
 
     // Run scheduler for 3 seconds
     let run_duration = Duration::from_secs(3);
@@ -221,14 +221,14 @@ fn test_circuit_breaker_protection() {
     let mut scheduler = Scheduler::new();
 
     // Add a node that always fails
-    scheduler.add(
-        Box::new(FlakyNode {
+    scheduler
+        .add(FlakyNode {
             name: "always_fails",
             counter: Arc::clone(&counter),
             fail_rate: 1.0, // Always fails
-        }),
-        10,
-    );
+        })
+        .order(10)
+        .done();
 
     // Run for 1 second
     scheduler

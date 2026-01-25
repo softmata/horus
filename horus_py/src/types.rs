@@ -135,8 +135,6 @@ pub struct PyNodeConfig {
     #[pyo3(get, set)]
     pub restart_delay_ms: u64,
     #[pyo3(get, set)]
-    pub enable_logging: bool,
-    #[pyo3(get, set)]
     pub log_level: String,
     #[pyo3(get, set)]
     pub custom_params: HashMap<String, String>,
@@ -152,7 +150,6 @@ impl PyNodeConfig {
             restart_on_failure: config.restart_on_failure,
             max_restart_attempts: config.max_restart_attempts,
             restart_delay_ms: config.restart_delay_ms,
-            enable_logging: config.enable_logging,
             log_level: config.log_level,
             custom_params: config.custom_params,
         }
@@ -167,10 +164,7 @@ impl PyNodeConfig {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "NodeConfig(logging={}, log_level='{}')",
-            self.enable_logging, self.log_level
-        )
+        format!("NodeConfig(log_level='{}')", self.log_level)
     }
 }
 
@@ -181,7 +175,6 @@ impl From<PyNodeConfig> for CoreNodeConfig {
             restart_on_failure: py_config.restart_on_failure,
             max_restart_attempts: py_config.max_restart_attempts,
             restart_delay_ms: py_config.restart_delay_ms,
-            enable_logging: py_config.enable_logging,
             log_level: py_config.log_level,
             custom_params: py_config.custom_params,
             circuit_breaker: None, // Use scheduler-level circuit breaker settings

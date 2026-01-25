@@ -33,7 +33,7 @@ fn test_scheduler_with_jit_node() {
     // Add a real JIT-capable ScalingNode
     // The scheduler should detect supports_jit() and compile with Cranelift
     let node = ScalingNode::new(2, 10); // output = input * 2 + 10
-    scheduler.add(Box::new(node), 0);
+    scheduler.add(node).order(0).done();
 
     // Run for a short duration - this will:
     // 1. Compile the node using Cranelift JIT
@@ -99,17 +99,11 @@ fn test_non_jit_node_default_behavior() {
             // Regular computation
         }
 
-        fn init(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn init(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
-        fn shutdown(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn shutdown(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
@@ -161,17 +155,11 @@ fn test_custom_jit_compute_function() {
             // Fallback tick
         }
 
-        fn init(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn init(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
-        fn shutdown(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn shutdown(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
@@ -219,7 +207,7 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
 
     // Add a JIT-capable node
     let jit_node = ScalingNode::new(4, 1); // output = input * 4 + 1
-    scheduler.add(Box::new(jit_node), 0);
+    scheduler.add(jit_node).order(0).done();
 
     // Add a regular node
     struct RegularComputeNode {
@@ -235,17 +223,11 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
             self.counter += 1;
         }
 
-        fn init(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn init(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
-        fn shutdown(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn shutdown(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
@@ -258,7 +240,7 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
         }
     }
 
-    scheduler.add(Box::new(RegularComputeNode { counter: 0 }), 1);
+    scheduler.add(RegularComputeNode { counter: 0 }).order(1).done();
 
     // Run both nodes - JIT node uses native code, regular node uses tick()
     let result = scheduler.run_for(Duration::from_millis(50));
@@ -277,7 +259,7 @@ fn test_learning_phase_with_jit() {
 
     // Add a JIT-capable node - will be compiled at add-time with factor=5, offset=2
     let jit_node = ScalingNode::new(5, 2);
-    scheduler.add(Box::new(jit_node), 0);
+    scheduler.add(jit_node).order(0).done();
 
     // Add a regular fast node - might get JIT'd during learning if ultra-fast
     struct FastNode {
@@ -294,17 +276,11 @@ fn test_learning_phase_with_jit() {
             self.counter = self.counter.wrapping_add(1);
         }
 
-        fn init(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn init(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
-        fn shutdown(
-            &mut self,
-            _ctx: &mut horus_core::core::NodeInfo,
-        ) -> horus_core::error::HorusResult<()> {
+        fn shutdown(&mut self) -> horus_core::error::Result<()> {
             Ok(())
         }
 
@@ -317,7 +293,7 @@ fn test_learning_phase_with_jit() {
         }
     }
 
-    scheduler.add(Box::new(FastNode { counter: 0 }), 1);
+    scheduler.add(FastNode { counter: 0 }).order(1).done();
 
     // Run long enough for learning phase to potentially complete
     // Learning phase typically needs ~100+ ticks per node

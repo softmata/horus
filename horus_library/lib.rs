@@ -35,7 +35,7 @@
 //! Node traits and types are provided by `horus_core`:
 //!
 //! ```rust,ignore
-//! use horus_core::{Node, NodeInfo, Topic};
+//! use horus_core::{Node, Topic, hlog};
 //! use horus_library::messages::{Twist, Odometry};
 //!
 //! pub struct MyRobotNode {
@@ -75,10 +75,8 @@
 //! use sim3d::rl::{RLTask, Action, Observation};
 //! ```
 
-pub mod drivers;
 pub mod hframe;
 pub mod messages;
-pub mod nodes;
 
 // Note: sim2d and sim3d are separate crates to avoid cyclic dependencies.
 // Access them directly via:
@@ -102,7 +100,7 @@ pub use messages::*;
 /// use horus_library::prelude::*;
 ///
 /// // Build custom nodes using core infrastructure
-/// use horus_core::{Node, NodeInfo, Topic};
+/// use horus_core::{Node, Topic, hlog};
 ///
 /// // For simulation, import sim2d/sim3d directly:
 /// use sim2d::{Sim2DBuilder, RobotConfig};

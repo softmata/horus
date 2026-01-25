@@ -1,6 +1,7 @@
-use horus_core::core::{HealthStatus, NetworkStatus, NodeHeartbeat, NodeState};
+use horus_core::core::{HealthStatus, NetworkStatus};
 use horus_core::error::HorusResult;
-use horus_core::memory::{shm_heartbeats_dir, shm_network_dir, shm_topics_dir};
+use horus_core::memory::{shm_network_dir, shm_topics_dir};
+use horus_core::NodePresence;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -162,22 +163,16 @@ pub fn discover_nodes() -> HorusResult<Vec<NodeStatus>> {
 }
 
 fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
-    // PRIMARY SOURCE 1: registry.json - discover nodes from scheduler registry
-    // Registry file is cleaned when scheduler process terminates
-    let mut nodes = discover_nodes_from_registry().unwrap_or_default();
+    // PRIMARY SOURCE: Presence files in /dev/shm/horus/nodes/
+    // Each node writes a presence file at startup and removes it at shutdown.
+    // Process liveness is verified by checking if PID exists.
+    let mut nodes = discover_nodes_from_presence();
 
-    // PRIMARY SOURCE 2: Heartbeat files - discover nodes from /dev/shm/horus/heartbeats
-    // This works even when registry is not available (e.g., when scheduler creates heartbeats but no registry)
-    let heartbeat_nodes = discover_nodes_from_heartbeats().unwrap_or_default();
-    for hb_node in heartbeat_nodes {
-        // Only add if not already found by registry
-        if !nodes.iter().any(|n| n.name == hb_node.name) {
-            nodes.push(hb_node);
-        }
+    // FALLBACK: registry.json (for backwards compatibility)
+    // Registry is still used as fallback for tools that haven't migrated
+    if nodes.is_empty() {
+        nodes = discover_nodes_from_registry().unwrap_or_default();
     }
-
-    // SUPPLEMENT: Add heartbeat data if available (extra metadata like tick counts)
-    enrich_nodes_with_heartbeats(&mut nodes);
 
     // SUPPLEMENT: Add process info (CPU, memory) if we have a PID
     for node in &mut nodes {
@@ -212,75 +207,76 @@ fn discover_nodes_uncached() -> HorusResult<Vec<NodeStatus>> {
     Ok(nodes)
 }
 
-/// Discover nodes from heartbeat files in /dev/shm/horus/heartbeats
-/// This provides discovery even when registry is not available
-fn discover_nodes_from_heartbeats() -> HorusResult<Vec<NodeStatus>> {
-    let mut nodes = Vec::new();
-    let heartbeats_dir = shm_heartbeats_dir();
+/// Discover nodes from presence files (primary discovery method - rqt-like)
+/// Each node writes a presence file at startup with PID, topics, etc.
+/// NodePresence::read_all() validates PIDs are still alive and cleans stale files.
+fn discover_nodes_from_presence() -> Vec<NodeStatus> {
+    let presence_nodes = NodePresence::read_all();
 
-    if !heartbeats_dir.exists() {
-        return Ok(nodes);
-    }
+    presence_nodes
+        .into_iter()
+        .map(|presence| {
+            let publishers: Vec<TopicInfo> = presence
+                .publishers
+                .iter()
+                .map(|t| TopicInfo {
+                    topic: t.topic_name.clone(),
+                    type_name: t.type_name.clone(),
+                })
+                .collect();
 
-    // Read all heartbeat files
-    if let Ok(entries) = std::fs::read_dir(&heartbeats_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(node_name) = path.file_name().and_then(|n| n.to_str()) {
-                    // Read heartbeat to get status info
-                    if let Some(heartbeat) = NodeHeartbeat::read_from_file(node_name) {
-                        // Only include nodes with recent heartbeats (within 60 seconds)
-                        // This prevents showing stale nodes from terminated processes
-                        if heartbeat.is_fresh(60) {
-                            let status_str = match heartbeat.state {
-                                NodeState::Uninitialized => "Idle",
-                                NodeState::Initializing => "Initializing",
-                                NodeState::Running => "Running",
-                                NodeState::Paused => "Paused",
-                                NodeState::Stopping => "Stopping",
-                                NodeState::Stopped => "Stopped",
-                                NodeState::Error(_) => "Error",
-                                NodeState::Crashed(_) => "Crashed",
-                            };
+            let subscribers: Vec<TopicInfo> = presence
+                .subscribers
+                .iter()
+                .map(|t| TopicInfo {
+                    topic: t.topic_name.clone(),
+                    type_name: t.type_name.clone(),
+                })
+                .collect();
 
-                            // Try to find PID for this node
-                            let pid = find_node_pid(node_name).unwrap_or(0);
+            NodeStatus {
+                name: presence.name.clone(),
+                status: "Running".to_string(),
+                health: HealthStatus::Healthy,
+                priority: presence.priority,
+                process_id: presence.pid,
+                command_line: String::new(), // Will be enriched by process info
+                working_dir: String::new(),  // Will be enriched by process info
+                cpu_usage: 0.0,
+                memory_usage: 0,
+                start_time: format_unix_timestamp(presence.start_time),
+                scheduler_name: presence.scheduler.unwrap_or_default(),
+                category: ProcessCategory::Node,
+                tick_count: 0, // Not stored in presence file
+                error_count: 0,
+                actual_rate_hz: presence.rate_hz.map(|r| r as u32).unwrap_or(0),
+                publishers,
+                subscribers,
+            }
+        })
+        .collect()
+}
 
-                            // Get process info for CPU/memory if we have a valid PID
-                            let proc_info = if pid > 0 {
-                                get_process_info(pid).unwrap_or_default()
-                            } else {
-                                ProcessInfo::default()
-                            };
+/// Format Unix timestamp to human-readable string
+fn format_unix_timestamp(secs: u64) -> String {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-                            nodes.push(NodeStatus {
-                                name: node_name.to_string(),
-                                status: status_str.to_string(),
-                                health: heartbeat.health,
-                                priority: 0,
-                                process_id: pid,
-                                command_line: proc_info.cmdline.clone(),
-                                working_dir: proc_info.working_dir.clone(),
-                                cpu_usage: proc_info.cpu_percent,
-                                memory_usage: proc_info.memory_kb,
-                                start_time: proc_info.start_time.clone(),
-                                scheduler_name: "Heartbeat".to_string(),
-                                category: ProcessCategory::Node,
-                                tick_count: heartbeat.tick_count,
-                                error_count: heartbeat.error_count,
-                                actual_rate_hz: heartbeat.actual_rate_hz,
-                                publishers: Vec::new(),
-                                subscribers: Vec::new(),
-                            });
-                        }
-                    }
-                }
+    let time = UNIX_EPOCH + Duration::from_secs(secs);
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(_) => {
+            let elapsed = SystemTime::now()
+                .duration_since(time)
+                .unwrap_or(Duration::from_secs(0));
+            if elapsed.as_secs() < 60 {
+                format!("{}s ago", elapsed.as_secs())
+            } else if elapsed.as_secs() < 3600 {
+                format!("{}m ago", elapsed.as_secs() / 60)
+            } else {
+                format!("{}h ago", elapsed.as_secs() / 3600)
             }
         }
+        Err(_) => "unknown".to_string(),
     }
-
-    Ok(nodes)
 }
 
 // Enhanced node status with pub/sub info
@@ -423,40 +419,6 @@ fn discover_nodes_from_registry() -> anyhow::Result<Vec<NodeStatus>> {
     Ok(nodes)
 }
 
-/// Find PID for a node by name (scans /proc for matching heartbeat-writing process)
-fn find_node_pid(node_name: &str) -> Option<u32> {
-    let proc_dir = Path::new("/proc");
-    if !proc_dir.exists() {
-        return None;
-    }
-
-    for entry in std::fs::read_dir(proc_dir).ok()? {
-        let entry = entry.ok()?;
-        let path = entry.path();
-
-        if let Some(pid_str) = path.file_name().and_then(|s| s.to_str()) {
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                if pid < 100 {
-                    continue; // Skip system processes
-                }
-
-                let cmdline_path = path.join("cmdline");
-                if let Ok(cmdline) = std::fs::read_to_string(cmdline_path) {
-                    let cmdline_str = cmdline.replace('\0', " ");
-
-                    // Check if this process is likely running this node
-                    // (horus run, scheduler, or direct node execution with node name)
-                    if cmdline_str.contains("horus") && cmdline_str.contains(node_name) {
-                        return Some(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
 fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {
     let mut nodes = Vec::new();
     let proc_dir = Path::new("/proc");
@@ -491,14 +453,10 @@ fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {
                         // Get detailed process info
                         let proc_info = get_process_info(pid).unwrap_or_default();
 
-                        // Check heartbeat for real status
-                        let (status, health, tick_count, error_count, actual_rate) =
-                            check_node_heartbeat(&name);
-
                         nodes.push(NodeStatus {
                             name: name.clone(),
-                            status,
-                            health,
+                            status: "Running".to_string(),
+                            health: HealthStatus::Unknown,
                             priority: 0, // Default for discovered processes
                             process_id: pid,
                             command_line: cmdline_str,
@@ -508,9 +466,9 @@ fn discover_horus_processes() -> anyhow::Result<Vec<NodeStatus>> {
                             start_time: proc_info.start_time,
                             scheduler_name: "Standalone".to_string(),
                             category,
-                            tick_count,
-                            error_count,
-                            actual_rate_hz: actual_rate,
+                            tick_count: 0,
+                            error_count: 0,
+                            actual_rate_hz: 0,
                             publishers: Vec::new(),
                             subscribers: Vec::new(),
                         });
@@ -1537,16 +1495,87 @@ lazy_static::lazy_static! {
 
 fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryInfo>> {
     let mut topics = Vec::new();
+    let mut seen_topics: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // Scan topics directory (flat namespace - all topics in one place like ROS)
-    // Note: Discovery is read-only - no auto-cleanup here
-    // Use cleanup_stale_topics() explicitly when cleanup is desired
+    // PRIMARY: Scan SHM topics directory (has full metadata: size, mtime, accessing processes)
     let topics_path = shm_topics_dir();
     if topics_path.exists() {
-        topics.extend(scan_topics_directory(&topics_path)?);
+        for topic in scan_topics_directory(&topics_path)? {
+            seen_topics.insert(topic.topic_name.clone());
+            topics.push(topic);
+        }
+    }
+
+    // SUPPLEMENT: Add topics from presence files (captures network topics too)
+    // These won't have SHM-specific metadata but will show pub/sub relationships
+    for topic in discover_topics_from_presence() {
+        if !seen_topics.contains(&topic.topic_name) {
+            seen_topics.insert(topic.topic_name.clone());
+            topics.push(topic);
+        }
     }
 
     Ok(topics)
+}
+
+/// Discover topics from node presence files
+/// This captures ALL topics including network-based ones that don't have SHM files
+fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
+    use std::collections::HashMap;
+
+    // Aggregate topic info from all presence files
+    let mut topic_map: HashMap<String, (Vec<String>, Vec<String>, Option<String>)> = HashMap::new();
+
+    for presence in NodePresence::read_all() {
+        // Add publishers
+        for pub_topic in &presence.publishers {
+            let entry = topic_map
+                .entry(pub_topic.topic_name.clone())
+                .or_insert_with(|| (Vec::new(), Vec::new(), None));
+            if !entry.0.contains(&presence.name) {
+                entry.0.push(presence.name.clone());
+            }
+            // Capture type name if available
+            if entry.2.is_none() && !pub_topic.type_name.is_empty() && pub_topic.type_name != "unknown" {
+                entry.2 = Some(pub_topic.type_name.clone());
+            }
+        }
+
+        // Add subscribers
+        for sub_topic in &presence.subscribers {
+            let entry = topic_map
+                .entry(sub_topic.topic_name.clone())
+                .or_insert_with(|| (Vec::new(), Vec::new(), None));
+            if !entry.1.contains(&presence.name) {
+                entry.1.push(presence.name.clone());
+            }
+            // Capture type name if available
+            if entry.2.is_none() && !sub_topic.type_name.is_empty() && sub_topic.type_name != "unknown" {
+                entry.2 = Some(sub_topic.type_name.clone());
+            }
+        }
+    }
+
+    // Convert to SharedMemoryInfo (network topics won't have SHM-specific metadata)
+    topic_map
+        .into_iter()
+        .map(|(topic_name, (publishers, subscribers, message_type))| {
+            let has_activity = !publishers.is_empty() || !subscribers.is_empty();
+            SharedMemoryInfo {
+                topic_name,
+                size_bytes: 0, // Network topics don't have SHM size
+                active: has_activity,
+                accessing_processes: Vec::new(), // Can't determine for network topics
+                last_modified: None,
+                message_type,
+                publishers,
+                subscribers,
+                message_rate_hz: 0.0, // Can't measure without SHM
+                status: if has_activity { TopicStatus::Active } else { TopicStatus::Stale },
+                age_string: "network".to_string(), // Indicate this is from presence, not SHM
+            }
+        })
+        .collect()
 }
 
 /// Clean up stale topic files from the global topics directory.
@@ -1602,32 +1631,6 @@ fn cleanup_stale_topics_in_dir(shm_path: &Path) {
     }
 }
 
-/// Get list of active node names from heartbeat files
-/// Used as fallback when registry.json doesn't exist
-fn get_active_heartbeat_nodes() -> Vec<String> {
-    let mut nodes = Vec::new();
-    let heartbeats_dir = shm_heartbeats_dir();
-
-    if let Ok(entries) = std::fs::read_dir(&heartbeats_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                // Check if node is recently active (heartbeat within last 30 seconds)
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(heartbeat) = serde_json::from_str::<serde_json::Value>(&content) {
-                        // Check if running state
-                        let state = heartbeat["state"].as_str().unwrap_or("");
-                        if state == "Running" {
-                            nodes.push(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    nodes
-}
-
 /// Scan a specific topics directory for shared memory files
 fn scan_topics_directory(shm_path: &Path) -> HorusResult<Vec<SharedMemoryInfo>> {
     let mut topics = Vec::new();
@@ -1635,8 +1638,8 @@ fn scan_topics_directory(shm_path: &Path) -> HorusResult<Vec<SharedMemoryInfo>> 
     // Load registry to get topic metadata
     let registry_topics = load_topic_metadata_from_registry();
 
-    // Fallback: get active node names from heartbeats for pub/sub inference
-    let active_nodes = get_active_heartbeat_nodes();
+    // Active nodes for pub/sub inference (from registry)
+    let active_nodes: Vec<String> = Vec::new();
 
     for entry in std::fs::read_dir(shm_path)? {
         let entry = entry?;
@@ -2007,128 +2010,6 @@ fn find_accessing_processes_fast(shm_path: &Path, shm_name: &str) -> Vec<u32> {
     }
 
     processes
-}
-
-/// Check node heartbeat file and determine status and health
-fn check_node_heartbeat(node_name: &str) -> (String, HealthStatus, u64, u32, u32) {
-    // Try to read heartbeat file
-    if let Some(heartbeat) = NodeHeartbeat::read_from_file(node_name) {
-        let status_str = match heartbeat.state {
-            NodeState::Uninitialized => "Idle",
-            NodeState::Initializing => "Initializing",
-            NodeState::Running => "Running",
-            NodeState::Paused => "Paused",
-            NodeState::Stopping => "Stopping",
-            NodeState::Stopped => "Stopped",
-            NodeState::Error(_) => "Error",
-            NodeState::Crashed(_) => "Crashed",
-        };
-
-        // For Running nodes, be more forgiving with freshness
-        // A node running at 0.1 Hz takes 10 seconds between ticks, so use 30 second threshold
-        // Only mark as Frozen if heartbeat is very stale (>30 seconds) for running nodes
-        if status_str == "Running" {
-            if heartbeat.is_fresh(30) {
-                // Node is running and heartbeat is reasonably fresh
-                return (
-                    status_str.to_string(),
-                    heartbeat.health,
-                    heartbeat.tick_count,
-                    heartbeat.error_count,
-                    heartbeat.actual_rate_hz,
-                );
-            } else {
-                // Heartbeat is very stale - node is likely frozen or hung
-                return (
-                    "Frozen".to_string(),
-                    HealthStatus::Critical,
-                    heartbeat.tick_count,
-                    heartbeat.error_count,
-                    0,
-                );
-            }
-        } else {
-            // For non-running states (Stopped, Error, etc.), trust the heartbeat regardless of age
-            return (
-                status_str.to_string(),
-                heartbeat.health,
-                heartbeat.tick_count,
-                heartbeat.error_count,
-                heartbeat.actual_rate_hz,
-            );
-        }
-    }
-
-    // No heartbeat file found - try registry snapshot as fallback
-    check_registry_snapshot(node_name)
-        .unwrap_or_else(|| ("Unknown".to_string(), HealthStatus::Unknown, 0, 0, 0))
-}
-
-/// Enrich nodes with heartbeat data if available (optional metadata)
-fn enrich_nodes_with_heartbeats(nodes: &mut [NodeStatus]) {
-    for node in nodes {
-        let (status, health, tick_count, error_count, actual_rate) =
-            check_node_heartbeat(&node.name);
-
-        // Only update if heartbeat provides better info
-        if status != "Unknown" {
-            node.status = status;
-            node.health = health;
-            node.tick_count = tick_count;
-            node.error_count = error_count;
-            node.actual_rate_hz = actual_rate;
-        }
-    }
-}
-
-/// Check registry snapshot for last known state (fallback when heartbeat unavailable)
-fn check_registry_snapshot(node_name: &str) -> Option<(String, HealthStatus, u64, u32, u32)> {
-    let registry_path = dirs::home_dir()?.join(".horus_registry.json");
-    let content = std::fs::read_to_string(&registry_path).ok()?;
-    let registry: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-    // Check if registry snapshot is recent (within last 30 seconds)
-    if let Some(last_snapshot) = registry["last_snapshot"].as_u64() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // If snapshot is too old, don't use it
-        if now.saturating_sub(last_snapshot) > 30 {
-            return None;
-        }
-    }
-
-    // Search for the node in the snapshot
-    let nodes = registry["nodes"].as_array()?;
-    for node in nodes {
-        if node["name"].as_str()? == node_name {
-            let state_str = node["state"].as_str().unwrap_or("Unknown");
-            let health_str = node["health"].as_str().unwrap_or("Unknown");
-            let error_count = node["error_count"].as_u64().unwrap_or(0) as u32;
-            let tick_count = node["tick_count"].as_u64().unwrap_or(0);
-
-            // Parse health
-            let health = match health_str {
-                "Healthy" => HealthStatus::Healthy,
-                "Warning" => HealthStatus::Warning,
-                "Error" => HealthStatus::Error,
-                "Critical" => HealthStatus::Critical,
-                _ => HealthStatus::Unknown,
-            };
-
-            return Some((
-                state_str.to_string(),
-                health,
-                tick_count,
-                error_count,
-                0, // No rate info in snapshot
-            ));
-        }
-    }
-
-    None
 }
 
 // Enhanced monitoring functions

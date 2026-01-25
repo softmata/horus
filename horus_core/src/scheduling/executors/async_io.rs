@@ -154,9 +154,7 @@ impl AsyncIOExecutor {
                     Some(AsyncMessage::Shutdown) | None => {
                         // Shutdown the node if we still have ownership
                         if let Some(mut node) = node_opt.take() {
-                            if let Some(context) = context_opt.as_mut() {
-                                let _ = node.shutdown(context);
-                            }
+                            let _ = node.shutdown();
                         }
                         break;
                     }

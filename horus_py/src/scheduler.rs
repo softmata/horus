@@ -1,7 +1,6 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
-use horus::memory::shm_heartbeats_dir;
-use horus::{NodeHeartbeat, NodeInfo as CoreNodeInfo};
+use horus::{announce_started, announce_stopped, NodeInfo as CoreNodeInfo, NodePresence, TopicMetadata};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -11,12 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Registered node with priority, logging, and per-node rate control
+/// Registered node with priority and per-node rate control
 struct RegisteredNode {
     node: PyObject,
     name: String,
     priority: u32,
-    logging_enabled: bool,
     context: Arc<Mutex<CoreNodeInfo>>,
     cached_info: Option<Py<PyNodeInfo>>, // Cache PyNodeInfo to avoid creating new ones every tick
     rate_hz: f64,                        // Phase 1: Per-node rate control
@@ -38,6 +36,93 @@ struct RegisteredNode {
     // Pub/Sub tracking for monitor
     publishers: Vec<String>,  // Topics this node publishes to
     subscribers: Vec<String>, // Topics this node subscribes to
+}
+
+/// Fluent builder for adding nodes to the scheduler.
+///
+/// Example:
+///     scheduler.node(my_node).order(0).rate_hz(100.0).rt().done()
+#[pyclass(module = "horus._horus")]
+pub struct PyNodeBuilder {
+    scheduler: Py<PyScheduler>,
+    node: PyObject,
+    order: u32,
+    rate_hz: Option<f64>,
+    rt: bool,
+    deadline_ms: Option<f64>,
+    wcet_us: Option<u64>,
+}
+
+#[pymethods]
+impl PyNodeBuilder {
+    /// Set execution order (lower = earlier in tick sequence).
+    ///
+    /// Priority Guidelines:
+    /// - 0-9: Critical real-time (motor control, safety)
+    /// - 10-49: High priority (sensors, fast control loops)
+    /// - 50-99: Normal priority (processing, planning)
+    /// - 100-199: Low priority (logging, diagnostics)
+    /// - 200+: Background (telemetry, non-essential)
+    fn order(mut slf: PyRefMut<'_, Self>, order: u32) -> PyRefMut<'_, Self> {
+        slf.order = order;
+        slf
+    }
+
+    /// Alias for order() - set execution priority.
+    fn priority(slf: PyRefMut<'_, Self>, priority: u32) -> PyRefMut<'_, Self> {
+        Self::order(slf, priority)
+    }
+
+    /// Set node-specific tick rate in Hz.
+    fn rate_hz(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
+        slf.rate_hz = Some(rate);
+        slf
+    }
+
+    /// Mark as a real-time node with deadline monitoring.
+    fn rt(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        slf.rt = true;
+        slf
+    }
+
+    /// Set soft deadline in milliseconds.
+    fn deadline_ms(mut slf: PyRefMut<'_, Self>, ms: f64) -> PyRefMut<'_, Self> {
+        slf.deadline_ms = Some(ms);
+        slf.rt = true; // Deadline implies RT
+        slf
+    }
+
+    /// Set WCET budget in microseconds.
+    fn wcet_us(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
+        slf.wcet_us = Some(us);
+        slf.rt = true; // WCET implies RT
+        slf
+    }
+
+    /// Finalize and add the node to the scheduler.
+    fn done(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
+        let scheduler = slf.scheduler.clone_ref(py);
+        let node = slf.node.clone_ref(py);
+        let order = slf.order;
+        let rate_hz = slf.rate_hz;
+        let rt = slf.rt;
+        let deadline_ms = slf.deadline_ms;
+
+        // Drop the borrow before mutating scheduler
+        drop(slf);
+
+        {
+            let mut sched = scheduler.borrow_mut(py);
+            sched.add(py, node, order, rate_hz, rt, deadline_ms)?;
+        }
+
+        Ok(scheduler)
+    }
+
+    /// Alias for done() - finalize and add.
+    fn add(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
+        Self::done(slf, py)
+    }
 }
 
 /// Python wrapper for HORUS Scheduler with per-node rate control
@@ -65,15 +150,11 @@ impl PyScheduler {
     #[new]
     #[pyo3(signature = (config=None))]
     pub fn new(config: Option<PySchedulerConfig>) -> PyResult<Self> {
-        // Create heartbeat directory for monitor
-        Self::setup_heartbeat_directory();
-
         // Extract config values or use defaults
         let (
             tick_rate,
             circuit_breaker,
             max_failures,
-            auto_restart,
             deadline_monitoring,
             watchdog_enabled,
             watchdog_timeout_ms,
@@ -82,13 +163,12 @@ impl PyScheduler {
                 cfg.tick_rate,
                 cfg.circuit_breaker,
                 cfg.max_failures,
-                cfg.auto_restart,
                 cfg.deadline_monitoring,
                 cfg.watchdog_enabled,
                 cfg.watchdog_timeout_ms,
             )
         } else {
-            (100.0, true, 5, true, false, false, 1000) // Standard defaults
+            (100.0, true, 5, false, false, 1000) // Standard defaults
         };
 
         Ok(PyScheduler {
@@ -99,7 +179,7 @@ impl PyScheduler {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             circuit_breaker_enabled: circuit_breaker,
             max_failures,
-            auto_restart,
+            auto_restart: true, // Always enabled
             deadline_monitoring,
             watchdog_enabled,
             watchdog_timeout_ms,
@@ -116,20 +196,47 @@ impl PyScheduler {
         Self::new(Some(config))
     }
 
-    /// Add a node with priority, logging, and optional rate control
+    /// Start building a node configuration (fluent API).
     ///
-    /// Rate precedence:
-    /// 1. Explicit `rate_hz` parameter (if provided)
-    /// 2. Node's `rate` attribute (rate_hz equivalent)
-    /// 3. Global scheduler rate (fallback)
-    #[pyo3(signature = (node, priority, logging_enabled, rate_hz=None))]
+    /// Returns a NodeBuilder that allows chaining configuration methods.
+    ///
+    /// Example:
+    ///     scheduler.node(sensor_node).order(0).rate_hz(1000.0).rt().done()
+    ///     scheduler.node(motor_node).order(1).deadline_ms(5.0).done()
+    ///     scheduler.node(logger).order(100).no_logging().done()
+    fn node(slf: Py<Self>, _py: Python, node: PyObject) -> PyResult<PyNodeBuilder> {
+        Ok(PyNodeBuilder {
+            scheduler: slf,
+            node,
+            order: 100,
+            rate_hz: None,
+            rt: false,
+            deadline_ms: None,
+            wcet_us: None,
+        })
+    }
+
+    /// Add a node to the scheduler (simplified API with kwargs).
+    ///
+    /// Args:
+    ///     node: The node to add
+    ///     order: Execution order (lower = earlier, default: 100)
+    ///     rate_hz: Node-specific tick rate in Hz (default: uses node.rate or scheduler rate)
+    ///     rt: Mark as real-time node (default: False)
+    ///     deadline_ms: Soft deadline in milliseconds (default: None)
+    ///
+    /// Example:
+    ///     scheduler.add(sensor_node, order=0, rate_hz=1000.0)
+    ///     scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
+    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None))]
     fn add(
         &mut self,
         py: Python,
         node: PyObject,
-        priority: u32,
-        logging_enabled: bool,
+        order: u32,
         rate_hz: Option<f64>,
+        rt: bool,
+        deadline_ms: Option<f64>,
     ) -> PyResult<()> {
         // Extract node name
         let name: String = node.getattr(py, "name")?.extract(py)?;
@@ -145,7 +252,7 @@ impl PyScheduler {
             .unwrap_or_default();
 
         // Create NodeInfo context for this node
-        let context = Arc::new(Mutex::new(CoreNodeInfo::new(name.clone(), logging_enabled)));
+        let context = Arc::new(Mutex::new(CoreNodeInfo::new(name.clone())));
 
         // Rate precedence: explicit param > node.rate > global rate
         let node_rate = rate_hz.unwrap_or_else(|| {
@@ -164,8 +271,7 @@ impl PyScheduler {
         nodes.push(RegisteredNode {
             node,
             name: name.clone(),
-            priority,
-            logging_enabled,
+            priority: order,
             context,
             cached_info: None,         // Will be created on first use
             rate_hz: node_rate,        // Phase 1: Per-node rate
@@ -176,12 +282,12 @@ impl PyScheduler {
             circuit_open: false,
             last_restart_attempt: None,
             // Soft real-time fields
-            deadline_ms: None, // No deadline by default
+            deadline_ms,
             deadline_misses: 0,
             last_tick_duration_ms: 0.0,
             // Watchdog fields
-            watchdog_enabled: false, // Disabled by default, enable per-node
-            watchdog_timeout_ms: self.watchdog_timeout_ms, // Use global default
+            watchdog_enabled: rt, // RT nodes get watchdog by default
+            watchdog_timeout_ms: self.watchdog_timeout_ms,
             last_watchdog_feed: Instant::now(),
             watchdog_expired: false,
             // Pub/Sub tracking
@@ -190,8 +296,8 @@ impl PyScheduler {
         });
 
         println!(
-            "Added node '{}' with priority {} (logging: {}, rate: {}Hz)",
-            name, priority, logging_enabled, node_rate
+            "Added node '{}' (order={}, rate={}Hz, rt={})",
+            name, order, node_rate, rt
         );
 
         Ok(())
@@ -330,9 +436,8 @@ impl PyScheduler {
             if registered.name == node_name {
                 let dict = PyDict::new(py);
                 dict.set_item("name", &registered.name)?;
-                dict.set_item("priority", registered.priority)?;
+                dict.set_item("order", registered.priority)?;
                 dict.set_item("rate_hz", registered.rate_hz)?;
-                dict.set_item("logging_enabled", registered.logging_enabled)?;
 
                 // Fault tolerance info
                 dict.set_item("failure_count", registered.failure_count)?;
@@ -449,15 +554,37 @@ impl PyScheduler {
 
                 if let Err(e) = result {
                     eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
+                } else {
+                    // Announce to discovery topic
+                    let pubs: Vec<TopicMetadata> = registered.publishers.iter()
+                        .map(|t| TopicMetadata { topic_name: t.clone(), type_name: "unknown".into() })
+                        .collect();
+                    let subs: Vec<TopicMetadata> = registered.subscribers.iter()
+                        .map(|t| TopicMetadata { topic_name: t.clone(), type_name: "unknown".into() })
+                        .collect();
+                    announce_started(&registered.name, &pubs, &subs);
+
+                    // Write presence file for monitor detection
+                    let presence = NodePresence::new(
+                        &registered.name,
+                        Some(&self.scheduler_name),
+                        pubs,
+                        subs,
+                        registered.priority,
+                        Some(registered.rate_hz),
+                    );
+                    if let Err(e) = presence.write() {
+                        eprintln!(
+                            "Warning: Failed to write presence file for '{}': {}",
+                            registered.name, e
+                        );
+                    }
                 }
             }
 
             // Write initial registry for monitor
             Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
         }
-
-        // Setup heartbeat directory
-        Self::setup_heartbeat_directory();
 
         // Track last snapshot time
         let mut last_snapshot = std::time::Instant::now();
@@ -641,11 +768,6 @@ impl PyScheduler {
                             }
                         }
                     }
-
-                    // Write heartbeat for monitor
-                    if let Ok(ctx) = registered.context.lock() {
-                        Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
-                    }
                 }
             }
 
@@ -672,9 +794,8 @@ impl PyScheduler {
             }
         }
 
-        // Clean up registry, heartbeats and session
+        // Clean up registry and session
         Self::cleanup_registry();
-        Self::cleanup_heartbeats();
         Self::cleanup_session();
 
         // Shutdown all nodes
@@ -701,6 +822,18 @@ impl PyScheduler {
 
                 if let Err(e) = result {
                     eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
+                    // Still try to remove presence file on error
+                    let _ = NodePresence::remove(&registered.name);
+                } else {
+                    // Announce to discovery topic
+                    announce_stopped(&registered.name);
+                    // Remove presence file
+                    if let Err(e) = NodePresence::remove(&registered.name) {
+                        eprintln!(
+                            "Warning: Failed to remove presence file for '{}': {}",
+                            registered.name, e
+                        );
+                    }
                 }
             }
         }
@@ -715,6 +848,8 @@ impl PyScheduler {
 
         Ok(())
     }
+
+    /// Run the scheduler indefinitely (until stop() is called)
 
     /// Run the scheduler indefinitely (until stop() is called)
     fn run(&mut self, py: Python) -> PyResult<()> {
@@ -761,15 +896,37 @@ impl PyScheduler {
 
                 if let Err(e) = result {
                     eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
+                } else {
+                    // Announce to discovery topic
+                    let pubs: Vec<TopicMetadata> = registered.publishers.iter()
+                        .map(|t| TopicMetadata { topic_name: t.clone(), type_name: "unknown".into() })
+                        .collect();
+                    let subs: Vec<TopicMetadata> = registered.subscribers.iter()
+                        .map(|t| TopicMetadata { topic_name: t.clone(), type_name: "unknown".into() })
+                        .collect();
+                    announce_started(&registered.name, &pubs, &subs);
+
+                    // Write presence file for monitor detection
+                    let presence = NodePresence::new(
+                        &registered.name,
+                        Some(&self.scheduler_name),
+                        pubs,
+                        subs,
+                        registered.priority,
+                        Some(registered.rate_hz),
+                    );
+                    if let Err(e) = presence.write() {
+                        eprintln!(
+                            "Warning: Failed to write presence file for '{}': {}",
+                            registered.name, e
+                        );
+                    }
                 }
             }
 
             // Write initial registry for monitor
             Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
         }
-
-        // Setup heartbeat directory
-        Self::setup_heartbeat_directory();
 
         // Track last snapshot time
         let mut last_snapshot = std::time::Instant::now();
@@ -987,10 +1144,6 @@ impl PyScheduler {
                         }
                     }
 
-                    // Write heartbeat for monitor
-                    if let Ok(ctx) = registered.context.lock() {
-                        Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
-                    }
                 }
             }
 
@@ -1011,9 +1164,8 @@ impl PyScheduler {
             }
         }
 
-        // Clean up registry, heartbeats and session
+        // Clean up registry and session
         Self::cleanup_registry();
-        Self::cleanup_heartbeats();
         Self::cleanup_session();
 
         // Shutdown all nodes
@@ -1040,6 +1192,18 @@ impl PyScheduler {
 
                 if let Err(e) = result {
                     eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
+                    // Still try to remove presence file on error
+                    let _ = NodePresence::remove(&registered.name);
+                } else {
+                    // Announce to discovery topic
+                    announce_stopped(&registered.name);
+                    // Remove presence file
+                    if let Err(e) = NodePresence::remove(&registered.name) {
+                        eprintln!(
+                            "Warning: Failed to remove presence file for '{}': {}",
+                            registered.name, e
+                        );
+                    }
                 }
             }
         }
@@ -1072,7 +1236,6 @@ impl PyScheduler {
     /// - name: Node name
     /// - priority: Execution priority
     /// - rate_hz: Node execution rate
-    /// - logging_enabled: Whether logging is enabled
     /// - total_ticks: Total number of ticks executed
     /// - failure_count: Total failure count
     /// - consecutive_failures: Current consecutive failure count
@@ -1088,9 +1251,8 @@ impl PyScheduler {
         for registered in nodes.iter() {
             let dict = PyDict::new(py);
             dict.set_item("name", &registered.name)?;
-            dict.set_item("priority", registered.priority)?;
+            dict.set_item("order", registered.priority)?;
             dict.set_item("rate_hz", registered.rate_hz)?;
-            dict.set_item("logging_enabled", registered.logging_enabled)?;
 
             // Fault tolerance info
             dict.set_item("failure_count", registered.failure_count)?;
@@ -1292,10 +1454,6 @@ impl PyScheduler {
                         ctx.record_tick();
                     }
 
-                    // Write heartbeat for monitor
-                    if let Ok(ctx) = registered.context.lock() {
-                        Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
-                    }
                 }
             }
 
@@ -1330,6 +1488,18 @@ impl PyScheduler {
 
                     if let Err(e) = result {
                         eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
+                        // Still try to remove presence file on error
+                        let _ = NodePresence::remove(&registered.name);
+                    } else {
+                        // Announce to discovery topic
+                        announce_stopped(&registered.name);
+                        // Remove presence file
+                        if let Err(e) = NodePresence::remove(&registered.name) {
+                            eprintln!(
+                                "Warning: Failed to remove presence file for '{}': {}",
+                                registered.name, e
+                            );
+                        }
                     }
                 }
             }
@@ -1485,10 +1655,6 @@ impl PyScheduler {
                         ctx.record_tick();
                     }
 
-                    // Write heartbeat for monitor
-                    if let Ok(ctx) = registered.context.lock() {
-                        Self::write_heartbeat(&registered.name, &ctx, registered.rate_hz);
-                    }
                 }
             }
 
@@ -1523,6 +1689,18 @@ impl PyScheduler {
 
                     if let Err(e) = result {
                         eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
+                        // Still try to remove presence file on error
+                        let _ = NodePresence::remove(&registered.name);
+                    } else {
+                        // Announce to discovery topic
+                        announce_stopped(&registered.name);
+                        // Remove presence file
+                        if let Err(e) = NodePresence::remove(&registered.name) {
+                            eprintln!(
+                                "Warning: Failed to remove presence file for '{}': {}",
+                                registered.name, e
+                            );
+                        }
                     }
                 }
             }
@@ -1540,8 +1718,8 @@ impl PyScheduler {
         Ok(nodes.iter().map(|n| n.name.clone()).collect())
     }
 
-    /// Get node information including priority and logging settings
-    fn get_node_info(&self, name: String) -> PyResult<Option<(u32, bool)>> {
+    /// Get node priority
+    fn get_node_info(&self, name: String) -> PyResult<Option<u32>> {
         let nodes = self
             .nodes
             .lock()
@@ -1549,7 +1727,7 @@ impl PyScheduler {
 
         for registered in nodes.iter() {
             if registered.name == name {
-                return Ok(Some((registered.priority, registered.logging_enabled)));
+                return Ok(Some(registered.priority));
             }
         }
         Ok(None)
@@ -1588,8 +1766,6 @@ impl PyScheduler {
             .extract()?;
 
         // Recreate scheduler with empty nodes list
-        Self::setup_heartbeat_directory();
-
         self.tick_rate_hz = tick_rate_hz;
         self.nodes = Arc::new(Mutex::new(Vec::new()));
         self.running = Arc::new(Mutex::new(false));
@@ -1599,36 +1775,6 @@ impl PyScheduler {
 }
 
 impl PyScheduler {
-    /// Create heartbeat directory for monitor
-    fn setup_heartbeat_directory() {
-        let dir = shm_heartbeats_dir();
-        let _ = fs::create_dir_all(&dir);
-    }
-
-    /// Write heartbeat for a node (for monitor)
-    fn write_heartbeat(node_name: &str, context: &CoreNodeInfo, rate_hz: f64) {
-        let heartbeat = NodeHeartbeat::from_metrics(context.state().clone(), context.metrics());
-
-        // Override target_rate_hz with actual node rate
-        let mut heartbeat = heartbeat;
-        heartbeat.target_rate_hz = rate_hz as u32;
-
-        let _ = heartbeat.write_to_file(node_name);
-    }
-
-    /// Clean up all heartbeat files
-    fn cleanup_heartbeats() {
-        let dir = shm_heartbeats_dir();
-        if dir.exists() {
-            // Only remove files, not the directory (other processes may be using it)
-            if let Ok(entries) = fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let _ = fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
-
     /// Clean up session directory (no-op with flat namespace)
     ///
     /// With the simplified flat namespace model, topics are shared globally.
@@ -1719,15 +1865,12 @@ impl PyScheduler {
                     // Get state and health from context
                     let (state_str, health_str, error_count, tick_count) =
                         if let Ok(ctx) = registered.context.lock() {
-                            let heartbeat = NodeHeartbeat::from_metrics(
-                                ctx.state().clone(),
-                                ctx.metrics(),
-                            );
+                            let metrics = ctx.metrics();
                             (
                                 ctx.state().to_string(),
-                                heartbeat.health.as_str().to_string(),
-                                ctx.metrics().errors_count,
-                                ctx.metrics().total_ticks,
+                                metrics.calculate_health().as_str().to_string(),
+                                metrics.errors_count,
+                                metrics.total_ticks,
                             )
                         } else {
                             (

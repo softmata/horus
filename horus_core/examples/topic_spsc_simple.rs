@@ -9,7 +9,7 @@
 //! ```
 
 use horus_core::memory::shm_topics_dir;
-use horus_core::{Node, Topic, NodeInfo, Scheduler};
+use horus_core::{Node, Topic, Scheduler};
 use std::thread;
 use std::time::Duration;
 
@@ -114,9 +114,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create scheduler
     let mut scheduler = Scheduler::new();
 
-    // Add nodes with priorities
-    scheduler.add(Box::new(sensor), 0); // High priority, no logging
-    scheduler.add(Box::new(controller), 1); // Normal priority, no logging
+    // Add nodes with priorities (lower order = runs first)
+    scheduler.add(sensor)
+        .order(0)  // High priority
+        .done();
+    scheduler.add(controller)
+        .order(1)  // Normal priority
+        .done();
 
     println!("Starting nodes... (Ctrl+C to stop)\n");
 

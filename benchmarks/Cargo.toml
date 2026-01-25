@@ -16,44 +16,28 @@ path = "src/lib.rs"
 # =============================================================================
 
 [[bin]]
-name = "all_paths_latency"
-path = "src/bin/performance/all_paths_latency.rs"
-doc = true
-
-[[bin]]
 name = "cross_process_benchmark"
-path = "src/bin/performance/cross_process_benchmark.rs"
-doc = true
+path = "src/bin/cross_process_benchmark.rs"
 
 [[bin]]
 name = "robotics_messages_benchmark"
-path = "src/bin/performance/robotics_messages_benchmark.rs"
-doc = true
+path = "src/bin/robotics_messages_benchmark.rs"
 
 [[bin]]
 name = "determinism_benchmark"
-path = "src/bin/performance/determinism_benchmark.rs"
-doc = true
+path = "src/bin/determinism_benchmark.rs"
 
 [[bin]]
 name = "scalability_benchmark"
-path = "src/bin/performance/scalability_benchmark.rs"
-doc = true
-
-[[bin]]
-name = "pod_benchmark"
-path = "src/bin/performance/pod_benchmark.rs"
-doc = true
-
-[[bin]]
-name = "backend_latency_benchmark"
-path = "src/bin/performance/backend_latency_benchmark.rs"
-doc = true
+path = "src/bin/scalability_benchmark.rs"
 
 [[bin]]
 name = "dds_comparison_benchmark"
-path = "src/bin/performance/dds_comparison_benchmark.rs"
-doc = true
+path = "src/bin/dds_comparison_benchmark.rs"
+
+[[bin]]
+name = "all_paths_latency"
+path = "src/bin/all_paths_latency.rs"
 
 [dependencies]
 horus = { path = "../horus" }

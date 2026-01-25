@@ -21,8 +21,8 @@ Example:
     camera = CameraNode(device_id=0, width=640, height=480)
 
     scheduler = Scheduler()
-    scheduler.add(serial, priority=0, logging=True)
-    scheduler.add(camera, priority=1, logging=True)
+    scheduler.add(serial, order=0, logging=True)
+    scheduler.add(camera, order=1, logging=True)
     scheduler.run()
 """
 

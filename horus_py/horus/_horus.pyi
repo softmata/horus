@@ -334,9 +334,10 @@ class PyScheduler:
     def add(
         self,
         node: Any,
-        priority: int,
-        logging_enabled: bool,
-        rate_hz: Optional[float] = None
+        priority: int = 100,
+        rate_hz: Optional[float] = None,
+        rt: bool = False,
+        deadline_ms: Optional[float] = None
     ) -> None:
         """
         Add a node to the scheduler.
@@ -344,8 +345,9 @@ class PyScheduler:
         Args:
             node: Node instance (must have tick/init/shutdown methods)
             priority: Priority level (lower = higher priority, 0 = highest)
-            logging_enabled: Enable logging for this node
             rate_hz: Optional per-node rate in Hz (uses global rate if None)
+            rt: Mark as real-time node (default: False)
+            deadline_ms: Soft deadline in milliseconds (default: None)
         """
         ...
 
@@ -399,7 +401,6 @@ class PyScheduler:
             Dictionary with node stats:
             - name: Node name
             - priority: Priority level
-            - logging_enabled: Whether logging is enabled
             - total_ticks: Total ticks executed
             - errors_count: Number of errors
         """

@@ -60,21 +60,6 @@ impl horus_core::core::LogSummary for TimestampedMsg {
     }
 }
 
-/// Synchronization message for coordinating processes
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
-struct SyncMsg {
-    ready: bool,
-    done: bool,
-    iteration_count: u64,
-}
-
-impl horus_core::core::LogSummary for SyncMsg {
-    fn log_summary(&self) -> String {
-        "SyncMsg".to_string()
-    }
-}
-
 /// Result message containing latency measurements
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct ResultMsg {
@@ -158,25 +143,17 @@ fn run_coordinator(args: &[String]) {
 
     let mut report = BenchmarkReport::new(platform.clone());
 
-    // Test different backends
-    let backends = [
-        ("SpscShm", "spsc"),
-        ("MpmcShm", "mpmc"),
-    ];
+    // Test AdaptiveTopic (auto-selects optimal backend)
+    println!("[AdaptiveTopic] Running cross-process benchmark...");
 
-    for (name, backend) in &backends {
-        println!("[{}] Running cross-process benchmark...", name);
+    let result = run_cross_process_test(
+        "AdaptiveTopic",
+        iterations,
+        &platform,
+    );
 
-        let result = run_cross_process_test(
-            name,
-            backend,
-            iterations,
-            &platform,
-        );
-
-        print_result(&result);
-        report.add_result(result);
-    }
+    print_result(&result);
+    report.add_result(result);
 
     // Summary
     println!("\n╔══════════════════════════════════════════════════════════════════╗");
@@ -205,11 +182,10 @@ fn run_coordinator(args: &[String]) {
 
 fn run_cross_process_test(
     name: &str,
-    backend: &str,
     iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
-    let topic_name = format!("xproc_{}_{}", backend, std::process::id());
+    let topic_name = format!("xproc_{}", std::process::id());
     let result_topic = format!("{}_results", topic_name);
 
     // Create result collection topic
@@ -223,7 +199,6 @@ fn run_cross_process_test(
         .arg("--consumer")
         .arg(&topic_name)
         .arg(&result_topic)
-        .arg(backend)
         .arg(iterations.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -237,7 +212,6 @@ fn run_cross_process_test(
     let mut producer = Command::new(&exe)
         .arg("--producer")
         .arg(&topic_name)
-        .arg(backend)
         .arg(iterations.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -325,23 +299,19 @@ fn run_cross_process_test(
 }
 
 fn run_producer(args: &[String]) {
-    if args.len() < 3 {
+    if args.len() < 2 {
         eprintln!("Producer: insufficient arguments");
         std::process::exit(1);
     }
 
     let topic_name = &args[0];
-    let backend = &args[1];
-    let iterations: usize = args[2].parse().unwrap_or(DEFAULT_ITERATIONS);
+    let iterations: usize = args[1].parse().unwrap_or(DEFAULT_ITERATIONS);
 
     // Pin to CPU 0
     let _ = set_cpu_affinity(0);
 
-    // Create producer based on backend
-    let producer: Topic<TimestampedMsg> = match backend.as_str() {
-        "spsc" => Topic::new(topic_name).expect("Failed to create SPSC producer"),
-        _ => Topic::new(topic_name).expect("Failed to create MPMC producer"),
-    };
+    // Create producer using AdaptiveTopic
+    let producer: Topic<TimestampedMsg> = Topic::new(topic_name).expect("Failed to create producer");
 
     // Warmup
     for i in 0..DEFAULT_WARMUP {
@@ -382,24 +352,20 @@ fn run_producer(args: &[String]) {
 }
 
 fn run_consumer(args: &[String]) {
-    if args.len() < 4 {
+    if args.len() < 3 {
         eprintln!("Consumer: insufficient arguments");
         std::process::exit(1);
     }
 
     let topic_name = &args[0];
     let result_topic = &args[1];
-    let backend = &args[2];
-    let iterations: usize = args[3].parse().unwrap_or(DEFAULT_ITERATIONS);
+    let iterations: usize = args[2].parse().unwrap_or(DEFAULT_ITERATIONS);
 
     // Pin to CPU 1
     let _ = set_cpu_affinity(1);
 
-    // Create consumer based on backend
-    let consumer: Topic<TimestampedMsg> = match backend.as_str() {
-        "spsc" => Topic::new(topic_name).expect("Failed to create SPSC consumer"),
-        _ => Topic::new(topic_name).expect("Failed to create MPMC consumer"),
-    };
+    // Create consumer using AdaptiveTopic
+    let consumer: Topic<TimestampedMsg> = Topic::new(topic_name).expect("Failed to create consumer");
 
     // Create result publisher
     let result_tx: Topic<ResultMsg> = Topic::new(result_topic).expect("Failed to create result topic");

@@ -99,35 +99,37 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new();
 
     // SAFETY (Priority 0) - Always runs first
-    scheduler.add(Box::new(EmergencyStopNode::new("cmd_vel")?), 0);
+    scheduler.add(EmergencyStopNode::new("cmd_vel")?)
+        .order(0)
+        .done();
 
     // SENSOR (Priority 1) - LiDAR publishes to "lidar/scan"
     let mut lidar = LidarNode::new()?;
     lidar.configure_serial("/dev/ttyUSB0", 115200);
-    scheduler.add(Box::new(lidar), 1);
+    scheduler.add(lidar).order(1).done();
 
     // PERCEPTION (Priority 2) - Subscribes "lidar/scan", publishes "obstacles"
     let mut detector = CollisionDetectorNode::new()?;
     detector.set_safety_distance(0.5);  // 50cm
-    scheduler.add(Box::new(detector), 2);
+    scheduler.add(detector).order(2).done();
 
     // PLANNING (Priority 3) - Subscribes "obstacles", publishes "cmd_vel"
-    scheduler.add(Box::new(PathPlannerNode::new()?), 3);
+    scheduler.add(PathPlannerNode::new()?).order(3).done();
 
     // CONTROL (Priority 4) - Subscribes "cmd_vel", publishes "motor/*"
     let drive = DifferentialDriveNode::new("cmd_vel", "motor/left", "motor/right", 0.3)?;
-    scheduler.add(Box::new(drive), 4);
+    scheduler.add(drive).order(4).done();
 
     // ACTUATORS (Priority 5) - Subscribe to motor commands
     let mut left = BldcMotorNode::new()?;
     left.configure_gpio(12, EscProtocol::DShot600);
     left.set_input_topic("motor/left");
-    scheduler.add(Box::new(left), 5);
+    scheduler.add(left).order(5).done();
 
     let mut right = BldcMotorNode::new()?;
     right.configure_gpio(13, EscProtocol::DShot600);
     right.set_input_topic("motor/right");
-    scheduler.add(Box::new(right), 5);
+    scheduler.add(right).order(5).done();
 
     scheduler.run()
 }
@@ -362,8 +364,8 @@ impl Node for SensorNode {
     fn name(&self) -> &'static str { "sensor_node" }
 
     // init() is optional - only override if you need setup logic
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("SensorNode initialized");
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "SensorNode initialized");
         Ok(())
     }
 
@@ -378,8 +380,8 @@ impl Node for SensorNode {
     }
 
     // shutdown() is optional - only override if you need cleanup logic
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!("SensorNode sent {} readings", self.counter));
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(info, "SensorNode sent {} readings", self.counter);
         Ok(())
     }
 }
@@ -510,8 +512,18 @@ use horus::prelude::*;
 
 let mut scheduler = Scheduler::new().name("my_app");
 
-// Add nodes with priority (0 = highest)
-scheduler.add(Box::new(my_node), 0);
+// Add nodes with fluent API (no Box::new needed!)
+scheduler.add(my_node)
+    .order(0)      // Priority: 0 = highest
+    .done();
+
+// Real-time nodes with WCET and deadline
+scheduler.add(motor_controller)
+    .order(0)
+    .rt()              // Mark as real-time
+    .wcet_us(200)      // 200μs worst-case execution time
+    .deadline_ms(1)    // 1ms deadline
+    .done();
 
 // Run options:
 scheduler.run()?;                                  // Run continuously until Ctrl+C
@@ -552,12 +564,12 @@ The core trait that all nodes must implement:
 use horus::prelude::*;
 
 pub trait Node: Send {
-    fn name(&self) -> &'static str;                          // Required: Node identifier
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {   // Optional: Setup logic
+    fn name(&self) -> &'static str;                // Required: Node identifier
+    fn init(&mut self) -> Result<()> {             // Optional: Setup logic
         Ok(())
     }
-    fn tick(&mut self);                                      // Required: Main loop logic
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> { // Optional: Cleanup logic
+    fn tick(&mut self);                            // Required: Main loop logic
+    fn shutdown(&mut self) -> Result<()> {         // Optional: Cleanup logic
         Ok(())
     }
 }
@@ -566,8 +578,8 @@ pub trait Node: Send {
 **Method requirements:**
 - **`name()`** - Required: Returns unique node identifier
 - **`tick()`** - Required: Your main logic that runs every cycle
-- **`init()`** - Optional: Override only if you need setup logic (ctx provides logging)
-- **`shutdown()`** - Optional: Override only if you need cleanup logic (ctx provides logging)
+- **`init()`** - Optional: Override only if you need setup logic (use `hlog!()` for logging)
+- **`shutdown()`** - Optional: Override only if you need cleanup logic (use `hlog!()` for logging)
 
 ### node! Macro
 
@@ -597,12 +609,12 @@ node! {
         }
 
         // Lifecycle hooks
-        init(ctx) {
-            ctx.log_info("MyNode initialized");
+        init {
+            hlog!(info, "MyNode initialized");
             Ok(())
         }
 
-        tick(_ctx) {
+        tick {
             // Process incoming messages
             if let Some(value) = self.input.recv() {
                 self.counter += 1;
@@ -611,8 +623,8 @@ node! {
             }
         }
 
-        shutdown(ctx) {
-            ctx.log_info("MyNode shutdown");
+        shutdown {
+            hlog!(info, "MyNode shutdown");
             Ok(())
         }
     }
@@ -626,7 +638,7 @@ node! {
 ### SnakeSim
 
 <div align="center">
-  <img src="examples/snakesim_demo.gif" alt="SnakeSim Demo" width="600"/>
+  <img src="gifs/snakesim_demo.gif" alt="SnakeSim Demo" width="600"/>
   <p><i>Multi-node snake game with real-time input processing and graphical display</i></p>
 </div>
 
@@ -690,7 +702,7 @@ All nodes communicate through the same high-performance IPC layer, regardless of
 ### Multi-Language Example
 
 <div align="center">
-  <img src="examples/multi_language_demo.gif" alt="Multi-Language Demo" width="700"/>
+  <img src="gifs/multi_language_demo.gif" alt="Multi-Language Demo" width="700"/>
   <p><i>Rust and Python nodes communicating in real-time</i></p>
 </div>
 
@@ -760,7 +772,7 @@ See [horus_py/README.md](horus_py/README.md) for complete documentation.
 ### Solving "Works on My Machine" with `horus env freeze` & `horus env restore`
 
 <div align="center">
-  <img src="examples/freeze_restore_demo.gif" alt="Freeze & Restore Demo" width="700"/>
+  <img src="gifs/freeze_restore_demo.gif" alt="Freeze & Restore Demo" width="700"/>
   <p><i>Share exact environments across machines - no dependency hell</i></p>
 </div>
 

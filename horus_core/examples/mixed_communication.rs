@@ -1,5 +1,5 @@
 use horus_core::scheduling::Scheduler;
-use horus_core::{HorusResult, Node, NodeInfo, NodeInfoExt, Topic};
+use horus_core::{Node, Result, Topic};
 use std::time::Duration;
 
 // Node that publishes telemetry data using Hub (multiple subscribers can consume)
@@ -9,7 +9,7 @@ pub struct TelemetryNode {
 }
 
 impl TelemetryNode {
-    pub fn new() -> HorusResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             telemetry_hub: Topic::new("telemetry")?,
             counter: 0.0,
@@ -22,7 +22,7 @@ impl Node for TelemetryNode {
         "TelemetryNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("TelemetryNode initialized - broadcasting to Hub");
         Ok(())
     }
@@ -43,7 +43,7 @@ pub struct ControlNode {
 }
 
 impl ControlNode {
-    pub fn new() -> HorusResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             command_link: Topic::new("command")?,
             response_link: Topic::new("response")?,
@@ -56,7 +56,7 @@ impl Node for ControlNode {
         "ControlNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("ControlNode initialized - using Link for low-latency control");
         Ok(())
     }
@@ -83,7 +83,7 @@ pub struct ActuatorNode {
 }
 
 impl ActuatorNode {
-    pub fn new() -> HorusResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             command_link: Topic::new("command")?,
             response_link: Topic::new("response")?,
@@ -97,7 +97,7 @@ impl Node for ActuatorNode {
         "ActuatorNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("ActuatorNode initialized - receiving via Link");
         Ok(())
     }
@@ -119,7 +119,7 @@ pub struct LoggerNode {
 }
 
 impl LoggerNode {
-    pub fn new() -> HorusResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             telemetry_hub: Topic::new("telemetry")?,
             logs_received: 0,
@@ -132,7 +132,7 @@ impl Node for LoggerNode {
         "LoggerNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("LoggerNode initialized - subscribing to Hub");
         Ok(())
     }
@@ -158,7 +158,7 @@ pub struct AnalyticsNode {
 }
 
 impl AnalyticsNode {
-    pub fn new() -> HorusResult<Self> {
+    pub fn new() -> Result<Self> {
         Ok(Self {
             telemetry_hub: Topic::new("telemetry")?,
             sum: 0.0,
@@ -172,7 +172,7 @@ impl Node for AnalyticsNode {
         "AnalyticsNode"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("AnalyticsNode initialized - also subscribing to Hub");
         Ok(())
     }
@@ -192,7 +192,7 @@ impl Node for AnalyticsNode {
     }
 }
 
-fn main() -> HorusResult<()> {
+fn main() -> Result<()> {
     println!("=== Mixed Communication Example ===");
     println!("Demonstrating Link and Hub coexistence in the same scheduler:\n");
     println!("- Control loop uses Link (248ns latency) for real-time control");
@@ -202,13 +202,23 @@ fn main() -> HorusResult<()> {
     let mut scheduler = Scheduler::new();
 
     // Add nodes using Link (for low-latency control)
-    scheduler.add(Box::new(ControlNode::new()?), 10);
-    scheduler.add(Box::new(ActuatorNode::new()?), 10);
+    scheduler.add(ControlNode::new()?)
+        .order(10)
+        .done();
+    scheduler.add(ActuatorNode::new()?)
+        .order(10)
+        .done();
 
     // Add nodes using Hub (for broadcast/multiple subscribers)
-    scheduler.add(Box::new(TelemetryNode::new()?), 20);
-    scheduler.add(Box::new(LoggerNode::new()?), 100);
-    scheduler.add(Box::new(AnalyticsNode::new()?), 100);
+    scheduler.add(TelemetryNode::new()?)
+        .order(20)
+        .done();
+    scheduler.add(LoggerNode::new()?)
+        .order(100)
+        .done();
+    scheduler.add(AnalyticsNode::new()?)
+        .order(100)
+        .done();
 
     println!("Running scheduler with 5 nodes (2 using Link, 3 using Hub)...\n");
 

@@ -63,33 +63,32 @@ From `horus_core/src/core/node.rs`:
 ```rust
 pub trait Node: Send {
     fn name(&self) -> &'static str;
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()>;
+    fn init(&mut self) -> Result<()>;
     fn tick(&mut self);
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()>;
+    fn shutdown(&mut self) -> Result<()>;
     fn get_publishers(&self) -> Vec<TopicMetadata> { Vec::new() }
     fn get_subscribers(&self) -> Vec<TopicMetadata> { Vec::new() }
 }
 ```
 
 **Key Points:**
-- `init()` takes `&mut NodeInfo` (NOT Option)
+- `init()` returns Result<()>, use `hlog!()` macro for logging
 - `tick()` takes no arguments and returns nothing
-- `shutdown()` takes `&mut NodeInfo` (NOT Option)
+- `shutdown()` returns Result<()>, use `hlog!()` macro for logging
 - All lifecycle methods use `Result<()>` for errors (via prelude alias)
 
-### 2. NodeInfo Context
+### 2. hlog!() Macro
 
-Provides logging and metrics tracking:
+Use the `hlog!()` macro for logging from nodes. Context is automatically captured:
 
 ```rust
-impl NodeInfo {
-    pub fn log_pub<T: Debug>(&mut self, topic: &str, data: &T, ipc_ns: u64);
-    pub fn log_sub<T: Debug>(&mut self, topic: &str, data: &T, ipc_ns: u64);
-    pub fn log_info(&mut self, message: &str);
-    pub fn log_warning(&mut self, message: &str);
-    pub fn log_error(&mut self, message: &str);
-    pub fn metrics(&self) -> &NodeMetrics;
-}
+use horus_core::hlog;
+
+// In your Node implementation:
+hlog!(info, "Node initialized successfully");
+hlog!(warn, "Low battery: {}%", percentage);
+hlog!(error, "Sensor read failed: {}", err);
+hlog!(debug, "Processing frame {}", frame_id);
 ```
 
 **Available Metrics:**
@@ -107,11 +106,11 @@ From `horus_core/src/communication/topic.rs`:
 
 ```rust
 impl<T> Topic<T> {
-    pub fn new(topic_name: &str) -> HorusResult<Self>;
-    pub fn producer(topic_name: &str) -> HorusResult<Self>;  // SPSC producer
-    pub fn consumer(topic_name: &str) -> HorusResult<Self>;  // SPSC consumer
-    pub fn send(&self, msg: T, ctx: Option<&mut NodeInfo>) -> Result<(), T>;
-    pub fn recv(&self, ctx: Option<&mut NodeInfo>) -> Option<T>;
+    pub fn new(topic_name: &str) -> Result<Self>;
+    pub fn producer(topic_name: &str) -> Result<Self>;  // SPSC producer
+    pub fn consumer(topic_name: &str) -> Result<Self>;  // SPSC consumer
+    pub fn send(&self, msg: T) -> Result<(), T>;
+    pub fn recv(&self) -> Option<T>;
     pub fn get_topic_name(&self) -> &str;
     pub fn get_metrics(&self) -> TopicMetrics;
 }
@@ -139,7 +138,7 @@ From `horus_core/src/scheduling/scheduler.rs`:
 ```rust
 impl Scheduler {
     pub fn new() -> Self;
-    pub fn add(&mut self, node: Box<dyn Node>, priority: u32, logging_enabled: Option<bool>) -> &mut Self;
+    pub fn add(&mut self, node: Box<dyn Node>, priority: u32) -> &mut Self;
     pub fn run(&mut self) -> HorusResult<()>;
     pub fn run_for(&mut self, duration: Duration) -> HorusResult<()>;
     pub fn tick(&mut self, node_names: &[&str]) -> HorusResult<()>;
@@ -198,8 +197,8 @@ impl Node for SensorNode {
     fn name(&self) -> &'static str { "SensorNode" }
 
     // Optional: Called once at startup
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("SensorNode initialized");
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "SensorNode initialized");
         Ok(())
     }
 
@@ -211,8 +210,8 @@ impl Node for SensorNode {
     }
 
     // Optional: Called once at shutdown
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("SensorNode shutdown");
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(info, "SensorNode shutdown");
         Ok(())
     }
 }
@@ -237,8 +236,8 @@ impl Node for ControlNode {
     fn name(&self) -> &'static str { "ControlNode" }
 
     // Optional: Called once at startup
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("ControlNode initialized");
+    fn init(&mut self) -> Result<()> {
+        hlog!(info, "ControlNode initialized");
         Ok(())
     }
 
@@ -246,13 +245,13 @@ impl Node for ControlNode {
     fn tick(&mut self) {
         if let Some(data) = self.subscriber.recv() {
             // Process the received data
-            println!("[ControlNode] Received: {}", data);
+            hlog!(info, "Received: {}", data);
         }
     }
 
     // Optional: Called once at shutdown
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("ControlNode shutdown");
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(info, "ControlNode shutdown");
         Ok(())
     }
 }
@@ -419,24 +418,25 @@ impl Node for RobustNode {
 }
 ```
 
-### 4. Logging
+### 4. Logging with hlog!()
 
 ```rust
+use horus_core::hlog;
+
 impl Node for MyNode {
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        // Logging is available in init() and shutdown() via ctx
-        ctx.log_info("Node initialized");
+    fn init(&mut self) -> Result<()> {
+        // Use hlog!() macro for logging - context is automatic
+        hlog!(info, "Node initialized");
         Ok(())
     }
 
     fn tick(&mut self) {
-        // tick() is designed for maximum performance - no ctx overhead
-        // Use external monitoring tools (horus monitor, horus topic echo)
-        // for runtime introspection without affecting hot path performance
+        // hlog!() works in tick() too - logs are captured with node context
+        hlog!(debug, "Processing tick");
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info("Node shutting down");
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(info, "Node shutting down");
         Ok(())
     }
 }

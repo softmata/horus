@@ -51,14 +51,14 @@ struct TickSection {
 /// Optional init implementation
 struct InitSection {
     _init_token: Ident, // "init" keyword
-    ctx_arg: Option<Ident>,
+    _ctx_arg: Option<Ident>, // Parsed for backwards compatibility but not used - init() no longer takes ctx
     body: Block,
 }
 
 /// Optional shutdown implementation
 struct ShutdownSection {
     _shutdown_token: Ident, // "shutdown" keyword
-    ctx_arg: Option<Ident>,
+    _ctx_arg: Option<Ident>, // Parsed for backwards compatibility but not used - shutdown() no longer takes ctx
     body: Block,
 }
 
@@ -346,7 +346,8 @@ fn parse_tick_section(input: ParseStream, tick_token: Ident) -> Result<TickSecti
 }
 
 fn parse_init_section(input: ParseStream, init_token: Ident) -> Result<InitSection> {
-    let ctx_arg = if input.peek(syn::token::Paren) {
+    // Parse optional (ctx) for backwards compatibility - but it's not used
+    let _ctx_arg = if input.peek(syn::token::Paren) {
         let args;
         parenthesized!(args in input);
         Some(args.parse::<Ident>()?)
@@ -358,13 +359,14 @@ fn parse_init_section(input: ParseStream, init_token: Ident) -> Result<InitSecti
 
     Ok(InitSection {
         _init_token: init_token,
-        ctx_arg,
+        _ctx_arg,
         body,
     })
 }
 
 fn parse_shutdown_section(input: ParseStream, shutdown_token: Ident) -> Result<ShutdownSection> {
-    let ctx_arg = if input.peek(syn::token::Paren) {
+    // Parse optional (ctx) for backwards compatibility - but it's not used
+    let _ctx_arg = if input.peek(syn::token::Paren) {
         let args;
         parenthesized!(args in input);
         Some(args.parse::<Ident>()?)
@@ -376,7 +378,7 @@ fn parse_shutdown_section(input: ParseStream, shutdown_token: Ident) -> Result<S
 
     Ok(ShutdownSection {
         _shutdown_token: shutdown_token,
-        ctx_arg,
+        _ctx_arg,
         body,
     })
 }
@@ -518,19 +520,12 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     };
 
     // Generate optional init implementation
+    // Note: ctx_arg is parsed for backwards compatibility but ignored - init() no longer takes ctx
     let init_impl = if let Some(ref init_section) = node_def.init_section {
         let init_body = &init_section.body;
-        if init_section.ctx_arg.is_some() {
-            quote! {
-                fn init(&mut self, ctx: &mut horus_core::core::NodeInfo) -> horus_core::error::HorusResult<()> {
-                    #init_body
-                }
-            }
-        } else {
-            quote! {
-                fn init(&mut self, _ctx: &mut horus_core::core::NodeInfo) -> horus_core::error::HorusResult<()> {
-                    #init_body
-                }
+        quote! {
+            fn init(&mut self) -> horus_core::error::Result<()> {
+                #init_body
             }
         }
     } else {
@@ -538,19 +533,12 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     };
 
     // Generate optional shutdown implementation
+    // Note: ctx_arg is parsed for backwards compatibility but ignored - shutdown() no longer takes ctx
     let shutdown_impl = if let Some(ref shutdown_section) = node_def.shutdown_section {
         let shutdown_body = &shutdown_section.body;
-        if shutdown_section.ctx_arg.is_some() {
-            quote! {
-                fn shutdown(&mut self, ctx: &mut horus_core::core::NodeInfo) -> horus_core::error::HorusResult<()> {
-                    #shutdown_body
-                }
-            }
-        } else {
-            quote! {
-                fn shutdown(&mut self, _ctx: &mut horus_core::core::NodeInfo) -> horus_core::error::HorusResult<()> {
-                    #shutdown_body
-                }
+        quote! {
+            fn shutdown(&mut self) -> horus_core::error::Result<()> {
+                #shutdown_body
             }
         }
     } else {

@@ -272,8 +272,8 @@ impl Node for RtNodeWrapper {
         self.node.name()
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> crate::error::HorusResult<()> {
-        self.node.init(ctx)
+    fn init(&mut self) -> crate::error::HorusResult<()> {
+        self.node.init()
     }
 
     fn tick(&mut self) {
@@ -302,8 +302,8 @@ impl Node for RtNodeWrapper {
         );
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> crate::error::HorusResult<()> {
-        self.node.shutdown(ctx)
+    fn shutdown(&mut self) -> crate::error::HorusResult<()> {
+        self.node.shutdown()
     }
 
     fn rate_hz(&self) -> Option<f64> {

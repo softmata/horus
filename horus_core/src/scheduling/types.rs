@@ -26,7 +26,6 @@ pub enum NodeControlCommand {
 pub(crate) struct RegisteredNode {
     pub(crate) node: Box<dyn Node>,
     pub(crate) priority: u32,
-    pub(crate) logging_enabled: bool,
     pub(crate) initialized: bool,
     pub(crate) context: Option<NodeInfo>,
     pub(crate) rate_hz: Option<f64>,

@@ -1,4 +1,3 @@
-use crate::memory::platform::shm_heartbeats_dir;
 use crate::params::RuntimeParams;
 use crate::scheduling::fault_tolerance::CircuitBreaker;
 use crate::terminal::is_raw_mode;
@@ -83,129 +82,6 @@ impl HealthStatus {
             Self::Critical => "red",
             Self::Unknown => "gray",
         }
-    }
-}
-
-/// Node heartbeat data for shared memory monitoring (platform-specific path)
-#[derive(Debug, Clone)]
-pub struct NodeHeartbeat {
-    pub state: NodeState,
-    pub health: HealthStatus,
-    pub tick_count: u64,
-    pub target_rate_hz: u32,
-    pub actual_rate_hz: u32,
-    pub error_count: u32,
-    pub last_tick_timestamp: u64,
-    pub heartbeat_timestamp: u64,
-}
-
-impl NodeHeartbeat {
-    /// Create new heartbeat from node metrics
-    pub fn from_metrics(state: NodeState, metrics: &NodeMetrics) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Determine health from metrics
-        let health = if metrics.errors_count > 10 {
-            HealthStatus::Critical
-        } else if metrics.errors_count > 3 {
-            HealthStatus::Error
-        } else if metrics.failed_ticks > 0 || metrics.avg_tick_duration_ms > 100.0 {
-            HealthStatus::Warning
-        } else {
-            HealthStatus::Healthy
-        };
-
-        Self {
-            state,
-            health,
-            tick_count: metrics.total_ticks,
-            target_rate_hz: 60, // Default, should be configured
-            actual_rate_hz: if metrics.avg_tick_duration_ms > 0.0 {
-                (1000.0 / metrics.avg_tick_duration_ms) as u32
-            } else {
-                0
-            },
-            error_count: metrics.errors_count as u32,
-            last_tick_timestamp: now,
-            heartbeat_timestamp: now,
-        }
-    }
-
-    /// Write heartbeat to file
-    pub fn write_to_file(&self, node_name: &str) -> crate::error::HorusResult<()> {
-        // Heartbeats are intentionally global (not session-isolated) so monitor can see all nodes
-        let dir = shm_heartbeats_dir();
-        std::fs::create_dir_all(&dir)?;
-
-        let path = dir.join(node_name);
-        let json = serde_json::json!({
-            "state": self.state.to_string(),
-            "health": self.health.as_str(),
-            "tick_count": self.tick_count,
-            "target_rate_hz": self.target_rate_hz,
-            "actual_rate_hz": self.actual_rate_hz,
-            "error_count": self.error_count,
-            "last_tick_timestamp": self.last_tick_timestamp,
-            "heartbeat_timestamp": self.heartbeat_timestamp,
-        });
-
-        std::fs::write(&path, json.to_string())?;
-        Ok(())
-    }
-
-    /// Read heartbeat from file
-    pub fn read_from_file(node_name: &str) -> Option<Self> {
-        let path = shm_heartbeats_dir().join(node_name);
-        let content = std::fs::read_to_string(&path).ok()?;
-        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-
-        // Parse state string back to enum
-        let state_str = json["state"].as_str()?;
-        let state = match state_str {
-            "Uninitialized" => NodeState::Uninitialized,
-            "Initializing" => NodeState::Initializing,
-            "Running" => NodeState::Running,
-            "Paused" => NodeState::Paused,
-            "Stopping" => NodeState::Stopping,
-            "Stopped" => NodeState::Stopped,
-            s if s.starts_with("Error") => NodeState::Error("".to_string()),
-            s if s.starts_with("Crashed") => NodeState::Crashed("".to_string()),
-            _ => return None,
-        };
-
-        // Parse health
-        let health_str = json["health"].as_str()?;
-        let health = match health_str {
-            "Healthy" => HealthStatus::Healthy,
-            "Warning" => HealthStatus::Warning,
-            "Error" => HealthStatus::Error,
-            "Critical" => HealthStatus::Critical,
-            _ => HealthStatus::Unknown,
-        };
-
-        Some(Self {
-            state,
-            health,
-            tick_count: json["tick_count"].as_u64()? as u64,
-            target_rate_hz: json["target_rate_hz"].as_u64()? as u32,
-            actual_rate_hz: json["actual_rate_hz"].as_u64()? as u32,
-            error_count: json["error_count"].as_u64()? as u32,
-            last_tick_timestamp: json["last_tick_timestamp"].as_u64()?,
-            heartbeat_timestamp: json["heartbeat_timestamp"].as_u64()?,
-        })
-    }
-
-    /// Check if heartbeat is fresh (within last N seconds)
-    pub fn is_fresh(&self, max_age_secs: u64) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        now.saturating_sub(self.heartbeat_timestamp) <= max_age_secs
     }
 }
 
@@ -341,6 +217,19 @@ impl NodeMetrics {
         self.min_tick_duration_ms = 0.0;
         self.last_tick_duration_ms = 0.0;
     }
+
+    /// Calculate health status from metrics
+    pub fn calculate_health(&self) -> HealthStatus {
+        if self.errors_count > 10 {
+            HealthStatus::Critical
+        } else if self.errors_count > 3 {
+            HealthStatus::Error
+        } else if self.failed_ticks > 0 || self.avg_tick_duration_ms > 100.0 {
+            HealthStatus::Warning
+        } else {
+            HealthStatus::Healthy
+        }
+    }
 }
 
 /// Configuration parameters for node behavior
@@ -350,7 +239,6 @@ pub struct NodeConfig {
     pub restart_on_failure: bool,
     pub max_restart_attempts: u32,
     pub restart_delay_ms: u64,
-    pub enable_logging: bool,
     pub log_level: String,
     pub custom_params: HashMap<String, String>,
     /// Optional per-node circuit breaker configuration
@@ -365,7 +253,6 @@ impl Default for NodeConfig {
             restart_on_failure: true,
             max_restart_attempts: 3,
             restart_delay_ms: 1000,
-            enable_logging: true,
             log_level: "INFO".to_string(), // Development default: includes info logging
             custom_params: HashMap::new(),
             circuit_breaker: None,
@@ -414,7 +301,7 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     /// Create a new NodeInfo with comprehensive initialization
-    pub fn new(node_name: String, logging_enabled: bool) -> Self {
+    pub fn new(node_name: String) -> Self {
         let now = Instant::now();
         let node_id = format!(
             "{}_{}",
@@ -425,10 +312,7 @@ impl NodeInfo {
                 .as_millis()
         );
 
-        let config = NodeConfig {
-            enable_logging: logging_enabled,
-            ..Default::default()
-        };
+        let config = NodeConfig::default();
 
         Self {
             name: node_name.clone(),
@@ -454,7 +338,7 @@ impl NodeInfo {
 
     /// Create NodeInfo with custom configuration
     pub fn new_with_config(node_name: String, config: NodeConfig) -> Self {
-        let mut node_info = Self::new(node_name, config.enable_logging);
+        let mut node_info = Self::new(node_name);
         node_info.config = config;
         node_info
     }
@@ -477,12 +361,14 @@ impl NodeInfo {
     }
 
     pub fn transition_to_error(&mut self, error_msg: String) {
-        self.log_error(&error_msg);
+        crate::hlog!(error, "{}", error_msg);
+        self.track_error(&error_msg);
         self.set_state(NodeState::Error(error_msg));
     }
 
     pub fn transition_to_crashed(&mut self, crash_msg: String) {
-        self.log_error(&crash_msg);
+        crate::hlog!(error, "{}", crash_msg);
+        self.track_error(&crash_msg);
         self.set_state(NodeState::Crashed(crash_msg));
     }
 
@@ -541,11 +427,7 @@ impl NodeInfo {
 
     /// Increment tick counter without recording duration metrics
     /// Useful for tools like sim2d that manage their own timing
-    /// Only increments when logging is enabled (so ticks start at 0 after learning phase)
     pub fn increment_tick(&mut self) {
-        if !self.config.enable_logging {
-            return;
-        }
         let _guard = self
             .metrics_lock
             .lock()
@@ -563,10 +445,7 @@ impl NodeInfo {
             let duration = start_time.elapsed();
             let duration_ms = duration.as_millis() as f64;
 
-            // Only count ticks when logging is enabled (so display starts at 0 after learning)
-            if self.config.enable_logging {
-                self.metrics.total_ticks += 1;
-            }
+            self.metrics.total_ticks += 1;
             self.metrics.successful_ticks += 1;
             self.metrics.last_tick_duration_ms = duration_ms;
 
@@ -593,20 +472,11 @@ impl NodeInfo {
             self.metrics.uptime_seconds = self.creation_time.elapsed().as_secs_f64();
         }
 
-        // Each node writes its own heartbeat - scheduler doesn't do monitoring
-        self.write_heartbeat();
     }
 
-    /// Write heartbeat for this node (called automatically after each successful tick)
-    fn write_heartbeat(&self) {
-        let heartbeat = NodeHeartbeat::from_metrics(self.state.clone(), &self.metrics);
-        let _ = heartbeat.write_to_file(&self.name);
-    }
-
-    /// Record node shutdown and write final heartbeat
+    /// Record node shutdown
     pub fn record_shutdown(&mut self) {
         self.transition_to_stopped();
-        self.write_heartbeat();
     }
 
     pub fn record_tick_failure(&mut self, error_msg: String) {
@@ -615,10 +485,7 @@ impl NodeInfo {
                 .metrics_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Only count ticks when logging is enabled (so display starts at 0 after learning)
-            if self.config.enable_logging {
-                self.metrics.total_ticks += 1;
-            }
+            self.metrics.total_ticks += 1;
             self.metrics.failed_ticks += 1;
 
             if let Some(start_time) = self.tick_start_time {
@@ -628,10 +495,8 @@ impl NodeInfo {
             }
         }
 
-        self.log_error(&error_msg);
-
-        // Write heartbeat even on failures so monitoring can see error count
-        self.write_heartbeat();
+        crate::hlog!(error, "{}", error_msg);
+        self.track_error(&error_msg);
     }
 
     /// Get elapsed time since tick started in microseconds
@@ -643,74 +508,8 @@ impl NodeInfo {
         }
     }
 
-    pub fn log_info(&self, message: &str) {
-        let now = chrono::Local::now();
-        let current_tick_us = if let Some(start_time) = self.tick_start_time {
-            start_time.elapsed().as_micros() as u64
-        } else {
-            0
-        };
-
-        if self.config.enable_logging
-            && (self.config.log_level == "INFO" || self.config.log_level == "DEBUG")
-        {
-            let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
-            let msg = format!(
-                "\x1b[34m[INFO]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                self.name, message, line_ending
-            );
-            use std::io::{self, Write};
-            let _ = io::stderr().write_all(msg.as_bytes());
-            let _ = io::stderr().flush();
-        }
-
-        // Write to global log buffer for monitor
-        use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-        publish_log(LogEntry {
-            timestamp: now.format("%H:%M:%S%.3f").to_string(),
-            tick_number: self.metrics.total_ticks,
-            node_name: self.name.clone(),
-            log_type: LogType::Info,
-            topic: None,
-            message: message.to_string(),
-            tick_us: current_tick_us,
-            ipc_ns: 0,
-        });
-    }
-
-    pub fn log_warning(&mut self, message: &str) {
-        let now = chrono::Local::now();
-        let current_tick_us = if let Some(start_time) = self.tick_start_time {
-            start_time.elapsed().as_micros() as u64
-        } else {
-            0
-        };
-
-        if self.config.enable_logging {
-            // Format to owned String first to avoid double-formatting issues
-            let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
-            let msg = format!(
-                "\x1b[33m[WARN]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                self.name, message, line_ending
-            );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
-        }
-
-        // Write to global log buffer for monitor
-        use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-        publish_log(LogEntry {
-            timestamp: now.format("%H:%M:%S%.3f").to_string(),
-            tick_number: self.metrics.total_ticks,
-            node_name: self.name.clone(),
-            log_type: LogType::Warning,
-            topic: None,
-            message: message.to_string(),
-            tick_us: current_tick_us,
-            ipc_ns: 0,
-        });
-
+    /// Track a warning for metrics (history + count). Use hlog!(warn, ...) for logging.
+    pub fn track_warning(&mut self, message: &str) {
         self.warning_history
             .push((Instant::now(), message.to_string()));
         if self.warning_history.len() > 100 {
@@ -719,39 +518,8 @@ impl NodeInfo {
         self.metrics.warnings_count += 1;
     }
 
-    pub fn log_error(&mut self, message: &str) {
-        let now = chrono::Local::now();
-        let current_tick_us = if let Some(start_time) = self.tick_start_time {
-            start_time.elapsed().as_micros() as u64
-        } else {
-            0
-        };
-
-        if self.config.enable_logging {
-            // Format to owned String first to avoid double-formatting issues
-            let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
-            let msg = format!(
-                "\x1b[31m[ERROR]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                self.name, message, line_ending
-            );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
-        }
-
-        // Write to global log buffer for monitor
-        use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-        publish_log(LogEntry {
-            timestamp: now.format("%H:%M:%S%.3f").to_string(),
-            tick_number: self.metrics.total_ticks,
-            node_name: self.name.clone(),
-            log_type: LogType::Error,
-            topic: None,
-            message: message.to_string(),
-            tick_us: current_tick_us,
-            ipc_ns: 0,
-        });
-
+    /// Track an error for metrics (history + count). Use hlog!(error, ...) for logging.
+    pub fn track_error(&mut self, message: &str) {
         self.error_history
             .push((Instant::now(), message.to_string()));
         if self.error_history.len() > 100 {
@@ -760,43 +528,9 @@ impl NodeInfo {
         self.metrics.errors_count += 1;
     }
 
-    pub fn log_debug(&mut self, message: &str) {
-        let now = chrono::Local::now();
-        let current_tick_us = if let Some(start_time) = self.tick_start_time {
-            start_time.elapsed().as_micros() as u64
-        } else {
-            0
-        };
-
-        if self.config.enable_logging && self.config.log_level == "DEBUG" {
-            // Format to owned String first to avoid double-formatting issues
-            let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
-            let msg = format!(
-                "\x1b[90m[DEBUG]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
-                self.name, message, line_ending
-            );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
-        }
-
-        // Write to global log buffer for monitor
-        use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-        publish_log(LogEntry {
-            timestamp: now.format("%H:%M:%S%.3f").to_string(),
-            tick_number: self.metrics.total_ticks,
-            node_name: self.name.clone(),
-            log_type: LogType::Debug,
-            topic: None,
-            message: message.to_string(),
-            tick_us: current_tick_us,
-            ipc_ns: 0,
-        });
-    }
-
     /// Production-ready metric logging - logs only significant events
     pub fn log_metrics_summary(&mut self) {
-        if self.config.enable_logging && self.config.log_level != "QUIET" {
+        if self.config.log_level != "QUIET" {
             let now = chrono::Local::now();
             let uptime = self.creation_time.elapsed().as_secs();
 
@@ -853,12 +587,6 @@ impl NodeInfo {
     pub fn set_config(&mut self, config: NodeConfig) {
         self.config = config;
     }
-    pub fn set_logging_enabled(&mut self, enabled: bool) {
-        self.config.enable_logging = enabled;
-    }
-    pub fn is_logging_enabled(&self) -> bool {
-        self.config.enable_logging
-    }
 
     // Custom data management
     pub fn set_custom_data(&mut self, key: String, value: String) {
@@ -875,29 +603,48 @@ impl NodeInfo {
 }
 
 /// Topic metadata for monitoring and introspection
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TopicMetadata {
     pub topic_name: String,
     pub type_name: String,
 }
 
 /// Comprehensive trait for Horus nodes with full lifecycle support
+///
+/// # Logging
+///
+/// Use the `hlog!()` macro for logging within any lifecycle method:
+///
+/// ```ignore
+/// use horus::hlog;
+///
+/// fn init(&mut self) -> HorusResult<()> {
+///     hlog!(info, "Initializing...");
+///     Ok(())
+/// }
+///
+/// fn tick(&mut self) {
+///     hlog!(debug, "Processing tick");
+/// }
+/// ```
 pub trait Node: Send {
     /// Get the node's name (must be unique)
     fn name(&self) -> &'static str;
 
-    /// Initialize the node (called once at startup)
-    fn init(&mut self, ctx: &mut NodeInfo) -> crate::error::HorusResult<()> {
-        ctx.log_info("Node initialized successfully");
+    /// Initialize the node (called once at startup).
+    ///
+    /// Use `hlog!()` for logging instead of the old ctx parameter.
+    fn init(&mut self) -> crate::error::Result<()> {
         Ok(())
     }
 
     /// Main execution loop (called repeatedly)
     fn tick(&mut self);
 
-    /// Shutdown the node (called once at cleanup)
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> crate::error::HorusResult<()> {
-        ctx.log_info("Node shutdown successfully");
+    /// Shutdown the node (called once at cleanup).
+    ///
+    /// Use `hlog!()` for logging instead of the old ctx parameter.
+    fn shutdown(&mut self) -> crate::error::Result<()> {
         Ok(())
     }
 
@@ -917,9 +664,11 @@ pub trait Node: Send {
         Vec::new()
     }
 
-    /// Handle errors (optional override)
-    fn on_error(&mut self, error: &str, ctx: &mut NodeInfo) {
-        ctx.log_error(&format!("Node error: {}", error));
+    /// Handle errors (optional override).
+    ///
+    /// Use `hlog!()` for logging instead of the old ctx parameter.
+    fn on_error(&mut self, error: &str) {
+        crate::hlog!(error, "Node error: {}", error);
     }
 
     /// Get node priority (optional override)
@@ -1261,7 +1010,6 @@ mod tests {
         assert!(config.restart_on_failure);
         assert_eq!(config.max_restart_attempts, 3);
         assert_eq!(config.restart_delay_ms, 1000);
-        assert!(config.enable_logging);
         assert_eq!(config.log_level, "INFO");
         assert!(config.custom_params.is_empty());
     }
@@ -1277,71 +1025,47 @@ mod tests {
     }
 
     // =========================================================================
-    // NodeHeartbeat Tests
+    // Health Calculation Tests
     // =========================================================================
 
     #[test]
-    fn test_node_heartbeat_from_metrics_healthy() {
+    fn test_calculate_health_healthy() {
         let metrics = NodeMetrics {
             total_ticks: 100,
             successful_ticks: 100,
             failed_ticks: 0,
             avg_tick_duration_ms: 10.0,
-            max_tick_duration_ms: 15.0,
-            min_tick_duration_ms: 5.0,
-            last_tick_duration_ms: 10.0,
-            messages_sent: 50,
-            messages_received: 50,
             errors_count: 0,
-            warnings_count: 0,
-            uptime_seconds: 100.0,
-        };
-        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
-        assert_eq!(heartbeat.health, HealthStatus::Healthy);
-        assert_eq!(heartbeat.tick_count, 100);
-    }
-
-    #[test]
-    fn test_node_heartbeat_from_metrics_warning() {
-        let metrics = NodeMetrics {
-            total_ticks: 100,
-            successful_ticks: 95,
-            failed_ticks: 5, // > 0 failed ticks triggers warning
-            avg_tick_duration_ms: 10.0,
             ..NodeMetrics::default()
         };
-        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
-        assert_eq!(heartbeat.health, HealthStatus::Warning);
+        assert_eq!(metrics.calculate_health(), HealthStatus::Healthy);
     }
 
     #[test]
-    fn test_node_heartbeat_from_metrics_error() {
+    fn test_calculate_health_warning() {
         let metrics = NodeMetrics {
-            total_ticks: 100,
+            failed_ticks: 5, // > 0 failed ticks triggers warning
+            ..NodeMetrics::default()
+        };
+        assert_eq!(metrics.calculate_health(), HealthStatus::Warning);
+    }
+
+    #[test]
+    fn test_calculate_health_error() {
+        let metrics = NodeMetrics {
             errors_count: 5, // > 3 triggers error
             ..NodeMetrics::default()
         };
-        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
-        assert_eq!(heartbeat.health, HealthStatus::Error);
+        assert_eq!(metrics.calculate_health(), HealthStatus::Error);
     }
 
     #[test]
-    fn test_node_heartbeat_from_metrics_critical() {
+    fn test_calculate_health_critical() {
         let metrics = NodeMetrics {
-            total_ticks: 100,
             errors_count: 15, // > 10 triggers critical
             ..NodeMetrics::default()
         };
-        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
-        assert_eq!(heartbeat.health, HealthStatus::Critical);
-    }
-
-    #[test]
-    fn test_node_heartbeat_is_fresh() {
-        let metrics = NodeMetrics::default();
-        let heartbeat = NodeHeartbeat::from_metrics(NodeState::Running, &metrics);
-        // Just created, should be fresh within 5 seconds
-        assert!(heartbeat.is_fresh(5));
+        assert_eq!(metrics.calculate_health(), HealthStatus::Critical);
     }
 
     // =========================================================================
@@ -1384,21 +1108,21 @@ mod tests {
 
     #[test]
     fn test_node_info_new() {
-        let info = NodeInfo::new("test_node".to_string(), true);
+        let info = NodeInfo::new("test_node".to_string());
         assert_eq!(info.name(), "test_node");
         assert_eq!(info.state(), &NodeState::Uninitialized);
     }
 
     #[test]
     fn test_node_info_node_id_format() {
-        let info = NodeInfo::new("test_node".to_string(), true);
+        let info = NodeInfo::new("test_node".to_string());
         // node_id should contain the node name
         assert!(info.node_id().starts_with("test_node_"));
     }
 
     #[test]
     fn test_node_info_state_transitions() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+        let mut info = NodeInfo::new("test_node".to_string());
 
         assert_eq!(info.state(), &NodeState::Uninitialized);
 
@@ -1417,7 +1141,7 @@ mod tests {
 
     #[test]
     fn test_node_info_priority() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+        let mut info = NodeInfo::new("test_node".to_string());
         assert_eq!(info.priority(), 50); // Default priority is 50 (middle range)
 
         info.set_priority(0);
@@ -1429,7 +1153,7 @@ mod tests {
 
     #[test]
     fn test_node_info_metrics_initial() {
-        let info = NodeInfo::new("test_node".to_string(), true);
+        let info = NodeInfo::new("test_node".to_string());
         let metrics = info.metrics();
         assert_eq!(metrics.total_ticks, 0);
         assert_eq!(metrics.successful_ticks, 0);
@@ -1437,11 +1161,11 @@ mod tests {
     }
 
     #[test]
-    fn test_node_info_error_logging() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+    fn test_node_info_error_tracking() {
+        let mut info = NodeInfo::new("test_node".to_string());
 
-        info.log_error("Test error 1");
-        info.log_error("Test error 2");
+        info.track_error("Test error 1");
+        info.track_error("Test error 2");
 
         let metrics = info.metrics();
         assert_eq!(metrics.errors_count, 2);
@@ -1449,7 +1173,7 @@ mod tests {
 
     #[test]
     fn test_node_info_uptime() {
-        let info = NodeInfo::new("test_node".to_string(), true);
+        let info = NodeInfo::new("test_node".to_string());
         std::thread::sleep(std::time::Duration::from_millis(10));
         let uptime = info.uptime();
         assert!(uptime.as_millis() >= 10);
@@ -1457,21 +1181,21 @@ mod tests {
 
     #[test]
     fn test_node_info_transition_to_error() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+        let mut info = NodeInfo::new("test_node".to_string());
         info.transition_to_error("Something went wrong".to_string());
         assert!(matches!(info.state(), &NodeState::Error(_)));
     }
 
     #[test]
     fn test_node_info_transition_to_crashed() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+        let mut info = NodeInfo::new("test_node".to_string());
         info.transition_to_crashed("Fatal error".to_string());
         assert!(matches!(info.state(), &NodeState::Crashed(_)));
     }
 
     #[test]
     fn test_node_info_initialize_and_shutdown() {
-        let mut info = NodeInfo::new("test_node".to_string(), true);
+        let mut info = NodeInfo::new("test_node".to_string());
         assert_eq!(info.state(), &NodeState::Uninitialized);
 
         info.initialize().unwrap();

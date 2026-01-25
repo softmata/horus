@@ -9,7 +9,7 @@
 /// - Path planning and navigation
 /// - Obstacle avoidance
 /// - Battery monitoring with fault tolerance
-use horus_core::{HorusResult, Node, NodeInfo, Scheduler, Topic, TopicMetadata};
+use horus_core::{hlog, Node, Result, Scheduler, Topic, TopicMetadata};
 use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -145,7 +145,7 @@ struct MotorControllerNode {
 }
 
 impl MotorControllerNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             kp_linear: 2.0,
             ki_linear: 0.1,
@@ -211,7 +211,7 @@ impl Node for MotorControllerNode {
         "motor_controller"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Motor controller initialized");
         Ok(())
     }
@@ -233,7 +233,7 @@ impl Node for MotorControllerNode {
         self.compute_pid();
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         // Stop motors
         if let Ok(mut speeds) = self.motor_speeds.lock() {
             *speeds = (0.0, 0.0);
@@ -274,7 +274,7 @@ struct CameraPerceptionNode {
 }
 
 impl CameraPerceptionNode {
-    fn new(camera_id: u32) -> HorusResult<Self> {
+    fn new(camera_id: u32) -> Result<Self> {
         Ok(Self {
             camera_id,
             resolution: (640, 480),
@@ -309,7 +309,7 @@ impl Node for CameraPerceptionNode {
         }
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!(
             "Camera {} initialized at {}x{} @ {}fps",
             self.camera_id, self.resolution.0, self.resolution.1, self.fps
@@ -341,7 +341,7 @@ impl Node for CameraPerceptionNode {
         let _ = self.image_pub.send(compressed);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Camera {} shutdown", self.camera_id);
         Ok(())
     }
@@ -366,7 +366,7 @@ struct LidarProcessingNode {
 }
 
 impl LidarProcessingNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             scan_pub: Topic::new("scan")?,
             obstacle_map: Arc::new(Mutex::new(Vec::new())),
@@ -394,7 +394,7 @@ impl Node for LidarProcessingNode {
         "lidar_processor"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Lidar processor initialized");
         Ok(())
     }
@@ -428,7 +428,7 @@ impl Node for LidarProcessingNode {
         let _ = self.scan_pub.send(scan);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Lidar processor shutdown");
         Ok(())
     }
@@ -463,7 +463,7 @@ struct SensorFusionNode {
 }
 
 impl SensorFusionNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             state: [0.0; 6],
             covariance: [[1.0; 6]; 6],
@@ -510,7 +510,7 @@ impl Node for SensorFusionNode {
         "sensor_fusion"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Sensor fusion initialized");
         Ok(())
     }
@@ -542,7 +542,7 @@ impl Node for SensorFusionNode {
         let _ = self.odometry_pub.send(odom);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Sensor fusion shutdown");
         Ok(())
     }
@@ -576,7 +576,7 @@ struct PathPlannerNode {
 }
 
 impl PathPlannerNode {
-    fn new(goal: (f64, f64)) -> HorusResult<Self> {
+    fn new(goal: (f64, f64)) -> Result<Self> {
         Ok(Self {
             goal,
             current_position: (0.0, 0.0),
@@ -628,7 +628,7 @@ impl Node for PathPlannerNode {
         "path_planner"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!(
             "Path planner initialized with goal: ({:.2}, {:.2})",
             self.goal.0, self.goal.1
@@ -662,7 +662,7 @@ impl Node for PathPlannerNode {
         let _ = self.path_pub.send(self.path.clone());
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Path planner shutdown");
         Ok(())
     }
@@ -700,7 +700,7 @@ struct NavigationControllerNode {
 }
 
 impl NavigationControllerNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             path_sub: Topic::new("path")?,
             odometry_sub: Topic::new("odometry")?,
@@ -768,7 +768,7 @@ impl Node for NavigationControllerNode {
         "navigation_controller"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Navigation controller initialized");
         Ok(())
     }
@@ -786,7 +786,7 @@ impl Node for NavigationControllerNode {
         }
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         // Send stop command
         let stop = Twist {
             linear_x: 0.0,
@@ -829,7 +829,7 @@ struct BatteryMonitorNode {
 }
 
 impl BatteryMonitorNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             battery_pub: Topic::new("battery_status")?,
             voltage: 24.0,
@@ -839,7 +839,7 @@ impl BatteryMonitorNode {
         })
     }
 
-    fn read_battery(&mut self) -> Result<BatteryStatus, &'static str> {
+    fn read_battery(&mut self) -> std::result::Result<BatteryStatus, &'static str> {
         // Simulate occasional failures (will trigger circuit breaker)
         self.failure_count += 1;
 
@@ -868,7 +868,7 @@ impl Node for BatteryMonitorNode {
         "battery_monitor"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("Battery monitor initialized");
         Ok(())
     }
@@ -893,7 +893,7 @@ impl Node for BatteryMonitorNode {
         }
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("Battery monitor shutdown");
         Ok(())
     }
@@ -918,7 +918,7 @@ struct IMUSensorNode {
 }
 
 impl IMUSensorNode {
-    fn new() -> HorusResult<Self> {
+    fn new() -> Result<Self> {
         Ok(Self {
             imu_pub: Topic::new("imu.data")?,
             tick_count: 0,
@@ -931,7 +931,7 @@ impl Node for IMUSensorNode {
         "imu_sensor"
     }
 
-    fn init(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn init(&mut self) -> Result<()> {
         println!("IMU sensor initialized");
         Ok(())
     }
@@ -953,7 +953,7 @@ impl Node for IMUSensorNode {
         let _ = self.imu_pub.send(imu_data);
     }
 
-    fn shutdown(&mut self, _ctx: &mut NodeInfo) -> HorusResult<()> {
+    fn shutdown(&mut self) -> Result<()> {
         println!("IMU sensor shutdown");
         Ok(())
     }
@@ -983,57 +983,57 @@ fn test_autonomous_robot_complete_system() {
     // Add all robot nodes with appropriate priorities
 
     // Critical control loop (highest priority - will be JIT compiled)
-    scheduler.add(
-        Box::new(MotorControllerNode::new().expect("Failed to create motor controller")),
-        0,  // Highest priority
-    );
+    scheduler
+        .add(MotorControllerNode::new().expect("Failed to create motor controller"))
+        .order(0)  // Highest priority
+        .done();
 
     // Sensor fusion (high priority)
-    scheduler.add(
-        Box::new(SensorFusionNode::new().expect("Failed to create sensor fusion")),
-        10,
-    );
+    scheduler
+        .add(SensorFusionNode::new().expect("Failed to create sensor fusion"))
+        .order(10)
+        .done();
 
     // IMU sensor (high priority)
-    scheduler.add(
-        Box::new(IMUSensorNode::new().expect("Failed to create IMU sensor")),
-        15,
-    );
+    scheduler
+        .add(IMUSensorNode::new().expect("Failed to create IMU sensor"))
+        .order(15)
+        .done();
 
     // Navigation controller
-    scheduler.add(
-        Box::new(NavigationControllerNode::new().expect("Failed to create navigation controller")),
-        20,
-    );
+    scheduler
+        .add(NavigationControllerNode::new().expect("Failed to create navigation controller"))
+        .order(20)
+        .done();
 
     // Path planner
-    scheduler.add(
-        Box::new(PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner")), // Goal at (10, 10)
-        30,
-    );
+    scheduler
+        .add(PathPlannerNode::new((10.0, 10.0)).expect("Failed to create path planner")) // Goal at (10, 10)
+        .order(30)
+        .done();
 
     // Camera perception (I/O heavy - will use async tier)
-    scheduler.add(
-        Box::new(CameraPerceptionNode::new(0).expect("Failed to create front camera")), // Front camera
-        40,
-    );
+    scheduler
+        .add(CameraPerceptionNode::new(0).expect("Failed to create front camera")) // Front camera
+        .order(40)
+        .done();
 
-    scheduler.add(
-        Box::new(CameraPerceptionNode::new(1).expect("Failed to create rear camera")), // Rear camera
-        45,
-    );
+    scheduler
+        .add(CameraPerceptionNode::new(1).expect("Failed to create rear camera")) // Rear camera
+        .order(45)
+        .done();
 
     // Lidar processing (I/O heavy - will use async tier)
-    scheduler.add(
-        Box::new(LidarProcessingNode::new().expect("Failed to create lidar processor")),
-        50,
-    );
+    scheduler
+        .add(LidarProcessingNode::new().expect("Failed to create lidar processor"))
+        .order(50)
+        .done();
 
     // Battery monitor (prone to failures - will test circuit breaker)
-    scheduler.add(
-        Box::new(BatteryMonitorNode::new().expect("Failed to create battery monitor")),
-        100,  // Lower priority
-    );
+    scheduler
+        .add(BatteryMonitorNode::new().expect("Failed to create battery monitor"))
+        .order(100)  // Lower priority
+        .done();
 
     println!("Robot system configuration:");
     println!("- Motor controller: PID control at 1kHz (will be JIT compiled)");
@@ -1090,15 +1090,15 @@ fn test_robot_performance_metrics() {
         fn name(&self) -> &'static str {
             self.inner.name()
         }
-        fn init(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
-            self.inner.init(ctx)
+        fn init(&mut self) -> Result<()> {
+            self.inner.init()
         }
         fn tick(&mut self) {
             self.counter.fetch_add(1, Ordering::Relaxed);
             self.inner.tick();
         }
-        fn shutdown(&mut self, ctx: &mut NodeInfo) -> HorusResult<()> {
-            self.inner.shutdown(ctx)
+        fn shutdown(&mut self) -> Result<()> {
+            self.inner.shutdown()
         }
         fn get_publishers(&self) -> Vec<TopicMetadata> {
             self.inner.get_publishers()
@@ -1111,13 +1111,13 @@ fn test_robot_performance_metrics() {
     let mut scheduler = Scheduler::new();
 
     // Add instrumented nodes
-    scheduler.add(
-        Box::new(InstrumentedMotorController {
+    scheduler
+        .add(InstrumentedMotorController {
             inner: MotorControllerNode::new().expect("Failed to create motor controller"),
             counter: Arc::clone(&motor_ticks),
-        }),
-        0,
-    );
+        })
+        .order(0)
+        .done();
 
     // Run for 2 seconds
     let run_duration = Duration::from_secs(2);

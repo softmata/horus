@@ -1,6 +1,7 @@
 // Integration test for real-time scheduler features
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RtClass, RtNode, RtPriority};
-use horus_core::error::HorusResult as Result;
+use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtNode, RtPriority};
+use horus_core::error::Result;
+use horus_core::hlog;
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -28,11 +29,12 @@ impl Node for CriticalControlNode {
         Box::leak(self.name.clone().into_boxed_str())
     }
 
-    fn init(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
+    fn init(&mut self) -> Result<()> {
+        hlog!(
+            info,
             "{} initialized for safety-critical operation",
             self.name
-        ));
+        );
         Ok(())
     }
 
@@ -41,16 +43,15 @@ impl Node for CriticalControlNode {
 
         // Simulate computation
         std::thread::sleep(Duration::from_micros(self.execution_time_us));
-
-        // Logging removed - ctx is Option type
     }
 
-    fn shutdown(&mut self, ctx: &mut NodeInfo) -> Result<()> {
-        ctx.log_info(&format!(
+    fn shutdown(&mut self) -> Result<()> {
+        hlog!(
+            info,
             "{} shutdown after {} ticks",
             self.name,
             self.tick_count.load(Ordering::SeqCst)
-        ));
+        );
         Ok(())
     }
 }
@@ -94,27 +95,26 @@ impl RtNode for CriticalControlNode {
 fn test_scheduler_with_rt_nodes() {
     let mut scheduler = Scheduler::new();
 
-    // Add normal RT node with add_rt method
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("motor_control", 50)), // 50μs execution
-        0,                                                       // Highest priority
-        Duration::from_micros(100),                              // 100μs WCET budget
-        Duration::from_millis(1),                                // 1ms deadline
-    );
+    // Add RT node with fluent API
+    scheduler.add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
+        .order(0)                    // Highest priority
+        .rt()                        // Mark as real-time
+        .wcet_us(100)               // 100μs WCET budget
+        .deadline_ms(1)             // 1ms deadline
+        .done();
 
     // Add another RT node
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("sensor_fusion", 30)), // 30μs execution
-        1,
-        Duration::from_micros(50),
-        Duration::from_millis(2),
-    );
+    scheduler.add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
+        .order(1)
+        .rt()
+        .wcet_us(50)
+        .deadline_ms(2)
+        .done();
 
     // Add a regular node
-    scheduler.add(
-        Box::new(CriticalControlNode::new("logger", 10)),
-        10,
-    );
+    scheduler.add(CriticalControlNode::new("logger", 10))
+        .order(10)
+        .done();
 
     // Run for a short duration
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -127,19 +127,19 @@ fn test_scheduler_with_safety_critical_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
     // Add critical nodes
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("flight_control", 80)),
-        0,
-        Duration::from_micros(100),
-        Duration::from_millis(1),
-    );
+    scheduler.add(CriticalControlNode::new("flight_control", 80))
+        .order(0)
+        .rt()
+        .wcet_us(100)
+        .deadline_ms(1)
+        .done();
 
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("navigation", 60)),
-        1,
-        Duration::from_micros(80),
-        Duration::from_millis(2),
-    );
+    scheduler.add(CriticalControlNode::new("navigation", 60))
+        .order(1)
+        .rt()
+        .wcet_us(80)
+        .deadline_ms(2)
+        .done();
 
     // Run briefly with safety monitoring
     let result = scheduler.run_for(Duration::from_millis(50));
@@ -158,12 +158,12 @@ fn test_wcet_violation_detection() {
 
     // Add node that will violate WCET
     // Execution time (100μs) > WCET budget (50μs)
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("violator", 100)),
-        0,
-        Duration::from_micros(50), // WCET budget too small
-        Duration::from_millis(1),
-    );
+    scheduler.add(CriticalControlNode::new("violator", 100))
+        .order(0)
+        .rt()
+        .wcet_us(50)      // WCET budget too small
+        .deadline_ms(1)
+        .done();
 
     // This should detect WCET violations but continue running
     let result = scheduler.run_for(Duration::from_millis(20));
@@ -181,12 +181,12 @@ fn test_deadline_miss_detection() {
     let mut scheduler = Scheduler::new().with_config(config);
 
     // Add node with tight deadline that might be missed
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("tight_deadline", 900)),
-        0,
-        Duration::from_micros(1000),
-        Duration::from_micros(500), // Deadline smaller than execution time
-    );
+    scheduler.add(CriticalControlNode::new("tight_deadline", 900))
+        .order(0)
+        .rt()
+        .wcet_us(1000)
+        .deadline_us(500)  // Deadline smaller than execution time
+        .done();
 
     // This should detect deadline misses
     let result = scheduler.run_for(Duration::from_millis(30));
@@ -198,29 +198,27 @@ fn test_mixed_rt_and_normal_nodes() {
     let mut scheduler = Scheduler::new();
 
     // Mix of RT and normal nodes
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("rt_critical", 50)),
-        0,
-        Duration::from_micros(100),
-        Duration::from_millis(1),
-    );
+    scheduler.add(CriticalControlNode::new("rt_critical", 50))
+        .order(0)
+        .rt()
+        .wcet_us(100)
+        .deadline_ms(1)
+        .done();
 
-    scheduler.add(
-        Box::new(CriticalControlNode::new("normal_processing", 200)),
-        5,
-    );
+    scheduler.add(CriticalControlNode::new("normal_processing", 200))
+        .order(5)
+        .done();
 
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("rt_sensor", 30)),
-        1,
-        Duration::from_micros(50),
-        Duration::from_millis(2),
-    );
+    scheduler.add(CriticalControlNode::new("rt_sensor", 30))
+        .order(1)
+        .rt()
+        .wcet_us(50)
+        .deadline_ms(2)
+        .done();
 
-    scheduler.add(
-        Box::new(CriticalControlNode::new("background_task", 500)),
-        20,
-    );
+    scheduler.add(CriticalControlNode::new("background_task", 500))
+        .order(20)
+        .done();
 
     // RT nodes should be properly prioritized
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -238,12 +236,12 @@ fn test_watchdog_functionality() {
     let mut scheduler = Scheduler::new().with_config(config);
 
     // Add RT node that will be monitored by watchdog
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("watchdog_monitored", 10)),
-        0,
-        Duration::from_micros(50),
-        Duration::from_millis(1),
-    );
+    scheduler.add(CriticalControlNode::new("watchdog_monitored", 10))
+        .order(0)
+        .rt()
+        .wcet_us(50)
+        .deadline_ms(1)
+        .done();
 
     // Run normally - watchdog should be fed and not expire
     let result = scheduler.run_for(Duration::from_millis(100));
@@ -256,19 +254,19 @@ fn test_high_performance_rt_config() {
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     // Add ultra-fast control nodes
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("traction_control", 10)),
-        0,
-        Duration::from_micros(20),
-        Duration::from_micros(100), // 10kHz control loop
-    );
+    scheduler.add(CriticalControlNode::new("traction_control", 10))
+        .order(0)
+        .rt()
+        .wcet_us(20)
+        .deadline_us(100)  // 10kHz control loop
+        .done();
 
-    scheduler.add_rt(
-        Box::new(CriticalControlNode::new("stability_control", 15)),
-        1,
-        Duration::from_micros(25),
-        Duration::from_micros(100),
-    );
+    scheduler.add(CriticalControlNode::new("stability_control", 15))
+        .order(1)
+        .rt()
+        .wcet_us(25)
+        .deadline_us(100)
+        .done();
 
     // Should handle high-frequency execution
     let result = scheduler.run_for(Duration::from_millis(50));

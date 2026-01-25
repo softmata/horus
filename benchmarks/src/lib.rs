@@ -20,7 +20,6 @@ pub mod stats;
 pub mod platform;
 pub mod output;
 pub mod timing;
-pub mod tracing;
 
 use serde::{Deserialize, Serialize};
 

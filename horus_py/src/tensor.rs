@@ -298,10 +298,10 @@ impl PyTensorHandle {
 
         // Create PyCapsule via Python ctypes
         // We'll create the DLManagedTensor structure in Python for simplicity
-        let ctypes = py.import("ctypes")?;
+        let _ctypes = py.import("ctypes")?;
 
         // Create the capsule using a helper function
-        let dlpack_module = py.import("builtins")?;
+        let _dlpack_module = py.import("builtins")?;
 
         // Build DLManagedTensor dict representation for Python
         let dl_tensor = PyDict::new(py);

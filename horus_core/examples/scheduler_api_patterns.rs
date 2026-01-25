@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Safety: ENABLED (max 3 misses)\n");
 
     // OS integration (requires root/capabilities)
-    match scheduler.set_realtime_priority(50) {
+    match scheduler.set_os_priority(50) {
         Ok(_) => println!("[OK] Real-time priority: 50 (SCHED_FIFO)"),
         Err(e) => println!("[WARNING] RT priority failed (need root): {}", e),
     }
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Equivalent to Pattern 1\n");
 
     // Same OS integration
-    let _ = scheduler2.set_realtime_priority(50);
+    let _ = scheduler2.set_os_priority(50);
     let _ = scheduler2.pin_to_cpu(0);
     let _ = scheduler2.lock_memory();
 

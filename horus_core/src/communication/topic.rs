@@ -1560,10 +1560,17 @@ fn prefetch_write<T>(ptr: *mut T) {
 #[cold]
 fn cold() {}
 
-/// Mark a condition as unlikely
+/// Mark a condition as unlikely (branch prediction hint)
 #[inline(always)]
 fn unlikely(b: bool) -> bool {
     if b { cold() }
+    b
+}
+
+/// Mark a condition as likely (branch prediction hint)
+#[inline(always)]
+fn likely(b: bool) -> bool {
+    if !b { cold() }
     b
 }
 
@@ -2110,21 +2117,27 @@ impl<T> MpscRing<T> {
     }
 
     /// Push a value (multiple producers can call concurrently)
+    ///
+    /// Optimized tight loop like MpmcRing for consistent low latency.
+    #[inline(always)]
     fn push(&self, value: T) -> Result<(), T> {
         loop {
             let tail = self.tail.value.load(Ordering::Relaxed);
             let index = (tail as usize) & self.mask;
-            let slot = &self.buffer[index];
+            let slot = unsafe { self.buffer.get_unchecked(index) };
+
+            // Prefetch next slot's sequence for next iteration
+            let next_index = ((tail.wrapping_add(1)) as usize) & self.mask;
+            prefetch_read(&self.buffer[next_index].sequence);
 
             let seq = slot.sequence.load(Ordering::Acquire);
             let diff = seq as i64 - tail as i64;
 
             if diff == 0 {
-                // Slot is ready for writing
-                // Try to claim this slot
+                // Slot is ready for writing - try to claim it
                 if self.tail.value.compare_exchange_weak(
                     tail,
-                    tail + 1,
+                    tail.wrapping_add(1),
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                 ).is_ok() {
@@ -2133,11 +2146,12 @@ impl<T> MpscRing<T> {
                         slot.data.get().write(mem::MaybeUninit::new(value));
                     }
                     // Mark slot as ready for consumer
-                    slot.sequence.store(tail + 1, Ordering::Release);
+                    slot.sequence.store(tail.wrapping_add(1), Ordering::Release);
                     return Ok(());
                 }
-                // CAS failed, another producer got it, retry
-            } else if diff < 0 {
+                // CAS failed, another producer got it - fast retry
+                continue;
+            } else if unlikely(diff < 0) {
                 // Queue is full
                 return Err(value);
             }
@@ -2147,30 +2161,38 @@ impl<T> MpscRing<T> {
     }
 
     /// Pop a value (single consumer only)
+    ///
+    /// Optimized for single-consumer access pattern with prefetching.
+    #[inline(always)]
     fn pop(&self) -> Option<T> {
         let head = self.head.value.load(Ordering::Relaxed);
         let index = (head as usize) & self.mask;
-        let slot = &self.buffer[index];
 
+        // SAFETY: index is always < capacity due to mask
+        let slot = unsafe { self.buffer.get_unchecked(index) };
+
+        // Prefetch the data before checking sequence - likely to succeed
+        prefetch_read(slot.data.get());
+
+        // Check if slot has data (sequence == head + 1 means data is ready)
         let seq = slot.sequence.load(Ordering::Acquire);
-        let diff = seq as i64 - (head + 1) as i64;
+        let expected = head.wrapping_add(1);
 
-        if diff == 0 {
-            // Slot has data ready
-            // Read the data
+        if likely(seq == expected) {
+            // Fast path: data is ready, prefetch already brought it into cache
             let value = unsafe {
                 (*slot.data.get()).assume_init_read()
             };
-            // Mark slot as empty for next round
-            slot.sequence.store(head + self.capacity as u64, Ordering::Release);
+            // Mark slot as empty for next round (sequence = head + capacity)
+            slot.sequence.store(head.wrapping_add(self.capacity as u64), Ordering::Release);
             // Advance head
-            self.head.value.store(head + 1, Ordering::Relaxed);
+            self.head.value.store(expected, Ordering::Relaxed);
             Some(value)
-        } else if diff < 0 {
-            // Queue is empty
+        } else if unlikely((seq as i64) < (expected as i64)) {
+            // Queue is empty (producer hasn't written yet)
             None
         } else {
-            // Shouldn't happen with single consumer
+            // Shouldn't happen with single consumer, but handle gracefully
             None
         }
     }
@@ -2272,23 +2294,23 @@ impl<T> MpscIntraBackend<T> {
 }
 
 impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscIntraBackend<T> {
-    #[inline]
+    #[inline(always)]
     fn push(&self, msg: T) -> Result<(), T> {
-        if !self.is_producer {
+        if unlikely(!self.is_producer) {
             return Err(msg);
         }
         self.ring.push(msg)
     }
 
-    #[inline]
+    #[inline(always)]
     fn pop(&self) -> Option<T> {
-        if self.is_producer {
+        if unlikely(self.is_producer) {
             return None;
         }
         self.ring.pop()
     }
 
-    #[inline]
+    #[inline(always)]
     fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
@@ -2703,7 +2725,7 @@ impl<T> MpmcRing<T> {
     /// Pop a value (multiple consumers can call concurrently)
     ///
     /// Optimizations:
-    /// - Prefetch data before CAS succeeds
+    /// - Early prefetch data before sequence check
     /// - Use unlikely() for error paths
     /// - Relaxed ordering where safe
     #[inline(always)]
@@ -2713,13 +2735,13 @@ impl<T> MpmcRing<T> {
             let index = (head as usize) & self.mask;
             let slot = unsafe { self.buffer.get_unchecked(index) };
 
+            // Prefetch data early - gives more time for cache line to arrive
+            prefetch_read(slot.data.get());
+
             let seq = slot.sequence.load(Ordering::Acquire);
             let diff = seq as i64 - (head + 1) as i64;
 
             if diff == 0 {
-                // Prefetch the data before we try CAS - likely to succeed
-                prefetch_read(slot.data.get());
-
                 // Slot has data ready - try to claim it
                 if self.head.value.compare_exchange_weak(
                     head,
@@ -2727,7 +2749,7 @@ impl<T> MpmcRing<T> {
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                 ).is_ok() {
-                    // We claimed the slot, read the data
+                    // We claimed the slot, read the data (already in cache)
                     let value = unsafe {
                         (*slot.data.get()).assume_init_read()
                     };
@@ -4275,17 +4297,18 @@ where
                 self.metrics.inc_sent();
                 self.state.store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
 
-                // Write to introspection log buffer (decoupled from NodeInfo)
+                // Write to introspection log buffer using thread-local node context
+                use crate::core::hlog::{current_node_name, current_tick_number};
                 use crate::core::log_buffer::{publish_log, LogEntry, LogType};
                 let now = chrono::Local::now();
                 publish_log(LogEntry {
                     timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                    tick_number: 0, // Not available without NodeInfo context
-                    node_name: format!("topic:{}", self.name), // Topic-based identification
+                    tick_number: current_tick_number(),
+                    node_name: current_node_name(),
                     log_type: LogType::Publish,
                     topic: Some(self.name.clone()),
                     message: summary,
-                    tick_us: 0, // Not available without NodeInfo context
+                    tick_us: 0,
                     ipc_ns,
                 });
             }
@@ -4383,18 +4406,19 @@ where
         if let Some(ref msg) = result {
             self.metrics.inc_received();
 
-            // Write to introspection log buffer (decoupled from NodeInfo)
+            // Write to introspection log buffer using thread-local node context
+            use crate::core::hlog::{current_node_name, current_tick_number};
             use crate::core::log_buffer::{publish_log, LogEntry, LogType};
             let now = chrono::Local::now();
             let summary = msg.log_summary();
             publish_log(LogEntry {
                 timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                tick_number: 0, // Not available without NodeInfo context
-                node_name: format!("topic:{}", self.name), // Topic-based identification
+                tick_number: current_tick_number(),
+                node_name: current_node_name(),
                 log_type: LogType::Subscribe,
                 topic: Some(self.name.clone()),
                 message: summary,
-                tick_us: 0, // Not available without NodeInfo context
+                tick_us: 0,
                 ipc_ns,
             });
         }
@@ -4461,6 +4485,38 @@ where
             TopicBackend::SpmcShm(inner) => inner.backend_name(),
             TopicBackend::Adaptive(inner) => inner.backend_name(),
             TopicBackend::Network(_) => "Network",
+        }
+    }
+
+    /// Check if all participants are in the same process (for debugging)
+    pub fn is_same_process(&self) -> bool {
+        match &self.backend {
+            TopicBackend::Adaptive(inner) => inner.is_same_process(),
+            _ => true, // Non-adaptive backends are always same-process
+        }
+    }
+
+    /// Check if caller is on same thread as creator (for debugging)
+    pub fn is_same_thread(&self) -> bool {
+        match &self.backend {
+            TopicBackend::Adaptive(inner) => inner.is_same_thread(),
+            _ => true, // Non-adaptive backends don't track thread
+        }
+    }
+
+    /// Get publisher count (for debugging)
+    pub fn pub_count(&self) -> u32 {
+        match &self.backend {
+            TopicBackend::Adaptive(inner) => inner.pub_count(),
+            _ => 1, // Non-adaptive backends are typically 1
+        }
+    }
+
+    /// Get subscriber count (for debugging)
+    pub fn sub_count(&self) -> u32 {
+        match &self.backend {
+            TopicBackend::Adaptive(inner) => inner.sub_count(),
+            _ => 1, // Non-adaptive backends are typically 1
         }
     }
 

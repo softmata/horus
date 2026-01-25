@@ -461,9 +461,9 @@ impl SchedulerBuilder {
 
         // === Apply RT Features ===
         {
-            // RT priority
+            // RT priority (using new set_os_priority method)
             if let Some(priority) = self.rt_priority {
-                match scheduler.set_realtime_priority(priority) {
+                match scheduler.set_os_priority(priority) {
                     Ok(()) => {
                         print_line(&format!(
                             "[BUILDER] RT priority {} applied",
