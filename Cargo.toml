@@ -8,6 +8,7 @@ members = [
     "horus_library",
     "horus_ai",         # AI/ML tensor system with DLPack
     "horus_perception", # AI-friendly perception types
+    "horus_ros2_bridge", # ROS2 protocol bridge via Zenoh
     "benchmarks",
     "horus_py",
 ]

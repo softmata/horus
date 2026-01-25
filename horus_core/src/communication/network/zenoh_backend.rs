@@ -1,4 +1,4 @@
-//! Zenoh backend for HORUS Hub/Link communication
+//! Zenoh backend for HORUS Topic communication
 //!
 //! Provides Zenoh-based transport for:
 //! - Multi-robot mesh networking
@@ -46,7 +46,7 @@ fn serialize_message<T: serde::Serialize>(
     }
 }
 
-/// Zenoh backend for HORUS Hub/Link communication
+/// Zenoh backend for HORUS Topic communication
 ///
 /// Provides pub/sub communication over Zenoh protocol.
 /// Supports both HORUS-native (bincode) and ROS2-compatible (CDR) serialization.

@@ -16,7 +16,7 @@ The `horus` crate re-exports everything you need:
 - **Core Framework** (`horus_core`)
   - Node trait and types
   - Scheduler
-  - Communication (Hub, Link)
+  - Communication (Topic API)
   - Memory management
 
 - **Standard Library** (`horus_library`)

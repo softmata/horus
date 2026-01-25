@@ -1,35 +1,21 @@
 # HORUS Macros
 
-Procedural macros for the HORUS robotics framework that eliminate boilerplate and provide a clean, section-based API for building robot nodes.
+Procedural macros for the HORUS robotics framework that eliminate boilerplate and provide clean, ergonomic APIs for building robot nodes and messages.
 
 ## Overview
 
-`horus_macros` provides a single, powerful `node!` macro that generates complete HORUS node implementations with automatic topic registration, lifecycle management, and Hub initialization.
+`horus_macros` provides two powerful macros:
 
-## Architecture Analysis
+1. **`node!`** - Generate complete HORUS node implementations with automatic topic registration
+2. **`message!`** - Define message types with automatic zero-copy optimization and String handling
 
-### Current Implementation
+## Available Macros
 
-**Single Macro Design:**
-- Only one macro: `node!` (function-like macro)
-- No attribute macros (`#[node]`) - despite some test references, only the function-like macro is implemented
-- Section-based syntax with clear separation of concerns
+### 1. `node!` - Node Generation Macro
 
-**Generated Code:**
-- Complete struct definition with typed Hub fields
-- `new()` constructor with error handling
-- `Node` trait implementation with lifecycle methods
-- `Default` trait implementation
-- Automatic CamelCase  snake_case naming conversion
+Generates complete HORUS node implementations with automatic topic registration, lifecycle management, and Topic initialization.
 
-**Key Features:**
-- **Zero unsafe code** - all generated code is safe Rust
-- **Compile-time validation** - syntax errors caught at macro expansion
-- **Minimal runtime overhead** - thin wrapper around manual implementation
-
-## Usage
-
-### Basic Node Structure
+#### Basic Usage
 
 ```rust
 use horus_macros::node;
@@ -72,7 +58,7 @@ node! {
 
         // Optional cleanup
         shutdown {
-            self.cmd_vel.send(CmdVel::stop(), None).ok();
+            self.cmd_vel.send(CmdVel::stop()).ok();
             Ok(())
         }
 
@@ -87,48 +73,7 @@ node! {
 }
 ```
 
-### Minimal Node
-
-```rust
-node! {
-    SimpleNode {
-        tick {
-            // Just the required tick implementation
-            hlog!(info, "Node running...");
-        }
-    }
-}
-```
-
-### Producer-Only Node
-
-```rust
-node! {
-    SensorNode {
-        pub {
-            readings: SensorReading -> "sensors/temperature",
-        }
-
-        data {
-            sensor_id: u32 = 0,
-        }
-
-        tick {
-            let reading = self.read_hardware();
-            self.readings.send(reading, None).ok();
-        }
-
-        impl {
-            fn read_hardware(&self) -> SensorReading {
-                // Hardware interface
-                SensorReading::new(25.0)
-            }
-        }
-    }
-}
-```
-
-## Section Reference
+#### Section Reference
 
 | Section | Required | Syntax | Purpose |
 |---------|----------|--------|---------|
@@ -140,169 +85,181 @@ node! {
 | `shutdown {}` | No | `shutdown { ... }` | Cleanup logic |
 | `impl {}` | No | `fn method(&self) { ... }` | Additional methods |
 
-**Logging:**
-- Use `hlog!()` macro for logging: `hlog!(info, "message")`, `hlog!(warn, "...")`, `hlog!(error, "...")`
-- The scheduler automatically sets the node context before each lifecycle call
-- Logs are published to the shared memory buffer for the HORUS monitor
+### 2. `message!` - Message Definition Macro
 
-## Generated API
+Defines message types with automatic trait implementations, zero-copy optimization, and smart String handling.
 
-For a node named `MyRobotNode`, the macro generates:
+#### Features
 
-```rust
-pub struct MyRobotNode {
-    // Hub fields for each pub/sub topic
-    // Data fields for internal state
-}
+- **Automatic zero-copy** - Pod-compatible types get `as_bytes()` and `from_bytes()` methods
+- **Smart String handling** - `String` fields automatically become `FixedString<N>` internally
+- **Clean API** - Users work with `&str`, macro handles fixed-size storage
+- **Auto-implemented traits** - `Debug`, `Clone`, `Serialize`, `Deserialize`, `LogSummary`, `Pod`, `Zeroable`
 
-impl MyRobotNode {
-    pub fn new() -> Result<Self> {
-        // Creates all Hubs with proper error handling
-    }
-}
-
-impl Node for MyRobotNode {
-    fn name(&self) -> &'static str {
-        "my_robot_node"  // Auto-converted to snake_case
-    }
-
-    fn tick(&mut self) {
-        // Your tick implementation
-    }
-
-    // Optional: init, shutdown if defined
-}
-
-impl Default for MyRobotNode {
-    fn default() -> Self {
-        Self::new().expect("Failed to create node")
-    }
-}
-
-// Any methods from impl section
-```
-
-## Message Types
-
-Messages are simple Rust structs - no special macros needed:
+#### Simple Tuple Messages
 
 ```rust
-use serde::{Serialize, Deserialize};
+use horus_macros::message;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RobotPose {
-    x: f64,
-    y: f64,
-    theta: f64,
+// Tuple-style (recommended for simple types)
+message!(Position = (f32, f32));
+message!(Color = (u8, u8, u8));
+message!(Velocity = (f64, f64, f64));
+
+// Usage
+let pos = Position(1.5, 2.3);
+let bytes = pos.as_bytes();  // Zero-copy!
+let restored = Position::from_bytes(bytes).unwrap();
+```
+
+#### Struct Messages
+
+```rust
+message! {
+    RobotStatus {
+        position_x: f32,
+        position_y: f32,
+        battery: u8,
+        is_moving: bool,
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CmdVel {
-    linear: f64,
-    angular: f64,
+// Usage
+let status = RobotStatus {
+    position_x: 1.0,
+    position_y: 2.0,
+    battery: 85,
+    is_moving: true,
+};
+```
+
+#### Messages with String Fields
+
+```rust
+message! {
+    RobotInfo {
+        #[max_len = 32]
+        name: String,  // Becomes FixedString<32> internally
+
+        #[max_len = 64]
+        description: String,
+
+        id: u32,
+        battery: u8,
+    }
 }
 
-impl CmdVel {
-    fn new(linear: f64, angular: f64) -> Self {
-        Self { linear, angular }
-    }
+// Clean usage - users never see FixedString!
+let info = RobotInfo::new(
+    "turtlebot_waffle",
+    "Differential drive robot with LiDAR",
+    42,
+    85,
+);
 
-    fn stop() -> Self {
-        Self::new(0.0, 0.0)
+// String accessors return &str
+println!("Name: {}", info.name());
+println!("Description: {}", info.description());
+
+// Setters accept any string-like type
+info.set_name("turtlebot_burger");
+
+// Still zero-copy!
+let bytes = info.as_bytes();
+let restored = RobotInfo::from_bytes(bytes).unwrap();
+assert_eq!(restored.name(), "turtlebot_waffle");
+```
+
+#### Generated API
+
+For `message!(Position = (f32, f32))`, the macro generates:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Position(pub f32, pub f32);
+
+impl LogSummary for Position {
+    fn log_summary(&self) -> String {
+        format!("{:?}", self)
     }
+}
+
+// Zero-copy methods (auto-generated for Pod types)
+unsafe impl bytemuck::Pod for Position {}
+unsafe impl bytemuck::Zeroable for Position {}
+
+impl Position {
+    pub const SIZE: usize = std::mem::size_of::<Self>();
+
+    pub fn as_bytes(&self) -> &[u8] { ... }
+    pub fn from_bytes(bytes: &[u8]) -> Option<&Self> { ... }
+    pub fn from_bytes_copy(bytes: &[u8]) -> Option<Self> { ... }
 }
 ```
+
+For struct messages with `String` fields, auto-generates:
+- Constructor accepting `impl AsRef<str>` for string fields
+- Getter methods returning `&str` (e.g., `name() -> &str`)
+- Setter methods accepting `impl AsRef<str>` (e.g., `set_name(s)`)
+
+## Design Principles
+
+1. **Zero boilerplate** - One line defines complete message types
+2. **Automatic optimization** - Zero-copy for Pod types, no manual work
+3. **Clean abstractions** - Users work with familiar types (`String`, `&str`)
+4. **Type safety** - Compile-time validation of all message definitions
+5. **Performance** - Zero runtime cost, all work done at compile time
+
+## Generated Code Characteristics
+
+**Node Macro:**
+- Complete struct definition with typed Topic fields
+- `new()` constructor with proper error handling
+- `Node` trait implementation with lifecycle methods
+- `Default` trait implementation
+- Automatic CamelCase → snake_case naming conversion
+
+**Message Macro:**
+- `Debug`, `Clone`, `Serialize`, `Deserialize` traits
+- `LogSummary` for efficient logging (auto-implemented)
+- `Pod`, `Zeroable` for zero-copy (when all fields are Pod-compatible)
+- String field conversion to `FixedString<N>` with clean accessors
+- Compile-time size calculation (`SIZE` constant)
 
 ## Testing
-
-The crate includes comprehensive tests:
-
-- **Unit tests** (`node_macro_test.rs`) - Test macro expansion with mock types
-- **Compile tests** (`compile_tests.rs`) - Ensure generated code compiles correctly
-- **Integration tests** - Test with actual HORUS types
 
 ```bash
 cargo test
 ```
 
-## Design Principles
-
-1. **Section-based clarity** - Clear visual separation of data flow
-2. **Minimal boilerplate** - Generate repetitive Hub creation code
-3. **Type safety** - Compile-time validation of topic types
-4. **Error handling** - Proper Result types throughout
-5. **Zero runtime cost** - Macro expansion only, no runtime overhead
+The crate includes:
+- Unit tests for macro expansion
+- Compile tests for generated code
+- Integration tests with actual HORUS types
 
 ## Implementation Details
 
 **Dependencies:**
 - `proc-macro2` - Token stream manipulation
 - `quote` - Code generation
-- `syn` - Rust syntax parsing (with "full" and "extra-traits" features)
+- `syn` - Rust syntax parsing
 
 **Code Generation:**
-- Parses sections in any order
-- Validates required sections (only `tick` is mandatory)
-- Generates safe Hub initialization with error propagation
-- Converts CamelCase node names to snake_case automatically
+- Parses input at compile time
+- Validates syntax and required sections
+- Generates safe, idiomatic Rust code
+- No runtime overhead - pure compile-time work
 
-## Comparison with Manual Implementation
+## Examples
 
-**Manual approach:**
-```rust
-pub struct MyNode {
-    pub_topic: Topic<String>,
-    sub_topic: Topic<i32>,
-    counter: u32,
-}
+See `horus/examples/` for complete examples:
+- `message_zero_copy.rs` - Zero-copy messages with String handling
+- Node examples showing full node lifecycle
 
-impl MyNode {
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            pub_topic: Topic::new("output")?,
-            sub_topic: Topic::new("input")?,
-            counter: 0,
-        })
-    }
-}
+## Why Procedural Macros?
 
-impl Node for MyNode {
-    fn name(&self) -> &'static str { "my_node" }
-    fn tick(&mut self) {
-        // Implementation
-    }
-}
-
-impl Default for MyNode {
-    fn default() -> Self {
-        Self::new().expect("Failed to create MyNode")
-    }
-}
-```
-
-**Macro approach:**
-```rust
-node! {
-    MyNode {
-        pub { pub_topic: String -> "output" }
-        sub { sub_topic: i32 -> "input" }
-        data { counter: u32 = 0 }
-        tick {
-            // Implementation
-        }
-    }
-}
-```
-
-The macro eliminates ~20 lines of boilerplate per node while maintaining the same performance and safety characteristics.
-
-## Limitations
-
-**Current Implementation:**
-- Function-like macro only (`node! {}`)
-- No attribute macro support (`#[node]`)
-- Single macro - no specialized macros for services, actions, etc.
-- No compile-time topic validation beyond Rust's type system
+Rust requires procedural macros to be in a dedicated crate with `proc-macro = true`. This is a compiler requirement for build ordering and dynamic library loading during compilation.
 
 ## License
 

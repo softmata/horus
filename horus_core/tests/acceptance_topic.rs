@@ -1,4 +1,4 @@
-//! Acceptance tests for Hub Communication (Pub/Sub)
+//! Acceptance tests for Topic Communication (Pub/Sub)
 //! Tests lock-free, zero-copy shared memory communication between nodes
 
 use horus_core::communication::Topic;
@@ -119,10 +119,10 @@ fn test_scenario_3_multiple_publishers() {
 #[test]
 fn test_scenario_4_message_buffering_same_hub() {
     // Scenario 4: Message Buffering (Modified)
-    // Note: Current implementation resets shared memory when new Hub instances are created
-    // So we test that a single Hub instance can send messages and read them later
-    // Given: A single Hub instance
-    // When: Hub sends multiple messages
+    // Note: Current implementation resets shared memory when new Topic instances are created
+    // So we test that a single Topic instance can send messages and read them later
+    // Given: A single Topic instance
+    // When: Topic sends multiple messages
     // Then: Messages are buffered and can be read later from the same Hub
 
     let topic = format!("test_buffered_{}", std::process::id());
@@ -211,8 +211,8 @@ fn test_scenario_7_large_messages() {
 fn test_scenario_9_custom_capacity() {
     // Scenario 9: Custom Capacity
     // Given: User needs larger buffer
-    // When: User creates Hub with new_with_capacity
-    // Then: Hub buffer has custom capacity
+    // When: User creates Topic with new_with_capacity
+    // Then: Topic buffer has custom capacity
 
     let topic = format!("test_capacity_{}", std::process::id());
 
@@ -263,7 +263,7 @@ fn test_scenario_high_frequency_publishing() {
 fn test_edge_case_topic_name_with_special_chars() {
     // Edge Case 1: Topic Name with Special Characters
     // Given: Topic name has special characters
-    // When: Hub is created
+    // When: Topic is created
     // Then: Topic name is sanitized for filesystem
 
     let topic = format!("robot.sensors.lidar_{}", std::process::id());
@@ -304,8 +304,8 @@ fn test_edge_case_same_process_multiple_hubs() {
 
 #[test]
 fn test_resource_cleanup() {
-    // Scenario 16: Hub Dropped
-    // Given: Hub goes out of scope
+    // Scenario 16: Topic Dropped
+    // Given: Topic goes out of scope
     // When: Drop trait executes
     // Then: No memory leaks, other Hubs on same topic still work
 

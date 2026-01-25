@@ -43,7 +43,7 @@ impl TensorHandle {
     /// Create a new handle from an existing tensor descriptor
     ///
     /// This increments the reference count. Use this when receiving a tensor
-    /// from Hub/Link or when wrapping a tensor you don't own yet.
+    /// from Topic or when wrapping a tensor you don't own yet.
     pub fn new(tensor: HorusTensor, pool: Arc<TensorPool>) -> Self {
         pool.retain(&tensor);
         Self { tensor, pool }
@@ -72,7 +72,7 @@ impl TensorHandle {
 
     /// Get the underlying tensor descriptor
     ///
-    /// The descriptor can be sent through Hub/Link. The receiver should
+    /// The descriptor can be sent through Topic. The receiver should
     /// wrap it in a new `TensorHandle` to manage the reference count.
     #[inline]
     pub fn tensor(&self) -> &HorusTensor {

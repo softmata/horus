@@ -2,7 +2,7 @@ use horus_core::scheduling::Scheduler;
 use horus_core::{Node, Result, Topic};
 use std::time::Duration;
 
-// Node that publishes telemetry data using Hub (multiple subscribers can consume)
+// Node that publishes telemetry data (multiple subscribers can consume)
 pub struct TelemetryNode {
     telemetry_hub: Topic<f32>,
     counter: f32,
@@ -23,7 +23,7 @@ impl Node for TelemetryNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        println!("TelemetryNode initialized - broadcasting to Hub");
+        println!("TelemetryNode initialized - broadcasting via Topic");
         Ok(())
     }
 
@@ -36,7 +36,7 @@ impl Node for TelemetryNode {
     }
 }
 
-// Control node that uses Link for real-time control (single producer/consumer, lowest latency)
+// Control node for real-time control (single producer/consumer, lowest latency)
 pub struct ControlNode {
     command_link: Topic<f32>,
     response_link: Topic<f32>,
@@ -57,12 +57,12 @@ impl Node for ControlNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        println!("ControlNode initialized - using Link for low-latency control");
+        println!("ControlNode initialized - using Topic for low-latency control");
         Ok(())
     }
 
     fn tick(&mut self) {
-        // Send control command through Link (ultra-low latency)
+        // Send control command through Topic (ultra-low latency SPSC backend)
         let command = 42.0;
         self.command_link.send(command).ok();
 
@@ -75,7 +75,7 @@ impl Node for ControlNode {
     }
 }
 
-// Actuator node that receives commands via Link (for low latency)
+// Actuator node that receives commands (low latency)
 pub struct ActuatorNode {
     command_link: Topic<f32>,
     response_link: Topic<f32>,
@@ -98,7 +98,7 @@ impl Node for ActuatorNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        println!("ActuatorNode initialized - receiving via Link");
+        println!("ActuatorNode initialized - receiving via Topic");
         Ok(())
     }
 
@@ -112,7 +112,7 @@ impl Node for ActuatorNode {
     }
 }
 
-// Logger node that subscribes to telemetry Hub (one of many possible subscribers)
+// Logger node that subscribes to telemetry (one of many possible subscribers)
 pub struct LoggerNode {
     telemetry_hub: Topic<f32>,
     logs_received: u32,
@@ -133,7 +133,7 @@ impl Node for LoggerNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        println!("LoggerNode initialized - subscribing to Hub");
+        println!("LoggerNode initialized - subscribing to Topic");
         Ok(())
     }
 
@@ -150,7 +150,7 @@ impl Node for LoggerNode {
     }
 }
 
-// Analytics node that also subscribes to telemetry Hub (demonstrating multiple subscribers)
+// Analytics node that also subscribes to telemetry (demonstrating multiple subscribers)
 pub struct AnalyticsNode {
     telemetry_hub: Topic<f32>,
     sum: f32,
@@ -173,7 +173,7 @@ impl Node for AnalyticsNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        println!("AnalyticsNode initialized - also subscribing to Hub");
+        println!("AnalyticsNode initialized - also subscribing to Topic");
         Ok(())
     }
 
@@ -194,14 +194,14 @@ impl Node for AnalyticsNode {
 
 fn main() -> Result<()> {
     println!("=== Mixed Communication Example ===");
-    println!("Demonstrating Link and Hub coexistence in the same scheduler:\n");
-    println!("- Control loop uses Link (248ns latency) for real-time control");
-    println!("- Telemetry uses Hub (437ns latency) for multiple subscribers\n");
+    println!("Demonstrating Topic API with automatic backend selection:\n");
+    println!("- Control loop uses Topic with SPSC backend (248ns latency) for real-time control");
+    println!("- Telemetry uses Topic with MPMC backend (437ns latency) for multiple subscribers\n");
 
     // Create scheduler
     let mut scheduler = Scheduler::new();
 
-    // Add nodes using Link (for low-latency control)
+    // Add nodes for low-latency control (Topic will auto-select SPSC backend)
     scheduler.add(ControlNode::new()?)
         .order(10)
         .done();
@@ -209,7 +209,7 @@ fn main() -> Result<()> {
         .order(10)
         .done();
 
-    // Add nodes using Hub (for broadcast/multiple subscribers)
+    // Add nodes for broadcast (Topic will auto-select MPMC backend)
     scheduler.add(TelemetryNode::new()?)
         .order(20)
         .done();
@@ -220,13 +220,13 @@ fn main() -> Result<()> {
         .order(100)
         .done();
 
-    println!("Running scheduler with 5 nodes (2 using Link, 3 using Hub)...\n");
+    println!("Running scheduler with 5 nodes (Topic auto-selects optimal backend)...\n");
 
     // Run for a short time
     scheduler.run_for(Duration::from_secs(3))?;
 
     println!("\n=== Demonstration Complete ===");
-    println!(" Control nodes communicated via Link (lowest latency)");
+    println!("✓ Control nodes communicated via Topic with SPSC backend (lowest latency)");
     println!(" Telemetry was broadcast via Hub to multiple subscribers");
     println!(" All nodes coexisted in the same scheduler");
 

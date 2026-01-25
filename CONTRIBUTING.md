@@ -98,18 +98,18 @@ Follow standard conventions:
 - Document public APIs with `///` comments
 
 ```rust
-/// Creates a new Hub for inter-process communication.
+/// Creates a new Topic for inter-process communication.
 ///
 /// # Arguments
 ///
-/// * `topic` - The topic name for this hub
+/// * `topic_name` - The topic name for this channel
 ///
 /// # Examples
 ///
 /// ```
-/// let hub = Hub::<f32>::new("temperature")?;
+/// let topic = Topic::<f32>::new("temperature")?;
 /// ```
-pub fn new(topic: &str) -> Result<Self> {
+pub fn new(topic_name: &str) -> Result<Self> {
     // implementation
 }
 ```

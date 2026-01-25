@@ -65,6 +65,7 @@ pub mod plugin;
 pub mod scheduling;
 pub mod state_machines;
 pub mod terminal;
+pub mod types;
 
 // Re-export commonly used types for easy access
 // Unified Topic API - the single way to create IPC channels
@@ -142,4 +143,8 @@ pub use serde_yaml;
 
 // Re-export bytemuck for consistent Pod/Zeroable trait usage
 pub use bytemuck;
+
+// Internal types used by macros (not part of public API)
+#[doc(hidden)]
+pub use types::FixedString;
 

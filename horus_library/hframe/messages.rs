@@ -1,6 +1,6 @@
 //! HFrame Message types for inter-node communication
 //!
-//! Provides message types compatible with HORUS Hub for broadcasting
+//! Provides message types compatible with HORUS Topic for broadcasting
 //! and receiving transform updates.
 
 use super::transform::Transform;

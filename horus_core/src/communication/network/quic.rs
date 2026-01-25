@@ -1073,7 +1073,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 /// QUIC backend wrapper for NetworkBackend integration
 ///
 /// Provides synchronous send/recv interface over QUIC transport
-/// for compatibility with the Hub/Link system.
+/// for compatibility with the Topic system.
 #[cfg(feature = "quic")]
 pub struct QuicBackend<T> {
     /// Underlying QUIC transport

@@ -35,8 +35,6 @@ pub mod protocol;
 pub mod queryable;
 pub mod reconnect;
 pub mod router;
-pub mod turn;
-pub mod udp_direct;
 pub mod udp_multicast;
 
 // Network v2 high-performance modules
@@ -59,36 +57,12 @@ pub mod certificate_manager;
 #[cfg(feature = "quic")]
 pub mod quic;
 
-// WebRTC data channels (requires webrtc-transport feature)
-#[cfg(feature = "webrtc-transport")]
-pub mod webrtc;
-
-// Built-in signaling server for P2P connection coordination
-#[cfg(feature = "signaling-server")]
-pub mod signaling_server;
-
-// Signaling server re-exports
-#[cfg(feature = "signaling-server")]
-pub use signaling_server::{
-    SignalingServer, SignalingServerBuilder, SignalingServerConfig, SignalingServerStats,
-    SignalingStatsSnapshot, WireIceCandidate, WireMessage, DEFAULT_SIGNAL_PORT,
-};
-
 // Husarnet VPN integration for WAN connectivity
 #[cfg(feature = "husarnet")]
 pub mod husarnet;
 
-// P2P connectivity with NAT traversal
-pub mod p2p;
-
 // Hybrid discovery (LAN multicast + Husarnet unicast)
 pub mod hybrid_discovery;
-
-// STUN client for NAT traversal
-pub mod stun;
-
-// ICE-lite for NAT hole punching
-pub mod ice;
 
 // Connection health monitoring
 pub mod health_monitor;
@@ -105,10 +79,6 @@ pub mod io_uring;
 // Requires the `mdns` feature flag
 #[cfg(feature = "mdns")]
 pub mod mdns;
-#[cfg(feature = "mdns")]
-pub mod mdns_discovery;
-#[cfg(feature = "mdns")]
-pub mod mdns_registration;
 
 // Zenoh transport for multi-robot mesh, cloud connectivity, and ROS2 interop
 // Requires the `zenoh-transport` feature flag
@@ -116,20 +86,12 @@ pub mod mdns_registration;
 pub mod zenoh_backend;
 pub mod zenoh_config;
 
-// ROS2 service protocol for Zenoh (request/response over rq/rs topics)
-// Requires the `zenoh-transport` feature flag
-#[cfg(feature = "zenoh-transport")]
-pub mod zenoh_ros2_services;
-
-// ROS2 action protocol for Zenoh (goal/cancel/result/feedback/status topics)
-// Requires the `zenoh-transport` feature flag
-#[cfg(feature = "zenoh-transport")]
-pub mod zenoh_ros2_actions;
-
-// ROS2 parameter server protocol for Zenoh (list/get/set/describe parameters)
-// Requires the `zenoh-transport` feature flag
-#[cfg(feature = "zenoh-transport")]
-pub mod zenoh_ros2_params;
+// ROS2 protocol implementations moved to separate horus_ros2_bridge crate
+// To use ROS2 services/actions/parameters, add horus_ros2_bridge to your Cargo.toml:
+//
+// [dependencies]
+// horus_core = { version = "0.1.7", features = ["zenoh-transport"] }
+// horus_ros2_bridge = "0.1.7"
 
 // Re-export commonly used types
 pub use backend::NetworkBackend;
@@ -146,7 +108,6 @@ pub use reconnect::{
     RetryCallback, RetryEvent, RetryExecutor, RetryResult, StateChangeCallback, StateTransition,
 };
 pub use router::RouterBackend;
-pub use udp_direct::UdpDirectBackend;
 pub use udp_multicast::UdpMulticastBackend;
 
 // Re-export new modules
@@ -209,43 +170,9 @@ pub use quic::{
 #[cfg(all(feature = "quic", feature = "tls"))]
 pub use quic::{get_or_create_cert, get_or_create_cert_with_config};
 
-// WebRTC re-exports
-#[cfg(feature = "webrtc-transport")]
-pub use webrtc::{
-    parse_webrtc_location, DataChannelHandle, DataChannelMode, IceServerConfig,
-    WebRtcConfig, WebRtcSignal, WebRtcStats, WebRtcTransport,
-};
-
-// P2P re-exports
-pub use p2p::{
-    parse_p2p_location, IceCandidate, IceCandidateType, IceProtocol, P2pConfig,
-    P2pConnection, P2pConnectionResult, P2pConnectionState, P2pConnector, P2pError,
-    P2pResponder, P2pResult, P2pStats, P2pStrategy, PeerId, SignalingClientConfig,
-    SignalingErrorCode, SignalingMessage, TurnServer,
-};
-
 // Hybrid discovery re-exports (LAN multicast + Husarnet unicast)
 pub use hybrid_discovery::{
     DiscoverySource, DiscoverySummary, HybridDiscovery, HybridDiscoveryConfig, HybridPeerInfo,
-};
-
-// STUN re-exports
-pub use stun::{
-    discover_external_address, full_stun_discovery, NatType, StunClient, StunConfig,
-    StunDiscoveryResult,
-};
-
-// ICE re-exports
-pub use ice::{
-    CandidatePair, CandidatePairState, IceAgent, IceCandidateInfo, IceConfig,
-    IceConnectionState, IceGatheringState, IceRole, IceStats, ICE_CONNECTIVITY_CHECK_INTERVAL,
-    ICE_CONSENT_INTERVAL, ICE_DEFAULT_TIMEOUT, ICE_KEEPALIVE_INTERVAL,
-};
-
-// TURN re-exports (relay-based NAT traversal)
-pub use turn::{
-    AllocationState, ChannelBinding, Permission, TurnAllocation, TurnClient, TurnConfig,
-    TurnError, TurnResult, TurnStats, TurnTransport,
 };
 
 // Health monitoring re-exports
@@ -261,20 +188,17 @@ pub use cloud::{
     RoomRegistry, VpnType,
 };
 
-// mDNS re-exports
+// mDNS re-exports (all from consolidated mdns module)
 #[cfg(feature = "mdns")]
 pub use mdns::{
+    // Core mDNS
     resolve_mdns_hostname, resolve_mdns_hostname_with_timeout, HorusMdns, MdnsCacheStats,
     ServiceInfo as MdnsServiceInfo, BROWSE_TIMEOUT, HORUS_SERVICE_TYPE, MDNS_TIMEOUT,
-};
-#[cfg(feature = "mdns")]
-pub use mdns_discovery::{
+    // Discovery API
     discover, discover_full, discover_full_with_options, discover_with_options, find_node,
     find_nodes_with_topic, nodes_to_json, to_json, watch, watch_with_interval, DiscoveredNode,
     DiscoveryEvent, DiscoveryOptions, DiscoveryResult, DiscoveryWatcher,
-};
-#[cfg(feature = "mdns")]
-pub use mdns_registration::{
+    // Registration API
     sanitize_hostname, GlobalMdnsManager, MdnsNodeRegistration, MdnsRegistrationBuilder,
     MdnsRegistrationConfig, DEFAULT_HORUS_PORT,
 };
@@ -300,117 +224,11 @@ pub use zenoh_config::{
 #[cfg(feature = "mdns")]
 pub use zenoh_config::discover_zenoh_routers_mdns;
 
-// ROS2 services re-exports
-#[cfg(feature = "zenoh-transport")]
-pub use zenoh_ros2_services::{
-    parse_service_topic, service_to_request_topic, service_to_response_topic, EmptyRequest,
-    EmptyResponse, RequestTracker, Ros2RequestHeader, Ros2ServiceConfig, Ros2ServiceError,
-    Ros2ServiceRequest, Ros2ServiceResponse, ServiceRegistry, ServiceStats, SetBoolRequest,
-    SetBoolResponse, TriggerRequest, TriggerResponse,
-};
-
-// ROS2 actions re-exports
-#[cfg(feature = "zenoh-transport")]
-pub use zenoh_ros2_actions::{
-    action_to_cancel_goal_topic,
-    action_to_feedback_topic,
-    action_to_get_result_topic,
-    // Topic naming
-    action_to_send_goal_topic,
-    action_to_status_topic,
-    apply_namespace_to_action,
-    parse_action_topic,
-    ActionClientTopics,
-    ActionServerTopics,
-    ActionStats,
-    ActionTopicType,
-    // Trait
-    ActionType,
-    CancelCallback,
-    CancelGoalErrorCode,
-    CancelGoalRequest,
-    CancelGoalResponse,
-    // Goal handles
-    ClientGoalHandle,
-    EmptyFeedback,
-    // Common action types
-    EmptyGoal,
-    EmptyResult,
-    ExecuteCallback,
-    FeedbackMessage,
-    GetResultRequest,
-    GetResultResponse,
-    GoalCallback,
-    // Core types
-    GoalId,
-    GoalInfo,
-    GoalStatus,
-    GoalStatusArray,
-    GoalStatusInfo,
-    ProgressFeedback,
-    // Client/Server
-    Ros2ActionClient,
-    Ros2ActionConfig,
-    Ros2ActionError,
-    Ros2ActionServer,
-    Ros2Time,
-    // Request/Response types
-    SendGoalRequest,
-    SendGoalResponse,
-    ServerGoalHandle,
-};
+// ROS2 services, actions, and parameters are now in the separate horus_ros2_bridge crate
+// No re-exports here to avoid circular dependencies
 
 // Network error re-exports - developer-friendly error handling
 pub use network_error::{
     colors as net_colors, errors as net_errors, format_error_report, format_error_report_colored,
     NetworkError, NetworkErrorCode, NetworkErrorContext,
-};
-
-// ROS2 parameters re-exports
-#[cfg(feature = "zenoh-transport")]
-pub use zenoh_ros2_params::{
-    param_to_describe_parameters_topic,
-    param_to_events_topic,
-    param_to_get_parameter_types_topic,
-    param_to_get_parameters_topic,
-    // Topic naming
-    param_to_list_parameters_topic,
-    param_to_set_parameters_atomically_topic,
-    param_to_set_parameters_topic,
-    DescribeParametersRequest,
-    DescribeParametersResponse,
-    FloatingPointRange,
-    GetParameterTypesRequest,
-    GetParameterTypesResponse,
-    GetParametersRequest,
-    GetParametersResponse,
-    IntegerRange,
-    // Request/Response types
-    ListParametersRequest,
-    ListParametersResponse,
-    ListParametersResult,
-    // Store and Client/Server
-    LocalParameterStore,
-    Parameter,
-    ParameterClientTopics,
-    ParameterDescriptor,
-    ParameterEvent,
-    ParameterEventType,
-    ParameterQos,
-    ParameterServerTopics,
-    ParameterStats,
-    ParameterTopicType,
-    // Core types
-    ParameterType,
-    ParameterValue,
-    Ros2ParamTime,
-    Ros2ParameterClient,
-    Ros2ParameterConfig,
-    Ros2ParameterError,
-    Ros2ParameterServer,
-    SetParameterResult,
-    SetParametersAtomicallyRequest,
-    SetParametersAtomicallyResponse,
-    SetParametersRequest,
-    SetParametersResponse,
 };

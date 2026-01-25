@@ -17,7 +17,7 @@
 //! // Just create a topic - backend is automatically selected
 //! let topic: Topic<SensorData> = Topic::new("sensor_data")?;
 //!
-//! // Send and receive directly (matches Hub/Link API)
+//! // Send and receive directly (Topic API)
 //! topic.send(data)?;
 //! let data = topic.recv();
 //! ```
@@ -586,10 +586,10 @@ pub(crate) trait TopicBackendTrait<T>: Send + Sync {
 }
 
 // ============================================================================
-// MpmcShm Backend (extracted from Hub)
+// MpmcShm Backend (unified Topic implementation)
 // ============================================================================
 
-/// MPMC Shared Memory backend - extracted from Hub
+/// MPMC Shared Memory backend - unified Topic implementation
 ///
 /// Uses ShmTopic ring buffer for multiple producers and multiple consumers.
 /// Latency: ~167ns
@@ -642,7 +642,7 @@ impl<T> Clone for MpmcShmBackend<T> {
 }
 
 // ============================================================================
-// SpscShm Backend (extracted from Link)
+// SpscShm Backend (extracted unified implementation)
 // ============================================================================
 
 /// Header for SPSC shared memory - single-slot design from Link
@@ -2939,7 +2939,6 @@ where
             Endpoint::Router { topic, .. } => topic.clone(),
             Endpoint::Zenoh { topic, .. } => topic.clone(),
             Endpoint::Mdns { topic, .. } => topic.clone(),
-            Endpoint::P2p { topic, .. } => topic.clone(),
             Endpoint::Cloud { topic, .. } => topic.clone(),
             Endpoint::ZenohCloud { topic, .. } => topic.clone(),
         };
@@ -2999,7 +2998,7 @@ where
 }
 
 // ============================================================================
-// Connection State (migrated from Hub)
+// Connection State (unified Topic implementation)
 // ============================================================================
 
 /// Connection state for Topic connections
@@ -3050,7 +3049,7 @@ impl Default for ConnectionState {
 }
 
 // ============================================================================
-// Atomic Topic Metrics (migrated from Hub)
+// Atomic Topic Metrics (unified Topic implementation)
 // ============================================================================
 
 /// Lock-free atomic metrics for Topic monitoring with cache optimization
@@ -3156,10 +3155,10 @@ enum TopicBackend<T> {
     /// MpmcIntra - in-process MPMC (~80ns)
     MpmcIntra(MpmcIntraBackend<T>),
 
-    /// MPMC ring buffer (from Hub) - ~167ns
+    /// MPMC ring buffer (unified implementation) - ~167ns
     MpmcShm(MpmcShmBackend<T>),
 
-    /// SPSC single-slot (from Link) - ~85ns
+    /// SPSC single-slot (unified implementation) - ~85ns
     SpscShm(SpscShmBackend<T>),
 
     /// MPSC shared memory - cross-process (~65ns)
@@ -3184,7 +3183,7 @@ enum TopicBackend<T> {
 /// Unified Topic for Smart IPC
 ///
 /// `Topic<T>` provides a simple pub/sub interface that automatically selects
-/// the optimal IPC backend. This replaces Hub, Link, and PodLink with a
+/// the optimal IPC backend. This unified API (replaces the old Hub, Link, and PodLink) with a
 /// single unified API.
 ///
 /// # Backend Selection
@@ -3215,10 +3214,10 @@ enum TopicBackend<T> {
 /// // Create a network topic
 /// let net_topic: Topic<SensorData> = Topic::new("sensor@192.168.1.5")?;
 ///
-/// // Send - matches Hub/Link pattern
+/// // Send - Topic pattern
 /// topic.send(data)?;
 ///
-/// // Receive - matches Hub/Link pattern
+/// // Receive - Topic pattern
 /// if let Some(msg) = topic.recv() {
 ///     process(msg);
 /// }
@@ -3946,7 +3945,6 @@ where
                     Endpoint::Router { topic, .. } => topic.clone(),
                     Endpoint::Zenoh { topic, .. } => topic.clone(),
                     Endpoint::Mdns { topic, .. } => topic.clone(),
-                    Endpoint::P2p { topic, .. } => topic.clone(),
                     Endpoint::Cloud { topic, .. } => topic.clone(),
                     Endpoint::ZenohCloud { topic, .. } => topic.clone(),
                     Endpoint::Local { topic } => topic.clone(),
@@ -4465,7 +4463,7 @@ where
         &self.name
     }
 
-    /// Get the topic name (alias for consistency with Hub)
+    /// Get the topic name (standard method name)
     #[inline]
     pub fn name(&self) -> &str {
         &self.name

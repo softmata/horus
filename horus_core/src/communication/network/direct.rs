@@ -1,4 +1,4 @@
-/// High-performance direct 1P1C network backend for Link
+/// High-performance direct 1P1C network backend for Topic
 ///
 /// Unlike RouterBackend (many-to-many), DirectBackend provides a simple
 /// point-to-point TCP connection between a single producer and consumer.

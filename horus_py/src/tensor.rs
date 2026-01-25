@@ -126,7 +126,7 @@ pub struct PyTensorHandle {
 impl PyTensorHandle {
     /// Create a TensorHandle from a raw tensor descriptor
     ///
-    /// This is used when receiving tensors from Hub/Link.
+    /// This is used when receiving tensors from Topic.
     #[staticmethod]
     fn from_descriptor(pool_id: u32, descriptor_bytes: &[u8]) -> PyResult<Self> {
         if descriptor_bytes.len() != std::mem::size_of::<HorusTensor>() {
@@ -148,7 +148,7 @@ impl PyTensorHandle {
         })
     }
 
-    /// Get the raw descriptor bytes (for sending through Hub/Link)
+    /// Get the raw descriptor bytes (for sending through Topic)
     fn to_descriptor(&self) -> PyResult<Vec<u8>> {
         let handle = self
             .handle

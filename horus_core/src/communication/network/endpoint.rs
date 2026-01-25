@@ -120,7 +120,6 @@
 use std::net::IpAddr;
 
 use super::cloud::CloudMode;
-use super::p2p::{P2pStrategy, PeerId};
 use super::zenoh_config::ZenohCloudConfig;
 
 /// Endpoint types for HORUS network communication.
@@ -353,14 +352,6 @@ pub enum Endpoint {
     ///
     /// // Force TURN for guaranteed connectivity
     /// let ep = parse_endpoint("control@p2p:a3f7-k2m9-p4n8/turn").unwrap();
-    /// ```
-    P2p {
-        topic: String,
-        /// Target peer ID (format: `xxxx-yyyy-zzzz`)
-        peer_id: PeerId,
-        /// Connection strategy (auto, direct, stun, turn)
-        strategy: P2pStrategy,
-    },
 
     /// Cloud/WAN connectivity.
     ///
@@ -634,14 +625,12 @@ pub fn parse_endpoint(input: &str) -> Result<Endpoint, String> {
         });
     }
 
-    // Check for P2P: "p2p:peer-id" or "p2p:peer-id/strategy"
-    if let Some(rest) = location.strip_prefix("p2p:") {
-        let (peer_id, strategy) = super::p2p::parse_p2p_location(rest)?;
-        return Ok(Endpoint::P2p {
-            topic,
-            peer_id,
-            strategy,
-        });
+    // P2P support removed - use cloud relay or VPN instead
+    if location.starts_with("p2p:") {
+        return Err(format!(
+            "P2P endpoints are no longer supported. Use cloud relay (cloud:room) or VPN (vpn:peer) instead. Location: {}",
+            location
+        ));
     }
 
     // Check for Cloud: "cloud:room", "relay:host", "vpn:peer"
@@ -875,7 +864,6 @@ enum EndpointConfig {
     Router { host: Option<IpAddr>, port: Option<u16> },
     Zenoh { ros2_mode: bool, connect: Option<String> },
     ZenohCloud { config: ZenohCloudConfig },
-    P2p { peer_id: PeerId, strategy: P2pStrategy },
     Cloud { mode: CloudMode },
 }
 
@@ -974,16 +962,6 @@ impl EndpointBuilder {
         self
     }
 
-    /// Build a P2P endpoint with NAT traversal.
-    ///
-    /// Uses auto strategy by default (tries Direct → STUN → TURN).
-    pub fn p2p(mut self, peer_id: PeerId) -> Self {
-        self.config = EndpointConfig::P2p {
-            peer_id,
-            strategy: P2pStrategy::Auto,
-        };
-        self
-    }
 
     /// Build a cloud room endpoint.
     ///
@@ -1046,13 +1024,6 @@ impl EndpointBuilder {
         self
     }
 
-    /// Set P2P connection strategy.
-    pub fn strategy(mut self, strat: P2pStrategy) -> Self {
-        if let EndpointConfig::P2p { strategy, .. } = &mut self.config {
-            *strategy = strat;
-        }
-        self
-    }
 
     /// Scope the topic to a room for isolation.
     ///
@@ -1145,11 +1116,6 @@ impl EndpointBuilder {
             EndpointConfig::ZenohCloud { config } => Endpoint::ZenohCloud {
                 topic: self.topic,
                 config,
-            },
-            EndpointConfig::P2p { peer_id, strategy } => Endpoint::P2p {
-                topic: self.topic,
-                peer_id,
-                strategy,
             },
             EndpointConfig::Cloud { mode } => Endpoint::Cloud {
                 topic: self.topic,
@@ -1245,19 +1211,6 @@ impl std::fmt::Display for Endpoint {
                 } else {
                     write!(f, "{}@zenoh:cloud/horus", topic)
                 }
-            }
-            Endpoint::P2p {
-                topic,
-                peer_id,
-                strategy,
-            } => {
-                let strat_str = match strategy {
-                    P2pStrategy::Auto => "",
-                    P2pStrategy::Direct => "/direct",
-                    P2pStrategy::Stun => "/stun",
-                    P2pStrategy::Turn => "/turn",
-                };
-                write!(f, "{}@p2p:{}{}", topic, peer_id.short_id, strat_str)
             }
             Endpoint::Cloud { topic, mode } => match mode {
                 CloudMode::HorusCloud { room, auth_key: None } => {
@@ -1632,85 +1585,6 @@ mod tests {
         ));
     }
 
-    // P2P endpoint tests
-    #[test]
-    fn test_parse_p2p_basic() {
-        use crate::communication::network::p2p::P2pStrategy;
-        let ep = parse_endpoint("mytopic@p2p:a3f7-k2m9-p4n8").unwrap();
-        match ep {
-            Endpoint::P2p {
-                topic,
-                peer_id,
-                strategy,
-            } => {
-                assert_eq!(topic, "mytopic");
-                assert_eq!(peer_id.short_id, "a3f7-k2m9-p4n8");
-                assert_eq!(strategy, P2pStrategy::Auto);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_parse_p2p_with_strategy() {
-        use crate::communication::network::p2p::P2pStrategy;
-
-        // Direct strategy
-        let ep = parse_endpoint("sensor_data@p2p:a3f7-k2m9-p4n8/direct").unwrap();
-        match ep {
-            Endpoint::P2p {
-                topic,
-                peer_id,
-                strategy,
-            } => {
-                assert_eq!(topic, "sensor_data");
-                assert_eq!(peer_id.short_id, "a3f7-k2m9-p4n8");
-                assert_eq!(strategy, P2pStrategy::Direct);
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // STUN strategy
-        let ep = parse_endpoint("cmd_vel@p2p:b2c4-d5e6-f7g8/stun").unwrap();
-        match ep {
-            Endpoint::P2p { strategy, .. } => {
-                assert_eq!(strategy, P2pStrategy::Stun);
-            }
-            _ => panic!("Wrong variant"),
-        }
-
-        // TURN strategy
-        let ep = parse_endpoint("video@p2p:x1y2-z3a4-b5c6/turn").unwrap();
-        match ep {
-            Endpoint::P2p { strategy, .. } => {
-                assert_eq!(strategy, P2pStrategy::Turn);
-            }
-            _ => panic!("Wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_parse_p2p_error_invalid_peer_id() {
-        // Missing dashes
-        let result = parse_endpoint("mytopic@p2p:a3f7k2m9p4n8");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid peer ID"));
-
-        // Too short
-        let result = parse_endpoint("mytopic@p2p:a3f7-k2m9");
-        assert!(result.is_err());
-
-        // Empty peer ID
-        let result = parse_endpoint("mytopic@p2p:");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_p2p_error_invalid_strategy() {
-        let result = parse_endpoint("mytopic@p2p:a3f7-k2m9-p4n8/invalid");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown P2P strategy"));
-    }
 
     // Cloud endpoint tests
     #[test]

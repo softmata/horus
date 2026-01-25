@@ -31,8 +31,8 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 
-use super::queryable::QueryError;
-use super::zenoh_config::ZenohConfig;
+use horus_core::communication::network::queryable::QueryError;
+use horus_core::communication::network::zenoh_config::ZenohConfig;
 
 // ============================================================================
 // ROS2 Service Topic Naming

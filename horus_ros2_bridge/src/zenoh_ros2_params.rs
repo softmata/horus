@@ -40,7 +40,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-use super::zenoh_ros2_services::Ros2ServiceError;
+use crate::zenoh_ros2_services::Ros2ServiceError;
 
 // ============================================================================
 // ROS2 Parameter Topic Naming

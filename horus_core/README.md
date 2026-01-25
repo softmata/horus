@@ -12,7 +12,7 @@ use horus::prelude::*;
 use horus_core::prelude::*;
 ```
 
-Rust-first robotics runtime: Node trait with priority scheduler, shared-memory IPC (Hub), and POSIX shared memory regions.
+Rust-first robotics runtime: Node trait with priority scheduler, shared-memory IPC (Topic), and POSIX shared memory regions.
 
 ## Table of Contents
 
@@ -29,7 +29,7 @@ HORUS Core provides lightweight primitives for robotics applications:
 
 - **Nodes**: Simple `Node` trait with `init/tick/shutdown` lifecycle
 - **Scheduler**: Priority-driven executor (0 = highest) with Ctrl+C handling
-- **Hub**: Shared-memory pub/sub communication
+- **Topic**: Unified IPC API with automatic backend selection
 - **NodeInfo**: Context for logging and metrics tracking
 
 ## Architecture
@@ -40,8 +40,7 @@ horus_core/
    ── node.rs           # Node trait + NodeInfo context
    ── log_buffer.rs     # Global log buffer
 ── communication/        # IPC primitives
-   ── horus/
-       ── hub.rs        # Hub pub/sub API
+   ── topic.rs          # Topic unified IPC API
 ── memory/               # Shared memory
    ── shm_topic.rs      # Lock-free ring buffer
 ── scheduling/           # Task scheduling
@@ -300,23 +299,25 @@ The HORUS scheduler has been enhanced with intelligent runtime optimization that
 
 ### Communication Latency
 
-**HORUS provides two IPC mechanisms optimized for different use cases:**
+**HORUS Topic API provides optimized IPC with automatic backend selection:**
 
-**Link (SPSC) - Cross-Core:**
+**Topic with SPSC Backend - Cross-Core:**
 - Median latency: 248ns (496 cycles @ 2GHz)
 - P95 latency: 444ns, P99 latency: 578ns
 - Burst throughput: 6.05 MHz (6M+ msg/s)
 - Bandwidth: Up to 369 MB/s
 - **Best for**: Point-to-point communication, control loops
+- **Auto-selected for**: Single publisher, single subscriber
 
-**Hub (MPMC) - Cross-Core:**
+**Topic with MPMC Backend - Cross-Core:**
 - Median latency: 481ns (962 cycles @ 2GHz)
 - P95 latency: 653ns
 - Flexible pub/sub architecture
 - **Best for**: Multi-subscriber topics, sensor broadcasting
+- **Auto-selected for**: Multiple publishers or subscribers
 
 **Key Results:**
-- Link is 29% faster than Hub in 1P1C scenarios
+- SPSC backend is 29% faster than MPMC for 1P1C scenarios
 - Sub-microsecond latency on modern x86_64 systems
 - Production-validated with 6.2M+ test messages
 - Zero corruptions detected
@@ -351,7 +352,7 @@ dir $env:TEMP\horus
 
 **Custom capacity:**
 ```rust
-let hub = Hub::new_with_capacity("large_topic", 2048)?;
+let topic = Topic::<MyMessage>::new_with_capacity("large_topic", 2048)?;
 ```
 
 ## Message Safety

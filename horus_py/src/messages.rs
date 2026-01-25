@@ -53,7 +53,7 @@ impl PyCmdVel {
         }
     }
 
-    /// Topic name for this message type (used by Hub for auto-discovery)
+    /// Topic name for this message type (used for auto-discovery)
     #[classattr]
     fn __topic_name__() -> &'static str {
         "cmd_vel"

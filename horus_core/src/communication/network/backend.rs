@@ -2,12 +2,10 @@ use super::endpoint::Endpoint;
 use super::router::RouterBackend;
 use super::smart_copy::{CopyStrategy, SmartCopyConfig, SmartCopySender};
 use super::smart_transport::{NetworkLocation, TransportSelector, TransportType};
-use super::udp_direct::UdpDirectBackend;
 use super::udp_multicast::UdpMulticastBackend;
 #[cfg(unix)]
 use super::unix_socket::UnixSocketBackend;
 
-#[cfg(target_os = "linux")]
 use super::batch_udp::{BatchUdpConfig, BatchUdpReceiver, BatchUdpSender};
 
 #[cfg(feature = "zenoh-transport")]
@@ -22,7 +20,7 @@ use crate::error::HorusResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// Network backend for Hub communication
+/// Network backend for Topic communication
 ///
 /// Provides actual network implementations with automatic selection:
 /// - Shared memory (local, fastest)
@@ -39,11 +37,7 @@ pub enum NetworkBackend<T> {
     #[cfg(unix)]
     UnixSocket(UnixSocketBackend<T>),
 
-    /// Direct UDP connection
-    UdpDirect(UdpDirectBackend<T>),
-
-    /// Batch UDP with sendmmsg/recvmmsg (Linux only, high performance)
-    #[cfg(target_os = "linux")]
+    /// Batch UDP with sendmmsg/recvmmsg (Linux) or regular UDP (fallback)
     BatchUdp(BatchUdpBackendWrapper<T>),
 
     /// Multicast discovery
@@ -197,20 +191,6 @@ where
                 }
             }
 
-            Endpoint::P2p {
-                topic,
-                peer_id,
-                strategy,
-            } => {
-                // P2P transport requires signaling server connection and NAT traversal
-                // This will be implemented with STUN/TURN support
-                let _ = (topic, peer_id, strategy);
-                Err(crate::error::HorusError::Communication(
-                    "P2P transport not yet implemented. Use direct IP addresses, mDNS (.local), \
-                     or Zenoh for multi-robot connectivity."
-                        .to_string(),
-                ))
-            }
 
             Endpoint::Cloud { topic, mode } => {
                 // Cloud transport requires WebSocket connection to cloud/relay server
@@ -292,7 +272,7 @@ where
     ) -> HorusResult<Self> {
         match transport {
             TransportType::SharedMemory => {
-                // Shared memory is handled at a higher level (Hub), not here
+                // Shared memory is handled at a higher level (Topic), not here
                 // Fall through to Unix socket or UDP
                 if is_localhost {
                     #[cfg(unix)]
@@ -302,8 +282,7 @@ where
                     }
                 }
                 // Fall through to UDP
-                let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                Ok(NetworkBackend::UdpDirect(udp_backend))
+                Self::create_batch_udp(topic, addr)
             }
 
             TransportType::UnixSocket => {
@@ -315,23 +294,11 @@ where
                 #[cfg(not(unix))]
                 {
                     // Fall back to UDP on non-Unix
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                    Self::create_batch_udp(topic, addr)
                 }
             }
 
-            TransportType::BatchUdp => {
-                #[cfg(target_os = "linux")]
-                {
-                    Self::create_batch_udp(topic, addr)
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    // Fall back to standard UDP on non-Linux
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
-                }
-            }
+            TransportType::BatchUdp => Self::create_batch_udp(topic, addr),
 
             TransportType::IoUring => {
                 // io_uring requires special setup and is best used via BatchUdp wrapper
@@ -342,21 +309,18 @@ where
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                    Self::create_batch_udp(topic, addr)
                 }
             }
 
             TransportType::Udp => {
-                let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                Ok(NetworkBackend::UdpDirect(udp_backend))
+                Self::create_batch_udp(topic, addr)
             }
 
             TransportType::Tcp => {
                 // TCP is handled via Router backend
                 // For direct TCP, fall back to UDP for now
-                let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                Ok(NetworkBackend::UdpDirect(udp_backend))
+                Self::create_batch_udp(topic, addr)
             }
 
             TransportType::Quic => {
@@ -376,8 +340,7 @@ where
                     log::warn!(
                         "QUIC transport requested but feature not enabled; falling back to UDP"
                     );
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                    Self::create_batch_udp(topic, addr)
                 }
             }
 
@@ -393,8 +356,7 @@ where
                     log::warn!(
                         "Zenoh transport requested but feature not enabled; falling back to UDP"
                     );
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                    Self::create_batch_udp(topic, addr)
                 }
             }
 
@@ -409,8 +371,7 @@ where
                 #[cfg(not(feature = "zenoh-transport"))]
                 {
                     log::warn!("Zenoh ROS2 transport requested but feature not enabled; falling back to UDP");
-                    let udp_backend = UdpDirectBackend::new(topic, addr.ip(), addr.port())?;
-                    Ok(NetworkBackend::UdpDirect(udp_backend))
+                    Self::create_batch_udp(topic, addr)
                 }
             }
         }
@@ -466,9 +427,7 @@ where
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         match self {
             #[cfg(unix)]
-            NetworkBackend::UnixSocket(backend) => backend.send(msg),
-            NetworkBackend::UdpDirect(backend) => backend.send(msg),
-            #[cfg(target_os = "linux")]
+            NetworkBackend::UnixSocket(backend) => backend.send(msg),            #[cfg(target_os = "linux")]
             NetworkBackend::BatchUdp(backend) => {
                 let data = bincode::serialize(msg).map_err(|e| {
                     crate::error::HorusError::Communication(format!("Serialization error: {}", e))
@@ -519,9 +478,7 @@ where
     pub fn recv(&mut self) -> Option<T> {
         match self {
             #[cfg(unix)]
-            NetworkBackend::UnixSocket(backend) => backend.recv(),
-            NetworkBackend::UdpDirect(backend) => backend.recv(),
-            #[cfg(target_os = "linux")]
+            NetworkBackend::UnixSocket(backend) => backend.recv(),            #[cfg(target_os = "linux")]
             NetworkBackend::BatchUdp(backend) => {
                 let mut receiver = match backend.receiver.lock() {
                     Ok(r) => r,
@@ -551,9 +508,7 @@ where
     pub fn transport_type(&self) -> &'static str {
         match self {
             #[cfg(unix)]
-            NetworkBackend::UnixSocket(_) => "unix_socket",
-            NetworkBackend::UdpDirect(_) => "udp_direct",
-            #[cfg(target_os = "linux")]
+            NetworkBackend::UnixSocket(_) => "unix_socket",            #[cfg(target_os = "linux")]
             NetworkBackend::BatchUdp(_) => "batch_udp",
             NetworkBackend::Multicast(_) => "multicast",
             NetworkBackend::Router(_) => "router",
@@ -591,10 +546,6 @@ impl<T> std::fmt::Debug for NetworkBackend<T> {
             #[cfg(unix)]
             NetworkBackend::UnixSocket(backend) => f
                 .debug_struct("NetworkBackend::UnixSocket")
-                .field("backend", backend)
-                .finish(),
-            NetworkBackend::UdpDirect(backend) => f
-                .debug_struct("NetworkBackend::UdpDirect")
                 .field("backend", backend)
                 .finish(),
             #[cfg(target_os = "linux")]

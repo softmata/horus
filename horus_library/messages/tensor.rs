@@ -6,7 +6,7 @@
 //! # Overview
 //!
 //! The tensor system consists of:
-//! - [`HorusTensor`]: A lightweight descriptor that flows through Hub/Link
+//! - [`HorusTensor`]: A lightweight descriptor that flows through Topic
 //! - [`TensorDtype`]: Data type enumeration (f32, f16, u8, etc.)
 //! - [`TensorDevice`]: Device location (CPU or CUDA:N)
 //!
@@ -191,7 +191,7 @@ impl std::fmt::Display for TensorDevice {
 /// Zero-copy tensor descriptor for shared memory communication
 ///
 /// This is a lightweight message type (~200 bytes) that describes a tensor
-/// stored in a shared memory pool. It flows through Hub/Link like any other
+/// stored in a shared memory pool. It flows through Topic like any other
 /// message, but the actual tensor data lives in the pool.
 ///
 /// # Memory Layout

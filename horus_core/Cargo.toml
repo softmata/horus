@@ -133,7 +133,7 @@ cloud-all = ["cloud-s3", "cloud-gcs", "cloud-azure"]  # Enable all cloud provide
 
 # Zenoh transport for multi-robot and ROS2 interop
 zenoh-transport = ["zenoh", "rmp-serde"]  # Includes MessagePack support
-zenoh-ros2 = ["zenoh-transport", "cdr-encoding", "byteorder"]  # Zenoh with ROS2 CDR compatibility
+zenoh-ros2 = ["zenoh-transport", "cdr-encoding", "byteorder"]  # Zenoh with ROS2 CDR compatibility (use horus_ros2_bridge crate for ROS2 protocols)
 
 # Dynamic driver plugin loading
 dynamic-plugins = ["libloading"]

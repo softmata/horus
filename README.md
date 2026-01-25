@@ -174,11 +174,11 @@ See [Built-in Nodes Documentation](horus_library/nodes/README.md) for complete c
 ## Key Features
 
 ### Real-Time Performance
-- **Sub-Microsecond Messaging**: Median 87ns (Link/SPSC), 313ns (Hub/MPMC)
+- **Sub-Microsecond Messaging**: Median 87ns (Topic with SPSC), 313ns (Topic with MPMC)
 - **High Throughput**: 6+ million messages per second sustained
 - **Enhanced Smart Scheduler**: Automatic optimization with JIT compilation, async I/O, and fault tolerance
 - **Priority-Based Scheduling**: Deterministic execution order with intelligent tier classification
-- **Wait-Free & Lock-Free Communication**: Link (87ns, wait-free), Hub (313ns, lock-free)
+- **Wait-Free & Lock-Free Communication**: Topic with SPSC (87ns, wait-free), Topic with MPMC (313ns, lock-free)
 - **Zero-Copy IPC**: Direct shared memory access
 
 ### Developer Experience
@@ -483,7 +483,7 @@ Both share the same global topic namespace → communication works automatically
 
 ### Message Types
 
-All message types sent through Hub/Link must implement the `LogSummary` trait:
+All message types sent through Topic must implement the `LogSummary` trait:
 
 ```rust
 use horus::prelude::*;

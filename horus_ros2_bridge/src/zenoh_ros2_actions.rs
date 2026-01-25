@@ -42,7 +42,7 @@ use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::queryable::QueryError;
+use horus_core::communication::network::queryable::QueryError;
 
 // ============================================================================
 // ROS2 Action Topic Naming
