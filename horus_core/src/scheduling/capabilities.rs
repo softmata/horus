@@ -36,7 +36,7 @@
 //! checks are simple field reads with zero overhead.
 
 use crate::core::rt_config::{RtCpuInfo, RtKernelInfo};
-use crate::hardware::{Platform, PlatformCapabilities, PlatformDetector};
+use horus_hardware::{Platform, PlatformCapabilities, PlatformDetector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

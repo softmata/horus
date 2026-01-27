@@ -11,7 +11,7 @@
 
 use colored::*;
 use horus_core::error::HorusResult;
-use horus_core::hardware::{
+use horus_hardware::{
     CategoryFilter, DeviceCategory, DiscoveredDevice, DiscoveryOptions, HardwareDiscovery,
     PlatformDetector, ProgressCallback,
 };
@@ -276,7 +276,7 @@ pub fn run_scan(options: HardwareScanOptions) -> HorusResult<()> {
     // CAN Interfaces (Linux only)
     #[cfg(target_os = "linux")]
     if options.can && !report.can_interfaces.is_empty() {
-        use horus_core::hardware::format_bitrate;
+        use horus_hardware::format_bitrate;
         println!("{}", "CAN Interfaces".cyan().bold());
         for iface in &report.can_interfaces {
             let state = format!("{:?}", iface.state);
@@ -686,7 +686,7 @@ impl Default for HardwareScanOptions {
 
 /// Helper function to match a device against a category filter
 fn match_category_filter(
-    device: &horus_core::hardware::DiscoveredDevice,
+    device: &horus_hardware::DiscoveredDevice,
     filter: &CategoryFilter,
 ) -> bool {
     match &device.category {

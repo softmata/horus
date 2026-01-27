@@ -3945,6 +3945,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "horus-hardware"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_derive",
+]
+
+[[package]]
 name = "horus_ai"
 version = "0.1.8"
 dependencies = [
@@ -4009,6 +4021,7 @@ dependencies = [
  "futures",
  "google-cloud-storage",
  "hex",
+ "horus-hardware",
  "horus_macros",
  "io-uring",
  "lazy_static",
@@ -4125,6 +4138,7 @@ dependencies = [
  "fs_extra",
  "futures",
  "glob",
+ "horus-hardware",
  "horus_core",
  "horus_library",
  "hostname",

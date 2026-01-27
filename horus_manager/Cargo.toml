@@ -21,6 +21,7 @@ path = "src/bin/isolated_runner.rs"
 # horus = { path = "../horus" }  # Temporarily disabled due to horus_library build issues
 horus_core = { path = "../horus_core", features = ["dynamic-plugins"] }
 horus_library = { path = "../horus_library" }
+horus-hardware = { path = "../../registry_packages/horus-hardware" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"
 tokio = { version = "1.0", features = ["full"] }

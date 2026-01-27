@@ -59,6 +59,9 @@ quinn = { version = "0.11", optional = true }
 # Macros (optional)
 horus_macros = { path = "../horus_macros", optional = true }
 
+# Extracted modules (used by scheduling/capabilities.rs for platform detection)
+horus-hardware = { path = "../../registry_packages/horus-hardware" }
+
 # HTTP client for model downloading and Husarnet API (optional)
 reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
 
