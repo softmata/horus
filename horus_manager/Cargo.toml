@@ -93,6 +93,10 @@ argon2 = "0.5"
 base64 = "0.21"
 rpassword = "7.3"
 
+# Package signing
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+hex = "0.4"
+
 [features]
 default = []
 zenoh-transport = ["horus_core/zenoh-transport", "dep:zenoh", "dep:cdr-encoding", "dep:byteorder"]

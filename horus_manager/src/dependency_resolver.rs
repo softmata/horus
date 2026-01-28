@@ -38,6 +38,9 @@ pub struct DependencySpec {
     pub name: String,
     pub requirement: VersionReq,  // Semver requirement like "^1.2.3"
     pub source: DependencySource, // Where to get this dependency
+    /// Optional target platform filter (e.g., "linux-x86_64")
+    /// If set, this dependency is only required on the specified platform
+    pub target: Option<String>,
 }
 
 impl fmt::Display for DependencySpec {
@@ -61,6 +64,7 @@ impl DependencySpec {
                 source: DependencySource::Pip {
                     package_name: "horus-robotics".to_string(),
                 },
+                target: None,
             });
         }
 
@@ -81,12 +85,14 @@ impl DependencySpec {
                 name,
                 requirement,
                 source: DependencySource::Registry,
+                target: None,
             })
         } else {
             Ok(Self {
                 name: spec.to_string(),
                 requirement: VersionReq::STAR, // Any version
                 source: DependencySource::Registry,
+                target: None,
             })
         }
     }
@@ -110,6 +116,7 @@ impl DependencySpec {
                 source: DependencySource::Pip {
                     package_name: pip_package,
                 },
+                target: None,
             })
         } else {
             Ok(Self {
@@ -118,6 +125,7 @@ impl DependencySpec {
                 source: DependencySource::Pip {
                     package_name: spec.to_string(),
                 },
+                target: None,
             })
         }
     }
@@ -134,6 +142,7 @@ impl DependencySpec {
                 source: DependencySource::Pip {
                     package_name: "horus-robotics".to_string(),
                 },
+                target: None,
             });
         }
 
@@ -150,11 +159,17 @@ impl DependencySpec {
                     name,
                     requirement,
                     source: DependencySource::Registry,
+                    target: None,
                 })
             }
 
             // Structured dependency: path, git, pip, or registry
             Value::Mapping(map) => {
+                // Parse optional target platform
+                let dep_target = map
+                    .get(Value::String("target".to_string()))
+                    .and_then(|v| v.as_str().map(String::from));
+
                 // Check for path dependency
                 if let Some(Value::String(path_str)) = map.get(Value::String("path".to_string())) {
                     let path = std::path::PathBuf::from(path_str);
@@ -162,6 +177,7 @@ impl DependencySpec {
                         name,
                         requirement: VersionReq::STAR, // Path deps don't use versions
                         source: DependencySource::Path(path),
+                        target: dep_target,
                     })
                 }
                 // Check for git dependency
@@ -187,6 +203,7 @@ impl DependencySpec {
                             tag,
                             rev,
                         },
+                        target: dep_target,
                     })
                 }
                 // Check for pip dependency: { pip: "package-name" } or { pip: "package-name", version: "^1.0" }
@@ -207,6 +224,7 @@ impl DependencySpec {
                         source: DependencySource::Pip {
                             package_name: pip_package.clone(),
                         },
+                        target: dep_target,
                     })
                 }
                 // Registry with explicit version
@@ -219,6 +237,7 @@ impl DependencySpec {
                         name,
                         requirement,
                         source: DependencySource::Registry,
+                        target: dep_target,
                     })
                 } else {
                     Err(anyhow!("Invalid dependency specification for '{}'", name))

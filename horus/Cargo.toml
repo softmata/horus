@@ -33,7 +33,6 @@ minimal = ["horus_library/default"]  # Explicitly disable standard-nodes
 gpio-hardware = ["horus_library/gpio-hardware"]
 i2c-hardware = ["horus_library/i2c-hardware"]
 spi-hardware = ["horus_library/spi-hardware"]
-can-hardware = ["horus_library/can-hardware"]
 modbus-hardware = ["horus_library/modbus-hardware"]
 
 # Sensor-specific features

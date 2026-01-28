@@ -28,11 +28,9 @@ colored = { version = "2.0", optional = true }
 # Optional hardware dependencies
 # Note: Hardware features are opt-in to avoid heavy dependencies for basic message usage
 opencv = { version = "0.92", optional = true }
-v4l = { version = "0.14", optional = true }
 rppal = { version = "0.14", optional = true }  # Raspberry Pi GPIO
 sysfs_gpio = { version = "0.6", optional = true }  # Linux sysfs GPIO interface
 serialport = { version = "4.2", optional = true }
-socketcan = { version = "3.1", optional = true }
 i2cdev = { version = "0.6", optional = true }
 libc = { version = "0.2", optional = true }
 spidev = { version = "0.6", optional = true }
@@ -75,21 +73,16 @@ standard-nodes = [
 # Enable with: horus = { features = ["vision"] }
 vision = [
     "opencv-backend",
-    "v4l2-backend",
 ]
 
 # Hardware backend features
 opencv-backend = ["opencv"]
-v4l2-backend = ["v4l"]
-realsense = []  # Feature flag for conditional compilation (no crate dependency)
-zed = []  # Feature flag for conditional compilation (no crate dependency)
 
 # Platform features
 raspberry-pi = ["rppal"]
 
 # Hardware interface features
 serial-hardware = ["serialport"]
-can-hardware = ["socketcan"]
 i2c-hardware = ["i2cdev", "libc"]
 spi-hardware = ["spidev"]
 gpio-hardware = ["rppal", "sysfs_gpio"]
@@ -119,9 +112,7 @@ cuda = []  # GPU acceleration for ML inference (requires CUDA toolkit)
 # Convenience feature bundles
 full-hardware = [
     "opencv-backend",
-    "v4l2-backend",
     "serial-hardware",
-    "can-hardware",
     "i2c-hardware",
     "spi-hardware",
     "gpio-hardware",

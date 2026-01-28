@@ -12,7 +12,7 @@ use std::path::Path;
 const NODE_FEATURES: &[(&str, &[&str])] = &[
     // Vision nodes
     ("CameraNode", &["opencv-backend"]),
-    ("DepthCameraNode", &["realsense"]),
+    ("DepthCameraNode", &[]),
     ("ImageProcessorNode", &["opencv-backend"]),
     // Input devices
     ("JoystickInputNode", &["gilrs"]),
@@ -33,7 +33,7 @@ const NODE_FEATURES: &[(&str, &[&str])] = &[
     ("DynamixelNode", &["serial-hardware"]),
     ("RoboclawMotorNode", &["serial-hardware"]),
     // Industrial interfaces
-    ("CanBusNode", &["can-hardware"]),
+    ("CanBusNode", &[]),
     ("DigitalIONode", &["gpio-hardware"]),
     ("I2cBusNode", &["i2c-hardware"]),
     ("ModbusNode", &["modbus-hardware"]),

@@ -27,7 +27,7 @@
 //!
 //! Plugins can be loaded at runtime without recompilation:
 //! - `horus plugins search camera` - Find camera plugins
-//! - `horus plugins install horus-realsense` - Install a plugin
+//! - `horus plugins install horus-rplidar` - Install a plugin
 //! - Plugin is loaded dynamically via `~/.horus/plugins/`
 
 mod discovery;

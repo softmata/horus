@@ -513,121 +513,12 @@ if [ "$OS_TYPE" = "unknown" ]; then
 fi
 
 # ============================================================================
-# PLATFORM PROFILE SELECTION
+# INSTALLATION PROFILE
 # ============================================================================
-# Profiles determine which packages to build:
-#   - full: All packages including sim2d, sim3d (Desktop/Workstation)
-#   - embedded: Core packages only, no heavy GUI (Raspberry Pi, Jetson)
-#   - minimal: Only essential runtime, no library (Resource-constrained)
-
-# Detect if running on embedded/SBC hardware
-detect_embedded_platform() {
-    local platform="desktop"
-
-    # Check for Raspberry Pi
-    if grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null || grep -q "BCM" /proc/cpuinfo 2>/dev/null; then
-        platform="raspberry_pi"
-    # Check for NVIDIA Jetson
-    elif [ -f "/etc/nv_tegra_release" ] || grep -q "tegra" /proc/cpuinfo 2>/dev/null; then
-        platform="jetson"
-    # Check for BeagleBone
-    elif grep -q "AM33XX" /proc/cpuinfo 2>/dev/null; then
-        platform="beaglebone"
-    # Check for Orange Pi / other ARM SBCs
-    elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "armv7l" ]; then
-        # Check available RAM (less than 4GB suggests embedded)
-        local mem_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-        if [ -n "$mem_kb" ] && [ "$mem_kb" -lt 4000000 ]; then
-            platform="arm_sbc"
-        fi
-    fi
-
-    echo "$platform"
-}
-
-# Platform selection prompt
-select_platform_profile() {
-    local detected_platform=$(detect_embedded_platform)
-    local default_profile="full"
-    local suggested=""
-
-    # Suggest embedded profile for detected SBC platforms
-    case "$detected_platform" in
-        raspberry_pi)
-            default_profile="embedded"
-            suggested=" (Raspberry Pi detected)"
-            ;;
-        jetson)
-            default_profile="embedded"
-            suggested=" (NVIDIA Jetson detected)"
-            ;;
-        beaglebone)
-            default_profile="minimal"
-            suggested=" (BeagleBone detected)"
-            ;;
-        arm_sbc)
-            default_profile="embedded"
-            suggested=" (ARM SBC detected)"
-            ;;
-    esac
-
-    echo ""
-    echo -e "${CYAN}Select installation profile:${NC}${suggested}"
-    echo ""
-    echo -e "  ${GREEN}1)${NC} Full        - All packages including simulators (sim2d, sim3d)"
-    echo -e "                   Best for: Desktop, Workstation, Development"
-    echo -e "                   Requires: ~8GB RAM, GPU recommended"
-    echo ""
-    echo -e "  ${YELLOW}2)${NC} Embedded    - Core packages only, no heavy GUI dependencies"
-    echo -e "                   Best for: Raspberry Pi, Jetson, ARM SBCs"
-    echo -e "                   Requires: ~2GB RAM, no GPU needed"
-    echo ""
-    echo -e "  ${MAGENTA}3)${NC} Minimal     - Only essential runtime (horus, horus_core, horus_macros)"
-    echo -e "                   Best for: Resource-constrained devices, CI/CD"
-    echo -e "                   Requires: ~1GB RAM"
-    echo ""
-
-    local profile_num=""
-    case "$default_profile" in
-        full) profile_num="1" ;;
-        embedded) profile_num="2" ;;
-        minimal) profile_num="3" ;;
-    esac
-
-    read -p "$(echo -e ${CYAN}?${NC}) Select profile [1/2/3] (default: ${profile_num}): " -n 1 -r PROFILE_CHOICE
-    echo
-
-    # Default to detected profile if user just presses enter
-    if [ -z "$PROFILE_CHOICE" ]; then
-        PROFILE_CHOICE="$profile_num"
-    fi
-
-    case "$PROFILE_CHOICE" in
-        1)
-            INSTALL_PROFILE="full"
-            echo -e "${GREEN}${STATUS_OK}${NC} Selected: Full installation"
-            ;;
-        2)
-            INSTALL_PROFILE="embedded"
-            echo -e "${YELLOW}${STATUS_OK}${NC} Selected: Embedded installation (no sim2d/sim3d)"
-            ;;
-        3)
-            INSTALL_PROFILE="minimal"
-            echo -e "${MAGENTA}${STATUS_OK}${NC} Selected: Minimal installation"
-            ;;
-        *)
-            # Invalid input, use default
-            INSTALL_PROFILE="$default_profile"
-            echo -e "${CYAN}${STATUS_INFO}${NC} Using default: ${INSTALL_PROFILE}"
-            ;;
-    esac
-
-    # Export the profile for later use
-    export INSTALL_PROFILE
-}
-
-# Select platform profile
-select_platform_profile
+# Single profile: builds all core packages.
+# sim2d/sim3d are standalone packages - install via: horus pkg install sim2d
+INSTALL_PROFILE="full"
+export INSTALL_PROFILE
 
 # ============================================================================
 # SMART VERSION SOLVER - Automatic dependency resolution
@@ -707,7 +598,6 @@ declare -A CARGO_MIN_VERSIONS=(
     ["serde"]="1.0"           # Serialization
     ["tokio"]="1.0"           # Async runtime
     ["pyo3"]="0.21"           # Python bindings
-    ["bevy"]="0.14"           # Game engine (sim3d)
 )
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1293,7 +1183,7 @@ else
     fi
 fi
 
-# GUI/Graphics libraries (required for sim2d and monitor)
+# GUI/Graphics libraries (required for monitor TUI)
 if [ "$(uname -s)" = "Linux" ]; then
     if ! pkg-config --exists x11 2>/dev/null; then
         echo -e "${YELLOW}${NC}  X11 development library not found"
@@ -1329,29 +1219,9 @@ fi
 # Optional but recommended libraries
 OPTIONAL_MISSING=""
 
-if ! pkg-config --exists libv4l2 2>/dev/null; then
-    echo -e "${YELLOW}${NC}  libv4l2 not found (optional - needed for camera support)"
-    OPTIONAL_MISSING="${OPTIONAL_MISSING} libv4l2"
-fi
-
 if ! pkg-config --exists fontconfig 2>/dev/null; then
     echo -e "${YELLOW}${NC}  fontconfig not found (optional - improves text rendering)"
     OPTIONAL_MISSING="${OPTIONAL_MISSING} fontconfig"
-fi
-
-# Hardware driver libraries (optional - for real hardware access)
-HARDWARE_MISSING=""
-
-# Check for RealSense camera support
-if ! pkg-config --exists realsense2 2>/dev/null; then
-    echo -e "${YELLOW}${NC}  librealsense2 not found (optional - for RealSense depth cameras)"
-    HARDWARE_MISSING="${HARDWARE_MISSING} realsense"
-fi
-
-# Check for CAN utilities (useful for debugging SocketCAN)
-if ! command -v cansend &> /dev/null; then
-    echo -e "${YELLOW}${NC}  can-utils not found (optional - for CAN bus debugging)"
-    HARDWARE_MISSING="${HARDWARE_MISSING} can-utils"
 fi
 
 if [ ! -z "$MISSING_LIBS" ]; then
@@ -1366,22 +1236,19 @@ if [ ! -z "$MISSING_LIBS" ]; then
     echo "    libssl-dev libudev-dev libasound2-dev \\"
     echo "    libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \\"
     echo "    libwayland-dev wayland-protocols libxkbcommon-dev \\"
-    echo "    libvulkan-dev libfontconfig-dev libfreetype-dev \\"
-    echo "    libv4l-dev"
+    echo "    libvulkan-dev libfontconfig-dev libfreetype-dev"
     echo ""
     echo -e "${CYAN}Fedora/RHEL/CentOS:${NC}"
     echo "  sudo dnf install -y gcc glibc-devel pkg-config openssl-devel systemd-devel alsa-lib-devel \\"
     echo "    libX11-devel libXrandr-devel libXi-devel libXcursor-devel libXinerama-devel \\"
     echo "    wayland-devel wayland-protocols-devel libxkbcommon-devel \\"
-    echo "    vulkan-devel fontconfig-devel freetype-devel \\"
-    echo "    libv4l-devel"
+    echo "    vulkan-devel fontconfig-devel freetype-devel"
     echo ""
     echo -e "${CYAN}Arch Linux:${NC}"
     echo "  sudo pacman -S gcc pkg-config openssl systemd alsa-lib \\"
     echo "    libx11 libxrandr libxi libxcursor libxinerama \\"
     echo "    wayland wayland-protocols libxkbcommon \\"
-    echo "    vulkan-icd-loader fontconfig freetype2 \\"
-    echo "    v4l-utils"
+    echo "    vulkan-icd-loader fontconfig freetype2"
     echo ""
     echo -e "${CYAN}macOS:${NC}"
     echo "  xcode-select --install"
@@ -1418,26 +1285,7 @@ fi
 echo -e "${GREEN}${NC} All required system dependencies found"
 
 if [ ! -z "$OPTIONAL_MISSING" ]; then
-    echo -e "${YELLOW}${NC} Some optional dependencies missing (camera/font support may be limited)"
-fi
-
-if [ ! -z "$HARDWARE_MISSING" ]; then
-    echo -e "${CYAN}${NC}  Optional hardware driver packages available:"
-    echo ""
-    if [[ "$HARDWARE_MISSING" == *"realsense"* ]]; then
-        echo -e "  ${CYAN}RealSense Depth Cameras:${NC}"
-        echo "    Ubuntu/Debian: sudo apt install -y librealsense2-dev librealsense2-utils"
-        echo "    See: https://github.com/IntelRealSense/librealsense/blob/master/doc/distribution_linux.md"
-        echo ""
-    fi
-    if [[ "$HARDWARE_MISSING" == *"can-utils"* ]]; then
-        echo -e "  ${CYAN}CAN Bus Debugging Tools:${NC}"
-        echo "    Ubuntu/Debian: sudo apt install -y can-utils"
-        echo "    Usage: candump can0, cansend can0 123#DEADBEEF"
-        echo ""
-    fi
-    echo -e "  ${CYAN}Note:${NC} Hardware features are optional. You can install these later if needed."
-    echo ""
+    echo -e "${YELLOW}${NC} Some optional dependencies missing (font support may be limited)"
 fi
 
 # ============================================================================
@@ -2086,53 +1934,30 @@ build_with_recovery() {
     check_lockfile_freshness
     validate_cargo_dependencies
 
-    # Define packages to build based on installation profile
-    # Order matters: dependencies first, then dependents
-    case "${INSTALL_PROFILE:-full}" in
-        minimal)
-            # Only essential runtime packages
-            BUILD_PACKAGES=(
-                "horus_macros"
-                "horus_core"
-                "horus"
-                "horus_manager"
-            )
-            echo -e "${MAGENTA}   Profile: Minimal - Building core runtime only${NC}"
-            ;;
-        embedded)
-            # Core packages + library + Python bindings, but no heavy simulators
-            BUILD_PACKAGES=(
-                "horus_macros"
-                "horus_core"
-                "horus"
-                "horus_manager"
-                "horus_library"
-                "horus_py"
-            )
-            echo -e "${YELLOW}   Profile: Embedded - Skipping sim2d/sim3d (saves ~1GB RAM during build)${NC}"
-            ;;
-        full|*)
-            # All core packages - simulators are now standalone packages
-            BUILD_PACKAGES=(
-                "horus_macros"
-                "horus_core"
-                "horus"
-                "horus_manager"
-                "horus_library"
-                "horus_py"
-            )
-            echo -e "${GREEN}   Profile: Full - Building core packages${NC}"
-            echo -e "${CYAN}   Note: sim2d/sim3d are standalone packages (built separately)${NC}"
-            ;;
-    esac
+    # Define packages to build (order matters: dependencies first)
+    BUILD_PACKAGES=(
+        "horus_macros"
+        "horus_core"
+        "horus"
+        "horus_ai"
+        "horus_perception"
+        "horus_ros2_bridge"
+        "horus_manager"
+        "horus_library"
+        "horus_py"
+    )
+    echo -e "${GREEN}   Building all packages${NC}"
+    echo -e "${CYAN}   sim2d/sim3d available via registry: horus pkg install sim2d${NC}"
 
     # Estimated crate counts for each package (for progress calculation)
     # Based on actual dependency counts from cargo tree (fresh build)
-    # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
     declare -A PACKAGE_CRATES=(
         ["horus_macros"]=10
         ["horus_core"]=350
         ["horus"]=50
+        ["horus_ai"]=20
+        ["horus_perception"]=15
+        ["horus_ros2_bridge"]=80
         ["horus_manager"]=150
         ["horus_library"]=50
         ["horus_py"]=20
@@ -2469,50 +2294,6 @@ chmod +x "$INSTALL_DIR/horus"
 
 echo -e "${GREEN}${NC} CLI installed to $INSTALL_DIR/horus"
 
-# Install sim2d binary from standalone package (only for full profile)
-if [ "${INSTALL_PROFILE:-full}" = "full" ]; then
-    SIM2D_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../horus-sim2d"
-    if [ -d "$SIM2D_DIR" ]; then
-        echo -e "${CYAN}${STATUS_INFO}${NC} Building sim2d from standalone package..."
-        if (cd "$SIM2D_DIR" && cargo build --release 2>/dev/null); then
-            if [ -f "$SIM2D_DIR/target/release/sim2d" ]; then
-                cp "$SIM2D_DIR/target/release/sim2d" "$INSTALL_DIR/sim2d"
-                chmod +x "$INSTALL_DIR/sim2d"
-                echo -e "${GREEN}${NC} sim2d binary installed to $INSTALL_DIR/sim2d"
-            fi
-        else
-            echo -e "${YELLOW}[-]${NC} sim2d: Build failed (check ../horus-sim2d)"
-        fi
-    else
-        echo -e "${CYAN}[-]${NC} sim2d: Standalone package not found at ../horus-sim2d"
-        echo -e "    Install separately: cd ../horus-sim2d && cargo install --path ."
-    fi
-else
-    echo -e "${YELLOW}[-]${NC} sim2d: Skipped (${INSTALL_PROFILE} profile)"
-fi
-
-# Install sim3d binary from standalone package (only for full profile)
-if [ "${INSTALL_PROFILE:-full}" = "full" ]; then
-    SIM3D_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../horus-sim3d"
-    if [ -d "$SIM3D_DIR" ]; then
-        echo -e "${CYAN}${STATUS_INFO}${NC} Building sim3d from standalone package..."
-        if (cd "$SIM3D_DIR" && cargo build --release 2>/dev/null); then
-            if [ -f "$SIM3D_DIR/target/release/sim3d" ]; then
-                cp "$SIM3D_DIR/target/release/sim3d" "$INSTALL_DIR/sim3d"
-                chmod +x "$INSTALL_DIR/sim3d"
-                echo -e "${GREEN}${NC} sim3d binary installed to $INSTALL_DIR/sim3d"
-            fi
-        else
-            echo -e "${YELLOW}[-]${NC} sim3d: Build failed (check ../horus-sim3d)"
-        fi
-    else
-        echo -e "${CYAN}[-]${NC} sim3d: Standalone package not found at ../horus-sim3d"
-        echo -e "    Install separately: cd ../horus-sim3d && cargo install --path ."
-    fi
-else
-    echo -e "${YELLOW}[-]${NC} sim3d: Skipped (${INSTALL_PROFILE} profile)"
-fi
-
 echo ""
 
 # Step 3: Create cache directory structure
@@ -2525,6 +2306,9 @@ HORUS_VERSION=$(grep -m1 '^version' horus/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_CORE_VERSION=$(grep -m1 '^version' horus_core/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_MACROS_VERSION=$(grep -m1 '^version' horus_macros/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_LIBRARY_VERSION=$(grep -m1 '^version' horus_library/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+HORUS_AI_VERSION=$(grep -m1 '^version' horus_ai/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+HORUS_PERCEPTION_VERSION=$(grep -m1 '^version' horus_perception/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+HORUS_ROS2_BRIDGE_VERSION=$(grep -m1 '^version' horus_ros2_bridge/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_PY_VERSION=$(grep -m1 '^version' horus_py/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 
 echo -e "${CYAN}  ${NC} Detected versions:"
@@ -2532,6 +2316,9 @@ echo "    horus: $HORUS_VERSION"
 echo "    horus_core: $HORUS_CORE_VERSION"
 echo "    horus_macros: $HORUS_MACROS_VERSION"
 echo "    horus_library: $HORUS_LIBRARY_VERSION"
+echo "    horus_ai: $HORUS_AI_VERSION"
+echo "    horus_perception: $HORUS_PERCEPTION_VERSION"
+echo "    horus_ros2_bridge: $HORUS_ROS2_BRIDGE_VERSION"
 echo "    horus_py: $HORUS_PY_VERSION"
 echo ""
 
@@ -2548,6 +2335,9 @@ if [ -f "$VERSION_FILE" ]; then
         rm -rf "$CACHE_DIR/horus_core@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_macros@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_library@$OLD_VERSION" 2>/dev/null || true
+        rm -rf "$CACHE_DIR/horus_ai@$OLD_VERSION" 2>/dev/null || true
+        rm -rf "$CACHE_DIR/horus_perception@$OLD_VERSION" 2>/dev/null || true
+        rm -rf "$CACHE_DIR/horus_ros2_bridge@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_py@$OLD_VERSION" 2>/dev/null || true
 
         echo -e "${GREEN}${NC} Old versions removed"
@@ -2640,15 +2430,25 @@ cp -r horus_library/messages "$HORUS_DIR/horus_library/" 2>/dev/null || true
 cp -r horus_library/traits "$HORUS_DIR/horus_library/" 2>/dev/null || true
 cp -r horus_library/algorithms "$HORUS_DIR/horus_library/" 2>/dev/null || true
 
+# Copy horus_ai crate
+mkdir -p "$HORUS_DIR/horus_ai"
+cp horus_ai/Cargo.toml "$HORUS_DIR/horus_ai/" 2>/dev/null || true
+cp -r horus_ai/src "$HORUS_DIR/horus_ai/" 2>/dev/null || true
+
+# Copy horus_perception crate
+mkdir -p "$HORUS_DIR/horus_perception"
+cp horus_perception/Cargo.toml "$HORUS_DIR/horus_perception/" 2>/dev/null || true
+cp -r horus_perception/src "$HORUS_DIR/horus_perception/" 2>/dev/null || true
+
+# Copy horus_ros2_bridge crate
+mkdir -p "$HORUS_DIR/horus_ros2_bridge"
+cp horus_ros2_bridge/Cargo.toml "$HORUS_DIR/horus_ros2_bridge/" 2>/dev/null || true
+cp -r horus_ros2_bridge/src "$HORUS_DIR/horus_ros2_bridge/" 2>/dev/null || true
+
 # Copy horus_manager crate (CLI binary source)
 mkdir -p "$HORUS_DIR/horus_manager"
 cp horus_manager/Cargo.toml "$HORUS_DIR/horus_manager/" 2>/dev/null || true
 cp -r horus_manager/src "$HORUS_DIR/horus_manager/" 2>/dev/null || true
-
-# Copy horus_router crate
-mkdir -p "$HORUS_DIR/horus_router"
-cp horus_router/Cargo.toml "$HORUS_DIR/horus_router/" 2>/dev/null || true
-cp -r horus_router/src "$HORUS_DIR/horus_router/" 2>/dev/null || true
 
 # Copy horus_py crate (Python bindings source - for reference)
 mkdir -p "$HORUS_DIR/horus_py"
@@ -2728,6 +2528,63 @@ cat > "$HORUS_LIBRARY_DIR/metadata.json" << EOF
 EOF
 
 echo -e "${GREEN}${NC} Installed horus_library"
+
+# Step 7b: Install horus_ai
+echo -e "${CYAN}${NC} Installing horus_ai@$HORUS_AI_VERSION..."
+HORUS_AI_DIR="$CACHE_DIR/horus_ai@$HORUS_AI_VERSION"
+mkdir -p "$HORUS_AI_DIR/lib"
+
+cp -r target/release/libhorus_ai.* "$HORUS_AI_DIR/lib/" 2>/dev/null || true
+cp -r target/release/deps/libhorus_ai*.rlib "$HORUS_AI_DIR/lib/" 2>/dev/null || true
+
+cat > "$HORUS_AI_DIR/metadata.json" << EOF
+{
+  "name": "horus_ai",
+  "version": "$HORUS_AI_VERSION",
+  "description": "HORUS AI - Tensor system with DLPack interop",
+  "install_type": "source"
+}
+EOF
+
+echo -e "${GREEN}${NC} Installed horus_ai"
+
+# Step 7c: Install horus_perception
+echo -e "${CYAN}${NC} Installing horus_perception@$HORUS_PERCEPTION_VERSION..."
+HORUS_PERCEPTION_DIR="$CACHE_DIR/horus_perception@$HORUS_PERCEPTION_VERSION"
+mkdir -p "$HORUS_PERCEPTION_DIR/lib"
+
+cp -r target/release/libhorus_perception.* "$HORUS_PERCEPTION_DIR/lib/" 2>/dev/null || true
+cp -r target/release/deps/libhorus_perception*.rlib "$HORUS_PERCEPTION_DIR/lib/" 2>/dev/null || true
+
+cat > "$HORUS_PERCEPTION_DIR/metadata.json" << EOF
+{
+  "name": "horus_perception",
+  "version": "$HORUS_PERCEPTION_VERSION",
+  "description": "HORUS Perception - AI-friendly detection, point cloud, and landmark types",
+  "install_type": "source"
+}
+EOF
+
+echo -e "${GREEN}${NC} Installed horus_perception"
+
+# Step 7d: Install horus_ros2_bridge
+echo -e "${CYAN}${NC} Installing horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION..."
+HORUS_ROS2_BRIDGE_DIR="$CACHE_DIR/horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION"
+mkdir -p "$HORUS_ROS2_BRIDGE_DIR/lib"
+
+cp -r target/release/libhorus_ros2_bridge.* "$HORUS_ROS2_BRIDGE_DIR/lib/" 2>/dev/null || true
+cp -r target/release/deps/libhorus_ros2_bridge*.rlib "$HORUS_ROS2_BRIDGE_DIR/lib/" 2>/dev/null || true
+
+cat > "$HORUS_ROS2_BRIDGE_DIR/metadata.json" << EOF
+{
+  "name": "horus_ros2_bridge",
+  "version": "$HORUS_ROS2_BRIDGE_VERSION",
+  "description": "HORUS ROS2 Bridge - ROS2 protocol bridge via Zenoh transport",
+  "install_type": "source"
+}
+EOF
+
+echo -e "${GREEN}${NC} Installed horus_ros2_bridge"
 
 # ============================================================================
 # PYTHON VERSION SOLVER - Smart dependency resolution for horus_py
@@ -3029,8 +2886,8 @@ echo ""
 # Save installed version for future updates
 echo "$HORUS_VERSION" > "$VERSION_FILE"
 
-# Save install profile for verify.sh and uninstall.sh
-echo "$INSTALL_PROFILE" > "$HOME/.horus/install_profile"
+# Save install profile for uninstall.sh
+echo "full" > "$HOME/.horus/install_profile"
 
 # Migrate old config files from localhost to production
 AUTH_CONFIG="$HOME/.horus/auth.json"
@@ -3052,22 +2909,6 @@ if [ -x "$INSTALL_DIR/horus" ]; then
     echo -e "${GREEN}${NC} CLI binary (horus): OK"
 else
     echo -e "${RED}${NC} CLI binary (horus): Missing"
-fi
-
-if [ "${INSTALL_PROFILE:-full}" = "full" ]; then
-    if [ -x "$INSTALL_DIR/sim2d" ]; then
-        echo -e "${GREEN}${NC} sim2d binary: OK"
-    else
-        echo -e "${YELLOW}[-]${NC} sim2d binary: Not installed"
-    fi
-
-    if [ -x "$INSTALL_DIR/sim3d" ]; then
-        echo -e "${GREEN}${NC} sim3d binary: OK"
-    else
-        echo -e "${YELLOW}[-]${NC} sim3d binary: Not installed"
-    fi
-else
-    echo -e "${CYAN}[-]${NC} sim2d/sim3d: Skipped (${INSTALL_PROFILE} profile)"
 fi
 
 if [ -d "$HORUS_DIR" ]; then
@@ -3092,6 +2933,24 @@ if [ -d "$HORUS_LIBRARY_DIR" ]; then
     echo -e "${GREEN}${NC} horus_library: OK"
 else
     echo -e "${RED}${NC} horus_library: Missing"
+fi
+
+if [ -d "$HORUS_AI_DIR" ]; then
+    echo -e "${GREEN}${NC} horus_ai: OK"
+else
+    echo -e "${RED}${NC} horus_ai: Missing"
+fi
+
+if [ -d "$HORUS_PERCEPTION_DIR" ]; then
+    echo -e "${GREEN}${NC} horus_perception: OK"
+else
+    echo -e "${RED}${NC} horus_perception: Missing"
+fi
+
+if [ -d "$HORUS_ROS2_BRIDGE_DIR" ]; then
+    echo -e "${GREEN}${NC} horus_ros2_bridge: OK"
+else
+    echo -e "${RED}${NC} horus_ros2_bridge: Missing"
 fi
 
 if [ "$PYTHON_AVAILABLE" = true ]; then
@@ -3282,7 +3141,7 @@ echo -e "${CYAN}System:${NC}"
 echo -e "  OS: $(uname -s) $(uname -r)"
 echo -e "  Arch: $(uname -m)"
 echo -e "  Script: install.sh v$SCRIPT_VERSION"
-echo -e "  Profile: ${INSTALL_PROFILE:-full}"
+echo -e "  Profile: full"
 
 echo ""
 echo -e "${GREEN}${STATUS_OK} HORUS installation complete!${NC}"

@@ -21,8 +21,7 @@
 #   13. Integration tests
 #   14. Benchmark smoke test
 #   15. Feature matrix testing
-#   16. verify.sh execution
-#   17. Shell script syntax validation
+#   16. Shell script syntax validation
 #   18. Version consistency check
 #   19. Dead code detection
 #   20. Docker container tests (optional)
@@ -712,34 +711,13 @@ else
 fi
 
 # =============================================================================
-# 16. VERIFY.SH EXECUTION
+# 16. SHELL SCRIPT SYNTAX VALIDATION
 # =============================================================================
-section "16. verify.sh Execution"
-
-if [ "$QUICK_MODE" = true ]; then
-    skip "verify.sh (quick mode)"
-else
-    if [ -x "verify.sh" ]; then
-        info "Running verify.sh..."
-        if ./verify.sh 2>&1 | tail -30; then
-            pass "verify.sh completed"
-        else
-            warn "verify.sh had some issues (check output above)"
-        fi
-    else
-        warn "verify.sh not found or not executable"
-    fi
-fi
-
-# =============================================================================
-# 17. SHELL SCRIPT SYNTAX VALIDATION
-# =============================================================================
-section "17. Shell Script Syntax Validation"
+section "16. Shell Script Syntax Validation"
 
 SHELL_SCRIPTS=(
     "install.sh"
     "uninstall.sh"
-    "verify.sh"
     "scripts/prerelease.sh"
     "scripts/release.sh"
     "scripts/deps.sh"

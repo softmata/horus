@@ -1,6 +1,6 @@
 #!/bin/bash
 # HORUS Shared Functions Library
-# Sourced by install.sh, verify.sh, uninstall.sh
+# Sourced by install.sh, uninstall.sh
 #
 # Usage: source "$(dirname "$0")/scripts/deps.sh" 2>/dev/null || source "$(dirname "$0")/deps.sh"
 #

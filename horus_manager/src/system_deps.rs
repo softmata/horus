@@ -74,17 +74,6 @@ pub const SYSTEM_DEPS: &[SystemDependency] = &[
         install_cmd: "sudo apt install -y libudev-dev && sudo usermod -a -G dialout $USER",
         docs_url: "https://www.kernel.org/doc/html/latest/driver-api/serial/index.html",
     },
-    // CAN Bus Hardware
-    SystemDependency {
-        feature: "can-hardware",
-        description: "CAN bus for industrial motors, automotive",
-        apt_packages: &["can-utils"],
-        device_files: &["/dev/can0", "/sys/class/net/can0"],
-        user_groups: &[],
-        pkg_config: &[],
-        install_cmd: "sudo apt install -y can-utils && sudo modprobe can && sudo modprobe can_raw",
-        docs_url: "https://www.kernel.org/doc/html/latest/networking/can.html",
-    },
     // Modbus Hardware
     SystemDependency {
         feature: "modbus-hardware",
@@ -117,28 +106,6 @@ pub const SYSTEM_DEPS: &[SystemDependency] = &[
         pkg_config: &["opencv4", "opencv"],
         install_cmd: "sudo apt install -y libopencv-dev pkg-config libclang-dev && sudo usermod -a -G video $USER",
         docs_url: "https://docs.opencv.org/master/",
-    },
-    // V4L2 Backend
-    SystemDependency {
-        feature: "v4l2-backend",
-        description: "Video4Linux2 camera capture",
-        apt_packages: &["v4l-utils", "libv4l-dev"],
-        device_files: &["/dev/video0"],
-        user_groups: &["video"],
-        pkg_config: &["libv4l2"],
-        install_cmd: "sudo apt install -y v4l-utils libv4l-dev && sudo usermod -a -G video $USER",
-        docs_url: "https://www.kernel.org/doc/html/latest/userspace-api/media/v4l/v4l2.html",
-    },
-    // Intel RealSense
-    SystemDependency {
-        feature: "realsense",
-        description: "Intel RealSense depth cameras",
-        apt_packages: &["librealsense2-dev", "librealsense2-dkms"],
-        device_files: &[],
-        user_groups: &["video"],
-        pkg_config: &["realsense2"],
-        install_cmd: "# Add Intel repo first:\nsudo mkdir -p /etc/apt/keyrings\ncurl -sSf https://librealsense.intel.com/Debian/librealsense.pgp | sudo tee /etc/apt/keyrings/librealsense.pgp > /dev/null\necho \"deb [signed-by=/etc/apt/keyrings/librealsense.pgp] https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main\" | sudo tee /etc/apt/sources.list.d/librealsense.list\nsudo apt update && sudo apt install -y librealsense2-dev librealsense2-dkms",
-        docs_url: "https://github.com/IntelRealSense/librealsense",
     },
     // ONNX Runtime
     SystemDependency {

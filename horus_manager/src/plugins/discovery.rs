@@ -267,40 +267,6 @@ impl PluginDiscovery {
     fn get_known_plugins(&self) -> Vec<AvailablePlugin> {
         vec![
             AvailablePlugin {
-                name: "horus-realsense".to_string(),
-                version: "0.1.0".to_string(),
-                description: "Intel RealSense depth camera support (D400, L500, T200 series)"
-                    .to_string(),
-                category: PluginCategory::Camera,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string(), "linux-aarch64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec!["librealsense2".to_string()],
-                features: vec![
-                    "depth".to_string(),
-                    "color".to_string(),
-                    "imu".to_string(),
-                    "tracking".to_string(),
-                ],
-            },
-            AvailablePlugin {
-                name: "horus-zed".to_string(),
-                version: "0.1.0".to_string(),
-                description: "Stereolabs ZED camera support (ZED, ZED2, ZED Mini)".to_string(),
-                category: PluginCategory::Camera,
-                source: PluginSourceType::Registry,
-                platforms: vec!["linux-x86_64".to_string()],
-                horus_compat: ">=0.1.0".to_string(),
-                has_prebuilt: true,
-                system_deps: vec!["zed-sdk".to_string(), "cuda".to_string()],
-                features: vec![
-                    "depth".to_string(),
-                    "tracking".to_string(),
-                    "spatial-mapping".to_string(),
-                ],
-            },
-            AvailablePlugin {
                 name: "horus-rplidar".to_string(),
                 version: "0.1.0".to_string(),
                 description: "Slamtec RPLiDAR support (A1, A2, A3, S1, S2)".to_string(),
@@ -487,9 +453,8 @@ hardware = []
         let mut discovery = PluginDiscovery::new();
         let results = discovery.search("camera").unwrap();
 
-        // Should find RealSense and ZED
-        assert!(results.iter().any(|p| p.name.contains("realsense")));
-        assert!(results.iter().any(|p| p.name.contains("zed")));
+        // Should find plugins matching "camera" in description
+        assert!(!results.is_empty());
     }
 
     #[test]
@@ -498,6 +463,6 @@ hardware = []
         let known = discovery.get_known_plugins();
 
         assert!(!known.is_empty());
-        assert!(known.iter().any(|p| p.name == "horus-realsense"));
+        assert!(known.iter().any(|p| p.name == "horus-rplidar"));
     }
 }

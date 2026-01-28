@@ -544,8 +544,23 @@ impl RegistryClient {
         let response = self.client.get(&url).send()?;
 
         if !response.status().is_success() {
+            // Check if the package was yanked (410 Gone)
+            if response.status() == reqwest::StatusCode::GONE {
+                let body = response.text().unwrap_or_default();
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("No reason given");
+                    return Err(anyhow!("Package {} has been yanked: {}", package_name, reason));
+                }
+            }
             return Err(anyhow!("Package not found: {}", package_name));
         }
+
+        // Check for package signature header
+        let pkg_signature = response
+            .headers()
+            .get("x-horus-signature")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
 
         let bytes = response.bytes()?;
 
@@ -686,6 +701,11 @@ impl RegistryClient {
                 &format!("Installed {} v{} locally", package_name, actual_version),
             );
             println!("   {} Location: {}", "".dimmed(), package_dir.display());
+        }
+
+        // Log signature if present
+        if let Some(sig) = &pkg_signature {
+            println!("   {} Signed package (signature: {}...)", "".green(), &sig[..16.min(sig.len())]);
         }
 
         // Pre-compile if installed to global cache and is Rust/C package
@@ -1160,6 +1180,18 @@ impl RegistryClient {
         dependencies: &[DependencySpec],
         target: &crate::workspace::InstallTarget,
     ) -> Result<()> {
+        // Filter dependencies by target platform
+        let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let dependencies: Vec<DependencySpec> = dependencies.iter()
+            .filter(|dep| {
+                match &dep.target {
+                    Some(t) => t == &current_platform || t == std::env::consts::OS,
+                    None => true, // No target means all platforms
+                }
+            })
+            .cloned()
+            .collect();
+
         // Use dependency resolver for version resolution
         use crate::dependency_resolver::{DependencyResolver, ResolvedDependency};
 
@@ -1287,45 +1319,132 @@ impl RegistryClient {
     }
 
     // Publish a package to registry
-    pub fn publish(&self, path: Option<&Path>) -> Result<()> {
+    pub fn publish(&self, path: Option<&Path>, dry_run: bool) -> Result<()> {
         let current_dir = path.unwrap_or_else(|| Path::new("."));
 
-        // Simple detection - just get name, version, description, license
-        let (name, version, description, license) = detect_package_info(current_dir)?;
+        // Detect package info from any supported manifest
+        let manifest = detect_package_info(current_dir)?;
+        let name = manifest.name;
+        let version = manifest.version;
+        let description = manifest.description;
+        let license = manifest.license;
 
-        // Validate dependencies - check for path/git deps before publishing
-        let yaml_path = current_dir.join("horus.yaml");
-        if yaml_path.exists() {
-            use crate::commands::run::parse_horus_yaml_dependencies_v2;
-            use crate::dependency_resolver::DependencySource;
+        println!(
+            " Detected {} manifest",
+            format!("{}", manifest.manifest_format).cyan()
+        );
 
-            match parse_horus_yaml_dependencies_v2(yaml_path.to_str().unwrap()) {
-                Ok(deps) => {
+        // Validate dependencies - check for path deps (format-specific)
+        match &manifest.manifest_format {
+            ManifestFormat::HorusYaml => {
+                let yaml_path = current_dir.join("horus.yaml");
+                if yaml_path.exists() {
+                    use crate::commands::run::parse_horus_yaml_dependencies_v2;
+                    use crate::dependency_resolver::DependencySource;
+
+                    match parse_horus_yaml_dependencies_v2(yaml_path.to_str().unwrap()) {
+                        Ok(deps) => {
+                            let mut has_path_deps = false;
+
+                            for dep in deps {
+                                if let DependencySource::Path(p) = dep.source {
+                                    println!(
+                                        "\n{} Cannot publish package with path dependencies!",
+                                        "Error:".red()
+                                    );
+                                    println!(
+                                        "  Path dependency: {} -> {}",
+                                        dep.name,
+                                        p.display()
+                                    );
+                                    println!(
+                                        "\n{}",
+                                        "Path dependencies are not reproducible and cannot be published."
+                                            .yellow()
+                                    );
+                                    println!("{}", "Please publish the path dependency to the registry first, then update horus.yaml.".yellow());
+                                    has_path_deps = true;
+                                }
+                            }
+
+                            if has_path_deps {
+                                return Err(anyhow!(
+                                    "Cannot publish package with path dependencies"
+                                ));
+                            }
+                        }
+                        Err(_) => {
+                            // If parsing fails, continue (might be old format or no deps)
+                        }
+                    }
+                }
+            }
+            ManifestFormat::CargoToml => {
+                let cargo_path = current_dir.join("Cargo.toml");
+                let content = fs::read_to_string(&cargo_path)?;
+                let toml_value: toml::Value = toml::from_str(&content)?;
+
+                if let Some(deps) = toml_value.get("dependencies").and_then(|v| v.as_table()) {
                     let mut has_path_deps = false;
 
-                    for dep in deps {
-                        if let DependencySource::Path(p) = dep.source {
-                            println!(
-                                "\n{} Cannot publish package with path dependencies!",
-                                "Error:".red()
-                            );
-                            println!("  Path dependency: {} -> {}", dep.name, p.display());
-                            println!(
-                                "\n{}",
-                                "Path dependencies are not reproducible and cannot be published."
-                                    .yellow()
-                            );
-                            println!("{}", "Please publish the path dependency to the registry first, then update horus.yaml.".yellow());
-                            has_path_deps = true;
+                    for (dep_name, dep_value) in deps {
+                        if let Some(table) = dep_value.as_table() {
+                            if table.contains_key("path") {
+                                println!(
+                                    "\n{} Cannot publish package with path dependencies!",
+                                    "Error:".red()
+                                );
+                                let path_val = table
+                                    .get("path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                println!("  Path dependency: {} -> {}", dep_name, path_val);
+                                has_path_deps = true;
+                            }
                         }
                     }
 
                     if has_path_deps {
+                        println!(
+                            "\n{}",
+                            "Path dependencies are not reproducible and cannot be published."
+                                .yellow()
+                        );
+                        println!("{}", "Please publish path dependencies to the registry first, then use version requirements in Cargo.toml.".yellow());
                         return Err(anyhow!("Cannot publish package with path dependencies"));
                     }
                 }
-                Err(_) => {
-                    // If parsing fails, continue (might be old format or no deps)
+            }
+            ManifestFormat::PackageJson => {
+                let pkg_path = current_dir.join("package.json");
+                let content = fs::read_to_string(&pkg_path)?;
+                let json: serde_json::Value = serde_json::from_str(&content)?;
+
+                if let Some(deps) = json.get("dependencies").and_then(|v| v.as_object()) {
+                    let mut has_path_deps = false;
+
+                    for (dep_name, dep_value) in deps {
+                        if let Some(val) = dep_value.as_str() {
+                            if val.starts_with("file:") {
+                                println!(
+                                    "\n{} Cannot publish package with file dependencies!",
+                                    "Error:".red()
+                                );
+                                println!("  File dependency: {} -> {}", dep_name, val);
+                                has_path_deps = true;
+                            }
+                        }
+                    }
+
+                    if has_path_deps {
+                        println!(
+                            "\n{}",
+                            "File dependencies are not reproducible and cannot be published."
+                                .yellow()
+                        );
+                        println!("{}", "Please publish file dependencies to the registry first, then use version ranges in package.json.".yellow());
+                        return Err(anyhow!("Cannot publish package with file dependencies"));
+                    }
                 }
             }
         }
@@ -1369,7 +1488,7 @@ impl RegistryClient {
         fs::remove_file(&tar_path)?; // Clean up temp file
 
         // Simple multipart form - just like the original
-        let form = reqwest::blocking::multipart::Form::new()
+        let mut form = reqwest::blocking::multipart::Form::new()
             .text("name", name.clone())
             .text("version", version.clone())
             .text("description", description.unwrap_or_default())
@@ -1379,9 +1498,35 @@ impl RegistryClient {
             )
             .part(
                 "package",
-                reqwest::blocking::multipart::Part::bytes(package_data)
+                reqwest::blocking::multipart::Part::bytes(package_data.clone())
                     .file_name(format!("{}-{}.tar.gz", safe_name, version)),
             );
+
+        if dry_run {
+            form = form.text("dry_run", "true");
+            println!(" {} Running in dry-run mode (no changes will be made)", "".cyan());
+        }
+
+        // Sign package if signing key exists
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
+        let signing_key_path = home.join(".horus/keys/signing_key");
+        if signing_key_path.exists() {
+            use ed25519_dalek::{Signer, SigningKey};
+
+            let key_bytes = fs::read(&signing_key_path)?;
+            if key_bytes.len() == 32 {
+                let signing_key = SigningKey::from_bytes(
+                    key_bytes.as_slice().try_into()
+                        .map_err(|_| anyhow!("Invalid signing key format"))?
+                );
+                let signature = signing_key.sign(&package_data);
+                let sig_hex = hex::encode(signature.to_bytes());
+                form = form.text("signature", sig_hex);
+                println!(" {} Package signed with Ed25519 key", "".green());
+            } else {
+                eprintln!(" {} Signing key has invalid length, skipping signature", "".yellow());
+            }
+        }
 
         // Upload to registry with API key authentication
         let response = self
@@ -1452,6 +1597,17 @@ impl RegistryClient {
             return Err(anyhow!("Package verification failed: {}", message));
         }
 
+        // Handle dry-run response
+        if dry_run {
+            if response_json.get("dry_run") == Some(&serde_json::json!(true)) {
+                println!(" {} Dry run passed! Package {} v{} is valid and ready to publish.", "".green(), name, version);
+                if let Some(size) = response_json.get("size").and_then(|v| v.as_u64()) {
+                    println!("   Package size: {:.2} MB", size as f64 / (1024.0 * 1024.0));
+                }
+            }
+            return Ok(());
+        }
+
         println!(" Published {} v{} successfully!", name, version);
 
         // Show verification status if available
@@ -1492,18 +1648,61 @@ impl RegistryClient {
         let encoded_name = url_encode_package_name(&name);
         println!("   View at: {}/packages/{}", self.base_url, encoded_name);
 
+        // Pre-populate metadata from manifest, then prompt for anything missing
+        let manifest_source_url = manifest.source_url.unwrap_or_default();
+        let manifest_categories = manifest.categories.unwrap_or_default();
+        let manifest_package_type = manifest.package_type.unwrap_or_default();
+
+        // Show what was auto-detected from manifest
+        if !manifest_source_url.is_empty()
+            || !manifest_categories.is_empty()
+            || !manifest_package_type.is_empty()
+        {
+            println!(
+                "\n{} Auto-detected metadata from {}:",
+                "".green(),
+                format!("{}", manifest.manifest_format).cyan()
+            );
+            if !manifest_source_url.is_empty() {
+                println!("   Source URL: {}", manifest_source_url);
+            }
+            if !manifest_categories.is_empty() {
+                println!("   Categories: {}", manifest_categories);
+            }
+            if !manifest_package_type.is_empty() {
+                println!("   Package type: {}", manifest_package_type);
+            }
+        }
+
         // Interactive prompts for documentation and source (optional metadata)
         println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());
         println!("   Help users discover and use your package by adding:");
 
-        let (docs_url, docs_type, source_url, categories, package_type) =
+        let (docs_url, docs_type, prompted_source_url, prompted_categories, prompted_package_type) =
             prompt_package_metadata(current_dir)?;
+
+        // Use manifest values as defaults, override with prompted values if provided
+        let final_source_url = if !prompted_source_url.is_empty() {
+            prompted_source_url
+        } else {
+            manifest_source_url
+        };
+        let final_categories = if !prompted_categories.is_empty() {
+            prompted_categories
+        } else {
+            manifest_categories
+        };
+        let final_package_type = if !prompted_package_type.is_empty() {
+            prompted_package_type
+        } else {
+            manifest_package_type
+        };
 
         // If user provided docs, source, categories, or package_type, update the package
         if !docs_url.is_empty()
-            || !source_url.is_empty()
-            || !categories.is_empty()
-            || !package_type.is_empty()
+            || !final_source_url.is_empty()
+            || !final_categories.is_empty()
+            || !final_package_type.is_empty()
         {
             println!("\n{} Updating package metadata...", "".cyan());
             self.update_package_metadata(
@@ -1511,9 +1710,9 @@ impl RegistryClient {
                 &version,
                 &docs_url,
                 &docs_type,
-                &source_url,
-                &categories,
-                &package_type,
+                &final_source_url,
+                &final_categories,
+                &final_package_type,
                 &api_key,
             )?;
             println!(" Package metadata updated!");
@@ -2523,41 +2722,224 @@ fn detect_cargo_installed_version(pkg_dir: &Path, package_name: &str) -> Option<
     None
 }
 
-fn detect_package_info(dir: &Path) -> Result<(String, String, Option<String>, Option<String>)> {
-    // HORUS uses horus.yaml as the primary package manifest
-    let horus_yaml = dir.join("horus.yaml");
+#[derive(Debug)]
+enum ManifestFormat {
+    HorusYaml,
+    CargoToml,
+    PackageJson,
+}
 
-    if !horus_yaml.exists() {
-        return Err(anyhow!("No horus.yaml found. This doesn't appear to be a HORUS package.\nRun 'horus new <name>' to create a new package."));
-    }
-
-    let content = fs::read_to_string(&horus_yaml)?;
-
-    // Simple YAML parsing for name, version, description, license
-    let mut name = String::from("unknown");
-    let mut version = String::from("0.1.8");
-    let mut description: Option<String> = None;
-    let mut license: Option<String> = None;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("name:") {
-            name = trimmed.trim_start_matches("name:").trim().to_string();
-        } else if trimmed.starts_with("version:") {
-            version = trimmed.trim_start_matches("version:").trim().to_string();
-        } else if trimmed.starts_with("description:") {
-            description = Some(
-                trimmed
-                    .trim_start_matches("description:")
-                    .trim()
-                    .to_string(),
-            );
-        } else if trimmed.starts_with("license:") {
-            license = Some(trimmed.trim_start_matches("license:").trim().to_string());
+impl std::fmt::Display for ManifestFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ManifestFormat::HorusYaml => write!(f, "horus.yaml"),
+            ManifestFormat::CargoToml => write!(f, "Cargo.toml"),
+            ManifestFormat::PackageJson => write!(f, "package.json"),
         }
     }
+}
 
-    Ok((name, version, description, license))
+#[derive(Debug)]
+struct PackageManifest {
+    name: String,
+    version: String,
+    description: Option<String>,
+    license: Option<String>,
+    package_type: Option<String>,
+    categories: Option<String>,
+    source_url: Option<String>,
+    manifest_format: ManifestFormat,
+}
+
+fn detect_package_info(dir: &Path) -> Result<PackageManifest> {
+    // Try horus.yaml first (primary manifest)
+    let horus_yaml = dir.join("horus.yaml");
+    if horus_yaml.exists() {
+        let content = fs::read_to_string(&horus_yaml)?;
+
+        let mut name = String::from("unknown");
+        let mut version = String::from("0.1.0");
+        let mut description: Option<String> = None;
+        let mut license: Option<String> = None;
+        let mut package_type: Option<String> = None;
+        let mut categories: Option<String> = None;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("name:") {
+                name = trimmed.trim_start_matches("name:").trim().to_string();
+            } else if trimmed.starts_with("version:") {
+                version = trimmed.trim_start_matches("version:").trim().to_string();
+            } else if trimmed.starts_with("description:") {
+                description = Some(
+                    trimmed
+                        .trim_start_matches("description:")
+                        .trim()
+                        .to_string(),
+                );
+            } else if trimmed.starts_with("license:") {
+                license = Some(trimmed.trim_start_matches("license:").trim().to_string());
+            } else if trimmed.starts_with("package_type:") {
+                package_type = Some(
+                    trimmed
+                        .trim_start_matches("package_type:")
+                        .trim()
+                        .to_string(),
+                );
+            } else if trimmed.starts_with("categories:") {
+                categories = Some(
+                    trimmed
+                        .trim_start_matches("categories:")
+                        .trim()
+                        .to_string(),
+                );
+            }
+        }
+
+        return Ok(PackageManifest {
+            name,
+            version,
+            description,
+            license,
+            package_type,
+            categories,
+            source_url: None,
+            manifest_format: ManifestFormat::HorusYaml,
+        });
+    }
+
+    // Try Cargo.toml
+    let cargo_toml = dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+        let content = fs::read_to_string(&cargo_toml)?;
+        let toml_value: toml::Value = toml::from_str(&content)
+            .map_err(|e| anyhow!("Failed to parse Cargo.toml: {}", e))?;
+
+        let package = toml_value
+            .get("package")
+            .ok_or_else(|| anyhow!("Cargo.toml missing [package] table"))?;
+
+        let name = package
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Cargo.toml missing package.name"))?
+            .to_string();
+
+        let version = package
+            .get("version")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Cargo.toml missing package.version"))?
+            .to_string();
+
+        let description = package
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let license = package
+            .get("license")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let source_url = package
+            .get("repository")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Check [package.metadata.horus] for horus-specific fields
+        let horus_meta = package
+            .get("metadata")
+            .and_then(|m| m.get("horus"));
+
+        let package_type = horus_meta
+            .and_then(|h| h.get("package_type"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let categories = horus_meta
+            .and_then(|h| h.get("categories"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        return Ok(PackageManifest {
+            name,
+            version,
+            description,
+            license,
+            package_type,
+            categories,
+            source_url,
+            manifest_format: ManifestFormat::CargoToml,
+        });
+    }
+
+    // Try package.json
+    let package_json = dir.join("package.json");
+    if package_json.exists() {
+        let content = fs::read_to_string(&package_json)?;
+        let json: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| anyhow!("Failed to parse package.json: {}", e))?;
+
+        let name = json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("package.json missing name"))?
+            .to_string();
+
+        let version = json
+            .get("version")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("package.json missing version"))?
+            .to_string();
+
+        let description = json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let license = json
+            .get("license")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Check "horus" key for horus-specific fields
+        let horus_meta = json.get("horus");
+
+        let package_type = horus_meta
+            .and_then(|h| h.get("package_type"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let categories = horus_meta
+            .and_then(|h| h.get("categories"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let source_url = json
+            .get("repository")
+            .and_then(|v| {
+                // repository can be a string or an object with "url"
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| v.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()))
+            });
+
+        return Ok(PackageManifest {
+            name,
+            version,
+            description,
+            license,
+            package_type,
+            categories,
+            source_url,
+            manifest_format: ManifestFormat::PackageJson,
+        });
+    }
+
+    Err(anyhow!(
+        "No package manifest found. Supported: horus.yaml, Cargo.toml, package.json\n\
+         Run 'horus new <name>' to create a new package with horus.yaml."
+    ))
 }
 
 // Extract HORUS dependencies from package metadata
@@ -3605,6 +3987,254 @@ impl RegistryClient {
 
         Ok(system_version.to_string())
     }
+}
+
+// ============================================================================
+// Package Update & Parallel Downloads
+// ============================================================================
+
+impl RegistryClient {
+    /// Update installed packages to their latest versions
+    pub fn update_packages(&self, package: Option<&str>, global: bool, dry_run: bool) -> Result<()> {
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
+
+        // Determine which directories to scan
+        let mut scan_dirs: Vec<(PathBuf, &str)> = Vec::new();
+
+        if global {
+            let global_cache = home.join(".horus/cache");
+            if global_cache.exists() {
+                scan_dirs.push((global_cache, "global"));
+            }
+        } else {
+            let local_packages = PathBuf::from(".horus/packages");
+            if local_packages.exists() {
+                scan_dirs.push((local_packages, "local"));
+            }
+            let global_cache = home.join(".horus/cache");
+            if global_cache.exists() {
+                scan_dirs.push((global_cache, "global"));
+            }
+        }
+
+        if scan_dirs.is_empty() {
+            println!("No installed packages found.");
+            return Ok(());
+        }
+
+        let mut updates: Vec<(String, String, String, PathBuf)> = Vec::new(); // (name, old_ver, new_ver, path)
+
+        for (dir, _location) in &scan_dirs {
+            if !dir.exists() {
+                continue;
+            }
+            let entries = fs::read_dir(dir)?;
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+
+                let metadata_path = path.join("metadata.json");
+                if !metadata_path.exists() {
+                    continue;
+                }
+
+                let metadata_str = fs::read_to_string(&metadata_path)?;
+                let metadata: serde_json::Value = serde_json::from_str(&metadata_str)?;
+
+                let pkg_name = metadata.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let pkg_version = metadata.get("version").and_then(|v| v.as_str()).unwrap_or("");
+
+                if pkg_name.is_empty() || pkg_version.is_empty() {
+                    continue;
+                }
+
+                // If a specific package was requested, skip others
+                if let Some(filter) = package {
+                    if pkg_name != filter {
+                        continue;
+                    }
+                }
+
+                // Check for newer version from registry
+                let encoded_name = url_encode_package_name(pkg_name);
+                let url = format!("{}/api/packages/{}", self.base_url, encoded_name);
+                match self.client.get(&url).send() {
+                    Ok(response) if response.status().is_success() => {
+                        if let Ok(info) = response.json::<serde_json::Value>() {
+                            let latest = info.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                            if !latest.is_empty() {
+                                if let (Ok(current), Ok(latest_ver)) = (
+                                    Version::parse(pkg_version),
+                                    Version::parse(latest),
+                                ) {
+                                    if latest_ver > current {
+                                        updates.push((
+                                            pkg_name.to_string(),
+                                            pkg_version.to_string(),
+                                            latest.to_string(),
+                                            path.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Skip packages we can't check
+                    }
+                }
+            }
+        }
+
+        if updates.is_empty() {
+            println!(" All packages are up to date!");
+            return Ok(());
+        }
+
+        // Print summary
+        println!("\n{} packages can be updated:\n", updates.len());
+        println!("  {:<30} {:<15} {}", "Package", "Current", "Latest");
+        println!("  {:<30} {:<15} {}", "-------", "-------", "------");
+        for (name, old_ver, new_ver, _) in &updates {
+            println!(
+                "  {:<30} {:<15} {}",
+                name.cyan(),
+                old_ver.yellow(),
+                new_ver.green()
+            );
+        }
+
+        if dry_run {
+            println!("\n {} Dry run - no changes made.", "".cyan());
+            return Ok(());
+        }
+
+        // Perform updates
+        println!();
+        for (name, old_ver, new_ver, old_path) in &updates {
+            let spinner = progress::robot_download_spinner(&format!(
+                "Updating {} {} -> {}...",
+                name, old_ver, new_ver
+            ));
+
+            let target = if global {
+                crate::workspace::InstallTarget::Global
+            } else {
+                crate::workspace::InstallTarget::Local(PathBuf::from("."))
+            };
+
+            match self.install_from_registry(&name, Some(new_ver.as_str()), target) {
+                Ok(_) => {
+                    // Remove old version directory if it differs
+                    if old_path.exists() {
+                        let _ = fs::remove_dir_all(old_path);
+                    }
+                    finish_success(&spinner, &format!("Updated {} {} -> {}", name, old_ver, new_ver));
+                }
+                Err(e) => {
+                    finish_error(&spinner, &format!("Failed to update {}: {}", name, e));
+                }
+            }
+        }
+
+        println!("\n {} Update complete!", "".green());
+        Ok(())
+    }
+
+    /// Install dependencies in parallel using rayon
+    pub fn install_dependencies_parallel(
+        &self,
+        deps: &[crate::dependency_resolver::DependencySpec],
+        target: &crate::workspace::InstallTarget,
+    ) -> Result<()> {
+        use rayon::prelude::*;
+
+        if deps.is_empty() {
+            return Ok(());
+        }
+
+        println!("  {} Installing {} dependencies in parallel...", "".cyan(), deps.len());
+
+        // Cap at 8 parallel threads
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(8.min(deps.len()))
+            .build()
+            .map_err(|e| anyhow!("Failed to create thread pool: {}", e))?;
+
+        let results: Vec<Result<()>> = pool.install(|| {
+            deps.par_iter().map(|dep| {
+                // Each thread gets its own RegistryClient (cheap — just a reqwest::blocking::Client)
+                let client = RegistryClient::new();
+                let version_req = dep.requirement.to_string();
+                let version = if version_req == "*" { None } else { Some(version_req.as_str()) };
+                match client.install_from_registry(&dep.name, version, target.clone()) {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        eprintln!("  {} Failed to install {}: {}", "".red(), dep.name, e);
+                        Err(e)
+                    }
+                }
+            }).collect()
+        });
+
+        let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
+        if !failures.is_empty() {
+            eprintln!("  {} {} dependencies failed to install", "".yellow(), failures.len());
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Package Signing
+// ============================================================================
+
+/// Generate an Ed25519 signing keypair for package signing
+pub fn generate_signing_keypair() -> Result<()> {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
+    let keys_dir = home.join(".horus/keys");
+    fs::create_dir_all(&keys_dir)?;
+
+    let secret_path = keys_dir.join("signing_key");
+    let public_path = keys_dir.join("signing_key.pub");
+
+    if secret_path.exists() {
+        println!(" Signing key already exists at {}", secret_path.display());
+        println!("   Delete it first if you want to regenerate.");
+        return Ok(());
+    }
+
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Write secret key (64 bytes: 32 secret + 32 public)
+    fs::write(&secret_path, signing_key.to_bytes())?;
+
+    // Restrict permissions on secret key
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Write public key (32 bytes, hex encoded for readability)
+    let pub_hex = hex::encode(verifying_key.to_bytes());
+    fs::write(&public_path, &pub_hex)?;
+
+    println!(" Generated signing keypair:");
+    println!("   Secret key: {}", secret_path.display());
+    println!("   Public key: {}", public_path.display());
+    println!("   Public key (hex): {}", pub_hex);
+    println!("\n   {} Keep your secret key safe! Anyone with it can sign packages as you.", "".yellow());
+
+    Ok(())
 }
 
 // ============================================================================

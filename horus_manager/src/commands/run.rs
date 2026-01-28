@@ -2465,16 +2465,16 @@ pub fn driver_to_features(driver: &str, backend: Option<&str>) -> Vec<String> {
         // Camera drivers
         "camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
             Some("opencv") => vec!["opencv-backend".to_string()],
-            Some("v4l2") => vec!["v4l2-backend".to_string()],
-            Some("realsense") => vec!["realsense".to_string()],
+            Some("v4l2") => vec![],
+            Some("realsense") => vec![],
             Some("zed") => vec!["zed".to_string()],
             _ => vec![], // Simulation - no feature needed
         },
 
         // Depth camera
         "depth-camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("realsense") => vec!["realsense".to_string()],
-            Some("zed") => vec!["zed".to_string()],
+            Some("realsense") => vec![],
+            Some("zed") => vec![],
             _ => vec![],
         },
 
@@ -2629,14 +2629,12 @@ pub fn enable_to_features(capability: &str) -> Vec<String> {
         "gpio-hardware" => vec!["gpio-hardware".to_string()],
         "i2c-hardware" => vec!["i2c-hardware".to_string()],
         "spi-hardware" => vec!["spi-hardware".to_string()],
-        "can-hardware" => vec!["can-hardware".to_string()],
         "serial-hardware" => vec!["serial-hardware".to_string()],
         "motor-hardware" => vec!["motor-hardware".to_string()],
         "all-hardware" => vec!["all-hardware".to_string()],
 
         // Backend features
         "opencv" | "opencv-backend" => vec!["opencv-backend".to_string()],
-        "realsense" => vec!["realsense".to_string()],
 
         // Performance features
         "io-uring" | "io-uring-net" => vec!["io-uring-net".to_string()],
@@ -5061,12 +5059,6 @@ pub fn check_hardware_requirements(file_path: &Path, language: &str) -> Result<(
             "spi-hardware",
             "/dev/spidev*",
             "sudo raspi-config -> Interface Options -> SPI",
-        ),
-        (
-            "CanBusNode",
-            "can-hardware",
-            "/sys/class/net/can*",
-            "sudo apt install can-utils",
         ),
         (
             "UltrasonicNode",

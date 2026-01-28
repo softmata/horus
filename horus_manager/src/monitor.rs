@@ -1269,7 +1269,7 @@ pub async fn packages_publish_handler() -> impl IntoResponse {
 
     let result = tokio::task::spawn_blocking(move || {
         let client = RegistryClient::new();
-        client.publish(None)
+        client.publish(None, false)
     })
     .await;
 

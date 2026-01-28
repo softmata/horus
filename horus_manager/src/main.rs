@@ -642,7 +642,25 @@ enum PkgCommands {
         /// Also generate freeze file
         #[arg(long)]
         freeze: bool,
+        /// Validate package without actually publishing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
+
+    /// Update installed packages to latest versions
+    Update {
+        /// Specific package to update (updates all if omitted)
+        package: Option<String>,
+        /// Update global cache packages
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Show what would be updated without making changes
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Generate signing key pair for package signing
+    KeyGen,
 
     /// Unpublish a package from the registry
     Unpublish {
@@ -686,7 +704,7 @@ enum PluginCommands {
 
     /// Show detailed info about a plugin
     Info {
-        /// Plugin name (e.g., "horus-realsense")
+        /// Plugin name (e.g., "horus-rplidar")
         name: String,
     },
 
@@ -816,7 +834,7 @@ enum DriverCommands {
 
     /// Show detailed information about a driver
     Info {
-        /// Driver ID (e.g., rplidar, mpu6050, realsense)
+        /// Driver ID (e.g., rplidar, mpu6050, bno055)
         driver: String,
     },
 
@@ -3801,10 +3819,10 @@ except ImportError as e:
                     Ok(())
                 }
 
-                PkgCommands::Publish { freeze } => {
+                PkgCommands::Publish { freeze, dry_run } => {
                     let client = registry::RegistryClient::new();
                     client
-                        .publish(None)
+                        .publish(None, dry_run)
                         .map_err(|e| HorusError::Config(e.to_string()))?;
 
                     // If --freeze flag is set, also generate freeze file
@@ -3823,6 +3841,20 @@ except ImportError as e:
                         println!(" Environment also frozen to {}", freeze_file);
                     }
 
+                    Ok(())
+                }
+
+                PkgCommands::Update { package, global, dry_run } => {
+                    let client = registry::RegistryClient::new();
+                    client
+                        .update_packages(package.as_deref(), global, dry_run)
+                        .map_err(|e| HorusError::Config(e.to_string()))?;
+                    Ok(())
+                }
+
+                PkgCommands::KeyGen => {
+                    registry::generate_signing_keypair()
+                        .map_err(|e| HorusError::Config(e.to_string()))?;
                     Ok(())
                 }
 
