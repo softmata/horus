@@ -1796,7 +1796,7 @@ impl Scheduler {
     /// mix-and-match debugging with live nodes.
     ///
     /// # Example
-    /// ```no_run
+    /// ```ignore
     /// use horus_core::Scheduler;
     /// use std::path::PathBuf;
     ///

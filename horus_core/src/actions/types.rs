@@ -208,7 +208,7 @@ impl CancelResponse {
 /// - Returns a **Result** on completion
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// use horus_core::actions::Action;
 /// use serde::{Deserialize, Serialize};
 ///

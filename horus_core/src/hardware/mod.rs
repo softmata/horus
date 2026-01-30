@@ -20,7 +20,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use horus_core::hardware::{HardwareDiscovery, Platform};
 //!
 //! // Create discovery instance

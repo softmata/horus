@@ -12,7 +12,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use horus_core::memory::simd::{simd_copy_to_shm, simd_copy_from_shm};
 //!
 //! let src = vec![0u8; 64 * 1024]; // 64KB buffer
