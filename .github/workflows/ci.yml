@@ -117,8 +117,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-v2-
+
+      # Clean build to avoid linker issues with stale artifacts
+      - name: Clean Build
+        run: cargo clean
 
       # Setup shared memory for HORUS tests
       - name: Setup Shared Memory
