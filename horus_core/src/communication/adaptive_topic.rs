@@ -389,7 +389,14 @@ impl AdaptiveTopicHeader {
     }
 
     /// Initialize a new header
-    pub fn init(&mut self, type_size: u32, type_align: u32, is_pod: bool, capacity: u32, slot_size: u32) {
+    pub fn init(
+        &mut self,
+        type_size: u32,
+        type_align: u32,
+        is_pod: bool,
+        capacity: u32,
+        slot_size: u32,
+    ) {
         // Ensure capacity is power of 2 for fast modulo
         let capacity = capacity.next_power_of_two();
 
@@ -1329,11 +1336,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     ///     Some(1024 * 1024)  // 1MB per slot
     /// )?;
     /// ```
-    pub fn with_capacity(
-        name: &str,
-        capacity: u32,
-        slot_size: Option<usize>,
-    ) -> HorusResult<Self> {
+    pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         let is_pod = Self::check_is_pod();
         let type_size = mem::size_of::<T>() as u32;
         let type_align = mem::align_of::<T>() as u32;
@@ -1360,7 +1363,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
         let final_slot_size = if header.magic != ADAPTIVE_MAGIC {
             // We're the creator - initialize the header
-            header.init(type_size, type_align, is_pod, capacity, actual_slot_size as u32);
+            header.init(
+                type_size,
+                type_align,
+                is_pod,
+                capacity,
+                actual_slot_size as u32,
+            );
             actual_slot_size
         } else {
             // Validate existing header

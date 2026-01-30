@@ -3359,7 +3359,11 @@ where
     /// // For 640x480 RGB images (~921KB), use 1MB slot size
     /// let topic: Topic<Image> = Topic::with_slot_size("camera/image", 4, 1024 * 1024)?;
     /// ```
-    pub fn with_slot_size(name: impl Into<String>, capacity: usize, slot_size: usize) -> HorusResult<Self> {
+    pub fn with_slot_size(
+        name: impl Into<String>,
+        capacity: usize,
+        slot_size: usize,
+    ) -> HorusResult<Self> {
         let name = name.into();
         let shm_name = format!("topic/{}", name);
 
