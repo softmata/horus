@@ -26,6 +26,8 @@ use std::thread;
 use std::time::Duration;
 
 #[cfg(feature = "zenoh-transport")]
+use horus_core::communication::Topic;
+#[cfg(feature = "zenoh-transport")]
 use horus_core::core::LogSummary;
 #[cfg(feature = "zenoh-transport")]
 use serde::{Deserialize, Serialize};

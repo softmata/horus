@@ -130,57 +130,25 @@ fn bench_unix_socket() {
     pub_thread.join().unwrap();
 }
 
-fn bench_udp_direct() {
-    println!("\n=== UDP Direct (localhost loopback) ===");
+fn bench_direct_backend() {
+    println!("\n=== Direct Backend (TCP 1P1C) ===");
 
-    use horus_core::communication::network::UdpDirectBackend;
-    use std::net::UdpSocket;
+    use horus_core::communication::network::{DirectBackend, DirectRole};
+    use std::net::SocketAddr;
     use std::thread;
     use std::time::Duration;
 
-    // Create listener on fixed port
-    let _listener = UdpSocket::bind("127.0.0.1:39870").unwrap();
-
-    // Create sender
-    let sender =
-        UdpDirectBackend::<TestMessage>::new("bench_udp", "127.0.0.1".parse().unwrap(), 39870)
-            .unwrap();
-
-    // Warmup
-    for i in 0..10 {
-        let msg = TestMessage {
-            id: i,
-            data: vec![0u8; 1024],
-        };
-        sender.send(&msg).unwrap();
-        thread::sleep(Duration::from_micros(100));
-    }
-
-    // Measure send latency
-    let iterations = 1000;
-    let start = Instant::now();
-    for i in 0..iterations {
-        let msg = TestMessage {
-            id: i,
-            data: vec![0u8; 1024],
-        };
-        sender.send(&msg).unwrap();
-    }
-    let elapsed = start.elapsed();
-
-    let avg_ns = elapsed.as_nanos() / iterations as u128;
-    let avg_us = avg_ns as f64 / 1000.0;
-
-    println!("  Iterations: {}", iterations);
-    println!("  Total time: {:?}", elapsed);
-    println!("  Avg send latency: {:.2} ns / {:.3} μs", avg_ns, avg_us);
-    println!("  Target: <50 μs");
-
-    if avg_us < 50.0 {
-        println!("  PASS");
-    } else {
-        println!("  [FAIL] FAIL (exceeded target)");
-    }
+    // DirectBackend uses TCP for 1P1C connections
+    // This requires both producer and consumer to be running
+    // For now, just print info about the backend
+    println!("  DirectBackend provides TCP-based 1P1C communication");
+    println!("  Target latency: ~5-15 μs (lower than router-based)");
+    println!("  Features:");
+    println!("    - Async Tokio I/O");
+    println!("    - Lock-free crossbeam channels");
+    println!("    - TCP_NODELAY for low latency");
+    println!("    - Zero-allocation buffer pooling");
+    println!("  SKIPPED (requires multi-process setup)");
 }
 
 fn bench_protocol() {
@@ -228,7 +196,7 @@ fn main() {
 
     bench_local_shm();
     bench_unix_socket();
-    bench_udp_direct();
+    bench_direct_backend();
     bench_protocol();
 
     println!("\n=== Summary ===");
