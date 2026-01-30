@@ -736,7 +736,7 @@ mod tests {
         let v: BlackboardValue = 42i32.into();
         assert_eq!(v.as_int(), Some(42));
 
-        let v: BlackboardValue = 3.14f32.into();
+        let v: BlackboardValue = 3.5f32.into();
         assert!(v.as_float().is_some());
 
         let v: BlackboardValue = "hello".into();

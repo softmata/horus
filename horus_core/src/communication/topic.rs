@@ -6740,7 +6740,7 @@ mod tests {
         // Send a message
         let msg = SpmcTestMsg {
             id: 42,
-            value: 3.14,
+            value: 3.5,
         };
         producer.send(msg.clone()).unwrap();
 
@@ -6749,7 +6749,7 @@ mod tests {
         assert!(received.is_some());
         let received = received.unwrap();
         assert_eq!(received.id, 42);
-        assert!((received.value - 3.14).abs() < 0.001);
+        assert!((received.value - 3.5).abs() < 0.001);
     }
 
     #[test]
