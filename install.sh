@@ -10,7 +10,9 @@ set -o pipefail  # Fail on pipe errors
 SCRIPT_VERSION="2.6.0"
 
 # Check bash version - we need bash 4+ for associative arrays
-if ((BASH_VERSINFO[0] < 4)); then
+# Use explicit check that works even if BASH_VERSINFO is unset
+BASH_MAJOR_VERSION="${BASH_VERSINFO[0]:-0}"
+if [ -z "$BASH_MAJOR_VERSION" ] || [ "$BASH_MAJOR_VERSION" -lt 4 ] 2>/dev/null; then
     # On macOS, try to auto-detect and use Homebrew's bash
     if [[ "$(uname)" == "Darwin" ]]; then
         BREW_BASH=""
