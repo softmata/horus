@@ -1426,6 +1426,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every send
         local.is_same_process = header.is_same_process();
+        // Cache is_pod from header for slow path dispatch
+        local.is_pod = header.is_pod_type();
+        // Cache slot_size from header for non-POD serialization path
+        local.slot_size = header.slot_size as usize;
         // Cache mode, capacity, and mask to avoid header access on hot path
         local.cached_mode = header.mode();
         local.cached_capacity = header.capacity as u64;
@@ -1472,6 +1476,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every recv
         local.is_same_process = header.is_same_process();
+        // Cache is_pod from header for slow path dispatch
+        local.is_pod = header.is_pod_type();
+        // Cache slot_size from header for non-POD serialization path
+        local.slot_size = header.slot_size as usize;
         // Cache mode, capacity, and mask to avoid header access on hot path
         local.cached_mode = header.mode();
         local.cached_capacity = header.capacity as u64;
@@ -1509,6 +1517,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         if current_epoch != local.cached_epoch {
             local.cached_epoch = current_epoch;
             local.is_same_process = header.is_same_process();
+            local.is_pod = header.is_pod_type();
+            local.slot_size = header.slot_size as usize;
             local.cached_mode = header.mode();
             local.cached_capacity = header.capacity as u64;
             local.cached_capacity_mask = header.capacity_mask as u64;
@@ -1530,6 +1540,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
                         local.is_same_process = header.is_same_process();
+                        local.is_pod = header.is_pod_type();
+                        local.slot_size = header.slot_size as usize;
                         local.cached_mode = header.mode();
                         local.cached_capacity = header.capacity as u64;
                         local.cached_capacity_mask = header.capacity_mask as u64;
@@ -1550,6 +1562,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         if migrator.is_optimal() {
                             local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
                             local.is_same_process = header.is_same_process();
+                            local.is_pod = header.is_pod_type();
+                            local.slot_size = header.slot_size as usize;
                             local.cached_mode = header.mode();
                             local.cached_capacity = header.capacity as u64;
                             local.cached_capacity_mask = header.capacity_mask as u64;
@@ -1842,6 +1856,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             if current_epoch != local.cached_epoch {
                 local.cached_epoch = current_epoch;
                 local.is_same_process = header.is_same_process();
+                local.is_pod = header.is_pod_type();
+                local.slot_size = header.slot_size as usize;
                 local.cached_mode = header.mode();
                 local.cached_capacity = header.capacity as u64;
                 local.cached_capacity_mask = header.capacity_mask as u64;
@@ -2051,6 +2067,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Epoch changed - update cache and re-evaluate path
                 local.cached_epoch = current_epoch;
                 local.is_same_process = header.is_same_process();
+                local.is_pod = header.is_pod_type();
+                local.slot_size = header.slot_size as usize;
                 local.cached_mode = header.mode();
                 local.cached_capacity = header.capacity as u64;
                 local.cached_capacity_mask = header.capacity_mask as u64;
@@ -2408,6 +2426,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             if current_epoch != local.cached_epoch {
                 local.cached_epoch = current_epoch;
                 local.is_same_process = header.is_same_process();
+                local.is_pod = header.is_pod_type();
+                local.slot_size = header.slot_size as usize;
                 local.cached_mode = header.mode();
                 local.cached_capacity = header.capacity as u64;
                 local.cached_capacity_mask = header.capacity_mask as u64;
