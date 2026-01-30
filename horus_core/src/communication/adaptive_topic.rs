@@ -710,10 +710,17 @@ impl AdaptiveTopicHeader {
             // No participants yet - stay Unknown
             (_, _, 0, 0, _) => AdaptiveBackendMode::Unknown,
 
-            // Same thread - fastest path (ALL participants must be on same thread)
-            // Only select DirectChannel when BOTH sides are registered - prevents
-            // costly migration if the other side joins from a different thread
-            (true, _, 1, 1, _) => AdaptiveBackendMode::DirectChannel,
+            // NOTE: DirectChannel mode is DISABLED for auto-selection because it uses
+            // thread-local storage which only works when the SAME AdaptiveTopic instance
+            // is used for both send() and recv() (via clone()). With separate instances
+            // (like two Topic::new() calls), each has its own LocalState, so DirectChannel
+            // would fail. Use SpscIntra instead, which uses shared memory.
+            //
+            // DirectChannel can still be explicitly requested via BackendHint, but auto-
+            // detection now always uses SpscIntra for same-thread scenarios.
+            //
+            // Previous (broken) behavior:
+            // (true, _, 1, 1, _) => AdaptiveBackendMode::DirectChannel,
 
             // Same process - use intra-process backends
             // Single-ended topics use SpscIntra (thread-safe, no migration needed when other joins)
@@ -3091,6 +3098,75 @@ mod tests {
         // No more pending messages after consuming
         let received = consumer.recv();
         assert!(received.is_none());
+    }
+
+    #[test]
+    fn test_separate_topic_instances() {
+        // Test that mimics user's temperature sensor pattern (Issue #45):
+        // Two separate Topic::new() calls with the same name (like sensor + monitor)
+        // This pattern was broken because DirectChannel mode was incorrectly selected,
+        // which uses thread-local storage that doesn't work across separate instances.
+        let unique_name = format!("test_separate_{}", std::process::id());
+
+        // Create "publisher" instance (like TemperatureSensor)
+        let publisher: AdaptiveTopic<f32> =
+            AdaptiveTopic::new(&unique_name).expect("Failed to create publisher");
+
+        // Create "subscriber" instance (like TemperatureMonitor)
+        // This opens the SAME shared memory, but is a separate instance
+        let subscriber: AdaptiveTopic<f32> =
+            AdaptiveTopic::new(&unique_name).expect("Failed to create subscriber");
+
+        // Verify both point to same shared memory (same magic)
+        let pub_header = publisher.header();
+        let sub_header = subscriber.header();
+        assert_eq!(
+            pub_header.magic, sub_header.magic,
+            "Headers should have same magic"
+        );
+
+        // Test sequence like the temperature sensor example
+        let mut temperature = 20.0f32;
+
+        // First tick cycle: sensor sends, monitor receives
+        temperature += 0.1;
+        publisher.send(temperature).expect("Failed to send");
+        let received = subscriber.recv();
+        assert_eq!(
+            received,
+            Some(20.1),
+            "First recv should get 20.1, got {:?}",
+            received
+        );
+
+        // Second tick cycle
+        temperature += 0.1;
+        publisher.send(temperature).expect("Failed to send");
+        let received = subscriber.recv();
+        assert_eq!(
+            received,
+            Some(20.2),
+            "Second recv should get 20.2, got {:?}",
+            received
+        );
+
+        // Third tick cycle
+        temperature += 0.1;
+        publisher.send(temperature).expect("Failed to send");
+        let received = subscriber.recv();
+        assert!(
+            (received.unwrap() - 20.3).abs() < 0.001,
+            "Third recv should get ~20.3, got {:?}",
+            received
+        );
+
+        // Verify subscriber is using SpscIntra (not DirectChannel)
+        let sub_local = subscriber.local();
+        assert_eq!(
+            sub_local.cached_mode,
+            AdaptiveBackendMode::SpscIntra,
+            "Should use SpscIntra for separate instances, not DirectChannel"
+        );
     }
 
     #[test]
