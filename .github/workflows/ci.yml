@@ -119,7 +119,7 @@ jobs:
           sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
 
       - name: Run Tests
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace
         env:
           RUST_BACKTRACE: 1
 
