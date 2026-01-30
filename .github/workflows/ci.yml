@@ -108,21 +108,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo
+      # Cache only registry index and git db (not compiled artifacts)
+      # This avoids linker errors from stale/incompatible cached .rlib files
+      - name: Cache Cargo Registry
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-test-v2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-v2-
-
-      # Clean build to avoid linker issues with stale artifacts
-      - name: Clean Build
-        run: cargo clean
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
 
       # Setup shared memory for HORUS tests
       - name: Setup Shared Memory
