@@ -30,6 +30,7 @@
 //! let msg = topic.recv()?;
 //! ```
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -194,6 +195,22 @@ impl AdaptiveBackendMode {
 /// Maximum number of participants to track for lease management
 /// With 24-byte entries: 16 * 24 = 384 bytes (6 cache lines)
 const MAX_PARTICIPANTS: usize = 16;
+
+// ============================================================================
+// DirectChannel Thread-Local Indices
+// ============================================================================
+
+/// Thread-local storage for DirectChannel head/tail indices.
+///
+/// This enables DirectChannel to work with separate Topic::new() instances
+/// on the same thread. Both instances share the same slot_index (assigned
+/// per pid+thread_id), so they access the same entry in this array.
+///
+/// Format: (head, tail) pairs indexed by slot_index
+thread_local! {
+    static DIRECT_INDICES: RefCell<[(u64, u64); MAX_PARTICIPANTS]> =
+        const { RefCell::new([(0, 0); MAX_PARTICIPANTS]) };
+}
 
 /// Participant entry in the header (24 bytes, cache-friendly)
 #[repr(C)]
@@ -717,17 +734,11 @@ impl AdaptiveTopicHeader {
             // No participants yet - stay Unknown
             (_, _, 0, 0, _) => AdaptiveBackendMode::Unknown,
 
-            // NOTE: DirectChannel mode is DISABLED for auto-selection because it uses
-            // thread-local storage which only works when the SAME AdaptiveTopic instance
-            // is used for both send() and recv() (via clone()). With separate instances
-            // (like two Topic::new() calls), each has its own LocalState, so DirectChannel
-            // would fail. Use SpscIntra instead, which uses shared memory.
-            //
-            // DirectChannel can still be explicitly requested via BackendHint, but auto-
-            // detection now always uses SpscIntra for same-thread scenarios.
-            //
-            // Previous (broken) behavior:
-            // (true, _, 1, 1, _) => AdaptiveBackendMode::DirectChannel,
+            // DirectChannel: Same thread, 1 producer, 1 consumer (~3-5ns)
+            // Uses thread-local DIRECT_INDICES array indexed by slot_index.
+            // Both separate Topic::new() instances share the same slot_index
+            // (assigned per pid+thread_id), so they access the same entry.
+            (true, _, 1, 1, _) => AdaptiveBackendMode::DirectChannel,
 
             // Same process - use intra-process backends
             // Single-ended topics use SpscIntra (thread-safe, no migration needed when other joins)
@@ -1523,6 +1534,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         Ok(())
     }
 
+    /// Sync DIRECT_INDICES from shared memory when entering DirectChannel mode.
+    /// This ensures that data written via SpscIntra is visible to DirectChannel.
+    #[inline]
+    fn sync_direct_indices_from_shm(slot: usize, head: u64, tail: u64) {
+        DIRECT_INDICES.with(|indices| {
+            let mut indices = indices.borrow_mut();
+            indices[slot] = (head, tail);
+        });
+    }
+
     /// Check if we need to migrate backends and do so if needed
     fn check_migration(&self) {
         let header = self.header();
@@ -1541,6 +1562,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Sync local indices from shared memory
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
             local.local_tail = header.tail.load(Ordering::Acquire);
+            // If entering DirectChannel mode, sync thread-local indices
+            if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                Self::sync_direct_indices_from_shm(
+                    local.slot_index as usize,
+                    local.local_head,
+                    local.local_tail,
+                );
+            }
             self.metrics.estimated_latency_ns.store(
                 local.cached_mode.expected_latency_ns() as u32,
                 Ordering::Relaxed,
@@ -1564,6 +1593,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         // Sync local indices from shared memory
                         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                         local.local_tail = header.tail.load(Ordering::Acquire);
+                        // If entering DirectChannel mode, sync thread-local indices
+                        if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                            Self::sync_direct_indices_from_shm(
+                                local.slot_index as usize,
+                                local.local_head,
+                                local.local_tail,
+                            );
+                        }
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         self.metrics.estimated_latency_ns.store(
                             local.cached_mode.expected_latency_ns() as u32,
@@ -1585,6 +1622,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             local.cached_capacity_mask = header.capacity_mask as u64;
                             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                             local.local_tail = header.tail.load(Ordering::Acquire);
+                            // If entering DirectChannel mode, sync thread-local indices
+                            if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                                Self::sync_direct_indices_from_shm(
+                                    local.slot_index as usize,
+                                    local.local_head,
+                                    local.local_tail,
+                                );
+                            }
                             self.metrics.estimated_latency_ns.store(
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
@@ -1645,20 +1690,57 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Get local state ONCE - single pointer dereference for entire function
         let local = self.local();
 
+        // Check for epoch change (mode migration) before fast paths
+        // This is needed because subscriber registration can trigger migration to DirectChannel
+        if local.role.can_send() {
+            let header = unsafe { &*local.cached_header_ptr };
+            let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
+            if current_epoch != local.cached_epoch {
+                // Epoch changed - update cache
+                local.cached_epoch = current_epoch;
+                local.cached_mode = header.mode();
+                local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+                local.local_tail = header.tail.load(Ordering::Acquire);
+                // If entering DirectChannel mode, sync thread-local indices
+                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                    Self::sync_direct_indices_from_shm(
+                        local.slot_index as usize,
+                        local.local_head,
+                        local.local_tail,
+                    );
+                }
+            }
+        }
+
         // ULTRA-FAST PATH: DirectChannel mode (same thread, 1P-1C)
-        // DirectChannel CANNOT migrate (same thread = no topology change possible)
-        // Uses LOCAL indices - NO ATOMICS, NO SHARED MEMORY ACCESS for indices
+        // Uses thread-local DIRECT_INDICES array indexed by slot_index.
+        // This enables separate Topic::new() instances to share indices.
         // NOTE: Must check can_send() for consistency - DirectChannel requires both roles registered
         if local.role.can_send() && local.cached_mode == AdaptiveBackendMode::DirectChannel {
-            // Use LOCAL head index - no atomic load needed for same-thread!
-            let seq = local.local_head;
-            // Direct write to ring buffer using cached pointer and capacity mask
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                std::ptr::write(base.add((seq & local.cached_capacity_mask) as usize), msg);
-            }
-            // Increment LOCAL head - no atomic needed for same-thread!
-            local.local_head = seq.wrapping_add(1);
+            let slot = local.slot_index as usize;
+            // Access thread-local indices - shared across all instances on this thread
+            let new_head = DIRECT_INDICES.with(|indices| {
+                let mut indices = indices.borrow_mut();
+                let (head, tail) = &mut indices[slot];
+
+                // Backpressure check: is buffer full?
+                if head.wrapping_sub(*tail) >= local.cached_capacity {
+                    return Err(msg);
+                }
+
+                // Direct write to ring buffer using cached pointer and capacity mask
+                unsafe {
+                    let base = local.cached_data_ptr as *mut T;
+                    std::ptr::write(base.add((*head & local.cached_capacity_mask) as usize), msg);
+                }
+                // Increment head in thread-local storage
+                *head = head.wrapping_add(1);
+                Ok(*head)
+            })?;
+            // Also update shared memory so slow path consumers can see the data
+            // (needed when clones with fresh LocalState use slow path)
+            let header = unsafe { &*local.cached_header_ptr };
+            header.sequence_or_head.store(new_head, Ordering::Release);
             return Ok(());
         }
 
@@ -2016,6 +2098,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // CRITICAL: Sync local_head to prevent fast path from overwriting
                 // The fast path uses local_head, so we must keep it in sync
                 local.local_head = seq + 1;
+                // If in DirectChannel mode, sync thread-local indices
+                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                    Self::sync_direct_indices_from_shm(
+                        local.slot_index as usize,
+                        seq + 1,
+                        local.local_tail,
+                    );
+                }
             }
         }
 
@@ -2048,20 +2138,36 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let local = self.local();
 
         // ULTRA-FAST PATH: DirectChannel mode (same thread, 1P-1C)
-        // Uses LOCAL indices - NO ATOMICS, NO SHARED MEMORY ACCESS
+        // Uses thread-local DIRECT_INDICES array indexed by slot_index.
+        // This enables separate Topic::new() instances to share indices.
         // NOTE: Must check can_recv() for consistency - DirectChannel requires both roles registered
         if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::DirectChannel {
-            let tail = local.local_tail;
-            if tail >= local.local_head {
-                return None; // No data available
+            let slot = local.slot_index as usize;
+            // Access thread-local indices - shared across all instances on this thread
+            let result = DIRECT_INDICES.with(|indices| {
+                let mut indices = indices.borrow_mut();
+                let (head, tail) = &mut indices[slot];
+
+                if *tail >= *head {
+                    return None; // No data available
+                }
+                // Direct read using cached pointer
+                let msg = unsafe {
+                    let base = local.cached_data_ptr as *const T;
+                    std::ptr::read(base.add((*tail & local.cached_capacity_mask) as usize))
+                };
+                // Increment tail in thread-local storage
+                *tail = tail.wrapping_add(1);
+                Some((msg, *tail))
+            });
+            if let Some((msg, new_tail)) = result {
+                // Also update shared memory so slow path senders can check backpressure
+                // (needed when clones with fresh LocalState use slow path)
+                let header = unsafe { &*local.cached_header_ptr };
+                header.tail.store(new_tail, Ordering::Release);
+                return Some(msg);
             }
-            // Direct read using cached pointer
-            let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
-            };
-            local.local_tail = tail.wrapping_add(1);
-            return Some(msg);
+            return None;
         }
 
         // FAST PATH: SpscIntra - optimized for single producer/single consumer
@@ -2586,6 +2692,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
                 local.local_tail = new_tail;
+                // If in DirectChannel mode, sync thread-local indices
+                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
+                    Self::sync_direct_indices_from_shm(
+                        local.slot_index as usize,
+                        local.local_head,
+                        new_tail,
+                    );
+                }
                 msg
             }
         };
@@ -3169,12 +3283,12 @@ mod tests {
             received
         );
 
-        // Verify subscriber is using SpscIntra (not DirectChannel)
+        // Verify subscriber is using DirectChannel (thread-local indexed mode)
         let sub_local = subscriber.local();
         assert_eq!(
             sub_local.cached_mode,
-            AdaptiveBackendMode::SpscIntra,
-            "Should use SpscIntra for separate instances, not DirectChannel"
+            AdaptiveBackendMode::DirectChannel,
+            "Should use DirectChannel for same-thread separate instances"
         );
     }
 
