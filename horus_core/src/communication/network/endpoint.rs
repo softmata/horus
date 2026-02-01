@@ -343,7 +343,7 @@ pub enum Endpoint {
     /// | `turn` | TURN relay (always works) | ~50ms | ⭐⭐⭐⭐⭐ |
     ///
     /// # Examples
-    /// ```rust,ignore
+    /// ```text
     /// // Auto strategy (recommended)
     /// let ep = parse_endpoint("video@p2p:a3f7-k2m9-p4n8").unwrap();
     ///
@@ -352,7 +352,8 @@ pub enum Endpoint {
     ///
     /// // Force TURN for guaranteed connectivity
     /// let ep = parse_endpoint("control@p2p:a3f7-k2m9-p4n8/turn").unwrap();
-
+    /// ```
+    ///
     /// Cloud/WAN connectivity.
     ///
     /// **Syntax:**
@@ -364,7 +365,7 @@ pub enum Endpoint {
     /// For connecting robots across the internet without complex NAT configuration.
     ///
     /// # Examples
-    /// ```rust,ignore
+    /// ```text
     /// // HORUS Cloud room
     /// let ep = parse_endpoint("fleet@cloud:factory-east").unwrap();
     ///

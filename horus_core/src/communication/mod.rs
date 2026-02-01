@@ -4,7 +4,7 @@
 //!
 //! ## Topic - The Unified Communication API
 //!
-//! Topic<T> provides a single, consistent interface for all communication patterns:
+//! `Topic<T>` provides a single, consistent interface for all communication patterns:
 //!
 //! - **Auto mode** (default): Automatically selects the best backend based on message type
 //! - **MPMC mode**: Multi-producer multi-consumer for general pub/sub (167-6994 ns/msg)

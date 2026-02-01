@@ -204,7 +204,7 @@ impl PluginLoader {
     /// Scans all search paths for plugin files (.so on Linux, .dylib on macOS,
     /// .dll on Windows). Returns a list of discovered plugins.
     ///
-    /// Note: This only discovers plugins; it doesn't load them. Use [`load`]
+    /// Note: This only discovers plugins; it doesn't load them. Use [`Self::load`]
     /// to actually load a plugin.
     pub fn discover(&mut self) -> PluginResult<Vec<DiscoveredPlugin>> {
         let mut discovered = Vec::new();

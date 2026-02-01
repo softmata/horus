@@ -1254,7 +1254,7 @@ impl Default for LocalState {
 
 /// Adaptive Topic - Universal Smart Detection IPC
 ///
-/// AdaptiveTopic<T> provides fully automatic backend detection. Users just call
+/// `AdaptiveTopic<T>` provides fully automatic backend detection. Users just call
 /// `send()`/`recv()` and the system auto-detects the optimal backend from 10 paths
 /// based on topology and access patterns.
 ///
