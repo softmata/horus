@@ -4,7 +4,7 @@
 //! - Build-before-test: Ensures Cargo.toml is generated/updated
 //! - Simulation mode: Enables simulation drivers for hardware-free testing
 //! - Default single-threaded: Prevents shared memory conflicts (--parallel to override)
-//! - Integration test mode: Runs tests marked #[ignore]
+//! - Integration test mode: Runs tests marked `#[ignore]`
 
 use anyhow::{Context, Result};
 use colored::*;

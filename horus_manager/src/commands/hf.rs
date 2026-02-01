@@ -7,7 +7,7 @@
 //!   horus hf list          - List all frames
 //!   horus hf echo A B      - Echo transform from A to B
 //!   horus hf tree          - Show frame tree structure
-//!   horus hf info <frame>  - Show frame details
+//!   horus hf info `<frame>`  - Show frame details
 
 use colored::*;
 use horus_core::error::HorusResult;

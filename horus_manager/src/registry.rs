@@ -107,7 +107,7 @@ pub struct DriverMetadata {
     /// Required Cargo features for this driver (e.g., ["serial-hardware", "i2c-hardware"])
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_features: Option<Vec<String>>,
-    /// Cargo crate dependencies (e.g., ["serialport@4.2", "i2cdev@0.6"])
+    /// Cargo crate dependencies (e.g., `["serialport@4.2", "i2cdev@0.6"]`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cargo_dependencies: Option<Vec<String>>,
     /// Python package dependencies (e.g., ["pyserial>=3.5", "smbus2"])
