@@ -103,12 +103,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status = StringMsg {
             data: format!("HORUS node alive, tick={}", tick),
         };
-        let mut send_ctx: Option<&mut horus_core::NodeInfo> = None;
+        let _send_ctx: Option<&mut horus_core::NodeInfo> = None;
         let _ = status_hub.send(status);
         println!("[HORUS] Published status: tick={}", tick);
 
         // Check for cmd_vel commands (non-blocking recv with no context)
-        let mut ctx: Option<&mut horus_core::NodeInfo> = None;
+        let _ctx: Option<&mut horus_core::NodeInfo> = None;
         while let Some(twist) = cmd_vel_hub.recv() {
             println!(
                 "[HORUS] Received cmd_vel: linear=({:.2}, {:.2}, {:.2}), angular=({:.2}, {:.2}, {:.2})",
