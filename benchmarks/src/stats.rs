@@ -732,7 +732,7 @@ mod tests {
     fn test_jarque_bera_symmetric() {
         // Roughly symmetric data should have low JB statistic
         let samples: Vec<u64> = (0..1000).map(|x| 1000 + (x % 100)).collect();
-        let (jb, pvalue) = jarque_bera_test(&samples);
+        let (jb, _pvalue) = jarque_bera_test(&samples);
         // For roughly uniform data, JB should be small but pvalue depends on sample size
         assert!(jb >= 0.0, "JB statistic should be non-negative");
     }
