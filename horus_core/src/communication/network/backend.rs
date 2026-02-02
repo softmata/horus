@@ -530,9 +530,12 @@ where
                     crate::error::HorusError::Communication(format!("Serialization error: {}", e))
                 })?;
 
-                backend.socket.send_to(&data, backend.remote_addr).map_err(|e| {
-                    crate::error::HorusError::Communication(format!("UDP send error: {}", e))
-                })?;
+                backend
+                    .socket
+                    .send_to(&data, backend.remote_addr)
+                    .map_err(|e| {
+                        crate::error::HorusError::Communication(format!("UDP send error: {}", e))
+                    })?;
 
                 log::trace!("UDP send: {} bytes to {}", data.len(), backend.remote_addr);
                 Ok(())
