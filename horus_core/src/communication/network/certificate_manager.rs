@@ -1,3 +1,4 @@
+#![allow(clippy::io_other_error)]
 //! Certificate management for HORUS network transports
 //!
 //! Provides automatic certificate generation, persistence, and management for

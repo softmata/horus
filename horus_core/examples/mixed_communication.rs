@@ -1,3 +1,4 @@
+#![allow(clippy::manual_is_multiple_of)]
 use horus_core::scheduling::Scheduler;
 use horus_core::{Node, Result, Topic};
 use std::time::Duration;

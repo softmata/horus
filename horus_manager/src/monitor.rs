@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity, clippy::unnecessary_unwrap)]
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -1269,7 +1270,7 @@ pub async fn packages_publish_handler() -> impl IntoResponse {
 
     let result = tokio::task::spawn_blocking(move || {
         let client = RegistryClient::new();
-        client.publish(None, false)
+        client.publish(None, false, None)
     })
     .await;
 

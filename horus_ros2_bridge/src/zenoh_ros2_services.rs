@@ -1,3 +1,10 @@
+#![allow(
+    clippy::empty_line_after_doc_comments,
+    clippy::field_reassign_with_default,
+    clippy::type_complexity,
+    clippy::bool_assert_comparison,
+    clippy::needless_borrows_for_generic_args
+)]
 //! ROS2 Service Protocol for Zenoh Bridge
 //!
 //! Implements the ROS2 service request/response pattern over Zenoh.

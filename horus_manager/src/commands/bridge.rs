@@ -1,3 +1,13 @@
+#![allow(
+    clippy::useless_vec,
+    clippy::unnecessary_map_or,
+    clippy::manual_strip,
+    clippy::needless_borrows_for_generic_args,
+    clippy::field_reassign_with_default,
+    clippy::type_complexity,
+    clippy::nonminimal_bool,
+    clippy::manual_range_contains
+)]
 //! ROS2 Bridge Command - Runtime interoperability between HORUS and ROS2
 //!
 //! Enables hybrid deployments where existing ROS2 nodes can coexist with HORUS nodes

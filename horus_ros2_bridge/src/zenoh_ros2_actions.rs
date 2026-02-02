@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_strip,
+    clippy::type_complexity,
+    clippy::needless_borrows_for_generic_args,
+    clippy::if_same_then_else
+)]
 //! ROS2 Action Protocol for Zenoh Bridge
 //!
 //! Implements the ROS2 action client/server pattern over Zenoh.

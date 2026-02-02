@@ -402,6 +402,7 @@ impl CudaTensorPool {
 
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
+        #[allow(clippy::arc_with_non_send_sync)]
         let mut pool = Self {
             pool_id,
             device_id,
@@ -450,6 +451,7 @@ impl CudaTensorPool {
 
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
+        #[allow(clippy::arc_with_non_send_sync)]
         let pool = Self {
             pool_id,
             device_id,
@@ -804,6 +806,7 @@ impl CudaTensorPool {
         unsafe { &*(self.mmap.as_ptr().add(offset) as *const CudaSlotHeader) }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn slot_mut(&self, index: u32) -> &mut CudaSlotHeader {
         let offset = std::mem::size_of::<CudaPoolHeader>()
             + (index as usize) * std::mem::size_of::<CudaSlotHeader>();

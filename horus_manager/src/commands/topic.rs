@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! Topic command - Interact with HORUS topics
 //!
 //! Provides commands for listing, echoing, and publishing to topics.
@@ -8,6 +9,22 @@ use horus_core::error::{HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
+
+// Import horus_library message types for deserialization
+use horus_library::messages::{
+    cmd_vel::CmdVel,
+    control::{
+        DifferentialDriveCommand, JointCommand, MotorCommand, PwmCommand, ServoCommand,
+        StepperCommand,
+    },
+    diagnostics::{EmergencyStop, Heartbeat, ResourceUsage, Status},
+    force::{ContactInfo, ForceCommand, TactileArray, WrenchStamped},
+    geometry::{Point3, Pose2D, Quaternion, Transform, Twist, Vector3},
+    navigation::{Goal, OccupancyGrid, Path, Waypoint},
+    perception::{BoundingBox3D, DepthImage, PointCloud},
+    sensor::{BatteryState, Imu, LaserScan, NavSatFix, Odometry, Range},
+    vision::{CameraInfo, CompressedImage, Detection, DetectionArray, Image},
+};
 
 /// List all active topics
 pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {

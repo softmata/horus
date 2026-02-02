@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Object tracking types
 //!
 //! Types for multi-object tracking (MOT) and tracked object state.

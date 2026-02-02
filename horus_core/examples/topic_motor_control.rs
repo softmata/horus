@@ -1,3 +1,4 @@
+#![allow(clippy::manual_is_multiple_of)]
 //! Real-World Motor Control Example with Topic
 //!
 //! This example demonstrates how Topic SPSC mode is ideal for tight control loops

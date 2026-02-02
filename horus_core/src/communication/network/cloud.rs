@@ -888,6 +888,7 @@ fn is_valid_room_name(name: &str) -> bool {
 }
 
 /// Parse host:port string
+#[allow(clippy::manual_strip)]
 fn parse_host_port(input: &str, default_port: u16) -> Result<(String, u16), String> {
     // Handle IPv6 addresses: [2001:db8::1]:port
     if input.starts_with('[') {

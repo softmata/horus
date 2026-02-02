@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Integration tests for HORUS auto-detection features
 //!
 //! Tests the automatic detection and configuration of:

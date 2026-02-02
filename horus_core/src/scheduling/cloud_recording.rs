@@ -61,7 +61,7 @@ const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 #[cfg(feature = "cloud-azure")]
 fn base64_encode(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut result = Vec::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut result = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
 
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as usize;
@@ -1014,6 +1014,7 @@ pub struct GcsBackend {
     client: google_cloud_storage::client::Client,
     runtime: tokio::runtime::Runtime,
     /// Tracks ongoing multipart uploads: upload_id -> (cloud_path, parts sorted by number)
+    #[allow(clippy::type_complexity)]
     uploads: Arc<RwLock<HashMap<String, (String, Vec<(u32, Vec<u8>)>)>>>,
 }
 
@@ -1336,6 +1337,7 @@ pub struct AzureBackend {
     client: azure_storage_blobs::prelude::ContainerClient,
     runtime: tokio::runtime::Runtime,
     /// Tracks ongoing multipart uploads: upload_id -> (cloud_path, block_ids)
+    #[allow(clippy::type_complexity)]
     uploads: Arc<RwLock<HashMap<String, (String, Vec<String>)>>>,
 }
 

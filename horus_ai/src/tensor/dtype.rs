@@ -1,3 +1,4 @@
+#![allow(clippy::should_implement_trait)]
 //! Tensor data types with DLPack mapping
 //!
 //! Provides enumeration of supported data types and conversion to/from DLPack codes.

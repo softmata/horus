@@ -1,3 +1,10 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    clippy::bool_assert_comparison,
+    clippy::if_same_then_else,
+    clippy::get_first
+)]
 //! Orchestration Integration Tests
 //!
 //! Comprehensive integration tests for the Mission Planner and State Machines modules,

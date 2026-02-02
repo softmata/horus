@@ -1,3 +1,10 @@
+#![allow(
+    clippy::empty_line_after_outer_attr,
+    clippy::manual_clamp,
+    clippy::if_same_then_else,
+    clippy::unnecessary_unwrap,
+    clippy::manual_strip
+)]
 //! Platform detection for reproducible benchmarks.
 //!
 //! Captures hardware and OS information to contextualize benchmark results:

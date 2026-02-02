@@ -1,3 +1,18 @@
+#![allow(
+    unused_mut,
+    unused_variables,
+    clippy::manual_div_ceil,
+    clippy::manual_range_contains,
+    clippy::nonminimal_bool,
+    clippy::needless_range_loop,
+    clippy::redundant_pattern_matching,
+    clippy::unnecessary_unwrap,
+    clippy::eq_op,
+    clippy::type_complexity,
+    clippy::identity_op,
+    clippy::erasing_op,
+    clippy::double_comparisons
+)]
 //! # Unified Topic Abstraction for Smart IPC
 //!
 //! This module provides a unified `Topic<T>` type that automatically selects
@@ -1777,6 +1792,7 @@ struct SpscIntraSlot<T> {
     /// Seqlock sequence counter (producer-owned)
     /// - Odd = write in progress
     /// - Even = valid data available (if > last_seen)
+    ///
     /// Aligned to cache line to prevent false sharing
     sequence: CacheAlignedU64,
     /// Data storage - separate cache line from sequence

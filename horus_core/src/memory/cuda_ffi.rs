@@ -1,3 +1,4 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 //! Custom CUDA FFI bindings for IPC memory sharing
 //!
 //! This module provides minimal, hand-crafted bindings to the CUDA Runtime API
@@ -848,6 +849,7 @@ pub fn host_get_device_pointer(_host_ptr: *mut c_void) -> CudaResult<*mut c_void
 
 /// Async memory copy (non-blocking, uses stream)
 #[cfg(feature = "cuda")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memcpy_async(
     dst: *mut c_void,
     src: *const c_void,
@@ -878,6 +880,7 @@ pub fn memcpy_async(
 
 /// Async memset (non-blocking, uses stream)
 #[cfg(feature = "cuda")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memset_async(
     ptr: *mut c_void,
     value: i32,

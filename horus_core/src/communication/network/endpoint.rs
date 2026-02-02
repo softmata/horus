@@ -1140,6 +1140,7 @@ impl EndpointBuilder {
     }
 
     /// Build and convert to string representation.
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.clone().build().to_string()
     }

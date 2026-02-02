@@ -1,3 +1,4 @@
+#![allow(unused_mut, unused_variables, clippy::manual_div_ceil)]
 //! # Adaptive Topic - Universal Smart Detection IPC
 //!
 //! This module provides fully automatic backend detection for `Topic::new()`.
@@ -1343,7 +1344,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// * `name` - Topic name
     /// * `capacity` - Number of slots in the ring buffer
     /// * `slot_size` - Custom slot size in bytes for non-POD types (default: 8KB).
-    ///                 Use larger values for big messages like images.
+    ///   Use larger values for big messages like images.
     ///
     /// # Example
     /// ```rust,ignore

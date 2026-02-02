@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_unwrap, clippy::nonminimal_bool)]
 // Simple registry client for HORUS package management
 // Keeps complexity low - just HTTP calls to registry
 
@@ -1347,7 +1348,7 @@ impl RegistryClient {
     }
 
     // Publish a package to registry
-    pub fn publish(&self, path: Option<&Path>, dry_run: bool) -> Result<()> {
+    pub fn publish(&self, path: Option<&Path>, dry_run: bool, org: Option<&str>) -> Result<()> {
         let current_dir = path.unwrap_or_else(|| Path::new("."));
 
         // Detect package info from any supported manifest
@@ -1529,6 +1530,16 @@ impl RegistryClient {
             println!(
                 " {} Running in dry-run mode (no changes will be made)",
                 "".cyan()
+            );
+        }
+
+        // Add organization if specified
+        if let Some(org_name) = org {
+            form = form.text("organization", org_name.to_string());
+            println!(
+                " {} Publishing to organization: {}",
+                "".cyan(),
+                org_name.cyan()
             );
         }
 

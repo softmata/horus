@@ -1,3 +1,4 @@
+#![allow(clippy::manual_clamp)]
 //! Statistical analysis functions for rigorous benchmarking.
 //!
 //! Provides:

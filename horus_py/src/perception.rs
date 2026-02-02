@@ -1,3 +1,8 @@
+#![allow(
+    clippy::wrong_self_convention,
+    clippy::get_first,
+    clippy::too_many_arguments
+)]
 //! horus.perception - Python bindings for perception types
 //!
 //! This module provides Python-friendly wrappers for HORUS perception types:

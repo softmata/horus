@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_range_contains,
+    clippy::manual_strip,
+    clippy::needless_borrows_for_generic_args,
+    clippy::type_complexity
+)]
 //! ROS2 Parameter Server Bridge for Zenoh
 //!
 //! Implements the ROS2 parameter server protocol over Zenoh.

@@ -1,3 +1,4 @@
+#![allow(clippy::should_implement_trait)]
 //! Device specification for tensor placement
 //!
 //! Defines where tensor data resides (CPU or CUDA GPU).

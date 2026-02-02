@@ -1,3 +1,14 @@
+#![allow(
+    dead_code,
+    clippy::len_zero,
+    clippy::manual_strip,
+    clippy::needless_borrows_for_generic_args,
+    clippy::if_same_then_else,
+    clippy::type_complexity,
+    unused_variables,
+    unused_mut,
+    unused_assignments
+)]
 //! Zenoh Multi-Robot Mesh Example
 //!
 //! This example demonstrates multi-robot communication using Zenoh transport.

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::io_other_error,
+    clippy::collapsible_match,
+    clippy::field_reassign_with_default
+)]
 //! Zenoh backend for HORUS Topic communication
 //!
 //! Provides Zenoh-based transport for:

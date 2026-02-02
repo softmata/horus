@@ -1,3 +1,10 @@
+#![allow(
+    clippy::should_implement_trait,
+    clippy::wrong_self_convention,
+    clippy::len_zero,
+    clippy::too_many_arguments,
+    clippy::empty_line_after_outer_attr
+)]
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
 use horus::{

@@ -142,6 +142,7 @@ pub struct HusarnetStatus {
     pub peer_count: usize,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for HusarnetStatus {
     fn default() -> Self {
         Self {

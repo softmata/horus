@@ -592,6 +592,7 @@ impl From<NetworkError> for crate::error::HorusError {
 }
 
 /// Extension trait for adding network error context to any error type
+#[allow(clippy::result_large_err)]
 pub trait NetworkErrorContext<T> {
     /// Wrap an error with network context
     fn network_context(

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_strip,
+    clippy::needless_borrows_for_generic_args,
+    clippy::manual_range_contains,
+    clippy::type_complexity
+)]
 use horus_core::core::{HealthStatus, NetworkStatus};
 use horus_core::error::HorusResult;
 use horus_core::memory::{shm_network_dir, shm_topics_dir};
@@ -1509,7 +1515,16 @@ fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryInfo>> {
     // SUPPLEMENT: Add topics from presence files (captures network topics too)
     // These won't have SHM-specific metadata but will show pub/sub relationships
     for topic in discover_topics_from_presence() {
-        if !seen_topics.contains(&topic.topic_name) {
+        // Check for duplicates - match exact name OR with horus_topic/ prefix
+        let is_duplicate = seen_topics.contains(&topic.topic_name)
+            || seen_topics.contains(&format!("horus_topic/{}", topic.topic_name))
+            || topic
+                .topic_name
+                .strip_prefix("horus_topic/")
+                .map(|base| seen_topics.contains(base))
+                .unwrap_or(false);
+
+        if !is_duplicate {
             seen_topics.insert(topic.topic_name.clone());
             topics.push(topic);
         }
