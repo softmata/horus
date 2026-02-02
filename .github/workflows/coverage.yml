@@ -1,0 +1,132 @@
+# HORUS Code Coverage
+# Measures test coverage and uploads to Codecov
+
+name: Coverage
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-coverage-
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Generate Coverage Report
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Generate HTML Report
+        run: |
+          cargo llvm-cov --workspace --html --output-dir coverage-html
+
+      - name: Upload Coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload HTML Report as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-html/
+          retention-days: 30
+
+      - name: Coverage Summary
+        run: |
+          cargo llvm-cov --workspace --text | tee coverage-summary.txt
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # Check coverage thresholds on main branch
+  coverage-threshold:
+    name: Coverage Threshold Check
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    needs: coverage
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Check Coverage Threshold
+        run: |
+          # Get overall coverage percentage
+          COVERAGE=$(cargo llvm-cov --workspace --text 2>/dev/null | grep "TOTAL" | awk '{print $NF}' | tr -d '%')
+
+          echo "Overall coverage: ${COVERAGE}%"
+
+          # Minimum threshold (adjust as coverage improves)
+          THRESHOLD=50
+
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          else
+            echo "Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+          fi

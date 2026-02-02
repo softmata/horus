@@ -1,0 +1,292 @@
+# HORUS Integration Tests
+# Cross-process IPC, ROS2 bridge, CLI, and example tests
+
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+  schedule:
+    # Run daily at 5 AM UTC
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cross-process IPC integration tests
+  ipc-integration:
+    name: Cross-Process IPC Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integration-
+
+      # Setup shared memory with proper permissions
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          # Increase shared memory limits
+          sudo sysctl -w kernel.shmmax=2147483648
+          sudo sysctl -w kernel.shmall=2147483648
+
+      - name: Build Workspace
+        run: cargo build --workspace --release
+
+      # Run integration tests with extended timeout
+      - name: Run IPC Integration Tests
+        run: |
+          cargo test --workspace --release --test '*' -- --test-threads=1 --nocapture
+        timeout-minutes: 10
+        env:
+          RUST_BACKTRACE: 1
+          RUST_LOG: debug
+
+      # Run specific cross-process tests if they exist
+      - name: Run Cross-Process Tests
+        run: |
+          if [ -d "horus_integration" ]; then
+            cargo test -p horus_integration --release -- --test-threads=1
+          elif [ -d "tests/integration" ]; then
+            cargo test --test integration --release -- --test-threads=1
+          else
+            echo "No dedicated integration test directory found"
+          fi
+        continue-on-error: true
+        env:
+          RUST_BACKTRACE: 1
+
+      # Verify shared memory cleanup
+      - name: Verify SHM Cleanup
+        run: |
+          echo "Checking shared memory state after tests..."
+          ls -la /dev/shm/horus/ || echo "SHM directory clean"
+
+  # ROS2 Bridge integration tests (if applicable)
+  ros2-bridge:
+    name: ROS2 Bridge Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-ros2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ros2-
+
+      # Check if ROS2 bridge exists
+      - name: Check ROS2 Bridge
+        id: check-ros2
+        run: |
+          if [ -d "horus_ros2" ] || [ -d "horus_bridge" ]; then
+            echo "has_ros2=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_ros2=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build ROS2 Bridge
+        if: steps.check-ros2.outputs.has_ros2 == 'true'
+        run: |
+          cargo build -p horus_ros2 --release 2>/dev/null || \
+          cargo build -p horus_bridge --release 2>/dev/null || \
+          echo "ROS2 bridge package not found"
+        continue-on-error: true
+
+      - name: Test ROS2 Bridge
+        if: steps.check-ros2.outputs.has_ros2 == 'true'
+        run: |
+          cargo test -p horus_ros2 --release 2>/dev/null || \
+          cargo test -p horus_bridge --release 2>/dev/null || \
+          echo "ROS2 bridge tests not found"
+        continue-on-error: true
+
+  # CLI integration tests
+  cli-integration:
+    name: CLI Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cli-
+
+      # Setup shared memory
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Build horus_manager
+        run: cargo build -p horus_manager --release
+
+      # Test CLI commands
+      - name: Test CLI Help
+        run: |
+          ./target/release/horus --help
+          ./target/release/horus --version
+
+      - name: Test CLI Topic Commands
+        run: |
+          # These may fail without running topics, which is expected
+          ./target/release/horus topic list --json 2>/dev/null || echo "No topics (expected)"
+        continue-on-error: true
+
+      - name: Test CLI Info Commands
+        run: |
+          ./target/release/horus info 2>/dev/null || echo "Info command executed"
+        continue-on-error: true
+
+      - name: Run horus_manager Tests
+        run: cargo test -p horus_manager --release
+        env:
+          RUST_BACKTRACE: 1
+
+  # Example execution tests
+  examples:
+    name: Example Execution Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-examples-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-examples-
+
+      # Setup shared memory
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      # Build all examples
+      - name: Build Examples
+        run: cargo build --workspace --examples
+
+      # List and run examples with timeout
+      - name: Run Examples
+        run: |
+          echo "## Example Execution Results" >> $GITHUB_STEP_SUMMARY
+
+          # Find all example binaries
+          for example in target/debug/examples/*; do
+            if [ -x "$example" ] && [ -f "$example" ]; then
+              name=$(basename "$example")
+              echo "Running example: $name"
+              echo "- **$name**: " >> $GITHUB_STEP_SUMMARY
+
+              # Run with 10 second timeout
+              if timeout 10s "$example" 2>&1; then
+                echo "passed" >> $GITHUB_STEP_SUMMARY
+              else
+                exit_code=$?
+                if [ $exit_code -eq 124 ]; then
+                  echo "timeout (expected for long-running examples)" >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "failed (exit code: $exit_code)" >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            fi
+          done
+        continue-on-error: true
+
+  # Summary job
+  integration-success:
+    name: Integration Tests Success
+    needs: [ipc-integration, ros2-bridge, cli-integration, examples]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Results
+        run: |
+          echo "IPC Integration: ${{ needs.ipc-integration.result }}"
+          echo "ROS2 Bridge: ${{ needs.ros2-bridge.result }}"
+          echo "CLI Integration: ${{ needs.cli-integration.result }}"
+          echo "Examples: ${{ needs.examples.result }}"
+
+          # IPC integration must pass
+          if [[ "${{ needs.ipc-integration.result }}" != "success" ]]; then
+            echo "IPC integration tests failed"
+            exit 1
+          fi
+
+          # CLI integration must pass
+          if [[ "${{ needs.cli-integration.result }}" != "success" ]]; then
+            echo "CLI integration tests failed"
+            exit 1
+          fi
+
+          echo "Integration tests passed"

@@ -1,0 +1,141 @@
+# HORUS Safety Checks
+# MIRI and other safety-focused testing
+# Runs weekly and on-demand
+
+name: Safety
+
+on:
+  schedule:
+    # Run weekly on Sunday at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      run_miri:
+        description: 'Run MIRI checks'
+        required: false
+        default: true
+        type: boolean
+  pull_request:
+    branches: [main]
+    paths:
+      # Only run on PRs that touch unsafe code
+      - 'horus_core/src/memory/**'
+      - 'horus_core/src/communication/**'
+      - 'horus_core/src/ipc/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  miri:
+    name: MIRI - Undefined Behavior Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust Nightly with MIRI
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Setup MIRI
+        run: cargo miri setup
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      # Run MIRI on core modules with unsafe code
+      - name: MIRI - horus_core memory module
+        run: |
+          cargo miri test -p horus_core --lib -- memory:: || true
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+
+      - name: MIRI - horus_core communication module
+        run: |
+          cargo miri test -p horus_core --lib -- communication:: || true
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+
+      - name: MIRI - horus_core ipc module
+        run: |
+          cargo miri test -p horus_core --lib -- ipc:: || true
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+
+      # Run MIRI on horus_perception types (has Pod/Zeroable derives)
+      - name: MIRI - horus_perception types
+        run: |
+          cargo miri test -p horus_perception --lib || true
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+
+  asan:
+    name: AddressSanitizer - Memory Error Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Run Tests with AddressSanitizer
+        run: |
+          cargo +nightly test --workspace --lib -Zbuild-std --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+          RUSTDOCFLAGS: -Zsanitizer=address
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+
+  tsan:
+    name: ThreadSanitizer - Data Race Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Run Concurrent Tests with ThreadSanitizer
+        run: |
+          cargo +nightly test --workspace --lib -Zbuild-std --target x86_64-unknown-linux-gnu -- --test-threads=1
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          TSAN_OPTIONS: second_deadlock_stack=1

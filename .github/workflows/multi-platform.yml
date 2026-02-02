@@ -1,0 +1,226 @@
+# HORUS Multi-Platform Testing
+# Tests on macOS, Windows, ARM64, and validates MSRV
+
+name: Multi-Platform
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  schedule:
+    # Run weekly on Tuesday at 4 AM UTC
+    - cron: '0 4 * * 2'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Minimum Supported Rust Version
+  MSRV: "1.75.0"
+
+jobs:
+  # macOS Testing
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check
+        run: cargo check --workspace
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+
+  # macOS ARM64 (Apple Silicon)
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-14  # M1 runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-arm64-cargo-
+
+      - name: Check
+        run: cargo check --workspace
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+
+  # Windows Testing
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check
+        run: cargo check --workspace
+        continue-on-error: true  # Windows may have platform-specific issues
+
+      - name: Build (lib only)
+        run: cargo build --workspace --lib
+        continue-on-error: true
+
+  # Linux ARM64 Cross-Compilation
+  linux-arm64:
+    name: Linux ARM64 (Cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-arm64-cross-
+
+      - name: Configure Cross-Compilation
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << EOF
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Check ARM64 Build
+        run: cargo check --workspace --target aarch64-unknown-linux-gnu --lib
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1
+
+  # MSRV (Minimum Supported Rust Version) Testing
+  msrv:
+    name: MSRV (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: ["1.75.0"]  # MSRV
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-msrv-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-msrv-${{ matrix.rust }}-
+
+      - name: Check MSRV Compatibility
+        run: cargo check --workspace
+
+      - name: Test MSRV Compatibility
+        run: cargo test --workspace --no-fail-fast
+        env:
+          RUST_BACKTRACE: 1
+
+  # Summary job
+  multi-platform-success:
+    name: Multi-Platform Success
+    needs: [macos, macos-arm64, windows, linux-arm64, msrv]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Results
+        run: |
+          echo "macOS: ${{ needs.macos.result }}"
+          echo "macOS ARM64: ${{ needs.macos-arm64.result }}"
+          echo "Windows: ${{ needs.windows.result }}"
+          echo "Linux ARM64: ${{ needs.linux-arm64.result }}"
+          echo "MSRV: ${{ needs.msrv.result }}"
+
+          # macOS and MSRV must pass
+          if [[ "${{ needs.macos.result }}" != "success" ]]; then
+            echo "macOS build failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.msrv.result }}" != "success" ]]; then
+            echo "MSRV build failed"
+            exit 1
+          fi
+
+          echo "Core platform checks passed"

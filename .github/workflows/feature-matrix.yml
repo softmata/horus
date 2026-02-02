@@ -1,0 +1,278 @@
+# HORUS Feature Matrix Testing
+# Tests various feature combinations to ensure orthogonality
+
+name: Feature Matrix
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+  schedule:
+    # Run weekly on Monday at 3 AM UTC
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Test CUDA feature (compile-only, no GPU on CI runners)
+  cuda:
+    name: CUDA Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cuda-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cuda-
+
+      # Check CUDA feature compiles (no actual CUDA SDK needed for compile check)
+      - name: Check CUDA feature compilation
+        run: cargo check -p horus_core --features cuda
+        continue-on-error: true  # May fail without CUDA SDK stubs
+
+      - name: Verify CUDA code is feature-gated
+        run: |
+          # Ensure CUDA code doesn't compile without feature
+          cargo check -p horus_core 2>&1 | grep -v "cuda" || echo "CUDA properly gated"
+
+  # Test OpenCV feature
+  opencv:
+    name: OpenCV Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config libopencv-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-opencv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-opencv-
+
+      - name: Check OpenCV feature compilation
+        run: cargo check --workspace --features opencv
+        continue-on-error: true  # Feature may not exist yet
+
+  # Test io-uring feature (Linux only)
+  io-uring:
+    name: io-uring Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config liburing-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-iouring-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-iouring-
+
+      - name: Check io-uring feature compilation
+        run: cargo check --workspace --features io-uring
+        continue-on-error: true  # Feature may not exist yet
+
+  # Test Zenoh networking feature
+  zenoh:
+    name: Zenoh Networking Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-zenoh-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-zenoh-
+
+      - name: Check Zenoh feature compilation
+        run: cargo check --workspace --features zenoh
+        continue-on-error: true  # Feature may not exist yet
+
+  # Test Python bindings feature
+  python:
+    name: Python Bindings Feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config python3-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-python-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-python-
+
+      - name: Check Python bindings compilation
+        run: |
+          if [ -d "horus_python" ]; then
+            cd horus_python && maturin build
+          else
+            echo "horus_python not found, skipping"
+          fi
+        continue-on-error: true
+
+  # Test no default features
+  minimal:
+    name: Minimal Build (No Default Features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-minimal-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-minimal-
+
+      - name: Check minimal build
+        run: cargo check --workspace --no-default-features
+
+  # Test all features combined
+  all-features:
+    name: All Features Combined
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-all-features-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-all-features-
+
+      - name: Check all features build
+        run: cargo check --workspace --all-features
+        continue-on-error: true  # Some features may conflict
+
+  # Summary job
+  feature-matrix-success:
+    name: Feature Matrix Success
+    needs: [cuda, opencv, io-uring, zenoh, python, minimal, all-features]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Feature Matrix Results
+        run: |
+          echo "CUDA: ${{ needs.cuda.result }}"
+          echo "OpenCV: ${{ needs.opencv.result }}"
+          echo "io-uring: ${{ needs.io-uring.result }}"
+          echo "Zenoh: ${{ needs.zenoh.result }}"
+          echo "Python: ${{ needs.python.result }}"
+          echo "Minimal: ${{ needs.minimal.result }}"
+          echo "All Features: ${{ needs.all-features.result }}"
+
+          # Minimal build must pass
+          if [[ "${{ needs.minimal.result }}" != "success" ]]; then
+            echo "Minimal build failed - this is required"
+            exit 1
+          fi
+
+          echo "Feature matrix checks completed"

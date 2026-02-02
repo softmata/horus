@@ -1,0 +1,73 @@
+# Codecov Configuration for HORUS
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "50...90"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%  # Allow 2% decrease
+        if_ci_failed: error
+
+      # Per-package thresholds
+      horus_core:
+        target: 60%
+        paths:
+          - "horus_core/src/**"
+
+      horus_perception:
+        target: 50%
+        paths:
+          - "horus_perception/src/**"
+
+      horus_manager:
+        target: 40%
+        paths:
+          - "horus_manager/src/**"
+
+    patch:
+      default:
+        target: 60%  # New code should have 60% coverage
+        threshold: 5%
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+ignore:
+  - "**/*_test.rs"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "**/examples/**"
+  - "target/**"
+
+flags:
+  horus_core:
+    paths:
+      - horus_core/src/
+    carryforward: true
+
+  horus_perception:
+    paths:
+      - horus_perception/src/
+    carryforward: true
+
+  horus_manager:
+    paths:
+      - horus_manager/src/
+    carryforward: true

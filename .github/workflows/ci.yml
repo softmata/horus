@@ -127,6 +127,21 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run Security Audit
+        run: cargo audit --deny warnings
+
   doc:
     name: Documentation
     runs-on: ubuntu-latest
@@ -158,10 +173,48 @@ jobs:
         env:
           RUSTDOCFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '' }}
 
+  doc-tests:
+    name: Documentation Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-doctest-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-doctest-
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Run Doc Tests
+        run: cargo test --workspace --doc
+        env:
+          RUST_BACKTRACE: 1
+
   # Final status check
   ci-success:
     name: CI Success
-    needs: [check, fmt, clippy, test, doc]
+    needs: [check, fmt, clippy, test, doc, doc-tests, security]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -171,7 +224,9 @@ jobs:
              [[ "${{ needs.fmt.result }}" == "success" ]] && \
              [[ "${{ needs.clippy.result }}" == "success" ]] && \
              [[ "${{ needs.test.result }}" == "success" ]] && \
-             [[ "${{ needs.doc.result }}" == "success" ]]; then
+             [[ "${{ needs.doc.result }}" == "success" ]] && \
+             [[ "${{ needs.doc-tests.result }}" == "success" ]] && \
+             [[ "${{ needs.security.result }}" == "success" ]]; then
             echo "All checks passed!"
             exit 0
           else
