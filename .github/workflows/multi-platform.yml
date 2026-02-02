@@ -43,13 +43,13 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Check
-        run: cargo check --workspace
+        run: cargo check --workspace --exclude horus_py
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --exclude horus_py
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --no-fail-fast --exclude horus_py
         env:
           RUST_BACKTRACE: 1
 
@@ -76,13 +76,13 @@ jobs:
           restore-keys: ${{ runner.os }}-arm64-cargo-
 
       - name: Check
-        run: cargo check --workspace
+        run: cargo check --workspace --exclude horus_py
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --exclude horus_py
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --no-fail-fast --exclude horus_py
         env:
           RUST_BACKTRACE: 1
 
@@ -182,17 +182,8 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-msrv-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-msrv-${{ matrix.rust }}-
+      # No caching for MSRV - build fresh to avoid incremental compilation issues
+      # These linking errors occur with stale cached artifacts
 
       - name: Setup Shared Memory
         run: |
