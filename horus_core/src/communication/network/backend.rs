@@ -1,11 +1,13 @@
 use super::endpoint::Endpoint;
 use super::router::RouterBackend;
+#[cfg(target_os = "linux")]
 use super::smart_copy::{CopyStrategy, SmartCopyConfig, SmartCopySender};
 use super::smart_transport::{NetworkLocation, TransportSelector, TransportType};
 use super::udp_multicast::UdpMulticastBackend;
 #[cfg(unix)]
 use super::unix_socket::UnixSocketBackend;
 
+#[cfg(target_os = "linux")]
 use super::batch_udp::{BatchUdpConfig, BatchUdpReceiver, BatchUdpSender};
 
 #[cfg(feature = "zenoh-transport")]
@@ -37,8 +39,13 @@ pub enum NetworkBackend<T> {
     #[cfg(unix)]
     UnixSocket(UnixSocketBackend<T>),
 
-    /// Batch UDP with sendmmsg/recvmmsg (Linux) or regular UDP (fallback)
+    /// Batch UDP with sendmmsg/recvmmsg (Linux only, uses Linux-specific syscalls)
+    #[cfg(target_os = "linux")]
     BatchUdp(BatchUdpBackendWrapper<T>),
+
+    /// Standard UDP backend for non-Linux platforms
+    #[cfg(not(target_os = "linux"))]
+    Udp(UdpBackendWrapper<T>),
 
     /// Multicast discovery
     Multicast(UdpMulticastBackend<T>),
@@ -79,6 +86,31 @@ impl<T> std::fmt::Debug for BatchUdpBackendWrapper<T> {
             .field("topic", &self.topic)
             .field("remote_addr", &self.remote_addr)
             .field("smart_copy", &self.smart_copy)
+            .finish()
+    }
+}
+
+/// Standard UDP backend wrapper for non-Linux platforms
+/// Uses regular UDP sockets without Linux-specific optimizations
+#[cfg(not(target_os = "linux"))]
+pub struct UdpBackendWrapper<T> {
+    socket: std::net::UdpSocket,
+    topic: String,
+    remote_addr: SocketAddr,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe impl<T: Send> Send for UdpBackendWrapper<T> {}
+#[cfg(not(target_os = "linux"))]
+unsafe impl<T: Send> Sync for UdpBackendWrapper<T> {}
+
+#[cfg(not(target_os = "linux"))]
+impl<T> std::fmt::Debug for UdpBackendWrapper<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpBackendWrapper")
+            .field("topic", &self.topic)
+            .field("remote_addr", &self.remote_addr)
             .finish()
     }
 }
@@ -420,6 +452,37 @@ where
         }))
     }
 
+    /// Create standard UDP backend for non-Linux platforms
+    #[cfg(not(target_os = "linux"))]
+    fn create_batch_udp(topic: &str, addr: SocketAddr) -> HorusResult<Self> {
+        use std::net::UdpSocket;
+
+        // Bind to any available port for sending
+        let bind_addr: SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse().unwrap()
+        } else {
+            "[::]:0".parse().unwrap()
+        };
+
+        let socket = UdpSocket::bind(bind_addr).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to create UDP socket: {}", e))
+        })?;
+
+        socket.set_nonblocking(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to set socket non-blocking: {}",
+                e
+            ))
+        })?;
+
+        Ok(NetworkBackend::Udp(UdpBackendWrapper {
+            socket,
+            topic: topic.to_string(),
+            remote_addr: addr,
+            _phantom: std::marker::PhantomData,
+        }))
+    }
+
     /// Send a message over the network
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         match self {
@@ -461,6 +524,22 @@ where
 
                 result
             }
+            #[cfg(not(target_os = "linux"))]
+            NetworkBackend::Udp(backend) => {
+                let data = bincode::serialize(msg).map_err(|e| {
+                    crate::error::HorusError::Communication(format!("Serialization error: {}", e))
+                })?;
+
+                backend
+                    .socket
+                    .send_to(&data, backend.remote_addr)
+                    .map_err(|e| {
+                        crate::error::HorusError::Communication(format!("UDP send error: {}", e))
+                    })?;
+
+                log::trace!("UDP send: {} bytes to {}", data.len(), backend.remote_addr);
+                Ok(())
+            }
             NetworkBackend::Multicast(backend) => backend.send(msg),
             NetworkBackend::Router(backend) => backend.send(msg),
             #[cfg(feature = "zenoh-transport")]
@@ -494,6 +573,14 @@ where
                     Err(_) => None,
                 }
             }
+            #[cfg(not(target_os = "linux"))]
+            NetworkBackend::Udp(backend) => {
+                let mut buf = [0u8; 65535];
+                match backend.socket.recv_from(&mut buf) {
+                    Ok((len, _addr)) => bincode::deserialize(&buf[..len]).ok(),
+                    Err(_) => None,
+                }
+            }
             NetworkBackend::Multicast(backend) => backend.recv(),
             NetworkBackend::Router(backend) => backend.recv(),
             #[cfg(feature = "zenoh-transport")]
@@ -510,6 +597,8 @@ where
             NetworkBackend::UnixSocket(_) => "unix_socket",
             #[cfg(target_os = "linux")]
             NetworkBackend::BatchUdp(_) => "batch_udp",
+            #[cfg(not(target_os = "linux"))]
+            NetworkBackend::Udp(_) => "udp",
             NetworkBackend::Multicast(_) => "multicast",
             NetworkBackend::Router(_) => "router",
             #[cfg(feature = "zenoh-transport")]
@@ -551,6 +640,11 @@ impl<T> std::fmt::Debug for NetworkBackend<T> {
             #[cfg(target_os = "linux")]
             NetworkBackend::BatchUdp(backend) => f
                 .debug_struct("NetworkBackend::BatchUdp")
+                .field("backend", backend)
+                .finish(),
+            #[cfg(not(target_os = "linux"))]
+            NetworkBackend::Udp(backend) => f
+                .debug_struct("NetworkBackend::Udp")
                 .field("backend", backend)
                 .finish(),
             NetworkBackend::Multicast(backend) => f
@@ -596,11 +690,13 @@ mod tests {
         let endpoint = parse_endpoint("test@localhost").unwrap();
         if let Ok(backend) = NetworkBackend::<Vec<u8>>::new(endpoint) {
             let transport = backend.transport_type();
-            // Should be unix_socket on Unix, or udp_direct on Windows
-            #[cfg(unix)]
+            // Should be unix_socket or batch_udp on Linux, unix_socket or udp on other Unix, or udp on Windows
+            #[cfg(target_os = "linux")]
             assert!(transport == "unix_socket" || transport == "batch_udp");
+            #[cfg(all(unix, not(target_os = "linux")))]
+            assert!(transport == "unix_socket" || transport == "udp");
             #[cfg(not(unix))]
-            assert_eq!(transport, "udp_direct");
+            assert_eq!(transport, "udp");
         }
     }
 }

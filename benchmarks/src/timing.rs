@@ -20,14 +20,12 @@ pub fn rdtsc() -> u64 {
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 pub fn rdtsc() -> u64 {
-    // Fallback: use Instant-based timing (less precise)
-    Instant::now()
-        .duration_since(
-            std::time::UNIX_EPOCH
-                .checked_add(Duration::from_secs(0))
-                .unwrap_or(std::time::UNIX_EPOCH),
-        )
-        .as_nanos() as u64
+    // Fallback: use SystemTime-based timing (less precise)
+    // Note: Instant doesn't have a fixed epoch, so we use SystemTime for consistency
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 /// RDTSCP with serialization - more accurate for timing small sections

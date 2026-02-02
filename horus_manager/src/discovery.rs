@@ -2354,6 +2354,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_parse_memory_from_stat_valid() {
         // stat format: pid (comm) state ... rss is 24th field (0-indexed: 23)
         // We need at least 24 space-separated fields
@@ -2364,6 +2365,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_parse_memory_from_stat_invalid() {
         assert_eq!(parse_memory_from_stat(""), 0);
         assert_eq!(parse_memory_from_stat("short stat"), 0);

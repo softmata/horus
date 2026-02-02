@@ -503,7 +503,7 @@ fn test_graceful_degradation_on_non_rt() {
 #[test]
 fn test_strict_mode_rejects_degradation() {
     // builder().strict() with RT features should fail on non-RT systems
-    let _result = Scheduler::builder()
+    let result = Scheduler::builder()
         .rt_priority(99) // Request RT priority
         .strict() // Don't allow degradation
         .build();
@@ -514,6 +514,7 @@ fn test_strict_mode_rejects_degradation() {
     {
         // Linux-specific behavior
         // Will fail unless running as root with RT permissions
+        let _ = result; // Use variable to avoid unused warning
     }
 
     #[cfg(not(target_os = "linux"))]
