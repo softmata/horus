@@ -49,7 +49,13 @@ jobs:
         run: cargo build --workspace --exclude horus_py
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast --exclude horus_py
+        run: |
+          # Exclude crates with Linux-specific tests:
+          # - horus_py: requires Python headers
+          # - horus_benchmarks: timing uses RDTSC/Linux-specific fallbacks
+          # - horus_core: topic tests rely on /dev/shm which doesn't exist on macOS
+          cargo test --workspace --no-fail-fast \
+            --exclude horus_py --exclude horus_benchmarks --exclude horus_core
         env:
           RUST_BACKTRACE: 1
 
@@ -82,7 +88,13 @@ jobs:
         run: cargo build --workspace --exclude horus_py
 
       - name: Test
-        run: cargo test --workspace --no-fail-fast --exclude horus_py
+        run: |
+          # Exclude crates with Linux-specific tests:
+          # - horus_py: requires Python headers
+          # - horus_benchmarks: timing uses RDTSC/Linux-specific fallbacks
+          # - horus_core: topic tests rely on /dev/shm which doesn't exist on macOS
+          cargo test --workspace --no-fail-fast \
+            --exclude horus_py --exclude horus_benchmarks --exclude horus_core
         env:
           RUST_BACKTRACE: 1
 
