@@ -16,8 +16,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Minimum Supported Rust Version
-  # Requires 1.85.0+ due to transitive dependency on `home` crate using edition 2024
-  MSRV: "1.85.0"
+  # Requires 1.92.0+ due to horus_ai crate requirements
+  MSRV: "1.92.0"
 
 jobs:
   # macOS Testing
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: ["1.85.0"]  # MSRV - requires edition 2024 support
+        rust: ["1.92.0"]  # MSRV - horus_ai requires 1.92.0
     steps:
       - uses: actions/checkout@v4
 
