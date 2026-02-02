@@ -3831,7 +3831,7 @@ except ImportError as e:
                 PkgCommands::Publish { freeze, dry_run } => {
                     let client = registry::RegistryClient::new();
                     client
-                        .publish(None, dry_run)
+                        .publish(None, dry_run, None)
                         .map_err(|e| HorusError::Config(e.to_string()))?;
 
                     // If --freeze flag is set, also generate freeze file
