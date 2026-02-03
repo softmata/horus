@@ -1994,10 +1994,14 @@ fn find_accessing_processes_fast(shm_path: &Path, shm_name: &str) -> Vec<u32> {
     let shm_path_str = shm_path.to_string_lossy();
 
     // For HORUS-like shared memory, only check HORUS processes first (much faster)
+    // Check both the name and the full path - topic files like "motors.cmd_vel" may not
+    // contain "horus" in the name but the path /dev/shm/horus/topics/... does
     let is_horus_shm = shm_name.contains("horus")
         || shm_name.contains("topic")
         || shm_name.starts_with("ros")
-        || shm_name.starts_with("shm_");
+        || shm_name.starts_with("shm_")
+        || shm_path_str.contains("horus")
+        || shm_path_str.contains("/topics/");
 
     if is_horus_shm {
         // Fast path: Only check processes with HORUS in their name
