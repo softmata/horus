@@ -212,9 +212,12 @@ jobs:
           # horus/horus_library: workspace linkage errors
           # horus_manager: persistent linker errors with older Rust
           # horus_py: requires Python dev headers
+          # Use single-threaded tests to avoid race conditions in static discovery topic
+          # (UnsafeCell<LocalState> is not thread-safe for parallel test access)
           cargo test --workspace --no-fail-fast \
             --exclude horus --exclude horus_library --exclude horus_py \
-            --exclude horus_manager
+            --exclude horus_manager \
+            -- --test-threads=1
         env:
           RUST_BACKTRACE: 1
 
