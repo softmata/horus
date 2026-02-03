@@ -123,7 +123,10 @@ jobs:
         run: cargo build --workspace
 
       - name: Run Tests
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          # Use single-threaded tests to avoid race conditions in static discovery topic
+          # (UnsafeCell<LocalState> is not thread-safe for parallel test access)
+          cargo test --workspace --no-fail-fast -- --test-threads=1
         env:
           RUST_BACKTRACE: 1
 
