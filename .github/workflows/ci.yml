@@ -1,5 +1,5 @@
 # HORUS CI Pipeline
-# Runs on all PRs and pushes to main
+# Runs on all PRs and pushes to main/dev
 
 name: CI
 
