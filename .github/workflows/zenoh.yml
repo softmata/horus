@@ -1,0 +1,345 @@
+# HORUS Zenoh Integration CI
+# Tests Zenoh transport feature, ROS2 compatibility, and performance
+
+name: Zenoh Integration
+
+on:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'horus_core/src/communication/network/zenoh*.rs'
+      - 'horus_core/src/communication/network/hybrid*.rs'
+      - 'horus_core/src/communication/network/locality*.rs'
+      - 'horus_ros2_bridge/**'
+      - 'horus_ros2_msgs/**'
+      - 'benchmarks/src/bin/zenoh*.rs'
+      - '.github/workflows/zenoh.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'horus_core/src/communication/network/zenoh*.rs'
+      - 'horus_core/src/communication/network/hybrid*.rs'
+      - 'horus_ros2_bridge/**'
+      - 'horus_ros2_msgs/**'
+  schedule:
+    # Run daily at 2 AM UTC to catch any regressions
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_benchmarks:
+        description: 'Run performance benchmarks'
+        required: false
+        default: 'true'
+        type: boolean
+      run_ros2_tests:
+        description: 'Run ROS2 interop tests'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Test Zenoh transport feature compilation
+  zenoh-check:
+    name: Zenoh Feature Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-zenoh-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-zenoh-check-
+
+      - name: Check zenoh-transport feature
+        run: cargo check -p horus_core --features zenoh-transport
+
+      - name: Check zenoh-ros2 feature
+        run: cargo check -p horus_core --features zenoh-ros2
+
+      - name: Check horus_ros2_bridge
+        run: cargo check -p horus_ros2_bridge
+
+      - name: Check horus_ros2_msgs
+        run: cargo check -p horus_ros2_msgs
+
+  # Run Zenoh-specific unit tests
+  zenoh-tests:
+    name: Zenoh Unit Tests
+    runs-on: ubuntu-latest
+    needs: zenoh-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-zenoh-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-zenoh-test-
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Run Zenoh config tests
+        run: cargo test -p horus_core zenoh_config --features zenoh-transport -- --test-threads=1
+
+      - name: Run Zenoh discovery tests
+        run: cargo test -p horus_core zenoh_discovery --features zenoh-transport -- --test-threads=1
+
+      - name: Run hybrid backend tests
+        run: cargo test -p horus_core hybrid_backend --features zenoh-transport -- --test-threads=1
+
+      - name: Run locality detection tests
+        run: cargo test -p horus_core locality --features zenoh-transport -- --test-threads=1
+
+      - name: Run test harness tests
+        run: cargo test -p horus_core test_harness -- --test-threads=1
+
+      - name: Run ROS2 message tests
+        run: cargo test -p horus_ros2_msgs -- --test-threads=1
+
+      - name: Run ROS2 bridge tests
+        run: cargo test -p horus_ros2_bridge --features horus_core/zenoh-transport -- --test-threads=1
+
+  # Run Zenoh integration tests with namespace isolation
+  zenoh-integration:
+    name: Zenoh Integration Tests
+    runs-on: ubuntu-latest
+    needs: zenoh-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-zenoh-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-zenoh-integration-
+
+      # Setup shared memory for HORUS tests
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Run mock testing utilities tests
+        run: cargo test -p horus_core testing --features zenoh-transport -- --test-threads=1
+
+      - name: Build integration test binary
+        run: cargo build --release -p horus_core --features zenoh-transport
+
+  # Run Zenoh performance benchmarks
+  zenoh-benchmarks:
+    name: Zenoh Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: zenoh-tests
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_benchmarks == 'true')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config gnuplot
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-zenoh-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-zenoh-bench-
+
+      - name: Configure CPU for benchmarks
+        run: |
+          echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor || true
+          echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo || true
+
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Download baseline
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/zenoh-baseline.json
+          key: zenoh-benchmark-baseline-${{ github.base_ref || 'main' }}
+          restore-keys: |
+            zenoh-benchmark-baseline-main
+            zenoh-benchmark-baseline-
+
+      - name: Build Zenoh benchmark
+        run: cargo build --release -p benchmarks --features zenoh --bin zenoh_benchmark
+        continue-on-error: true
+
+      - name: Run Zenoh benchmark
+        run: |
+          cd benchmarks
+          if [ -f ../target/release/zenoh_benchmark ]; then
+            ../target/release/zenoh_benchmark | tee zenoh-benchmark-results.txt
+          else
+            echo "Zenoh benchmark not built (feature may be missing)"
+            echo "SKIPPED" > zenoh-benchmark-results.txt
+          fi
+        continue-on-error: true
+
+      - name: Generate benchmark report
+        run: |
+          cd benchmarks
+          mkdir -p zenoh-benchmark-report
+
+          echo "# Zenoh Benchmark Results" > zenoh-benchmark-report/README.md
+          echo "" >> zenoh-benchmark-report/README.md
+          echo "Commit: ${{ github.sha }}" >> zenoh-benchmark-report/README.md
+          echo "Date: $(date -u)" >> zenoh-benchmark-report/README.md
+          echo "" >> zenoh-benchmark-report/README.md
+
+          if [ -f zenoh-benchmark-results.txt ]; then
+            echo "## Results" >> zenoh-benchmark-report/README.md
+            echo '```' >> zenoh-benchmark-report/README.md
+            cat zenoh-benchmark-results.txt >> zenoh-benchmark-report/README.md
+            echo '```' >> zenoh-benchmark-report/README.md
+          fi
+
+          cp zenoh-benchmark-results.txt zenoh-benchmark-report/ || true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenoh-benchmark-results
+          path: benchmarks/zenoh-benchmark-report/
+
+      - name: Save new baseline (main branch only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: benchmarks/zenoh-baseline.json
+          key: zenoh-benchmark-baseline-main-${{ github.sha }}
+
+  # Optional ROS2 integration tests (requires ROS2 installation)
+  ros2-integration:
+    name: ROS2 Integration Tests
+    runs-on: ubuntu-latest
+    needs: zenoh-tests
+    if: |
+      github.event_name == 'workflow_dispatch' && inputs.run_ros2_tests == 'true'
+    container:
+      image: ros:humble-ros-base
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust in container
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y libudev-dev pkg-config build-essential
+
+      - name: Source ROS2 environment
+        run: |
+          echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+
+      - name: Build with ROS2 support
+        run: |
+          source /opt/ros/humble/setup.bash
+          $HOME/.cargo/bin/cargo build -p horus_ros2_bridge --features horus_core/zenoh-transport
+
+      - name: Run ROS2 compatibility tests
+        run: |
+          source /opt/ros/humble/setup.bash
+          $HOME/.cargo/bin/cargo test -p horus_ros2_bridge --features horus_core/zenoh-transport -- --test-threads=1
+        continue-on-error: true
+
+  # Summary job
+  zenoh-ci-success:
+    name: Zenoh CI Success
+    needs: [zenoh-check, zenoh-tests, zenoh-integration]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Results
+        run: |
+          echo "## Zenoh CI Results"
+          echo ""
+          echo "Feature Check: ${{ needs.zenoh-check.result }}"
+          echo "Unit Tests: ${{ needs.zenoh-tests.result }}"
+          echo "Integration Tests: ${{ needs.zenoh-integration.result }}"
+
+          if [[ "${{ needs.zenoh-check.result }}" == "success" ]] && \
+             [[ "${{ needs.zenoh-tests.result }}" == "success" ]] && \
+             [[ "${{ needs.zenoh-integration.result }}" == "success" ]]; then
+            echo ""
+            echo "All Zenoh CI checks passed!"
+            exit 0
+          else
+            echo ""
+            echo "Some Zenoh CI checks failed!"
+            exit 1
+          fi

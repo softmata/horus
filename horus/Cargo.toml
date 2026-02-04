@@ -13,7 +13,7 @@ categories = ["science::robotics", "embedded", "network-programming"]
 # Core HORUS components
 horus_core = { path = "../horus_core" }
 horus_macros = { path = "../horus_macros", optional = true }
-horus_library = { path = "../horus_library" }  # Uses default features (standard-nodes)
+horus_library = { path = "../horus_library" }
 
 # Re-export commonly used dependencies
 serde = { workspace = true }
@@ -22,44 +22,44 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 [features]
+# ============================================================================
+# DEFAULT FEATURES
+# ============================================================================
+# HORUS ships minimal by default - fast IPC via shared memory.
+# For multi-robot networking: horus pkg install horus-ros2
 default = ["macros"]
+
 macros = ["dep:horus_macros"]
 
-# Minimal build without standard nodes (for embedded/constrained systems)
-minimal = ["horus_library/default"]  # Explicitly disable standard-nodes
+# ============================================================================
+# DISCOVERY
+# ============================================================================
 
-# Hardware feature flags - propagate to horus_library
-# These are for hardware that requires physical devices
-gpio-hardware = ["horus_library/gpio-hardware"]
-i2c-hardware = ["horus_library/i2c-hardware"]
-spi-hardware = ["horus_library/spi-hardware"]
-modbus-hardware = ["horus_library/modbus-hardware"]
+# Zero-config peer discovery via mDNS/DNS-SD
+mdns = ["horus_core/mdns"]
 
-# Sensor-specific features
-bno055-imu = ["horus_library/bno055-imu"]
-mpu6050-imu = ["horus_library/mpu6050-imu"]
-rplidar = ["horus_library/rplidar"]
-nmea-gps = ["horus_library/nmea-gps"]
+# Husarnet VPN for secure WAN connectivity
+husarnet = ["horus_core/husarnet"]
 
-# Vision nodes (requires OpenCV - heavy dependency)
-vision = ["horus_library/vision"]
+# ============================================================================
+# SECURITY & TRANSPORT
+# ============================================================================
 
-# Convenience bundles
-full-hardware = ["horus_library/full-hardware"]
-all-sensors = ["horus_library/all-sensors"]
-
-# Advanced features from horus_core
-cuda = ["horus_core/cuda"]
-quic = ["horus_core/quic"]
+# TLS encryption for TCP connections
 tls = ["horus_core/tls"]
+
+# QUIC transport (multiplexed UDP + TLS 1.3)
+quic = ["horus_core/quic"]
+
+# Linux io_uring for ultra-low latency (Linux 5.6+)
 io-uring-net = ["horus_core/io-uring-net"]
 
-# Legacy aliases (for backwards compatibility)
-gilrs = ["horus_library/gilrs"]
-crossterm = ["horus_library/crossterm"]
-serial-hardware = ["horus_library/serial-hardware"]
-opencv-backend = ["horus_library/opencv-backend"]
-input-nodes = ["gilrs", "crossterm"]
+# ============================================================================
+# GPU
+# ============================================================================
+
+# CUDA IPC for cross-process GPU memory sharing
+cuda = ["horus_core/cuda"]
 
 [lib]
 name = "horus"

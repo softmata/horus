@@ -232,6 +232,13 @@ enum Commands {
         command: TopicCommands,
     },
 
+    /// Zenoh network discovery and interaction (requires zenoh-transport feature)
+    #[cfg(feature = "zenoh-transport")]
+    Zenoh {
+        #[command(subcommand)]
+        command: ZenohCommands,
+    },
+
     /// Node management (list, info, kill)
     Node {
         #[command(subcommand)]
@@ -1400,6 +1407,67 @@ enum ParamCommands {
 
     /// Dump all parameters as YAML to stdout
     Dump,
+}
+
+/// Zenoh network discovery and interaction commands
+#[cfg(feature = "zenoh-transport")]
+#[derive(Subcommand)]
+enum ZenohCommands {
+    /// List all discovered Zenoh topics
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Only show ROS2 topics (rt/*, rq/*, rr/*)
+        #[arg(long = "ros2")]
+        ros2_only: bool,
+    },
+
+    /// Show detailed info about a Zenoh topic
+    Info {
+        /// Topic key expression (e.g., "rt/scan" or "/scan" for ROS2)
+        key_expr: String,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Echo messages from a Zenoh topic
+    Echo {
+        /// Topic key expression
+        key_expr: String,
+
+        /// Number of messages to echo (default: unlimited)
+        #[arg(short = 'n', long = "count")]
+        count: Option<usize>,
+
+        /// Show raw hex dump instead of interpreting data
+        #[arg(long = "raw")]
+        raw: bool,
+    },
+
+    /// Publish a message to a Zenoh topic
+    Pub {
+        /// Topic key expression
+        key_expr: String,
+
+        /// Message content (JSON or plain string)
+        message: String,
+
+        /// Publishing rate in Hz (default: 1.0)
+        #[arg(short = 'r', long = "rate")]
+        rate: Option<f64>,
+
+        /// Number of messages to publish (default: 1)
+        #[arg(short = 'n', long = "count")]
+        count: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2975,6 +3043,29 @@ except ImportError as e:
                 rate,
                 count,
             } => commands::topic::publish_topic(&name, &message, rate, count),
+        },
+
+        #[cfg(feature = "zenoh-transport")]
+        Commands::Zenoh { command } => match command {
+            ZenohCommands::List {
+                verbose,
+                json,
+                ros2_only,
+            } => commands::zenoh::list_topics(verbose, json, ros2_only),
+            ZenohCommands::Info { key_expr, json } => {
+                commands::zenoh::topic_info(&key_expr, json)
+            }
+            ZenohCommands::Echo {
+                key_expr,
+                count,
+                raw,
+            } => commands::zenoh::echo_topic(&key_expr, count, raw),
+            ZenohCommands::Pub {
+                key_expr,
+                message,
+                rate,
+                count,
+            } => commands::zenoh::publish_topic(&key_expr, &message, rate, count),
         },
 
         Commands::Node { command } => match command {

@@ -23,6 +23,59 @@ use super::zenoh_config::{
 };
 use crate::error::{HorusError, HorusResult};
 
+// ============================================================================
+// Zenoh Error Helpers
+// ============================================================================
+
+/// Create a serialization error with context
+#[allow(dead_code)]
+fn serialization_error(format: &str, cause: impl std::fmt::Display) -> HorusError {
+    NetworkError::new(
+        NetworkErrorCode::SerializationFailed,
+        format!("{} serialization failed: {}", format, cause),
+    )
+    .with_suggestion(format!(
+        "Check that your message type implements Serialize correctly for {} format",
+        format
+    ))
+    .into()
+}
+
+/// Create a deserialization error with context
+#[allow(dead_code)]
+fn deserialization_error(format: &str, cause: impl std::fmt::Display) -> HorusError {
+    NetworkError::new(
+        NetworkErrorCode::DeserializationFailed,
+        format!("{} deserialization failed: {}", format, cause),
+    )
+    .with_suggestion(format!(
+        "Check that the message matches the expected {} format and type",
+        format
+    ))
+    .into()
+}
+
+/// Create a Zenoh connection error
+fn zenoh_connection_error(operation: &str, cause: impl std::fmt::Display) -> HorusError {
+    NetworkError::new(
+        NetworkErrorCode::ConnectionFailed,
+        format!("Zenoh {} failed: {}", operation, cause),
+    )
+    .with_suggestion("Check Zenoh router connectivity and network configuration")
+    .with_cli_hint("horus net status")
+    .into()
+}
+
+/// Create a Zenoh operation error
+fn zenoh_operation_error(operation: &str, cause: impl std::fmt::Display) -> HorusError {
+    NetworkError::new(
+        NetworkErrorCode::SocketError,
+        format!("Zenoh {} error: {}", operation, cause),
+    )
+    .with_suggestion("Check Zenoh session health and network connectivity")
+    .into()
+}
+
 /// Serialize a message using the specified format
 #[cfg(feature = "zenoh-transport")]
 fn serialize_message<T: serde::Serialize>(
@@ -31,24 +84,250 @@ fn serialize_message<T: serde::Serialize>(
 ) -> HorusResult<Vec<u8>> {
     match format {
         SerializationFormat::Bincode => bincode::serialize(msg)
-            .map_err(|e| HorusError::Communication(format!("Bincode serialize error: {}", e))),
-        SerializationFormat::Json => serde_json::to_vec(msg)
-            .map_err(|e| HorusError::Communication(format!("JSON serialize error: {}", e))),
+            .map_err(|e| serialization_error("Bincode", e)),
         #[cfg(feature = "cdr-encoding")]
         SerializationFormat::Cdr => {
             // ROS2/DDS typically uses little-endian CDR
             cdr_encoding::to_vec::<_, byteorder::LittleEndian>(msg)
-                .map_err(|e| HorusError::Communication(format!("CDR serialize error: {}", e)))
+                .map_err(|e| serialization_error("CDR", e))
         }
         #[cfg(not(feature = "cdr-encoding"))]
         SerializationFormat::Cdr => {
             log::warn!("CDR format requires 'zenoh-ros2' feature, falling back to bincode");
             bincode::serialize(msg)
-                .map_err(|e| HorusError::Communication(format!("Bincode serialize error: {}", e)))
+                .map_err(|e| serialization_error("Bincode", e))
         }
-        SerializationFormat::MessagePack => rmp_serde::to_vec(msg)
-            .map_err(|e| HorusError::Communication(format!("MessagePack serialize error: {}", e))),
     }
+}
+
+// ============================================================================
+// Zenoh Session Pool
+// ============================================================================
+
+/// Key for identifying equivalent session configurations
+#[cfg(feature = "zenoh-transport")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionPoolKey {
+    /// Connect endpoints (sorted for consistent hashing)
+    connect: Vec<String>,
+    /// Listen endpoints (sorted for consistent hashing)
+    listen: Vec<String>,
+    /// Zenoh mode
+    mode: super::zenoh_config::ZenohMode,
+    /// Whether ROS2 mode is enabled
+    ros2_mode: bool,
+    /// ROS2 domain ID
+    ros2_domain_id: u32,
+}
+
+#[cfg(feature = "zenoh-transport")]
+impl SessionPoolKey {
+    fn from_config(config: &ZenohConfig) -> Self {
+        let mut connect = config.connect.clone();
+        connect.sort();
+        let mut listen = config.listen.clone();
+        listen.sort();
+
+        Self {
+            connect,
+            listen,
+            mode: config.mode.clone(),
+            ros2_mode: config.ros2_mode,
+            ros2_domain_id: config.ros2_domain_id,
+        }
+    }
+}
+
+/// Entry in the session pool
+#[cfg(feature = "zenoh-transport")]
+struct PooledSession {
+    /// The shared Zenoh session
+    session: Arc<zenoh::Session>,
+    /// Number of active references to this session
+    ref_count: usize,
+    /// Creation timestamp for debugging
+    created_at: std::time::Instant,
+}
+
+/// Global session pool for sharing Zenoh sessions across topics.
+///
+/// Instead of creating a new session for each topic, the pool allows
+/// multiple topics with the same configuration to share a single session,
+/// reducing resource usage and connection overhead.
+///
+/// # Features
+///
+/// - **Lazy creation**: Sessions are only created when first requested
+/// - **Config-based sharing**: Topics with equivalent configs share sessions
+/// - **Reference counting**: Sessions are dropped when no longer in use
+/// - **Thread-safe**: Safe to use from multiple threads
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // Get or create a pooled session
+/// let session = ZenohSessionPool::get_or_create(&config).await?;
+///
+/// // Use the session...
+///
+/// // When done, release (decrements ref count)
+/// ZenohSessionPool::release(&config);
+/// ```
+#[cfg(feature = "zenoh-transport")]
+pub struct ZenohSessionPool {
+    // Static pool storage
+}
+
+#[cfg(feature = "zenoh-transport")]
+lazy_static::lazy_static! {
+    /// Global session pool instance
+    static ref SESSION_POOL: parking_lot::Mutex<std::collections::HashMap<SessionPoolKey, PooledSession>> =
+        parking_lot::Mutex::new(std::collections::HashMap::new());
+}
+
+#[cfg(feature = "zenoh-transport")]
+impl ZenohSessionPool {
+    /// Get an existing session or create a new one for the given configuration.
+    ///
+    /// If a session with equivalent configuration already exists, its reference
+    /// count is incremented and the existing session is returned. Otherwise,
+    /// a new session is created and added to the pool.
+    pub async fn get_or_create(config: &ZenohConfig) -> HorusResult<Arc<zenoh::Session>> {
+        let key = SessionPoolKey::from_config(config);
+
+        // Check if session already exists
+        {
+            let mut pool = SESSION_POOL.lock();
+            if let Some(entry) = pool.get_mut(&key) {
+                entry.ref_count += 1;
+                log::debug!(
+                    "zenoh_pool: Reusing session (refs={}, endpoints={:?})",
+                    entry.ref_count,
+                    key.connect
+                );
+                return Ok(entry.session.clone());
+            }
+        }
+
+        // Create new session outside the lock
+        log::info!(
+            "zenoh_pool: Creating new session (mode={:?}, endpoints={:?})",
+            key.mode,
+            key.connect
+        );
+
+        let zenoh_config = zenoh::Config::default();
+        let session = zenoh::open(zenoh_config)
+            .await
+            .map_err(|e| zenoh_connection_error("pool session open", e))?;
+
+        let session = Arc::new(session);
+
+        // Add to pool
+        {
+            let mut pool = SESSION_POOL.lock();
+            pool.insert(
+                key.clone(),
+                PooledSession {
+                    session: session.clone(),
+                    ref_count: 1,
+                    created_at: std::time::Instant::now(),
+                },
+            );
+        }
+
+        log::debug!("zenoh_pool: Session created and pooled");
+        Ok(session)
+    }
+
+    /// Get an existing session or create one synchronously (blocking).
+    pub fn get_or_create_blocking(config: &ZenohConfig) -> HorusResult<Arc<zenoh::Session>> {
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| {
+            NetworkError::new(
+                NetworkErrorCode::ResourceExhausted,
+                "No tokio runtime available for blocking pool access",
+            )
+        })?;
+
+        rt.block_on(Self::get_or_create(config))
+    }
+
+    /// Release a session reference.
+    ///
+    /// Decrements the reference count for the session matching the given config.
+    /// If the reference count reaches zero, the session is removed from the pool
+    /// and will be closed when the last Arc reference is dropped.
+    pub fn release(config: &ZenohConfig) {
+        let key = SessionPoolKey::from_config(config);
+        let mut pool = SESSION_POOL.lock();
+
+        if let Some(entry) = pool.get_mut(&key) {
+            entry.ref_count = entry.ref_count.saturating_sub(1);
+            log::debug!("zenoh_pool: Released session (refs={})", entry.ref_count);
+
+            if entry.ref_count == 0 {
+                log::info!(
+                    "zenoh_pool: Removing unused session (age={:?})",
+                    entry.created_at.elapsed()
+                );
+                pool.remove(&key);
+            }
+        }
+    }
+
+    /// Get statistics about the session pool.
+    pub fn stats() -> ZenohPoolStats {
+        let pool = SESSION_POOL.lock();
+        let total_sessions = pool.len();
+        let total_refs: usize = pool.values().map(|e| e.ref_count).sum();
+
+        ZenohPoolStats {
+            total_sessions,
+            total_references: total_refs,
+            sessions: pool
+                .iter()
+                .map(|(key, entry)| ZenohPoolSessionInfo {
+                    endpoints: key.connect.clone(),
+                    ref_count: entry.ref_count,
+                    age_secs: entry.created_at.elapsed().as_secs_f64(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Clear all sessions from the pool.
+    ///
+    /// This should only be used for testing or shutdown scenarios.
+    /// Active references will continue to work, but new requests will
+    /// create new sessions.
+    pub fn clear() {
+        let mut pool = SESSION_POOL.lock();
+        let count = pool.len();
+        pool.clear();
+        log::info!("zenoh_pool: Cleared {} sessions", count);
+    }
+}
+
+/// Statistics about the Zenoh session pool
+#[derive(Debug, Clone)]
+pub struct ZenohPoolStats {
+    /// Total number of sessions in the pool
+    pub total_sessions: usize,
+    /// Total number of active references across all sessions
+    pub total_references: usize,
+    /// Per-session information
+    pub sessions: Vec<ZenohPoolSessionInfo>,
+}
+
+/// Information about a single pooled session
+#[derive(Debug, Clone)]
+pub struct ZenohPoolSessionInfo {
+    /// Connection endpoints for this session
+    pub endpoints: Vec<String>,
+    /// Number of active references
+    pub ref_count: usize,
+    /// Age of the session in seconds
+    pub age_secs: f64,
 }
 
 /// Zenoh backend for HORUS Topic communication
@@ -93,22 +372,38 @@ where
         // In zenoh 1.2+, configuration is done differently
         let zenoh_config = zenoh::Config::default();
 
-        // Log mode for debugging
-        log::debug!("Creating Zenoh backend with mode: {:?}", config.mode);
+        log::info!(
+            "zenoh[{}]: Creating backend (mode={:?}, format={:?})",
+            topic,
+            config.mode,
+            config.serialization
+        );
 
         // Add connect endpoints logging
         if !config.connect.is_empty() {
             for endpoint in &config.connect {
-                log::debug!("Zenoh will connect to: {}", endpoint);
+                log::debug!("zenoh[{}]: Will connect to endpoint: {}", topic, endpoint);
+            }
+        }
+
+        if !config.listen.is_empty() {
+            for endpoint in &config.listen {
+                log::debug!("zenoh[{}]: Will listen on: {}", topic, endpoint);
             }
         }
 
         // Open session
+        log::debug!("zenoh[{}]: Opening Zenoh session...", topic);
         let session = zenoh::open(zenoh_config)
             .await
-            .map_err(|e| HorusError::Communication(format!("Zenoh open failed: {}", e)))?;
+            .map_err(|e| zenoh_connection_error("session open", e))?;
 
         let key_expr = config.topic_to_key_expr(topic);
+        log::debug!(
+            "zenoh[{}]: Session opened, key_expr='{}'",
+            topic,
+            key_expr
+        );
 
         Ok(Self {
             session: Arc::new(session),
@@ -130,29 +425,122 @@ where
                 tokio::runtime::Runtime::new().map(|rt| rt.handle().clone())
             })
             .map_err(|e| {
-                HorusError::Communication(format!("Failed to get tokio runtime: {}", e))
+                NetworkError::new(
+                    NetworkErrorCode::ResourceExhausted,
+                    format!("Failed to get tokio runtime: {}", e),
+                )
+                .with_suggestion("Ensure you're running within a tokio async context")
             })?;
 
         rt.block_on(Self::new(topic, config))
     }
 
+    /// Create a new Zenoh backend using a pooled session.
+    ///
+    /// This is the recommended way to create backends when you have multiple
+    /// topics with the same configuration, as it shares the underlying Zenoh
+    /// session to reduce resource usage.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let config = ZenohConfig::default();
+    ///
+    /// // These two backends will share the same session
+    /// let backend1 = ZenohBackend::<Msg1>::new_pooled("topic1", config.clone()).await?;
+    /// let backend2 = ZenohBackend::<Msg2>::new_pooled("topic2", config.clone()).await?;
+    /// ```
+    pub async fn new_pooled(topic: &str, config: ZenohConfig) -> HorusResult<Self> {
+        log::info!(
+            "zenoh[{}]: Creating pooled backend (mode={:?}, format={:?})",
+            topic,
+            config.mode,
+            config.serialization
+        );
+
+        // Get or create a pooled session
+        let session = ZenohSessionPool::get_or_create(&config).await?;
+
+        let key_expr = config.topic_to_key_expr(topic);
+        log::debug!(
+            "zenoh[{}]: Using pooled session, key_expr='{}'",
+            topic,
+            key_expr
+        );
+
+        Ok(Self {
+            session,
+            publisher: None,
+            recv_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1024))),
+            key_expr,
+            config,
+            connection_quality: Arc::new(Mutex::new(ZenohConnectionQuality::new())),
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Create a pooled backend synchronously (blocking).
+    pub fn new_pooled_blocking(topic: &str, config: ZenohConfig) -> HorusResult<Self> {
+        let rt = tokio::runtime::Handle::try_current()
+            .or_else(|_| {
+                tokio::runtime::Runtime::new().map(|rt| rt.handle().clone())
+            })
+            .map_err(|e| {
+                NetworkError::new(
+                    NetworkErrorCode::ResourceExhausted,
+                    format!("Failed to get tokio runtime: {}", e),
+                )
+                .with_suggestion("Ensure you're running within a tokio async context")
+            })?;
+
+        rt.block_on(Self::new_pooled(topic, config))
+    }
+
+    /// Create a backend with an existing session.
+    ///
+    /// This allows direct control over session sharing without using the pool.
+    pub fn with_session(
+        topic: &str,
+        session: Arc<zenoh::Session>,
+        config: ZenohConfig,
+    ) -> Self {
+        let key_expr = config.topic_to_key_expr(topic);
+
+        Self {
+            session,
+            publisher: None,
+            recv_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(1024))),
+            key_expr,
+            config,
+            connection_quality: Arc::new(Mutex::new(ZenohConnectionQuality::new())),
+            _phantom: PhantomData,
+        }
+    }
+
     /// Initialize publisher for sending messages
     pub async fn init_publisher(&mut self) -> HorusResult<()> {
         if self.publisher.is_some() {
+            log::trace!("zenoh[{}]: Publisher already initialized", self.key_expr);
             return Ok(());
         }
 
+        log::debug!("zenoh[{}]: Declaring publisher...", self.key_expr);
         let publisher = self
             .session
             .declare_publisher(&self.key_expr)
             .await
-            .map_err(|e| HorusError::Communication(format!("Zenoh publisher error: {}", e)))?;
+            .map_err(|e| {
+                log::error!("zenoh[{}]: Failed to declare publisher: {}", self.key_expr, e);
+                zenoh_operation_error("publisher declare", e)
+            })?;
 
         // Store publisher - use unsafe transmute to handle lifetime
         // This is safe because the session outlives the publisher
         let static_publisher: zenoh::pubsub::Publisher<'static> =
             unsafe { std::mem::transmute(publisher) };
         self.publisher = Some(Box::new(static_publisher));
+
+        log::info!("zenoh[{}]: Publisher initialized", self.key_expr);
         Ok(())
     }
 
@@ -161,22 +549,35 @@ where
         let recv_buffer = self.recv_buffer.clone();
         let serialization = self.config.serialization;
 
+        log::debug!("zenoh[{}]: Declaring subscriber...", self.key_expr);
         let subscriber = self
             .session
             .declare_subscriber(&self.key_expr)
             .await
-            .map_err(|e| HorusError::Communication(format!("Zenoh subscriber error: {}", e)))?;
+            .map_err(|e| {
+                log::error!("zenoh[{}]: Failed to declare subscriber: {}", self.key_expr, e);
+                zenoh_operation_error("subscriber declare", e)
+            })?;
+
+        log::info!(
+            "zenoh[{}]: Subscriber initialized (format={:?})",
+            self.key_expr,
+            serialization
+        );
 
         // Spawn a task to receive messages
         let key_expr = self.key_expr.clone();
         tokio::spawn(async move {
+            let mut msg_count: u64 = 0;
+            let mut error_count: u64 = 0;
+
             loop {
                 match subscriber.recv_async().await {
                     Ok(sample) => {
                         let payload = sample.payload().to_bytes();
+                        let payload_len = payload.len();
                         let msg: Option<T> = match serialization {
                             SerializationFormat::Bincode => bincode::deserialize(&payload).ok(),
-                            SerializationFormat::Json => serde_json::from_slice(&payload).ok(),
                             #[cfg(feature = "cdr-encoding")]
                             SerializationFormat::Cdr => {
                                 // ROS2/DDS uses little-endian CDR, returns (value, bytes_read)
@@ -186,25 +587,52 @@ where
                             }
                             #[cfg(not(feature = "cdr-encoding"))]
                             SerializationFormat::Cdr => {
-                                log::warn!("CDR format requires 'zenoh-ros2' feature, falling back to bincode");
+                                log::warn!(
+                                    "zenoh[{}]: CDR format requires 'zenoh-ros2' feature, falling back to bincode",
+                                    key_expr
+                                );
                                 bincode::deserialize(&payload).ok()
-                            }
-                            SerializationFormat::MessagePack => {
-                                rmp_serde::from_slice(&payload).ok()
                             }
                         };
 
                         if let Some(msg) = msg {
+                            msg_count += 1;
+                            log::trace!(
+                                "zenoh[{}]: Received message #{} ({} bytes)",
+                                key_expr,
+                                msg_count,
+                                payload_len
+                            );
+
                             let mut buffer = recv_buffer.lock();
                             // Keep buffer bounded
                             if buffer.len() >= 10000 {
+                                log::warn!(
+                                    "zenoh[{}]: Receive buffer full, dropping oldest message",
+                                    key_expr
+                                );
                                 buffer.pop_front();
                             }
                             buffer.push_back(msg);
+                        } else {
+                            error_count += 1;
+                            log::debug!(
+                                "zenoh[{}]: Failed to deserialize message ({} bytes, format={:?}, errors={})",
+                                key_expr,
+                                payload_len,
+                                serialization,
+                                error_count
+                            );
                         }
                     }
                     Err(e) => {
-                        log::warn!("Zenoh subscriber error on {}: {}", key_expr, e);
+                        log::warn!(
+                            "zenoh[{}]: Subscriber error, terminating (received {} msgs, {} errors): {}",
+                            key_expr,
+                            msg_count,
+                            error_count,
+                            e
+                        );
                         break;
                     }
                 }
@@ -219,18 +647,44 @@ where
         let publisher = self
             .publisher
             .as_ref()
-            .ok_or_else(|| HorusError::Communication("Publisher not initialized".into()))?;
+            .ok_or_else(|| {
+                log::error!("zenoh[{}]: Cannot send - publisher not initialized", self.key_expr);
+                NetworkError::new(
+                    NetworkErrorCode::InvalidConfig,
+                    "Publisher not initialized",
+                )
+                .with_suggestion("Call init_publisher() before sending messages")
+            })?;
 
         // Serialize using configured format
         let payload = serialize_message(msg, self.config.serialization)?;
+        let payload_len = payload.len();
+
+        log::trace!(
+            "zenoh[{}]: Sending {} bytes (sync, format={:?})",
+            self.key_expr,
+            payload_len,
+            self.config.serialization
+        );
 
         // Use blocking runtime for sync API compatibility
         let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| HorusError::Communication(format!("No tokio runtime: {}", e)))?;
+            .map_err(|e| {
+                log::error!("zenoh[{}]: No tokio runtime for sync send: {}", self.key_expr, e);
+                NetworkError::new(
+                    NetworkErrorCode::ResourceExhausted,
+                    format!("No tokio runtime: {}", e),
+                )
+                .with_suggestion("Ensure you're running within a tokio async context")
+            })?;
 
         rt.block_on(async { publisher.put(payload).await })
-            .map_err(|e| HorusError::Communication(format!("Zenoh put error: {}", e)))?;
+            .map_err(|e| {
+                log::error!("zenoh[{}]: Send failed: {}", self.key_expr, e);
+                zenoh_operation_error("put", e)
+            })?;
 
+        log::trace!("zenoh[{}]: Send complete ({} bytes)", self.key_expr, payload_len);
         Ok(())
     }
 
@@ -239,15 +693,34 @@ where
         let publisher = self
             .publisher
             .as_ref()
-            .ok_or_else(|| HorusError::Communication("Publisher not initialized".into()))?;
+            .ok_or_else(|| {
+                log::error!("zenoh[{}]: Cannot send_async - publisher not initialized", self.key_expr);
+                NetworkError::new(
+                    NetworkErrorCode::InvalidConfig,
+                    "Publisher not initialized",
+                )
+                .with_suggestion("Call init_publisher() before sending messages")
+            })?;
 
         let payload = serialize_message(msg, self.config.serialization)?;
+        let payload_len = payload.len();
+
+        log::trace!(
+            "zenoh[{}]: Sending {} bytes (async, format={:?})",
+            self.key_expr,
+            payload_len,
+            self.config.serialization
+        );
 
         publisher
             .put(payload)
             .await
-            .map_err(|e| HorusError::Communication(format!("Zenoh put error: {}", e)))?;
+            .map_err(|e| {
+                log::error!("zenoh[{}]: Async send failed: {}", self.key_expr, e);
+                zenoh_operation_error("put", e)
+            })?;
 
+        log::trace!("zenoh[{}]: Async send complete ({} bytes)", self.key_expr, payload_len);
         Ok(())
     }
 
@@ -375,17 +848,42 @@ where
 
     /// Mark the connection as established to a router
     pub fn mark_connected(&self, router: &str) {
+        log::info!(
+            "zenoh[{}]: Connection established to router '{}'",
+            self.key_expr,
+            router
+        );
         self.connection_quality.lock().mark_connected(router);
     }
 
     /// Mark the connection as disconnected
     pub fn mark_disconnected(&self) {
+        let quality = self.connection_quality.lock();
+        let prev_router = quality.connected_router.clone();
+        drop(quality);
+
+        log::warn!(
+            "zenoh[{}]: Connection lost (was connected to {:?})",
+            self.key_expr,
+            prev_router
+        );
         self.connection_quality.lock().mark_disconnected();
     }
 
     /// Record a failover to a new router
     pub fn record_failover(&self, new_router: &str) {
-        self.connection_quality.lock().record_failover(new_router);
+        let mut quality = self.connection_quality.lock();
+        let prev_router = quality.connected_router.clone();
+        let failover_num = quality.failover_count + 1;
+        quality.record_failover(new_router);
+
+        log::warn!(
+            "zenoh[{}]: Failover #{} from {:?} to '{}'",
+            self.key_expr,
+            failover_num,
+            prev_router,
+            new_router
+        );
     }
 
     /// Get the number of failovers that have occurred
@@ -398,6 +896,7 @@ where
     /// Uses Zenoh's liveliness mechanism to ping and measure RTT.
     /// Updates the connection quality metrics accordingly.
     pub async fn perform_health_check(&self) -> HorusResult<f64> {
+        log::trace!("zenoh[{}]: Starting health check...", self.key_expr);
         let start = std::time::Instant::now();
 
         // Use Zenoh's built-in get() for a round-trip latency measurement
@@ -449,12 +948,28 @@ where
                 let mut quality = self.connection_quality.lock();
                 quality.update_latency(latency_ms);
                 quality.record_health_check_success();
+
+                log::debug!(
+                    "zenoh[{}]: Health check OK: {:.2}ms (avg: {:.2}ms, score: {})",
+                    self.key_expr,
+                    latency_ms,
+                    quality.avg_latency_ms,
+                    quality.health_score()
+                );
+
                 Ok(latency_ms)
             }
             Ok(Err(e)) => {
                 // Query failed
                 let mut quality = self.connection_quality.lock();
                 quality.record_health_check_failure();
+
+                log::warn!(
+                    "zenoh[{}]: Health check failed (query error): {}",
+                    self.key_expr,
+                    e
+                );
+
                 Err(HorusError::Communication(format!(
                     "Health check query failed: {}",
                     e
@@ -464,6 +979,12 @@ where
                 // Timeout
                 let mut quality = self.connection_quality.lock();
                 quality.record_health_check_failure();
+
+                log::warn!(
+                    "zenoh[{}]: Health check timed out (>5s)",
+                    self.key_expr
+                );
+
                 Err(HorusError::Communication("Health check timed out".into()))
             }
         }
@@ -484,11 +1005,19 @@ where
         let key_expr = self.key_expr.clone();
         let quality = self.connection_quality.clone();
 
+        log::info!(
+            "zenoh[{}]: Starting health monitoring (interval={:?})",
+            self.key_expr,
+            interval
+        );
+
         tokio::spawn(async move {
             let health_key = format!("{}/__horus_health_monitor__", key_expr);
             let mut consecutive_failures = 0u32;
+            let mut total_checks: u64 = 0;
 
             loop {
+                total_checks += 1;
                 let start = std::time::Instant::now();
 
                 // Simple ping using get() to measure RTT
@@ -508,10 +1037,20 @@ where
                         let mut q = quality.lock();
                         q.update_latency(latency_ms);
                         q.record_health_check_success();
+
+                        if consecutive_failures > 0 {
+                            log::info!(
+                                "zenoh[{}]: Connection recovered after {} failures",
+                                key_expr,
+                                consecutive_failures
+                            );
+                        }
                         consecutive_failures = 0;
 
                         log::trace!(
-                            "Health check OK: {:.2}ms (avg: {:.2}ms, score: {})",
+                            "zenoh[{}]: Health check #{} OK: {:.2}ms (avg: {:.2}ms, score: {})",
+                            key_expr,
+                            total_checks,
                             latency_ms,
                             q.avg_latency_ms,
                             q.health_score()
@@ -522,10 +1061,25 @@ where
                         let mut q = quality.lock();
                         q.record_health_check_failure();
 
-                        if consecutive_failures >= 3 {
+                        if consecutive_failures == 1 {
+                            log::debug!(
+                                "zenoh[{}]: Health check #{} failed (first failure)",
+                                key_expr,
+                                total_checks
+                            );
+                        } else if consecutive_failures == 3 {
                             log::warn!(
-                                "Connection quality degraded: {} consecutive failures",
-                                consecutive_failures
+                                "zenoh[{}]: Connection degraded ({} consecutive failures, score: {})",
+                                key_expr,
+                                consecutive_failures,
+                                q.health_score()
+                            );
+                        } else if consecutive_failures >= 5 && consecutive_failures % 5 == 0 {
+                            log::error!(
+                                "zenoh[{}]: Connection unhealthy ({} consecutive failures, score: {})",
+                                key_expr,
+                                consecutive_failures,
+                                q.health_score()
                             );
                         }
                     }
@@ -865,6 +1419,283 @@ pub struct ZenohSessionInfo {
     pub connected_router: Option<String>,
 }
 
+// ============================================================================
+// ZenohBatch - Batched Multi-Topic Operations
+// ============================================================================
+
+/// A pending publish operation in a batch
+#[cfg(feature = "zenoh-transport")]
+struct BatchedPublish {
+    /// Key expression for the topic
+    key_expr: String,
+    /// Serialized payload
+    payload: Vec<u8>,
+}
+
+/// Batched multi-topic publish operations for improved network efficiency.
+///
+/// Allows accumulating multiple publish operations and committing them all
+/// in a single batch, reducing network round-trips for scenarios where
+/// multiple topics need to be updated together (e.g., sensor data + status).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_core::communication::network::zenoh_backend::ZenohBatch;
+///
+/// // Create a batch with an existing session
+/// let mut batch = ZenohBatch::new(session.clone(), config.clone());
+///
+/// // Queue multiple publishes
+/// batch.publish("sensor/lidar", &lidar_data)?;
+/// batch.publish("sensor/imu", &imu_data)?;
+/// batch.publish("robot/status", &status)?;
+///
+/// // Commit all in parallel (single logical operation)
+/// let results = batch.commit().await?;
+/// ```
+///
+/// # Benefits
+///
+/// - Reduced network round-trips for correlated publishes
+/// - Better cache locality for serialization
+/// - Atomic-like semantics (all succeed or all fail reporting)
+/// - Parallel execution of underlying publishes
+#[cfg(feature = "zenoh-transport")]
+pub struct ZenohBatch {
+    /// Shared Zenoh session
+    session: Arc<zenoh::Session>,
+    /// Configuration for serialization
+    config: ZenohConfig,
+    /// Queued publish operations
+    pending: Vec<BatchedPublish>,
+}
+
+#[cfg(feature = "zenoh-transport")]
+impl ZenohBatch {
+    /// Create a new batch with a Zenoh session
+    ///
+    /// The session is shared and will not be closed when the batch is dropped.
+    pub fn new(session: Arc<zenoh::Session>, config: ZenohConfig) -> Self {
+        Self {
+            session,
+            config,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Create a new batch with the specified capacity
+    ///
+    /// Pre-allocating capacity is useful when you know the number of
+    /// publishes ahead of time.
+    pub fn with_capacity(session: Arc<zenoh::Session>, config: ZenohConfig, capacity: usize) -> Self {
+        Self {
+            session,
+            config,
+            pending: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Queue a publish operation to a topic
+    ///
+    /// The message is serialized immediately using the batch's serialization format.
+    /// The actual network send is deferred until `commit()` is called.
+    pub fn publish<T: serde::Serialize>(
+        &mut self,
+        topic: &str,
+        msg: &T,
+    ) -> HorusResult<&mut Self> {
+        let key_expr = self.config.topic_to_key_expr(topic);
+        let payload = serialize_message(msg, self.config.serialization)?;
+
+        log::trace!(
+            "zenoh_batch: Queued publish to '{}' ({} bytes)",
+            key_expr,
+            payload.len()
+        );
+
+        self.pending.push(BatchedPublish { key_expr, payload });
+        Ok(self)
+    }
+
+    /// Queue a raw payload publish (already serialized)
+    ///
+    /// Use this when you have pre-serialized data or binary payloads.
+    pub fn publish_raw(&mut self, topic: &str, payload: Vec<u8>) -> &mut Self {
+        let key_expr = self.config.topic_to_key_expr(topic);
+
+        log::trace!(
+            "zenoh_batch: Queued raw publish to '{}' ({} bytes)",
+            key_expr,
+            payload.len()
+        );
+
+        self.pending.push(BatchedPublish { key_expr, payload });
+        self
+    }
+
+    /// Get the number of pending operations in the batch
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Check if the batch is empty
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Clear all pending operations without committing
+    pub fn clear(&mut self) {
+        self.pending.clear();
+    }
+
+    /// Commit all pending publishes in parallel
+    ///
+    /// Returns the number of successful publishes and any errors encountered.
+    /// All publishes are executed concurrently using tokio::join.
+    pub async fn commit(self) -> HorusResult<BatchCommitResult> {
+        if self.pending.is_empty() {
+            return Ok(BatchCommitResult {
+                total: 0,
+                successful: 0,
+                failed: 0,
+                errors: Vec::new(),
+            });
+        }
+
+        let total = self.pending.len();
+        log::debug!("zenoh_batch: Committing {} publishes", total);
+
+        // Execute all publishes concurrently
+        let futures: Vec<_> = self
+            .pending
+            .into_iter()
+            .map(|op| {
+                let session = self.session.clone();
+                async move {
+                    session
+                        .put(&op.key_expr, op.payload)
+                        .await
+                        .map(|_| op.key_expr.clone())
+                        .map_err(|e| (op.key_expr, e.to_string()))
+                }
+            })
+            .collect();
+
+        let results = futures::future::join_all(futures).await;
+
+        let mut successful = 0;
+        let mut failed = 0;
+        let mut errors = Vec::new();
+
+        for result in results {
+            match result {
+                Ok(key_expr) => {
+                    successful += 1;
+                    log::trace!("zenoh_batch: Published to '{}'", key_expr);
+                }
+                Err((key_expr, error)) => {
+                    failed += 1;
+                    log::error!("zenoh_batch: Failed to publish to '{}': {}", key_expr, error);
+                    errors.push(BatchPublishError { key_expr, error });
+                }
+            }
+        }
+
+        log::debug!(
+            "zenoh_batch: Commit complete - {}/{} successful",
+            successful,
+            total
+        );
+
+        if failed > 0 && successful == 0 {
+            // All failed
+            return Err(NetworkError::new(
+                NetworkErrorCode::SocketError,
+                format!("All {} batch publishes failed", total),
+            )
+            .into());
+        }
+
+        Ok(BatchCommitResult {
+            total,
+            successful,
+            failed,
+            errors,
+        })
+    }
+
+    /// Commit all pending publishes synchronously (blocking)
+    ///
+    /// This is a convenience method for use outside of async contexts.
+    /// It creates a temporary tokio runtime to execute the commit.
+    pub fn commit_blocking(self) -> HorusResult<BatchCommitResult> {
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| {
+                NetworkError::new(
+                    NetworkErrorCode::ResourceExhausted,
+                    "No tokio runtime available for blocking commit",
+                )
+                .with_suggestion("Ensure you're running within a tokio async context or use commit() instead")
+            })?;
+
+        rt.block_on(self.commit())
+    }
+}
+
+#[cfg(feature = "zenoh-transport")]
+impl std::fmt::Debug for ZenohBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZenohBatch")
+            .field("pending_count", &self.pending.len())
+            .field("serialization", &self.config.serialization)
+            .finish()
+    }
+}
+
+/// Result of a batch commit operation
+#[derive(Debug, Clone)]
+pub struct BatchCommitResult {
+    /// Total number of operations in the batch
+    pub total: usize,
+    /// Number of successful publishes
+    pub successful: usize,
+    /// Number of failed publishes
+    pub failed: usize,
+    /// Details of any failed publishes
+    pub errors: Vec<BatchPublishError>,
+}
+
+impl BatchCommitResult {
+    /// Check if all operations succeeded
+    pub fn all_succeeded(&self) -> bool {
+        self.failed == 0
+    }
+
+    /// Check if any operations failed
+    pub fn has_errors(&self) -> bool {
+        self.failed > 0
+    }
+
+    /// Get success rate as a percentage
+    pub fn success_rate(&self) -> f64 {
+        if self.total == 0 {
+            100.0
+        } else {
+            (self.successful as f64 / self.total as f64) * 100.0
+        }
+    }
+}
+
+/// Error details for a single failed publish in a batch
+#[derive(Debug, Clone)]
+pub struct BatchPublishError {
+    /// Key expression that failed
+    pub key_expr: String,
+    /// Error message
+    pub error: String,
+}
+
 /// Stub implementation when zenoh feature is not enabled
 #[cfg(not(feature = "zenoh-transport"))]
 pub struct ZenohBackend<T> {
@@ -1134,25 +1965,6 @@ mod tests {
         assert_eq!(received, Some(msg));
     }
 
-    /// Test MessagePack serialization format
-    #[test]
-    fn test_messagepack_serialization() {
-        let msg = TestMessage {
-            value: 42,
-            text: "msgpack test".to_string(),
-        };
-
-        // Serialize with MessagePack
-        let payload = serialize_message(&msg, SerializationFormat::MessagePack)
-            .expect("MessagePack serialize failed");
-
-        // Deserialize with MessagePack
-        let deserialized: TestMessage =
-            rmp_serde::from_slice(&payload).expect("MessagePack deserialize failed");
-
-        assert_eq!(msg, deserialized);
-    }
-
     /// Test CDR serialization format (ROS2 compatible)
     #[cfg(feature = "cdr-encoding")]
     #[test]
@@ -1170,25 +1982,6 @@ mod tests {
         let (deserialized, _bytes_read): (TestMessage, usize) =
             cdr_encoding::from_bytes::<_, byteorder::LittleEndian>(&payload)
                 .expect("CDR deserialize failed");
-
-        assert_eq!(msg, deserialized);
-    }
-
-    /// Test JSON serialization format
-    #[test]
-    fn test_json_serialization() {
-        let msg = TestMessage {
-            value: 99,
-            text: "json test".to_string(),
-        };
-
-        // Serialize with JSON
-        let payload =
-            serialize_message(&msg, SerializationFormat::Json).expect("JSON serialize failed");
-
-        // Deserialize with JSON
-        let deserialized: TestMessage =
-            serde_json::from_slice(&payload).expect("JSON deserialize failed");
 
         assert_eq!(msg, deserialized);
     }
@@ -1360,8 +2153,9 @@ mod tests {
     }
 
     /// Test serialization format isolation
-    /// Different formats should NOT be able to deserialize each other's data
+    /// Different formats produce different byte representations
     #[test]
+    #[cfg(feature = "cdr-encoding")]
     fn test_serialization_format_isolation() {
         let msg = TestMessage {
             value: 42,
@@ -1370,28 +2164,27 @@ mod tests {
 
         // Serialize with different formats
         let bincode_data = serialize_message(&msg, SerializationFormat::Bincode).unwrap();
-        let msgpack_data = serialize_message(&msg, SerializationFormat::MessagePack).unwrap();
-        let json_data = serialize_message(&msg, SerializationFormat::Json).unwrap();
+        let cdr_data = serialize_message(&msg, SerializationFormat::Cdr).unwrap();
 
         // Verify each format produces different bytes (no accidental compatibility)
-        assert_ne!(bincode_data, msgpack_data);
-        assert_ne!(bincode_data, json_data);
-        assert_ne!(msgpack_data, json_data);
-
-        // Verify cross-format deserialization fails gracefully
-        // Bincode data should NOT deserialize as MessagePack
-        let cross_deser: Result<TestMessage, _> = rmp_serde::from_slice(&bincode_data);
-        assert!(
-            cross_deser.is_err(),
-            "Bincode data should not deserialize as MessagePack"
+        assert_ne!(
+            bincode_data, cdr_data,
+            "Bincode and CDR should produce different byte representations"
         );
 
-        // MessagePack data should NOT deserialize as Bincode
-        let cross_deser: Result<TestMessage, _> = bincode::deserialize(&msgpack_data);
-        assert!(
-            cross_deser.is_err(),
-            "MessagePack data should not deserialize as Bincode"
-        );
+        // Verify each format round-trips correctly with itself
+        let bincode_roundtrip: TestMessage = bincode::deserialize(&bincode_data).unwrap();
+        assert_eq!(bincode_roundtrip.value, msg.value);
+        assert_eq!(bincode_roundtrip.text, msg.text);
+
+        let (cdr_roundtrip, _): (TestMessage, usize) =
+            cdr_encoding::from_bytes::<_, byteorder::LittleEndian>(&cdr_data).unwrap();
+        assert_eq!(cdr_roundtrip.value, msg.value);
+        assert_eq!(cdr_roundtrip.text, msg.text);
+
+        // Note: Cross-format deserialization may succeed with garbage values or fail,
+        // depending on the data. The key point is that formats are not interchangeable
+        // for correct round-trip communication.
     }
 
     /// Test that hierarchical topic namespaces work correctly
@@ -1450,5 +2243,251 @@ mod tests {
             original.topic_to_key_expr("test"),
             cloned.topic_to_key_expr("test")
         );
+    }
+
+    /// Test ZenohBatch basic operations
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_zenoh_batch_basic() {
+        // Open a session for the batch
+        let session = zenoh::open(zenoh::Config::default())
+            .await
+            .expect("Failed to open session");
+        let session = Arc::new(session);
+
+        let config = ZenohConfig::default();
+
+        // Create batch with capacity
+        let mut batch = ZenohBatch::with_capacity(session, config, 3);
+
+        assert!(batch.is_empty());
+        assert_eq!(batch.len(), 0);
+
+        // Queue some messages
+        let msg1 = TestMessage {
+            value: 1,
+            text: "first".to_string(),
+        };
+        let msg2 = TestMessage {
+            value: 2,
+            text: "second".to_string(),
+        };
+        let msg3 = TestMessage {
+            value: 3,
+            text: "third".to_string(),
+        };
+
+        batch.publish("batch/topic1", &msg1).unwrap();
+        batch.publish("batch/topic2", &msg2).unwrap();
+        batch.publish("batch/topic3", &msg3).unwrap();
+
+        assert!(!batch.is_empty());
+        assert_eq!(batch.len(), 3);
+
+        // Commit the batch
+        let result = batch.commit().await.expect("Batch commit failed");
+
+        assert_eq!(result.total, 3);
+        assert_eq!(result.successful, 3);
+        assert_eq!(result.failed, 0);
+        assert!(result.all_succeeded());
+        assert!(!result.has_errors());
+        assert_eq!(result.success_rate(), 100.0);
+    }
+
+    /// Test ZenohBatch with raw payloads
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_zenoh_batch_raw() {
+        let session = zenoh::open(zenoh::Config::default())
+            .await
+            .expect("Failed to open session");
+        let session = Arc::new(session);
+
+        let config = ZenohConfig::default();
+        let mut batch = ZenohBatch::new(session, config);
+
+        // Queue raw payloads
+        batch.publish_raw("batch/raw1", vec![1, 2, 3, 4]);
+        batch.publish_raw("batch/raw2", vec![5, 6, 7, 8]);
+
+        assert_eq!(batch.len(), 2);
+
+        let result = batch.commit().await.expect("Batch commit failed");
+
+        assert_eq!(result.total, 2);
+        assert!(result.all_succeeded());
+    }
+
+    /// Test ZenohBatch empty commit
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_zenoh_batch_empty() {
+        let session = zenoh::open(zenoh::Config::default())
+            .await
+            .expect("Failed to open session");
+        let session = Arc::new(session);
+
+        let config = ZenohConfig::default();
+        let batch = ZenohBatch::new(session, config);
+
+        // Commit empty batch should succeed
+        let result = batch.commit().await.expect("Empty batch commit failed");
+
+        assert_eq!(result.total, 0);
+        assert_eq!(result.successful, 0);
+        assert!(result.all_succeeded()); // No failures
+    }
+
+    /// Test ZenohBatch debug formatting
+    #[test]
+    fn test_zenoh_batch_debug() {
+        // We can't create a real session without async, but we can test
+        // the BatchCommitResult debug
+        let result = BatchCommitResult {
+            total: 5,
+            successful: 4,
+            failed: 1,
+            errors: vec![BatchPublishError {
+                key_expr: "failed/topic".to_string(),
+                error: "test error".to_string(),
+            }],
+        };
+
+        assert!(!result.all_succeeded());
+        assert!(result.has_errors());
+        assert_eq!(result.success_rate(), 80.0);
+
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("BatchCommitResult"));
+    }
+
+    /// Test session pool basic operations
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_session_pool_basic() {
+        // Clear pool before test
+        ZenohSessionPool::clear();
+
+        let config = ZenohConfig::default();
+
+        // Initial stats should show empty pool
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 0);
+
+        // Get first session
+        let session1 = ZenohSessionPool::get_or_create(&config)
+            .await
+            .expect("Failed to get session");
+
+        // Stats should show one session with one reference
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.total_references, 1);
+
+        // Get second session with same config - should reuse
+        let session2 = ZenohSessionPool::get_or_create(&config)
+            .await
+            .expect("Failed to get session");
+
+        // Should be the same session
+        assert!(Arc::ptr_eq(&session1, &session2));
+
+        // Stats should show same session with two references
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.total_references, 2);
+
+        // Release one reference
+        ZenohSessionPool::release(&config);
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.total_references, 1);
+
+        // Release second reference - session should be removed
+        ZenohSessionPool::release(&config);
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 0);
+    }
+
+    /// Test session pool with different configs
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_session_pool_different_configs() {
+        // Clear pool before test
+        ZenohSessionPool::clear();
+
+        let config1 = ZenohConfig::default();
+        // Create a config with different connect endpoints
+        let config2 = ZenohConfig::default().connect_to("tcp/10.0.0.1:7447");
+
+        // Get sessions with different configs
+        let session1 = ZenohSessionPool::get_or_create(&config1)
+            .await
+            .expect("Failed to get session");
+        let session2 = ZenohSessionPool::get_or_create(&config2)
+            .await
+            .expect("Failed to get session");
+
+        // Should be different sessions (different connect endpoints)
+        assert!(!Arc::ptr_eq(&session1, &session2));
+
+        // Stats should show two sessions
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 2);
+        assert_eq!(stats.total_references, 2);
+
+        // Clean up
+        ZenohSessionPool::release(&config1);
+        ZenohSessionPool::release(&config2);
+    }
+
+    /// Test pooled backend creation
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_pooled_backend_creation() {
+        // Clear pool before test
+        ZenohSessionPool::clear();
+
+        let config = ZenohConfig::default();
+
+        // Create two backends with same config
+        let backend1 = ZenohBackend::<TestMessage>::new_pooled("pool_test_1", config.clone())
+            .await
+            .expect("Failed to create backend");
+        let backend2 = ZenohBackend::<TestMessage>::new_pooled("pool_test_2", config.clone())
+            .await
+            .expect("Failed to create backend");
+
+        // They should share the same session
+        let stats = ZenohSessionPool::stats();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.total_references, 2);
+
+        // But have different key expressions
+        assert_ne!(backend1.key_expr(), backend2.key_expr());
+        assert_eq!(backend1.key_expr(), "horus/pool_test_1");
+        assert_eq!(backend2.key_expr(), "horus/pool_test_2");
+    }
+
+    /// Test ZenohPoolStats
+    #[test]
+    fn test_pool_stats_struct() {
+        let stats = ZenohPoolStats {
+            total_sessions: 3,
+            total_references: 7,
+            sessions: vec![
+                ZenohPoolSessionInfo {
+                    endpoints: vec!["tcp/127.0.0.1:7447".to_string()],
+                    ref_count: 4,
+                    age_secs: 10.5,
+                },
+                ZenohPoolSessionInfo {
+                    endpoints: vec![],
+                    ref_count: 3,
+                    age_secs: 5.0,
+                },
+            ],
+        };
+
+        assert_eq!(stats.total_sessions, 3);
+        assert_eq!(stats.sessions.len(), 2);
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("ZenohPoolStats"));
     }
 }

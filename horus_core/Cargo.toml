@@ -118,34 +118,93 @@ rand = "0.8"
 [features]
 default = ["macros"]
 macros = ["horus_macros"]
+
+# ============================================================================
+# Security & Transport Features
+# ============================================================================
+
+# TLS encryption for secure TCP connections
+# Dependencies: rustls, tokio-rustls, rustls-pemfile, rcgen, x509-parser, hex
 tls = ["rustls", "tokio-rustls", "rustls-pemfile", "rcgen", "x509-parser", "hex"]
+
+# QUIC transport (multiplexed UDP streams with built-in TLS 1.3)
+# Dependencies: quinn, rustls, rcgen
 quic = ["quinn", "rustls", "rcgen"]
+
+# ============================================================================
+# Performance Features
+# ============================================================================
+
+# Linux io_uring for lowest possible latency network I/O (Linux 5.6+ only)
 io-uring-net = ["io-uring"]
-ultra-low-latency = ["io-uring-net"]  # Enable io_uring for lowest latency
-network-v2 = []  # Enable all network v2 optimizations
-cuda = []  # Enable CUDA IPC for cross-process GPU memory sharing
 
-# Cloud storage backends
+# CUDA IPC for cross-process GPU memory sharing (requires NVIDIA GPU)
+cuda = []
+
+# ============================================================================
+# Cloud Storage Backends
+# ============================================================================
+
+# Amazon S3 cloud storage
 cloud-s3 = ["aws-sdk-s3", "aws-config", "futures"]
+
+# Google Cloud Storage
 cloud-gcs = ["google-cloud-storage", "futures"]
+
+# Azure Blob Storage
 cloud-azure = ["azure_storage", "azure_storage_blobs", "futures"]
-cloud-all = ["cloud-s3", "cloud-gcs", "cloud-azure"]  # Enable all cloud providers
 
-# Zenoh transport for multi-robot and ROS2 interop
-zenoh-transport = ["zenoh", "rmp-serde"]  # Includes MessagePack support
-zenoh-ros2 = ["zenoh-transport", "cdr-encoding", "byteorder"]  # Zenoh with ROS2 CDR compatibility (use horus_ros2_bridge crate for ROS2 protocols)
+# Enable all cloud providers
+cloud-all = ["cloud-s3", "cloud-gcs", "cloud-azure"]
 
-# Dynamic driver plugin loading
-dynamic-plugins = ["libloading"]
+# ============================================================================
+# Zenoh Transport (Multi-Robot & ROS2 Interop)
+# ============================================================================
+#
+# Feature Hierarchy:
+#   zenoh-transport (base) → zenoh-ros2 (adds CDR format)
+#
+# Usage:
+#   - For HORUS-only multi-robot: use `zenoh-transport`
+#   - For ROS2 interop: use `zenoh-ros2` + `horus_ros2_bridge` crate
+#
+# Wire Formats:
+#   - zenoh-transport: MessagePack (compact, fast)
+#   - zenoh-ros2: CDR (ROS2/DDS compatible)
 
-# mDNS/DNS-SD for zero-config networking
+# Base Zenoh support for multi-robot mesh networking
+# Includes: Peer/Client/Router modes, MessagePack serialization, HybridBackend
+zenoh-transport = ["zenoh", "rmp-serde", "futures"]
+
+# Zenoh with ROS2 CDR wire format compatibility
+# Requires: zenoh-transport (automatically enabled)
+# Note: For full ROS2 services/actions, also use horus_ros2_bridge crate
+zenoh-ros2 = ["zenoh-transport", "cdr-encoding", "byteorder"]
+
+# ============================================================================
+# Discovery & Connectivity
+# ============================================================================
+
+# mDNS/DNS-SD for automatic peer discovery on local networks
 mdns = ["mdns-sd"]
 
-# WebRTC data channels for browser connectivity and P2P
+# Husarnet VPN integration for secure WAN connectivity
+# Enables Husarnet API client for peer discovery and routing
+husarnet = ["reqwest"]
+
+# ============================================================================
+# WebRTC (Browser & P2P)
+# ============================================================================
+
+# WebRTC data channels for browser connectivity and NAT traversal
 webrtc-transport = ["webrtc", "bytes"]
 
-# Built-in signaling server for P2P connection coordination
+# Built-in WebSocket signaling server for WebRTC connection coordination
 signaling-server = ["tokio-tungstenite", "dashmap", "futures"]
 
-# Husarnet VPN integration for WAN connectivity
-husarnet = ["reqwest"]
+# ============================================================================
+# Plugin System
+# ============================================================================
+
+# Dynamic driver plugin loading via .so/.dll/.dylib
+dynamic-plugins = ["libloading"]

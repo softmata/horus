@@ -6,10 +6,6 @@ rust-version.workspace = true
 description = "HORUS AI/ML tensor system with DLPack interop"
 license = "Apache-2.0"
 
-[features]
-default = []
-cuda = []
-
 [dependencies]
 # Core HORUS
 horus_core = { workspace = true }

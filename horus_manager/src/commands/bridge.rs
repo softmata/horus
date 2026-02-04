@@ -4230,11 +4230,11 @@ async fn bridge_single_topic(
     match direction {
         BridgeDirection::In => {
             // ROS2 -> HORUS: Subscribe to Zenoh, publish to shared memory
-            bridge_ros2_to_horus(topic_name, horus_topic, zenoh_config, running, stats).await
+            bridge_ros2_to_horus(topic_name, &horus_topic, zenoh_config, running, stats).await
         }
         BridgeDirection::Out => {
             // HORUS -> ROS2: Subscribe to shared memory, publish to Zenoh
-            bridge_horus_to_ros2(topic_name, horus_topic, zenoh_config, running, stats).await
+            bridge_horus_to_ros2(topic_name, &horus_topic, zenoh_config, running, stats).await
         }
         BridgeDirection::Both => {
             // Bidirectional: Run both directions concurrently
