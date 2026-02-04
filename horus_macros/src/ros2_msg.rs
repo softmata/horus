@@ -193,7 +193,9 @@ fn generate_definition(package: Ident, name: Ident, fields: Vec<Ros2Field>) -> T
     });
 
     // Check if we can derive Copy (no arrays, strings, or nested non-Copy types)
-    let is_copy = fields.iter().all(|f| !f.is_array && is_copy_type(&f.field_type));
+    let is_copy = fields
+        .iter()
+        .all(|f| !f.is_array && is_copy_type(&f.field_type));
     let copy_derive = if is_copy {
         quote! { Copy, }
     } else {

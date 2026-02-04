@@ -324,7 +324,10 @@ impl LocalityDetector {
     /// Check if a peer is on the same machine
     pub fn is_same_machine(&self, peer_id: &str) -> bool {
         let locality = self.get_locality(peer_id);
-        matches!(locality, LocalityLevel::SameProcess | LocalityLevel::SameMachine)
+        matches!(
+            locality,
+            LocalityLevel::SameProcess | LocalityLevel::SameMachine
+        )
     }
 
     /// Check if a peer is in the same process
@@ -535,10 +538,7 @@ pub fn get_hostname() -> String {
 
 /// Check if an address is a local loopback address
 pub fn is_local_address(addr: &str) -> bool {
-    addr == "127.0.0.1"
-        || addr == "::1"
-        || addr == "localhost"
-        || addr.starts_with("127.")
+    addr == "127.0.0.1" || addr == "::1" || addr == "localhost" || addr.starts_with("127.")
 }
 
 /// Check if an address is a private/LAN address
@@ -558,10 +558,7 @@ pub fn is_private_address(addr: &str) -> bool {
     }
 
     // IPv6 private ranges
-    if addr.starts_with("fe80:")
-        || addr.starts_with("fc00:")
-        || addr.starts_with("fd")
-    {
+    if addr.starts_with("fe80:") || addr.starts_with("fc00:") || addr.starts_with("fd") {
         return true;
     }
 
@@ -630,10 +627,7 @@ mod tests {
         let our_pid = std::process::id();
 
         // Register a peer with same PID
-        detector.register_peer(
-            "peer1",
-            LocalityPeerInfo::new("different-host", our_pid),
-        );
+        detector.register_peer("peer1", LocalityPeerInfo::new("different-host", our_pid));
 
         // Should detect as same process (PID match takes precedence)
         assert!(detector.is_same_process("peer1"));
@@ -645,10 +639,7 @@ mod tests {
         let detector = LocalityDetector::new("test-host");
 
         // Register a peer with same hostname, different PID
-        detector.register_peer(
-            "peer2",
-            LocalityPeerInfo::new("test-host", 99999),
-        );
+        detector.register_peer("peer2", LocalityPeerInfo::new("test-host", 99999));
 
         assert!(!detector.is_same_process("peer2"));
         assert!(detector.is_same_machine("peer2"));
@@ -768,7 +759,10 @@ mod tests {
 
         detector.register_peer("local1", LocalityPeerInfo::new("test-host", 111));
         detector.register_peer("local2", LocalityPeerInfo::new("test-host", 222));
-        detector.register_peer("remote", LocalityPeerInfo::new("other-host", 333).with_address("8.8.8.8"));
+        detector.register_peer(
+            "remote",
+            LocalityPeerInfo::new("other-host", 333).with_address("8.8.8.8"),
+        );
 
         let local = detector.local_peers();
         assert_eq!(local.len(), 2);

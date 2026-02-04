@@ -3052,9 +3052,7 @@ except ImportError as e:
                 json,
                 ros2_only,
             } => commands::zenoh::list_topics(verbose, json, ros2_only),
-            ZenohCommands::Info { key_expr, json } => {
-                commands::zenoh::topic_info(&key_expr, json)
-            }
+            ZenohCommands::Info { key_expr, json } => commands::zenoh::topic_info(&key_expr, json),
             ZenohCommands::Echo {
                 key_expr,
                 count,

@@ -21,12 +21,12 @@
 //! cargo run --release -p horus_benchmarks --features zenoh --bin zenoh_benchmark -- --quick
 //! ```
 
+use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, write_json_report,
     BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics, Statistics,
     ThroughputMetrics,
 };
-use horus::prelude::Topic;
 use horus_core::communication::network::zenoh_backend::ZenohBackend;
 use horus_core::communication::network::zenoh_config::{SerializationFormat, ZenohConfig};
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,11 @@ impl Default for BenchMessage {
 
 impl horus_core::core::LogSummary for BenchMessage {
     fn log_summary(&self) -> String {
-        format!("BenchMessage(seq={}, size={})", self.seq, self.payload.len())
+        format!(
+            "BenchMessage(seq={}, size={})",
+            self.seq,
+            self.payload.len()
+        )
     }
 }
 
@@ -102,16 +106,26 @@ fn main() {
         (DEFAULT_ITERATIONS, DEFAULT_WARMUP)
     };
 
-    println!("{}",
-        "╔══════════════════════════════════════════════════════════════════╗");
-    println!("{}",
-        "║           HORUS Zenoh Transport Benchmark                        ║");
-    println!("{}",
-        "╠══════════════════════════════════════════════════════════════════╣");
-    println!("{}",
-        "║  Comparing Zenoh transport vs native HORUS IPC                   ║");
-    println!("{}",
-        "╚══════════════════════════════════════════════════════════════════╝");
+    println!(
+        "{}",
+        "╔══════════════════════════════════════════════════════════════════╗"
+    );
+    println!(
+        "{}",
+        "║           HORUS Zenoh Transport Benchmark                        ║"
+    );
+    println!(
+        "{}",
+        "╠══════════════════════════════════════════════════════════════════╣"
+    );
+    println!(
+        "{}",
+        "║  Comparing Zenoh transport vs native HORUS IPC                   ║"
+    );
+    println!(
+        "{}",
+        "╚══════════════════════════════════════════════════════════════════╝"
+    );
     println!();
 
     let platform = detect_platform();
@@ -250,10 +264,7 @@ fn main() {
 fn print_latency_result(name: &str, result: &BenchmarkResult) {
     println!(
         "  {:<15} median: {:>6.0} ns, p99: {:>6} ns, cv: {:.3}",
-        name,
-        result.statistics.median,
-        result.statistics.p99,
-        result.determinism.cv
+        name, result.statistics.median, result.statistics.p99, result.determinism.cv
     );
 }
 
@@ -555,7 +566,10 @@ fn build_result(
     } else {
         1_000_000 // 1ms
     };
-    let deadline_misses = latencies.iter().filter(|&&l| l > deadline_threshold).count() as u64;
+    let deadline_misses = latencies
+        .iter()
+        .filter(|&&l| l > deadline_threshold)
+        .count() as u64;
 
     BenchmarkResult {
         name: name.to_string(),

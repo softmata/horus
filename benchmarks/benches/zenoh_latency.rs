@@ -71,7 +71,9 @@ fn bench_native_latency(c: &mut Criterion) {
     });
 
     // Medium message (128 bytes)
-    group.throughput(Throughput::Bytes(std::mem::size_of::<MediumMessage>() as u64));
+    group.throughput(Throughput::Bytes(
+        std::mem::size_of::<MediumMessage>() as u64
+    ));
     group.bench_function(BenchmarkId::new("medium", "128B"), |b| {
         let topic = Topic::<MediumMessage>::new("bench.native.medium").expect("create topic");
         let msg = MediumMessage::default();

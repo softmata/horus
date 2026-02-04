@@ -608,10 +608,7 @@ mod tests {
 
         registry.register_type::<f64>("float64");
 
-        assert_eq!(
-            registry.get_type_name::<f64>(),
-            Some("float64".to_string())
-        );
+        assert_eq!(registry.get_type_name::<f64>(), Some("float64".to_string()));
         assert_eq!(registry.get_type_name::<i32>(), None);
     }
 

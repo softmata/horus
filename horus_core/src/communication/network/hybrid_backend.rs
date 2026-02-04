@@ -344,11 +344,11 @@ where
 
     /// Create a blocking version (for non-async contexts)
     pub fn new_blocking(topic: &str, config: HybridConfig) -> HorusResult<Self> {
-        let rt = tokio::runtime::Handle::try_current().or_else(|_| {
-            tokio::runtime::Runtime::new().map(|rt| rt.handle().clone())
-        }).map_err(|e| {
-            HorusError::Communication(format!("Failed to get tokio runtime: {}", e))
-        })?;
+        let rt = tokio::runtime::Handle::try_current()
+            .or_else(|_| tokio::runtime::Runtime::new().map(|rt| rt.handle().clone()))
+            .map_err(|e| {
+                HorusError::Communication(format!("Failed to get tokio runtime: {}", e))
+            })?;
 
         rt.block_on(Self::new(topic, config))
     }
@@ -419,7 +419,9 @@ where
                 }
                 Err(e) => {
                     if self.config.enable_stats {
-                        self.stats.zenoh_send_failures.fetch_add(1, Ordering::Relaxed);
+                        self.stats
+                            .zenoh_send_failures
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e)
                 }
@@ -446,7 +448,9 @@ where
                     self.has_local_peers.store(true, Ordering::Relaxed);
                     self.locality.mark_local("self");
                     if self.config.enable_stats {
-                        self.stats.local_peers_detected.fetch_add(1, Ordering::Relaxed);
+                        self.stats
+                            .local_peers_detected
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 return Some(msg);
@@ -536,7 +540,9 @@ where
         if self.locality.has_local_peers() && !self.has_local_peers.load(Ordering::Relaxed) {
             self.has_local_peers.store(true, Ordering::Relaxed);
             if self.config.enable_stats {
-                self.stats.local_peers_detected.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .local_peers_detected
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -562,7 +568,10 @@ where
             .field("topic", &self.topic)
             .field("has_shm", &self.shm.is_some())
             .field("has_zenoh", &self.zenoh.is_some())
-            .field("has_local_peers", &self.has_local_peers.load(Ordering::Relaxed))
+            .field(
+                "has_local_peers",
+                &self.has_local_peers.load(Ordering::Relaxed),
+            )
             .field("mode", &self.current_mode())
             .finish()
     }
@@ -629,7 +638,9 @@ where
             self.stats.shm_sends.fetch_add(1, Ordering::Relaxed);
             Ok(())
         } else {
-            Err(HorusError::Communication("No backend available".to_string()))
+            Err(HorusError::Communication(
+                "No backend available".to_string(),
+            ))
         }
     }
 
@@ -767,8 +778,9 @@ mod tests {
     async fn test_hybrid_both_backends() {
         let config = HybridConfig::default();
 
-        let mut backend =
-            HybridBackend::<TestMessage>::new("test/hybrid_both", config).await.unwrap();
+        let mut backend = HybridBackend::<TestMessage>::new("test/hybrid_both", config)
+            .await
+            .unwrap();
 
         // Initialize publisher
         backend.init_publisher().await.unwrap();
@@ -783,12 +795,14 @@ mod tests {
     async fn test_hybrid_send_receive() {
         let config = HybridConfig::default();
 
-        let mut sender =
-            HybridBackend::<TestMessage>::new("test/hybrid_sr", config.clone()).await.unwrap();
+        let mut sender = HybridBackend::<TestMessage>::new("test/hybrid_sr", config.clone())
+            .await
+            .unwrap();
         sender.init_publisher().await.unwrap();
 
-        let mut receiver =
-            HybridBackend::<TestMessage>::new("test/hybrid_sr", config).await.unwrap();
+        let mut receiver = HybridBackend::<TestMessage>::new("test/hybrid_sr", config)
+            .await
+            .unwrap();
         receiver.init_subscriber().await.unwrap();
 
         // Give time for setup

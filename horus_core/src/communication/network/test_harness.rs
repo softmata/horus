@@ -405,11 +405,7 @@ pub mod assertions {
     }
 
     /// Assert that a value is received within a timeout
-    pub fn assert_receives_within<T, F>(
-        mut receiver: F,
-        timeout: Duration,
-        description: &str,
-    ) -> T
+    pub fn assert_receives_within<T, F>(mut receiver: F, timeout: Duration, description: &str) -> T
     where
         F: FnMut() -> Option<T>,
     {
@@ -437,9 +433,8 @@ mod tests {
 
     #[test]
     fn test_namespaced_topics() {
-        let ctx = ZenohTestContext::with_config(
-            ZenohTestConfig::default().with_namespace("my_test"),
-        );
+        let ctx =
+            ZenohTestContext::with_config(ZenohTestConfig::default().with_namespace("my_test"));
         assert_eq!(ctx.namespaced("sensor/data"), "my_test/sensor/data");
         assert_eq!(ctx.namespaced("cmd_vel"), "my_test/cmd_vel");
     }

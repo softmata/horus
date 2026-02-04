@@ -46,7 +46,6 @@ pub struct ZenohTopicInfo {
     pub subscriber_count: usize,
 }
 
-
 /// List all discovered Zenoh topics
 ///
 /// Connects to the Zenoh network and discovers all available topics.
@@ -55,9 +54,7 @@ pub fn list_topics(verbose: bool, json: bool, ros2_only: bool) -> HorusResult<()
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| HorusError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-    rt.block_on(async {
-        list_topics_async(verbose, json, ros2_only).await
-    })
+    rt.block_on(async { list_topics_async(verbose, json, ros2_only).await })
 }
 
 async fn list_topics_async(verbose: bool, json: bool, ros2_only: bool) -> HorusResult<()> {
@@ -345,11 +342,7 @@ async fn topic_info_async(key_expr: &str, json: bool) -> HorusResult<()> {
             "Messages received:".cyan(),
             message_count
         );
-        println!(
-            "  {} {} bytes",
-            "Total bytes:".cyan(),
-            total_bytes
-        );
+        println!("  {} {} bytes", "Total bytes:".cyan(), total_bytes);
         println!("  {} {:.2} Hz", "Rate:".cyan(), rate_hz);
 
         if message_count > 0 {
@@ -430,12 +423,7 @@ async fn echo_topic_async(key_expr: &str, count: Option<usize>, raw: bool) -> Ho
 
                 if raw {
                     // Print raw hex bytes
-                    println!(
-                        "[{}] {} ({} bytes):",
-                        received,
-                        key.cyan(),
-                        payload.len()
-                    );
+                    println!("[{}] {} ({} bytes):", received, key.cyan(), payload.len());
                     print_hex_dump(&payload, 64);
                 } else {
                     // Try to interpret as UTF-8 or JSON
@@ -507,9 +495,8 @@ async fn publish_topic_async(
     // Parse message - try JSON first, then use as raw string
     let payload: Vec<u8> = if message.starts_with('{') || message.starts_with('[') {
         // JSON - validate and serialize
-        let json: serde_json::Value = serde_json::from_str(message).map_err(|e| {
-            HorusError::Config(format!("Invalid JSON message: {}", e))
-        })?;
+        let json: serde_json::Value = serde_json::from_str(message)
+            .map_err(|e| HorusError::Config(format!("Invalid JSON message: {}", e)))?;
         serde_json::to_vec(&json).unwrap()
     } else {
         // Raw string

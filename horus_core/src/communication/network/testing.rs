@@ -103,12 +103,14 @@ impl MockRos2Node {
 
         {
             let mut topics = self.topics.write().unwrap();
-            let entry = topics.entry(topic_name.clone()).or_insert_with(|| MockTopicData {
-                type_id,
-                messages: Arc::new(Mutex::new(Vec::new())),
-                subscriber_count: 0,
-                publisher_count: 0,
-            });
+            let entry = topics
+                .entry(topic_name.clone())
+                .or_insert_with(|| MockTopicData {
+                    type_id,
+                    messages: Arc::new(Mutex::new(Vec::new())),
+                    subscriber_count: 0,
+                    publisher_count: 0,
+                });
             entry.publisher_count += 1;
         }
 
@@ -136,12 +138,14 @@ impl MockRos2Node {
 
         let messages = {
             let mut topics = self.topics.write().unwrap();
-            let entry = topics.entry(topic_name.clone()).or_insert_with(|| MockTopicData {
-                type_id,
-                messages: Arc::new(Mutex::new(Vec::new())),
-                subscriber_count: 0,
-                publisher_count: 0,
-            });
+            let entry = topics
+                .entry(topic_name.clone())
+                .or_insert_with(|| MockTopicData {
+                    type_id,
+                    messages: Arc::new(Mutex::new(Vec::new())),
+                    subscriber_count: 0,
+                    publisher_count: 0,
+                });
             entry.subscriber_count += 1;
             Arc::clone(&entry.messages)
         };
@@ -417,10 +421,13 @@ mod tests {
         let subscriber = node.create_subscriber::<TestMessage>("test_topic");
 
         // Inject a message (simulating external ROS2 node)
-        node.inject_message("test_topic", TestMessage {
-            value: 100,
-            name: "injected".to_string(),
-        });
+        node.inject_message(
+            "test_topic",
+            TestMessage {
+                value: 100,
+                name: "injected".to_string(),
+            },
+        );
 
         let msg = subscriber.recv().unwrap();
         assert_eq!(msg.value, 100);
@@ -432,9 +439,18 @@ mod tests {
         let mut node = MockRos2Node::new("test_node");
         let publisher = node.create_publisher::<TestMessage>("test_topic");
 
-        publisher.publish(TestMessage { value: 1, name: "a".to_string() });
-        publisher.publish(TestMessage { value: 2, name: "b".to_string() });
-        publisher.publish(TestMessage { value: 3, name: "c".to_string() });
+        publisher.publish(TestMessage {
+            value: 1,
+            name: "a".to_string(),
+        });
+        publisher.publish(TestMessage {
+            value: 2,
+            name: "b".to_string(),
+        });
+        publisher.publish(TestMessage {
+            value: 3,
+            name: "c".to_string(),
+        });
 
         let published: Vec<TestMessage> = node.get_published("test_topic");
         assert_eq!(published.len(), 3);
@@ -483,8 +499,20 @@ mod tests {
         let mut node = MockRos2Node::new("test_node");
         let subscriber = node.create_subscriber::<TestMessage>("test_topic");
 
-        node.inject_message("test_topic", TestMessage { value: 1, name: "a".to_string() });
-        node.inject_message("test_topic", TestMessage { value: 2, name: "b".to_string() });
+        node.inject_message(
+            "test_topic",
+            TestMessage {
+                value: 1,
+                name: "a".to_string(),
+            },
+        );
+        node.inject_message(
+            "test_topic",
+            TestMessage {
+                value: 2,
+                name: "b".to_string(),
+            },
+        );
 
         assert_eq!(subscriber.pending(), 2);
         subscriber.clear();

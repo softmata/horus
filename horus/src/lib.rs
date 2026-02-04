@@ -422,17 +422,17 @@ pub mod prelude {
     // Network Communication
     // ============================================
     pub use horus_core::communication::network::{
-        // Core network types
-        NetworkBackend,
-        Endpoint,
-        EndpointBuilder,
         // Discovery
         DiscoveryService,
+        Endpoint,
+        EndpointBuilder,
+        HealthLevel,
         // Health monitoring
         HealthMonitor,
         HealthMonitorConfig,
-        HealthLevel,
         HealthStatus,
+        // Core network types
+        NetworkBackend,
         // Network error handling
         NetworkError,
         NetworkErrorCode,
@@ -440,21 +440,13 @@ pub mod prelude {
 
     // Locality detection (useful for routing optimization)
     pub use horus_core::communication::network::{
-        LocalityDetector,
-        LocalityLevel,
-        LocalityPeerInfo,
-        LocalityStats,
-        get_hostname,
-        is_local_address,
-        is_private_address,
+        get_hostname, is_local_address, is_private_address, LocalityDetector, LocalityLevel,
+        LocalityPeerInfo, LocalityStats,
     };
 
     // Hybrid discovery (LAN multicast + optional WAN)
     pub use horus_core::communication::network::{
-        HybridDiscovery,
-        HybridDiscoveryConfig,
-        HybridPeerInfo,
-        DiscoverySource,
+        DiscoverySource, HybridDiscovery, HybridDiscoveryConfig, HybridPeerInfo,
     };
 }
 

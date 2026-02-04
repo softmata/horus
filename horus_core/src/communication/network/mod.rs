@@ -260,14 +260,14 @@ pub use zenoh_config::{
 pub use zenoh_config::discover_zenoh_routers_mdns;
 
 // Hybrid backend re-exports (SHM + Zenoh zero-copy local bypass)
-pub use hybrid_backend::{HybridConfig, HybridMode, HybridStats};
 #[cfg(feature = "zenoh-transport")]
 pub use hybrid_backend::HybridBackend;
+pub use hybrid_backend::{HybridConfig, HybridMode, HybridStats};
 
 // Locality detection re-exports (for detecting same-process/machine peers)
 pub use locality::{
     get_hostname, is_local_address, is_private_address, LocalityDetector, LocalityLevel,
-    LocalityStats, LocalityPeerInfo,
+    LocalityPeerInfo, LocalityStats,
 };
 
 // ROS2 services, actions, and parameters are now in the separate horus_ros2_bridge crate
@@ -280,12 +280,9 @@ pub use network_error::{
 };
 
 // Testing utilities re-exports (mock ROS2 nodes without ROS2 installation)
-pub use testing::{
-    MockPublisher, MockRos2Node, MockScenarioBuilder, MockSubscriber, TopicStats,
-};
+pub use testing::{MockPublisher, MockRos2Node, MockScenarioBuilder, MockSubscriber, TopicStats};
 
 // Zenoh test harness re-exports (namespace isolation, parallel-safe)
 pub use test_harness::{
-    zenoh_test_sync, zenoh_test_sync_with_config, ZenohTestConfig, ZenohTestContext,
-    ZenohTestGuard,
+    zenoh_test_sync, zenoh_test_sync_with_config, ZenohTestConfig, ZenohTestContext, ZenohTestGuard,
 };

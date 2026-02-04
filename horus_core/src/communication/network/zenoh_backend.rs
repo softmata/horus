@@ -83,8 +83,9 @@ fn serialize_message<T: serde::Serialize>(
     format: SerializationFormat,
 ) -> HorusResult<Vec<u8>> {
     match format {
-        SerializationFormat::Bincode => bincode::serialize(msg)
-            .map_err(|e| serialization_error("Bincode", e)),
+        SerializationFormat::Bincode => {
+            bincode::serialize(msg).map_err(|e| serialization_error("Bincode", e))
+        }
         #[cfg(feature = "cdr-encoding")]
         SerializationFormat::Cdr => {
             // ROS2/DDS typically uses little-endian CDR
@@ -94,8 +95,7 @@ fn serialize_message<T: serde::Serialize>(
         #[cfg(not(feature = "cdr-encoding"))]
         SerializationFormat::Cdr => {
             log::warn!("CDR format requires 'zenoh-ros2' feature, falling back to bincode");
-            bincode::serialize(msg)
-                .map_err(|e| serialization_error("Bincode", e))
+            bincode::serialize(msg).map_err(|e| serialization_error("Bincode", e))
         }
     }
 }
@@ -399,11 +399,7 @@ where
             .map_err(|e| zenoh_connection_error("session open", e))?;
 
         let key_expr = config.topic_to_key_expr(topic);
-        log::debug!(
-            "zenoh[{}]: Session opened, key_expr='{}'",
-            topic,
-            key_expr
-        );
+        log::debug!("zenoh[{}]: Session opened, key_expr='{}'", topic, key_expr);
 
         Ok(Self {
             session: Arc::new(session),
@@ -482,9 +478,7 @@ where
     /// Create a pooled backend synchronously (blocking).
     pub fn new_pooled_blocking(topic: &str, config: ZenohConfig) -> HorusResult<Self> {
         let rt = tokio::runtime::Handle::try_current()
-            .or_else(|_| {
-                tokio::runtime::Runtime::new().map(|rt| rt.handle().clone())
-            })
+            .or_else(|_| tokio::runtime::Runtime::new().map(|rt| rt.handle().clone()))
             .map_err(|e| {
                 NetworkError::new(
                     NetworkErrorCode::ResourceExhausted,
@@ -499,11 +493,7 @@ where
     /// Create a backend with an existing session.
     ///
     /// This allows direct control over session sharing without using the pool.
-    pub fn with_session(
-        topic: &str,
-        session: Arc<zenoh::Session>,
-        config: ZenohConfig,
-    ) -> Self {
+    pub fn with_session(topic: &str, session: Arc<zenoh::Session>, config: ZenohConfig) -> Self {
         let key_expr = config.topic_to_key_expr(topic);
 
         Self {
@@ -530,7 +520,11 @@ where
             .declare_publisher(&self.key_expr)
             .await
             .map_err(|e| {
-                log::error!("zenoh[{}]: Failed to declare publisher: {}", self.key_expr, e);
+                log::error!(
+                    "zenoh[{}]: Failed to declare publisher: {}",
+                    self.key_expr,
+                    e
+                );
                 zenoh_operation_error("publisher declare", e)
             })?;
 
@@ -555,7 +549,11 @@ where
             .declare_subscriber(&self.key_expr)
             .await
             .map_err(|e| {
-                log::error!("zenoh[{}]: Failed to declare subscriber: {}", self.key_expr, e);
+                log::error!(
+                    "zenoh[{}]: Failed to declare subscriber: {}",
+                    self.key_expr,
+                    e
+                );
                 zenoh_operation_error("subscriber declare", e)
             })?;
 
@@ -644,17 +642,14 @@ where
 
     /// Send a message (synchronous wrapper)
     pub fn send(&self, msg: &T) -> HorusResult<()> {
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| {
-                log::error!("zenoh[{}]: Cannot send - publisher not initialized", self.key_expr);
-                NetworkError::new(
-                    NetworkErrorCode::InvalidConfig,
-                    "Publisher not initialized",
-                )
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            log::error!(
+                "zenoh[{}]: Cannot send - publisher not initialized",
+                self.key_expr
+            );
+            NetworkError::new(NetworkErrorCode::InvalidConfig, "Publisher not initialized")
                 .with_suggestion("Call init_publisher() before sending messages")
-            })?;
+        })?;
 
         // Serialize using configured format
         let payload = serialize_message(msg, self.config.serialization)?;
@@ -668,15 +663,18 @@ where
         );
 
         // Use blocking runtime for sync API compatibility
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|e| {
-                log::error!("zenoh[{}]: No tokio runtime for sync send: {}", self.key_expr, e);
-                NetworkError::new(
-                    NetworkErrorCode::ResourceExhausted,
-                    format!("No tokio runtime: {}", e),
-                )
-                .with_suggestion("Ensure you're running within a tokio async context")
-            })?;
+        let rt = tokio::runtime::Handle::try_current().map_err(|e| {
+            log::error!(
+                "zenoh[{}]: No tokio runtime for sync send: {}",
+                self.key_expr,
+                e
+            );
+            NetworkError::new(
+                NetworkErrorCode::ResourceExhausted,
+                format!("No tokio runtime: {}", e),
+            )
+            .with_suggestion("Ensure you're running within a tokio async context")
+        })?;
 
         rt.block_on(async { publisher.put(payload).await })
             .map_err(|e| {
@@ -684,23 +682,24 @@ where
                 zenoh_operation_error("put", e)
             })?;
 
-        log::trace!("zenoh[{}]: Send complete ({} bytes)", self.key_expr, payload_len);
+        log::trace!(
+            "zenoh[{}]: Send complete ({} bytes)",
+            self.key_expr,
+            payload_len
+        );
         Ok(())
     }
 
     /// Send a message asynchronously
     pub async fn send_async(&self, msg: &T) -> HorusResult<()> {
-        let publisher = self
-            .publisher
-            .as_ref()
-            .ok_or_else(|| {
-                log::error!("zenoh[{}]: Cannot send_async - publisher not initialized", self.key_expr);
-                NetworkError::new(
-                    NetworkErrorCode::InvalidConfig,
-                    "Publisher not initialized",
-                )
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            log::error!(
+                "zenoh[{}]: Cannot send_async - publisher not initialized",
+                self.key_expr
+            );
+            NetworkError::new(NetworkErrorCode::InvalidConfig, "Publisher not initialized")
                 .with_suggestion("Call init_publisher() before sending messages")
-            })?;
+        })?;
 
         let payload = serialize_message(msg, self.config.serialization)?;
         let payload_len = payload.len();
@@ -712,15 +711,16 @@ where
             self.config.serialization
         );
 
-        publisher
-            .put(payload)
-            .await
-            .map_err(|e| {
-                log::error!("zenoh[{}]: Async send failed: {}", self.key_expr, e);
-                zenoh_operation_error("put", e)
-            })?;
+        publisher.put(payload).await.map_err(|e| {
+            log::error!("zenoh[{}]: Async send failed: {}", self.key_expr, e);
+            zenoh_operation_error("put", e)
+        })?;
 
-        log::trace!("zenoh[{}]: Async send complete ({} bytes)", self.key_expr, payload_len);
+        log::trace!(
+            "zenoh[{}]: Async send complete ({} bytes)",
+            self.key_expr,
+            payload_len
+        );
         Ok(())
     }
 
@@ -980,10 +980,7 @@ where
                 let mut quality = self.connection_quality.lock();
                 quality.record_health_check_failure();
 
-                log::warn!(
-                    "zenoh[{}]: Health check timed out (>5s)",
-                    self.key_expr
-                );
+                log::warn!("zenoh[{}]: Health check timed out (>5s)", self.key_expr);
 
                 Err(HorusError::Communication("Health check timed out".into()))
             }
@@ -1488,7 +1485,11 @@ impl ZenohBatch {
     ///
     /// Pre-allocating capacity is useful when you know the number of
     /// publishes ahead of time.
-    pub fn with_capacity(session: Arc<zenoh::Session>, config: ZenohConfig, capacity: usize) -> Self {
+    pub fn with_capacity(
+        session: Arc<zenoh::Session>,
+        config: ZenohConfig,
+        capacity: usize,
+    ) -> Self {
         Self {
             session,
             config,
@@ -1500,11 +1501,7 @@ impl ZenohBatch {
     ///
     /// The message is serialized immediately using the batch's serialization format.
     /// The actual network send is deferred until `commit()` is called.
-    pub fn publish<T: serde::Serialize>(
-        &mut self,
-        topic: &str,
-        msg: &T,
-    ) -> HorusResult<&mut Self> {
+    pub fn publish<T: serde::Serialize>(&mut self, topic: &str, msg: &T) -> HorusResult<&mut Self> {
         let key_expr = self.config.topic_to_key_expr(topic);
         let payload = serialize_message(msg, self.config.serialization)?;
 
@@ -1596,7 +1593,11 @@ impl ZenohBatch {
                 }
                 Err((key_expr, error)) => {
                     failed += 1;
-                    log::error!("zenoh_batch: Failed to publish to '{}': {}", key_expr, error);
+                    log::error!(
+                        "zenoh_batch: Failed to publish to '{}': {}",
+                        key_expr,
+                        error
+                    );
                     errors.push(BatchPublishError { key_expr, error });
                 }
             }
@@ -1630,14 +1631,15 @@ impl ZenohBatch {
     /// This is a convenience method for use outside of async contexts.
     /// It creates a temporary tokio runtime to execute the commit.
     pub fn commit_blocking(self) -> HorusResult<BatchCommitResult> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| {
-                NetworkError::new(
-                    NetworkErrorCode::ResourceExhausted,
-                    "No tokio runtime available for blocking commit",
-                )
-                .with_suggestion("Ensure you're running within a tokio async context or use commit() instead")
-            })?;
+        let rt = tokio::runtime::Handle::try_current().map_err(|_| {
+            NetworkError::new(
+                NetworkErrorCode::ResourceExhausted,
+                "No tokio runtime available for blocking commit",
+            )
+            .with_suggestion(
+                "Ensure you're running within a tokio async context or use commit() instead",
+            )
+        })?;
 
         rt.block_on(self.commit())
     }
