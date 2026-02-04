@@ -175,7 +175,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-doc-
 
       - name: Check Documentation
-        run: cargo doc --workspace --no-deps
+        run: |
+          # Exclude horus_manager to avoid filename collision with horus library
+          # (both would create target/doc/horus/ due to binary named 'horus')
+          cargo doc --workspace --no-deps --exclude horus_manager
         env:
           RUSTDOCFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '' }}
 
