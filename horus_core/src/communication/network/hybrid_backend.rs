@@ -50,14 +50,19 @@
 
 use crate::error::{HorusError, HorusResult};
 use crate::memory::shm_topic::ShmTopic;
-use parking_lot::{Mutex, RwLock};
-use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+#[cfg(feature = "zenoh-transport")]
+use parking_lot::{Mutex, RwLock};
+#[cfg(feature = "zenoh-transport")]
+use std::collections::HashSet;
 #[cfg(feature = "zenoh-transport")]
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+#[cfg(feature = "zenoh-transport")]
+use std::time::Instant;
 
 #[cfg(feature = "zenoh-transport")]
 use super::zenoh_backend::ZenohBackend;
@@ -186,6 +191,7 @@ impl HybridStats {
 }
 
 /// Tracks which peers are local vs remote
+#[cfg(feature = "zenoh-transport")]
 struct LocalityTracker {
     /// Set of local peer IDs (detected via same SHM region access)
     local_peers: RwLock<HashSet<String>>,
@@ -195,6 +201,7 @@ struct LocalityTracker {
     check_interval: Duration,
 }
 
+#[cfg(feature = "zenoh-transport")]
 impl LocalityTracker {
     fn new(check_interval: Duration) -> Self {
         Self {
@@ -708,6 +715,7 @@ mod tests {
         assert_eq!(format!("{}", HybridMode::None), "None");
     }
 
+    #[cfg(feature = "zenoh-transport")]
     #[test]
     fn test_locality_tracker() {
         let tracker = LocalityTracker::new(Duration::from_millis(100));

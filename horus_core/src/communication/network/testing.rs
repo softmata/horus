@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 /// patterns, allowing you to test your HORUS-ROS2 bridge code without
 /// needing ROS2 installed.
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub struct MockRos2Node {
     /// Node name
     name: String,
@@ -50,6 +51,7 @@ pub struct MockRos2Node {
 
 /// Internal topic data
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MockTopicData {
     /// Type ID for type checking
     type_id: TypeId,
@@ -235,6 +237,7 @@ pub struct TopicStats {
 
 /// A mock publisher for testing
 #[derive(Debug)]
+#[allow(clippy::type_complexity)]
 pub struct MockPublisher<T> {
     topic: String,
     topics: Arc<RwLock<HashMap<String, MockTopicData>>>,

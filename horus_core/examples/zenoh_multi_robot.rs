@@ -31,7 +31,9 @@
 //! cargo run --example zenoh_multi_robot --features zenoh-transport -- monitor
 //! ```
 
+#[cfg(feature = "zenoh-transport")]
 use std::thread;
+#[cfg(feature = "zenoh-transport")]
 use std::time::Duration;
 
 #[cfg(feature = "zenoh-transport")]

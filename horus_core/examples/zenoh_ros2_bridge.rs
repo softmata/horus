@@ -22,7 +22,9 @@
 //! ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.5}}"
 //! ```
 
+#[cfg(feature = "zenoh-transport")]
 use std::thread;
+#[cfg(feature = "zenoh-transport")]
 use std::time::Duration;
 
 #[cfg(feature = "zenoh-transport")]
