@@ -111,6 +111,9 @@ jobs:
       # No caching for test job - build completely fresh to avoid linker errors
       # Caching caused issues with stale artifacts and filename collisions
 
+      - name: Clean build artifacts
+        run: cargo clean
+
       # Setup shared memory for HORUS tests
       - name: Setup Shared Memory
         run: |
