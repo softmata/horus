@@ -179,7 +179,7 @@ impl ZenohConfig {
 }
 
 /// Zenoh session mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ZenohMode {
     /// Peer mode: discover and connect to other peers
     #[default]
@@ -517,6 +517,10 @@ pub enum CongestionControl {
 }
 
 /// Serialization format for messages
+///
+/// HORUS supports two serialization formats:
+/// - **Bincode**: Fast, compact binary format (default for HORUS-to-HORUS)
+/// - **CDR**: Common Data Representation for ROS2 interoperability
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SerializationFormat {
     /// Bincode (HORUS native, fastest)
@@ -524,10 +528,6 @@ pub enum SerializationFormat {
     Bincode,
     /// CDR (ROS2 compatible)
     Cdr,
-    /// JSON (human-readable, debugging)
-    Json,
-    /// MessagePack (compact, cross-language)
-    MessagePack,
 }
 
 /// Default HORUS cloud router endpoint

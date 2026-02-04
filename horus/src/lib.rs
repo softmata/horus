@@ -417,6 +417,45 @@ pub mod prelude {
     // Core node types (Node, NodeInfo, Topic) are re-exported from horus_core above.
     // Users implement their own nodes using these building blocks.
     // See horus_library::nodes module documentation for usage patterns.
+
+    // ============================================
+    // Network Communication
+    // ============================================
+    pub use horus_core::communication::network::{
+        // Core network types
+        NetworkBackend,
+        Endpoint,
+        EndpointBuilder,
+        // Discovery
+        DiscoveryService,
+        // Health monitoring
+        HealthMonitor,
+        HealthMonitorConfig,
+        HealthLevel,
+        HealthStatus,
+        // Network error handling
+        NetworkError,
+        NetworkErrorCode,
+    };
+
+    // Locality detection (useful for routing optimization)
+    pub use horus_core::communication::network::{
+        LocalityDetector,
+        LocalityLevel,
+        LocalityPeerInfo,
+        LocalityStats,
+        get_hostname,
+        is_local_address,
+        is_private_address,
+    };
+
+    // Hybrid discovery (LAN multicast + optional WAN)
+    pub use horus_core::communication::network::{
+        HybridDiscovery,
+        HybridDiscoveryConfig,
+        HybridPeerInfo,
+        DiscoverySource,
+    };
 }
 
 /// Version information

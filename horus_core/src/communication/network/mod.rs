@@ -85,6 +85,21 @@ pub mod mdns;
 pub mod zenoh_backend;
 pub mod zenoh_config;
 
+// Hybrid backend - zero-copy local bypass combining SHM + Zenoh
+pub mod hybrid_backend;
+
+// Locality detection for Zenoh peers (same-process, same-machine, remote)
+pub mod locality;
+
+// Type introspection for Zenoh topics
+pub mod zenoh_discovery;
+
+// Testing utilities for ROS2 interoperability (mock nodes without ROS2 installation)
+pub mod testing;
+
+// Zenoh integration test harness (namespace isolation, parallel-safe)
+pub mod test_harness;
+
 // ROS2 protocol implementations moved to separate horus_ros2_bridge crate
 // To use ROS2 services/actions/parameters, add horus_ros2_bridge to your Cargo.toml:
 //
@@ -244,6 +259,17 @@ pub use zenoh_config::{
 #[cfg(feature = "mdns")]
 pub use zenoh_config::discover_zenoh_routers_mdns;
 
+// Hybrid backend re-exports (SHM + Zenoh zero-copy local bypass)
+pub use hybrid_backend::{HybridConfig, HybridMode, HybridStats};
+#[cfg(feature = "zenoh-transport")]
+pub use hybrid_backend::HybridBackend;
+
+// Locality detection re-exports (for detecting same-process/machine peers)
+pub use locality::{
+    get_hostname, is_local_address, is_private_address, LocalityDetector, LocalityLevel,
+    LocalityStats, LocalityPeerInfo,
+};
+
 // ROS2 services, actions, and parameters are now in the separate horus_ros2_bridge crate
 // No re-exports here to avoid circular dependencies
 
@@ -251,4 +277,15 @@ pub use zenoh_config::discover_zenoh_routers_mdns;
 pub use network_error::{
     colors as net_colors, errors as net_errors, format_error_report, format_error_report_colored,
     NetworkError, NetworkErrorCode, NetworkErrorContext,
+};
+
+// Testing utilities re-exports (mock ROS2 nodes without ROS2 installation)
+pub use testing::{
+    MockPublisher, MockRos2Node, MockScenarioBuilder, MockSubscriber, TopicStats,
+};
+
+// Zenoh test harness re-exports (namespace isolation, parallel-safe)
+pub use test_harness::{
+    zenoh_test_sync, zenoh_test_sync_with_config, ZenohTestConfig, ZenohTestContext,
+    ZenohTestGuard,
 };

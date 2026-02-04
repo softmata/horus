@@ -59,53 +59,70 @@ fn default_true() -> bool {
 
 impl ZenohEndpointConfig {
     /// Convert to ZenohConfig from network module
+    ///
+    /// This method bridges the file-based configuration (TOML/YAML) to the
+    /// internal API configuration used by ZenohBackend.
+    ///
+    /// # Design Note
+    ///
+    /// `ZenohEndpointConfig` and `ZenohConfig` are intentionally separate:
+    /// - `ZenohEndpointConfig`: Serde-serializable for config files (string options)
+    /// - `ZenohConfig`: Internal API with type-safe enums
+    ///
+    /// This is the DTO (Data Transfer Object) pattern.
     #[cfg(feature = "zenoh-transport")]
     pub fn to_zenoh_config(&self) -> crate::communication::network::ZenohConfig {
+        crate::communication::network::ZenohConfig::from(self.clone())
+    }
+}
+
+/// Convert from file-based config to internal API config
+#[cfg(feature = "zenoh-transport")]
+impl From<ZenohEndpointConfig> for crate::communication::network::ZenohConfig {
+    fn from(endpoint_config: ZenohEndpointConfig) -> Self {
         use crate::communication::network::{
             CongestionControl, Reliability, SerializationFormat, ZenohConfig, ZenohMode, ZenohQos,
         };
 
-        let mut config = if self.ros2_mode {
-            ZenohConfig::ros2(self.ros2_domain_id)
+        let mut config = if endpoint_config.ros2_mode {
+            ZenohConfig::ros2(endpoint_config.ros2_domain_id)
         } else {
             ZenohConfig::default()
         };
 
         // Apply namespace
-        if let Some(ref ns) = self.namespace {
+        if let Some(ref ns) = endpoint_config.namespace {
             config.namespace = Some(ns.clone());
         }
 
         // Apply connect endpoints
-        for endpoint in &self.connect {
+        for endpoint in &endpoint_config.connect {
             config.connect.push(endpoint.clone());
         }
 
         // Apply listen endpoints
-        for endpoint in &self.listen {
+        for endpoint in &endpoint_config.listen {
             config.listen.push(endpoint.clone());
         }
 
         // Set mode based on whether we have connect endpoints
-        if !self.connect.is_empty() {
+        if !endpoint_config.connect.is_empty() {
             config.mode = ZenohMode::Client;
         }
 
-        config.shared_memory = self.shared_memory;
+        config.shared_memory = endpoint_config.shared_memory;
 
         // Apply serialization format
-        if let Some(ref fmt) = self.serialization {
+        if let Some(ref fmt) = endpoint_config.serialization {
             config.serialization = match fmt.to_lowercase().as_str() {
-                "json" => SerializationFormat::Json,
                 "cdr" => SerializationFormat::Cdr,
-                "messagepack" | "msgpack" => SerializationFormat::MessagePack,
                 _ => SerializationFormat::Bincode,
             };
         }
 
         // Apply QoS settings
         let mut qos = ZenohQos::default();
-        if let Some(ref rel) = self.reliability {
+        if let Some(ref rel) = endpoint_config.reliability {
             qos.reliability = match rel.to_lowercase().as_str() {
                 "reliable" => Reliability::Reliable,
                 _ => Reliability::BestEffort,
@@ -115,10 +132,10 @@ impl ZenohEndpointConfig {
                 qos.congestion = CongestionControl::Block;
             }
         }
-        if let Some(priority) = self.priority {
+        if let Some(priority) = endpoint_config.priority {
             qos.priority = priority.min(7);
         }
-        qos.express = self.express;
+        qos.express = endpoint_config.express;
         config.qos = qos;
 
         config

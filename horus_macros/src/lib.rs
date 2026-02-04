@@ -19,6 +19,7 @@ use proc_macro::TokenStream;
 
 mod message;
 mod node;
+mod ros2_msg;
 
 /// Generate a HORUS node implementation with automatic topic registration.
 ///
@@ -171,5 +172,75 @@ pub fn node(input: TokenStream) -> TokenStream {
 pub fn message(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as message::MessageInput);
     let output = message::generate_message(input);
+    TokenStream::from(output)
+}
+
+/// Generate ROS2-compatible message types with CDR serialization support.
+///
+/// This macro provides two modes:
+///
+/// ## Import Mode
+///
+/// Import well-known ROS2 message types from `horus_ros2_msgs`:
+///
+/// ```rust,ignore
+/// use horus_macros::ros2_msg;
+///
+/// ros2_msg!(geometry_msgs::Twist);
+/// ros2_msg!(sensor_msgs::Imu);
+/// ros2_msg!(nav_msgs::Odometry);
+/// ```
+///
+/// ## Define Mode
+///
+/// Define custom ROS2-compatible messages with inline syntax:
+///
+/// ```rust,ignore
+/// ros2_msg! {
+///     my_msgs::RobotState {
+///         std_msgs::Header header,
+///         geometry_msgs::Pose pose,
+///         geometry_msgs::Twist velocity,
+///         float64 battery_level,
+///         string status_message,
+///         float64[] sensor_readings,
+///     }
+/// }
+/// ```
+///
+/// # Supported Types
+///
+/// ## Primitives
+/// - `bool`, `byte`, `char`
+/// - `int8`, `int16`, `int32`, `int64`
+/// - `uint8`, `uint16`, `uint32`, `uint64`
+/// - `float32`, `float64`
+/// - `string`
+///
+/// ## Arrays
+/// - `float64[]` - Unbounded array (becomes `Vec<f64>`)
+/// - `float64[36]` - Fixed-size array (becomes `[f64; 36]`)
+///
+/// ## Nested Messages
+/// - `geometry_msgs::Point position` - References horus_ros2_msgs types
+///
+/// # Generated Code
+///
+/// The macro generates:
+/// - Struct with serde derives for JSON/CDR serialization
+/// - `LogSummary` implementation for efficient logging
+/// - Constructor method `new(...)`
+/// - `Default` implementation
+/// - `Copy` derive (when possible - no strings/arrays)
+///
+/// # CDR Compatibility
+///
+/// Generated types are wire-compatible with ROS2 when serialized with
+/// `cdr-encoding`. This enables direct communication with ROS2 nodes
+/// via Zenoh or DDS.
+#[proc_macro]
+pub fn ros2_msg(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as ros2_msg::Ros2MsgInput);
+    let output = ros2_msg::generate_ros2_msg(input);
     TokenStream::from(output)
 }
