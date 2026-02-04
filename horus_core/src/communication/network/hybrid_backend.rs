@@ -53,7 +53,9 @@ use crate::memory::shm_topic::ShmTopic;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashSet;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "zenoh-transport")]
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
