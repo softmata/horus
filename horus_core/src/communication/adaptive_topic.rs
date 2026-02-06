@@ -1469,11 +1469,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let slot = header.register_producer()?;
 
         local.slot_index = slot as i32;
-        local.role = if local.role == TopicRole::Consumer {
-            TopicRole::Both
-        } else {
-            TopicRole::Producer
-        };
+        // Cache pointers BEFORE setting role - the global discovery topic is shared
+        // across threads via static OnceLock, so another thread calling send() may
+        // see role=Producer and immediately dereference cached_header_ptr.
+        // Setting pointers first ensures they are valid when can_send() becomes true.
+        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every send
         local.is_same_process = header.is_same_process();
@@ -1488,13 +1489,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Initialize local indices from shared memory
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
-        // Cache data pointer to avoid Arc dereference on hot path
-        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
-        // Cast to mut since we may use it for both read and write operations
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // Cache header pointer to avoid Arc dereference on hot path
-        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
-        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        // Set role LAST - this gates the fast path via can_send()
+        local.role = if local.role == TopicRole::Consumer {
+            TopicRole::Both
+        } else {
+            TopicRole::Producer
+        };
 
         // Update metrics
         self.metrics.estimated_latency_ns.store(
@@ -1519,11 +1519,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let slot = header.register_consumer()?;
 
         local.slot_index = slot as i32;
-        local.role = if local.role == TopicRole::Producer {
-            TopicRole::Both
-        } else {
-            TopicRole::Consumer
-        };
+        // Cache pointers BEFORE setting role (same reasoning as ensure_producer)
+        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every recv
         local.is_same_process = header.is_same_process();
@@ -1538,13 +1536,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Initialize local indices from shared memory
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
-        // Cache data pointer to avoid Arc dereference on hot path
-        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
-        // Cast to mut since we may use it for both read and write operations
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        // Cache header pointer to avoid Arc dereference on hot path
-        // SAFETY: Pointer is valid for AdaptiveTopic lifetime (Arc keeps ShmRegion alive)
-        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        // Set role LAST - this gates the fast path via can_recv()
+        local.role = if local.role == TopicRole::Producer {
+            TopicRole::Both
+        } else {
+            TopicRole::Consumer
+        };
 
         // Update metrics
         self.metrics.estimated_latency_ns.store(
