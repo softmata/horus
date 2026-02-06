@@ -5,7 +5,7 @@ edition = "2021"
 
 [lib]
 name = "horus_core"
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 log = "0.4"

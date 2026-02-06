@@ -175,5 +175,4 @@ impl PySchedulerConfig {
             config_name: name.to_string(),
         }
     }
-
 }

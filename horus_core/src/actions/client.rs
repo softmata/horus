@@ -234,7 +234,6 @@ where
     pub fn cancel(&self) {
         self.client.cancel_goal(self.goal_id);
     }
-
 }
 
 impl<A: Action> Debug for ClientGoalHandle<A> {
@@ -431,7 +430,6 @@ where
         self.goals.write().insert(goal_id, state.clone());
         state
     }
-
 }
 
 /// Builder for creating action clients.

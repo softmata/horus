@@ -4236,7 +4236,10 @@ where
             TopicBackend::SpmcShm(inner) => inner.push(msg),
             TopicBackend::Adaptive(inner) => inner.send(msg),
             TopicBackend::Network(_) => {
-                debug_assert!(false, "send() called on Network backend - use send_network() instead");
+                debug_assert!(
+                    false,
+                    "send() called on Network backend - use send_network() instead"
+                );
                 Err(msg)
             }
         }
@@ -4297,7 +4300,10 @@ where
             TopicBackend::SpmcShm(inner) => inner.push(msg),
             TopicBackend::Adaptive(inner) => inner.send(msg),
             TopicBackend::Network(_) => {
-                debug_assert!(false, "send_logged() called on Network backend - use send_network() instead");
+                debug_assert!(
+                    false,
+                    "send_logged() called on Network backend - use send_network() instead"
+                );
                 Err(msg)
             }
         };
@@ -4364,7 +4370,10 @@ where
             TopicBackend::SpmcShm(inner) => inner.pop(),
             TopicBackend::Adaptive(inner) => inner.recv(),
             TopicBackend::Network(_) => {
-                debug_assert!(false, "recv() called on Network backend - use recv_network() instead");
+                debug_assert!(
+                    false,
+                    "recv() called on Network backend - use recv_network() instead"
+                );
                 None
             }
         }
@@ -4412,7 +4421,10 @@ where
             TopicBackend::SpmcShm(inner) => inner.pop(),
             TopicBackend::Adaptive(inner) => inner.recv(),
             TopicBackend::Network(_) => {
-                debug_assert!(false, "recv_logged() called on Network backend - use recv_network() instead");
+                debug_assert!(
+                    false,
+                    "recv_logged() called on Network backend - use recv_network() instead"
+                );
                 None
             }
         };
