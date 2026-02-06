@@ -4216,9 +4216,10 @@ where
     /// - SpscShm: ~80-100ns (cross-process)
     /// - MpmcShm: ~150-200ns (cross-process)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if called on a Network backend - use `send_network()` instead.
+    /// Returns `Err(msg)` if the channel is full or if called on a Network backend
+    /// (use `send_network()` for network topics).
     #[inline(always)]
     pub fn send(&self, msg: T) -> Result<(), T> {
         // ZERO-OVERHEAD IPC: No timing, no logging, no syscalls, NO METRICS
@@ -4235,7 +4236,8 @@ where
             TopicBackend::SpmcShm(inner) => inner.push(msg),
             TopicBackend::Adaptive(inner) => inner.send(msg),
             TopicBackend::Network(_) => {
-                panic!("Network Topic send() requires Serialize bound. Use from_endpoint().")
+                debug_assert!(false, "send() called on Network backend - use send_network() instead");
+                Err(msg)
             }
         }
     }
@@ -4295,7 +4297,8 @@ where
             TopicBackend::SpmcShm(inner) => inner.push(msg),
             TopicBackend::Adaptive(inner) => inner.send(msg),
             TopicBackend::Network(_) => {
-                panic!("Network Topic send_logged() requires Serialize bound. Network topics should be created via from_endpoint() which ensures T has proper bounds.")
+                debug_assert!(false, "send_logged() called on Network backend - use send_network() instead");
+                Err(msg)
             }
         };
 
@@ -4340,9 +4343,10 @@ where
     /// * `Some(msg)` if a message is available
     /// * `None` if no message available
     ///
-    /// # Panics
+    /// # Returns
     ///
-    /// Panics if called on a Network backend - use `recv_network()` instead for network topics.
+    /// * `None` if no message available or if called on a Network backend
+    ///   (use `recv_network()` for network topics).
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         // ZERO-OVERHEAD IPC: No timing, no logging, no syscalls, NO METRICS
@@ -4360,7 +4364,8 @@ where
             TopicBackend::SpmcShm(inner) => inner.pop(),
             TopicBackend::Adaptive(inner) => inner.recv(),
             TopicBackend::Network(_) => {
-                panic!("Network Topic recv() requires DeserializeOwned bound. Network topics should be created via from_endpoint() which ensures T has proper bounds.")
+                debug_assert!(false, "recv() called on Network backend - use recv_network() instead");
+                None
             }
         }
     }
@@ -4407,7 +4412,8 @@ where
             TopicBackend::SpmcShm(inner) => inner.pop(),
             TopicBackend::Adaptive(inner) => inner.recv(),
             TopicBackend::Network(_) => {
-                panic!("Network Topic recv_logged() requires DeserializeOwned bound. Network topics should be created via from_endpoint() which ensures T has proper bounds.")
+                debug_assert!(false, "recv_logged() called on Network backend - use recv_network() instead");
+                None
             }
         };
 
