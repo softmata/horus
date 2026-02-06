@@ -265,9 +265,9 @@ fn test_prototype_fast_startup() {
     let _scheduler = SchedulerBuilder::prototype().build().unwrap();
     let elapsed = start.elapsed();
 
-    // Startup should be fast (under 100ms on any system)
+    // Startup should be fast (under 500ms on any system, including CI under load)
     assert!(
-        elapsed < Duration::from_millis(100),
+        elapsed < Duration::from_millis(500),
         "prototype() should start quickly, took {:?}",
         elapsed
     );

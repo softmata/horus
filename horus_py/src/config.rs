@@ -176,21 +176,4 @@ impl PySchedulerConfig {
         }
     }
 
-    /// Convert to Rust SchedulerConfig
-    #[allow(dead_code)]
-    pub(crate) fn to_rust_config(&self) -> SchedulerConfig {
-        let mut config = SchedulerConfig::standard();
-        config.timing.global_rate_hz = self.tick_rate;
-        config.fault.circuit_breaker_enabled = self.circuit_breaker;
-        config.fault.max_failures = self.max_failures;
-        config.realtime.deadline_monitoring = self.deadline_monitoring;
-        config.realtime.watchdog_enabled = self.watchdog_enabled;
-        config.realtime.watchdog_timeout_ms = self.watchdog_timeout_ms;
-        config.monitoring.profiling_enabled = self.profiling;
-        // Python-specific adjustments
-        config.realtime.wcet_enforcement = false;
-        config.realtime.rt_scheduling_class = false;
-        config.realtime.memory_locking = false;
-        config
-    }
 }

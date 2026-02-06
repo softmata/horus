@@ -2810,15 +2810,14 @@ pub async fn discover_ros2_topics(_domain_id: u32) -> HorusResult<DiscoveryResul
 // Service Bridge
 // ============================================================================
 
-/// ROS2 service key expression format
-/// Request: {domain_id}/rq/{service_name}/{request_type}
-/// Response: {domain_id}/rr/{service_name}/{response_type}
-#[allow(dead_code)]
+/// ROS2 service key expression format for request topics.
+#[allow(dead_code)] // Used in test module
 fn ros2_service_request_key(domain_id: u32, service_name: &str) -> String {
     format!("{}/rq{}/**", domain_id, service_name)
 }
 
-#[allow(dead_code)]
+/// ROS2 service key expression format for response topics.
+#[allow(dead_code)] // Used in test module
 fn ros2_service_response_key(domain_id: u32, service_name: &str) -> String {
     format!("{}/rr{}/**", domain_id, service_name)
 }

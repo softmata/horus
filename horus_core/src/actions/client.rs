@@ -235,31 +235,6 @@ where
         self.client.cancel_goal(self.goal_id);
     }
 
-    /// Update the goal state (called internally by the client).
-    #[allow(dead_code)]
-    fn update_status(&self, status: GoalStatus) {
-        let mut state = self.state.write();
-        state.status = status;
-        state.updated_at = Instant::now();
-    }
-
-    /// Update with a result (called internally by the client).
-    #[allow(dead_code)]
-    fn update_result(&self, result: A::Result, status: GoalStatus) {
-        let mut state = self.state.write();
-        state.result = Some(result);
-        state.status = status;
-        state.updated_at = Instant::now();
-    }
-
-    /// Update with feedback (called internally by the client).
-    #[allow(dead_code)]
-    fn update_feedback(&self, feedback: A::Feedback) {
-        let mut state = self.state.write();
-        state.last_feedback = Some(feedback);
-        state.feedback_count += 1;
-        state.updated_at = Instant::now();
-    }
 }
 
 impl<A: Action> Debug for ClientGoalHandle<A> {
@@ -457,11 +432,6 @@ where
         state
     }
 
-    /// Remove a goal handle.
-    #[allow(dead_code)]
-    fn unregister_goal(&self, goal_id: GoalId) {
-        self.goals.write().remove(&goal_id);
-    }
 }
 
 /// Builder for creating action clients.

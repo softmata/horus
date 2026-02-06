@@ -183,19 +183,21 @@ impl Default for MissionPlannerConfig {
 // ============================================================================
 
 /// Runtime state for an active mission being executed.
-#[allow(dead_code)]
 struct ActiveMission {
     /// Mission state.
     state: MissionState,
-    /// Goal DAG for ordering goals.
+    /// Goal DAG for ordering goals (used during goal execution scheduling).
+    #[allow(dead_code)] // Populated during construction, read during mission advancement
     goal_dag: GoalDAG,
     /// Goal schedulers (one per goal).
     goal_schedulers: HashMap<GoalId, ExecutionScheduler<TaskId>>,
-    /// Task DAGs (one per goal).
+    /// Task DAGs (one per goal, used during task execution scheduling).
+    #[allow(dead_code)] // Populated during construction, read during task advancement
     task_dags: HashMap<GoalId, TaskDAG>,
     /// Goal execution scheduler.
     goal_scheduler: ExecutionScheduler<GoalId>,
-    /// When this mission was queued.
+    /// When this mission was queued (used for priority aging).
+    #[allow(dead_code)] // Reserved for priority-based scheduling with age weighting
     queued_at: Instant,
 }
 
@@ -224,12 +226,6 @@ impl ActiveMission {
             goal_scheduler,
             queued_at: Instant::now(),
         })
-    }
-
-    /// Get the mission ID.
-    #[allow(dead_code)]
-    fn id(&self) -> &MissionId {
-        self.state.id()
     }
 
     /// Get the mission priority.

@@ -1505,22 +1505,12 @@ const CACHE_LINE_SIZE: usize = 128;
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 const CACHE_LINE_SIZE: usize = 128;
 
-/// Helper to compute padding needed to fill a cache line.
-///
-/// Note: Not directly used due to Rust const generics limitations, but documents
-/// the formula: padding = CACHE_LINE_SIZE - used_bytes
-#[allow(dead_code)]
-const fn cache_line_padding(used_bytes: usize) -> usize {
-    CACHE_LINE_SIZE.saturating_sub(used_bytes)
-}
-
 // ============================================================================
 // Prefetch hints for performance
 // ============================================================================
 
 /// Prefetch data for reading (T0 = all cache levels)
 #[inline(always)]
-#[allow(dead_code)]
 fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
@@ -1533,26 +1523,6 @@ fn prefetch_read<T>(ptr: *const T) {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
     {
         let _ = ptr; // Avoid unused warning on other platforms
-    }
-}
-
-/// Prefetch data for writing (exclusive access)
-#[inline(always)]
-#[allow(dead_code)]
-fn prefetch_write<T>(ptr: *mut T) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        // PREFETCHW is available on most modern x86_64
-        // Fall back to T0 which also works
-        std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-    }
-    #[cfg(target_arch = "x86")]
-    unsafe {
-        std::arch::x86::_mm_prefetch(ptr as *const i8, std::arch::x86::_MM_HINT_T0);
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-    {
-        let _ = ptr;
     }
 }
 

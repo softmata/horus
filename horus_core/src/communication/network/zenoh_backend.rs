@@ -28,7 +28,6 @@ use crate::error::{HorusError, HorusResult};
 // ============================================================================
 
 /// Create a serialization error with context
-#[allow(dead_code)]
 fn serialization_error(format: &str, cause: impl std::fmt::Display) -> HorusError {
     NetworkError::new(
         NetworkErrorCode::SerializationFailed,
@@ -36,20 +35,6 @@ fn serialization_error(format: &str, cause: impl std::fmt::Display) -> HorusErro
     )
     .with_suggestion(format!(
         "Check that your message type implements Serialize correctly for {} format",
-        format
-    ))
-    .into()
-}
-
-/// Create a deserialization error with context
-#[allow(dead_code)]
-fn deserialization_error(format: &str, cause: impl std::fmt::Display) -> HorusError {
-    NetworkError::new(
-        NetworkErrorCode::DeserializationFailed,
-        format!("{} deserialization failed: {}", format, cause),
-    )
-    .with_suggestion(format!(
-        "Check that the message matches the expected {} format and type",
         format
     ))
     .into()
