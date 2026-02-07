@@ -85,8 +85,8 @@ pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
 // Machine Learning
 pub use ml::{
     ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
-    Keypoint, LLMRequest, LLMResponse, ModelFormat, ModelInfo, Pose, PoseArray, Predictions,
-    SegmentationMask, Tensor, TrainingMetrics,
+    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, ModelFormat, ModelInfo, Pose,
+    PoseArray, PoseKeypoint, Predictions, SegmentationMask, Tensor, TrainingMetrics,
 };
 
 // Tensor types for zero-copy ML workloads

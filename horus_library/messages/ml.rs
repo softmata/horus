@@ -157,12 +157,13 @@ pub struct ModelInfo {
     pub metadata: HashMap<String, String>,
 }
 
-/// Object detection bounding box
+/// ML model detection output
 ///
-/// Represents a single detected object with bounding box,
-/// class, and confidence score.
+/// Represents a single detected object from ML inference with bounding box,
+/// class, and confidence score. Named `MlDetection` to distinguish from
+/// `vision::Detection` (sensor-level) and `horus_perception::Detection` (zero-copy Pod).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Detection {
+pub struct MlDetection {
     /// Bounding box [x, y, width, height] in pixels
     pub bbox: [f32; 4],
     /// Class ID
@@ -175,18 +176,18 @@ pub struct Detection {
     pub track_id: Option<u32>,
 }
 
-/// Array of object detections
+/// Array of ML model detections
 ///
 /// Used by object detection models (YOLO, SSD, etc.) to return
 /// multiple detections from a single image.
 ///
 /// # Example
 /// ```rust,ignore
-/// use horus_library::messages::ml::{DetectionArray, Detection};
+/// use horus_library::messages::ml::{MlDetectionArray, MlDetection};
 ///
-/// let detections = DetectionArray {
+/// let detections = MlDetectionArray {
 ///     detections: vec![
-///         Detection {
+///         MlDetection {
 ///             bbox: [100.0, 100.0, 200.0, 300.0],
 ///             class_id: 0,
 ///             class_name: Some("person".into()),
@@ -200,9 +201,9 @@ pub struct Detection {
 /// };
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DetectionArray {
+pub struct MlDetectionArray {
     /// List of detections
-    pub detections: Vec<Detection>,
+    pub detections: Vec<MlDetection>,
     /// Image width in pixels
     pub image_width: u32,
     /// Image height in pixels
@@ -232,9 +233,10 @@ pub struct SegmentationMask {
 
 /// Human pose keypoint
 ///
-/// Represents a single keypoint in pose estimation.
+/// Represents a single keypoint in pose estimation. Named `PoseKeypoint`
+/// to distinguish from `horus_perception::Landmark` (zero-copy Pod for IPC).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Keypoint {
+pub struct PoseKeypoint {
     /// X coordinate in pixels
     pub x: f32,
     /// Y coordinate in pixels
@@ -253,7 +255,7 @@ pub struct Keypoint {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pose {
     /// List of keypoints (typically 17-33 points depending on model)
-    pub keypoints: Vec<Keypoint>,
+    pub keypoints: Vec<PoseKeypoint>,
     /// Overall pose confidence
     pub confidence: f32,
     /// Person/instance ID (for multi-person pose)
