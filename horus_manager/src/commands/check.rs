@@ -139,15 +139,14 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                                     _ => true,
                                 };
                                 if !main_exists {
-                                    file_errors
-                                        .push(format!("main file not found for '{}'", lang));
+                                    file_errors.push(format!("main file not found for '{}'", lang));
                                 }
                             }
 
                             // Validate path dependencies exist
-                            if let Ok(deps) = parse_horus_yaml_dependencies_v2(
-                                yaml_path.to_str().unwrap_or(""),
-                            ) {
+                            if let Ok(deps) =
+                                parse_horus_yaml_dependencies_v2(yaml_path.to_str().unwrap_or(""))
+                            {
                                 for dep in &deps {
                                     if let DependencySource::Path(path_str) = &dep.source {
                                         let dep_path = if Path::new(path_str).is_absolute() {
@@ -447,11 +446,7 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
 
 /// Check a horus.yaml manifest file
 fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
-    println!(
-        "{} Checking {}...\n",
-        "▶".cyan(),
-        horus_yaml_path.display()
-    );
+    println!("{} Checking {}...\n", "▶".cyan(), horus_yaml_path.display());
 
     let mut errors = Vec::new();
     let mut warn_msgs = Vec::new();
@@ -544,9 +539,8 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
             }
         } else {
             println!("{}", "✗".red());
-            errors.push(
-                "Missing or invalid 'language' field - must be: rust or python".to_string(),
-            );
+            errors
+                .push("Missing or invalid 'language' field - must be: rust or python".to_string());
         }
 
         // Version format validation
@@ -835,9 +829,8 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
         } else {
             println!("{}", "⚠".yellow());
             if !quiet {
-                warn_msgs.push(
-                    "No packages directory - dependencies not installed yet".to_string(),
-                );
+                warn_msgs
+                    .push("No packages directory - dependencies not installed yet".to_string());
             }
         }
     } else {
@@ -885,8 +878,8 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
             match language {
                 "rust" => {
                     let has_cargo = base_dir.join("Cargo.toml").exists();
-                    let has_main = base_dir.join("main.rs").exists()
-                        || base_dir.join("src/main.rs").exists();
+                    let has_main =
+                        base_dir.join("main.rs").exists() || base_dir.join("src/main.rs").exists();
 
                     if has_cargo || has_main {
                         let check_result = std::process::Command::new("cargo")
@@ -940,8 +933,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                             Err(_) => {
                                 println!("{}", "⚠".yellow());
                                 if !quiet {
-                                    warn_msgs
-                                        .push("Could not validate Python syntax".to_string());
+                                    warn_msgs.push("Could not validate Python syntax".to_string());
                                 }
                             }
                         }
@@ -1182,10 +1174,8 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                             Err(e) => {
                                 println!("{}", "⚠".yellow());
                                 if !quiet {
-                                    warn_msgs.push(format!(
-                                        "Could not parse Python imports: {}",
-                                        e
-                                    ));
+                                    warn_msgs
+                                        .push(format!("Could not parse Python imports: {}", e));
                                 }
                             }
                         }

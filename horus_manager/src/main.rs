@@ -1956,7 +1956,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 mode,
             } => commands::driver::run_list(category, registry_only, plugins_only, mode),
             DriverCommands::Info { driver } => commands::driver::run_info(driver),
-            DriverCommands::Search { query, bus_type } => commands::driver::run_search(query, bus_type),
+            DriverCommands::Search { query, bus_type } => {
+                commands::driver::run_search(query, bus_type)
+            }
             DriverCommands::Probe {
                 plugin,
                 backend,
@@ -2010,7 +2012,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
         Commands::Record { command } => match command {
             RecordCommands::List { long } => commands::record::run_list(long),
             RecordCommands::Info { session } => commands::record::run_info(session),
-            RecordCommands::Delete { session, force } => commands::record::run_delete(session, force),
+            RecordCommands::Delete { session, force } => {
+                commands::record::run_delete(session, force)
+            }
             RecordCommands::Replay {
                 recording,
                 start_tick,
@@ -2037,8 +2041,17 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 stop_tick,
                 speed,
                 loop_playback,
-            } => commands::record::run_inject(session, nodes, all, script, start_tick, stop_tick, speed, loop_playback),
-        }
+            } => commands::record::run_inject(
+                session,
+                nodes,
+                all,
+                script,
+                start_tick,
+                stop_tick,
+                speed,
+                loop_playback,
+            ),
+        },
 
         Commands::Net { command } => match command {
             NetCommands::Check { verbose } => commands::net::run_check(verbose),
@@ -2081,4 +2094,3 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
     }
 }
-

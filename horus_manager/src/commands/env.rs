@@ -1,6 +1,8 @@
 //! Env command - freeze, restore, list, and show environments
 
-use crate::commands::check::{check_system_package_exists, prompt_missing_system_package, MissingSystemChoice};
+use crate::commands::check::{
+    check_system_package_exists, prompt_missing_system_package, MissingSystemChoice,
+};
 use crate::{registry, workspace, yaml_utils};
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
@@ -18,10 +20,8 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
 
     // Save to local file
     let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.yaml"));
-    let yaml = serde_yaml::to_string(&manifest)
-        .map_err(|e| HorusError::Config(e.to_string()))?;
-    fs::write(&freeze_file, yaml)
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+    let yaml = serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(e.to_string()))?;
+    fs::write(&freeze_file, yaml).map_err(|e| HorusError::Config(e.to_string()))?;
 
     println!("  Environment frozen to {}", freeze_file.display());
     println!("   ID: {}", manifest.horus_id);
@@ -46,7 +46,11 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
                     println!("  • {} -> {}", pkg.name, path);
                 }
             }
-            println!("\n{}", "Path dependencies are not portable and cannot be published to the registry.".yellow());
+            println!(
+                "\n{}",
+                "Path dependencies are not portable and cannot be published to the registry."
+                    .yellow()
+            );
             println!(
                 "{}",
                 "You can still save locally with: horus env freeze".yellow()
@@ -76,19 +80,13 @@ pub fn run_restore(source: String) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
 
     // Check if source is a file path or environment ID
-    if source.ends_with(".yaml")
-        || source.ends_with(".yml")
-        || PathBuf::from(&source).exists()
-    {
+    if source.ends_with(".yaml") || source.ends_with(".yml") || PathBuf::from(&source).exists() {
         // It's a file path
-        let content = fs::read_to_string(&source).map_err(|e| {
-            HorusError::Config(format!("Failed to read freeze file: {}", e))
-        })?;
+        let content = fs::read_to_string(&source)
+            .map_err(|e| HorusError::Config(format!("Failed to read freeze file: {}", e)))?;
 
-        let manifest: registry::EnvironmentManifest =
-            serde_yaml::from_str(&content).map_err(|e| {
-                HorusError::Config(format!("Failed to parse freeze file: {}", e))
-            })?;
+        let manifest: registry::EnvironmentManifest = serde_yaml::from_str(&content)
+            .map_err(|e| HorusError::Config(format!("Failed to parse freeze file: {}", e)))?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
@@ -170,30 +168,20 @@ fn restore_packages(
                     // Prompt user for what to do
                     match prompt_missing_system_package(&pkg.name)? {
                         MissingSystemChoice::InstallGlobal => {
-                            println!(
-                                "  {} Installing to HORUS global cache...",
-                                "▶".cyan()
-                            );
+                            println!("  {} Installing to HORUS global cache...", "▶".cyan());
                             client
                                 .install_to_target(
                                     &pkg.name,
                                     Some(&pkg.version),
                                     workspace::InstallTarget::Global,
                                 )
-                                .map_err(|e| {
-                                    HorusError::Config(e.to_string())
-                                })?;
+                                .map_err(|e| HorusError::Config(e.to_string()))?;
                         }
                         MissingSystemChoice::InstallLocal => {
-                            println!(
-                                "  {} Installing to HORUS local...",
-                                "▶".cyan()
-                            );
+                            println!("  {} Installing to HORUS local...", "▶".cyan());
                             client
                                 .install(&pkg.name, Some(&pkg.version))
-                                .map_err(|e| {
-                                    HorusError::Config(e.to_string())
-                                })?;
+                                .map_err(|e| HorusError::Config(e.to_string()))?;
                         }
                         MissingSystemChoice::Skip => {
                             println!("  {} Skipped {}", "⊘".yellow(), pkg.name);
@@ -203,14 +191,16 @@ fn restore_packages(
                 }
             }
             registry::PackageSource::Path { path } => {
-                println!(
-                    "  {} {} (path dependency)",
-                    "[WARNING]".yellow(),
-                    pkg.name
-                );
+                println!("  {} {} (path dependency)", "[WARNING]".yellow(), pkg.name);
                 println!("    Path: {}", path);
-                println!("    {} Path dependencies are not portable across machines.", "Note:".dimmed());
-                println!("    {} Please update horus.yaml with the correct path if needed.", "Tip:".dimmed());
+                println!(
+                    "    {} Path dependencies are not portable across machines.",
+                    "Note:".dimmed()
+                );
+                println!(
+                    "    {} Please update horus.yaml with the correct path if needed.",
+                    "Tip:".dimmed()
+                );
                 // Don't try to install - user must fix path manually
                 continue;
             }
@@ -228,17 +218,9 @@ fn restore_packages(
             let yaml_path = ws_path.join("horus.yaml");
             if yaml_path.exists() {
                 if let Err(e) =
-                    yaml_utils::add_dependency_to_horus_yaml(
-                        &yaml_path,
-                        &pkg.name,
-                        &pkg.version,
-                    )
+                    yaml_utils::add_dependency_to_horus_yaml(&yaml_path, &pkg.name, &pkg.version)
                 {
-                    eprintln!(
-                        "  {} Failed to update horus.yaml: {}",
-                        "⚠".yellow(),
-                        e
-                    );
+                    eprintln!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
                 }
             }
         }

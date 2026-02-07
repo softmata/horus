@@ -10,9 +10,9 @@ use crate::plugins::{
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use colored::*;
+use serde_json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use serde_json;
 
 /// Detect if a package has CLI plugin capabilities
 ///
@@ -915,11 +915,7 @@ pub fn run_install(
                 if let Err(e) =
                     yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &package, version)
                 {
-                    println!(
-                        "  {} Failed to update horus.yaml: {}",
-                        "⚠".yellow(),
-                        e
-                    );
+                    println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
                 }
             }
         }
@@ -929,22 +925,18 @@ pub fn run_install(
 }
 
 /// Remove a package
-pub fn run_remove(
-    package: String,
-    global: bool,
-    target: Option<String>,
-) -> HorusResult<()> {
+pub fn run_remove(package: String, global: bool, target: Option<String>) -> HorusResult<()> {
     println!("{} Removing {}...", "▶".cyan(), package.yellow());
 
     // Track workspace path for horus.yaml update
     let workspace_path = if global {
         None
     } else if let Some(target_name) = &target {
-        let reg = workspace::WorkspaceRegistry::load()
-            .map_err(|e| HorusError::Config(e.to_string()))?;
-        let ws = reg.find_by_name(target_name).ok_or_else(|| {
-            HorusError::Config(format!("Workspace '{}' not found", target_name))
-        })?;
+        let reg =
+            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg
+            .find_by_name(target_name)
+            .ok_or_else(|| HorusError::Config(format!("Workspace '{}' not found", target_name)))?;
         Some(ws.path.clone())
     } else {
         workspace::find_workspace_root()
@@ -952,9 +944,8 @@ pub fn run_remove(
 
     let remove_dir = if global {
         // Remove from global cache
-        let home = dirs::home_dir().ok_or_else(|| {
-            HorusError::Config("Could not find home directory".to_string())
-        })?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
         let global_cache = home.join(".horus/cache");
 
         // Find versioned directory
@@ -972,18 +963,15 @@ pub fn run_remove(
             }
         }
         found.ok_or_else(|| {
-            HorusError::Config(format!(
-                "Package {} not found in global cache",
-                package
-            ))
+            HorusError::Config(format!("Package {} not found in global cache", package))
         })?
     } else if let Some(target_name) = &target {
         // Remove from specific workspace
-        let reg = workspace::WorkspaceRegistry::load()
-            .map_err(|e| HorusError::Config(e.to_string()))?;
-        let ws = reg.find_by_name(target_name).ok_or_else(|| {
-            HorusError::Config(format!("Workspace '{}' not found", target_name))
-        })?;
+        let reg =
+            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg
+            .find_by_name(target_name)
+            .ok_or_else(|| HorusError::Config(format!("Workspace '{}' not found", target_name)))?;
         ws.path.join(".horus/packages").join(&package)
     } else {
         // Remove from current workspace
@@ -996,16 +984,15 @@ pub fn run_remove(
 
     // Check for system package reference first
     let packages_dir = if global {
-        let home = dirs::home_dir().ok_or_else(|| {
-            HorusError::Config("Could not find home directory".to_string())
-        })?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
         home.join(".horus/cache")
     } else if let Some(target_name) = &target {
-        let reg = workspace::WorkspaceRegistry::load()
-            .map_err(|e| HorusError::Config(e.to_string()))?;
-        let ws = reg.find_by_name(target_name).ok_or_else(|| {
-            HorusError::Config(format!("Workspace '{}' not found", target_name))
-        })?;
+        let reg =
+            workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg
+            .find_by_name(target_name)
+            .ok_or_else(|| HorusError::Config(format!("Workspace '{}' not found", target_name)))?;
         ws.path.join(".horus/packages")
     } else if let Some(root) = workspace::find_workspace_root() {
         root.join(".horus/packages")
@@ -1016,17 +1003,14 @@ pub fn run_remove(
     let system_ref = packages_dir.join(format!("{}.system.json", package));
     if system_ref.exists() {
         // Read to determine package type
-        let content = fs::read_to_string(&system_ref).map_err(|e| {
-            HorusError::Config(format!("Failed to read system reference: {}", e))
-        })?;
-        let metadata: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-            HorusError::Config(format!("Failed to parse system reference: {}", e))
-        })?;
+        let content = fs::read_to_string(&system_ref)
+            .map_err(|e| HorusError::Config(format!("Failed to read system reference: {}", e)))?;
+        let metadata: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| HorusError::Config(format!("Failed to parse system reference: {}", e)))?;
 
         // Remove reference file
-        fs::remove_file(&system_ref).map_err(|e| {
-            HorusError::Config(format!("Failed to remove system reference: {}", e))
-        })?;
+        fs::remove_file(&system_ref)
+            .map_err(|e| HorusError::Config(format!("Failed to remove system reference: {}", e)))?;
 
         // If it's a cargo package, also remove bin symlink
         if let Some(pkg_type) = metadata.get("package_type") {
@@ -1092,9 +1076,8 @@ pub fn run_remove(
     }
 
     // Remove package directory
-    fs::remove_dir_all(&remove_dir).map_err(|e| {
-        HorusError::Config(format!("Failed to remove package: {}", e))
-    })?;
+    fs::remove_dir_all(&remove_dir)
+        .map_err(|e| HorusError::Config(format!("Failed to remove package: {}", e)))?;
 
     println!("  Removed {} from {}", package, remove_dir.display());
 
@@ -1114,11 +1097,7 @@ pub fn run_remove(
 }
 
 /// List packages (local, global, or search)
-pub fn run_list(
-    query: Option<String>,
-    global: bool,
-    all: bool,
-) -> HorusResult<()> {
+pub fn run_list(query: Option<String>, global: bool, all: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
 
     if let Some(q) = query {
@@ -1151,9 +1130,8 @@ pub fn run_list(
         }
     } else if all {
         // List both local and global packages
-        let home = dirs::home_dir().ok_or_else(|| {
-            HorusError::Config("Could not find home directory".to_string())
-        })?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
         let global_cache = home.join(".horus/cache");
 
         // Show local packages
@@ -1227,9 +1205,8 @@ pub fn run_list(
     } else if global {
         // List global cache packages
         println!("{} Global cache packages:\n", "🌐".cyan());
-        let home = dirs::home_dir().ok_or_else(|| {
-            HorusError::Config("Could not find home directory".to_string())
-        })?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
         let global_cache = home.join(".horus/cache");
 
         if !global_cache.exists() {
@@ -1237,9 +1214,7 @@ pub fn run_list(
             return Ok(());
         }
 
-        for entry in
-            fs::read_dir(&global_cache).map_err(|e| HorusError::Config(e.to_string()))?
-        {
+        for entry in fs::read_dir(&global_cache).map_err(|e| HorusError::Config(e.to_string()))? {
             let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
             if entry
                 .file_type()
@@ -1265,9 +1240,7 @@ pub fn run_list(
             return Ok(());
         }
 
-        for entry in
-            fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(e.to_string()))?
-        {
+        for entry in fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(e.to_string()))? {
             let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
             let entry_path = entry.path();
 
@@ -1380,11 +1353,7 @@ pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
 }
 
 /// Update packages
-pub fn run_update(
-    package: Option<String>,
-    global: bool,
-    dry_run: bool,
-) -> HorusResult<()> {
+pub fn run_update(package: Option<String>, global: bool, dry_run: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     client
         .update_packages(package.as_deref(), global, dry_run)
@@ -1399,11 +1368,7 @@ pub fn run_keygen() -> HorusResult<()> {
 }
 
 /// Unpublish a package from the registry
-pub fn run_unpublish(
-    package: String,
-    version: String,
-    yes: bool,
-) -> HorusResult<()> {
+pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult<()> {
     use std::io::{self, Write};
 
     println!(
@@ -1432,9 +1397,9 @@ pub fn run_unpublish(
         io::stdout().flush().unwrap();
 
         let mut confirmation = String::new();
-        io::stdin().read_line(&mut confirmation).map_err(|e| {
-            HorusError::Config(format!("Failed to read input: {}", e))
-        })?;
+        io::stdin()
+            .read_line(&mut confirmation)
+            .map_err(|e| HorusError::Config(format!("Failed to read input: {}", e)))?;
 
         if confirmation.trim() != package {
             println!("  Package name mismatch. Unpublish cancelled.");
@@ -1459,12 +1424,7 @@ pub fn run_unpublish(
 }
 
 /// Add a dependency to horus.yaml (does NOT install - deferred to `horus run`)
-pub fn run_add(
-    name: String,
-    ver: Option<String>,
-    driver: bool,
-    plugin: bool,
-) -> HorusResult<()> {
+pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) -> HorusResult<()> {
     // Find horus.yaml in current directory or workspace
     let workspace_path = workspace::find_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());

@@ -1,8 +1,8 @@
 //! Driver command - list, search, info, probe, and manage hardware drivers
 
+use crate::registry;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
-use crate::registry;
 
 struct DriverInfo {
     id: &'static str,
@@ -156,9 +156,7 @@ pub fn run_list(
                 "simulation" | "sim" => "Simulation",
                 _ => {
                     println!("{} Unknown category: {}", "[WARN]".yellow(), cat_str);
-                    println!(
-                        "       Valid categories: sensor, actuator, bus, input, simulation"
-                    );
+                    println!("       Valid categories: sensor, actuator, bus, input, simulation");
                     return Ok(());
                 }
             };
@@ -221,14 +219,11 @@ pub fn run_list(
             );
 
             for plugin_id in loaded {
-                if let Some(manifest) =
-                    loader.get_plugin(&plugin_id).ok().map(|p| p.manifest())
-                {
+                if let Some(manifest) = loader.get_plugin(&plugin_id).ok().map(|p| p.manifest()) {
                     // Filter by category if specified
                     let category_match = if let Some(cat_str) = &category {
                         let cat_lower = cat_str.to_lowercase();
-                        let manifest_cat =
-                            format!("{:?}", manifest.category).to_lowercase();
+                        let manifest_cat = format!("{:?}", manifest.category).to_lowercase();
                         manifest_cat.contains(&cat_lower)
                     } else {
                         true
@@ -246,15 +241,9 @@ pub fn run_list(
 
                         // Show backends provided by this plugin
                         if !manifest.backends.is_empty() {
-                            let backend_ids: Vec<_> = manifest
-                                .backends
-                                .iter()
-                                .map(|b| b.id.as_str())
-                                .collect();
-                            println!(
-                                "     Backends: {}",
-                                backend_ids.join(", ").cyan()
-                            );
+                            let backend_ids: Vec<_> =
+                                manifest.backends.iter().map(|b| b.id.as_str()).collect();
+                            println!("     Backends: {}", backend_ids.join(", ").cyan());
                         }
                     }
                 }
@@ -434,12 +423,7 @@ pub fn run_search(query: String, bus_type: Option<String>) -> HorusResult<()> {
                 );
                 for d in results {
                     let bus = d.bus_type.as_deref().unwrap_or("?");
-                    println!(
-                        "  {} {} [{}]",
-                        "-".green(),
-                        d.name.yellow(),
-                        bus.dimmed()
-                    );
+                    println!("  {} {} [{}]", "-".green(), d.name.yellow(), bus.dimmed());
                     if let Some(desc) = &d.description {
                         println!("     {}", desc.dimmed());
                     }
@@ -454,11 +438,7 @@ pub fn run_search(query: String, bus_type: Option<String>) -> HorusResult<()> {
 }
 
 /// Probe for hardware using driver plugins
-pub fn run_probe(
-    plugin: Option<String>,
-    backend: Option<String>,
-    mode: String,
-) -> HorusResult<()> {
+pub fn run_probe(plugin: Option<String>, backend: Option<String>, mode: String) -> HorusResult<()> {
     use horus_core::plugin::{DriverLoader, DriverLoaderConfig, DriverMode};
 
     let driver_mode = match mode.to_lowercase().as_str() {
@@ -505,12 +485,7 @@ pub fn run_probe(
         let results = match loader.probe(&plugin_id) {
             Ok(r) => r,
             Err(e) => {
-                println!(
-                    "  {} Plugin {}: {}",
-                    "[ERROR]".red(),
-                    plugin_id.yellow(),
-                    e
-                );
+                println!("  {} Plugin {}: {}", "[ERROR]".red(), plugin_id.yellow(), e);
                 continue;
             }
         };
@@ -533,11 +508,7 @@ pub fn run_probe(
 
         for result in results {
             let status = if result.detected {
-                format!(
-                    "✓ Detected (confidence: {:.0}%)",
-                    result.confidence * 100.0
-                )
-                .green()
+                format!("✓ Detected (confidence: {:.0}%)", result.confidence * 100.0).green()
             } else {
                 "✗ Not detected".red().to_string().into()
             };
@@ -619,9 +590,7 @@ pub fn run_plugins(reload: bool, mode: String) -> HorusResult<()> {
     let health_map = loader.health();
 
     for plugin_id in loaded {
-        if let Some(manifest) =
-            loader.get_plugin(&plugin_id).ok().map(|p| p.manifest())
-        {
+        if let Some(manifest) = loader.get_plugin(&plugin_id).ok().map(|p| p.manifest()) {
             println!(
                 "  {} {} v{} ({:?})",
                 "◆".magenta(),

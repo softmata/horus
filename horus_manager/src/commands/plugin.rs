@@ -41,12 +41,8 @@ pub fn run_search(query: String) -> HorusResult<()> {
         for plugin in results {
             let source_badge = match plugin.source {
                 crate::plugins::PluginSourceType::Local => "[LOCAL]".yellow(),
-                crate::plugins::PluginSourceType::Registry => {
-                    "[REGISTRY]".green()
-                }
-                crate::plugins::PluginSourceType::CratesIo => {
-                    "[CRATES.IO]".blue()
-                }
+                crate::plugins::PluginSourceType::Registry => "[REGISTRY]".green(),
+                crate::plugins::PluginSourceType::CratesIo => "[CRATES.IO]".blue(),
                 crate::plugins::PluginSourceType::Git => "[GIT]".magenta(),
             };
             println!(
@@ -97,10 +93,8 @@ pub fn run_available(include_local: bool) -> HorusResult<()> {
     println!();
 
     // Group by category
-    let mut by_category: std::collections::HashMap<
-        String,
-        Vec<crate::plugins::AvailablePlugin>,
-    > = std::collections::HashMap::new();
+    let mut by_category: std::collections::HashMap<String, Vec<crate::plugins::AvailablePlugin>> =
+        std::collections::HashMap::new();
 
     for plugin in all_plugins {
         let cat_name = format!("{:?}", plugin.category);
@@ -117,12 +111,8 @@ pub fn run_available(include_local: bool) -> HorusResult<()> {
         for plugin in plugins {
             let source = match plugin.source {
                 crate::plugins::PluginSourceType::Local => "local".yellow(),
-                crate::plugins::PluginSourceType::Registry => {
-                    "registry".green()
-                }
-                crate::plugins::PluginSourceType::CratesIo => {
-                    "crates.io".blue()
-                }
+                crate::plugins::PluginSourceType::Registry => "registry".green(),
+                crate::plugins::PluginSourceType::CratesIo => "crates.io".blue(),
                 crate::plugins::PluginSourceType::Git => "git".magenta(),
             };
             println!(

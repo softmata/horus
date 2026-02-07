@@ -8,9 +8,9 @@ use std::path::PathBuf;
 /// List recording sessions
 pub fn run_list(long: bool) -> HorusResult<()> {
     let manager = RecordingManager::new();
-    let sessions = manager.list_sessions().map_err(|e| {
-        HorusError::Internal(format!("Failed to list recordings: {}", e))
-    })?;
+    let sessions = manager
+        .list_sessions()
+        .map_err(|e| HorusError::Internal(format!("Failed to list recordings: {}", e)))?;
 
     if sessions.is_empty() {
         println!("{} No recording sessions found.", "[INFO]".cyan());
@@ -25,8 +25,7 @@ pub fn run_list(long: bool) -> HorusResult<()> {
         for session in sessions {
             if long {
                 // Get detailed info
-                let recordings =
-                    manager.get_session_recordings(&session).unwrap_or_default();
+                let recordings = manager.get_session_recordings(&session).unwrap_or_default();
                 let total_size: u64 = recordings
                     .iter()
                     .filter_map(|p| std::fs::metadata(p).ok())
@@ -51,9 +50,9 @@ pub fn run_list(long: bool) -> HorusResult<()> {
 /// Show info about a recording session
 pub fn run_info(session: String) -> HorusResult<()> {
     let manager = RecordingManager::new();
-    let recordings = manager.get_session_recordings(&session).map_err(|e| {
-        HorusError::Internal(format!("Failed to get session info: {}", e))
-    })?;
+    let recordings = manager
+        .get_session_recordings(&session)
+        .map_err(|e| HorusError::Internal(format!("Failed to get session info: {}", e)))?;
 
     if recordings.is_empty() {
         println!("{} Session '{}' not found.", "[WARN]".yellow(), session);
@@ -70,9 +69,7 @@ pub fn run_info(session: String) -> HorusResult<()> {
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         // Try to load and get tick count
-        let tick_info = if let Ok(recording) =
-            horus_core::scheduling::NodeRecording::load(&path)
-        {
+        let tick_info = if let Ok(recording) = horus_core::scheduling::NodeRecording::load(&path) {
             format!("ticks {}-{}", recording.first_tick, recording.last_tick)
         } else {
             "scheduler recording".to_string()
@@ -107,9 +104,9 @@ pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
         }
     }
 
-    manager.delete_session(&session).map_err(|e| {
-        HorusError::Internal(format!("Failed to delete session: {}", e))
-    })?;
+    manager
+        .delete_session(&session)
+        .map_err(|e| HorusError::Internal(format!("Failed to delete session: {}", e)))?;
 
     println!("{} Deleted session '{}'", "✓".green(), session);
     Ok(())
@@ -133,13 +130,9 @@ pub fn run_replay(
         PathBuf::from(&recording)
     } else {
         // Treat as session name - find the scheduler recording
-        let recordings =
-            manager.get_session_recordings(&recording).map_err(|e| {
-                HorusError::Internal(format!(
-                    "Failed to get session '{}': {}",
-                    recording, e
-                ))
-            })?;
+        let recordings = manager.get_session_recordings(&recording).map_err(|e| {
+            HorusError::Internal(format!("Failed to get session '{}': {}", recording, e))
+        })?;
 
         if recordings.is_empty() {
             return Err(HorusError::Internal(format!(
@@ -198,8 +191,7 @@ pub fn run_replay(
         // Support formats: hex (0x...), decimal numbers, or raw strings
         let value_bytes = if let Some(hex_str) = value_str.strip_prefix("0x") {
             // Hex format
-            parse_hex_string(hex_str)
-                .unwrap_or_else(|_| value_str.as_bytes().to_vec())
+            parse_hex_string(hex_str).unwrap_or_else(|_| value_str.as_bytes().to_vec())
         } else if let Ok(num) = value_str.parse::<f64>() {
             // Float number
             num.to_le_bytes().to_vec()
@@ -230,19 +222,12 @@ fn parse_hex_string(s: &str) -> Result<Vec<u8>, String> {
     }
     (0..s.len())
         .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|e| format!("Invalid hex: {}", e))
-        })
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("Invalid hex: {}", e)))
         .collect()
 }
 
 /// Diff two recording sessions
-pub fn run_diff(
-    session1: String,
-    session2: String,
-    limit: Option<usize>,
-) -> HorusResult<()> {
+pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> HorusResult<()> {
     let manager = RecordingManager::new();
 
     println!(
@@ -254,17 +239,11 @@ pub fn run_diff(
 
     // Get recordings from both sessions
     let recordings1 = manager.get_session_recordings(&session1).map_err(|e| {
-        HorusError::Internal(format!(
-            "Failed to load session '{}': {}",
-            session1, e
-        ))
+        HorusError::Internal(format!("Failed to load session '{}': {}", session1, e))
     })?;
 
     let recordings2 = manager.get_session_recordings(&session2).map_err(|e| {
-        HorusError::Internal(format!(
-            "Failed to load session '{}': {}",
-            session2, e
-        ))
+        HorusError::Internal(format!("Failed to load session '{}': {}", session2, e))
     })?;
 
     // Find matching nodes
@@ -305,14 +284,31 @@ pub fn run_diff(
                         );
                         for diff in diffs.iter().take(max_diffs - total_diffs) {
                             match diff {
-                                horus_core::scheduling::RecordingDiff::OutputDifference { tick, topic, .. } => {
+                                horus_core::scheduling::RecordingDiff::OutputDifference {
+                                    tick,
+                                    topic,
+                                    ..
+                                } => {
                                     println!("    Tick {}: output '{}' differs", tick, topic);
                                 }
-                                horus_core::scheduling::RecordingDiff::MissingTick { tick, in_recording } => {
-                                    println!("    Tick {} missing in recording {}", tick, in_recording);
+                                horus_core::scheduling::RecordingDiff::MissingTick {
+                                    tick,
+                                    in_recording,
+                                } => {
+                                    println!(
+                                        "    Tick {} missing in recording {}",
+                                        tick, in_recording
+                                    );
                                 }
-                                horus_core::scheduling::RecordingDiff::MissingOutput { tick, topic, in_recording } => {
-                                    println!("    Tick {}: output '{}' missing in recording {}", tick, topic, in_recording);
+                                horus_core::scheduling::RecordingDiff::MissingOutput {
+                                    tick,
+                                    topic,
+                                    in_recording,
+                                } => {
+                                    println!(
+                                        "    Tick {}: output '{}' missing in recording {}",
+                                        tick, topic, in_recording
+                                    );
                                 }
                             }
                             total_diffs += 1;
@@ -334,11 +330,7 @@ pub fn run_diff(
 }
 
 /// Export a recording session to JSON or CSV
-pub fn run_export(
-    session: String,
-    output: PathBuf,
-    format: String,
-) -> HorusResult<()> {
+pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResult<()> {
     let manager = RecordingManager::new();
 
     println!(
@@ -349,30 +341,24 @@ pub fn run_export(
         format
     );
 
-    let recordings = manager.get_session_recordings(&session).map_err(|e| {
-        HorusError::Internal(format!("Failed to load session: {}", e))
-    })?;
+    let recordings = manager
+        .get_session_recordings(&session)
+        .map_err(|e| HorusError::Internal(format!("Failed to load session: {}", e)))?;
 
     if format == "json" {
         use std::io::Write;
-        let mut file = std::fs::File::create(&output).map_err(|e| {
-            HorusError::Internal(format!("Failed to create output file: {}", e))
-        })?;
+        let mut file = std::fs::File::create(&output)
+            .map_err(|e| HorusError::Internal(format!("Failed to create output file: {}", e)))?;
 
         writeln!(file, "{{")?;
         writeln!(file, "  \"session\": \"{}\",", session)?;
         writeln!(file, "  \"recordings\": [")?;
 
         for (i, path) in recordings.iter().enumerate() {
-            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path)
-            {
+            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path) {
                 let comma = if i < recordings.len() - 1 { "," } else { "" };
                 writeln!(file, "    {{")?;
-                writeln!(
-                    file,
-                    "      \"node_name\": \"{}\",",
-                    recording.node_name
-                )?;
+                writeln!(file, "      \"node_name\": \"{}\",", recording.node_name)?;
                 writeln!(file, "      \"node_id\": \"{}\",", recording.node_id)?;
                 writeln!(file, "      \"first_tick\": {},", recording.first_tick)?;
                 writeln!(file, "      \"last_tick\": {},", recording.last_tick)?;
@@ -391,9 +377,8 @@ pub fn run_export(
         println!("{} Exported to {:?}", "✓".green(), output);
     } else if format == "csv" {
         use std::io::Write;
-        let mut file = std::fs::File::create(&output).map_err(|e| {
-            HorusError::Internal(format!("Failed to create output file: {}", e))
-        })?;
+        let mut file = std::fs::File::create(&output)
+            .map_err(|e| HorusError::Internal(format!("Failed to create output file: {}", e)))?;
 
         // Write CSV header
         writeln!(
@@ -403,8 +388,7 @@ pub fn run_export(
 
         // Process each recording
         for path in &recordings {
-            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path)
-            {
+            if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path) {
                 // Skip scheduler recordings (they have different structure)
                 if recording.node_name.starts_with("scheduler") {
                     continue;
@@ -416,8 +400,7 @@ pub fn run_export(
                         .outputs
                         .iter()
                         .map(|(k, v)| {
-                            let hex: String =
-                                v.iter().map(|b| format!("{:02x}", b)).collect();
+                            let hex: String = v.iter().map(|b| format!("{:02x}", b)).collect();
                             format!("{}={}", k, hex)
                         })
                         .collect();
@@ -507,12 +490,7 @@ pub fn run_inject(
                     injected_count += 1;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "  {} Failed to inject '{}': {}",
-                        "✗".red(),
-                        node_name,
-                        e
-                    );
+                    eprintln!("  {} Failed to inject '{}': {}", "✗".red(), node_name, e);
                 }
             }
         }
@@ -610,25 +588,19 @@ pub fn run_inject(
 
             match scheduler.run() {
                 Ok(()) => {
-                    println!(
-                        "\n{} Recording finished, restarting...\n",
-                        "[LOOP]".cyan()
-                    );
+                    println!("\n{} Recording finished, restarting...\n", "[LOOP]".cyan());
 
                     // Recreate scheduler for next iteration
-                    scheduler =
-                        Scheduler::new().with_name(&format!("Inject({})", session));
+                    scheduler = Scheduler::new().with_name(&format!("Inject({})", session));
 
                     // Re-inject nodes
                     for path in &recordings {
-                        let filename =
-                            path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                         if filename.starts_with("scheduler@") {
                             continue;
                         }
                         let node_name = filename.split('@').next().unwrap_or("");
-                        let should_inject =
-                            all || nodes.iter().any(|n| n == node_name);
+                        let should_inject = all || nodes.iter().any(|n| n == node_name);
                         if should_inject {
                             let _ = scheduler.add_replay(path.clone(), 0);
                         }

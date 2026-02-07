@@ -130,20 +130,17 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     }
 
     // Find all workspaces and their dependencies
-    let registry = workspace::WorkspaceRegistry::load()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+    let registry =
+        workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
 
-    let mut used_packages: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut used_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for ws in &registry.workspaces {
         let yaml_path = ws.path.join("horus.yaml");
         if yaml_path.exists() {
-            if let Ok(deps) =
-                crate::commands::run::parse_horus_yaml_dependencies_v2(
-                    yaml_path.to_str().unwrap_or(""),
-                )
-            {
+            if let Ok(deps) = crate::commands::run::parse_horus_yaml_dependencies_v2(
+                yaml_path.to_str().unwrap_or(""),
+            ) {
                 for dep in deps {
                     // Extract package name from dependency spec
                     used_packages.insert(dep.name.clone());
