@@ -257,12 +257,6 @@ enum Commands {
         command: HfCommands,
     },
 
-    /// ROS2 bridge for runtime interoperability
-    Bridge {
-        #[command(subcommand)]
-        command: BridgeCommands,
-    },
-
     /// System diagnostics and health check
     Doctor {
         /// Show detailed diagnostic information
@@ -1116,67 +1110,6 @@ enum HfCommands {
         #[arg(short = 'w', long = "window")]
         window: Option<usize>,
     },
-}
-
-#[derive(Subcommand)]
-enum BridgeCommands {
-    /// Start ROS2 bridge for runtime interoperability
-    #[command(name = "ros2", alias = "ros")]
-    Ros2 {
-        /// Topics to bridge (comma-separated)
-        #[arg(short = 't', long = "topics", value_delimiter = ',')]
-        topics: Vec<String>,
-
-        /// Bridge all discovered topics
-        #[arg(short = 'a', long = "all")]
-        all: bool,
-
-        /// Bridge direction: in (ROS2->HORUS), out (HORUS->ROS2), both (default)
-        #[arg(short = 'd', long = "direction")]
-        direction: Option<String>,
-
-        /// Namespace filter (only bridge topics matching this prefix)
-        #[arg(short = 'n', long = "namespace")]
-        namespace: Option<String>,
-
-        /// ROS2 domain ID (0-232, default: 0)
-        #[arg(long = "domain")]
-        domain_id: Option<u32>,
-
-        /// QoS profile: sensor_data, default, services, parameters
-        #[arg(short = 'q', long = "qos")]
-        qos: Option<String>,
-
-        /// Also bridge services
-        #[arg(long = "services")]
-        services: bool,
-
-        /// Also bridge actions
-        #[arg(long = "actions")]
-        actions: bool,
-
-        /// Also bridge parameters
-        #[arg(long = "params")]
-        params: bool,
-
-        /// Verbose output with statistics
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
-
-    /// List discoverable ROS2 topics
-    List {
-        /// ROS2 domain ID (default: 0)
-        #[arg(long = "domain")]
-        domain_id: Option<u32>,
-
-        /// Output as JSON
-        #[arg(long = "json")]
-        json: bool,
-    },
-
-    /// Show bridge information and capabilities
-    Info,
 }
 
 #[derive(Subcommand)]
@@ -3102,28 +3035,6 @@ except ImportError as e:
             HfCommands::Info { name } => commands::hf::frame_info(&name),
             HfCommands::Can { source, target } => commands::hf::can_transform(&source, &target),
             HfCommands::Hz { window } => commands::hf::monitor_rates(window),
-        },
-
-        Commands::Bridge { command } => match command {
-            BridgeCommands::Ros2 {
-                topics,
-                all,
-                direction,
-                namespace,
-                domain_id,
-                qos,
-                services,
-                actions,
-                params,
-                verbose,
-            } => commands::bridge::start_ros2_bridge(
-                topics, all, direction, namespace, domain_id, qos, services, actions, params,
-                verbose,
-            ),
-            BridgeCommands::List { domain_id, json } => {
-                commands::bridge::list_ros2_topics(domain_id, json)
-            }
-            BridgeCommands::Info => commands::bridge::bridge_info(),
         },
 
         Commands::Hardware { command } => match command {
