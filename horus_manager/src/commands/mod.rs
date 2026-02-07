@@ -1,8 +1,12 @@
+pub mod cache;
+pub mod check;
 pub mod clean;
 pub mod deploy;
 #[cfg(feature = "mdns")]
 pub mod discover;
 pub mod doctor;
+pub mod driver;
+pub mod env;
 pub mod github_auth;
 pub mod hardware;
 pub mod hf;
@@ -16,6 +20,8 @@ pub mod new;
 pub mod node;
 pub mod param;
 pub mod pkg;
+pub mod plugin;
+pub mod record;
 pub mod run;
 pub mod test;
 pub mod topic;

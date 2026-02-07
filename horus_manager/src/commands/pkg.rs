@@ -12,6 +12,7 @@ use chrono::Utc;
 use colored::*;
 use std::fs;
 use std::path::{Path, PathBuf};
+use serde_json;
 
 /// Detect if a package has CLI plugin capabilities
 ///
@@ -777,6 +778,787 @@ pub fn list_plugins(show_global: bool, show_project: bool) -> Result<()> {
             "\n  Install plugins with: {}",
             "horus pkg install <package>".cyan()
         );
+    }
+
+    Ok(())
+}
+
+// ── Package management command handlers ──────────────────────────────────
+
+use crate::{registry, workspace, yaml_utils};
+use horus_core::error::{HorusError, HorusResult};
+
+/// Install a package from registry or local path
+pub fn run_install(
+    package: String,
+    ver: Option<String>,
+    global: bool,
+    target: Option<String>,
+) -> HorusResult<()> {
+    // Check if package is actually a path
+    if yaml_utils::is_path_like(&package) {
+        // Path dependency installation
+        if global {
+            return Err(HorusError::Config(
+                "Cannot install path dependencies globally. Path dependencies must be local."
+                    .to_string(),
+            ));
+        }
+
+        println!(
+            "{} Installing path dependency: {}",
+            "▶".cyan(),
+            package.green()
+        );
+
+        // Resolve path
+        let path = PathBuf::from(&package);
+        let absolute_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| HorusError::Config(e.to_string()))?
+                .join(&path)
+        };
+
+        // Verify path exists and is a directory
+        if !absolute_path.exists() {
+            return Err(HorusError::Config(format!(
+                "Path does not exist: {}",
+                absolute_path.display()
+            )));
+        }
+        if !absolute_path.is_dir() {
+            return Err(HorusError::Config(format!(
+                "Path is not a directory: {}",
+                absolute_path.display()
+            )));
+        }
+
+        // Read package name from the path
+        let package_name = yaml_utils::read_package_name_from_path(&absolute_path)
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        println!(
+            "  {} Detected package name: {}",
+            "▸".cyan(),
+            package_name.cyan()
+        );
+
+        // Determine installation target
+        let install_target = if let Some(target_name) = target {
+            let registry = workspace::WorkspaceRegistry::load()
+                .map_err(|e| HorusError::Config(e.to_string()))?;
+            let ws = registry.find_by_name(&target_name).ok_or_else(|| {
+                HorusError::Config(format!("Workspace '{}' not found", target_name))
+            })?;
+            workspace::InstallTarget::Local(ws.path.clone())
+        } else {
+            workspace::detect_or_select_workspace(true)
+                .map_err(|e| HorusError::Config(e.to_string()))?
+        };
+
+        // Install using install_from_path
+        let client = registry::RegistryClient::new();
+        let workspace_path = match &install_target {
+            workspace::InstallTarget::Local(p) => p.clone(),
+            _ => unreachable!(), // Already blocked global above
+        };
+
+        // Pass None for base_dir - CLI paths are resolved relative to current_dir
+        client
+            .install_from_path(&package_name, &absolute_path, install_target, None)
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        // Update horus.yaml with path dependency
+        let horus_yaml_path = workspace_path.join("horus.yaml");
+        if horus_yaml_path.exists() {
+            if let Err(e) = yaml_utils::add_path_dependency_to_horus_yaml(
+                &horus_yaml_path,
+                &package_name,
+                &package, // Use original path as provided by user
+            ) {
+                println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+            } else {
+                println!("  {} Updated horus.yaml", "✓".green());
+            }
+        }
+
+        println!("{} Path dependency installed successfully!", "✓".green());
+        Ok(())
+    } else {
+        // Registry dependency installation
+        let install_target = if global {
+            workspace::InstallTarget::Global
+        } else if let Some(target_name) = target {
+            let registry = workspace::WorkspaceRegistry::load()
+                .map_err(|e| HorusError::Config(e.to_string()))?;
+            let ws = registry.find_by_name(&target_name).ok_or_else(|| {
+                HorusError::Config(format!("Workspace '{}' not found", target_name))
+            })?;
+            workspace::InstallTarget::Local(ws.path.clone())
+        } else {
+            workspace::detect_or_select_workspace(true)
+                .map_err(|e| HorusError::Config(e.to_string()))?
+        };
+
+        let client = registry::RegistryClient::new();
+        client
+            .install_to_target(&package, ver.as_deref(), install_target.clone())
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        // Update horus.yaml if installing locally
+        if let workspace::InstallTarget::Local(workspace_path) = install_target {
+            let horus_yaml_path = workspace_path.join("horus.yaml");
+            if horus_yaml_path.exists() {
+                let version = ver.as_deref().unwrap_or("latest");
+                if let Err(e) =
+                    yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &package, version)
+                {
+                    println!(
+                        "  {} Failed to update horus.yaml: {}",
+                        "⚠".yellow(),
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Remove a package
+pub fn run_remove(
+    package: String,
+    global: bool,
+    target: Option<String>,
+) -> HorusResult<()> {
+    println!("{} Removing {}...", "▶".cyan(), package.yellow());
+
+    // Track workspace path for horus.yaml update
+    let workspace_path = if global {
+        None
+    } else if let Some(target_name) = &target {
+        let reg = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg.find_by_name(target_name).ok_or_else(|| {
+            HorusError::Config(format!("Workspace '{}' not found", target_name))
+        })?;
+        Some(ws.path.clone())
+    } else {
+        workspace::find_workspace_root()
+    };
+
+    let remove_dir = if global {
+        // Remove from global cache
+        let home = dirs::home_dir().ok_or_else(|| {
+            HorusError::Config("Could not find home directory".to_string())
+        })?;
+        let global_cache = home.join(".horus/cache");
+
+        // Find versioned directory
+        let mut found = None;
+        if global_cache.exists() {
+            for entry in
+                fs::read_dir(&global_cache).map_err(|e| HorusError::Config(e.to_string()))?
+            {
+                let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == package || name.starts_with(&format!("{}@", package)) {
+                    found = Some(entry.path());
+                    break;
+                }
+            }
+        }
+        found.ok_or_else(|| {
+            HorusError::Config(format!(
+                "Package {} not found in global cache",
+                package
+            ))
+        })?
+    } else if let Some(target_name) = &target {
+        // Remove from specific workspace
+        let reg = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg.find_by_name(target_name).ok_or_else(|| {
+            HorusError::Config(format!("Workspace '{}' not found", target_name))
+        })?;
+        ws.path.join(".horus/packages").join(&package)
+    } else {
+        // Remove from current workspace
+        if let Some(root) = workspace::find_workspace_root() {
+            root.join(".horus/packages").join(&package)
+        } else {
+            PathBuf::from(".horus/packages").join(&package)
+        }
+    };
+
+    // Check for system package reference first
+    let packages_dir = if global {
+        let home = dirs::home_dir().ok_or_else(|| {
+            HorusError::Config("Could not find home directory".to_string())
+        })?;
+        home.join(".horus/cache")
+    } else if let Some(target_name) = &target {
+        let reg = workspace::WorkspaceRegistry::load()
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+        let ws = reg.find_by_name(target_name).ok_or_else(|| {
+            HorusError::Config(format!("Workspace '{}' not found", target_name))
+        })?;
+        ws.path.join(".horus/packages")
+    } else if let Some(root) = workspace::find_workspace_root() {
+        root.join(".horus/packages")
+    } else {
+        PathBuf::from(".horus/packages")
+    };
+
+    let system_ref = packages_dir.join(format!("{}.system.json", package));
+    if system_ref.exists() {
+        // Read to determine package type
+        let content = fs::read_to_string(&system_ref).map_err(|e| {
+            HorusError::Config(format!("Failed to read system reference: {}", e))
+        })?;
+        let metadata: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            HorusError::Config(format!("Failed to parse system reference: {}", e))
+        })?;
+
+        // Remove reference file
+        fs::remove_file(&system_ref).map_err(|e| {
+            HorusError::Config(format!("Failed to remove system reference: {}", e))
+        })?;
+
+        // If it's a cargo package, also remove bin symlink
+        if let Some(pkg_type) = metadata.get("package_type") {
+            if pkg_type == "CratesIO" {
+                let bin_dir = if let Some(root) = workspace::find_workspace_root() {
+                    root.join(".horus/bin")
+                } else {
+                    PathBuf::from(".horus/bin")
+                };
+                let bin_link = bin_dir.join(&package);
+                if bin_link.exists() || bin_link.read_link().is_ok() {
+                    fs::remove_file(&bin_link).map_err(|e| {
+                        HorusError::Config(format!("Failed to remove binary link: {}", e))
+                    })?;
+                    println!("  Removed binary link for {}", package);
+                }
+            }
+        }
+
+        println!("  Removed system package reference for {}", package);
+
+        // Update horus.yaml if removing from local workspace
+        if let Some(ws_path) = workspace_path {
+            let horus_yaml_path = ws_path.join("horus.yaml");
+            if horus_yaml_path.exists() {
+                let content = fs::read_to_string(&horus_yaml_path)
+                    .map_err(|e| HorusError::Config(e.to_string()))?;
+
+                // Remove package from dependencies list
+                let lines: Vec<&str> = content.lines().collect();
+                let mut new_lines = Vec::new();
+                let mut in_deps = false;
+
+                for line in lines {
+                    if line.trim() == "dependencies:" {
+                        in_deps = true;
+                        new_lines.push(line);
+                    } else if in_deps && line.starts_with("  -") {
+                        let dep = line.trim_start_matches("  -").trim();
+                        if dep != package && !dep.starts_with(&format!("{}@", package)) {
+                            new_lines.push(line);
+                        }
+                    } else {
+                        if in_deps && !line.starts_with("  ") {
+                            in_deps = false;
+                        }
+                        new_lines.push(line);
+                    }
+                }
+
+                let new_content = new_lines.join("\n") + "\n";
+                fs::write(&horus_yaml_path, new_content)
+                    .map_err(|e| HorusError::Config(e.to_string()))?;
+            }
+        }
+
+        return Ok(());
+    }
+
+    if !remove_dir.exists() {
+        println!("  Package {} is not installed", package);
+        return Ok(());
+    }
+
+    // Remove package directory
+    fs::remove_dir_all(&remove_dir).map_err(|e| {
+        HorusError::Config(format!("Failed to remove package: {}", e))
+    })?;
+
+    println!("  Removed {} from {}", package, remove_dir.display());
+
+    // Update horus.yaml if removing from local workspace
+    if let Some(ws_path) = workspace_path {
+        let horus_yaml_path = ws_path.join("horus.yaml");
+        if horus_yaml_path.exists() {
+            if let Err(e) =
+                yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &package)
+            {
+                println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// List packages (local, global, or search)
+pub fn run_list(
+    query: Option<String>,
+    global: bool,
+    all: bool,
+) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+
+    if let Some(q) = query {
+        // Search registry marketplace
+        println!(
+            "{} Searching registry marketplace for '{}'...",
+            "▶".cyan(),
+            q
+        );
+        let results = client
+            .search(&q)
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        if results.is_empty() {
+            println!("  No packages found in marketplace matching '{}'", q);
+        } else {
+            println!(
+                "\n{} Found {} package(s) in marketplace:\n",
+                "✓".green(),
+                results.len()
+            );
+            for pkg in results {
+                println!(
+                    "  {} {} - {}",
+                    pkg.name.yellow().bold(),
+                    pkg.version.dimmed(),
+                    pkg.description.unwrap_or_default()
+                );
+            }
+        }
+    } else if all {
+        // List both local and global packages
+        let home = dirs::home_dir().ok_or_else(|| {
+            HorusError::Config("Could not find home directory".to_string())
+        })?;
+        let global_cache = home.join(".horus/cache");
+
+        // Show local packages
+        println!("{} Local packages:\n", "📦".cyan());
+        let packages_dir = if let Some(root) = workspace::find_workspace_root() {
+            root.join(".horus/packages")
+        } else {
+            PathBuf::from(".horus/packages")
+        };
+
+        if packages_dir.exists() {
+            let mut has_local = false;
+            for entry in
+                fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(e.to_string()))?
+            {
+                let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
+                let entry_path = entry.path();
+
+                // Skip if it's a metadata file
+                if entry_path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    continue;
+                }
+
+                if entry
+                    .file_type()
+                    .map_err(|e| HorusError::Config(e.to_string()))?
+                    .is_dir()
+                    || entry
+                        .file_type()
+                        .map_err(|e| HorusError::Config(e.to_string()))?
+                        .is_symlink()
+                {
+                    has_local = true;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !print_package_info(&packages_dir, &name, &entry_path) {
+                        println!("   {}", name.yellow());
+                    }
+                }
+            }
+            if !has_local {
+                println!("  No local packages");
+            }
+        } else {
+            println!("  No local packages");
+        }
+
+        // Show global packages
+        println!("\n{} Global cache packages:\n", "🌐".cyan());
+        if global_cache.exists() {
+            let mut has_global = false;
+            for entry in
+                fs::read_dir(&global_cache).map_err(|e| HorusError::Config(e.to_string()))?
+            {
+                let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
+                if entry
+                    .file_type()
+                    .map_err(|e| HorusError::Config(e.to_string()))?
+                    .is_dir()
+                {
+                    has_global = true;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    println!("   {}", name.yellow());
+                }
+            }
+            if !has_global {
+                println!("  No global packages");
+            }
+        } else {
+            println!("  No global packages");
+        }
+    } else if global {
+        // List global cache packages
+        println!("{} Global cache packages:\n", "🌐".cyan());
+        let home = dirs::home_dir().ok_or_else(|| {
+            HorusError::Config("Could not find home directory".to_string())
+        })?;
+        let global_cache = home.join(".horus/cache");
+
+        if !global_cache.exists() {
+            println!("  No global packages yet");
+            return Ok(());
+        }
+
+        for entry in
+            fs::read_dir(&global_cache).map_err(|e| HorusError::Config(e.to_string()))?
+        {
+            let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
+            if entry
+                .file_type()
+                .map_err(|e| HorusError::Config(e.to_string()))?
+                .is_dir()
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                println!("   {}", name.yellow());
+            }
+        }
+    } else {
+        // List local workspace packages (default)
+        let packages_dir = if let Some(root) = workspace::find_workspace_root() {
+            root.join(".horus/packages")
+        } else {
+            PathBuf::from(".horus/packages")
+        };
+
+        println!("{} Local packages:\n", "📦".cyan());
+
+        if !packages_dir.exists() {
+            println!("  No packages installed yet");
+            return Ok(());
+        }
+
+        for entry in
+            fs::read_dir(&packages_dir).map_err(|e| HorusError::Config(e.to_string()))?
+        {
+            let entry = entry.map_err(|e| HorusError::Config(e.to_string()))?;
+            let entry_path = entry.path();
+
+            // Skip if it's a metadata file
+            if entry_path.extension().and_then(|s| s.to_str()) == Some("json") {
+                continue;
+            }
+
+            if entry
+                .file_type()
+                .map_err(|e| HorusError::Config(e.to_string()))?
+                .is_dir()
+                || entry
+                    .file_type()
+                    .map_err(|e| HorusError::Config(e.to_string()))?
+                    .is_symlink()
+            {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !print_package_info(&packages_dir, &name, &entry_path) {
+                    println!("  {}", name.yellow());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Print package info from metadata files, returns true if info was printed
+fn print_package_info(packages_dir: &Path, name: &str, entry_path: &Path) -> bool {
+    // Check for path dependency metadata
+    let path_meta = packages_dir.join(format!("{}.path.json", name));
+    if path_meta.exists() {
+        if let Ok(content) = fs::read_to_string(&path_meta) {
+            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                let version = metadata["version"].as_str().unwrap_or("dev");
+                let path = metadata["source_path"].as_str().unwrap_or("unknown");
+                println!(
+                    "   {} {} {} {}",
+                    name.yellow(),
+                    version.dimmed(),
+                    "(path:".dimmed(),
+                    format!("{})", path).dimmed()
+                );
+                return true;
+            }
+        }
+    }
+
+    // Check for system package metadata
+    let system_meta = packages_dir.join(format!("{}.system.json", name));
+    if system_meta.exists() {
+        if let Ok(content) = fs::read_to_string(&system_meta) {
+            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                let version = metadata["version"].as_str().unwrap_or("unknown");
+                println!(
+                    "   {} {} {}",
+                    name.yellow(),
+                    version.dimmed(),
+                    "(system)".dimmed()
+                );
+                return true;
+            }
+        }
+    }
+
+    // Check for regular metadata.json
+    let metadata_path = entry_path.join("metadata.json");
+    if metadata_path.exists() {
+        if let Ok(content) = fs::read_to_string(&metadata_path) {
+            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                let version = metadata["version"].as_str().unwrap_or("unknown");
+                println!(
+                    "   {} {} {}",
+                    name.yellow(),
+                    version.dimmed(),
+                    "(registry)".dimmed()
+                );
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Publish a package to the registry
+pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client
+        .publish(None, dry_run, None)
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    // If --freeze flag is set, also generate freeze file
+    if freeze {
+        println!("\n{} Generating freeze file...", "▶".cyan());
+        let manifest = client
+            .freeze()
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        let freeze_file = "horus-freeze.yaml";
+        let yaml =
+            serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(e.to_string()))?;
+        fs::write(freeze_file, yaml).map_err(|e| HorusError::Config(e.to_string()))?;
+
+        println!("  Environment also frozen to {}", freeze_file);
+    }
+
+    Ok(())
+}
+
+/// Update packages
+pub fn run_update(
+    package: Option<String>,
+    global: bool,
+    dry_run: bool,
+) -> HorusResult<()> {
+    let client = registry::RegistryClient::new();
+    client
+        .update_packages(package.as_deref(), global, dry_run)
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+    Ok(())
+}
+
+/// Generate signing keypair
+pub fn run_keygen() -> HorusResult<()> {
+    registry::generate_signing_keypair().map_err(|e| HorusError::Config(e.to_string()))?;
+    Ok(())
+}
+
+/// Unpublish a package from the registry
+pub fn run_unpublish(
+    package: String,
+    version: String,
+    yes: bool,
+) -> HorusResult<()> {
+    use std::io::{self, Write};
+
+    println!(
+        "{} Unpublishing {} v{}...",
+        "▶".cyan(),
+        package.yellow(),
+        version.yellow()
+    );
+
+    // Confirmation prompt (unless --yes flag is set)
+    if !yes {
+        println!(
+            "\n{} This action is {} and will:",
+            "Warning:".yellow().bold(),
+            "IRREVERSIBLE".red().bold()
+        );
+        println!("  • Delete {} v{} from the registry", package, version);
+        println!("  • Make this version unavailable for download");
+        println!("  • Cannot be undone");
+        println!(
+            "\n{} Consider using 'yank' instead for temporary removal",
+            "Tip:".dimmed()
+        );
+
+        print!("\nType the package name '{}' to confirm: ", package);
+        io::stdout().flush().unwrap();
+
+        let mut confirmation = String::new();
+        io::stdin().read_line(&mut confirmation).map_err(|e| {
+            HorusError::Config(format!("Failed to read input: {}", e))
+        })?;
+
+        if confirmation.trim() != package {
+            println!("  Package name mismatch. Unpublish cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Call unpublish API
+    let client = registry::RegistryClient::new();
+    client
+        .unpublish(&package, &version)
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    println!(
+        "\n  Successfully unpublished {} v{}",
+        package.green(),
+        version.green()
+    );
+    println!("   The package is no longer available on the registry");
+
+    Ok(())
+}
+
+/// Add a dependency to horus.yaml (does NOT install - deferred to `horus run`)
+pub fn run_add(
+    name: String,
+    ver: Option<String>,
+    driver: bool,
+    plugin: bool,
+) -> HorusResult<()> {
+    // Find horus.yaml in current directory or workspace
+    let workspace_path = workspace::find_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let horus_yaml_path = workspace_path.join("horus.yaml");
+
+    if !horus_yaml_path.exists() {
+        return Err(HorusError::Config(
+            "No horus.yaml found. Run 'horus init' or 'horus new' first.".to_string(),
+        ));
+    }
+
+    // Determine package type - either from flags or auto-detect from registry
+    let pkg_type = if driver {
+        "driver".to_string()
+    } else if plugin {
+        "plugin".to_string()
+    } else {
+        // Auto-detect from registry
+        registry::fetch_package_type(&name).unwrap_or_else(|_| "node".to_string())
+    };
+
+    let version = ver.as_deref().unwrap_or("latest");
+
+    // Format dependency string based on type
+    let dep_string = match pkg_type.as_str() {
+        "driver" => format!("driver:{}@{}", name, version),
+        "plugin" => format!("plugin:{}@{}", name, version),
+        _ => {
+            if version == "latest" {
+                name.clone()
+            } else {
+                format!("{}@{}", name, version)
+            }
+        }
+    };
+
+    // Add to horus.yaml
+    match yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version) {
+        Ok(_) => {
+            println!("{} Added '{}' to horus.yaml", "✓".green(), name.cyan());
+            println!("  Type: {}", pkg_type.dimmed());
+            if version != "latest" {
+                println!("  Version: {}", version.dimmed());
+            }
+            println!();
+            println!("Run {} to install dependencies.", "horus run".cyan().bold());
+        }
+        Err(e) => {
+            return Err(HorusError::Config(format!(
+                "Failed to update horus.yaml: {}",
+                e
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove a dependency from horus.yaml (does NOT delete from cache)
+pub fn run_remove_dep(name: String) -> HorusResult<()> {
+    // Find horus.yaml in current directory or workspace
+    let workspace_path = workspace::find_workspace_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let horus_yaml_path = workspace_path.join("horus.yaml");
+
+    if !horus_yaml_path.exists() {
+        return Err(HorusError::Config(
+            "No horus.yaml found in current directory or workspace.".to_string(),
+        ));
+    }
+
+    // Remove from horus.yaml
+    match yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &name) {
+        Ok(_) => {
+            println!("{} Removed '{}' from horus.yaml", "✓".green(), name.cyan());
+            println!();
+            println!("Note: Package remains in cache (~/.horus/cache/).");
+            println!(
+                "Run {} to clean unused packages.",
+                "horus cache clean".dimmed()
+            );
+        }
+        Err(e) => {
+            // Check if it's a "not found" error
+            let err_str = e.to_string();
+            if err_str.contains("not found") {
+                println!("{} '{}' is not in horus.yaml", "!".yellow(), name);
+            } else {
+                return Err(HorusError::Config(format!(
+                    "Failed to update horus.yaml: {}",
+                    e
+                )));
+            }
+        }
     }
 
     Ok(())
