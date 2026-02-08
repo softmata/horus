@@ -1,9 +1,9 @@
-//! Zenoh Throughput Benchmarks
+//! Topic Throughput Benchmarks
 //!
-//! Measures message throughput for Zenoh transport under sustained load.
+//! Measures message throughput for native HORUS IPC under sustained load.
 //! Tests various message sizes and concurrency levels.
 //!
-//! Run with: cargo bench --features zenoh -- zenoh_throughput
+//! Run with: cargo bench -- topic_throughput
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
@@ -61,7 +61,6 @@ fn bench_sustained_throughput(c: &mut Criterion) {
     group.sample_size(100);
 
     // 16-byte messages - target: >1M msg/sec for native
-    let size_16 = std::mem::size_of::<ThroughputPayload16>() as u64;
     group.throughput(Throughput::Elements(1000)); // Measure 1000 messages per iteration
     group.bench_function(BenchmarkId::new("native_16B", "1000_msgs"), |b| {
         let topic = Topic::<ThroughputPayload16>::new("bench.throughput.16").expect("create topic");
@@ -78,7 +77,8 @@ fn bench_sustained_throughput(c: &mut Criterion) {
     });
 
     // 256-byte messages
-    group.throughput(Throughput::Bytes(size_16 * 1000));
+    let size_256 = std::mem::size_of::<ThroughputPayload256>() as u64;
+    group.throughput(Throughput::Bytes(size_256 * 1000));
     group.bench_function(BenchmarkId::new("native_256B", "1000_msgs"), |b| {
         let topic =
             Topic::<ThroughputPayload256>::new("bench.throughput.256").expect("create topic");

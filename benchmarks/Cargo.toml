@@ -75,13 +75,13 @@ zenoh = ["horus_core/zenoh-transport"]
 
 # =============================================================================
 # CRITERION BENCHMARKS
-# Run with: cargo bench --features zenoh
+# Run with: cargo bench
 # =============================================================================
 
 [[bench]]
-name = "zenoh_latency"
+name = "topic_latency"
 harness = false
 
 [[bench]]
-name = "zenoh_throughput"
+name = "topic_throughput"
 harness = false

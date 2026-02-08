@@ -1,9 +1,9 @@
-//! Zenoh Latency Benchmarks
+//! Topic Latency Benchmarks
 //!
-//! Measures end-to-end latency for Zenoh transport at various message sizes.
-//! Compares with native HORUS shared memory IPC.
+//! Measures end-to-end latency for native HORUS shared memory IPC
+//! at various message sizes.
 //!
-//! Run with: cargo bench --features zenoh -- zenoh_latency
+//! Run with: cargo bench -- topic_latency
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use horus::prelude::*;
