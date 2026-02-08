@@ -3289,11 +3289,8 @@ pub struct Topic<T> {
     /// Connection state (atomic for lock-free access)
     state: std::sync::atomic::AtomicU8,
 
-    /// Whether metrics tracking is enabled (adds ~10-20ns per send/recv)
-    metrics_enabled: bool,
-
     /// Optional logging function, set via `.with_logging()` when T: LogSummary.
-    /// When Some, `send()` and `recv()` write to the introspection log buffer.
+    /// When Some, `send()` and `recv()` log message summaries and track metrics.
     log_fn: Option<fn(&T) -> String>,
 
     /// Phantom for type safety
@@ -3323,7 +3320,6 @@ impl<T: Clone> Clone for Topic<T> {
             },
             metrics: self.metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(self.state.load(Ordering::Relaxed)),
-            metrics_enabled: self.metrics_enabled,
             log_fn: self.log_fn,
             _marker: PhantomData,
         }
@@ -3406,26 +3402,6 @@ where
         Self::new(descriptor.name())
     }
 
-    /// Enable metrics tracking on this topic.
-    ///
-    /// When enabled, `send()` and `recv()` automatically update internal
-    /// counters (sent, received, failures). Adds ~10-20ns overhead per call
-    /// from atomic counter updates.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let topic: Topic<SensorData> = Topic::new("sensor")?
-    ///     .with_metrics(true);
-    ///
-    /// topic.send(msg)?;  // Automatically tracks metrics
-    /// let stats = topic.get_metrics();
-    /// ```
-    pub fn with_metrics(mut self, enabled: bool) -> Self {
-        self.metrics_enabled = enabled;
-        self
-    }
-
     /// Create a new topic with custom capacity
     ///
     /// # Smart Detection
@@ -3478,7 +3454,6 @@ where
             backend: TopicBackend::Adaptive(adaptive),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         })
@@ -3527,7 +3502,6 @@ where
             backend: TopicBackend::Adaptive(adaptive),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         })
@@ -3661,7 +3635,6 @@ where
             backend: TopicBackend::Direct(DirectChannelBackend::new()),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         }
@@ -3700,7 +3673,6 @@ where
             backend: TopicBackend::SpscIntra(SpscIntraBackend::new_producer(slot.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3710,7 +3682,6 @@ where
             backend: TopicBackend::SpscIntra(SpscIntraBackend::new_consumer(slot)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3761,7 +3732,6 @@ where
             backend: TopicBackend::MpscIntra(MpscIntraBackend::new_producer(ring.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3771,7 +3741,6 @@ where
             backend: TopicBackend::MpscIntra(MpscIntraBackend::new_consumer(ring)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3823,7 +3792,6 @@ where
             backend: TopicBackend::SpmcIntra(SpmcIntraBackend::new_producer(slot.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3833,7 +3801,6 @@ where
             backend: TopicBackend::SpmcIntra(SpmcIntraBackend::new_consumer(slot)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3886,7 +3853,6 @@ where
             backend: TopicBackend::MpmcIntra(MpmcIntraBackend::new_producer(ring.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3896,7 +3862,6 @@ where
             backend: TopicBackend::MpmcIntra(MpmcIntraBackend::new_consumer(ring)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         };
@@ -3952,7 +3917,6 @@ where
             backend: TopicBackend::MpscShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         })
@@ -4005,7 +3969,6 @@ where
             backend: TopicBackend::SpmcShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         })
@@ -4051,7 +4014,6 @@ where
             backend: TopicBackend::SpscShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-            metrics_enabled: false,
             log_fn: None,
             _marker: PhantomData,
         })
@@ -4127,7 +4089,6 @@ where
                     backend: TopicBackend::MpmcShm(backend),
                     metrics: Arc::new(AtomicTopicMetrics::default()),
                     state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
-                    metrics_enabled: false,
                     log_fn: None,
                     _marker: PhantomData,
                 })
@@ -4153,7 +4114,6 @@ where
                     backend: TopicBackend::Network(backend),
                     metrics: Arc::new(AtomicTopicMetrics::default()),
                     state: std::sync::atomic::AtomicU8::new(ConnectionState::Connecting.into_u8()),
-                    metrics_enabled: false,
                     log_fn: None,
                     _marker: PhantomData,
                 })
@@ -4398,7 +4358,6 @@ where
     /// ```
     pub fn with_logging(mut self) -> Self {
         self.log_fn = Some(|msg: &T| msg.log_summary());
-        self.metrics_enabled = true; // Logging implies metrics
         self
     }
 }
@@ -4442,13 +4401,8 @@ where
     /// (use `send_network()` for network topics).
     #[inline(always)]
     pub fn send(&self, msg: T) -> Result<(), T> {
-        // Fast path: no metrics, no logging — zero overhead
-        if !self.metrics_enabled && self.log_fn.is_none() {
-            return self.send_raw(msg);
-        }
-
-        // Logging path: compute summary before msg is moved, measure IPC time
         if let Some(log_fn) = self.log_fn {
+            // Logging path: summary + metrics + introspection
             let summary = log_fn(&msg);
             let start = Instant::now();
             let result = self.send_raw(msg);
@@ -4477,22 +4431,11 @@ where
                     self.metrics.inc_send_failures();
                 }
             }
-            return result;
+            result
+        } else {
+            // Zero-overhead path
+            self.send_raw(msg)
         }
-
-        // Metrics-only path
-        let result = self.send_raw(msg);
-        match &result {
-            Ok(()) => {
-                self.metrics.inc_sent();
-                self.state
-                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.metrics.inc_send_failures();
-            }
-        }
-        result
     }
 
     /// Raw send to backend — no metrics, no logging. Internal use only.
@@ -4533,13 +4476,8 @@ where
     ///   (use `recv_network()` for network topics).
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        // Fast path: no metrics, no logging — zero overhead
-        if !self.metrics_enabled && self.log_fn.is_none() {
-            return self.recv_raw();
-        }
-
-        // Logging path
         if let Some(log_fn) = self.log_fn {
+            // Logging path: metrics + introspection
             let start = Instant::now();
             let result = self.recv_raw();
             let ipc_ns = start.elapsed().as_nanos() as u64;
@@ -4561,15 +4499,11 @@ where
                     ipc_ns,
                 });
             }
-            return result;
+            result
+        } else {
+            // Zero-overhead path
+            self.recv_raw()
         }
-
-        // Metrics-only path
-        let result = self.recv_raw();
-        if result.is_some() {
-            self.metrics.inc_received();
-        }
-        result
     }
 
     /// Raw recv from backend — no metrics, no logging. Internal use only.
