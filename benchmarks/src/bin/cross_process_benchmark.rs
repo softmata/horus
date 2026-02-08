@@ -317,7 +317,7 @@ fn run_producer(args: &[String]) {
             send_time_ns: current_time_ns(),
             payload: [0u8; 48],
         };
-        let _ = producer.send(msg);
+        producer.send(msg);
         std::thread::sleep(Duration::from_micros(10));
     }
 
@@ -331,7 +331,7 @@ fn run_producer(args: &[String]) {
             send_time_ns: current_time_ns(),
             payload: [0u8; 48],
         };
-        producer.send(msg).expect("Send failed");
+        producer.send(msg);
 
         // Small delay to prevent queue overflow
         if i % 1000 == 0 {
@@ -345,7 +345,7 @@ fn run_producer(args: &[String]) {
         send_time_ns: 0,
         payload: [0xFFu8; 48],
     };
-    producer.send(done_msg).ok();
+    producer.send(done_msg);
 }
 
 fn run_consumer(args: &[String]) {
@@ -404,13 +404,7 @@ fn run_consumer(args: &[String]) {
         consumer_pid: std::process::id(),
     };
 
-    // Try multiple times to ensure delivery
-    for _ in 0..10 {
-        if result_tx.send(result.clone()).is_ok() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    result_tx.send(result.clone());
 }
 
 fn print_result(result: &BenchmarkResult) {

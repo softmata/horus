@@ -65,7 +65,7 @@ fn bench_native_latency(c: &mut Criterion) {
         let msg = SmallMessage::default();
 
         b.iter(|| {
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             topic.recv()
         });
     });
@@ -79,7 +79,7 @@ fn bench_native_latency(c: &mut Criterion) {
         let msg = MediumMessage::default();
 
         b.iter(|| {
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             topic.recv()
         });
     });
@@ -91,7 +91,7 @@ fn bench_native_latency(c: &mut Criterion) {
         let msg = LargeMessage::default();
 
         b.iter(|| {
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             topic.recv()
         });
     });
@@ -111,7 +111,7 @@ fn bench_latency_comparison(c: &mut Criterion) {
         let msg = SmallMessage::default();
 
         b.iter(|| {
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             topic.recv()
         });
     });

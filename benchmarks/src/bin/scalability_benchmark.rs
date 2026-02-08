@@ -247,10 +247,9 @@ fn run_scalability_test(
                     padding2: [0; 16],
                 };
 
-                if producer.send(msg).is_ok() {
-                    local_sent += 1;
-                    seq += 1;
-                }
+                producer.send(msg);
+                local_sent += 1;
+                seq += 1;
             }
 
             total_sent.fetch_add(local_sent, Ordering::Relaxed);

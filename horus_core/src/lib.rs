@@ -28,7 +28,7 @@
 //!     fn name(&self) -> &'static str { "example" }
 //!
 //!     fn tick(&mut self) {
-//!         let _ = self.output.send("Hello HORUS!".into());
+//!         self.output.send("Hello HORUS!".into());
 //!     }
 //! }
 //! ```

@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data: format!("HORUS node alive, tick={}", tick),
         };
         let _send_ctx: Option<&mut horus_core::NodeInfo> = None;
-        let _ = status_hub.send(status);
+        status_hub.send(status);
         println!("[HORUS] Published status: tick={}", tick);
 
         // Check for cmd_vel commands (non-blocking recv with no context)

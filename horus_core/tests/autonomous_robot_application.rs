@@ -343,7 +343,7 @@ impl Node for CameraPerceptionNode {
             data: image_data[..100].to_vec(), // Fake compression
         };
 
-        let _ = self.image_pub.send(compressed);
+        self.image_pub.send(compressed);
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -430,7 +430,7 @@ impl Node for LidarProcessingNode {
             *map = obstacles;
         }
 
-        let _ = self.scan_pub.send(scan);
+        self.scan_pub.send(scan);
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -544,7 +544,7 @@ impl Node for SensorFusionNode {
             vtheta: self.state[5],
         };
 
-        let _ = self.odometry_pub.send(odom);
+        self.odometry_pub.send(odom);
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -664,7 +664,7 @@ impl Node for PathPlannerNode {
         self.plan_path();
 
         // Publish path
-        let _ = self.path_pub.send(self.path.clone());
+        self.path_pub.send(self.path.clone());
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -787,7 +787,7 @@ impl Node for NavigationControllerNode {
         // Get path and compute velocity command
         if let Some(path) = self.path_sub.recv() {
             let cmd_vel = self.compute_cmd_vel(&path);
-            let _ = self.cmd_vel_pub.send(cmd_vel);
+            self.cmd_vel_pub.send(cmd_vel);
         }
     }
 
@@ -797,7 +797,7 @@ impl Node for NavigationControllerNode {
             linear_x: 0.0,
             angular_z: 0.0,
         };
-        let _ = self.cmd_vel_pub.send(stop);
+        self.cmd_vel_pub.send(stop);
         println!("Navigation controller shutdown");
         Ok(())
     }
@@ -889,7 +889,7 @@ impl Node for BatteryMonitorNode {
                     eprintln!("WARNING: Battery overheating! {}°C", status.temperature);
                 }
 
-                let _ = self.battery_pub.send(status);
+                self.battery_pub.send(status);
             }
             Err(e) => {
                 // This will trigger circuit breaker after 5 failures
@@ -955,7 +955,7 @@ impl Node for IMUSensorNode {
             ],
         };
 
-        let _ = self.imu_pub.send(imu_data);
+        self.imu_pub.send(imu_data);
     }
 
     fn shutdown(&mut self) -> Result<()> {

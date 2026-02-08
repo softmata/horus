@@ -34,7 +34,7 @@ fn bench_local_shm() {
             id: i,
             data: vec![0u8; 1024],
         };
-        hub.send(msg).unwrap();
+        hub.send(msg);
         let _ = hub.recv();
     }
 
@@ -45,7 +45,7 @@ fn bench_local_shm() {
             id: i,
             data: vec![0u8; 1024],
         };
-        hub.send(msg).unwrap();
+        hub.send(msg);
         let _ = hub.recv().unwrap();
     }
     let elapsed = start.elapsed();

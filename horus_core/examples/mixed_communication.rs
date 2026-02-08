@@ -30,7 +30,7 @@ impl Node for TelemetryNode {
 
     fn tick(&mut self) {
         self.counter += 1.0;
-        self.telemetry_hub.send(self.counter).ok();
+        self.telemetry_hub.send(self.counter);
         if self.counter as u32 % 100 == 0 {
             println!("[TelemetryNode] Published: {}", self.counter);
         }
@@ -65,7 +65,7 @@ impl Node for ControlNode {
     fn tick(&mut self) {
         // Send control command through Topic (ultra-low latency SPSC backend)
         let command = 42.0;
-        self.command_link.send(command).ok();
+        self.command_link.send(command);
 
         // Check for response
         if let Some(response) = self.response_link.recv() {
@@ -108,7 +108,7 @@ impl Node for ActuatorNode {
             self.processed += 1;
             // Process command and send response
             let response = command + self.processed as f32;
-            self.response_link.send(response).ok();
+            self.response_link.send(response);
         }
     }
 }

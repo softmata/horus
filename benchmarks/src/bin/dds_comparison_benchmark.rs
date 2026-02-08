@@ -305,9 +305,8 @@ fn benchmark_horus_adaptive(
             timestamp_ns: 0,
             value: 0.0,
         };
-        while tx.send(msg).is_err() {
-            thread::yield_now();
-        }
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -330,9 +329,7 @@ fn benchmark_horus_adaptive(
             value: 0.0,
         };
         let start = timer.start();
-        while tx.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
 
         if (i + 1) % BATCH_SIZE == 0 {

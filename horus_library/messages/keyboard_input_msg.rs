@@ -41,7 +41,7 @@ pub struct KeyboardInput {
     pub code: u32,           // Raw key code
     pub modifier_flags: u32, // Bit flags for modifiers instead of Vec<String>
     pub pressed: bool,       // True for press, false for release
-    pub timestamp_ms: u64,      // Unix timestamp_ms in milliseconds
+    pub timestamp_ms: u64,   // Unix timestamp_ms in milliseconds
     pub _padding: [u8; 16],  // Padding to match JoystickInput size (72 bytes)
 }
 

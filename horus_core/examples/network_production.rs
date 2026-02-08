@@ -82,15 +82,8 @@ fn run_publisher() -> Result<(), Box<dyn std::error::Error>> {
             timestamp_ns: counter,
         };
 
-        match hub.send(data.clone()) {
-            Ok(_) => {
-                println!("Sent: {}", data.log_summary());
-            }
-            Err(_) => {
-                eprintln!("{}", "Send failed - connection may be lost".yellow());
-                // In production, you would initiate reconnection here
-            }
-        }
+        hub.send(data.clone());
+        println!("Sent: {}", data.log_summary());
 
         counter += 1;
         std::thread::sleep(Duration::from_secs(1));

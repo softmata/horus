@@ -41,14 +41,8 @@ impl Node for SensorNode {
         let sensor_value = (self.counter.sin() * 100.0) + 100.0;
 
         // Send via Topic (ultra-low latency)
-        match self.data_link.send(sensor_value) {
-            Ok(()) => {
-                println!("[{}] Sent: {:.2}", self.name(), sensor_value);
-            }
-            Err(value) => {
-                eprintln!("[{}] Buffer full! Dropped: {:.2}", self.name(), value);
-            }
-        }
+        self.data_link.send(sensor_value);
+        println!("[{}] Sent: {:.2}", self.name(), sensor_value);
 
         // Control loop rate
         thread::sleep(Duration::from_millis(100));

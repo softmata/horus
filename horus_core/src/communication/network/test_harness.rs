@@ -21,7 +21,7 @@
 //!     zenoh_test(|ctx| async {
 //!         // ctx provides isolated namespace and session
 //!         let topic = ctx.topic::<MyMessage>("test_data").await?;
-//!         topic.send(MyMessage { value: 42 })?;
+//!         topic.send(MyMessage { value: 42 });
 //!
 //!         let received = topic.recv_timeout(Duration::from_secs(1)).await?;
 //!         assert_eq!(received.value, 42);

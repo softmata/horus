@@ -27,8 +27,8 @@
 //!
 //! // Just this - backend auto-selected
 //! let topic: Topic<Data> = Topic::new("sensor")?;
-//! topic.send(data)?;
-//! let msg = topic.recv()?;
+//! topic.send(data);
+//! let msg = topic.recv();
 //! ```
 
 use std::cell::RefCell;
@@ -1279,7 +1279,7 @@ impl Default for LocalState {
 /// let topic = AdaptiveTopic::<SensorData>::new("sensor")?;
 ///
 /// // Send - registers as producer on first call
-/// topic.send(data)?;
+/// topic.send(data);
 ///
 /// // Recv - registers as consumer on first call
 /// if let Some(msg) = topic.recv() {
@@ -3164,7 +3164,7 @@ mod tests {
         assert_eq!(topic.role(), TopicRole::Unregistered);
 
         // Send a message
-        topic.send(42u64).expect("Failed to send");
+        let _ = topic.send(42u64);
 
         // After send, role should be Producer
         assert_eq!(topic.role(), TopicRole::Producer);
@@ -3194,7 +3194,7 @@ mod tests {
             AdaptiveTopic::new("test_adaptive_roundtrip").expect("Failed to create topic");
 
         // Send a value
-        topic.send(12345u64).expect("Failed to send");
+        let _ = topic.send(12345u64);
 
         // Create a consumer clone
         let consumer = topic.clone();
@@ -3223,7 +3223,7 @@ mod tests {
 
         // Send and receive multiple messages - testing the "latest value" semantics
         for i in 0..10u32 {
-            topic.send(i).expect("Failed to send");
+            let _ = topic.send(i);
 
             // Clone for receiving (after send, to properly share state)
             let consumer = topic.clone();
@@ -3234,7 +3234,7 @@ mod tests {
         }
 
         // After all send/recv cycles, send one more and verify clone receives it
-        topic.send(999u32).expect("Failed to send final");
+        let _ = topic.send(999u32);
         let consumer = topic.clone();
         let received = consumer.recv();
         assert_eq!(received, Some(999));
@@ -3274,7 +3274,7 @@ mod tests {
 
         // First tick cycle: sensor sends, monitor receives
         temperature += 0.1;
-        publisher.send(temperature).expect("Failed to send");
+        let _ = publisher.send(temperature);
         let received = subscriber.recv();
         assert_eq!(
             received,
@@ -3285,7 +3285,7 @@ mod tests {
 
         // Second tick cycle
         temperature += 0.1;
-        publisher.send(temperature).expect("Failed to send");
+        let _ = publisher.send(temperature);
         let received = subscriber.recv();
         assert_eq!(
             received,
@@ -3296,7 +3296,7 @@ mod tests {
 
         // Third tick cycle
         temperature += 0.1;
-        publisher.send(temperature).expect("Failed to send");
+        let _ = publisher.send(temperature);
         let received = subscriber.recv();
         assert!(
             (received.unwrap() - 20.3).abs() < 0.001,
@@ -3323,7 +3323,7 @@ mod tests {
         assert_eq!(topic.pending_count(), 0);
 
         // Send a message
-        topic.send("hello".to_string()).expect("Failed to send");
+        let _ = topic.send("hello".to_string());
 
         // Check has_message immediately after send (before any recv)
         // Note: has_message() checks if sequence > 0 or ring buffer has data
@@ -3352,7 +3352,7 @@ mod tests {
         let _mode = topic.mode();
 
         // After registering as producer
-        topic.send(1).expect("Failed to send");
+        let _ = topic.send(1);
 
         // Mode might change based on topology
         let _new_mode = topic.mode();
@@ -3368,7 +3368,7 @@ mod tests {
             AdaptiveTopic::new("test_adaptive_clone").expect("Failed to create topic");
 
         // Register as producer
-        topic.send(100).expect("Failed to send");
+        let _ = topic.send(100);
 
         // Clone
         let cloned = topic.clone();
@@ -3383,7 +3383,7 @@ mod tests {
         );
 
         // Can send from cloned
-        cloned.send(200).expect("Failed to send from clone");
+        let _ = cloned.send(200);
         assert_eq!(cloned.role(), TopicRole::Producer);
     }
 
@@ -3401,7 +3401,7 @@ mod tests {
 
         // Send some messages
         for i in 0..5 {
-            topic.send(i).expect("Failed to send");
+            let _ = topic.send(i);
         }
 
         assert_eq!(metrics.messages_sent.load(Ordering::Relaxed), 5);
@@ -3418,7 +3418,7 @@ mod tests {
 
         // Warm up with a few messages (using clone pattern for recv)
         for _ in 0..10 {
-            topic.send(1u64).expect("Failed to send warmup");
+            let _ = topic.send(1u64);
             let consumer = topic.clone();
             let _ = consumer.recv();
         }
@@ -3428,7 +3428,7 @@ mod tests {
         let start = std::time::Instant::now();
 
         for i in 0..iterations {
-            topic.send(i as u64).expect("Failed to send");
+            let _ = topic.send(i as u64);
             let consumer = topic.clone();
             let _ = consumer.recv();
         }
@@ -3473,7 +3473,7 @@ mod tests {
         let start = std::time::Instant::now();
 
         for i in 0..iterations {
-            topic.send(i as u64).expect("Failed to send");
+            let _ = topic.send(i as u64);
             let consumer = topic.clone();
             let msg = consumer.recv();
             assert_eq!(msg, Some(i as u64), "Message {} mismatch", i);

@@ -115,7 +115,7 @@ fn get_discovery_topic() -> Option<&'static Topic<NodeAnnouncement>> {
 pub fn announce_started(name: &str, publishers: &[TopicMetadata], subscribers: &[TopicMetadata]) {
     if let Some(topic) = get_discovery_topic() {
         let announcement = NodeAnnouncement::started(name, publishers, subscribers);
-        let _ = topic.send(announcement);
+        topic.send(announcement);
     }
 }
 
@@ -123,7 +123,7 @@ pub fn announce_started(name: &str, publishers: &[TopicMetadata], subscribers: &
 pub fn announce_stopped(name: &str) {
     if let Some(topic) = get_discovery_topic() {
         let announcement = NodeAnnouncement::stopped(name);
-        let _ = topic.send(announcement);
+        topic.send(announcement);
     }
 }
 
@@ -131,7 +131,7 @@ pub fn announce_stopped(name: &str) {
 pub fn announce_crashed(name: &str) {
     if let Some(topic) = get_discovery_topic() {
         let announcement = NodeAnnouncement::crashed(name);
-        let _ = topic.send(announcement);
+        topic.send(announcement);
     }
 }
 

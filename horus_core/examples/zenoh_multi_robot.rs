@@ -124,7 +124,7 @@ fn run_robot(robot_id: &str, start_x: f64, start_y: f64) -> Result<(), Box<dyn s
 
         // Send our pose
         let mut send_ctx: Option<&mut horus_core::NodeInfo> = None;
-        let _ = pose_hub.send(pose.clone());
+        pose_hub.send(pose.clone());
         println!(
             "[{}] Published: x={:.2}, y={:.2}, theta={:.2}",
             robot_id, x, y, theta

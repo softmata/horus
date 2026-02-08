@@ -535,7 +535,8 @@ mod tests {
         let valid = TransformStamped::identity();
         assert!(valid.is_valid());
 
-        let invalid_translation = TransformStamped::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let invalid_translation =
+            TransformStamped::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
         assert!(!invalid_translation.is_valid());
 
         let unnormalized = TransformStamped::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);

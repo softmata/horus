@@ -374,7 +374,7 @@ impl PyTopic {
     ///     node: Optional Node for automatic logging with IPC timing
     ///
     /// Returns:
-    ///     True if sent successfully, False otherwise
+    ///     Always True (send is infallible fire-and-forget)
     ///
     /// Examples:
     ///     topic.send(CmdVel(1.5, 0.5), node)  # With logging
@@ -390,7 +390,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(cmd).is_ok()
+                    topic.send(cmd);
+                    true
                 });
 
                 if let Some(node_obj) = &node {
@@ -415,7 +416,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(pose).is_ok()
+                    topic.send(pose);
+                    true
                 });
 
                 if let Some(node_obj) = &node {
@@ -440,7 +442,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(imu).is_ok()
+                    topic.send(imu);
+                    true
                 });
 
                 if let Some(node_obj) = &node {
@@ -465,7 +468,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(odom).is_ok()
+                    topic.send(odom);
+                    true
                 });
 
                 if let Some(node_obj) = &node {
@@ -496,7 +500,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(scan).is_ok()
+                    topic.send(scan);
+                    true
                 });
 
                 if let Some(node_obj) = &node {
@@ -540,7 +545,8 @@ impl PyTopic {
                 let topic_ref = topic.clone();
                 let success = py.allow_threads(|| {
                     let topic = topic_ref.write().unwrap();
-                    topic.send(msg).is_ok()
+                    topic.send(msg);
+                    true
                 });
 
                 if let Some(node_obj) = &node {

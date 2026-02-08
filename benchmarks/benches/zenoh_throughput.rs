@@ -72,7 +72,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
                     sequence: i,
                     data: i * 2,
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -89,7 +89,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
                     sequence: i,
                     ..Default::default()
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -106,7 +106,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
                     sequence: i,
                     ..Default::default()
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -131,7 +131,7 @@ fn bench_burst_throughput(c: &mut Criterion) {
                     sequence: i,
                     data: i,
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -147,7 +147,7 @@ fn bench_burst_throughput(c: &mut Criterion) {
                     sequence: i,
                     data: i,
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -181,7 +181,7 @@ fn bench_multi_topic_throughput(c: &mut Criterion) {
                     sequence: seq,
                     data: seq * 2,
                 };
-                topic.send(black_box(msg)).ok();
+                topic.send(black_box(msg));
             }
         });
     });
@@ -205,7 +205,7 @@ fn bench_multi_topic_throughput(c: &mut Criterion) {
                 sequence: seq,
                 data: seq * 2,
             };
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
         });
     });
 
@@ -226,7 +226,7 @@ fn bench_pubsub_roundtrip(c: &mut Criterion) {
                 sequence: 1,
                 data: 42,
             };
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             let received = topic.recv();
             black_box(received)
         });
@@ -240,7 +240,7 @@ fn bench_pubsub_roundtrip(c: &mut Criterion) {
                 sequence: 1,
                 ..Default::default()
             };
-            topic.send(black_box(msg)).ok();
+            topic.send(black_box(msg));
             let received = topic.recv();
             black_box(received)
         });

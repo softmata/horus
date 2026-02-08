@@ -228,7 +228,7 @@ where
         if elapsed >= self.min_interval {
             if let Some(ref link) = *self.link.read() {
                 let msg = ActionFeedback::new(goal_id, feedback);
-                let _ = link.send(msg);
+                link.send(msg);
                 *self.last_send.write() = now;
             }
         }
@@ -774,7 +774,7 @@ where
             // Store in history
             // Note: We can't modify result_history here since we only have &self
             // This would need to be handled differently in a real implementation
-            let _ = link.send(result);
+            link.send(result);
         }
     }
 
@@ -782,7 +782,7 @@ where
     fn publish_status(&self, goal_id: GoalId, status: GoalStatus) {
         if let Some(ref link) = self.status_link {
             let update = GoalStatusUpdate::new(goal_id, status);
-            let _ = link.send(update);
+            link.send(update);
         }
     }
 

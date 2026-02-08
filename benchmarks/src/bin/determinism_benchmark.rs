@@ -281,9 +281,8 @@ fn run_determinism_benchmark(
                 seq: i as u64,
             };
             // Retry with backoff if buffer is full
-            while tx.send(msg).is_err() {
-                thread::yield_now();
-            }
+            tx.send(msg);
+            thread::yield_now();
             // Wait for buffer to drain periodically
             if (i + 1) % BATCH_SIZE == 0 {
                 while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
@@ -311,9 +310,7 @@ fn run_determinism_benchmark(
 
             let start = timer.start();
             // Retry if buffer is full
-            while tx.send(msg).is_err() {
-                std::hint::spin_loop();
-            }
+            tx.send(msg);
             let elapsed = timer.elapsed_ns(start);
 
             run_latencies.push(elapsed);

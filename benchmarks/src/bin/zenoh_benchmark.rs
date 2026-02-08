@@ -284,7 +284,7 @@ fn benchmark_native_topic(
             send_time_ns: current_time_ns(),
             payload: vec![0u8; payload_size],
         };
-        let _ = topic.send(msg);
+        topic.send(msg);
         let _ = topic.recv();
     }
 
@@ -298,7 +298,7 @@ fn benchmark_native_topic(
             send_time_ns: send_time,
             payload: vec![0u8; payload_size],
         };
-        let _ = topic.send(msg);
+        topic.send(msg);
 
         // Spin until we receive the message
         loop {
@@ -459,7 +459,7 @@ fn benchmark_native_throughput(payload_size: usize, duration: Duration) -> Throu
             send_time_ns: 0,
             payload: vec![0u8; payload_size],
         };
-        let _ = topic.send(msg);
+        topic.send(msg);
         seq += 1;
     }
 

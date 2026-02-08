@@ -44,7 +44,7 @@ pub struct JoystickInput {
     pub element_name: [u8; 32], // Fixed-size element name buffer (null-terminated)
     pub value: f32,             // Button: 0.0/1.0, Axis: -1.0 to 1.0, Hat: directional
     pub pressed: bool,          // For buttons: true when pressed
-    pub timestamp_ms: u64,         // Unix timestamp_ms in milliseconds
+    pub timestamp_ms: u64,      // Unix timestamp_ms in milliseconds
 }
 
 impl JoystickInput {

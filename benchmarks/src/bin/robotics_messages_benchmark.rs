@@ -301,9 +301,8 @@ fn benchmark_cmdvel(
     const BATCH_SIZE: usize = 32;
     for i in 0..DEFAULT_WARMUP {
         let msg = CmdVel::new(1.0, 0.5);
-        while tx.send(msg).is_err() {
-            thread::yield_now();
-        }
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -321,9 +320,7 @@ fn benchmark_cmdvel(
     for i in 0..iterations {
         let msg = CmdVel::new(1.0 + (i as f32 * 0.001), 0.5);
         let start = timer.start();
-        while tx.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
         if (i + 1) % BATCH_SIZE == 0 {
             let target = warmup_base + (i + 1) as u64;
@@ -393,9 +390,8 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
     const BATCH_SIZE: usize = 32;
     for i in 0..DEFAULT_WARMUP {
         let msg = Imu::new();
-        while tx.send(msg).is_err() {
-            thread::yield_now();
-        }
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -415,9 +411,7 @@ fn benchmark_imu(iterations: usize, platform: &horus_benchmarks::PlatformInfo) -
         msg.linear_acceleration = [0.0, 0.0, 9.81];
         msg.angular_velocity = [0.01, 0.02, 0.0];
         let start = timer.start();
-        while tx.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
         if (i + 1) % BATCH_SIZE == 0 {
             let target = warmup_base + (i + 1) as u64;
@@ -494,16 +488,8 @@ fn benchmark_laserscan(
         for j in 0..360 {
             msg.ranges[j] = 5.0 + (j as f32 * 0.01);
         }
-        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    thread::yield_now();
-                }
-            }
-        }
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -524,15 +510,7 @@ fn benchmark_laserscan(
             msg.ranges[j] = 5.0 + ((j + seq) as f32 * 0.01);
         }
         let start = timer.start();
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    std::hint::spin_loop();
-                }
-            }
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
         if (seq + 1) % BATCH_SIZE == 0 {
             let target = warmup_base + (seq + 1) as u64;
@@ -611,16 +589,8 @@ fn benchmark_jointcmd(
         msg.add_position("wrist_1", 0.0).ok();
         msg.add_position("wrist_2", -0.5).ok();
         msg.add_position("wrist_3", 0.1).ok();
-        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    thread::yield_now();
-                }
-            }
-        }
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -645,15 +615,7 @@ fn benchmark_jointcmd(
         msg.add_position("wrist_2", -0.5 + offset).ok();
         msg.add_position("wrist_3", 0.1 + offset).ok();
         let start = timer.start();
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    std::hint::spin_loop();
-                }
-            }
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
         if (i + 1) % BATCH_SIZE == 0 {
             let target = warmup_base + (i + 1) as u64;
@@ -737,17 +699,9 @@ fn benchmark_pointcloud(
     // Warmup - batch to avoid buffer overflow (capacity = 64)
     const BATCH_SIZE: usize = 32;
     for i in 0..warmup_count {
-        let mut msg = PointCloud::xyz(&points);
-        // Topic::send returns Err(msg) on failure, so we can retry with the returned message
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    thread::yield_now();
-                }
-            }
-        }
+        let msg = PointCloud::xyz(&points);
+        tx.send(msg);
+        thread::yield_now();
         if (i + 1) % BATCH_SIZE == 0 {
             while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
                 thread::yield_now();
@@ -763,17 +717,9 @@ fn benchmark_pointcloud(
     let warmup_base = warmup_count as u64;
     let mut latencies = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let mut msg = PointCloud::xyz(&points);
+        let msg = PointCloud::xyz(&points);
         let start = timer.start();
-        loop {
-            match tx.send(msg) {
-                Ok(()) => break,
-                Err(returned_msg) => {
-                    msg = returned_msg;
-                    std::hint::spin_loop();
-                }
-            }
-        }
+        tx.send(msg);
         latencies.push(timer.elapsed_ns(start));
         if (i + 1) % BATCH_SIZE == 0 {
             let target = warmup_base + (i + 1) as u64;

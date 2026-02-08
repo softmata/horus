@@ -334,8 +334,7 @@ where
         let goal_id = request.goal_id;
 
         if let Some(ref link) = *self.goal_link.read() {
-            link.send(request)
-                .map_err(|_| ActionError::CommunicationError("Failed to send goal".to_string()))?;
+            link.send(request);
 
             log::debug!("ActionClient '{}': Sent goal {}", A::name(), goal_id);
             Ok(goal_id)
@@ -348,7 +347,7 @@ where
     fn cancel_goal(&self, goal_id: GoalId) {
         if let Some(ref link) = *self.cancel_link.read() {
             let request = CancelRequest::new(goal_id);
-            let _ = link.send(request);
+            link.send(request);
             log::debug!("ActionClient '{}': Sent cancel for {}", A::name(), goal_id);
         }
     }

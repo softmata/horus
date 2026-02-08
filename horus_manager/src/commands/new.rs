@@ -309,7 +309,7 @@ node! {
             // Your control logic here
             let msg = CmdVel::new(1.0, 0.0);
 
-            self.cmd_vel.send(msg).ok();
+            self.cmd_vel.send(msg);
         }
     }
 }
@@ -352,7 +352,7 @@ impl Node for Controller {
         // Your control logic here
         let msg = CmdVel::new(1.0, 0.0);
 
-        self.cmd_vel.send(msg).ok();
+        self.cmd_vel.send(msg);
     }
 
     fn get_publishers(&self) -> Vec<TopicMetadata> {

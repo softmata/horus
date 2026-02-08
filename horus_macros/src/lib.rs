@@ -52,7 +52,7 @@ mod ros2_msg;
 ///             }
 ///             self.frame_count += 1;
 ///             let img = self.capture_frame();
-///             self.image.send(img).ok();
+///             self.image.send(img);
 ///         }
 ///     }
 /// }
@@ -159,7 +159,7 @@ pub fn node(input: TokenStream) -> TokenStream {
 /// message!(Position = (f32, f32));
 ///
 /// let topic = Topic::<Position>::new("robot.position")?;
-/// topic.send(Position(1.0, 2.0))?;  // Works automatically!
+/// topic.send(Position(1.0, 2.0));  // Works automatically!
 /// ```
 ///
 /// # Benefits

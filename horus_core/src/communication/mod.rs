@@ -18,7 +18,7 @@
 //!
 //! // Default MPMC mode - most flexible
 //! let topic: Topic<String> = Topic::new("sensor_data").unwrap();
-//! topic.send("hello".to_string())?;
+//! topic.send("hello".to_string());
 //!
 //! // SPSC mode - lowest latency for point-to-point
 //! let topic: Topic<String, Spsc> = Topic::with_mode("control_cmd").unwrap();
@@ -40,7 +40,7 @@
 //!
 //! // Use it directly - zero-copy path selected automatically
 //! let topic: Topic<MotorCommand> = Topic::new("motor")?;
-//! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 })?;
+//! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
 //! ```
 //!
 //! Types are POD if `!std::mem::needs_drop::<T>()` - this automatically

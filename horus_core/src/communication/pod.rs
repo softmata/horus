@@ -16,7 +16,7 @@
 //!
 //! // Use it directly - zero-copy path selected automatically
 //! let topic: Topic<MotorCommand> = Topic::new("motor")?;
-//! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 })?;
+//! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
 //! ```
 //!
 //! ## How Auto-Detection Works

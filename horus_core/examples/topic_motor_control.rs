@@ -146,9 +146,7 @@ impl Node for MotorDriverNode {
             self.voltage * 0.5, // Simulated current
         );
 
-        if self.encoder_link.send(reading).is_err() {
-            eprintln!("[{}] Warning: Encoder buffer full!", self.name());
-        }
+        self.encoder_link.send(reading);
 
         thread::sleep(Duration::from_micros(1000)); // 1kHz loop
     }
@@ -211,9 +209,7 @@ impl Node for MotorControllerNode {
 
             // Send motor command
             let cmd = MotorCommand::new(voltage, true);
-            if self.cmd_link.send(cmd).is_err() {
-                eprintln!("[{}] Warning: Command buffer full!", self.name());
-            }
+            self.cmd_link.send(cmd);
 
             // Print status every 100ms
             if self.iteration % 100 == 0 {

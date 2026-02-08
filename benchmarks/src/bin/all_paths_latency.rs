@@ -162,7 +162,7 @@ fn bench_direct_channel_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     // Warmup - establishes DirectChannel mode
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
     for _ in 0..WARMUP {
-        let _ = topic.send(msg);
+        topic.send(msg);
         let _ = topic.recv();
     }
     while topic.recv().is_some() {}
@@ -174,7 +174,7 @@ fn bench_direct_channel_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
-        let _ = std::hint::black_box(topic.send(std::hint::black_box(msg)));
+        topic.send(std::hint::black_box(msg));
         let end = rdtscp();
         latencies.push(end.wrapping_sub(start));
         // Must recv to avoid buffer full
@@ -233,9 +233,7 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     // Send warmup
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
     for _ in 0..2000 {
-        while producer.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        producer.send(msg);
     }
 
     while !consumer_ready.load(Ordering::Acquire) {
@@ -245,9 +243,7 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     // Extra warmup rounds
     for _ in 0..3 {
         for _ in 0..1000 {
-            while producer.send(msg).is_err() {
-                std::hint::spin_loop();
-            }
+            producer.send(msg);
         }
         thread::sleep(Duration::from_millis(2));
     }
@@ -259,15 +255,9 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
-        if producer.send(msg).is_ok() {
-            let end = rdtscp();
-            latencies.push(end.wrapping_sub(start));
-        } else {
-            // Backpressure - wait (not measured)
-            while producer.send(msg).is_err() {
-                std::hint::spin_loop();
-            }
-        }
+        producer.send(msg);
+        let end = rdtscp();
+        latencies.push(end.wrapping_sub(start));
     }
 
     thread::sleep(Duration::from_millis(50));
@@ -314,7 +304,7 @@ fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
 
     // Warmup
     for _ in 0..WARMUP {
-        let _ = topic.send(msg);
+        topic.send(msg);
         let _ = topic.recv();
     }
     while topic.recv().is_some() {}
@@ -328,7 +318,7 @@ fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
-        let _ = std::hint::black_box(topic.send(std::hint::black_box(msg)));
+        topic.send(std::hint::black_box(msg));
         let end = rdtscp();
         send_latencies.push(
             cal.cycles_to_ns(end.wrapping_sub(start))
@@ -345,7 +335,7 @@ fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
 
     // Measure recv-only (after send)
     for _ in 0..1000 {
-        let _ = topic.send(msg);
+        topic.send(msg);
     }
     let mut recv_latencies = Vec::with_capacity(1000);
     for _ in 0..1000 {
@@ -357,7 +347,7 @@ fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
             cal.cycles_to_ns(end.wrapping_sub(start))
                 .saturating_sub(overhead_ns),
         );
-        let _ = topic.send(msg);
+        topic.send(msg);
     }
     recv_latencies.sort_unstable();
     let recv_p50 = recv_latencies[recv_latencies.len() / 2];
@@ -368,7 +358,7 @@ fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
-        let _ = std::hint::black_box(topic.send(std::hint::black_box(msg)));
+        topic.send(std::hint::black_box(msg));
         let _ = std::hint::black_box(topic.recv());
         let end = rdtscp();
         rt_latencies.push(
@@ -406,9 +396,7 @@ fn bench_spsc_intra_detailed_rdtsc(timer: &PrecisionTimer) {
 
     // Warmup
     for _ in 0..5000 {
-        while producer.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        producer.send(msg);
     }
     thread::sleep(Duration::from_millis(10));
 
@@ -423,17 +411,12 @@ fn bench_spsc_intra_detailed_rdtsc(timer: &PrecisionTimer) {
         for _ in 0..10000 {
             serialize();
             let start = rdtsc();
-            if producer.send(msg).is_ok() {
-                let end = rdtscp();
-                latencies.push(
-                    cal.cycles_to_ns(end.wrapping_sub(start))
-                        .saturating_sub(overhead_ns),
-                );
-            } else {
-                while producer.send(msg).is_err() {
-                    std::hint::spin_loop();
-                }
-            }
+            producer.send(msg);
+            let end = rdtscp();
+            latencies.push(
+                cal.cycles_to_ns(end.wrapping_sub(start))
+                    .saturating_sub(overhead_ns),
+            );
         }
         latencies.sort_unstable();
         let p50 = latencies
@@ -746,9 +729,7 @@ fn run_child_publisher(topic_name: &str, count: u64) {
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
 
     for _ in 0..count {
-        while topic.send(msg).is_err() {
-            std::hint::spin_loop();
-        }
+        topic.send(msg);
     }
 }
 

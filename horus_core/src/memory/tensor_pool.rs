@@ -51,7 +51,7 @@
 //! // ... write tensor data ...
 //!
 //! // Send tensor through Hub (only descriptor is copied)
-//! hub.send(tensor)?;
+//! hub.send(tensor);
 //!
 //! // Reference counting handles cleanup automatically
 //! ```

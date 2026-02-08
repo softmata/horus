@@ -130,7 +130,7 @@ use serde_json;
 /// }))?;
 ///
 /// let msg = GenericMessage::new(data);
-/// topic.send(msg)?;
+/// topic.send(msg);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///

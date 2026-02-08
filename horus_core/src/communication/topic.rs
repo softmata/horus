@@ -33,7 +33,7 @@
 //! let topic: Topic<SensorData> = Topic::new("sensor_data")?;
 //!
 //! // Send and receive directly (Topic API)
-//! topic.send(data)?;
+//! topic.send(data);
 //! let data = topic.recv();
 //! ```
 //!
@@ -268,7 +268,7 @@ impl TopicConfig {
 
 /// A compile-time topic descriptor that pairs a name with a message type.
 ///
-/// Created by the [`topics!`] macro to provide type-safe topic names that
+/// Created by the [`topics!`](crate::topics!) macro to provide type-safe topic names that
 /// prevent typos and type mismatches at compile time.
 ///
 /// # Example
@@ -3265,7 +3265,7 @@ enum TopicBackend<T> {
 /// let net_topic: Topic<SensorData> = Topic::new("sensor@192.168.1.5")?;
 ///
 /// // Send - Topic pattern
-/// topic.send(data)?;
+/// topic.send(data);
 ///
 /// // Receive - Topic pattern
 /// if let Some(msg) = topic.recv() {
@@ -3360,7 +3360,7 @@ where
 
     /// Create a topic from a type-safe descriptor (publishing side).
     ///
-    /// Use with the [`topics!`] macro for compile-time checked topic names
+    /// Use with the [`topics!`](crate::topics!) macro for compile-time checked topic names
     /// and message types.
     ///
     /// # Example
@@ -3373,7 +3373,7 @@ where
     /// }
     ///
     /// let publisher = Topic::publish(CMD_VEL)?;
-    /// publisher.send(CmdVel { linear: 1.0, angular: 0.0 })?;
+    /// publisher.send(CmdVel { linear: 1.0, angular: 0.0 });
     /// ```
     pub fn publish(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
         Self::new(descriptor.name())
@@ -3381,7 +3381,7 @@ where
 
     /// Create a topic from a type-safe descriptor (subscribing side).
     ///
-    /// Use with the [`topics!`] macro for compile-time checked topic names
+    /// Use with the [`topics!`](crate::topics!) macro for compile-time checked topic names
     /// and message types.
     ///
     /// # Example
@@ -3622,7 +3622,7 @@ where
     /// // Same-thread communication
     /// let topic: Topic<Command> = Topic::direct("commands");
     ///
-    /// topic.send(cmd)?;
+    /// topic.send(cmd);
     /// let received = topic.recv();
     /// ```
     ///
@@ -3658,7 +3658,7 @@ where
     /// let (producer, consumer) = Topic::<SensorData>::spsc_intra("sensor");
     ///
     /// // In producer thread
-    /// producer.send(data)?;
+    /// producer.send(data);
     ///
     /// // In consumer thread
     /// let data = consumer.recv();
@@ -3714,8 +3714,8 @@ where
     /// let producer2 = producer.clone();
     ///
     /// // In producer threads
-    /// producer.send(data1)?;
-    /// producer2.send(data2)?;
+    /// producer.send(data1);
+    /// producer2.send(data2);
     ///
     /// // In consumer thread
     /// while let Some(data) = consumer.recv() {
@@ -3776,7 +3776,7 @@ where
     /// let consumer2 = consumer.clone();
     ///
     /// // Producer broadcasts (never blocks)
-    /// producer.send(pose)?;
+    /// producer.send(pose);
     ///
     /// // Multiple consumers receive the same value
     /// let pose1 = consumer.recv();
@@ -3836,8 +3836,8 @@ where
     /// let consumer2 = consumer.clone();
     ///
     /// // Multiple producers submit work
-    /// producer.send(work1)?;
-    /// producer2.send(work2)?;
+    /// producer.send(work1);
+    /// producer2.send(work2);
     ///
     /// // Multiple consumers process work (any consumer gets any message)
     /// let work = consumer.recv();
@@ -3889,7 +3889,7 @@ where
     /// ```rust,ignore
     /// // Producer process
     /// let producer: Topic<SensorData> = Topic::mpsc_shm("sensor_fusion", 64, true)?;
-    /// producer.send(data)?;
+    /// producer.send(data);
     ///
     /// // Consumer process (single consumer only)
     /// let consumer: Topic<SensorData> = Topic::mpsc_shm("sensor_fusion", 64, false)?;
@@ -3941,7 +3941,7 @@ where
     /// ```rust,ignore
     /// // Producer process (single producer only)
     /// let producer: Topic<SensorData> = Topic::spmc_shm("camera", true)?;
-    /// producer.send(data)?;
+    /// producer.send(data);
     ///
     /// // Consumer process 1
     /// let consumer1: Topic<SensorData> = Topic::spmc_shm("camera", false)?;
@@ -3993,7 +3993,7 @@ where
     /// ```rust,ignore
     /// // Producer process
     /// let producer: Topic<MotorCommand> = Topic::spsc_shm("motor_cmd", true)?;
-    /// producer.send(cmd)?;
+    /// producer.send(cmd);
     ///
     /// // Consumer process
     /// let consumer: Topic<MotorCommand> = Topic::spsc_shm("motor_cmd", false)?;
@@ -4354,7 +4354,7 @@ where
     /// let topic: Topic<CmdVel> = Topic::new("cmd_vel")?
     ///     .with_logging();
     ///
-    /// topic.send(msg)?;  // Automatically logs + tracks metrics
+    /// topic.send(msg);  // Automatically logs + tracks metrics
     /// ```
     pub fn with_logging(mut self) -> Self {
         self.log_fn = Some(|msg: &T| msg.log_summary());
@@ -4381,11 +4381,6 @@ where
     ///
     /// * `msg` - The message to send
     ///
-    /// # Returns
-    ///
-    /// * `Ok(())` if sent successfully
-    /// * `Err(msg)` if the buffer is full (message returned)
-    ///
     /// # Performance
     ///
     /// When unconfigured, latency matches the raw backend:
@@ -4395,69 +4390,81 @@ where
     /// - SpscShm: ~80-100ns (cross-process)
     /// - MpmcShm: ~150-200ns (cross-process)
     ///
-    /// # Errors
+    /// # Fire-and-Forget
     ///
-    /// Returns `Err(msg)` if the channel is full or if called on a Network backend
-    /// (use `send_network()` for network topics).
+    /// Send is infallible. If the ring buffer is full, the oldest message is
+    /// overwritten (standard robotics "keep last" semantics). For network
+    /// backends, use `send_network()` instead.
     #[inline(always)]
-    pub fn send(&self, msg: T) -> Result<(), T> {
+    pub fn send(&self, msg: T) {
         if let Some(log_fn) = self.log_fn {
             // Logging path: summary + metrics + introspection
             let summary = log_fn(&msg);
             let start = Instant::now();
-            let result = self.send_raw(msg);
+            self.send_raw(msg);
             let ipc_ns = start.elapsed().as_nanos() as u64;
 
-            match &result {
-                Ok(()) => {
-                    self.metrics.inc_sent();
-                    self.state
-                        .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-                    use crate::core::hlog::{current_node_name, current_tick_number};
-                    use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-                    let now = chrono::Local::now();
-                    publish_log(LogEntry {
-                        timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                        tick_number: current_tick_number(),
-                        node_name: current_node_name(),
-                        log_type: LogType::Publish,
-                        topic: Some(self.name.clone()),
-                        message: summary,
-                        tick_us: 0,
-                        ipc_ns,
-                    });
-                }
-                Err(_) => {
-                    self.metrics.inc_send_failures();
-                }
-            }
-            result
+            self.metrics.inc_sent();
+            self.state
+                .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+            use crate::core::hlog::{current_node_name, current_tick_number};
+            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+            let now = chrono::Local::now();
+            publish_log(LogEntry {
+                timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                tick_number: current_tick_number(),
+                node_name: current_node_name(),
+                log_type: LogType::Publish,
+                topic: Some(self.name.clone()),
+                message: summary,
+                tick_us: 0,
+                ipc_ns,
+            });
         } else {
             // Zero-overhead path
-            self.send_raw(msg)
+            self.send_raw(msg);
         }
     }
 
     /// Raw send to backend — no metrics, no logging. Internal use only.
     #[inline(always)]
-    fn send_raw(&self, msg: T) -> Result<(), T> {
+    fn send_raw(&self, msg: T) {
         match &self.backend {
-            TopicBackend::Direct(inner) => inner.push(msg),
-            TopicBackend::SpscIntra(inner) => inner.push(msg),
-            TopicBackend::MpscIntra(inner) => inner.push(msg),
-            TopicBackend::SpmcIntra(inner) => inner.push(msg),
-            TopicBackend::MpmcIntra(inner) => inner.push(msg),
-            TopicBackend::MpmcShm(inner) => inner.push(msg),
-            TopicBackend::SpscShm(inner) => inner.push(msg),
-            TopicBackend::MpscShm(inner) => inner.push(msg),
-            TopicBackend::SpmcShm(inner) => inner.push(msg),
-            TopicBackend::Adaptive(inner) => inner.send(msg),
+            TopicBackend::Direct(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::SpscIntra(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::MpscIntra(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::SpmcIntra(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::MpmcIntra(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::MpmcShm(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::SpscShm(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::MpscShm(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::SpmcShm(inner) => {
+                let _ = inner.push(msg);
+            }
+            TopicBackend::Adaptive(inner) => {
+                let _ = inner.send(msg);
+            }
             TopicBackend::Network(_) => {
                 debug_assert!(
                     false,
                     "send() called on Network backend - use send_network() instead"
                 );
-                Err(msg)
             }
         }
     }
@@ -4796,8 +4803,8 @@ impl<T: PodMessage> PodTopic<T> {
 
     /// Send a POD message (~50ns)
     #[inline]
-    pub fn send(&self, msg: T) -> Result<(), T> {
-        self.backend.push(msg)
+    pub fn send(&self, msg: T) {
+        let _ = self.backend.push(msg);
     }
 
     /// Receive a POD message (~50ns)
@@ -4931,7 +4938,7 @@ mod tests {
             id: 42,
             payload: "hello topic".to_string(),
         };
-        topic.send(msg.clone()).unwrap();
+        topic.send(msg.clone());
 
         let received = consumer.recv();
         assert!(received.is_some());
@@ -4952,7 +4959,7 @@ mod tests {
                 id: i,
                 payload: format!("msg_{}", i),
             };
-            producer.send(msg).unwrap();
+            producer.send(msg);
         }
 
         for i in 0..5 {
@@ -4978,7 +4985,7 @@ mod tests {
             id: 1,
             payload: "shared".to_string(),
         };
-        topic1.send(msg.clone()).unwrap();
+        topic1.send(msg.clone());
 
         let received = topic2.recv();
         assert!(received.is_some());
@@ -4997,7 +5004,7 @@ mod tests {
             id: 1,
             payload: "test".to_string(),
         };
-        topic.send(msg).unwrap();
+        topic.send(msg);
 
         assert!(topic.has_messages());
 
@@ -5101,7 +5108,7 @@ mod tests {
             id: 77,
             payload: "descriptor roundtrip".to_string(),
         };
-        publisher.send(msg.clone()).unwrap();
+        publisher.send(msg.clone());
 
         let received = subscriber.recv();
         assert!(received.is_some());
@@ -5114,13 +5121,16 @@ mod tests {
             TYPED_TOPIC: i32 = "test_macro_e2e",
         }
 
-        // The type is baked in — this compiles because TYPED_TOPIC is TopicDescriptor<i32>
+        // Verify the macro produces a valid TopicDescriptor<i32>
+        assert_eq!(TYPED_TOPIC.name(), "test_macro_e2e");
+
+        // Use a unique name to avoid test collisions
         let unique = format!("test_macro_e2e_{}", std::process::id());
         let desc = TopicDescriptor::<i32>::new(Box::leak(unique.into_boxed_str()));
         let pub_topic = Topic::publish(desc).unwrap();
         let sub_topic = pub_topic.clone();
 
-        pub_topic.send(42).unwrap();
+        pub_topic.send(42);
         let received = sub_topic.recv();
         assert_eq!(received, Some(42));
     }
@@ -5146,7 +5156,7 @@ mod tests {
             id: 99,
             payload: "adaptive test".to_string(),
         };
-        topic1.send(msg.clone()).unwrap();
+        topic1.send(msg.clone());
 
         let received = topic2.recv();
         assert!(received.is_some());
@@ -5168,7 +5178,7 @@ mod tests {
             id: 1,
             payload: "direct".to_string(),
         };
-        topic.send(msg).unwrap();
+        topic.send(msg);
 
         assert!(topic.has_messages());
 
@@ -5195,8 +5205,8 @@ mod tests {
             payload: "second".to_string(),
         };
 
-        topic.send(msg1).unwrap();
-        topic.send(msg2).unwrap();
+        topic.send(msg1);
+        topic.send(msg2);
 
         // Should get the second message (overwritten)
         let received = topic.recv();
@@ -5266,7 +5276,7 @@ mod tests {
             id: 1,
             payload: "clone test".to_string(),
         };
-        topic1.send(msg).unwrap();
+        topic1.send(msg);
 
         // topic2 should NOT see topic1's message (independent channels)
         assert!(!topic2.has_messages());
@@ -5303,14 +5313,14 @@ mod tests {
 
         // Warmup
         for i in 0..1000u64 {
-            topic.send(black_box(TinyMsg(i))).unwrap();
+            topic.send(black_box(TinyMsg(i)));
             black_box(topic.recv());
         }
 
         // Measure safe API (with thread validation ~30ns)
         let start = Instant::now();
         for i in 0..iterations {
-            topic.send(black_box(TinyMsg(i))).unwrap();
+            topic.send(black_box(TinyMsg(i)));
             black_box(topic.recv());
         }
         let elapsed = start.elapsed();
@@ -5362,7 +5372,7 @@ mod tests {
             id: 42,
             payload: "spsc intra test".to_string(),
         };
-        producer.send(msg).unwrap();
+        producer.send(msg);
 
         let received = consumer.recv();
         assert!(received.is_some());
@@ -5385,8 +5395,8 @@ mod tests {
             payload: "second".to_string(),
         };
 
-        producer.send(msg1).unwrap();
-        producer.send(msg2).unwrap();
+        producer.send(msg1);
+        producer.send(msg2);
 
         // Should get the second message (overwritten)
         let received = consumer.recv();
@@ -5410,7 +5420,7 @@ mod tests {
                     id: i,
                     payload: format!("msg_{}", i),
                 };
-                producer.send(msg).unwrap();
+                producer.send(msg);
                 thread::sleep(std::time::Duration::from_micros(100));
             }
         });
@@ -5456,7 +5466,7 @@ mod tests {
             id: 1,
             payload: "test".to_string(),
         };
-        producer.send(msg).unwrap();
+        producer.send(msg);
 
         assert!(consumer.has_messages());
 
@@ -5490,14 +5500,14 @@ mod tests {
 
         // Warmup
         for i in 0..1000u64 {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
 
         // Measure
         let start = Instant::now();
         for i in 0..iterations {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
         let elapsed = start.elapsed();
@@ -5525,7 +5535,7 @@ mod tests {
             payload: "hello".to_string(),
         };
 
-        producer.send(msg.clone()).unwrap();
+        producer.send(msg.clone());
 
         let received = consumer.recv();
         assert!(received.is_some());
@@ -5540,18 +5550,14 @@ mod tests {
         let producer2 = producer1.clone();
 
         // Send from both producers
-        producer1
-            .send(TestMessage {
-                id: 1,
-                payload: "from_1".to_string(),
-            })
-            .unwrap();
-        producer2
-            .send(TestMessage {
-                id: 2,
-                payload: "from_2".to_string(),
-            })
-            .unwrap();
+        producer1.send(TestMessage {
+            id: 1,
+            payload: "from_1".to_string(),
+        });
+        producer2.send(TestMessage {
+            id: 2,
+            payload: "from_2".to_string(),
+        });
 
         // Consumer should receive both
         let msg1 = consumer.recv().unwrap();
@@ -5566,12 +5572,10 @@ mod tests {
     fn test_mpsc_intra_producer_cannot_receive() {
         let (producer, _consumer) = Topic::<TestMessage>::mpsc_intra("mpsc_prod_recv", 64);
 
-        producer
-            .send(TestMessage {
-                id: 1,
-                payload: "test".to_string(),
-            })
-            .unwrap();
+        producer.send(TestMessage {
+            id: 1,
+            payload: "test".to_string(),
+        });
 
         // Producer should not be able to receive
         let result = producer.recv();
@@ -5579,39 +5583,35 @@ mod tests {
     }
 
     #[test]
-    fn test_mpsc_intra_consumer_cannot_send() {
+    fn test_mpsc_intra_consumer_send_is_noop() {
         let (_producer, consumer) = Topic::<TestMessage>::mpsc_intra("mpsc_cons_send", 64);
 
         let msg = TestMessage {
             id: 1,
             payload: "test".to_string(),
         };
-        let result = consumer.send(msg);
-
-        // Consumer should not be able to send
-        assert!(result.is_err());
+        // send() is infallible (fire-and-forget); consumer send is a no-op
+        consumer.send(msg);
     }
 
     #[test]
-    fn test_mpsc_intra_queue_full() {
+    fn test_mpsc_intra_queue_full_overwrites() {
         // Create a small queue
         let (producer, _consumer) = Topic::<TestMessage>::mpsc_intra("mpsc_full", 4);
 
         // Fill the queue (capacity is rounded to power of 2, so 4)
         for i in 0..4 {
-            let result = producer.send(TestMessage {
+            producer.send(TestMessage {
                 id: i,
                 payload: format!("msg_{}", i),
             });
-            assert!(result.is_ok(), "Should be able to send message {}", i);
         }
 
-        // Next send should fail (queue full)
-        let result = producer.send(TestMessage {
+        // send() is infallible — overflow overwrites oldest (fire-and-forget)
+        producer.send(TestMessage {
             id: 99,
             payload: "overflow".to_string(),
         });
-        assert!(result.is_err(), "Queue should be full");
     }
 
     #[test]
@@ -5628,12 +5628,10 @@ mod tests {
 
         assert!(!consumer.has_messages());
 
-        producer
-            .send(TestMessage {
-                id: 1,
-                payload: "test".to_string(),
-            })
-            .unwrap();
+        producer.send(TestMessage {
+            id: 1,
+            payload: "test".to_string(),
+        });
 
         assert!(consumer.has_messages());
 
@@ -5672,15 +5670,8 @@ mod tests {
                         id: (p * msgs_per_producer + i) as u64,
                         payload: format!("producer_{}_msg_{}", p, i),
                     };
-                    // Retry if queue is full
-                    loop {
-                        match producer.send(msg.clone()) {
-                            Ok(_) => break,
-                            Err(_) => {
-                                thread::yield_now();
-                            }
-                        }
-                    }
+                    // send() is infallible (fire-and-forget)
+                    producer.send(msg.clone());
                 }
             });
             handles.push(handle);
@@ -5735,14 +5726,14 @@ mod tests {
 
         // Warmup
         for i in 0..1000u64 {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
 
         // Measure
         let start = Instant::now();
         for i in 0..iterations {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
         let elapsed = start.elapsed();
@@ -5766,7 +5757,7 @@ mod tests {
         let (producer, consumer) = Topic::<TestData>::spmc_intra("spmc_basic");
 
         // Send a message
-        producer.send(TestData(42)).unwrap();
+        producer.send(TestData(42));
 
         // Receive the message
         let received = consumer.recv();
@@ -5782,7 +5773,7 @@ mod tests {
         let consumer2 = consumer1.clone();
 
         // Send a message
-        producer.send(TestData(100)).unwrap();
+        producer.send(TestData(100));
 
         // Both consumers receive the same message
         let recv1 = consumer1.recv();
@@ -5804,15 +5795,14 @@ mod tests {
     }
 
     #[test]
-    fn test_spmc_intra_consumer_cannot_send() {
+    fn test_spmc_intra_consumer_send_is_noop() {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         struct TestData(u64);
 
         let (_producer, consumer) = Topic::<TestData>::spmc_intra("spmc_cons_no_send");
 
-        // Consumer should fail to send
-        let result = consumer.send(TestData(42));
-        assert!(result.is_err());
+        // send() is infallible (fire-and-forget); consumer send is a no-op
+        consumer.send(TestData(42));
     }
 
     #[test]
@@ -5823,9 +5813,9 @@ mod tests {
         let (producer, consumer) = Topic::<TestData>::spmc_intra("spmc_overwrite");
 
         // Send multiple messages
-        producer.send(TestData(1)).unwrap();
-        producer.send(TestData(2)).unwrap();
-        producer.send(TestData(3)).unwrap();
+        producer.send(TestData(1));
+        producer.send(TestData(2));
+        producer.send(TestData(3));
 
         // Consumer should get the latest value
         let recv = consumer.recv();
@@ -5858,7 +5848,7 @@ mod tests {
         assert!(!consumer.has_messages());
 
         // Send a message
-        producer.send(TestData(42)).unwrap();
+        producer.send(TestData(42));
 
         // Now has messages
         assert!(consumer.has_messages());
@@ -5939,7 +5929,7 @@ mod tests {
 
         // Producer sends values
         for i in 1..=100u64 {
-            producer.send(TestData(i)).unwrap();
+            producer.send(TestData(i));
             // Give consumers time to read (longer for parallel test reliability)
             thread::sleep(std::time::Duration::from_micros(100));
         }
@@ -5991,14 +5981,14 @@ mod tests {
 
         // Warmup - producer always succeeds
         for i in 0..1000u64 {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
 
         // Measure
         let start = Instant::now();
         for i in 0..iterations {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
         let elapsed = start.elapsed();
@@ -6047,7 +6037,7 @@ mod tests {
         let (producer, consumer) = Topic::<TestData>::mpmc_intra("mpmc_basic", 64);
 
         // Send a message
-        producer.send(TestData(42)).unwrap();
+        producer.send(TestData(42));
 
         // Receive the message
         let received = consumer.recv();
@@ -6063,8 +6053,8 @@ mod tests {
         let producer2 = producer.clone();
 
         // Multiple producers send
-        producer.send(TestData(1)).unwrap();
-        producer2.send(TestData(2)).unwrap();
+        producer.send(TestData(1));
+        producer2.send(TestData(2));
 
         // Receive both messages
         let mut received = vec![];
@@ -6088,8 +6078,8 @@ mod tests {
         let consumer2 = consumer1.clone();
 
         // Send two messages
-        producer.send(TestData(1)).unwrap();
-        producer.send(TestData(2)).unwrap();
+        producer.send(TestData(1));
+        producer.send(TestData(2));
 
         // Each consumer gets one message (load balancing)
         let recv1 = consumer1.recv();
@@ -6116,19 +6106,18 @@ mod tests {
     }
 
     #[test]
-    fn test_mpmc_intra_consumer_cannot_send() {
+    fn test_mpmc_intra_consumer_send_is_noop() {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         struct TestData(u64);
 
         let (_producer, consumer) = Topic::<TestData>::mpmc_intra("mpmc_cons_no_send", 64);
 
-        // Consumer should fail to send
-        let result = consumer.send(TestData(42));
-        assert!(result.is_err());
+        // send() is infallible (fire-and-forget); consumer send is a no-op
+        consumer.send(TestData(42));
     }
 
     #[test]
-    fn test_mpmc_intra_queue_full() {
+    fn test_mpmc_intra_queue_full_overwrites() {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         struct TestData(u64);
 
@@ -6136,12 +6125,11 @@ mod tests {
 
         // Fill the queue (capacity is 4, rounded up from any smaller value)
         for i in 0..4u64 {
-            producer.send(TestData(i)).unwrap();
+            producer.send(TestData(i));
         }
 
-        // Next send should fail
-        let result = producer.send(TestData(100));
-        assert!(result.is_err());
+        // send() is infallible — overflow overwrites oldest (fire-and-forget)
+        producer.send(TestData(100));
     }
 
     #[test]
@@ -6166,7 +6154,7 @@ mod tests {
         assert!(!consumer.has_messages());
 
         // Send a message
-        producer.send(TestData(42)).unwrap();
+        producer.send(TestData(42));
 
         // Now has messages
         assert!(consumer.has_messages());
@@ -6213,9 +6201,7 @@ mod tests {
         // Producer 1
         let p1_handle = thread::spawn(move || {
             for i in 0..50u64 {
-                while producer.send(TestData(i)).is_err() {
-                    std::hint::spin_loop();
-                }
+                producer.send(TestData(i));
                 pc1.fetch_add(1, Ordering::SeqCst);
             }
         });
@@ -6223,9 +6209,7 @@ mod tests {
         // Producer 2
         let p2_handle = thread::spawn(move || {
             for i in 50..100u64 {
-                while producer2.send(TestData(i)).is_err() {
-                    std::hint::spin_loop();
-                }
+                producer2.send(TestData(i));
                 pc2.fetch_add(1, Ordering::SeqCst);
             }
         });
@@ -6281,14 +6265,14 @@ mod tests {
 
         // Warmup
         for i in 0..1000u64 {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
 
         // Measure
         let start = Instant::now();
         for i in 0..iterations {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
         let elapsed = start.elapsed();
@@ -6635,7 +6619,7 @@ mod tests {
             id: 42,
             payload: "test".to_string(),
         };
-        producer.send(msg.clone()).unwrap();
+        producer.send(msg.clone());
 
         // Receive message
         let received = consumer.recv().unwrap();
@@ -6661,12 +6645,10 @@ mod tests {
 
         assert!(!consumer.has_messages());
 
-        producer
-            .send(TestMessage {
-                id: 1,
-                payload: "msg".to_string(),
-            })
-            .unwrap();
+        producer.send(TestMessage {
+            id: 1,
+            payload: "msg".to_string(),
+        });
         assert!(consumer.has_messages());
 
         consumer.recv();
@@ -6680,29 +6662,26 @@ mod tests {
         let producer = Topic::<TestMessage>::mpsc_shm(&unique_name, 64, true).unwrap();
 
         // Send to self
-        producer
-            .send(TestMessage {
-                id: 1,
-                payload: "msg".to_string(),
-            })
-            .unwrap();
+        producer.send(TestMessage {
+            id: 1,
+            payload: "msg".to_string(),
+        });
 
         // Producer cannot receive
         assert!(producer.recv().is_none());
     }
 
     #[test]
-    fn test_mpsc_shm_consumer_cannot_send() {
+    fn test_mpsc_shm_consumer_send_is_noop() {
         let unique_name = format!("mpsc_shm_cons_send_{}", std::process::id());
 
         let consumer = Topic::<TestMessage>::mpsc_shm(&unique_name, 64, false).unwrap();
 
-        // Consumer cannot send
-        let result = consumer.send(TestMessage {
+        // send() is infallible (fire-and-forget); consumer send is a no-op
+        consumer.send(TestMessage {
             id: 1,
             payload: "msg".to_string(),
         });
-        assert!(result.is_err());
     }
 
     #[test]
@@ -6714,12 +6693,10 @@ mod tests {
 
         // Send multiple messages
         for i in 0..10 {
-            producer
-                .send(TestMessage {
-                    id: i,
-                    payload: format!("msg{}", i),
-                })
-                .unwrap();
+            producer.send(TestMessage {
+                id: i,
+                payload: format!("msg{}", i),
+            });
         }
 
         // Receive in order (FIFO)
@@ -6733,7 +6710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mpsc_shm_queue_full() {
+    fn test_mpsc_shm_queue_full_overwrites() {
         let unique_name = format!("mpsc_shm_full_{}", std::process::id());
 
         // Very small queue
@@ -6741,19 +6718,17 @@ mod tests {
 
         // Fill the queue (capacity will be rounded to power of 2 = 4)
         for i in 0..4u64 {
-            let result = producer.send(TestMessage {
+            producer.send(TestMessage {
                 id: i,
                 payload: format!("msg{}", i),
             });
-            assert!(result.is_ok(), "Failed to send message {}", i);
         }
 
-        // Next send should fail
-        let result = producer.send(TestMessage {
+        // send() is infallible — overflow overwrites oldest (fire-and-forget)
+        producer.send(TestMessage {
             id: 999,
             payload: "overflow".to_string(),
         });
-        assert!(result.is_err(), "Queue should be full");
     }
 
     #[test]
@@ -6775,18 +6750,14 @@ mod tests {
         let producer2 = producer.clone();
 
         // Both producers should work
-        producer
-            .send(TestMessage {
-                id: 1,
-                payload: "p1".to_string(),
-            })
-            .unwrap();
-        producer2
-            .send(TestMessage {
-                id: 2,
-                payload: "p2".to_string(),
-            })
-            .unwrap();
+        producer.send(TestMessage {
+            id: 1,
+            payload: "p1".to_string(),
+        });
+        producer2.send(TestMessage {
+            id: 2,
+            payload: "p2".to_string(),
+        });
 
         let consumer = Topic::<TestMessage>::mpsc_shm(&unique_name, 64, false).unwrap();
         let msg1 = consumer.recv().unwrap();
@@ -6842,14 +6813,14 @@ mod tests {
 
         // Warmup
         for i in 0..1000u64 {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
 
         // Measure
         let start = Instant::now();
         for i in 0..iterations {
-            producer.send(black_box(TinyMsg(i))).unwrap();
+            producer.send(black_box(TinyMsg(i)));
             black_box(consumer.recv());
         }
         let elapsed = start.elapsed();
@@ -6889,7 +6860,7 @@ mod tests {
             let p = producer1.clone();
             thread::spawn(move || {
                 for i in 0..messages_per_producer {
-                    p.send(SimpleMsg(i)).unwrap();
+                    p.send(SimpleMsg(i));
                 }
             })
         };
@@ -6898,7 +6869,7 @@ mod tests {
             let p = producer2.clone();
             thread::spawn(move || {
                 for i in 0..messages_per_producer {
-                    p.send(SimpleMsg(i + 1000)).unwrap();
+                    p.send(SimpleMsg(i + 1000));
                 }
             })
         };
@@ -6907,7 +6878,7 @@ mod tests {
             let p = producer3.clone();
             thread::spawn(move || {
                 for i in 0..messages_per_producer {
-                    p.send(SimpleMsg(i + 2000)).unwrap();
+                    p.send(SimpleMsg(i + 2000));
                 }
             })
         };
@@ -6954,7 +6925,7 @@ mod tests {
 
         // Send a message
         let msg = SpmcTestMsg { id: 42, value: 3.5 };
-        producer.send(msg.clone()).unwrap();
+        producer.send(msg.clone());
 
         // Receive the message
         let received = consumer.recv();
@@ -6978,7 +6949,7 @@ mod tests {
         assert!(received.is_none());
 
         // Now send a message
-        producer.send(SpmcTestMsg { id: 1, value: 1.0 }).unwrap();
+        producer.send(SpmcTestMsg { id: 1, value: 1.0 });
 
         // Should receive it
         let received = consumer.recv();
@@ -6996,7 +6967,7 @@ mod tests {
         assert!(!consumer.has_messages());
 
         // Send a message
-        producer.send(SpmcTestMsg { id: 1, value: 1.0 }).unwrap();
+        producer.send(SpmcTestMsg { id: 1, value: 1.0 });
 
         // Now has messages
         assert!(consumer.has_messages());
@@ -7016,7 +6987,7 @@ mod tests {
             id: 100,
             value: 2.71,
         };
-        producer.send(msg.clone()).unwrap();
+        producer.send(msg.clone());
 
         // All consumers should receive the same message
         let r1 = consumer1.recv().unwrap();
@@ -7037,12 +7008,10 @@ mod tests {
 
         // Send multiple messages - consumers get latest
         for i in 0..10 {
-            producer
-                .send(SpmcTestMsg {
-                    id: i,
-                    value: i as f64,
-                })
-                .unwrap();
+            producer.send(SpmcTestMsg {
+                id: i,
+                value: i as f64,
+            });
         }
 
         // Consumer should see the latest value (SPMC is broadcast, not queue)
@@ -7091,7 +7060,7 @@ mod tests {
 
         // Warmup
         for i in 0..1000 {
-            producer.send(SpmcTinyMsg(i)).unwrap();
+            producer.send(SpmcTinyMsg(i));
             let _ = consumer.recv();
         }
 
@@ -7100,7 +7069,7 @@ mod tests {
         let start = std::time::Instant::now();
 
         for i in 0..iterations {
-            producer.send(SpmcTinyMsg(i)).unwrap();
+            producer.send(SpmcTinyMsg(i));
             let _ = consumer.recv();
         }
 
@@ -7147,7 +7116,7 @@ mod tests {
 
             // Producer sends messages
             for i in 0..total_messages {
-                producer.send(SpmcTinyMsg(i)).unwrap();
+                producer.send(SpmcTinyMsg(i));
                 // Longer delay for parallel test reliability
                 std::thread::sleep(std::time::Duration::from_micros(100));
             }
@@ -7218,7 +7187,7 @@ mod tests {
         let consumer2 = consumer1.clone();
 
         // Send a message
-        producer.send(SpmcTestMsg { id: 42, value: 1.0 }).unwrap();
+        producer.send(SpmcTestMsg { id: 42, value: 1.0 });
 
         // Both consumers should be able to receive
         let r1 = consumer1.recv();

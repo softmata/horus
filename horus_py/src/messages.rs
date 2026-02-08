@@ -282,7 +282,12 @@ impl PyOdometry {
     fn __repr__(&self) -> String {
         format!(
             "Odometry(x={:.3}, y={:.3}, theta={:.3}, v_lin={:.3}, v_ang={:.3}, timestamp_ns={})",
-            self.x, self.y, self.theta, self.linear_velocity, self.angular_velocity, self.timestamp_ns
+            self.x,
+            self.y,
+            self.theta,
+            self.linear_velocity,
+            self.angular_velocity,
+            self.timestamp_ns
         )
     }
 }
