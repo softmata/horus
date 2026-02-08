@@ -309,9 +309,7 @@ node! {
             // Your control logic here
             let msg = CmdVel::new(1.0, 0.0);
 
-            // send_logged() writes to shared log buffer for monitoring tools
-            // Use send() instead for zero-overhead hot path (~167ns vs ~300ns)
-            self.cmd_vel.send_logged(msg).ok();
+            self.cmd_vel.send(msg).ok();
         }
     }
 }
@@ -340,7 +338,7 @@ struct Controller {
 impl Controller {
     fn new() -> Result<Self> {
         Ok(Self {
-            cmd_vel: Topic::new("motors.cmd_vel")?,
+            cmd_vel: Topic::new("motors.cmd_vel")?.with_logging(),
         })
     }
 }
@@ -354,9 +352,7 @@ impl Node for Controller {
         // Your control logic here
         let msg = CmdVel::new(1.0, 0.0);
 
-        // send_logged() writes to shared log buffer for monitoring tools
-        // Use send() instead for zero-overhead hot path (~167ns vs ~300ns)
-        self.cmd_vel.send_logged(msg).ok();
+        self.cmd_vel.send(msg).ok();
     }
 
     fn get_publishers(&self) -> Vec<TopicMetadata> {

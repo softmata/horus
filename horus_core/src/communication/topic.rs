@@ -3289,6 +3289,13 @@ pub struct Topic<T> {
     /// Connection state (atomic for lock-free access)
     state: std::sync::atomic::AtomicU8,
 
+    /// Whether metrics tracking is enabled (adds ~10-20ns per send/recv)
+    metrics_enabled: bool,
+
+    /// Optional logging function, set via `.with_logging()` when T: LogSummary.
+    /// When Some, `send()` and `recv()` write to the introspection log buffer.
+    log_fn: Option<fn(&T) -> String>,
+
     /// Phantom for type safety
     _marker: PhantomData<T>,
 }
@@ -3316,6 +3323,8 @@ impl<T: Clone> Clone for Topic<T> {
             },
             metrics: self.metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(self.state.load(Ordering::Relaxed)),
+            metrics_enabled: self.metrics_enabled,
+            log_fn: self.log_fn,
             _marker: PhantomData,
         }
     }
@@ -3397,6 +3406,26 @@ where
         Self::new(descriptor.name())
     }
 
+    /// Enable metrics tracking on this topic.
+    ///
+    /// When enabled, `send()` and `recv()` automatically update internal
+    /// counters (sent, received, failures). Adds ~10-20ns overhead per call
+    /// from atomic counter updates.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let topic: Topic<SensorData> = Topic::new("sensor")?
+    ///     .with_metrics(true);
+    ///
+    /// topic.send(msg)?;  // Automatically tracks metrics
+    /// let stats = topic.get_metrics();
+    /// ```
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
+        self
+    }
+
     /// Create a new topic with custom capacity
     ///
     /// # Smart Detection
@@ -3449,6 +3478,8 @@ where
             backend: TopicBackend::Adaptive(adaptive),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         })
     }
@@ -3496,6 +3527,8 @@ where
             backend: TopicBackend::Adaptive(adaptive),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         })
     }
@@ -3628,6 +3661,8 @@ where
             backend: TopicBackend::Direct(DirectChannelBackend::new()),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         }
     }
@@ -3665,6 +3700,8 @@ where
             backend: TopicBackend::SpscIntra(SpscIntraBackend::new_producer(slot.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3673,6 +3710,8 @@ where
             backend: TopicBackend::SpscIntra(SpscIntraBackend::new_consumer(slot)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3722,6 +3761,8 @@ where
             backend: TopicBackend::MpscIntra(MpscIntraBackend::new_producer(ring.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3730,6 +3771,8 @@ where
             backend: TopicBackend::MpscIntra(MpscIntraBackend::new_consumer(ring)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3780,6 +3823,8 @@ where
             backend: TopicBackend::SpmcIntra(SpmcIntraBackend::new_producer(slot.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3788,6 +3833,8 @@ where
             backend: TopicBackend::SpmcIntra(SpmcIntraBackend::new_consumer(slot)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3839,6 +3886,8 @@ where
             backend: TopicBackend::MpmcIntra(MpmcIntraBackend::new_producer(ring.clone())),
             metrics: metrics.clone(),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3847,6 +3896,8 @@ where
             backend: TopicBackend::MpmcIntra(MpmcIntraBackend::new_consumer(ring)),
             metrics,
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         };
 
@@ -3901,6 +3952,8 @@ where
             backend: TopicBackend::MpscShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         })
     }
@@ -3952,6 +4005,8 @@ where
             backend: TopicBackend::SpmcShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         })
     }
@@ -3996,6 +4051,8 @@ where
             backend: TopicBackend::SpscShm(backend),
             metrics: Arc::new(AtomicTopicMetrics::default()),
             state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+            metrics_enabled: false,
+            log_fn: None,
             _marker: PhantomData,
         })
     }
@@ -4070,6 +4127,8 @@ where
                     backend: TopicBackend::MpmcShm(backend),
                     metrics: Arc::new(AtomicTopicMetrics::default()),
                     state: std::sync::atomic::AtomicU8::new(ConnectionState::Connected.into_u8()),
+                    metrics_enabled: false,
+                    log_fn: None,
                     _marker: PhantomData,
                 })
             }
@@ -4094,6 +4153,8 @@ where
                     backend: TopicBackend::Network(backend),
                     metrics: Arc::new(AtomicTopicMetrics::default()),
                     state: std::sync::atomic::AtomicU8::new(ConnectionState::Connecting.into_u8()),
+                    metrics_enabled: false,
+                    log_fn: None,
                     _marker: PhantomData,
                 })
             }
@@ -4312,6 +4373,37 @@ where
 }
 
 // ============================================================================
+// Topic Logging Configuration (requires LogSummary)
+// ============================================================================
+
+impl<T> Topic<T>
+where
+    T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + LogSummary + 'static,
+{
+    /// Enable automatic logging on this topic.
+    ///
+    /// When enabled, `send()` and `recv()` write message summaries to the
+    /// introspection log buffer, visible through `horus topic echo` and
+    /// `horus monitor`. Also enables metrics tracking.
+    ///
+    /// Requires the message type to implement `LogSummary`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let topic: Topic<CmdVel> = Topic::new("cmd_vel")?
+    ///     .with_logging();
+    ///
+    /// topic.send(msg)?;  // Automatically logs + tracks metrics
+    /// ```
+    pub fn with_logging(mut self) -> Self {
+        self.log_fn = Some(|msg: &T| msg.log_summary());
+        self.metrics_enabled = true; // Logging implies metrics
+        self
+    }
+}
+
+// ============================================================================
 // Topic Send/Recv Implementation
 // ============================================================================
 
@@ -4319,11 +4411,12 @@ impl<T> Topic<T>
 where
     T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
 {
-    /// Send a message to the topic (zero-overhead hot path)
+    /// Send a message to the topic
     ///
-    /// This is the TRUE zero-overhead path - no timing, no logging, no syscalls,
-    /// NO METRICS updates. For metrics tracking, use `send_tracked()`.
-    /// For introspection, use `send_logged()` or external tools like `horus topic echo`.
+    /// Behavior adapts to topic configuration:
+    /// - **Default** (no config): Zero-overhead hot path — no timing, no logging, no syscalls
+    /// - **`.with_metrics(true)`**: Tracks send/failure counters (~10-20ns overhead)
+    /// - **`.with_logging()`**: Logs message summaries + metrics (~50ns overhead)
     ///
     /// # Arguments
     ///
@@ -4336,7 +4429,7 @@ where
     ///
     /// # Performance
     ///
-    /// This method is optimized for absolute minimum latency:
+    /// When unconfigured, latency matches the raw backend:
     /// - DirectChannel: ~3-5ns (same thread)
     /// - SpscIntra: ~15-25ns (cross-thread)
     /// - MpmcIntra: ~30-50ns (same process)
@@ -4349,8 +4442,130 @@ where
     /// (use `send_network()` for network topics).
     #[inline(always)]
     pub fn send(&self, msg: T) -> Result<(), T> {
-        // ZERO-OVERHEAD IPC: No timing, no logging, no syscalls, NO METRICS
-        // This is the hot path - every nanosecond counts
+        // Fast path: no metrics, no logging — zero overhead
+        if !self.metrics_enabled && self.log_fn.is_none() {
+            return self.send_raw(msg);
+        }
+
+        // Logging path: compute summary before msg is moved, measure IPC time
+        if let Some(log_fn) = self.log_fn {
+            let summary = log_fn(&msg);
+            let start = Instant::now();
+            let result = self.send_raw(msg);
+            let ipc_ns = start.elapsed().as_nanos() as u64;
+
+            match &result {
+                Ok(()) => {
+                    self.metrics.inc_sent();
+                    self.state
+                        .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+                    use crate::core::hlog::{current_node_name, current_tick_number};
+                    use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+                    let now = chrono::Local::now();
+                    publish_log(LogEntry {
+                        timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                        tick_number: current_tick_number(),
+                        node_name: current_node_name(),
+                        log_type: LogType::Publish,
+                        topic: Some(self.name.clone()),
+                        message: summary,
+                        tick_us: 0,
+                        ipc_ns,
+                    });
+                }
+                Err(_) => {
+                    self.metrics.inc_send_failures();
+                }
+            }
+            return result;
+        }
+
+        // Metrics-only path
+        let result = self.send_raw(msg);
+        match &result {
+            Ok(()) => {
+                self.metrics.inc_sent();
+                self.state
+                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.metrics.inc_send_failures();
+            }
+        }
+        result
+    }
+
+    /// Send a message with metrics tracking
+    ///
+    /// **Deprecated:** Use `.with_metrics(true)` on the topic instead:
+    /// ```rust,ignore
+    /// let topic = Topic::new("name")?.with_metrics(true);
+    /// topic.send(msg)?; // Automatically tracks metrics
+    /// ```
+    #[deprecated(note = "Use Topic::new(name)?.with_metrics(true) then .send() instead")]
+    #[inline]
+    pub fn send_tracked(&self, msg: T) -> Result<(), T> {
+        let result = self.send_raw(msg);
+        match &result {
+            Ok(()) => {
+                self.metrics.inc_sent();
+                self.state
+                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.metrics.inc_send_failures();
+            }
+        }
+        result
+    }
+
+    /// Send a message with detailed logging (requires LogSummary)
+    ///
+    /// **Deprecated:** Use `.with_logging()` on the topic instead:
+    /// ```rust,ignore
+    /// let topic = Topic::new("name")?.with_logging();
+    /// topic.send(msg)?; // Automatically logs + tracks metrics
+    /// ```
+    #[deprecated(note = "Use Topic::new(name)?.with_logging() then .send() instead")]
+    #[inline]
+    pub fn send_logged(&self, msg: T) -> Result<(), T>
+    where
+        T: LogSummary,
+    {
+        let summary = msg.log_summary();
+        let start = Instant::now();
+        let result = self.send_raw(msg);
+        let ipc_ns = start.elapsed().as_nanos() as u64;
+
+        match &result {
+            Ok(()) => {
+                self.metrics.inc_sent();
+                self.state
+                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+                use crate::core::hlog::{current_node_name, current_tick_number};
+                use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+                let now = chrono::Local::now();
+                publish_log(LogEntry {
+                    timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                    tick_number: current_tick_number(),
+                    node_name: current_node_name(),
+                    log_type: LogType::Publish,
+                    topic: Some(self.name.clone()),
+                    message: summary,
+                    tick_us: 0,
+                    ipc_ns,
+                });
+            }
+            Err(_) => {
+                self.metrics.inc_send_failures();
+            }
+        }
+        result
+    }
+
+    /// Raw send to backend — no metrics, no logging. Internal use only.
+    #[inline(always)]
+    fn send_raw(&self, msg: T) -> Result<(), T> {
         match &self.backend {
             TopicBackend::Direct(inner) => inner.push(msg),
             TopicBackend::SpscIntra(inner) => inner.push(msg),
@@ -4372,119 +4587,116 @@ where
         }
     }
 
-    /// Send a message with metrics tracking
+    /// Receive a message from the topic
     ///
-    /// Like `send()`, but updates internal counters for monitoring.
-    /// Use this when you need accurate message counts.
+    /// Behavior adapts to topic configuration:
+    /// - **Default** (no config): Zero-overhead hot path
+    /// - **`.with_metrics(true)`**: Tracks receive counters (~10-20ns overhead)
+    /// - **`.with_logging()`**: Logs received message summaries + metrics
     ///
-    /// Note: Adds ~10-20ns overhead from atomic counter updates.
-    #[inline]
-    pub fn send_tracked(&self, msg: T) -> Result<(), T> {
-        let result = self.send(msg);
-
-        // Update metrics based on result (atomic counter, no syscalls)
-        match &result {
-            Ok(()) => {
-                self.metrics.inc_sent();
-                self.state
-                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.metrics.inc_send_failures();
-            }
+    /// # Returns
+    ///
+    /// * `Some(msg)` if a message is available
+    /// * `None` if no message available or if called on a Network backend
+    ///   (use `recv_network()` for network topics).
+    #[inline(always)]
+    pub fn recv(&self) -> Option<T> {
+        // Fast path: no metrics, no logging — zero overhead
+        if !self.metrics_enabled && self.log_fn.is_none() {
+            return self.recv_raw();
         }
 
-        result
-    }
+        // Logging path
+        if let Some(log_fn) = self.log_fn {
+            let start = Instant::now();
+            let result = self.recv_raw();
+            let ipc_ns = start.elapsed().as_nanos() as u64;
 
-    /// Send a message with detailed logging (requires LogSummary)
-    ///
-    /// Like `send()`, but logs the message's `log_summary()` to the introspection system.
-    /// Use this when you want to capture message contents for monitoring tools.
-    ///
-    /// Note: This method writes to the global log buffer for introspection tools like
-    /// `horus topic echo` and `horus monitor`. For console output, use external tools.
-    #[inline]
-    pub fn send_logged(&self, msg: T) -> Result<(), T>
-    where
-        T: LogSummary,
-    {
-        // Compute summary BEFORE msg is moved (for automatic logging)
-        let summary = msg.log_summary();
-
-        // Measure IPC time
-        let start = Instant::now();
-
-        let result = match &self.backend {
-            TopicBackend::Direct(inner) => inner.push(msg),
-            TopicBackend::SpscIntra(inner) => inner.push(msg),
-            TopicBackend::MpscIntra(inner) => inner.push(msg),
-            TopicBackend::SpmcIntra(inner) => inner.push(msg),
-            TopicBackend::MpmcIntra(inner) => inner.push(msg),
-            TopicBackend::MpmcShm(inner) => inner.push(msg),
-            TopicBackend::SpscShm(inner) => inner.push(msg),
-            TopicBackend::MpscShm(inner) => inner.push(msg),
-            TopicBackend::SpmcShm(inner) => inner.push(msg),
-            TopicBackend::Adaptive(inner) => inner.send(msg),
-            TopicBackend::Network(_) => {
-                debug_assert!(
-                    false,
-                    "send_logged() called on Network backend - use send_network() instead"
-                );
-                Err(msg)
-            }
-        };
-
-        let ipc_ns = start.elapsed().as_nanos() as u64;
-
-        match &result {
-            Ok(()) => {
-                self.metrics.inc_sent();
-                self.state
-                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-
-                // Write to introspection log buffer using thread-local node context
+            if let Some(ref msg) = result {
+                self.metrics.inc_received();
                 use crate::core::hlog::{current_node_name, current_tick_number};
                 use crate::core::log_buffer::{publish_log, LogEntry, LogType};
                 let now = chrono::Local::now();
+                let summary = log_fn(msg);
                 publish_log(LogEntry {
                     timestamp: now.format("%H:%M:%S%.3f").to_string(),
                     tick_number: current_tick_number(),
                     node_name: current_node_name(),
-                    log_type: LogType::Publish,
+                    log_type: LogType::Subscribe,
                     topic: Some(self.name.clone()),
                     message: summary,
                     tick_us: 0,
                     ipc_ns,
                 });
             }
-            Err(_) => {
-                self.metrics.inc_send_failures();
-            }
+            return result;
         }
 
+        // Metrics-only path
+        let result = self.recv_raw();
+        if result.is_some() {
+            self.metrics.inc_received();
+        }
         result
     }
 
-    /// Receive a message from the topic (zero-overhead)
+    /// Receive a message with metrics tracking
     ///
-    /// This is the fast path - no timing, no logging, no syscalls.
-    /// For introspection, use `recv_logged()` or external tools like `horus topic echo`.
+    /// **Deprecated:** Use `.with_metrics(true)` on the topic instead:
+    /// ```rust,ignore
+    /// let topic = Topic::new("name")?.with_metrics(true);
+    /// if let Some(msg) = topic.recv() { /* ... */ }
+    /// ```
+    #[deprecated(note = "Use Topic::new(name)?.with_metrics(true) then .recv() instead")]
+    #[inline]
+    pub fn recv_tracked(&self) -> Option<T> {
+        let result = self.recv_raw();
+        if result.is_some() {
+            self.metrics.inc_received();
+        }
+        result
+    }
+
+    /// Receive a message with detailed logging (requires LogSummary)
     ///
-    /// # Returns
-    ///
-    /// * `Some(msg)` if a message is available
-    /// * `None` if no message available
-    ///
-    /// # Returns
-    ///
-    /// * `None` if no message available or if called on a Network backend
-    ///   (use `recv_network()` for network topics).
+    /// **Deprecated:** Use `.with_logging()` on the topic instead:
+    /// ```rust,ignore
+    /// let topic = Topic::new("name")?.with_logging();
+    /// if let Some(msg) = topic.recv() { /* ... */ }
+    /// ```
+    #[deprecated(note = "Use Topic::new(name)?.with_logging() then .recv() instead")]
+    #[inline]
+    pub fn recv_logged(&self) -> Option<T>
+    where
+        T: LogSummary,
+    {
+        let start = Instant::now();
+        let result = self.recv_raw();
+        let ipc_ns = start.elapsed().as_nanos() as u64;
+
+        if let Some(ref msg) = result {
+            self.metrics.inc_received();
+            use crate::core::hlog::{current_node_name, current_tick_number};
+            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+            let now = chrono::Local::now();
+            let summary = msg.log_summary();
+            publish_log(LogEntry {
+                timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                tick_number: current_tick_number(),
+                node_name: current_node_name(),
+                log_type: LogType::Subscribe,
+                topic: Some(self.name.clone()),
+                message: summary,
+                tick_us: 0,
+                ipc_ns,
+            });
+        }
+        result
+    }
+
+    /// Raw recv from backend — no metrics, no logging. Internal use only.
     #[inline(always)]
-    pub fn recv(&self) -> Option<T> {
-        // ZERO-OVERHEAD IPC: No timing, no logging, no syscalls, NO METRICS
-        // This is the hot path - every nanosecond counts
-        // For introspection, use recv_logged() or external tools like `horus topic echo`
+    fn recv_raw(&self) -> Option<T> {
         match &self.backend {
             TopicBackend::Direct(inner) => inner.pop(),
             TopicBackend::SpscIntra(inner) => inner.pop(),
@@ -4504,81 +4716,6 @@ where
                 None
             }
         }
-    }
-
-    /// Receive a message with metrics tracking
-    ///
-    /// Like `recv()`, but updates internal counters for monitoring.
-    /// Use this when you need accurate message counts.
-    ///
-    /// Note: Adds ~10-20ns overhead from atomic counter updates.
-    #[inline]
-    pub fn recv_tracked(&self) -> Option<T> {
-        let result = self.recv();
-
-        // Update metrics if we received a message
-        if result.is_some() {
-            self.metrics.inc_received();
-        }
-
-        result
-    }
-
-    /// Receive a message with detailed logging (requires LogSummary)
-    ///
-    /// Like `recv()`, but logs the message's `log_summary()` instead of just type name.
-    /// Use this when you want to see message contents in the automatic logging.
-    #[inline]
-    pub fn recv_logged(&self) -> Option<T>
-    where
-        T: LogSummary,
-    {
-        // Measure IPC time
-        let start = Instant::now();
-
-        let result = match &self.backend {
-            TopicBackend::Direct(inner) => inner.pop(),
-            TopicBackend::SpscIntra(inner) => inner.pop(),
-            TopicBackend::MpscIntra(inner) => inner.pop(),
-            TopicBackend::SpmcIntra(inner) => inner.pop(),
-            TopicBackend::MpmcIntra(inner) => inner.pop(),
-            TopicBackend::MpmcShm(inner) => inner.pop(),
-            TopicBackend::SpscShm(inner) => inner.pop(),
-            TopicBackend::MpscShm(inner) => inner.pop(),
-            TopicBackend::SpmcShm(inner) => inner.pop(),
-            TopicBackend::Adaptive(inner) => inner.recv(),
-            TopicBackend::Network(_) => {
-                debug_assert!(
-                    false,
-                    "recv_logged() called on Network backend - use recv_network() instead"
-                );
-                None
-            }
-        };
-
-        let ipc_ns = start.elapsed().as_nanos() as u64;
-
-        if let Some(ref msg) = result {
-            self.metrics.inc_received();
-
-            // Write to introspection log buffer using thread-local node context
-            use crate::core::hlog::{current_node_name, current_tick_number};
-            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-            let now = chrono::Local::now();
-            let summary = msg.log_summary();
-            publish_log(LogEntry {
-                timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                tick_number: current_tick_number(),
-                node_name: current_node_name(),
-                log_type: LogType::Subscribe,
-                topic: Some(self.name.clone()),
-                message: summary,
-                tick_us: 0,
-                ipc_ns,
-            });
-        }
-
-        result
     }
 
     /// Get a snapshot of the topic's metrics
