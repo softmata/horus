@@ -427,7 +427,6 @@ impl Default for DiscoveryOptions {
 }
 
 /// Main hardware discovery interface
-#[allow(dead_code)]
 pub struct HardwareDiscovery {
     /// USB discovery
     usb_discovery: UsbDiscovery,
@@ -435,30 +434,39 @@ pub struct HardwareDiscovery {
     serial_discovery: SerialDiscovery,
     /// I2C discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     i2c_discovery: I2cDiscovery,
     /// SPI discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     spi_discovery: SpiDiscovery,
     /// CAN discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     can_discovery: CanDiscovery,
     /// GPIO discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     gpio_discovery: GpioDiscovery,
     /// PWM discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     pwm_discovery: PwmDiscovery,
     /// Camera discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     camera_discovery: CameraDiscovery,
     /// Bluetooth discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     bluetooth_discovery: BluetoothDiscovery,
     /// Network discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     network_discovery: NetworkDiscovery,
     /// Audio discovery (Linux only)
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     audio_discovery: AudioDiscovery,
     /// Device database
     database: DeviceDatabase,

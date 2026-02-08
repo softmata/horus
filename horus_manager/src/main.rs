@@ -501,30 +501,6 @@ enum NetCommands {
 
     /// Network troubleshooting with fix suggestions
     Doctor,
-
-    /// Start a WebSocket signaling server for P2P connection coordination
-    #[cfg(feature = "signaling-server")]
-    SignalServer {
-        /// Port to listen on (default: 8765)
-        #[arg(short = 'p', long = "port", default_value = "8765")]
-        port: u16,
-
-        /// Bind address (default: 0.0.0.0)
-        #[arg(short = 'b', long = "bind", default_value = "0.0.0.0")]
-        bind: String,
-
-        /// Shared secret for authentication (optional)
-        #[arg(short = 's', long = "secret")]
-        secret: Option<String>,
-
-        /// Maximum number of peers (default: 10000)
-        #[arg(long = "max-peers", default_value = "10000")]
-        max_peers: usize,
-
-        /// Enable verbose logging
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -2064,14 +2040,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 commands::net::run_trace(&endpoint, max_hops)
             }
             NetCommands::Doctor => commands::net::run_doctor(),
-            #[cfg(feature = "signaling-server")]
-            NetCommands::SignalServer {
-                port,
-                bind,
-                secret,
-                max_peers,
-                verbose,
-            } => commands::net::run_signal_server(&bind, port, secret, max_peers, verbose),
         },
 
         Commands::Husarnet { command } => match command {

@@ -291,12 +291,11 @@ impl<T> ShmTopic<T> {
 
         // Ensure data section is properly aligned
         let aligned_header_size = header_size.div_ceil(element_align) * element_align;
-        let total_size =
-            aligned_header_size
-                .checked_add(data_size)
-                .ok_or(HorusError::Memory(
-                    "Integer overflow calculating total size".to_string(),
-                ))?;
+        let total_size = aligned_header_size
+            .checked_add(data_size)
+            .ok_or(HorusError::Memory(
+                "Integer overflow calculating total size".to_string(),
+            ))?;
 
         if total_size > MAX_TOTAL_SIZE {
             return Err(HorusError::Memory(format!(

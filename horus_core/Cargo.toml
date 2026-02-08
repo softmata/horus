@@ -13,7 +13,6 @@ libc = "0.2"
 memmap2 = "0.9"
 paste = "1.0"  # For macro identifier concatenation
 core_affinity = "0.8"  # CPU core pinning
-tempfile = "3.0"
 crossbeam = "0.8"
 once_cell = "1.19"
 num_cpus = "1.16"
@@ -76,13 +75,6 @@ zenoh = { version = "1.0", optional = true }
 # mDNS service discovery (optional)
 mdns-sd = { version = "0.11", optional = true }
 
-# WebRTC data channels (optional)
-webrtc = { version = "0.13", optional = true }
-bytes = { version = "1.0", optional = true }
-
-# WebSocket signaling server (optional)
-tokio-tungstenite = { version = "0.24", optional = true }
-dashmap = { version = "6.0", optional = true }  # Concurrent hashmap for peer tracking
 
 # Dynamic plugin loading (optional)
 libloading = { workspace = true, optional = true }
@@ -103,6 +95,7 @@ io-uring = { version = "0.6", optional = true }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = "0.8"
+tempfile = "3.0"
 
 # Benchmarks are currently disabled
 # Uncomment to enable:
@@ -191,16 +184,6 @@ mdns = ["mdns-sd"]
 # Husarnet VPN integration for secure WAN connectivity
 # Enables Husarnet API client for peer discovery and routing
 husarnet = ["reqwest"]
-
-# ============================================================================
-# WebRTC (Browser & P2P)
-# ============================================================================
-
-# WebRTC data channels for browser connectivity and NAT traversal
-webrtc-transport = ["webrtc", "bytes"]
-
-# Built-in WebSocket signaling server for WebRTC connection coordination
-signaling-server = ["tokio-tungstenite", "dashmap", "futures"]
 
 # ============================================================================
 # Plugin System

@@ -3540,8 +3540,6 @@ where
         match selected {
             SelectedBackend::DirectChannel => Ok(Self::direct(config.name)),
             SelectedBackend::SpscIntra => {
-                // SpscIntra returns (producer, consumer) - for now return producer
-                // TODO: Better API for SPSC where you need both ends
                 let (producer, _consumer) = Self::spsc_intra(&config.name);
                 if config.is_producer {
                     Ok(producer)

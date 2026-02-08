@@ -266,7 +266,10 @@ mod tests {
         let checkpoint = manager.create_checkpoint(metadata).unwrap();
         let path = manager.save_checkpoint(&checkpoint).unwrap();
 
-        let loaded = manager.load_checkpoint(&path).unwrap().unwrap();
+        let loaded = manager
+            .load_checkpoint(&path)
+            .expect("load failed")
+            .expect("checkpoint not found");
         assert_eq!(loaded.id, checkpoint.id);
         assert_eq!(loaded.metadata.scheduler_name, "test");
     }

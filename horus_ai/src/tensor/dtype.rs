@@ -40,7 +40,8 @@ pub enum TensorDtype {
     Bool = 12,
 }
 
-/// DLPack type codes
+/// DLPack type codes (standard specification constants)
+#[allow(dead_code)]
 pub mod dlpack_codes {
     /// Integer type
     pub const DLPACK_INT: u8 = 0;
@@ -49,12 +50,10 @@ pub mod dlpack_codes {
     /// Float type
     pub const DLPACK_FLOAT: u8 = 2;
     /// Opaque handle type
-    #[allow(dead_code)]
     pub const DLPACK_OPAQUE_HANDLE: u8 = 3;
     /// BFloat type
     pub const DLPACK_BFLOAT: u8 = 4;
     /// Complex type
-    #[allow(dead_code)]
     pub const DLPACK_COMPLEX: u8 = 5;
     /// Boolean type
     pub const DLPACK_BOOL: u8 = 6;
