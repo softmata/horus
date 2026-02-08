@@ -27,7 +27,7 @@ pub struct SerialData {
     /// Parity (0=none, 1=odd, 2=even)
     pub parity: u8,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for SerialData {
@@ -40,7 +40,7 @@ impl Default for SerialData {
             data_bits: 8,
             stop_bits: 1,
             parity: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -53,7 +53,7 @@ impl SerialData {
     /// Create a new serial data message
     pub fn new(port: &str) -> Self {
         let mut msg = Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

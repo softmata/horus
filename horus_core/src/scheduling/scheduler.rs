@@ -1,6 +1,7 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
 use crate::core::{announce_started, announce_stopped, Node, NodeInfo, NodePresence};
 use crate::error::HorusResult;
+use crate::horus_internal;
 use crate::memory::platform::shm_control_dir;
 use crate::terminal::print_line;
 use colored::Colorize;
@@ -629,10 +630,7 @@ impl Scheduler {
 
             if sched_setscheduler(0, SCHED_FIFO, &param) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
-                    "sched_setscheduler failed: {}",
-                    err
-                )));
+                return Err(horus_internal!("sched_setscheduler failed: {}", err));
             }
             Ok(())
         }
@@ -653,10 +651,7 @@ impl Scheduler {
 
             if mlockall(MCL_CURRENT | MCL_FUTURE) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
-                    "mlockall failed: {}",
-                    err
-                )));
+                return Err(horus_internal!("mlockall failed: {}", err));
             }
             Ok(())
         }
@@ -681,10 +676,7 @@ impl Scheduler {
 
             if sched_setaffinity(0, std::mem::size_of::<cpu_set_t>(), &cpuset) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
-                    "sched_setaffinity failed: {}",
-                    err
-                )));
+                return Err(horus_internal!("sched_setaffinity failed: {}", err));
             }
             Ok(())
         }
@@ -1808,9 +1800,8 @@ impl Scheduler {
     /// ).expect("Failed to load recording");
     /// ```
     pub fn add_replay(&mut self, recording_path: PathBuf, priority: u32) -> HorusResult<&mut Self> {
-        let replayer = NodeReplayer::load(&recording_path).map_err(|e| {
-            crate::error::HorusError::Internal(format!("Failed to load recording: {}", e))
-        })?;
+        let replayer = NodeReplayer::load(&recording_path)
+            .map_err(|e| horus_internal!("Failed to load recording: {}", e))?;
 
         let node_name = replayer.recording().node_name.clone();
         let node_id = replayer.recording().node_id.clone();
@@ -1869,9 +1860,8 @@ impl Scheduler {
     /// scheduler.run();
     /// ```
     pub fn replay_from(scheduler_path: PathBuf) -> HorusResult<Self> {
-        let scheduler_recording = SchedulerRecording::load(&scheduler_path).map_err(|e| {
-            crate::error::HorusError::Internal(format!("Failed to load scheduler recording: {}", e))
-        })?;
+        let scheduler_recording = SchedulerRecording::load(&scheduler_path)
+            .map_err(|e| horus_internal!("Failed to load scheduler recording: {}", e))?;
 
         let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
         let mut scheduler =
@@ -2048,17 +2038,17 @@ impl Scheduler {
     /// List all available recording sessions.
     pub fn list_recordings() -> HorusResult<Vec<String>> {
         let manager = RecordingManager::new();
-        manager.list_sessions().map_err(|e| {
-            crate::error::HorusError::Internal(format!("Failed to list recordings: {}", e))
-        })
+        manager
+            .list_sessions()
+            .map_err(|e| horus_internal!("Failed to list recordings: {}", e))
     }
 
     /// Delete a recording session.
     pub fn delete_recording(session_name: &str) -> HorusResult<()> {
         let manager = RecordingManager::new();
-        manager.delete_session(session_name).map_err(|e| {
-            crate::error::HorusError::Internal(format!("Failed to delete recording: {}", e))
-        })
+        manager
+            .delete_session(session_name)
+            .map_err(|e| horus_internal!("Failed to delete recording: {}", e))
     }
 
     // ============================================================================
@@ -2265,11 +2255,11 @@ impl Scheduler {
 
             if sched_setscheduler(0, SCHED_FIFO, &param) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
+                return Err(horus_internal!(
                     "Failed to set OS priority: {}. \
                      Ensure you have RT-PREEMPT kernel and CAP_SYS_NICE capability.",
                     err
-                )));
+                ));
             }
 
             print_line(&format!(
@@ -2313,10 +2303,7 @@ impl Scheduler {
 
             if sched_setaffinity(0, std::mem::size_of::<cpu_set_t>(), &cpuset) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
-                    "Failed to set CPU affinity: {}",
-                    err
-                )));
+                return Err(horus_internal!("Failed to set CPU affinity: {}", err));
             }
 
             print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
@@ -2355,11 +2342,11 @@ impl Scheduler {
 
             if mlockall(MCL_CURRENT | MCL_FUTURE) != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(crate::error::HorusError::Internal(format!(
+                return Err(horus_internal!(
                     "Failed to lock memory: {}. \
                      Check ulimit -l and ensure CAP_IPC_LOCK capability.",
                     err
-                )));
+                ));
             }
 
             print_line("[OK] Memory locked (no page faults)");
@@ -2782,9 +2769,8 @@ impl Scheduler {
         duration: Option<Duration>,
     ) -> HorusResult<()> {
         // Create tokio runtime for nodes that need async
-        let rt = tokio::runtime::Runtime::new().map_err(|e| {
-            crate::error::HorusError::Internal(format!("Failed to create tokio runtime: {}", e))
-        })?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| horus_internal!("Failed to create tokio runtime: {}", e))?;
 
         rt.block_on(async {
             // Track start time for duration-limited runs

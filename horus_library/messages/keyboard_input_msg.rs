@@ -41,7 +41,7 @@ pub struct KeyboardInput {
     pub code: u32,           // Raw key code
     pub modifier_flags: u32, // Bit flags for modifiers instead of Vec<String>
     pub pressed: bool,       // True for press, false for release
-    pub timestamp: u64,      // Unix timestamp in milliseconds
+    pub timestamp_ms: u64,      // Unix timestamp_ms in milliseconds
     pub _padding: [u8; 16],  // Padding to match JoystickInput size (72 bytes)
 }
 
@@ -80,7 +80,7 @@ impl KeyboardInput {
             code,
             modifier_flags,
             pressed,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,

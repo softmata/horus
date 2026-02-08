@@ -5,6 +5,7 @@
 
 use crate::core::node::{Node, NodeInfo};
 use crate::error::HorusResult;
+use crate::horus_internal;
 use crossbeam::channel::{bounded, Receiver, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -164,12 +165,7 @@ impl BackgroundExecutor {
                     }
                 }
             })
-            .map_err(|e| {
-                crate::error::HorusError::Internal(format!(
-                    "Failed to spawn background thread: {}",
-                    e
-                ))
-            })?;
+            .map_err(|e| horus_internal!("Failed to spawn background thread: {}", e))?;
 
         self.worker_handles.push(handle);
 

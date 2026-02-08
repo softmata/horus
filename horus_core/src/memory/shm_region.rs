@@ -5,7 +5,7 @@
 // - macOS: shm_open() + mmap (POSIX shared memory, RAM-backed via Mach)
 // - Windows: CreateFileMappingW with INVALID_HANDLE_VALUE (pagefile-backed, optimized for IPC)
 
-use crate::error::HorusResult;
+use crate::error::{HorusError, HorusResult};
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
@@ -112,7 +112,10 @@ impl ShmRegion {
         let path = horus_shm_dir.join(format!("horus_{}", name));
 
         if !path.exists() {
-            return Err(format!("Shared memory '{}' does not exist", name).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Shared memory '{}' does not exist",
+                name
+            )));
         }
 
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
@@ -177,8 +180,8 @@ impl ShmRegion {
 
         // Use flat namespace - all topics share same prefix (ROS-like simplicity)
         let shm_name = format!("/horus_{}", name);
-        let c_name =
-            CString::new(shm_name.clone()).map_err(|e| format!("Invalid shm name: {}", e))?;
+        let c_name = CString::new(shm_name.clone())
+            .map_err(|e| HorusError::SharedMemory(format!("Invalid shm name: {}", e)))?;
 
         // Try to open existing first
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
@@ -199,12 +202,11 @@ impl ShmRegion {
                 // Race condition: someone else created it, try opening again
                 let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
                 if fd < 0 {
-                    return Err(format!(
+                    return Err(HorusError::SharedMemory(format!(
                         "Failed to open/create shm '{}': {}",
                         shm_name,
                         std::io::Error::last_os_error()
-                    )
-                    .into());
+                    )));
                 }
                 (fd, false)
             } else {
@@ -212,11 +214,10 @@ impl ShmRegion {
                 if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
                     unsafe { libc::close(fd) };
                     unsafe { libc::shm_unlink(c_name.as_ptr()) };
-                    return Err(format!(
+                    return Err(HorusError::SharedMemory(format!(
                         "Failed to set shm size: {}",
                         std::io::Error::last_os_error()
-                    )
-                    .into());
+                    )));
                 }
                 (fd, true)
             }
@@ -239,7 +240,10 @@ impl ShmRegion {
             if is_owner {
                 unsafe { libc::shm_unlink(c_name.as_ptr()) };
             }
-            return Err(format!("Failed to mmap shm: {}", std::io::Error::last_os_error()).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Failed to mmap shm: {}",
+                std::io::Error::last_os_error()
+            )));
         }
 
         // Initialize to zero if owner
@@ -265,20 +269,26 @@ impl ShmRegion {
 
         // Use flat namespace - all topics share same prefix
         let shm_name = format!("/horus_{}", name);
-        let c_name =
-            CString::new(shm_name.clone()).map_err(|e| format!("Invalid shm name: {}", e))?;
+        let c_name = CString::new(shm_name.clone())
+            .map_err(|e| HorusError::SharedMemory(format!("Invalid shm name: {}", e)))?;
 
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
 
         if fd < 0 {
-            return Err(format!("Shared memory '{}' does not exist", name).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Shared memory '{}' does not exist",
+                name
+            )));
         }
 
         // Get size
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd, &mut stat) } != 0 {
             unsafe { libc::close(fd) };
-            return Err(format!("Failed to stat shm: {}", std::io::Error::last_os_error()).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Failed to stat shm: {}",
+                std::io::Error::last_os_error()
+            )));
         }
         let size = stat.st_size as usize;
 
@@ -295,7 +305,10 @@ impl ShmRegion {
 
         if ptr == libc::MAP_FAILED {
             unsafe { libc::close(fd) };
-            return Err(format!("Failed to mmap shm: {}", std::io::Error::last_os_error()).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Failed to mmap shm: {}",
+                std::io::Error::last_os_error()
+            )));
         }
 
         Ok(Self {
@@ -389,10 +402,10 @@ impl ShmRegion {
         };
 
         if handle == 0 {
-            return Err(format!("CreateFileMappingW failed: error {}", unsafe {
-                GetLastError()
-            })
-            .into());
+            return Err(HorusError::SharedMemory(format!(
+                "CreateFileMappingW failed: error {}",
+                unsafe { GetLastError() }
+            )));
         }
 
         let is_owner = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
@@ -402,9 +415,10 @@ impl ShmRegion {
 
         if ptr.is_null() {
             unsafe { CloseHandle(handle) };
-            return Err(
-                format!("MapViewOfFile failed: error {}", unsafe { GetLastError() }).into(),
-            );
+            return Err(HorusError::SharedMemory(format!(
+                "MapViewOfFile failed: error {}",
+                unsafe { GetLastError() }
+            )));
         }
 
         // Initialize to zero if owner
@@ -446,7 +460,10 @@ impl ShmRegion {
         };
 
         if handle == 0 {
-            return Err(format!("Shared memory '{}' does not exist", name).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Shared memory '{}' does not exist",
+                name
+            )));
         }
 
         // Map view - we don't know size, map entire region
@@ -462,9 +479,10 @@ impl ShmRegion {
 
         if ptr.is_null() {
             unsafe { CloseHandle(handle) };
-            return Err(
-                format!("MapViewOfFile failed: error {}", unsafe { GetLastError() }).into(),
-            );
+            return Err(HorusError::SharedMemory(format!(
+                "MapViewOfFile failed: error {}",
+                unsafe { GetLastError() }
+            )));
         }
 
         // Note: We can't easily get the size of an existing mapping on Windows
@@ -577,7 +595,10 @@ impl ShmRegion {
         // Topic names use dot notation - no conversion needed
         let path = PathBuf::from("/tmp/horus/topics").join(format!("horus_{}", name));
         if !path.exists() {
-            return Err(format!("Shared memory '{}' does not exist", name).into());
+            return Err(HorusError::SharedMemory(format!(
+                "Shared memory '{}' does not exist",
+                name
+            )));
         }
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let size = file.metadata()?.len() as usize;

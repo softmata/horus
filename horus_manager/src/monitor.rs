@@ -722,7 +722,7 @@ pub async fn network_handler() -> impl IntoResponse {
                 "bytes_received": s.bytes_received,
                 "packets_sent": s.packets_sent,
                 "packets_received": s.packets_received,
-                "timestamp": s.timestamp,
+                "timestamp_secs": s.timestamp_secs,
             })
         })
         .collect::<Vec<_>>();

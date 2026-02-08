@@ -44,7 +44,7 @@ pub struct CanFrame {
     /// CAN interface name (e.g., "can0", "vcan0")
     pub interface: [u8; 16],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for CanFrame {
@@ -60,7 +60,7 @@ impl Default for CanFrame {
             is_brs: false,
             is_esi: false,
             interface: [0; 16],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -88,7 +88,7 @@ impl CanFrame {
             is_brs: false,
             is_esi: false,
             interface: [0; 16],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -118,7 +118,7 @@ impl CanFrame {
             is_brs: false,
             is_esi: false,
             interface: [0; 16],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -138,7 +138,7 @@ impl CanFrame {
             is_brs: brs,
             is_esi: false,
             interface: [0; 16],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

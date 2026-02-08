@@ -19,7 +19,7 @@ use horus_library::messages::{
     },
     diagnostics::{EmergencyStop, Heartbeat, ResourceUsage, Status},
     force::{ContactInfo, ForceCommand, TactileArray, WrenchStamped},
-    geometry::{Point3, Pose2D, Quaternion, Transform, Twist, Vector3},
+    geometry::{Point3, Pose2D, Quaternion, TransformStamped, Twist, Vector3},
     navigation::{Goal, OccupancyGrid, Path, Waypoint},
     perception::{BoundingBox3D, DepthImage, PointCloud},
     sensor::{BatteryState, Imu, LaserScan, NavSatFix, Odometry, Range},

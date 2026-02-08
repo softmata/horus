@@ -28,7 +28,7 @@ pub struct AnalogIO {
     /// I/O board identifier
     pub board_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for AnalogIO {
@@ -42,7 +42,7 @@ impl Default for AnalogIO {
             resolution_bits: 16,
             sampling_frequency: 1000.0,
             board_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -52,7 +52,7 @@ impl AnalogIO {
     pub fn new(channel_count: u8) -> Self {
         Self {
             channel_count,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

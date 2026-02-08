@@ -26,7 +26,7 @@ pub struct DigitalIO {
     /// I/O board identifier
     pub board_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl DigitalIO {
@@ -34,7 +34,7 @@ impl DigitalIO {
     pub fn new(pin_count: u8) -> Self {
         Self {
             pin_count,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -118,7 +118,7 @@ impl DigitalIO {
         for i in 0..self.pin_count.min(32) {
             self.pins[i as usize] = (mask & (1 << i)) != 0;
         }
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;

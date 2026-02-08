@@ -30,7 +30,7 @@ pub struct ModbusMessage {
     /// Message direction (true = request, false = response)
     pub is_request: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for ModbusMessage {
@@ -45,7 +45,7 @@ impl Default for ModbusMessage {
             exception_code: 0,
             transaction_id: 0,
             is_request: true,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -69,7 +69,7 @@ impl ModbusMessage {
             start_address: start_addr,
             quantity: count,
             is_request: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -86,7 +86,7 @@ impl ModbusMessage {
             quantity: 1,
             data_length: 1,
             is_request: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -105,7 +105,7 @@ impl ModbusMessage {
             quantity: values.len() as u16,
             data_length: values.len().min(32) as u8,
             is_request: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -124,7 +124,7 @@ impl ModbusMessage {
         response.data_length = data.len().min(32) as u8;
         response.data[..response.data_length as usize]
             .copy_from_slice(&data[..response.data_length as usize]);
-        response.timestamp = std::time::SystemTime::now()
+        response.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -139,7 +139,7 @@ impl ModbusMessage {
             exception_code,
             transaction_id: self.transaction_id,
             is_request: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

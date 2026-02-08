@@ -44,7 +44,7 @@ pub struct JoystickInput {
     pub element_name: [u8; 32], // Fixed-size element name buffer (null-terminated)
     pub value: f32,             // Button: 0.0/1.0, Axis: -1.0 to 1.0, Hat: directional
     pub pressed: bool,          // For buttons: true when pressed
-    pub timestamp: u64,         // Unix timestamp in milliseconds
+    pub timestamp_ms: u64,         // Unix timestamp_ms in milliseconds
 }
 
 impl JoystickInput {
@@ -70,7 +70,7 @@ impl JoystickInput {
             element_name,
             value: if pressed { 1.0 } else { 0.0 },
             pressed,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
@@ -94,7 +94,7 @@ impl JoystickInput {
             element_name,
             value,
             pressed: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
@@ -118,7 +118,7 @@ impl JoystickInput {
             element_name,
             value,
             pressed: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
@@ -146,7 +146,7 @@ impl JoystickInput {
             element_name,
             value: if connected { 1.0 } else { 0.0 },
             pressed: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,

@@ -29,14 +29,14 @@ pub struct NetworkStatus {
     /// Reception errors
     pub rx_errors: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl NetworkStatus {
     /// Create new network status
     pub fn new(interface: &str) -> Self {
         let mut status = Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

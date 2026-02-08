@@ -23,7 +23,7 @@ pub struct WrenchStamped {
     /// Frame ID for the measurement
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl WrenchStamped {
@@ -34,7 +34,7 @@ impl WrenchStamped {
             torque,
             point_of_application: Point3::origin(),
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -114,7 +114,7 @@ pub struct TactileArray {
     /// Frame ID for sensor location
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for TactileArray {
@@ -128,7 +128,7 @@ impl Default for TactileArray {
             sensor_spacing: 2.0, // 2mm spacing
             sensitivity: 1.0,
             frame_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -143,7 +143,7 @@ impl TactileArray {
         Self {
             sensor_count,
             arrangement,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -241,7 +241,7 @@ pub struct ImpedanceParameters {
     /// Whether impedance control is active
     pub enabled: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ImpedanceParameters {
@@ -254,7 +254,7 @@ impl ImpedanceParameters {
             inertia: [1.0, 1.0, 1.0, 0.1, 0.1, 0.1],
             force_limits: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0],
             enabled: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -282,7 +282,7 @@ impl ImpedanceParameters {
     /// Enable impedance control
     pub fn enable(&mut self) {
         self.enabled = true;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -291,7 +291,7 @@ impl ImpedanceParameters {
     /// Disable impedance control
     pub fn disable(&mut self) {
         self.enabled = false;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -323,7 +323,7 @@ pub struct ForceCommand {
     /// Frame ID for force/torque reference
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ForceCommand {
@@ -339,7 +339,7 @@ impl ForceCommand {
             gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             timeout_seconds: 0.0,
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -358,7 +358,7 @@ impl ForceCommand {
             gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             timeout_seconds: 0.0,
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -436,7 +436,7 @@ pub struct ContactInfo {
     /// Frame ID for contact point reference
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ContactInfo {
@@ -452,7 +452,7 @@ impl ContactInfo {
             confidence: 0.5,
             contact_start_time: 0,
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -470,7 +470,7 @@ impl ContactInfo {
     /// Get contact duration in seconds
     pub fn contact_duration_seconds(&self) -> f64 {
         if self.contact_start_time > 0 {
-            (self.timestamp - self.contact_start_time) as f64 / 1e9
+            (self.timestamp_ns - self.contact_start_time) as f64 / 1e9
         } else {
             0.0
         }
@@ -493,7 +493,7 @@ pub struct HapticFeedback {
     /// Enable/disable feedback
     pub enabled: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl HapticFeedback {
@@ -510,7 +510,7 @@ impl HapticFeedback {
             force_feedback: Vector3::zero(),
             pattern_type: Self::PATTERN_CONSTANT,
             enabled: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -526,7 +526,7 @@ impl HapticFeedback {
             force_feedback: force,
             pattern_type: Self::PATTERN_CONSTANT,
             enabled: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

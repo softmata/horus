@@ -35,7 +35,7 @@ pub struct RobotState {
     /// Communication quality (0.0-1.0)
     pub comm_quality: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Robot type enumeration
@@ -76,7 +76,7 @@ impl Default for RobotState {
             robot_type: RobotType::Mobile,
             priority: 5, // Medium priority
             comm_quality: 1.0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -86,7 +86,7 @@ impl RobotState {
     pub fn new(robot_id: &str, robot_type: RobotType) -> Self {
         let mut state = Self {
             robot_type,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -141,7 +141,7 @@ impl RobotState {
     pub fn update_motion(&mut self, pose: Pose2D, velocity: Twist) {
         self.pose = pose;
         self.velocity = velocity;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -209,7 +209,7 @@ pub struct FleetStatus {
     /// Fleet communication health (0.0-1.0)
     pub comm_health: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Coordination mode for fleet operation
@@ -242,7 +242,7 @@ impl Default for FleetStatus {
             emergency_active: false,
             average_battery: 0.0,
             comm_health: 1.0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -251,7 +251,7 @@ impl FleetStatus {
     /// Create a new fleet status
     pub fn new(fleet_id: &str) -> Self {
         let mut status = Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -355,7 +355,7 @@ impl FleetStatus {
             .iter()
             .any(|r| matches!(r.status, StatusLevel::Fatal));
 
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -389,7 +389,7 @@ pub struct TaskAssignment {
     /// Task status
     pub status: TaskStatus,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Task type enumeration
@@ -460,7 +460,7 @@ impl Default for TaskAssignment {
             assigned_time: 0,
             expected_completion: 0,
             status: TaskStatus::Assigned,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -475,7 +475,7 @@ impl TaskAssignment {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -507,13 +507,13 @@ impl TaskAssignment {
     /// Update task status
     pub fn update_status(&mut self, status: TaskStatus) {
         self.status = status;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
 
         if status == TaskStatus::Completed {
-            self.expected_completion = self.timestamp;
+            self.expected_completion = self.timestamp_ns;
         }
     }
 
@@ -566,7 +566,7 @@ pub struct FormationControl {
     /// Enable formation keeping
     pub enabled: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Formation type enumeration
@@ -603,7 +603,7 @@ impl FormationControl {
             scale: 1.0,
             stiffness: 0.8,
             enabled: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -632,7 +632,7 @@ impl FormationControl {
             scale: 1.0,
             stiffness: 0.8,
             enabled: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -643,7 +643,7 @@ impl FormationControl {
     /// Enable/disable formation control
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -672,7 +672,7 @@ pub struct AuctionBid {
     /// Bid status
     pub status: BidStatus,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Bid status enumeration
@@ -703,7 +703,7 @@ impl AuctionBid {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

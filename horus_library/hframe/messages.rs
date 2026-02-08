@@ -41,7 +41,7 @@ pub struct TransformStamped {
     #[serde(with = "serde_arrays")]
     pub child_frame: [u8; FRAME_ID_SIZE],
     /// Timestamp in nanoseconds since UNIX epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
     /// The transform from parent to child frame
     pub transform: Transform,
 }
@@ -54,7 +54,7 @@ impl Default for TransformStamped {
         Self {
             parent_frame: [0u8; FRAME_ID_SIZE],
             child_frame: [0u8; FRAME_ID_SIZE],
-            timestamp: 0,
+            timestamp_ns: 0,
             transform: Transform::identity(),
         }
     }
@@ -62,11 +62,11 @@ impl Default for TransformStamped {
 
 impl TransformStamped {
     /// Create a new stamped transform
-    pub fn new(parent: &str, child: &str, timestamp: u64, transform: Transform) -> Self {
+    pub fn new(parent: &str, child: &str, timestamp_ns: u64, transform: Transform) -> Self {
         let mut msg = Self::default();
         string_to_frame_id(parent, &mut msg.parent_frame);
         string_to_frame_id(child, &mut msg.child_frame);
-        msg.timestamp = timestamp;
+        msg.timestamp_ns = timestamp_ns;
         msg.transform = transform;
         msg
     }
@@ -143,11 +143,11 @@ impl StaticTransformStamped {
     }
 
     /// Convert to TransformStamped with given timestamp
-    pub fn to_stamped(&self, timestamp: u64) -> TransformStamped {
+    pub fn to_stamped(&self, timestamp_ns: u64) -> TransformStamped {
         TransformStamped {
             parent_frame: self.parent_frame,
             child_frame: self.child_frame,
-            timestamp,
+            timestamp_ns,
             transform: self.transform,
         }
     }
@@ -254,7 +254,7 @@ mod tests {
 
         assert_eq!(tf.parent_frame_id(), "world");
         assert_eq!(tf.child_frame_id(), "robot");
-        assert_eq!(tf.timestamp, 1234567890);
+        assert_eq!(tf.timestamp_ns, 1234567890);
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(tf.child_frame_id(), "camera");
 
         let stamped = tf.to_stamped(12345);
-        assert_eq!(stamped.timestamp, 12345);
+        assert_eq!(stamped.timestamp_ns, 12345);
     }
 
     #[test]

@@ -29,13 +29,13 @@ pub struct Metric {
     pub name: String,
     pub value: MetricValue,
     pub labels: HashMap<String, String>,
-    pub timestamp: u64,
+    pub timestamp_secs: u64,
 }
 
 /// Telemetry snapshot containing all metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySnapshot {
-    pub timestamp: u64,
+    pub timestamp_secs: u64,
     pub scheduler_name: String,
     pub uptime_secs: f64,
     pub metrics: Vec<Metric>,
@@ -154,7 +154,7 @@ impl TelemetryManager {
             name: name.to_string(),
             value,
             labels,
-            timestamp: SystemTime::now()
+            timestamp_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
@@ -175,7 +175,7 @@ impl TelemetryManager {
         }
 
         let snapshot = TelemetrySnapshot {
-            timestamp: SystemTime::now()
+            timestamp_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
@@ -304,7 +304,7 @@ impl TelemetryManager {
     /// Get current metrics snapshot
     pub fn get_snapshot(&self) -> TelemetrySnapshot {
         TelemetrySnapshot {
-            timestamp: SystemTime::now()
+            timestamp_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),

@@ -16,7 +16,7 @@
 //!
 //! ### Message Types
 //! Standard robotics message types for node communication:
-//! - **Geometry**: `Pose2D`, `Pose3D`, `Transform`, `Twist`, `Vector3`, `Quaternion`
+//! - **Geometry**: `Pose2D`, `Pose3D`, `TransformStamped`, `Twist`, `Vector3`, `Quaternion`
 //! - **Sensors**: `ImuData`, `LaserScan`, `PointCloud`, `BatteryState`, `Temperature`
 //! - **Navigation**: `Odometry`, `Path`, `OccupancyGrid`, `Goal`
 //! - **Vision**: `Image`, `CameraInfo`, `CompressedImage`

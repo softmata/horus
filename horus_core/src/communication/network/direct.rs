@@ -149,13 +149,16 @@ where
         buffer_pool: Arc<BufferPool>,
     ) -> HorusResult<()> {
         // Connect to consumer
-        let mut stream = TcpStream::connect(consumer_addr)
-            .await
-            .map_err(|e| format!("Failed to connect to consumer at {}: {}", consumer_addr, e))?;
+        let mut stream = TcpStream::connect(consumer_addr).await.map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to connect to consumer at {}: {}",
+                consumer_addr, e
+            ))
+        })?;
 
-        stream
-            .set_nodelay(true)
-            .map_err(|e| format!("Failed to set TCP_NODELAY: {}", e))?;
+        stream.set_nodelay(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set TCP_NODELAY: {}", e))
+        })?;
 
         // Send loop
         while let Ok(data) = send_rx.recv() {
@@ -176,19 +179,21 @@ where
     /// Consumer task: listen and receive
     async fn consumer_handler(listen_addr: SocketAddr, recv_tx: Sender<T>) -> HorusResult<()> {
         // Listen for producer
-        let listener = TcpListener::bind(listen_addr)
-            .await
-            .map_err(|e| format!("Failed to bind to {}: {}", listen_addr, e))?;
+        let listener = TcpListener::bind(listen_addr).await.map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to bind to {}: {}",
+                listen_addr, e
+            ))
+        })?;
 
         // Accept first connection (1P1C - only one producer)
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|e| format!("Failed to accept connection: {}", e))?;
+        let (mut stream, _) = listener.accept().await.map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to accept connection: {}", e))
+        })?;
 
-        stream
-            .set_nodelay(true)
-            .map_err(|e| format!("Failed to set TCP_NODELAY: {}", e))?;
+        stream.set_nodelay(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set TCP_NODELAY: {}", e))
+        })?;
 
         // Receive loop
         let mut len_buffer = [0u8; 4];
@@ -231,7 +236,9 @@ where
         })?;
 
         // Serialize
-        let data = bincode::serialize(msg).map_err(|e| format!("Serialization error: {}", e))?;
+        let data = bincode::serialize(msg).map_err(|e| {
+            crate::error::HorusError::Serialization(format!("Serialization error: {}", e))
+        })?;
 
         // Get pooled buffer
         let mut buffer = self.buffer_pool.get();

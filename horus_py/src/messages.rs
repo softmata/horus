@@ -18,12 +18,12 @@ use pyo3::prelude::*;
 /// Attributes:
 ///     linear: Forward/backward velocity in m/s
 ///     angular: Rotational velocity in rad/s
-///     timestamp: Timestamp in nanoseconds (default: 0)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     cmd = CmdVel(1.5, 0.3)           # Forward at 1.5 m/s, turning at 0.3 rad/s
 ///     cmd = CmdVel(linear=0.5, angular=0.0)  # Straight forward
-///     cmd = CmdVel(0.0, 1.0, timestamp=12345)  # With explicit timestamp
+///     cmd = CmdVel(0.0, 1.0, timestamp_ns=12345)  # With explicit timestamp
 #[pyclass(name = "CmdVel")]
 #[derive(Clone, Debug)]
 pub struct PyCmdVel {
@@ -32,7 +32,7 @@ pub struct PyCmdVel {
     #[pyo3(get, set)]
     pub angular: f32,
     #[pyo3(get, set)]
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 #[pymethods]
@@ -42,14 +42,14 @@ impl PyCmdVel {
     /// Args:
     ///     linear: Forward velocity in m/s
     ///     angular: Angular velocity in rad/s
-    ///     timestamp: Optional timestamp in nanoseconds
+    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
-    #[pyo3(signature = (linear, angular, timestamp=0))]
-    fn new(linear: f32, angular: f32, timestamp: u64) -> Self {
+    #[pyo3(signature = (linear, angular, timestamp_ns=0))]
+    fn new(linear: f32, angular: f32, timestamp_ns: u64) -> Self {
         Self {
             linear,
             angular,
-            timestamp,
+            timestamp_ns,
         }
     }
 
@@ -61,8 +61,8 @@ impl PyCmdVel {
 
     fn __repr__(&self) -> String {
         format!(
-            "CmdVel(linear={:.3}, angular={:.3}, timestamp={})",
-            self.linear, self.angular, self.timestamp
+            "CmdVel(linear={:.3}, angular={:.3}, timestamp_ns={})",
+            self.linear, self.angular, self.timestamp_ns
         )
     }
 
@@ -77,7 +77,7 @@ impl PyCmdVel {
 ///     x: X position in meters
 ///     y: Y position in meters
 ///     theta: Orientation in radians
-///     timestamp: Timestamp in nanoseconds (default: 0)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     pose = Pose2D(1.0, 2.0, 0.5)     # Position (1,2) facing 0.5 rad
@@ -92,7 +92,7 @@ pub struct PyPose2D {
     #[pyo3(get, set)]
     pub theta: f64,
     #[pyo3(get, set)]
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 #[pymethods]
@@ -103,15 +103,15 @@ impl PyPose2D {
     ///     x: X position in meters
     ///     y: Y position in meters
     ///     theta: Orientation in radians
-    ///     timestamp: Optional timestamp in nanoseconds
+    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
-    #[pyo3(signature = (x, y, theta, timestamp=0))]
-    fn new(x: f64, y: f64, theta: f64, timestamp: u64) -> Self {
+    #[pyo3(signature = (x, y, theta, timestamp_ns=0))]
+    fn new(x: f64, y: f64, theta: f64, timestamp_ns: u64) -> Self {
         Self {
             x,
             y,
             theta,
-            timestamp,
+            timestamp_ns,
         }
     }
 
@@ -123,8 +123,8 @@ impl PyPose2D {
 
     fn __repr__(&self) -> String {
         format!(
-            "Pose2D(x={:.3}, y={:.3}, theta={:.3}, timestamp={})",
-            self.x, self.y, self.theta, self.timestamp
+            "Pose2D(x={:.3}, y={:.3}, theta={:.3}, timestamp_ns={})",
+            self.x, self.y, self.theta, self.timestamp_ns
         )
     }
 
@@ -140,7 +140,7 @@ impl PyPose2D {
 /// Attributes:
 ///     accel_x, accel_y, accel_z: Linear acceleration in m/s²
 ///     gyro_x, gyro_y, gyro_z: Angular velocity in rad/s
-///     timestamp: Timestamp in nanoseconds (default: 0)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     imu = Imu(0.0, 0.0, 9.81, 0.0, 0.0, 0.0)  # At rest (gravity on Z)
@@ -162,7 +162,7 @@ pub struct PyImu {
     #[pyo3(get, set)]
     pub gyro_z: f64,
     #[pyo3(get, set)]
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 #[pymethods]
@@ -172,9 +172,9 @@ impl PyImu {
     /// Args:
     ///     accel_x, accel_y, accel_z: Linear acceleration (m/s²)
     ///     gyro_x, gyro_y, gyro_z: Angular velocity (rad/s)
-    ///     timestamp: Optional timestamp in nanoseconds
+    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
-    #[pyo3(signature = (accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, timestamp=0))]
+    #[pyo3(signature = (accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, timestamp_ns=0))]
     fn new(
         accel_x: f64,
         accel_y: f64,
@@ -182,7 +182,7 @@ impl PyImu {
         gyro_x: f64,
         gyro_y: f64,
         gyro_z: f64,
-        timestamp: u64,
+        timestamp_ns: u64,
     ) -> Self {
         Self {
             accel_x,
@@ -191,7 +191,7 @@ impl PyImu {
             gyro_x,
             gyro_y,
             gyro_z,
-            timestamp,
+            timestamp_ns,
         }
     }
 
@@ -203,14 +203,14 @@ impl PyImu {
 
     fn __repr__(&self) -> String {
         format!(
-            "Imu(accel=[{:.3}, {:.3}, {:.3}], gyro=[{:.3}, {:.3}, {:.3}], timestamp={})",
+            "Imu(accel=[{:.3}, {:.3}, {:.3}], gyro=[{:.3}, {:.3}, {:.3}], timestamp_ns={})",
             self.accel_x,
             self.accel_y,
             self.accel_z,
             self.gyro_x,
             self.gyro_y,
             self.gyro_z,
-            self.timestamp
+            self.timestamp_ns
         )
     }
 }
@@ -221,7 +221,7 @@ impl PyImu {
 ///     x, y, theta: Position and orientation
 ///     linear_velocity: Forward velocity in m/s
 ///     angular_velocity: Rotational velocity in rad/s
-///     timestamp: Timestamp in nanoseconds (default: 0)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     odom = Odometry(x=1.0, y=2.0, theta=0.5)  # Position only
@@ -241,7 +241,7 @@ pub struct PyOdometry {
     #[pyo3(get, set)]
     pub angular_velocity: f64,
     #[pyo3(get, set)]
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 #[pymethods]
@@ -252,16 +252,16 @@ impl PyOdometry {
     ///     x, y, theta: Position and orientation
     ///     linear_velocity: Forward velocity (m/s)
     ///     angular_velocity: Rotational velocity (rad/s)
-    ///     timestamp: Optional timestamp in nanoseconds
+    ///     timestamp_ns: Optional timestamp in nanoseconds
     #[new]
-    #[pyo3(signature = (x=0.0, y=0.0, theta=0.0, linear_velocity=0.0, angular_velocity=0.0, timestamp=0))]
+    #[pyo3(signature = (x=0.0, y=0.0, theta=0.0, linear_velocity=0.0, angular_velocity=0.0, timestamp_ns=0))]
     fn new(
         x: f64,
         y: f64,
         theta: f64,
         linear_velocity: f64,
         angular_velocity: f64,
-        timestamp: u64,
+        timestamp_ns: u64,
     ) -> Self {
         Self {
             x,
@@ -269,7 +269,7 @@ impl PyOdometry {
             theta,
             linear_velocity,
             angular_velocity,
-            timestamp,
+            timestamp_ns,
         }
     }
 
@@ -281,8 +281,8 @@ impl PyOdometry {
 
     fn __repr__(&self) -> String {
         format!(
-            "Odometry(x={:.3}, y={:.3}, theta={:.3}, v_lin={:.3}, v_ang={:.3}, timestamp={})",
-            self.x, self.y, self.theta, self.linear_velocity, self.angular_velocity, self.timestamp
+            "Odometry(x={:.3}, y={:.3}, theta={:.3}, v_lin={:.3}, v_ang={:.3}, timestamp_ns={})",
+            self.x, self.y, self.theta, self.linear_velocity, self.angular_velocity, self.timestamp_ns
         )
     }
 }
@@ -296,7 +296,7 @@ impl PyOdometry {
 ///     range_min: Minimum valid range in meters
 ///     range_max: Maximum valid range in meters
 ///     ranges: List of range measurements
-///     timestamp: Timestamp in nanoseconds (default: 0)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
 ///
 /// Examples:
 ///     scan = LaserScan(
@@ -323,14 +323,14 @@ pub struct PyLaserScan {
     #[pyo3(get, set)]
     pub ranges: Vec<f32>,
     #[pyo3(get, set)]
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 #[pymethods]
 impl PyLaserScan {
     /// Create a new LaserScan message
     #[new]
-    #[pyo3(signature = (angle_min=0.0, angle_max=0.0, angle_increment=0.0, range_min=0.0, range_max=0.0, ranges=None, timestamp=0))]
+    #[pyo3(signature = (angle_min=0.0, angle_max=0.0, angle_increment=0.0, range_min=0.0, range_max=0.0, ranges=None, timestamp_ns=0))]
     fn new(
         angle_min: f32,
         angle_max: f32,
@@ -338,7 +338,7 @@ impl PyLaserScan {
         range_min: f32,
         range_max: f32,
         ranges: Option<Vec<f32>>,
-        timestamp: u64,
+        timestamp_ns: u64,
     ) -> Self {
         Self {
             angle_min,
@@ -347,7 +347,7 @@ impl PyLaserScan {
             range_min,
             range_max,
             ranges: ranges.unwrap_or_default(),
-            timestamp,
+            timestamp_ns,
         }
     }
 
@@ -364,13 +364,13 @@ impl PyLaserScan {
 
     fn __repr__(&self) -> String {
         format!(
-            "LaserScan(angle=[{:.2}, {:.2}], range=[{:.2}, {:.2}], {} points, timestamp={})",
+            "LaserScan(angle=[{:.2}, {:.2}], range=[{:.2}, {:.2}], {} points, timestamp_ns={})",
             self.angle_min,
             self.angle_max,
             self.range_min,
             self.range_max,
             self.ranges.len(),
-            self.timestamp
+            self.timestamp_ns
         )
     }
 }

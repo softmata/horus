@@ -32,7 +32,7 @@ pub struct LaserScan {
     /// Time to complete full scan in seconds
     pub scan_time: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for LaserScan {
@@ -46,7 +46,7 @@ impl Default for LaserScan {
             angle_increment: std::f32::consts::PI / 180.0,
             time_increment: 0.0,
             scan_time: 0.1,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -55,7 +55,7 @@ impl LaserScan {
     /// Create a new laser scan with default parameters
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -117,7 +117,7 @@ pub struct Imu {
     /// Linear acceleration covariance matrix
     pub linear_acceleration_covariance: [f64; 9],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Imu {
@@ -130,7 +130,7 @@ impl Imu {
             angular_velocity_covariance: [0.0; 9],
             linear_acceleration: [0.0; 3],
             linear_acceleration_covariance: [0.0; 9],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -195,7 +195,7 @@ pub struct Odometry {
     /// Frame ID for the twist (e.g., "base_link")
     pub child_frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Odometry {
@@ -207,7 +207,7 @@ impl Default for Odometry {
             twist_covariance: [0.0; 36],
             frame_id: [0; 32],
             child_frame_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -222,7 +222,7 @@ impl Odometry {
             twist_covariance: [0.0; 36],
             frame_id: [0; 32],
             child_frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -248,7 +248,7 @@ impl Odometry {
     pub fn update(&mut self, pose: Pose2D, twist: Twist) {
         self.pose = pose;
         self.twist = twist;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -277,7 +277,7 @@ pub struct Range {
     /// Range reading in meters
     pub range: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Range {
@@ -292,7 +292,7 @@ impl Range {
             min_range: 0.02,
             max_range: 4.0,
             range,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -328,7 +328,7 @@ pub struct BatteryState {
     /// Number of valid cell voltage readings
     pub cell_count: u8,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for BatteryState {
@@ -343,7 +343,7 @@ impl Default for BatteryState {
             temperature: 25.0,
             cell_voltages: [0.0; 16],
             cell_count: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -366,7 +366,7 @@ impl BatteryState {
             temperature: 25.0,
             cell_voltages: [0.0; 16],
             cell_count: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -447,7 +447,7 @@ pub struct NavSatFix {
     /// Course/heading in degrees
     pub heading: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for NavSatFix {
@@ -464,7 +464,7 @@ impl Default for NavSatFix {
             vdop: 99.9,
             speed: 0.0,
             heading: 0.0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -485,7 +485,7 @@ impl NavSatFix {
     /// Create a new GPS fix message
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

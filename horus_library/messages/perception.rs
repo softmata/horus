@@ -105,14 +105,14 @@ pub struct PointCloud {
     /// Coordinate frame reference
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl PointCloud {
     /// Create a new empty point cloud
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -289,7 +289,7 @@ pub struct BoundingBox3D {
     /// Tracking ID
     pub track_id: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl BoundingBox3D {
@@ -302,7 +302,7 @@ impl BoundingBox3D {
             label: [0; 32],
             confidence: 1.0,
             track_id: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -369,14 +369,14 @@ pub struct BoundingBoxArray3D {
     /// Source sensor frame
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl BoundingBoxArray3D {
     /// Create a new bounding box array
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -437,7 +437,7 @@ pub struct DepthImage {
     /// Frame ID for camera reference
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for DepthImage {
@@ -450,7 +450,7 @@ impl Default for DepthImage {
             max_depth: 10000, // 10m maximum
             depth_scale: 1.0, // 1mm per unit
             frame_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -462,7 +462,7 @@ impl DepthImage {
             width,
             height,
             depths,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -561,7 +561,7 @@ pub struct PlaneDetection {
     /// Plane type label ("floor", "wall", "table", etc.)
     pub plane_type: [u8; 16],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl PlaneDetection {
@@ -575,7 +575,7 @@ impl PlaneDetection {
             inlier_count: 0,
             confidence: 0.5,
             plane_type: [0; 16],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -622,7 +622,7 @@ pub struct PlaneArray {
     /// Detection algorithm used
     pub algorithm: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 // ============================================================================

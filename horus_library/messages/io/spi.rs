@@ -37,7 +37,7 @@ pub struct SpiMessage {
     /// Transaction successful
     pub success: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for SpiMessage {
@@ -55,7 +55,7 @@ impl Default for SpiMessage {
             lsb_first: false,
             three_wire: false,
             success: false,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -85,7 +85,7 @@ impl SpiMessage {
             lsb_first: false,
             three_wire: false,
             success: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

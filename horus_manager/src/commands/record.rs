@@ -1,7 +1,8 @@
 //! Record command - manage, replay, diff, export, and inject recording sessions
 
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::HorusResult;
+use horus_core::horus_internal;
 use horus_core::scheduling::{diff_recordings, RecordingManager};
 use std::path::PathBuf;
 
@@ -10,7 +11,7 @@ pub fn run_list(long: bool) -> HorusResult<()> {
     let manager = RecordingManager::new();
     let sessions = manager
         .list_sessions()
-        .map_err(|e| HorusError::Internal(format!("Failed to list recordings: {}", e)))?;
+        .map_err(|e| horus_internal!("Failed to list recordings: {}", e))?;
 
     if sessions.is_empty() {
         println!("{} No recording sessions found.", "[INFO]".cyan());
@@ -52,7 +53,7 @@ pub fn run_info(session: String) -> HorusResult<()> {
     let manager = RecordingManager::new();
     let recordings = manager
         .get_session_recordings(&session)
-        .map_err(|e| HorusError::Internal(format!("Failed to get session info: {}", e)))?;
+        .map_err(|e| horus_internal!("Failed to get session info: {}", e))?;
 
     if recordings.is_empty() {
         println!("{} Session '{}' not found.", "[WARN]".yellow(), session);
@@ -106,7 +107,7 @@ pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
 
     manager
         .delete_session(&session)
-        .map_err(|e| HorusError::Internal(format!("Failed to delete session: {}", e)))?;
+        .map_err(|e| horus_internal!("Failed to delete session: {}", e))?;
 
     println!("{} Deleted session '{}'", "✓".green(), session);
     Ok(())
@@ -130,15 +131,15 @@ pub fn run_replay(
         PathBuf::from(&recording)
     } else {
         // Treat as session name - find the scheduler recording
-        let recordings = manager.get_session_recordings(&recording).map_err(|e| {
-            HorusError::Internal(format!("Failed to get session '{}': {}", recording, e))
-        })?;
+        let recordings = manager
+            .get_session_recordings(&recording)
+            .map_err(|e| horus_internal!("Failed to get session '{}': {}", recording, e))?;
 
         if recordings.is_empty() {
-            return Err(HorusError::Internal(format!(
+            return Err(horus_internal!(
                 "Session '{}' not found or has no recordings",
                 recording
-            )));
+            ));
         }
 
         // Find the scheduler recording (file starting with "scheduler@")
@@ -152,10 +153,7 @@ pub fn run_replay(
             })
             .cloned()
             .ok_or_else(|| {
-                HorusError::Internal(format!(
-                    "No scheduler recording found in session '{}'",
-                    recording
-                ))
+                horus_internal!("No scheduler recording found in session '{}'", recording)
             })?
     };
 
@@ -238,13 +236,13 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
     );
 
     // Get recordings from both sessions
-    let recordings1 = manager.get_session_recordings(&session1).map_err(|e| {
-        HorusError::Internal(format!("Failed to load session '{}': {}", session1, e))
-    })?;
+    let recordings1 = manager
+        .get_session_recordings(&session1)
+        .map_err(|e| horus_internal!("Failed to load session '{}': {}", session1, e))?;
 
-    let recordings2 = manager.get_session_recordings(&session2).map_err(|e| {
-        HorusError::Internal(format!("Failed to load session '{}': {}", session2, e))
-    })?;
+    let recordings2 = manager
+        .get_session_recordings(&session2)
+        .map_err(|e| horus_internal!("Failed to load session '{}': {}", session2, e))?;
 
     // Find matching nodes
     let mut total_diffs = 0;
@@ -343,12 +341,12 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
 
     let recordings = manager
         .get_session_recordings(&session)
-        .map_err(|e| HorusError::Internal(format!("Failed to load session: {}", e)))?;
+        .map_err(|e| horus_internal!("Failed to load session: {}", e))?;
 
     if format == "json" {
         use std::io::Write;
         let mut file = std::fs::File::create(&output)
-            .map_err(|e| HorusError::Internal(format!("Failed to create output file: {}", e)))?;
+            .map_err(|e| horus_internal!("Failed to create output file: {}", e))?;
 
         writeln!(file, "{{")?;
         writeln!(file, "  \"session\": \"{}\",", session)?;
@@ -378,7 +376,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
     } else if format == "csv" {
         use std::io::Write;
         let mut file = std::fs::File::create(&output)
-            .map_err(|e| HorusError::Internal(format!("Failed to create output file: {}", e)))?;
+            .map_err(|e| horus_internal!("Failed to create output file: {}", e))?;
 
         // Write CSV header
         writeln!(
@@ -453,15 +451,15 @@ pub fn run_inject(
     );
 
     // Get all recordings from the session
-    let recordings = manager.get_session_recordings(&session).map_err(|e| {
-        HorusError::Internal(format!("Failed to load session '{}': {}", session, e))
-    })?;
+    let recordings = manager
+        .get_session_recordings(&session)
+        .map_err(|e| horus_internal!("Failed to load session '{}': {}", session, e))?;
 
     if recordings.is_empty() {
-        return Err(HorusError::Internal(format!(
+        return Err(horus_internal!(
             "Session '{}' not found or has no recordings",
             session
-        )));
+        ));
     }
 
     // Create a new scheduler for hybrid execution
@@ -497,8 +495,8 @@ pub fn run_inject(
     }
 
     if injected_count == 0 {
-        return Err(HorusError::Internal(
-            "No nodes were injected. Check node names or use --all".to_string(),
+        return Err(horus_internal!(
+            "No nodes were injected. Check node names or use --all"
         ));
     }
 
@@ -521,10 +519,10 @@ pub fn run_inject(
     // If a script is provided, compile and run it with the injected nodes
     if let Some(script_path) = &script {
         if !script_path.exists() {
-            return Err(HorusError::Internal(format!(
+            return Err(horus_internal!(
                 "Script file not found: {}",
                 script_path.display()
-            )));
+            ));
         }
 
         println!(

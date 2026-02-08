@@ -36,7 +36,7 @@ pub struct TimeSync {
     /// Time synchronization quality indicator
     pub sync_quality: SyncQuality,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Time synchronization quality levels
@@ -65,7 +65,7 @@ impl TimeSync {
         let mut sync = Self {
             master_time: Self::current_time_ns(),
             local_send_time: Self::current_time_ns(),
-            timestamp: Self::current_time_ns(),
+            timestamp_ns: Self::current_time_ns(),
             confidence: 0.5,
             ..Default::default()
         };
@@ -183,7 +183,7 @@ pub struct ScheduledEvent {
     /// Last execution time
     pub last_execution: u64,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Event type enumeration
@@ -249,7 +249,7 @@ impl ScheduledEvent {
             scheduled_time,
             tolerance: 1_000_000, // 1ms default tolerance
             created_time: TimeSync::current_time_ns(),
-            timestamp: TimeSync::current_time_ns(),
+            timestamp_ns: TimeSync::current_time_ns(),
             ..Default::default()
         }
     }
@@ -263,7 +263,7 @@ impl ScheduledEvent {
             repeat_interval: interval,
             tolerance: 1_000_000,
             created_time: TimeSync::current_time_ns(),
-            timestamp: TimeSync::current_time_ns(),
+            timestamp_ns: TimeSync::current_time_ns(),
             ..Default::default()
         }
     }
@@ -290,10 +290,10 @@ impl ScheduledEvent {
     /// Update event status
     pub fn update_status(&mut self, status: EventStatus) {
         self.status = status;
-        self.timestamp = TimeSync::current_time_ns();
+        self.timestamp_ns = TimeSync::current_time_ns();
 
         if status == EventStatus::Completed || status == EventStatus::Failed {
-            self.last_execution = self.timestamp;
+            self.last_execution = self.timestamp_ns;
 
             // Schedule next repeat if applicable
             if self.repeat_interval > 0 {
@@ -350,7 +350,7 @@ pub struct Timeline {
     /// Synchronization reference time
     pub sync_reference: u64,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 /// Timeline execution status
@@ -385,7 +385,7 @@ impl Default for Timeline {
             status: TimelineStatus::Created,
             coordinator_id: [0; 32],
             sync_reference: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -398,7 +398,7 @@ impl Timeline {
             current_time: start_time,
             status: TimelineStatus::Created,
             sync_reference: TimeSync::current_time_ns(),
-            timestamp: TimeSync::current_time_ns(),
+            timestamp_ns: TimeSync::current_time_ns(),
             ..Default::default()
         };
 
@@ -423,7 +423,7 @@ impl Timeline {
         // Sort events by scheduled time (simple bubble sort for small arrays)
         self.sort_events();
 
-        self.timestamp = TimeSync::current_time_ns();
+        self.timestamp_ns = TimeSync::current_time_ns();
         Ok(())
     }
 
@@ -481,14 +481,14 @@ impl Timeline {
             }
         }
 
-        self.timestamp = TimeSync::current_time_ns();
+        self.timestamp_ns = TimeSync::current_time_ns();
     }
 
     /// Start timeline execution
     pub fn start(&mut self) {
         if self.status == TimelineStatus::Created {
             self.status = TimelineStatus::Running;
-            self.timestamp = TimeSync::current_time_ns();
+            self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
@@ -496,7 +496,7 @@ impl Timeline {
     pub fn pause(&mut self) {
         if self.status == TimelineStatus::Running {
             self.status = TimelineStatus::Paused;
-            self.timestamp = TimeSync::current_time_ns();
+            self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
@@ -504,14 +504,14 @@ impl Timeline {
     pub fn resume(&mut self) {
         if self.status == TimelineStatus::Paused {
             self.status = TimelineStatus::Running;
-            self.timestamp = TimeSync::current_time_ns();
+            self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
     /// Stop timeline execution
     pub fn stop(&mut self) {
         self.status = TimelineStatus::Stopped;
-        self.timestamp = TimeSync::current_time_ns();
+        self.timestamp_ns = TimeSync::current_time_ns();
     }
 }
 
@@ -541,7 +541,7 @@ pub struct ClockStats {
     /// Statistics collection period
     pub measurement_period: u64,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ClockStats {
@@ -550,7 +550,7 @@ impl ClockStats {
         let mut stats = Self {
             sync_interval: 1_000_000_000,       // 1 second default
             measurement_period: 60_000_000_000, // 1 minute
-            timestamp: TimeSync::current_time_ns(),
+            timestamp_ns: TimeSync::current_time_ns(),
             ..Default::default()
         };
 
@@ -579,7 +579,7 @@ impl ClockStats {
                 (ALPHA * offset as f64 + (1.0 - ALPHA) * self.average_offset as f64) as i64;
         }
 
-        self.timestamp = self.last_sync_time;
+        self.timestamp_ns = self.last_sync_time;
     }
 
     /// Calculate sync success rate

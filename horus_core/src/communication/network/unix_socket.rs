@@ -28,8 +28,12 @@ where
     /// Create a new publisher (binds to socket, waits for subscriber)
     pub fn new_publisher(topic: &str) -> HorusResult<Self> {
         // Create socket directory
-        std::fs::create_dir_all(UNIX_SOCKET_DIR)
-            .map_err(|e| format!("Failed to create socket directory: {}", e))?;
+        std::fs::create_dir_all(UNIX_SOCKET_DIR).map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to create socket directory: {}",
+                e
+            ))
+        })?;
 
         let socket_path = PathBuf::from(UNIX_SOCKET_DIR).join(format!("horus_{}.sock", topic));
 
@@ -37,12 +41,13 @@ where
         let _ = std::fs::remove_file(&socket_path);
 
         // Bind listener
-        let listener = UnixListener::bind(&socket_path)
-            .map_err(|e| format!("Failed to bind Unix socket: {}", e))?;
+        let listener = UnixListener::bind(&socket_path).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to bind Unix socket: {}", e))
+        })?;
 
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
+        listener.set_nonblocking(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set nonblocking: {}", e))
+        })?;
 
         // Wait for first subscriber with timeout
         let stream = loop {
@@ -61,9 +66,9 @@ where
             }
         };
 
-        stream
-            .set_nonblocking(false)
-            .map_err(|e| format!("Failed to set blocking: {}", e))?;
+        stream.set_nonblocking(false).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set blocking: {}", e))
+        })?;
 
         Ok(Self {
             topic_name: topic.to_string(),
@@ -79,12 +84,16 @@ where
         let socket_path = PathBuf::from(UNIX_SOCKET_DIR).join(format!("horus_{}.sock", topic));
 
         // Connect to publisher
-        let stream = UnixStream::connect(&socket_path)
-            .map_err(|e| format!("Failed to connect to Unix socket: {}", e))?;
+        let stream = UnixStream::connect(&socket_path).map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to connect to Unix socket: {}",
+                e
+            ))
+        })?;
 
-        stream
-            .set_nonblocking(false)
-            .map_err(|e| format!("Failed to set blocking: {}", e))?;
+        stream.set_nonblocking(false).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set blocking: {}", e))
+        })?;
 
         Ok(Self {
             topic_name: topic.to_string(),
@@ -98,23 +107,24 @@ where
     /// Send a message over Unix socket
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         // Serialize using bincode (faster than JSON)
-        let serialized =
-            bincode::serialize(msg).map_err(|e| format!("Serialization error: {}", e))?;
+        let serialized = bincode::serialize(msg).map_err(|e| {
+            crate::error::HorusError::Serialization(format!("Serialization error: {}", e))
+        })?;
 
         // Write length prefix (4 bytes)
         let len = serialized.len() as u32;
         let len_bytes = len.to_le_bytes();
 
         let mut stream = self.stream.lock().unwrap();
-        stream
-            .write_all(&len_bytes)
-            .map_err(|e| format!("Failed to write length: {}", e))?;
-        stream
-            .write_all(&serialized)
-            .map_err(|e| format!("Failed to write data: {}", e))?;
-        stream
-            .flush()
-            .map_err(|e| format!("Failed to flush: {}", e))?;
+        stream.write_all(&len_bytes).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to write length: {}", e))
+        })?;
+        stream.write_all(&serialized).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to write data: {}", e))
+        })?;
+        stream.flush().map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to flush: {}", e))
+        })?;
 
         Ok(())
     }

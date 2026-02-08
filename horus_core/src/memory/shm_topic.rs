@@ -1,5 +1,5 @@
 use super::shm_region::ShmRegion;
-use crate::error::HorusResult;
+use crate::error::{HorusError, HorusResult};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
@@ -243,18 +243,16 @@ impl<T> ShmTopic<T> {
     pub fn new(name: &str, capacity: usize) -> HorusResult<Self> {
         // Safety validation: check capacity bounds
         if capacity < MIN_CAPACITY {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Capacity {} too small, minimum is {}",
                 capacity, MIN_CAPACITY
-            )
-            .into());
+            )));
         }
         if capacity > MAX_CAPACITY {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Capacity {} too large, maximum is {}",
                 capacity, MAX_CAPACITY
-            )
-            .into());
+            )));
         }
 
         // PERFORMANCE: Round up to power of 2 for bitwise AND optimization
@@ -267,38 +265,44 @@ impl<T> ShmTopic<T> {
 
         // Safety validation: check element size
         if element_size == 0 {
-            return Err("Cannot create shared memory for zero-sized types".into());
+            return Err(HorusError::SharedMemory(
+                "Cannot create shared memory for zero-sized types".to_string(),
+            ));
         }
         if element_size > MAX_ELEMENT_SIZE {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Element size {} too large, maximum is {}",
                 element_size, MAX_ELEMENT_SIZE
-            )
-            .into());
+            )));
         }
 
         // Safety validation: check for overflow in size calculations
         let data_size = capacity
             .checked_mul(element_size)
-            .ok_or("Integer overflow calculating data size")?;
+            .ok_or(HorusError::SharedMemory(
+                "Integer overflow calculating data size".to_string(),
+            ))?;
         if data_size > MAX_TOTAL_SIZE {
-            return Err(
-                format!("Data size {} exceeds maximum {}", data_size, MAX_TOTAL_SIZE).into(),
-            );
+            return Err(HorusError::SharedMemory(format!(
+                "Data size {} exceeds maximum {}",
+                data_size, MAX_TOTAL_SIZE
+            )));
         }
 
         // Ensure data section is properly aligned
         let aligned_header_size = header_size.div_ceil(element_align) * element_align;
-        let total_size = aligned_header_size
-            .checked_add(data_size)
-            .ok_or("Integer overflow calculating total size")?;
+        let total_size =
+            aligned_header_size
+                .checked_add(data_size)
+                .ok_or(HorusError::SharedMemory(
+                    "Integer overflow calculating total size".to_string(),
+                ))?;
 
         if total_size > MAX_TOTAL_SIZE {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Total size {} exceeds maximum {}",
                 total_size, MAX_TOTAL_SIZE
-            )
-            .into());
+            )));
         }
 
         // Create shared memory region
@@ -310,15 +314,21 @@ impl<T> ShmTopic<T> {
 
         // Safety check: ensure we have enough space for the header
         if region.size() < header_size {
-            return Err("Shared memory region too small for header".into());
+            return Err(HorusError::SharedMemory(
+                "Shared memory region too small for header".to_string(),
+            ));
         }
 
         // Safety check: ensure pointer is not null and properly aligned
         if header_ptr.is_null() {
-            return Err("Null pointer for shared memory header".into());
+            return Err(HorusError::SharedMemory(
+                "Null pointer for shared memory header".to_string(),
+            ));
         }
         if !(header_ptr as usize).is_multiple_of(std::mem::align_of::<RingBufferHeader>()) {
-            return Err("Header pointer not properly aligned".into());
+            return Err(HorusError::SharedMemory(
+                "Header pointer not properly aligned".to_string(),
+            ));
         }
 
         let header = unsafe {
@@ -332,8 +342,12 @@ impl<T> ShmTopic<T> {
         // 32-bit Index Optimization: capacity stored as u32 for reduced instruction cache pressure
         let actual_capacity: u32 = if is_owner {
             // Validate capacity fits in u32 (should always pass given MAX_CAPACITY = 1M)
-            let capacity_u32 = u32::try_from(capacity)
-                .map_err(|_| format!("Capacity {} exceeds u32 maximum (4 billion)", capacity))?;
+            let capacity_u32 = u32::try_from(capacity).map_err(|_| {
+                HorusError::SharedMemory(format!(
+                    "Capacity {} exceeds u32 maximum (4 billion)",
+                    capacity
+                ))
+            })?;
 
             unsafe {
                 // Initialize all fields BEFORE setting magic (prevents race condition)
@@ -375,22 +389,20 @@ impl<T> ShmTopic<T> {
                 }
                 if magic != 0 && magic != MAGIC_INITIALIZED {
                     // Invalid magic - corrupted or incompatible version
-                    return Err(format!(
+                    return Err(HorusError::SharedMemory(format!(
                         "Topic '{}' has invalid magic number 0x{:X} (corrupted or incompatible version). \
                          Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                         name, magic
-                    )
-                    .into());
+                    )));
                 }
                 // Magic is 0 - owner is still initializing, spin-wait
                 wait_iters += 1;
                 if wait_iters > MAX_INIT_WAIT_ITERS {
-                    return Err(format!(
+                    return Err(HorusError::SharedMemory(format!(
                         "Topic '{}' initialization timeout: owner process may have crashed during setup. \
                          Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                         name
-                    )
-                    .into());
+                    )));
                 }
                 std::hint::spin_loop();
             }
@@ -401,25 +413,27 @@ impl<T> ShmTopic<T> {
 
             // CRITICAL: Validate existing capacity is power of 2 for bitwise AND optimization
             if !existing_capacity.is_power_of_two() {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Topic '{}' has invalid capacity {} (corrupted shared memory). \
                      Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                     name, existing_capacity
-                )
-                .into());
+                )));
             }
 
             // Validate that the existing capacity matches what we calculated
             // Convert capacity (usize) to u32 for comparison with stored value
-            let capacity_u32 = u32::try_from(capacity)
-                .map_err(|_| format!("Capacity {} exceeds u32 maximum (4 billion)", capacity))?;
+            let capacity_u32 = u32::try_from(capacity).map_err(|_| {
+                HorusError::SharedMemory(format!(
+                    "Capacity {} exceeds u32 maximum (4 billion)",
+                    capacity
+                ))
+            })?;
             if existing_capacity != capacity_u32 {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Topic '{}' capacity mismatch: existing={}, requested={} (rounded from original request). \
                      Existing shared memory may be from different session or incompatible version.",
                     name, existing_capacity, capacity_u32
-                )
-                .into());
+                )));
             }
 
             existing_capacity
@@ -455,24 +469,32 @@ impl<T> ShmTopic<T> {
 
             // Safety checks for data pointer
             if raw_ptr.is_null() {
-                return Err("Null pointer for data region".into());
+                return Err(HorusError::SharedMemory(
+                    "Null pointer for data region".to_string(),
+                ));
             }
 
             // Verify we have enough space for the data
             if region.size() < aligned_header_size + data_size {
-                return Err("Shared memory region too small for data".into());
+                return Err(HorusError::SharedMemory(
+                    "Shared memory region too small for data".to_string(),
+                ));
             }
 
             // Verify alignment
             if !(raw_ptr as usize).is_multiple_of(element_align) {
-                return Err("Data pointer not properly aligned".into());
+                return Err(HorusError::SharedMemory(
+                    "Data pointer not properly aligned".to_string(),
+                ));
             }
 
             // Verify the pointer is within the mapped region bounds
             let region_end = (region.as_ptr() as *mut u8).add(region.size());
             let data_end = raw_ptr.add(data_size);
             if data_end > region_end {
-                return Err("Data region extends beyond mapped memory".into());
+                return Err(HorusError::SharedMemory(
+                    "Data region extends beyond mapped memory".to_string(),
+                ));
             }
 
             NonNull::new_unchecked(raw_ptr)
@@ -487,11 +509,10 @@ impl<T> ShmTopic<T> {
 
             // Check if we've exceeded max consumers (MAX_CONSUMERS fits in u32)
             if id as usize >= MAX_CONSUMERS {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Maximum number of consumers ({}) exceeded for topic '{}'",
                     MAX_CONSUMERS, name
-                )
-                .into());
+                )));
             }
 
             // MPMC OPTIMIZED: Consumer tail will be initialized in local memory below
@@ -520,17 +541,23 @@ impl<T> ShmTopic<T> {
         // Safety checks for opening existing shared memory
         let header_size = mem::size_of::<RingBufferHeader>();
         if region.size() < header_size {
-            return Err("Existing shared memory region too small for header".into());
+            return Err(HorusError::SharedMemory(
+                "Existing shared memory region too small for header".to_string(),
+            ));
         }
 
         let header_ptr = region.as_ptr() as *mut RingBufferHeader;
 
         // Safety check: ensure pointer is not null and properly aligned
         if header_ptr.is_null() {
-            return Err("Null pointer for existing shared memory header".into());
+            return Err(HorusError::SharedMemory(
+                "Null pointer for existing shared memory header".to_string(),
+            ));
         }
         if !(header_ptr as usize).is_multiple_of(std::mem::align_of::<RingBufferHeader>()) {
-            return Err("Existing header pointer not properly aligned".into());
+            return Err(HorusError::SharedMemory(
+                "Existing header pointer not properly aligned".to_string(),
+            ));
         }
 
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
@@ -546,22 +573,20 @@ impl<T> ShmTopic<T> {
             }
             if magic != 0 && magic != MAGIC_INITIALIZED {
                 // Invalid magic - corrupted or incompatible version
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Topic '{}' has invalid magic number 0x{:X} (corrupted or incompatible version). \
                      Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                     name, magic
-                )
-                .into());
+                )));
             }
             // Magic is 0 - owner is still initializing, spin-wait
             wait_iters += 1;
             if wait_iters > MAX_INIT_WAIT_ITERS {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Topic '{}' initialization timeout: owner process may have crashed during setup. \
                      Please delete shared memory files in /dev/shm/horus/topics/ and restart.",
                     name
-                )
-                .into());
+                )));
             }
             std::hint::spin_loop();
         }
@@ -573,11 +598,10 @@ impl<T> ShmTopic<T> {
         // Validate capacity is within safe bounds (compare as usize for constants)
         let capacity_usize = capacity as usize;
         if !(MIN_CAPACITY..=MAX_CAPACITY).contains(&capacity_usize) {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Invalid capacity {} in existing shared memory (must be {}-{})",
                 capacity, MIN_CAPACITY, MAX_CAPACITY
-            )
-            .into());
+            )));
         }
 
         // Validate element size matches
@@ -585,11 +609,10 @@ impl<T> ShmTopic<T> {
             unsafe { (*header.as_ptr()).element_size.load(Ordering::Acquire) };
         let expected_element_size = mem::size_of::<T>();
         if stored_element_size != expected_element_size {
-            return Err(format!(
+            return Err(HorusError::SharedMemory(format!(
                 "Element size mismatch: stored {}, expected {}",
                 stored_element_size, expected_element_size
-            )
-            .into());
+            )));
         }
 
         log::info!(
@@ -621,7 +644,9 @@ impl<T> ShmTopic<T> {
 
             // Safety checks for data pointer in existing shared memory
             if raw_ptr.is_null() {
-                return Err("Null pointer for existing data region".into());
+                return Err(HorusError::SharedMemory(
+                    "Null pointer for existing data region".to_string(),
+                ));
             }
 
             // Calculate expected total size (use usize for size calculations)
@@ -630,24 +655,27 @@ impl<T> ShmTopic<T> {
 
             // Verify we have enough space for the data
             if region.size() < expected_total_size {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Existing shared memory too small: {} < {}",
                     region.size(),
                     expected_total_size
-                )
-                .into());
+                )));
             }
 
             // Verify alignment
             if !(raw_ptr as usize).is_multiple_of(element_align) {
-                return Err("Existing data pointer not properly aligned".into());
+                return Err(HorusError::SharedMemory(
+                    "Existing data pointer not properly aligned".to_string(),
+                ));
             }
 
             // Verify the pointer is within the mapped region bounds
             let region_end = (region.as_ptr() as *mut u8).add(region.size());
             let data_end = raw_ptr.add(expected_data_size);
             if data_end > region_end {
-                return Err("Existing data region extends beyond mapped memory".into());
+                return Err(HorusError::SharedMemory(
+                    "Existing data region extends beyond mapped memory".to_string(),
+                ));
             }
 
             NonNull::new_unchecked(raw_ptr)
@@ -662,11 +690,10 @@ impl<T> ShmTopic<T> {
 
             // Check if we've exceeded max consumers (MAX_CONSUMERS fits in u32)
             if id as usize >= MAX_CONSUMERS {
-                return Err(format!(
+                return Err(HorusError::SharedMemory(format!(
                     "Maximum number of consumers ({}) exceeded for topic '{}'",
                     MAX_CONSUMERS, name
-                )
-                .into());
+                )));
             }
 
             let head = (*header.as_ptr()).head.load(Ordering::Relaxed);
@@ -1114,11 +1141,10 @@ impl<T> ShmTopic<T> {
                                 "Critical safety violation: head index {} >= capacity {}",
                                 head, self.capacity
                             );
-                            return Err(format!(
+                            return Err(HorusError::SharedMemory(format!(
                                 "Head index {} >= capacity {}",
                                 head, self.capacity
-                            )
-                            .into());
+                            )));
                         }
 
                         // Cast u32 index to usize for byte offset calculation
@@ -1138,7 +1164,9 @@ impl<T> ShmTopic<T> {
                             eprintln!(
                                 "Critical safety violation: loan would exceed data region bounds"
                             );
-                            return Err("Loan would exceed data region bounds".into());
+                            return Err(HorusError::SharedMemory(
+                                "Loan would exceed data region bounds".to_string(),
+                            ));
                         }
 
                         return Ok(PublisherSample {

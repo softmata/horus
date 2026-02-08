@@ -144,13 +144,16 @@ where
         buffer_pool: Arc<BufferPool>,
     ) -> HorusResult<()> {
         // Connect with TCP_NODELAY for low latency
-        let mut stream = TcpStream::connect(router_addr)
-            .await
-            .map_err(|e| format!("Failed to connect to router at {}: {}", router_addr, e))?;
+        let mut stream = TcpStream::connect(router_addr).await.map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to connect to router at {}: {}",
+                router_addr, e
+            ))
+        })?;
 
-        stream
-            .set_nodelay(true)
-            .map_err(|e| format!("Failed to set TCP_NODELAY: {}", e))?;
+        stream.set_nodelay(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set TCP_NODELAY: {}", e))
+        })?;
 
         // Send subscribe message
         let subscribe_packet = HorusPacket::new_router_subscribe(topic.clone());
@@ -158,14 +161,15 @@ where
         subscribe_packet.encode(&mut buffer);
 
         let len_bytes = (buffer.len() as u32).to_le_bytes();
-        stream
-            .write_all(&len_bytes)
-            .await
-            .map_err(|e| format!("Failed to send subscribe length: {}", e))?;
-        stream
-            .write_all(&buffer)
-            .await
-            .map_err(|e| format!("Failed to send subscribe: {}", e))?;
+        stream.write_all(&len_bytes).await.map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to send subscribe length: {}",
+                e
+            ))
+        })?;
+        stream.write_all(&buffer).await.map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to send subscribe: {}", e))
+        })?;
 
         // Split stream for concurrent read/write
         let (mut read_half, mut write_half) = stream.into_split();
@@ -246,7 +250,9 @@ where
     /// Send a message (optimized with zero-allocation buffer pooling)
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         // Serialize payload
-        let payload = bincode::serialize(msg).map_err(|e| format!("Serialization error: {}", e))?;
+        let payload = bincode::serialize(msg).map_err(|e| {
+            crate::error::HorusError::Serialization(format!("Serialization error: {}", e))
+        })?;
 
         // Fragment if needed
         let fragments = self.fragment_manager.fragment(&payload);

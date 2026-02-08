@@ -24,7 +24,7 @@ pub struct Goal {
     /// Unique goal identifier
     pub goal_id: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Goal {
@@ -37,7 +37,7 @@ impl Goal {
             timeout_seconds: 0.0,
             priority: 1,
             goal_id: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -117,7 +117,7 @@ pub struct GoalResult {
     #[serde(with = "serde_arrays")]
     pub error_message: [u8; 64],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for GoalResult {
@@ -129,7 +129,7 @@ impl Default for GoalResult {
             eta_seconds: 0.0,
             progress: 0.0,
             error_message: [0; 64],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -144,7 +144,7 @@ impl GoalResult {
             eta_seconds: 0.0,
             progress: 0.0,
             error_message: [0; 64],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -219,7 +219,7 @@ pub struct Path {
     /// Path generation algorithm used
     pub algorithm: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Path {
@@ -231,7 +231,7 @@ impl Default for Path {
             duration_seconds: 0.0,
             frame_id: [0; 32],
             algorithm: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -240,7 +240,7 @@ impl Path {
     /// Create a new empty path
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -330,7 +330,7 @@ pub struct OccupancyGrid {
     #[serde(with = "serde_arrays")]
     pub metadata: [u8; 64],
     /// Timestamp when map was created
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for OccupancyGrid {
@@ -343,7 +343,7 @@ impl Default for OccupancyGrid {
             data: Vec::new(),
             frame_id: [0; 32],
             metadata: [0; 64],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -360,7 +360,7 @@ impl OccupancyGrid {
             data: vec![-1; data_size], // Initialize as unknown
             frame_id: [0; 32],
             metadata: [0; 64],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -605,7 +605,7 @@ pub struct VelocityObstacles {
     /// Number of valid obstacles
     pub count: u8,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl LogSummary for Goal {
@@ -734,7 +734,7 @@ pub struct PathPlan {
     /// Number of waypoints in path
     pub path_length: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for PathPlan {
@@ -743,7 +743,7 @@ impl Default for PathPlan {
             waypoints: Vec::new(),
             goal_pose: [0.0, 0.0, 0.0],
             path_length: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -752,7 +752,7 @@ impl PathPlan {
     /// Create a new path plan
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -766,7 +766,7 @@ impl PathPlan {
             path_length: waypoints.len() as u32,
             waypoints,
             goal_pose: goal,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

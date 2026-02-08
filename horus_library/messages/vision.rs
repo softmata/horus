@@ -56,7 +56,7 @@ pub struct Image {
     /// Frame ID (camera identifier)
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Image {
@@ -68,7 +68,7 @@ impl Default for Image {
             step: 0,
             data: Vec::new(),
             frame_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -84,7 +84,7 @@ impl Image {
             step: width * bytes_per_pixel,
             data,
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -193,7 +193,7 @@ pub struct CompressedImage {
     /// Frame ID (camera identifier)
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl CompressedImage {
@@ -210,7 +210,7 @@ impl CompressedImage {
             width: 0,
             height: 0,
             frame_id: [0; 32],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -252,7 +252,7 @@ pub struct CameraInfo {
     /// Frame ID (camera identifier)
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for CameraInfo {
@@ -266,7 +266,7 @@ impl Default for CameraInfo {
             rectification_matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], // Identity
             projection_matrix: [0.0; 12],
             frame_id: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -279,7 +279,7 @@ impl CameraInfo {
             height,
             camera_matrix: [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
             projection_matrix: [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0],
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -358,11 +358,11 @@ pub struct Detection {
     /// Bounding box
     pub bbox: RegionOfInterest,
     /// 3D pose if available
-    pub pose: Option<crate::messages::geometry::Transform>,
+    pub pose: Option<crate::messages::geometry::TransformStamped>,
     /// Object ID for tracking
     pub track_id: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Detection {
@@ -373,7 +373,7 @@ impl Default for Detection {
             bbox: RegionOfInterest::default(),
             pose: None,
             track_id: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -392,7 +392,7 @@ impl Detection {
             bbox,
             pose: None,
             track_id: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -420,14 +420,14 @@ pub struct DetectionArray {
     /// Frame ID
     pub frame_id: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl DetectionArray {
     /// Create a new detection array
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

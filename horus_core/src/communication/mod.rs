@@ -87,6 +87,6 @@ pub use storage::AccessMode;
 pub use topic::{
     AccessPattern, Auto, BackendHint, ConnectionState, Mpmc, MpmcIntraBackend, MpscIntraBackend,
     Pod, ProcessTopology, SpmcIntraBackend, Spsc, SpscIntraBackend, Topic, TopicConfig,
-    TopicMetrics, TopicMode,
+    TopicDescriptor, TopicMetrics, TopicMode,
 };
 pub use traits::{Channel, Publisher, Subscriber};

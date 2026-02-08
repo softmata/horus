@@ -6,7 +6,7 @@
 // # Message Organization
 //
 // Messages are organized by domain:
-// - Geometry: Spatial primitives (Twist, Pose2D, Transform, etc.)
+// - Geometry: Spatial primitives (Twist, Pose2D, TransformStamped, etc.)
 // - Sensor: Sensor data formats (LaserScan, Imu, Odometry, etc.)
 // - Control: Actuator commands (MotorCommand, ServoCommand, PID, etc.)
 // - Diagnostics: System health (Status, Heartbeat, EmergencyStop, etc.)
@@ -39,7 +39,7 @@ pub mod snake_state;
 
 // Re-export all message types for convenience
 // Geometry
-pub use geometry::{Point3, Pose2D, Quaternion, Transform, Twist, Vector3};
+pub use geometry::{Point3, Pose2D, Quaternion, TransformStamped, Twist, Vector3};
 
 // Sensor
 pub use sensor::{BatteryState, Imu, LaserScan, NavSatFix, Odometry, Range};

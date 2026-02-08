@@ -32,17 +32,23 @@ where
     /// Create a new UDP multicast backend
     pub fn new(topic: &str) -> HorusResult<Self> {
         // Bind to any available port
-        let socket = UdpSocket::bind("0.0.0.0:0")
-            .map_err(|e| format!("Failed to bind UDP socket: {}", e))?;
+        let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to bind UDP socket: {}", e))
+        })?;
 
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
+        socket.set_nonblocking(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set nonblocking: {}", e))
+        })?;
 
         // Get the local port we're bound to
         let local_port = socket
             .local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to get local address: {}",
+                    e
+                ))
+            })?
             .port();
 
         // Create discovery service
@@ -199,7 +205,9 @@ where
     /// Send a message to all discovered peers
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         // Serialize payload
-        let payload = bincode::serialize(msg).map_err(|e| format!("Serialization error: {}", e))?;
+        let payload = bincode::serialize(msg).map_err(|e| {
+            crate::error::HorusError::Serialization(format!("Serialization error: {}", e))
+        })?;
 
         // Fragment the payload if needed
         let fragments = self.fragment_manager.fragment(&payload);
@@ -231,9 +239,9 @@ where
 
             // Send to all peers
             for peer_addr in peers.iter() {
-                self.socket
-                    .send_to(&buffer, peer_addr)
-                    .map_err(|e| format!("UDP send error: {}", e))?;
+                self.socket.send_to(&buffer, peer_addr).map_err(|e| {
+                    crate::error::HorusError::Communication(format!("UDP send error: {}", e))
+                })?;
             }
         }
         drop(seq);

@@ -35,24 +35,38 @@ pub struct DiscoveryService {
 impl DiscoveryService {
     /// Create a new discovery service
     pub fn new() -> HorusResult<Self> {
-        let socket = UdpSocket::bind(("0.0.0.0", MULTICAST_PORT))
-            .map_err(|e| format!("Failed to bind discovery socket: {}", e))?;
+        let socket = UdpSocket::bind(("0.0.0.0", MULTICAST_PORT)).map_err(|e| {
+            crate::error::HorusError::Communication(format!(
+                "Failed to bind discovery socket: {}",
+                e
+            ))
+        })?;
 
-        socket
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set nonblocking: {}", e))?;
+        socket.set_nonblocking(true).map_err(|e| {
+            crate::error::HorusError::Communication(format!("Failed to set nonblocking: {}", e))
+        })?;
 
         socket
             .set_read_timeout(Some(DISCOVERY_TIMEOUT))
-            .map_err(|e| format!("Failed to set read timeout: {}", e))?;
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to set read timeout: {}",
+                    e
+                ))
+            })?;
 
         // Join multicast group
-        let multicast_ip: Ipv4Addr = MULTICAST_ADDR
-            .parse()
-            .map_err(|e| format!("Invalid multicast address: {}", e))?;
+        let multicast_ip: Ipv4Addr = MULTICAST_ADDR.parse().map_err(|e| {
+            crate::error::HorusError::Config(format!("Invalid multicast address: {}", e))
+        })?;
         socket
             .join_multicast_v4(&multicast_ip, &Ipv4Addr::UNSPECIFIED)
-            .map_err(|e| format!("Failed to join multicast group: {}", e))?;
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to join multicast group: {}",
+                    e
+                ))
+            })?;
 
         let multicast_addr = SocketAddr::new(IpAddr::V4(multicast_ip), MULTICAST_PORT);
 
@@ -80,7 +94,12 @@ impl DiscoveryService {
         packet.encode(&mut buffer);
         self.socket
             .send_to(&buffer, self.multicast_addr)
-            .map_err(|e| format!("Failed to send discovery request: {}", e))?;
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to send discovery request: {}",
+                    e
+                ))
+            })?;
 
         // Wait for responses (timeout after DISCOVERY_TIMEOUT)
         std::thread::sleep(DISCOVERY_TIMEOUT);
@@ -113,7 +132,12 @@ impl DiscoveryService {
         packet.encode(&mut buffer);
         self.socket
             .send_to(&buffer, self.multicast_addr)
-            .map_err(|e| format!("Failed to send discovery announcement: {}", e))?;
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to send discovery announcement: {}",
+                    e
+                ))
+            })?;
 
         Ok(())
     }

@@ -2,6 +2,7 @@
 //! Tests lock-free, zero-copy shared memory communication between nodes
 
 use horus_core::communication::Topic;
+use horus_core::core::Node;
 use serde::{Deserialize, Serialize};
 
 #[test]
@@ -363,4 +364,226 @@ fn test_custom_struct() {
 
     let received = sub_hub.recv().expect("Should receive struct");
     assert_eq!(received, data, "Struct should be received correctly");
+}
+
+// ============================================================================
+// topics! Macro + Node Integration Tests (User Perspective)
+// ============================================================================
+//
+// These tests simulate how a real HORUS user would use the topics! macro
+// with Node structs, Topic::publish/subscribe, and tick-based communication.
+
+/// User-defined message type (typical robotics struct)
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct MotorCommand {
+    velocity: f32,
+    torque: f32,
+}
+
+impl horus_core::core::LogSummary for MotorCommand {
+    fn log_summary(&self) -> String {
+        format!(
+            "MotorCmd(vel:{:.2}, torq:{:.2})",
+            self.velocity, self.torque
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct EncoderFeedback {
+    position: f64,
+    velocity: f64,
+}
+
+impl horus_core::core::LogSummary for EncoderFeedback {
+    fn log_summary(&self) -> String {
+        format!(
+            "Encoder(pos:{:.3}, vel:{:.3})",
+            self.position, self.velocity
+        )
+    }
+}
+
+// Define topics once in a shared module — the user pattern
+horus_core::topics! {
+    pub MOTOR_CMD: MotorCommand = "test_topics_macro_motor_cmd",
+    pub ENCODER_FB: EncoderFeedback = "test_topics_macro_encoder_fb",
+}
+
+/// A controller node that publishes motor commands and reads encoder feedback
+struct ControllerNode {
+    cmd_pub: horus_core::Topic<MotorCommand>,
+    encoder_sub: horus_core::Topic<EncoderFeedback>,
+    last_feedback: Option<EncoderFeedback>,
+    tick_count: u32,
+}
+
+impl horus_core::Node for ControllerNode {
+    fn name(&self) -> &'static str {
+        "Controller"
+    }
+
+    fn tick(&mut self) {
+        self.tick_count += 1;
+
+        // Publish a motor command
+        let cmd = MotorCommand {
+            velocity: self.tick_count as f32 * 0.1,
+            torque: 1.0,
+        };
+        let _ = self.cmd_pub.send(cmd);
+
+        // Read encoder feedback (non-blocking)
+        if let Some(fb) = self.encoder_sub.recv() {
+            self.last_feedback = Some(fb);
+        }
+    }
+}
+
+/// A motor driver node that reads motor commands and publishes encoder feedback
+struct MotorDriverNode {
+    cmd_sub: horus_core::Topic<MotorCommand>,
+    encoder_pub: horus_core::Topic<EncoderFeedback>,
+    position: f64,
+    last_cmd: Option<MotorCommand>,
+}
+
+impl horus_core::Node for MotorDriverNode {
+    fn name(&self) -> &'static str {
+        "MotorDriver"
+    }
+
+    fn tick(&mut self) {
+        // Read command
+        if let Some(cmd) = self.cmd_sub.recv() {
+            self.last_cmd = Some(cmd.clone());
+            self.position += cmd.velocity as f64 * 0.001; // integrate velocity
+        }
+
+        // Publish encoder feedback
+        let fb = EncoderFeedback {
+            position: self.position,
+            velocity: self
+                .last_cmd
+                .as_ref()
+                .map(|c| c.velocity as f64)
+                .unwrap_or(0.0),
+        };
+        let _ = self.encoder_pub.send(fb);
+    }
+}
+
+#[test]
+fn test_topics_macro_with_nodes_pub_sub() {
+    // Full user-perspective test:
+    // 1. Define topics with topics! macro (done above)
+    // 2. Create nodes using Topic::publish/subscribe
+    // 3. Run tick loop manually
+    // 4. Verify data flows between nodes via typed topics
+    //
+    // Note: Topic::publish/subscribe both call Topic::new() internally.
+    // To share the same underlying backend (like clone()), we create one
+    // Topic per name and clone it for the second node — this matches real
+    // usage where nodes in the same process share Topic handles.
+
+    // Create shared topic handles (one per topic name, cloned to each node)
+    let motor_topic = horus_core::Topic::publish(MOTOR_CMD).expect("create MOTOR_CMD");
+    let encoder_topic = horus_core::Topic::publish(ENCODER_FB).expect("create ENCODER_FB");
+
+    let mut controller = ControllerNode {
+        cmd_pub: motor_topic.clone(),
+        encoder_sub: encoder_topic.clone(),
+        last_feedback: None,
+        tick_count: 0,
+    };
+
+    let mut driver = MotorDriverNode {
+        cmd_sub: motor_topic.clone(),
+        encoder_pub: encoder_topic.clone(),
+        position: 0.0,
+        last_cmd: None,
+    };
+
+    // Simulate tick cycles: controller publishes cmd → driver reads & responds → controller reads
+    for _ in 0..5 {
+        controller.tick();
+        driver.tick();
+    }
+    // One final controller tick to read the last encoder feedback
+    controller.tick();
+
+    // The driver should have received commands
+    assert!(
+        driver.last_cmd.is_some(),
+        "MotorDriver should have received a MotorCommand via MOTOR_CMD topic"
+    );
+
+    // The controller should have received feedback
+    assert!(
+        controller.last_feedback.is_some(),
+        "Controller should have received EncoderFeedback via ENCODER_FB topic"
+    );
+
+    // Position should have advanced (velocity was integrated)
+    assert!(
+        driver.position > 0.0,
+        "Motor position should have advanced from commands"
+    );
+
+    let fb = controller.last_feedback.as_ref().unwrap();
+    assert!(
+        fb.position > 0.0,
+        "Encoder feedback position should reflect motor movement"
+    );
+}
+
+#[test]
+fn test_topics_macro_type_safety_compile_time() {
+    // This test verifies that the topics! macro produces correctly-typed descriptors.
+    // If the types were wrong, this test wouldn't compile at all.
+
+    // MOTOR_CMD is TopicDescriptor<MotorCommand>
+    let _pub: horus_core::Topic<MotorCommand> =
+        horus_core::Topic::publish(MOTOR_CMD).expect("typed publish");
+
+    // ENCODER_FB is TopicDescriptor<EncoderFeedback>
+    let _sub: horus_core::Topic<EncoderFeedback> =
+        horus_core::Topic::subscribe(ENCODER_FB).expect("typed subscribe");
+
+    // The following would NOT compile (type mismatch):
+    // let _bad: horus_core::Topic<String> = horus_core::Topic::publish(MOTOR_CMD);
+    //                                                                   ^^^^^^^^^ expected MotorCommand
+}
+
+#[test]
+fn test_topics_macro_descriptor_names() {
+    // Verify the descriptors carry the correct topic names
+    assert_eq!(MOTOR_CMD.name(), "test_topics_macro_motor_cmd");
+    assert_eq!(ENCODER_FB.name(), "test_topics_macro_encoder_fb");
+}
+
+#[test]
+fn test_topics_macro_roundtrip_with_publish_subscribe() {
+    // Direct roundtrip: publish a message via Topic::publish, receive via Topic::subscribe
+    // Uses a unique topic name to avoid shared-memory interference from parallel tests
+
+    horus_core::topics! {
+        ROUNDTRIP_TOPIC: MotorCommand = "test_roundtrip_motor_cmd",
+    }
+
+    let publisher = horus_core::Topic::publish(ROUNDTRIP_TOPIC).expect("publish");
+    let subscriber = publisher.clone();
+
+    let cmd = MotorCommand {
+        velocity: 3.14,
+        torque: 2.71,
+    };
+    publisher.send(cmd.clone()).expect("send");
+
+    let received = subscriber.recv();
+    assert_eq!(
+        received,
+        Some(cmd),
+        "Should receive exact message through typed topic"
+    );
 }

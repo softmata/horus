@@ -27,7 +27,7 @@ pub struct EtherNetIPMessage {
     /// Message direction (true = request, false = response)
     pub is_request: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for EtherNetIPMessage {
@@ -42,7 +42,7 @@ impl Default for EtherNetIPMessage {
             context: [0; 8],
             status: 0,
             is_request: true,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }

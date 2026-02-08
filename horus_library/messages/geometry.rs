@@ -20,7 +20,7 @@ pub struct Twist {
     /// Angular velocity [roll, pitch, yaw] in rad/s
     pub angular: [f64; 3],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Twist {
@@ -29,7 +29,7 @@ impl Twist {
         Self {
             linear,
             angular,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -67,7 +67,7 @@ pub struct Pose2D {
     /// Orientation angle in radians
     pub theta: f64,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Pose2D {
@@ -77,7 +77,7 @@ impl Pose2D {
             x,
             y,
             theta,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -120,22 +120,22 @@ impl Pose2D {
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-pub struct Transform {
+pub struct TransformStamped {
     /// Translation [x, y, z] in meters
     pub translation: [f64; 3],
     /// Rotation as quaternion [x, y, z, w]
     pub rotation: [f64; 4],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
-impl Transform {
+impl TransformStamped {
     /// Create a new transform
     pub fn new(translation: [f64; 3], rotation: [f64; 4]) -> Self {
         Self {
             translation,
             rotation,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -325,7 +325,7 @@ impl LogSummary for Pose2D {
     }
 }
 
-impl LogSummary for Transform {
+impl LogSummary for TransformStamped {
     fn log_summary(&self) -> String {
         format!("{:?}", self)
     }
@@ -364,9 +364,9 @@ unsafe impl horus_core::bytemuck::Pod for Pose2D {}
 unsafe impl horus_core::bytemuck::Zeroable for Pose2D {}
 unsafe impl horus_core::communication::PodMessage for Pose2D {}
 
-unsafe impl horus_core::bytemuck::Pod for Transform {}
-unsafe impl horus_core::bytemuck::Zeroable for Transform {}
-unsafe impl horus_core::communication::PodMessage for Transform {}
+unsafe impl horus_core::bytemuck::Pod for TransformStamped {}
+unsafe impl horus_core::bytemuck::Zeroable for TransformStamped {}
+unsafe impl horus_core::communication::PodMessage for TransformStamped {}
 
 unsafe impl horus_core::bytemuck::Pod for Point3 {}
 unsafe impl horus_core::bytemuck::Zeroable for Point3 {}
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(twist.angular[0], 0.1);
         assert_eq!(twist.angular[1], 0.2);
         assert_eq!(twist.angular[2], 0.3);
-        assert!(twist.timestamp > 0);
+        assert!(twist.timestamp_ns > 0);
     }
 
     #[test]
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(pose.x, 1.0);
         assert_eq!(pose.y, 2.0);
         assert_eq!(pose.theta, 0.5);
-        assert!(pose.timestamp > 0);
+        assert!(pose.timestamp_ns > 0);
     }
 
     #[test]
@@ -506,15 +506,15 @@ mod tests {
 
     #[test]
     fn test_transform_new() {
-        let tf = Transform::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        let tf = TransformStamped::new([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(tf.translation, [1.0, 2.0, 3.0]);
         assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
-        assert!(tf.timestamp > 0);
+        assert!(tf.timestamp_ns > 0);
     }
 
     #[test]
     fn test_transform_identity() {
-        let tf = Transform::identity();
+        let tf = TransformStamped::identity();
         assert_eq!(tf.translation, [0.0, 0.0, 0.0]);
         assert_eq!(tf.rotation, [0.0, 0.0, 0.0, 1.0]);
     }
@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn test_transform_from_pose_2d() {
         let pose = Pose2D::new(1.0, 2.0, 0.0);
-        let tf = Transform::from_pose_2d(&pose);
+        let tf = TransformStamped::from_pose_2d(&pose);
         assert_eq!(tf.translation[0], 1.0);
         assert_eq!(tf.translation[1], 2.0);
         assert_eq!(tf.translation[2], 0.0);
@@ -532,19 +532,19 @@ mod tests {
 
     #[test]
     fn test_transform_is_valid() {
-        let valid = Transform::identity();
+        let valid = TransformStamped::identity();
         assert!(valid.is_valid());
 
-        let invalid_translation = Transform::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
+        let invalid_translation = TransformStamped::new([f64::INFINITY, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
         assert!(!invalid_translation.is_valid());
 
-        let unnormalized = Transform::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        let unnormalized = TransformStamped::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
         assert!(!unnormalized.is_valid()); // Quaternion not normalized
     }
 
     #[test]
     fn test_transform_normalize_rotation() {
-        let mut tf = Transform::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
+        let mut tf = TransformStamped::new([0.0; 3], [1.0, 1.0, 1.0, 1.0]);
         tf.normalize_rotation();
         let norm = tf.rotation.iter().map(|v| v * v).sum::<f64>().sqrt();
         assert!((norm - 1.0).abs() < 1e-10);
@@ -552,9 +552,9 @@ mod tests {
 
     #[test]
     fn test_transform_serialization() {
-        let tf = Transform::identity();
+        let tf = TransformStamped::identity();
         let serialized = serde_json::to_string(&tf).unwrap();
-        let deserialized: Transform = serde_json::from_str(&serialized).unwrap();
+        let deserialized: TransformStamped = serde_json::from_str(&serialized).unwrap();
         assert_eq!(tf.translation, deserialized.translation);
         assert_eq!(tf.rotation, deserialized.rotation);
     }

@@ -32,7 +32,7 @@ pub struct Checkpoint {
     /// Unique checkpoint ID
     pub id: u64,
     /// Timestamp when created
-    pub timestamp: u64,
+    pub timestamp_secs: u64,
     /// Node states (serialized)
     pub node_states: HashMap<String, NodeCheckpoint>,
     /// Scheduler metadata
@@ -99,7 +99,7 @@ impl CheckpointManager {
         self.checkpoint_index += 1;
         let checkpoint = Checkpoint {
             id: self.checkpoint_index,
-            timestamp: SystemTime::now()
+            timestamp_secs: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),

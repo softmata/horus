@@ -26,8 +26,8 @@ pub struct NodeAnnouncement {
     pub publishers: Vec<String>,
     /// Topics this node subscribes to
     pub subscribers: Vec<String>,
-    /// Timestamp (unix millis)
-    pub timestamp: u64,
+    /// Timestamp in milliseconds since epoch
+    pub timestamp_ms: u64,
 }
 
 /// Node lifecycle event
@@ -63,7 +63,7 @@ impl NodeAnnouncement {
             event: NodeEvent::Started,
             publishers: publishers.iter().map(|t| t.topic_name.clone()).collect(),
             subscribers: subscribers.iter().map(|t| t.topic_name.clone()).collect(),
-            timestamp: SystemTime::now()
+            timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
@@ -78,7 +78,7 @@ impl NodeAnnouncement {
             event: NodeEvent::Stopped,
             publishers: Vec::new(),
             subscribers: Vec::new(),
-            timestamp: SystemTime::now()
+            timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
@@ -93,7 +93,7 @@ impl NodeAnnouncement {
             event: NodeEvent::Crashed,
             publishers: Vec::new(),
             subscribers: Vec::new(),
-            timestamp: SystemTime::now()
+            timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,

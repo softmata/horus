@@ -23,7 +23,7 @@ pub struct Heartbeat {
     /// Time since startup in seconds
     pub uptime: f64,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Heartbeat {
@@ -34,7 +34,7 @@ impl Default for Heartbeat {
             sequence: 0,
             alive: true,
             uptime: 0.0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -47,7 +47,7 @@ impl Heartbeat {
             alive: true,
             sequence: 0,
             uptime: 0.0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -67,7 +67,7 @@ impl Heartbeat {
     pub fn update(&mut self, uptime: f64) {
         self.sequence += 1;
         self.uptime = uptime;
-        self.timestamp = std::time::SystemTime::now()
+        self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
@@ -111,7 +111,7 @@ pub struct Status {
     /// Component name reporting the status
     pub component: [u8; 32],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for Status {
@@ -121,7 +121,7 @@ impl Default for Status {
             code: 0,
             message: [0; 128],
             component: [0; 32],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -132,7 +132,7 @@ impl Status {
         let mut status = Self {
             level,
             code,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -205,7 +205,7 @@ pub struct EmergencyStop {
     /// Auto-reset allowed after clearing
     pub auto_reset: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for EmergencyStop {
@@ -215,7 +215,7 @@ impl Default for EmergencyStop {
             reason: [0; 64],
             source: [0; 32],
             auto_reset: false,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -226,7 +226,7 @@ impl EmergencyStop {
         let mut estop = Self {
             engaged: true,
             auto_reset: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -247,7 +247,7 @@ impl EmergencyStop {
         Self {
             engaged: false,
             auto_reset: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -295,14 +295,14 @@ pub struct ResourceUsage {
     /// Number of active threads
     pub thread_count: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ResourceUsage {
     /// Create a new resource usage message
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -410,7 +410,7 @@ pub struct DiagnosticReport {
     /// Overall status level
     pub level: StatusLevel,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for DiagnosticReport {
@@ -420,7 +420,7 @@ impl Default for DiagnosticReport {
             values: [DiagnosticValue::default(); 16],
             value_count: 0,
             level: StatusLevel::Ok,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -429,7 +429,7 @@ impl DiagnosticReport {
     /// Create a new diagnostic report
     pub fn new(component: &str) -> Self {
         let mut report = Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -665,7 +665,7 @@ pub struct SafetyStatus {
     /// Fault code if any
     pub fault_code: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl SafetyStatus {
@@ -683,7 +683,7 @@ impl SafetyStatus {
             comms_ok: true,
             mode: Self::MODE_NORMAL,
             fault_code: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

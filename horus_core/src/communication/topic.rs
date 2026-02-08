@@ -263,6 +263,89 @@ impl TopicConfig {
 }
 
 // ============================================================================
+// Type-Safe Topic Descriptors
+// ============================================================================
+
+/// A compile-time topic descriptor that pairs a name with a message type.
+///
+/// Created by the [`topics!`] macro to provide type-safe topic names that
+/// prevent typos and type mismatches at compile time.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_core::topics;
+///
+/// topics! {
+///     SENSOR_DATA: f64 = "sensor_data",
+///     MOTOR_CMD: MotorCommand = "motor_cmd",
+/// }
+///
+/// // Type-checked — wrong type won't compile
+/// let pub_topic: Topic<f64> = Topic::publish(SENSOR_DATA)?;
+/// let sub_topic: Topic<f64> = Topic::subscribe(SENSOR_DATA)?;
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct TopicDescriptor<T> {
+    name: &'static str,
+    _marker: PhantomData<T>,
+}
+
+impl<T> TopicDescriptor<T> {
+    /// Create a new topic descriptor (used by the `topics!` macro).
+    #[inline]
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get the topic name.
+    #[inline]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// Define type-safe topic descriptors for compile-time checked topic names.
+///
+/// This macro generates `TopicDescriptor<T>` constants that encode both the topic
+/// name and message type, preventing typos and type mismatches at compile time.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_core::topics;
+/// use horus_library::messages::{CmdVel, LaserScan};
+///
+/// topics! {
+///     SENSOR_DATA: f64 = "sensor_data",
+///     CMD_VEL: CmdVel = "cmd_vel",
+///     LIDAR: LaserScan = "/robot/lidar",
+/// }
+///
+/// // Type-safe — autocomplete works, typos are compile errors
+/// let publisher = Topic::publish(CMD_VEL)?;
+/// let subscriber = Topic::subscribe(CMD_VEL)?;
+///
+/// // Wrong type won't compile:
+/// // let bad: Topic<String> = Topic::subscribe(CMD_VEL)?; // ERROR
+///
+/// // Raw strings still work for dynamic names:
+/// let dynamic = Topic::<f64>::new("runtime_topic")?;
+/// ```
+#[macro_export]
+macro_rules! topics {
+    ($($vis:vis $name:ident : $type:ty = $topic_name:expr),* $(,)?) => {
+        $(
+            $vis const $name: $crate::communication::topic::TopicDescriptor<$type> =
+                $crate::communication::topic::TopicDescriptor::new($topic_name);
+        )*
+    };
+}
+
+// ============================================================================
 // Backend Selection Logic
 // ============================================================================
 
@@ -3270,6 +3353,50 @@ where
         Self::with_capacity(name, 64)
     }
 
+    /// Create a topic from a type-safe descriptor (publishing side).
+    ///
+    /// Use with the [`topics!`] macro for compile-time checked topic names
+    /// and message types.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_core::{topics, Topic};
+    ///
+    /// topics! {
+    ///     CMD_VEL: CmdVel = "cmd_vel",
+    /// }
+    ///
+    /// let publisher = Topic::publish(CMD_VEL)?;
+    /// publisher.send(CmdVel { linear: 1.0, angular: 0.0 })?;
+    /// ```
+    pub fn publish(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
+        Self::new(descriptor.name())
+    }
+
+    /// Create a topic from a type-safe descriptor (subscribing side).
+    ///
+    /// Use with the [`topics!`] macro for compile-time checked topic names
+    /// and message types.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus_core::{topics, Topic};
+    ///
+    /// topics! {
+    ///     SENSOR_DATA: f64 = "sensor_data",
+    /// }
+    ///
+    /// let subscriber = Topic::subscribe(SENSOR_DATA)?;
+    /// if let Some(value) = subscriber.recv() {
+    ///     println!("Got: {}", value);
+    /// }
+    /// ```
+    pub fn subscribe(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
+        Self::new(descriptor.name())
+    }
+
     /// Create a new topic with custom capacity
     ///
     /// # Smart Detection
@@ -3930,7 +4057,7 @@ where
         capacity: usize,
     ) -> HorusResult<Self> {
         let endpoint_str = endpoint.into();
-        let parsed = parse_endpoint(&endpoint_str)?;
+        let parsed = parse_endpoint(&endpoint_str).map_err(HorusError::Config)?;
 
         match parsed {
             Endpoint::Local { ref topic } => {
@@ -4960,6 +5087,93 @@ mod tests {
         assert_eq!(config.capacity, 256);
         assert!(!config.create);
         assert!(!config.is_producer);
+    }
+
+    // ========================================================================
+    // TopicDescriptor & topics! Macro Tests
+    // ========================================================================
+
+    #[test]
+    fn test_topic_descriptor_new() {
+        let desc = TopicDescriptor::<f64>::new("sensor_data");
+        assert_eq!(desc.name(), "sensor_data");
+    }
+
+    #[test]
+    fn test_topic_descriptor_const() {
+        const MY_TOPIC: TopicDescriptor<i32> = TopicDescriptor::new("my_topic");
+        assert_eq!(MY_TOPIC.name(), "my_topic");
+    }
+
+    #[test]
+    fn test_topics_macro() {
+        topics! {
+            SENSOR: f64 = "test_macro_sensor",
+            CONTROL: TestMessage = "test_macro_control",
+        }
+
+        assert_eq!(SENSOR.name(), "test_macro_sensor");
+        assert_eq!(CONTROL.name(), "test_macro_control");
+    }
+
+    #[test]
+    fn test_topics_macro_visibility() {
+        topics! {
+            pub PUB_TOPIC: f64 = "pub_topic",
+        }
+        assert_eq!(PUB_TOPIC.name(), "pub_topic");
+    }
+
+    #[test]
+    fn test_topic_publish_from_descriptor() {
+        let unique = format!("test_pub_desc_{}", std::process::id());
+        let desc = TopicDescriptor::<TestMessage>::new(Box::leak(unique.into_boxed_str()));
+        let topic = Topic::publish(desc).unwrap();
+        assert!(topic.name().starts_with("test_pub_desc_"));
+    }
+
+    #[test]
+    fn test_topic_subscribe_from_descriptor() {
+        let unique = format!("test_sub_desc_{}", std::process::id());
+        let desc = TopicDescriptor::<TestMessage>::new(Box::leak(unique.into_boxed_str()));
+        let topic = Topic::subscribe(desc).unwrap();
+        assert!(topic.name().starts_with("test_sub_desc_"));
+    }
+
+    #[test]
+    fn test_topic_descriptor_publish_subscribe_roundtrip() {
+        let unique = format!("test_desc_rt_{}", std::process::id());
+        let desc = TopicDescriptor::<TestMessage>::new(Box::leak(unique.into_boxed_str()));
+
+        let publisher = Topic::publish(desc).unwrap();
+        let subscriber = publisher.clone();
+
+        let msg = TestMessage {
+            id: 77,
+            payload: "descriptor roundtrip".to_string(),
+        };
+        publisher.send(msg.clone()).unwrap();
+
+        let received = subscriber.recv();
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().id, 77);
+    }
+
+    #[test]
+    fn test_topics_macro_end_to_end() {
+        topics! {
+            TYPED_TOPIC: i32 = "test_macro_e2e",
+        }
+
+        // The type is baked in — this compiles because TYPED_TOPIC is TopicDescriptor<i32>
+        let unique = format!("test_macro_e2e_{}", std::process::id());
+        let desc = TopicDescriptor::<i32>::new(Box::leak(unique.into_boxed_str()));
+        let pub_topic = Topic::publish(desc).unwrap();
+        let sub_topic = pub_topic.clone();
+
+        pub_topic.send(42).unwrap();
+        let received = sub_topic.recv();
+        assert_eq!(received, Some(42));
     }
 
     #[test]

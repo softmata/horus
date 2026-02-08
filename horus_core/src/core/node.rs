@@ -109,7 +109,7 @@ pub struct NetworkStatus {
     /// Packets received
     pub packets_received: u64,
     /// Last update timestamp (Unix seconds)
-    pub timestamp: u64,
+    pub timestamp_secs: u64,
 }
 
 impl NetworkStatus {
@@ -131,7 +131,7 @@ impl NetworkStatus {
             bytes_received: 0,
             packets_sent: 0,
             packets_received: 0,
-            timestamp: now,
+            timestamp_secs: now,
         }
     }
 
@@ -143,8 +143,12 @@ impl NetworkStatus {
         std::fs::create_dir_all(&dir)?;
 
         let path = dir.join(&self.node_name);
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize network status: {}", e))?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::error::HorusError::Serialization(format!(
+                "Failed to serialize network status: {}",
+                e
+            ))
+        })?;
 
         std::fs::write(&path, json)?;
         Ok(())
@@ -188,7 +192,7 @@ impl NetworkStatus {
             .unwrap()
             .as_secs();
 
-        now.saturating_sub(self.timestamp) <= max_age_secs
+        now.saturating_sub(self.timestamp_secs) <= max_age_secs
     }
 }
 

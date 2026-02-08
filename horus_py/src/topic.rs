@@ -94,20 +94,20 @@ fn get_laserscan_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
 fn extract_cmdvel(py: Python<'_>, obj: &PyObject) -> PyResult<CmdVel> {
     let linear: f32 = obj.getattr(py, "linear")?.extract(py)?;
     let angular: f32 = obj.getattr(py, "angular")?.extract(py)?;
-    let timestamp: u64 = obj.getattr(py, "timestamp")?.extract(py).unwrap_or(0);
-    Ok(CmdVel::with_timestamp(linear, angular, timestamp))
+    let timestamp_ns: u64 = obj.getattr(py, "timestamp_ns")?.extract(py).unwrap_or(0);
+    Ok(CmdVel::with_timestamp(linear, angular, timestamp_ns))
 }
 
 fn extract_pose2d(py: Python<'_>, obj: &PyObject) -> PyResult<Pose2D> {
     let x: f64 = obj.getattr(py, "x")?.extract(py)?;
     let y: f64 = obj.getattr(py, "y")?.extract(py)?;
     let theta: f64 = obj.getattr(py, "theta")?.extract(py)?;
-    let timestamp: u64 = obj.getattr(py, "timestamp")?.extract(py).unwrap_or(0);
+    let timestamp_ns: u64 = obj.getattr(py, "timestamp_ns")?.extract(py).unwrap_or(0);
     Ok(Pose2D {
         x,
         y,
         theta,
-        timestamp,
+        timestamp_ns,
     })
 }
 
@@ -118,11 +118,11 @@ fn extract_imu(py: Python<'_>, obj: &PyObject) -> PyResult<Imu> {
     let gx: f64 = obj.getattr(py, "gyro_x")?.extract(py)?;
     let gy: f64 = obj.getattr(py, "gyro_y")?.extract(py)?;
     let gz: f64 = obj.getattr(py, "gyro_z")?.extract(py)?;
-    let timestamp: u64 = obj.getattr(py, "timestamp")?.extract(py).unwrap_or(0);
+    let timestamp_ns: u64 = obj.getattr(py, "timestamp_ns")?.extract(py).unwrap_or(0);
     let mut imu = Imu::new();
     imu.linear_acceleration = [ax, ay, az];
     imu.angular_velocity = [gx, gy, gz];
-    imu.timestamp = timestamp;
+    imu.timestamp_ns = timestamp_ns;
     Ok(imu)
 }
 
@@ -138,14 +138,14 @@ fn extract_odometry(py: Python<'_>, obj: &PyObject) -> PyResult<Odometry> {
         .getattr(py, "angular_velocity")?
         .extract(py)
         .unwrap_or(0.0);
-    let timestamp: u64 = obj.getattr(py, "timestamp")?.extract(py).unwrap_or(0);
+    let timestamp_ns: u64 = obj.getattr(py, "timestamp_ns")?.extract(py).unwrap_or(0);
     let mut odom = Odometry::new();
     odom.pose.x = x;
     odom.pose.y = y;
     odom.pose.theta = theta;
     odom.twist.linear[0] = linear_velocity;
     odom.twist.angular[2] = angular_velocity;
-    odom.timestamp = timestamp;
+    odom.timestamp_ns = timestamp_ns;
     Ok(odom)
 }
 
@@ -163,7 +163,7 @@ fn cmdvel_to_python(py: Python<'_>, cmd: &CmdVel) -> PyResult<PyObject> {
 fn pose2d_to_python(py: Python<'_>, pose: &Pose2D) -> PyResult<PyObject> {
     let cls = get_pose2d_class(py)?;
     Ok(cls
-        .call1((pose.x, pose.y, pose.theta, pose.timestamp))?
+        .call1((pose.x, pose.y, pose.theta, pose.timestamp_ns))?
         .into())
 }
 
@@ -177,7 +177,7 @@ fn imu_to_python(py: Python<'_>, imu: &Imu) -> PyResult<PyObject> {
             imu.angular_velocity[0],
             imu.angular_velocity[1],
             imu.angular_velocity[2],
-            imu.timestamp,
+            imu.timestamp_ns,
         ))?
         .into())
 }
@@ -190,7 +190,7 @@ fn odometry_to_python(py: Python<'_>, odom: &Odometry) -> PyResult<PyObject> {
     dict.set_item("theta", odom.pose.theta)?;
     dict.set_item("linear_velocity", odom.twist.linear[0])?;
     dict.set_item("angular_velocity", odom.twist.angular[2])?;
-    dict.set_item("timestamp", odom.timestamp)?;
+    dict.set_item("timestamp_ns", odom.timestamp_ns)?;
     Ok(cls.call((), Some(&dict))?.into())
 }
 
@@ -203,7 +203,7 @@ fn laserscan_to_python(py: Python<'_>, scan: &LaserScan) -> PyResult<PyObject> {
     dict.set_item("range_min", scan.range_min)?;
     dict.set_item("range_max", scan.range_max)?;
     dict.set_item("ranges", scan.ranges.as_slice())?;
-    dict.set_item("timestamp", scan.timestamp)?;
+    dict.set_item("timestamp_ns", scan.timestamp_ns)?;
     Ok(cls.call((), Some(&dict))?.into())
 }
 

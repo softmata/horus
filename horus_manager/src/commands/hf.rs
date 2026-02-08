@@ -30,7 +30,7 @@ pub struct FrameData {
     pub parent: String,
     pub child: String,
     pub transform: Transform,
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
     pub is_static: bool,
     pub last_update: Instant,
     pub update_count: u64,
@@ -41,7 +41,7 @@ pub struct HFrameReader {
     hframe: HFrame,
     pub frame_data: HashMap<String, FrameData>,
     pub root_frames: HashSet<String>,
-    /// Pending transforms: child -> (parent, transform, timestamp, is_static)
+    /// Pending transforms: child -> (parent, transform, timestamp_ns, is_static)
     pending_transforms: HashMap<String, (String, Transform, u64, bool)>,
 }
 
@@ -209,7 +209,7 @@ impl HFrameReader {
         // Overwrite any existing transform for this child (keep latest parent info)
         self.pending_transforms.insert(
             child.clone(),
-            (parent.clone(), tf.transform, tf.timestamp, is_static),
+            (parent.clone(), tf.transform, tf.timestamp_ns, is_static),
         );
 
         // Track frame data for display
@@ -217,14 +217,14 @@ impl HFrameReader {
             parent: parent.clone(),
             child: child.clone(),
             transform: tf.transform,
-            timestamp: tf.timestamp,
+            timestamp_ns: tf.timestamp_ns,
             is_static,
             last_update: Instant::now(),
             update_count: 0,
         });
 
         entry.transform = tf.transform;
-        entry.timestamp = tf.timestamp;
+        entry.timestamp_ns = tf.timestamp_ns;
         entry.last_update = Instant::now();
         entry.update_count += 1;
     }
@@ -315,7 +315,7 @@ pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
                         "is_static": data.is_static,
                         "translation": data.transform.translation,
                         "rotation": data.transform.rotation,
-                        "timestamp_ns": data.timestamp,
+                        "timestamp_ns": data.timestamp_ns,
                     })
                 } else {
                     serde_json::json!({
@@ -734,14 +734,14 @@ pub fn frame_info(frame_name: &str) -> HorusResult<()> {
         );
 
         // Format timestamp
-        let secs = data.timestamp / 1_000_000_000;
-        let nanos = data.timestamp % 1_000_000_000;
+        let secs = data.timestamp_ns / 1_000_000_000;
+        let nanos = data.timestamp_ns % 1_000_000_000;
         println!(
             "  {} {}.{:09} ({} ns)",
             "Last Update:".cyan(),
             secs,
             nanos,
-            data.timestamp
+            data.timestamp_ns
         );
 
         println!();

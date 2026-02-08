@@ -1,5 +1,6 @@
 use crate::core::node::{Node, NodeInfo};
 use crate::error::HorusResult;
+use crate::horus_internal;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -40,9 +41,7 @@ impl AsyncIOExecutor {
             .enable_io()
             .enable_time()
             .build()
-            .map_err(|e| {
-                crate::error::HorusError::Internal(format!("Failed to create async runtime: {}", e))
-            })?;
+            .map_err(|e| horus_internal!("Failed to create async runtime: {}", e))?;
 
         Ok(Self {
             runtime: Arc::new(runtime),

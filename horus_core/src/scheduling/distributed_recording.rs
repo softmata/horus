@@ -441,7 +441,7 @@ impl RecordingCoordinator {
         Ok(SnapshotResult {
             generation: self.barrier.lock().generation,
             processes: process_ids,
-            timestamp: SystemTime::now()
+            timestamp_ns: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64,
@@ -521,7 +521,7 @@ impl RecordingCoordinator {
 pub struct SnapshotResult {
     pub generation: u64,
     pub processes: Vec<String>,
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 // ============================================================================

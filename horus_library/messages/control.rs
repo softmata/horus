@@ -27,7 +27,7 @@ pub struct MotorCommand {
     /// Enable motor (false = brake/coast depending on config)
     pub enable: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl MotorCommand {
@@ -46,7 +46,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -63,7 +63,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -80,7 +80,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -110,7 +110,7 @@ pub struct DifferentialDriveCommand {
     /// Enable motors
     pub enable: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl DifferentialDriveCommand {
@@ -121,7 +121,7 @@ impl DifferentialDriveCommand {
             right_velocity: right,
             max_acceleration: f64::INFINITY,
             enable: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -135,7 +135,7 @@ impl DifferentialDriveCommand {
             right_velocity: 0.0,
             max_acceleration: f64::INFINITY,
             enable: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -169,7 +169,7 @@ pub struct ServoCommand {
     /// Torque enable
     pub enable: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl ServoCommand {
@@ -180,7 +180,7 @@ impl ServoCommand {
             position,
             speed: 0.5,
             enable: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -194,7 +194,7 @@ impl ServoCommand {
             position,
             speed: speed.clamp(0.0, 1.0),
             enable: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -208,7 +208,7 @@ impl ServoCommand {
             position: 0.0,
             speed: 0.0,
             enable: false,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -239,7 +239,7 @@ pub struct PidConfig {
     /// Enable anti-windup
     pub anti_windup: bool,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl PidConfig {
@@ -253,7 +253,7 @@ impl PidConfig {
             integral_limit: f64::INFINITY,
             output_limit: f64::INFINITY,
             anti_windup: true,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -359,7 +359,7 @@ pub struct JointCommand {
     #[serde(with = "serde_arrays")]
     pub modes: [u8; 16],
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for JointCommand {
@@ -371,7 +371,7 @@ impl Default for JointCommand {
             velocities: [0.0; 16],
             efforts: [0.0; 16],
             modes: [0; 16],
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -384,7 +384,7 @@ impl JointCommand {
     /// Create a new joint command
     pub fn new() -> Self {
         Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -484,7 +484,7 @@ pub struct PwmCommand {
     /// Current limit in amperes (0 = no limit)
     pub current_limit: f32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl PwmCommand {
@@ -497,7 +497,7 @@ impl PwmCommand {
             enable: true,
             brake_mode: false,
             current_limit: 0.0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -523,7 +523,7 @@ impl PwmCommand {
             enable: false,
             brake_mode: false,
             current_limit: 0.0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -539,7 +539,7 @@ impl PwmCommand {
             enable: true,
             brake_mode: true,
             current_limit: 0.0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -618,7 +618,7 @@ pub struct StepperCommand {
     /// Current limit in milliamps (0 = use default)
     pub current_limit: u16,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl StepperCommand {
@@ -638,7 +638,7 @@ impl StepperCommand {
             enable: true,
             microsteps: 16,
             current_limit: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -656,7 +656,7 @@ impl StepperCommand {
             enable: true,
             microsteps: 16,
             current_limit: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -674,7 +674,7 @@ impl StepperCommand {
             enable: true,
             microsteps: 16,
             current_limit: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -692,7 +692,7 @@ impl StepperCommand {
             enable: true,
             microsteps: 16,
             current_limit: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -710,7 +710,7 @@ impl StepperCommand {
             enable: false,
             microsteps: 16,
             current_limit: 0,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

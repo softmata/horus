@@ -8,6 +8,7 @@
 
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
+use horus_core::horus_internal;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -117,7 +118,7 @@ pub fn run_peers(json: bool) -> HorusResult<()> {
 
     if json {
         let json_output = serde_json::to_string_pretty(&peers)
-            .map_err(|e| HorusError::Internal(format!("JSON serialization failed: {}", e)))?;
+            .map_err(|e| horus_internal!("JSON serialization failed: {}", e))?;
         println!("{}", json_output);
         return Ok(());
     }
@@ -462,7 +463,7 @@ pub struct PeerInfo {
 fn get_husarnet_peers() -> HorusResult<Vec<PeerInfo>> {
     let status = query_husarnet_api("/api/status")?;
     let json: serde_json::Value = serde_json::from_str(&status)
-        .map_err(|e| HorusError::Internal(format!("Failed to parse API response: {}", e)))?;
+        .map_err(|e| horus_internal!("Failed to parse API response: {}", e))?;
 
     let mut peers = Vec::new();
 

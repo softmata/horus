@@ -168,7 +168,7 @@ mod tests {
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct TestMsg {
-        timestamp: u64,
+        timestamp_ns: u64,
         value: f32,
         _pad: [u8; 4],
     }
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_pod_message_bytes() {
         let msg = TestMsg {
-            timestamp: 12345,
+            timestamp_ns: 12345,
             value: 3.125,
             _pad: [0; 4],
         };
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn test_pod_message_zeroed() {
         let msg: TestMsg = <TestMsg as PodMessage>::zeroed();
-        assert_eq!(msg.timestamp, 0);
+        assert_eq!(msg.timestamp_ns, 0);
         assert_eq!(msg.value, 0.0);
     }
 }

@@ -92,13 +92,41 @@ pub enum HorusError {
     #[error("Unsupported: {0}")]
     Unsupported(String),
 
-    /// Generic internal errors (use sparingly)
-    #[error("Internal error: {0}")]
-    Internal(String),
+    /// Internal errors with source location for debugging.
+    /// Use the `horus_internal!()` macro to create these — it captures file/line automatically.
+    #[error("Internal error: {message} (at {file}:{line})")]
+    Internal {
+        message: String,
+        file: &'static str,
+        line: u32,
+    },
 
-    /// Catch-all for other error types
-    #[error("{0}")]
-    Other(String),
+    /// Error with preserved source chain for context propagation.
+    /// Use `.horus_context()` on Results to create these.
+    #[error("{message}\n  Caused by: {source}")]
+    Contextual {
+        message: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+/// Create an internal error with automatic file/line capture.
+///
+/// ```rust,ignore
+/// use horus_core::horus_internal;
+/// return Err(horus_internal!("Unexpected state: {:?}", state));
+/// // Expands to: HorusError::Internal { message: "...", file: "src/foo.rs", line: 42 }
+/// ```
+#[macro_export]
+macro_rules! horus_internal {
+    ($($arg:tt)*) => {
+        $crate::error::HorusError::Internal {
+            message: format!($($arg)*),
+            file: file!(),
+            line: line!(),
+        }
+    };
 }
 
 /// Convenience type alias for Results using HorusError
@@ -107,28 +135,63 @@ pub type HorusResult<T> = std::result::Result<T, HorusError>;
 // ============================================
 // Clean aliases for public API
 // ============================================
-// Users should use `horus::Error` and `horus::Result<T>` in their code.
-// The Horus-prefixed versions are kept for internal use and backward compatibility.
 
 /// Error type alias for clean public API
-///
-/// Use `horus::Error` in your code:
-/// ```rust,ignore
-/// use horus::prelude::*;
-/// fn my_function() -> Result<(), Error> { Ok(()) }
-/// ```
 pub type Error = HorusError;
 
 /// Result type alias for clean public API
-///
-/// Use `horus::Result<T>` in your code:
-/// ```rust,ignore
-/// use horus::prelude::*;
-/// fn my_function() -> Result<String> { Ok("success".into()) }
-/// ```
 pub type Result<T> = std::result::Result<T, HorusError>;
 
-// Implement conversions from common error types
+// ============================================
+// Error context extension trait (1.1)
+// ============================================
+
+/// Extension trait for adding context to errors while preserving the source chain.
+///
+/// Instead of:
+/// ```rust,ignore
+/// fs::read_to_string(path)
+///     .map_err(|e| HorusError::Config(format!("Failed to read config: {}", e)))?;
+/// ```
+///
+/// Use:
+/// ```rust,ignore
+/// fs::read_to_string(path)
+///     .horus_context(|| format!("Reading config file: {}", path.display()))?;
+/// ```
+///
+/// The error display will show the chain:
+/// ```text
+/// Reading config file: /etc/horus/config.toml
+///   Caused by: No such file or directory (os error 2)
+/// ```
+pub trait HorusContext<T> {
+    /// Add context to an error, preserving the original error as the source.
+    fn horus_context<F, S>(self, f: F) -> HorusResult<T>
+    where
+        F: FnOnce() -> S,
+        S: Into<String>;
+}
+
+impl<T, E: std::error::Error + Send + Sync + 'static> HorusContext<T>
+    for std::result::Result<T, E>
+{
+    fn horus_context<F, S>(self, f: F) -> HorusResult<T>
+    where
+        F: FnOnce() -> S,
+        S: Into<String>,
+    {
+        self.map_err(|e| HorusError::Contextual {
+            message: f().into(),
+            source: Box::new(e),
+        })
+    }
+}
+
+// ============================================
+// From implementations for common error types
+// ============================================
+
 impl From<serde_json::Error> for HorusError {
     fn from(err: serde_json::Error) -> Self {
         HorusError::Serialization(err.to_string())
@@ -173,49 +236,59 @@ impl From<std::str::ParseBoolError> for HorusError {
 
 impl From<uuid::Error> for HorusError {
     fn from(err: uuid::Error) -> Self {
-        HorusError::Internal(format!("UUID error: {}", err))
+        HorusError::Internal {
+            message: format!("UUID error: {}", err),
+            file: file!(),
+            line: line!(),
+        }
     }
 }
 
 impl<T> From<std::sync::PoisonError<T>> for HorusError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
-        HorusError::Internal("Lock poisoned".to_string())
+        HorusError::Internal {
+            message: "Lock poisoned".to_string(),
+            file: file!(),
+            line: line!(),
+        }
     }
 }
 
-// Allow conversion from Box<dyn Error> for backward compatibility
 impl From<Box<dyn std::error::Error>> for HorusError {
     fn from(err: Box<dyn std::error::Error>) -> Self {
-        HorusError::Other(err.to_string())
+        HorusError::Internal {
+            message: err.to_string(),
+            file: file!(),
+            line: line!(),
+        }
     }
 }
 
 impl From<Box<dyn std::error::Error + Send + Sync>> for HorusError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        HorusError::Other(err.to_string())
+        HorusError::Contextual {
+            message: "Error".to_string(),
+            source: err,
+        }
     }
 }
 
-// Convert from anyhow::Error
 impl From<anyhow::Error> for HorusError {
     fn from(err: anyhow::Error) -> Self {
-        HorusError::Other(err.to_string())
+        HorusError::Internal {
+            message: err.to_string(),
+            file: file!(),
+            line: line!(),
+        }
     }
 }
 
-// Convert from &str for convenient error creation
-impl From<&str> for HorusError {
-    fn from(msg: &str) -> Self {
-        HorusError::Other(msg.to_string())
-    }
-}
-
-// Convert from String for convenient error creation
-impl From<String> for HorusError {
-    fn from(msg: String) -> Self {
-        HorusError::Other(msg)
-    }
-}
+// NOTE: From<String> and From<&str> intentionally removed.
+// Use specific error variants instead:
+//   HorusError::config("msg")       — for config errors
+//   HorusError::internal("msg")     — for internal errors (or horus_internal! macro)
+//   HorusError::InvalidInput("msg") — for input errors
+// This prevents accidental untyped errors via "string".into()
 
 // Helper methods
 impl HorusError {
@@ -263,6 +336,15 @@ impl HorusError {
     /// Create an invalid input error
     pub fn invalid_input<S: Into<String>>(msg: S) -> Self {
         HorusError::InvalidInput(msg.into())
+    }
+
+    /// Create an internal error (without file/line — prefer horus_internal! macro)
+    pub fn internal<S: Into<String>>(msg: S) -> Self {
+        HorusError::Internal {
+            message: msg.into(),
+            file: "unknown",
+            line: 0,
+        }
     }
 
     /// Check if this is a not found error

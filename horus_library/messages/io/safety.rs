@@ -27,14 +27,14 @@ pub struct SafetyRelayStatus {
     /// Switch cycles count
     pub switch_cycles: u32,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl SafetyRelayStatus {
     /// Create new safety relay status
     pub fn new(relay_id: &str) -> Self {
         let mut status = Self {
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,

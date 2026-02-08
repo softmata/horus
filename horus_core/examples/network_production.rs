@@ -19,7 +19,7 @@ struct SensorData {
     sensor_id: String,
     temperature: f32,
     pressure: f32,
-    timestamp: u64,
+    timestamp_ns: u64,
 }
 
 impl LogSummary for SensorData {
@@ -79,7 +79,7 @@ fn run_publisher() -> Result<(), Box<dyn std::error::Error>> {
             sensor_id: "TEMP_001".to_string(),
             temperature: 20.0 + (counter as f32 * 0.1) % 10.0,
             pressure: 101.3 + (counter as f32 * 0.01) % 2.0,
-            timestamp: counter,
+            timestamp_ns: counter,
         };
 
         match hub.send(data.clone()) {
@@ -144,15 +144,15 @@ fn run_subscriber() -> Result<(), Box<dyn std::error::Error>> {
                 message_count += 1;
 
                 // Check for message loss (timestamp gaps)
-                if last_timestamp > 0 && data.timestamp != last_timestamp + 1 {
-                    let lost = data.timestamp - last_timestamp - 1;
+                if last_timestamp > 0 && data.timestamp_ns != last_timestamp + 1 {
+                    let lost = data.timestamp_ns - last_timestamp - 1;
                     eprintln!(
                         "{} Detected {} lost messages",
                         "[WARNING]".yellow().bold(),
                         lost
                     );
                 }
-                last_timestamp = data.timestamp;
+                last_timestamp = data.timestamp_ns;
 
                 println!(
                     "Received: {} (total: {})",

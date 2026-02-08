@@ -30,7 +30,7 @@ pub struct I2cMessage {
     /// Error code (0=no error)
     pub error_code: u8,
     /// Timestamp in nanoseconds since epoch
-    pub timestamp: u64,
+    pub timestamp_ns: u64,
 }
 
 impl Default for I2cMessage {
@@ -45,7 +45,7 @@ impl Default for I2cMessage {
             clock_speed: 100000, // 100kHz default
             success: false,
             error_code: 0,
-            timestamp: 0,
+            timestamp_ns: 0,
         }
     }
 }
@@ -69,7 +69,7 @@ impl I2cMessage {
             device_address: address,
             transaction_type: Self::TYPE_READ,
             data_length: length,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -84,7 +84,7 @@ impl I2cMessage {
             device_address: address,
             transaction_type: Self::TYPE_WRITE,
             data_length: data.len().min(256) as u8,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -103,7 +103,7 @@ impl I2cMessage {
             register_address: register,
             transaction_type: Self::TYPE_READ_REGISTER,
             data_length: length,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
@@ -119,7 +119,7 @@ impl I2cMessage {
             register_address: register,
             transaction_type: Self::TYPE_WRITE_REGISTER,
             data_length: data.len().min(256) as u8,
-            timestamp: std::time::SystemTime::now()
+            timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos() as u64,
