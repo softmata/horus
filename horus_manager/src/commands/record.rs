@@ -215,7 +215,7 @@ pub fn run_replay(
 /// Parse a hex string into bytes
 fn parse_hex_string(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("Hex string must have even length".to_string());
     }
     (0..s.len())
@@ -430,6 +430,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
 }
 
 /// Inject recorded nodes into a live/scripted run
+#[allow(clippy::too_many_arguments)]
 pub fn run_inject(
     session: String,
     nodes: Vec<String>,
