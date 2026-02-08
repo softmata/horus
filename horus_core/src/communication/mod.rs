@@ -69,7 +69,6 @@ pub mod adaptive_topic;
 pub mod config;
 pub mod network;
 pub mod pod;
-pub mod smart_detect;
 pub mod storage;
 pub mod topic;
 pub mod traits;
@@ -80,9 +79,6 @@ pub use adaptive_topic::{
 };
 pub use config::{EndpointConfig, HorusConfig};
 pub use pod::{is_pod, PodMessage};
-pub use smart_detect::{
-    smart_detect, DetectedPattern, DetectionResult, RecommendedBackend, SmartTopicHeader,
-};
 pub use storage::AccessMode;
 pub use topic::{
     AccessPattern, Auto, BackendHint, ConnectionState, Mpmc, MpmcIntraBackend, MpscIntraBackend,
