@@ -3273,7 +3273,7 @@ enum TopicBackend<T> {
 /// }
 ///
 /// // Check metrics
-/// let metrics = topic.get_metrics();
+/// let metrics = topic.metrics();
 /// println!("Sent: {}, Received: {}", metrics.messages_sent, metrics.messages_received);
 /// ```
 pub struct Topic<T> {
@@ -4540,7 +4540,7 @@ where
     /// Get a snapshot of the topic's metrics
     ///
     /// Returns current counters for sent/received messages and failures.
-    pub fn get_metrics(&self) -> TopicMetrics {
+    pub fn metrics(&self) -> TopicMetrics {
         self.metrics.snapshot()
     }
 
@@ -4548,7 +4548,7 @@ where
     ///
     /// For local shared memory backends, this is always Connected.
     /// For network backends, this reflects the actual connection status.
-    pub fn get_connection_state(&self) -> ConnectionState {
+    pub fn connection_state(&self) -> ConnectionState {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
 
@@ -4571,12 +4571,6 @@ where
     }
 
     /// Get the topic name
-    #[inline]
-    pub fn get_topic_name(&self) -> &str {
-        &self.name
-    }
-
-    /// Get the topic name (standard method name)
     #[inline]
     pub fn name(&self) -> &str {
         &self.name

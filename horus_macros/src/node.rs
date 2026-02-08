@@ -555,7 +555,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    // Generate get_publishers() implementation
+    // Generate publishers() implementation
     let publishers_impl = if let Some(ref pub_section) = node_def.pub_section {
         let publishers: Vec<_> = pub_section
             .fields
@@ -572,7 +572,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             })
             .collect();
         quote! {
-            fn get_publishers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
+            fn publishers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
                 vec![#(#publishers),*]
             }
         }
@@ -580,7 +580,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    // Generate get_subscribers() implementation
+    // Generate subscribers() implementation
     let subscribers_impl = if let Some(ref sub_section) = node_def.sub_section {
         let subscribers: Vec<_> = sub_section
             .fields
@@ -597,7 +597,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
             })
             .collect();
         quote! {
-            fn get_subscribers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
+            fn subscribers(&self) -> Vec<::horus::horus_core::core::node::TopicMetadata> {
                 vec![#(#subscribers),*]
             }
         }

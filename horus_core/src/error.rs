@@ -40,10 +40,6 @@ pub enum HorusError {
     #[error("Memory error: {0}")]
     Memory(String),
 
-    /// Shared memory specific errors
-    #[error("Shared memory error: {0}")]
-    SharedMemory(String),
-
     /// Parameter management errors
     #[error("Parameter error: {0}")]
     Parameter(String),

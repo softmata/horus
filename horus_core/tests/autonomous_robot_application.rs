@@ -247,7 +247,7 @@ impl Node for MotorControllerNode {
         Ok(())
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         vec![
             TopicMetadata {
                 topic_name: "cmd_vel".to_string(),
@@ -260,7 +260,7 @@ impl Node for MotorControllerNode {
         ]
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "motor_speeds".to_string(),
             type_name: "std_msgs/Float64MultiArray".to_string(),
@@ -351,14 +351,14 @@ impl Node for CameraPerceptionNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: format!("camera_{}/compressed", self.camera_id),
             type_name: "sensor_msgs/CompressedImage".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -438,14 +438,14 @@ impl Node for LidarProcessingNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "scan".to_string(),
             type_name: "sensor_msgs/LaserScan".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -552,14 +552,14 @@ impl Node for SensorFusionNode {
         Ok(())
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "imu.data".to_string(),
             type_name: "sensor_msgs/Imu".to_string(),
         }]
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "odometry".to_string(),
             type_name: "nav_msgs/Odometry".to_string(),
@@ -672,7 +672,7 @@ impl Node for PathPlannerNode {
         Ok(())
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         vec![
             TopicMetadata {
                 topic_name: "odometry".to_string(),
@@ -685,7 +685,7 @@ impl Node for PathPlannerNode {
         ]
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "path".to_string(),
             type_name: "nav_msgs/Path".to_string(),
@@ -802,7 +802,7 @@ impl Node for NavigationControllerNode {
         Ok(())
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         vec![
             TopicMetadata {
                 topic_name: "path".to_string(),
@@ -815,7 +815,7 @@ impl Node for NavigationControllerNode {
         ]
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "cmd_vel".to_string(),
             type_name: "geometry_msgs/Twist".to_string(),
@@ -903,14 +903,14 @@ impl Node for BatteryMonitorNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "battery_status".to_string(),
             type_name: "sensor_msgs/BatteryState".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -963,14 +963,14 @@ impl Node for IMUSensorNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "imu.data".to_string(),
             type_name: "sensor_msgs/Imu".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -1130,11 +1130,11 @@ fn test_robot_performance_metrics() {
         fn shutdown(&mut self) -> Result<()> {
             self.inner.shutdown()
         }
-        fn get_publishers(&self) -> Vec<TopicMetadata> {
-            self.inner.get_publishers()
+        fn publishers(&self) -> Vec<TopicMetadata> {
+            self.inner.publishers()
         }
-        fn get_subscribers(&self) -> Vec<TopicMetadata> {
-            self.inner.get_subscribers()
+        fn subscribers(&self) -> Vec<TopicMetadata> {
+            self.inner.subscribers()
         }
     }
 

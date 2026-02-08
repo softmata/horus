@@ -702,7 +702,7 @@ class Node:
             self.info.request_stop()
 
     # Topic introspection methods
-    def get_publishers(self) -> List[str]:
+    def publishers(self) -> List[str]:
         """
         Get list of topics this node publishes to.
 
@@ -710,12 +710,12 @@ class Node:
             List of publisher topic names
 
         Example:
-            topics = node.get_publishers()
+            topics = node.publishers()
             print(f"Publishing to: {topics}")
         """
         return self.pub_topics.copy()
 
-    def get_subscribers(self) -> List[str]:
+    def subscribers(self) -> List[str]:
         """
         Get list of topics this node subscribes to.
 
@@ -723,7 +723,7 @@ class Node:
             List of subscriber topic names
 
         Example:
-            topics = node.get_subscribers()
+            topics = node.subscribers()
             print(f"Subscribed to: {topics}")
         """
         return self.sub_topics.copy()

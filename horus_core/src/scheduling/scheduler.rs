@@ -946,9 +946,9 @@ impl Scheduler {
     /// let scheduler = Scheduler::builder()
     ///     .name("MyScheduler")
     ///     .build()?;
-    /// assert_eq!(scheduler.get_name(), "MyScheduler");
+    /// assert_eq!(scheduler.scheduler_name(), "MyScheduler");
     /// ```
-    pub fn get_name(&self) -> &str {
+    pub fn scheduler_name(&self) -> &str {
         &self.scheduler_name
     }
 
@@ -2522,14 +2522,14 @@ impl Scheduler {
         let node_name = node.name().to_string();
 
         // Collect topology from node (for deterministic validation)
-        for pub_meta in node.get_publishers() {
+        for pub_meta in node.publishers() {
             self.collected_publishers.push((
                 node_name.clone(),
                 pub_meta.topic_name,
                 pub_meta.type_name,
             ));
         }
-        for sub_meta in node.get_subscribers() {
+        for sub_meta in node.subscribers() {
             self.collected_subscribers.push((
                 node_name.clone(),
                 sub_meta.topic_name,
@@ -2819,8 +2819,8 @@ impl Scheduler {
                             Ok(()) => {
                                 registered.initialized = true;
                                 // Announce to discovery topic
-                                let publishers = registered.node.get_publishers();
-                                let subscribers = registered.node.get_subscribers();
+                                let publishers = registered.node.publishers();
+                                let subscribers = registered.node.subscribers();
                                 announce_started(node_name, &publishers, &subscribers);
 
                                 // Write presence file for monitor detection
@@ -3372,8 +3372,8 @@ impl Scheduler {
 
                 // Get pub/sub from Node trait (macro-declared)
                 // Runtime-discovered pub/sub is now tracked by TopicRegistry, not NodeInfo
-                let publishers = registered.node.get_publishers();
-                let subscribers = registered.node.get_subscribers();
+                let publishers = registered.node.publishers();
+                let subscribers = registered.node.subscribers();
 
                 // Format publishers
                 let pubs_json = publishers.iter()
@@ -3560,8 +3560,8 @@ impl Scheduler {
 
                 // Get pub/sub from Node trait (macro-declared)
                 // Runtime-discovered pub/sub is now tracked by TopicRegistry, not NodeInfo
-                let publishers = registered.node.get_publishers();
-                let subscribers = registered.node.get_subscribers();
+                let publishers = registered.node.publishers();
+                let subscribers = registered.node.subscribers();
 
                 // Get state and health from context
                 let (state_str, health_str, error_count, tick_count) = if let Some(ref ctx) = registered.context {
@@ -3629,13 +3629,13 @@ impl Scheduler {
                 let name = r.node.name();
                 let pubs = r
                     .node
-                    .get_publishers()
+                    .publishers()
                     .iter()
                     .map(|p| p.topic_name.clone())
                     .collect();
                 let subs = r
                     .node
-                    .get_subscribers()
+                    .subscribers()
                     .iter()
                     .map(|s| s.topic_name.clone())
                     .collect();
@@ -4540,7 +4540,7 @@ mod tests {
 
         fn tick(&mut self) {}
 
-        fn get_publishers(&self) -> Vec<TopicMetadata> {
+        fn publishers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: self.topic.clone(),
                 type_name: "TestMessage".to_string(),
@@ -4570,7 +4570,7 @@ mod tests {
 
         fn tick(&mut self) {}
 
-        fn get_subscribers(&self) -> Vec<TopicMetadata> {
+        fn subscribers(&self) -> Vec<TopicMetadata> {
             vec![TopicMetadata {
                 topic_name: self.topic.clone(),
                 type_name: "TestMessage".to_string(),

@@ -355,7 +355,7 @@ impl Node for Controller {
         self.cmd_vel.send(msg);
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![
             TopicMetadata {
                 topic_name: "motors.cmd_vel".to_string(),

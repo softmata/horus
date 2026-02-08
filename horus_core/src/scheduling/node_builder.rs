@@ -324,14 +324,4 @@ impl<'a> NodeBuilder<'a> {
     pub fn done(self) -> &'a mut super::scheduler::Scheduler {
         self.scheduler.add_configured(self.config)
     }
-
-    /// Alias for `done()`.
-    pub fn build(self) -> &'a mut super::scheduler::Scheduler {
-        self.done()
-    }
-
-    /// Alias for `done()`.
-    pub fn add(self) -> &'a mut super::scheduler::Scheduler {
-        self.done()
-    }
 }

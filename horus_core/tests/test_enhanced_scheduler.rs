@@ -35,14 +35,14 @@ impl Node for CpuNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: format!("{}/output", self.name),
             type_name: "std_msgs/Int32".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -75,14 +75,14 @@ impl Node for IoNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: format!("{}/data", self.name),
             type_name: "sensor_msgs/Image".to_string(),
         }]
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 }
@@ -118,11 +118,11 @@ impl Node for FlakyNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         vec![TopicMetadata {
             topic_name: "camera.data".to_string(),
             type_name: "sensor_msgs/Image".to_string(),

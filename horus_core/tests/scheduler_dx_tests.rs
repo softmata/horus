@@ -176,7 +176,7 @@ fn test_simulation_with_seed_reproducibility() {
     assert!(scheduler2.is_simulation_mode());
 
     // Scheduler names should match
-    assert_eq!(scheduler1.get_name(), scheduler2.get_name());
+    assert_eq!(scheduler1.scheduler_name(), scheduler2.scheduler_name());
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn test_simulation_has_blackbox() {
 
     // The scheduler should have recording capabilities enabled
     assert!(
-        scheduler.get_name().contains("Simulation"),
+        scheduler.scheduler_name().contains("Simulation"),
         "Should be named SimulationScheduler"
     );
 
@@ -253,7 +253,7 @@ fn test_prototype_has_safety_monitor() {
 
     // Verify by checking name
     assert!(
-        scheduler.get_name().contains("Prototype"),
+        scheduler.scheduler_name().contains("Prototype"),
         "Should be named PrototypeScheduler"
     );
 }
@@ -318,7 +318,7 @@ fn test_builder_with_name() {
         .build()
         .expect("build should succeed");
 
-    assert_eq!(scheduler.get_name(), "CustomScheduler");
+    assert_eq!(scheduler.scheduler_name(), "CustomScheduler");
 }
 
 #[test]
@@ -416,7 +416,7 @@ fn test_builder_chaining() {
         .build()
         .expect("chained build should succeed");
 
-    assert_eq!(scheduler.get_name(), "ChainedScheduler");
+    assert_eq!(scheduler.scheduler_name(), "ChainedScheduler");
 }
 
 #[test]
@@ -469,7 +469,7 @@ fn test_builder_preset_safety_critical() {
     match result {
         Ok(scheduler) => {
             // Verify it's configured for safety
-            assert!(scheduler.get_name().len() > 0);
+            assert!(scheduler.scheduler_name().len() > 0);
         }
         Err(_) => {
             // Expected on non-RT systems - strict mode rejects degradation
@@ -562,25 +562,25 @@ fn test_scheduler_names() {
 
     let new_scheduler = Scheduler::new();
     assert!(
-        !new_scheduler.get_name().is_empty(),
+        !new_scheduler.scheduler_name().is_empty(),
         "new() should have a name"
     );
 
     let sim_scheduler = SchedulerBuilder::simulation().build().unwrap();
     assert!(
-        sim_scheduler.get_name().contains("Simulation"),
+        sim_scheduler.scheduler_name().contains("Simulation"),
         "simulation() should have 'Simulation' in name"
     );
 
     let proto_scheduler = SchedulerBuilder::prototype().build().unwrap();
     assert!(
-        proto_scheduler.get_name().contains("Prototype"),
+        proto_scheduler.scheduler_name().contains("Prototype"),
         "prototype() should have 'Prototype' in name"
     );
 
     let builder_scheduler = Scheduler::builder().name("CustomName").build().unwrap();
     assert_eq!(
-        builder_scheduler.get_name(),
+        builder_scheduler.scheduler_name(),
         "CustomName",
         "builder().name() should override default"
     );
@@ -832,7 +832,7 @@ fn test_builder_circuit_breaker_config() {
         .expect("Builder should succeed");
 
     // Builder created scheduler should work
-    assert!(!scheduler.get_name().is_empty());
+    assert!(!scheduler.scheduler_name().is_empty());
 }
 
 // =============================================================================

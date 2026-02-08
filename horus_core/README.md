@@ -65,8 +65,8 @@ pub trait Node: Send {
     fn init(&mut self) -> Result<()>;
     fn tick(&mut self);
     fn shutdown(&mut self) -> Result<()>;
-    fn get_publishers(&self) -> Vec<TopicMetadata> { Vec::new() }
-    fn get_subscribers(&self) -> Vec<TopicMetadata> { Vec::new() }
+    fn publishers(&self) -> Vec<TopicMetadata> { Vec::new() }
+    fn subscribers(&self) -> Vec<TopicMetadata> { Vec::new() }
 }
 ```
 
@@ -110,8 +110,8 @@ impl<T> Topic<T> {
     pub fn consumer(topic_name: &str) -> Result<Self>;  // SPSC consumer
     pub fn send(&self, msg: T) -> Result<(), T>;
     pub fn recv(&self) -> Option<T>;
-    pub fn get_topic_name(&self) -> &str;
-    pub fn get_metrics(&self) -> TopicMetrics;
+    pub fn name(&self) -> &str;
+    pub fn metrics(&self) -> TopicMetrics;
 }
 ```
 

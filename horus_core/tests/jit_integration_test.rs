@@ -107,11 +107,11 @@ fn test_non_jit_node_default_behavior() {
             Ok(())
         }
 
-        fn get_publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
 
-        fn get_subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
     }
@@ -163,11 +163,11 @@ fn test_custom_jit_compute_function() {
             Ok(())
         }
 
-        fn get_publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
 
-        fn get_subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
 
@@ -231,11 +231,11 @@ fn test_mixed_scheduler_with_jit_and_regular_nodes() {
             Ok(())
         }
 
-        fn get_publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
 
-        fn get_subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
     }
@@ -287,11 +287,11 @@ fn test_learning_phase_with_jit() {
             Ok(())
         }
 
-        fn get_publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn publishers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
 
-        fn get_subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
+        fn subscribers(&self) -> Vec<horus_core::core::TopicMetadata> {
             Vec::new()
         }
     }

@@ -818,12 +818,12 @@ impl PyTopic {
             let dict = pyo3::types::PyDict::new(py);
 
             let metrics = match &self.topic_type {
-                TopicType::CmdVel(t) => t.read().unwrap().get_metrics(),
-                TopicType::Pose2D(t) => t.read().unwrap().get_metrics(),
-                TopicType::Imu(t) => t.read().unwrap().get_metrics(),
-                TopicType::Odometry(t) => t.read().unwrap().get_metrics(),
-                TopicType::LaserScan(t) => t.read().unwrap().get_metrics(),
-                TopicType::Generic(t) => t.read().unwrap().get_metrics(),
+                TopicType::CmdVel(t) => t.read().unwrap().metrics(),
+                TopicType::Pose2D(t) => t.read().unwrap().metrics(),
+                TopicType::Imu(t) => t.read().unwrap().metrics(),
+                TopicType::Odometry(t) => t.read().unwrap().metrics(),
+                TopicType::LaserScan(t) => t.read().unwrap().metrics(),
+                TopicType::Generic(t) => t.read().unwrap().metrics(),
             };
 
             dict.set_item("messages_sent", metrics.messages_sent)?;

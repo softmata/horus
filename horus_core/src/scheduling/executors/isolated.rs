@@ -137,7 +137,7 @@ impl IpcRegion {
             .read(true)
             .write(true)
             .open(&path)
-            .map_err(|e| HorusError::SharedMemory(format!("Failed to open IPC region: {}", e)))?;
+            .map_err(|e| HorusError::Memory(format!("Failed to open IPC region: {}", e)))?;
 
         Ok(Self { path, file })
     }
@@ -1161,7 +1161,7 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
     // Validate magic
     let magic = ipc.read_magic()?;
     if magic != IPC_MAGIC {
-        return Err(HorusError::SharedMemory(format!(
+        return Err(HorusError::Memory(format!(
             "Invalid IPC magic: expected {:x}, got {:x}",
             IPC_MAGIC, magic
         )));

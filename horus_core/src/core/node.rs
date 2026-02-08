@@ -655,7 +655,7 @@ pub trait Node: Send {
     ///
     /// **Important:** Override this if your node publishes to any topics.
     /// The default returns empty, which may hide connectivity issues during debugging.
-    fn get_publishers(&self) -> Vec<TopicMetadata> {
+    fn publishers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
@@ -663,7 +663,7 @@ pub trait Node: Send {
     ///
     /// **Important:** Override this if your node subscribes to any topics.
     /// The default returns empty, which may hide connectivity issues during debugging.
-    fn get_subscribers(&self) -> Vec<TopicMetadata> {
+    fn subscribers(&self) -> Vec<TopicMetadata> {
         Vec::new()
     }
 
@@ -699,7 +699,7 @@ pub trait Node: Send {
     }
 
     /// Get node configuration (optional override)
-    fn get_config(&self) -> NodeConfig {
+    fn config(&self) -> NodeConfig {
         NodeConfig::default()
     }
 

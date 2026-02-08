@@ -794,7 +794,7 @@ impl Node for ReplayNode {
         self.tick_count += 1;
     }
 
-    // Use default implementations for get_publishers and get_subscribers
+    // Use default implementations for publishers and subscribers
     // which return empty Vec - replay nodes don't declare topics
 }
 

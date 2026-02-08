@@ -43,11 +43,11 @@ impl Node for ScalingNode {
         Ok(())
     }
 
-    fn get_publishers(&self) -> Vec<crate::core::TopicMetadata> {
+    fn publishers(&self) -> Vec<crate::core::TopicMetadata> {
         Vec::new()
     }
 
-    fn get_subscribers(&self) -> Vec<crate::core::TopicMetadata> {
+    fn subscribers(&self) -> Vec<crate::core::TopicMetadata> {
         Vec::new()
     }
 
