@@ -4495,74 +4495,6 @@ where
         result
     }
 
-    /// Send a message with metrics tracking
-    ///
-    /// **Deprecated:** Use `.with_metrics(true)` on the topic instead:
-    /// ```rust,ignore
-    /// let topic = Topic::new("name")?.with_metrics(true);
-    /// topic.send(msg)?; // Automatically tracks metrics
-    /// ```
-    #[deprecated(note = "Use Topic::new(name)?.with_metrics(true) then .send() instead")]
-    #[inline]
-    pub fn send_tracked(&self, msg: T) -> Result<(), T> {
-        let result = self.send_raw(msg);
-        match &result {
-            Ok(()) => {
-                self.metrics.inc_sent();
-                self.state
-                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.metrics.inc_send_failures();
-            }
-        }
-        result
-    }
-
-    /// Send a message with detailed logging (requires LogSummary)
-    ///
-    /// **Deprecated:** Use `.with_logging()` on the topic instead:
-    /// ```rust,ignore
-    /// let topic = Topic::new("name")?.with_logging();
-    /// topic.send(msg)?; // Automatically logs + tracks metrics
-    /// ```
-    #[deprecated(note = "Use Topic::new(name)?.with_logging() then .send() instead")]
-    #[inline]
-    pub fn send_logged(&self, msg: T) -> Result<(), T>
-    where
-        T: LogSummary,
-    {
-        let summary = msg.log_summary();
-        let start = Instant::now();
-        let result = self.send_raw(msg);
-        let ipc_ns = start.elapsed().as_nanos() as u64;
-
-        match &result {
-            Ok(()) => {
-                self.metrics.inc_sent();
-                self.state
-                    .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-                use crate::core::hlog::{current_node_name, current_tick_number};
-                use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-                let now = chrono::Local::now();
-                publish_log(LogEntry {
-                    timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                    tick_number: current_tick_number(),
-                    node_name: current_node_name(),
-                    log_type: LogType::Publish,
-                    topic: Some(self.name.clone()),
-                    message: summary,
-                    tick_us: 0,
-                    ipc_ns,
-                });
-            }
-            Err(_) => {
-                self.metrics.inc_send_failures();
-            }
-        }
-        result
-    }
-
     /// Raw send to backend — no metrics, no logging. Internal use only.
     #[inline(always)]
     fn send_raw(&self, msg: T) -> Result<(), T> {
@@ -4636,60 +4568,6 @@ where
         let result = self.recv_raw();
         if result.is_some() {
             self.metrics.inc_received();
-        }
-        result
-    }
-
-    /// Receive a message with metrics tracking
-    ///
-    /// **Deprecated:** Use `.with_metrics(true)` on the topic instead:
-    /// ```rust,ignore
-    /// let topic = Topic::new("name")?.with_metrics(true);
-    /// if let Some(msg) = topic.recv() { /* ... */ }
-    /// ```
-    #[deprecated(note = "Use Topic::new(name)?.with_metrics(true) then .recv() instead")]
-    #[inline]
-    pub fn recv_tracked(&self) -> Option<T> {
-        let result = self.recv_raw();
-        if result.is_some() {
-            self.metrics.inc_received();
-        }
-        result
-    }
-
-    /// Receive a message with detailed logging (requires LogSummary)
-    ///
-    /// **Deprecated:** Use `.with_logging()` on the topic instead:
-    /// ```rust,ignore
-    /// let topic = Topic::new("name")?.with_logging();
-    /// if let Some(msg) = topic.recv() { /* ... */ }
-    /// ```
-    #[deprecated(note = "Use Topic::new(name)?.with_logging() then .recv() instead")]
-    #[inline]
-    pub fn recv_logged(&self) -> Option<T>
-    where
-        T: LogSummary,
-    {
-        let start = Instant::now();
-        let result = self.recv_raw();
-        let ipc_ns = start.elapsed().as_nanos() as u64;
-
-        if let Some(ref msg) = result {
-            self.metrics.inc_received();
-            use crate::core::hlog::{current_node_name, current_tick_number};
-            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-            let now = chrono::Local::now();
-            let summary = msg.log_summary();
-            publish_log(LogEntry {
-                timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                tick_number: current_tick_number(),
-                node_name: current_node_name(),
-                log_type: LogType::Subscribe,
-                topic: Some(self.name.clone()),
-                message: summary,
-                tick_us: 0,
-                ipc_ns,
-            });
         }
         result
     }
