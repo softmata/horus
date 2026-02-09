@@ -288,27 +288,6 @@ impl Default for GpioDiscovery {
     }
 }
 
-/// Get platform-specific GPIO chip info
-#[allow(dead_code)]
-pub fn identify_platform_gpio() -> Option<String> {
-    // Read device tree compatible string
-    let compatible = fs::read_to_string("/proc/device-tree/compatible").ok()?;
-
-    if compatible.contains("raspberrypi") || compatible.contains("bcm2") {
-        Some("Raspberry Pi GPIO (BCM)".to_string())
-    } else if compatible.contains("nvidia,tegra") {
-        Some("NVIDIA Tegra GPIO".to_string())
-    } else if compatible.contains("ti,omap") || compatible.contains("ti,am335") {
-        Some("TI OMAP/AM335x GPIO".to_string())
-    } else if compatible.contains("rockchip") {
-        Some("Rockchip GPIO".to_string())
-    } else if compatible.contains("allwinner") {
-        Some("Allwinner GPIO".to_string())
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,12 +333,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_identify_platform() {
-        if let Some(platform) = identify_platform_gpio() {
-            println!("Platform GPIO: {}", platform);
-        } else {
-            println!("Platform GPIO: Unknown");
-        }
-    }
 }

@@ -42,22 +42,6 @@ use super::pwm::{PwmChip, PwmDiscovery};
 #[cfg(target_os = "linux")]
 use super::spi::{SpiBus, SpiDiscovery};
 
-/// Execute a probing operation with a timeout.
-/// Returns None if the operation times out or fails.
-#[allow(dead_code)]
-fn probe_with_timeout<T, F>(timeout: Duration, probe_fn: F) -> Option<T>
-where
-    F: FnOnce() -> Option<T> + Send + 'static,
-    T: Send + 'static,
-{
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let result = probe_fn();
-        let _ = tx.send(result);
-    });
-    rx.recv_timeout(timeout).ok().flatten()
-}
-
 /// Execute a probing operation with a timeout, returning a Vec.
 /// Returns empty Vec if the operation times out.
 fn probe_vec_with_timeout<T, F>(timeout: Duration, probe_fn: F) -> Vec<T>
@@ -432,42 +416,6 @@ pub struct HardwareDiscovery {
     usb_discovery: UsbDiscovery,
     /// Serial discovery
     serial_discovery: SerialDiscovery,
-    /// I2C discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    i2c_discovery: I2cDiscovery,
-    /// SPI discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    spi_discovery: SpiDiscovery,
-    /// CAN discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    can_discovery: CanDiscovery,
-    /// GPIO discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    gpio_discovery: GpioDiscovery,
-    /// PWM discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    pwm_discovery: PwmDiscovery,
-    /// Camera discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    camera_discovery: CameraDiscovery,
-    /// Bluetooth discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    bluetooth_discovery: BluetoothDiscovery,
-    /// Network discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    network_discovery: NetworkDiscovery,
-    /// Audio discovery (Linux only)
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    audio_discovery: AudioDiscovery,
     /// Device database
     database: DeviceDatabase,
     /// Discovery options
@@ -480,24 +428,6 @@ impl HardwareDiscovery {
         Ok(Self {
             usb_discovery: UsbDiscovery::new(),
             serial_discovery: SerialDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            i2c_discovery: I2cDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            spi_discovery: SpiDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            can_discovery: CanDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            gpio_discovery: GpioDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            pwm_discovery: PwmDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            camera_discovery: CameraDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            bluetooth_discovery: BluetoothDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            network_discovery: NetworkDiscovery::new(),
-            #[cfg(target_os = "linux")]
-            audio_discovery: AudioDiscovery::new(),
             database: DeviceDatabase::new(),
             options: DiscoveryOptions::default(),
         })
