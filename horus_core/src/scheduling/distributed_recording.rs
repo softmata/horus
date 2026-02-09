@@ -336,12 +336,10 @@ pub struct RecordingCoordinator {
     /// Registered processes
     processes: RwLock<HashMap<String, ProcessInfo>>,
     /// Global event counter
-    #[allow(dead_code)] // Reserved for future event sequencing
-    global_event_counter: AtomicU64,
+    _global_event_counter: AtomicU64,
     /// Barrier state
     barrier: Mutex<BarrierState>,
     /// Recording active
-    #[allow(dead_code)] // Reserved for future active state tracking
     active: AtomicBool,
     /// Base directory for recordings
     base_dir: PathBuf,
@@ -349,12 +347,11 @@ pub struct RecordingCoordinator {
 
 /// Information about a registered process
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields reserved for future process monitoring
 struct ProcessInfo {
-    id: String,
-    registered_at: Instant,
-    last_heartbeat: Instant,
-    event_count: u64,
+    _id: String,
+    _registered_at: Instant,
+    _last_heartbeat: Instant,
+    _event_count: u64,
 }
 
 /// State for snapshot barriers
@@ -383,7 +380,7 @@ impl RecordingCoordinator {
         Ok(Self {
             session_id: session_id.to_string(),
             processes: RwLock::new(HashMap::new()),
-            global_event_counter: AtomicU64::new(0),
+            _global_event_counter: AtomicU64::new(0),
             barrier: Mutex::new(BarrierState::default()),
             active: AtomicBool::new(false),
             base_dir,
@@ -395,10 +392,10 @@ impl RecordingCoordinator {
         let mut processes = self.processes.write();
 
         let info = ProcessInfo {
-            id: process_id.to_string(),
-            registered_at: Instant::now(),
-            last_heartbeat: Instant::now(),
-            event_count: 0,
+            _id: process_id.to_string(),
+            _registered_at: Instant::now(),
+            _last_heartbeat: Instant::now(),
+            _event_count: 0,
         };
 
         processes.insert(process_id.to_string(), info);
@@ -538,9 +535,6 @@ pub struct FleetRecorder {
     global_timeline: RwLock<Vec<FleetEvent>>,
     /// Fleet-wide vector clock
     fleet_clock: RwLock<VectorClock>,
-    /// Active flag
-    #[allow(dead_code)] // Reserved for future active state tracking
-    active: AtomicBool,
     /// Base directory
     base_dir: PathBuf,
 }
@@ -592,7 +586,6 @@ impl FleetRecorder {
             robots: RwLock::new(HashMap::new()),
             global_timeline: RwLock::new(Vec::new()),
             fleet_clock: RwLock::new(VectorClock::new()),
-            active: AtomicBool::new(false),
             base_dir,
         })
     }

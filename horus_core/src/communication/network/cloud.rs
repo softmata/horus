@@ -368,16 +368,15 @@ impl std::error::Error for RoomError {}
 
 /// Room membership entry
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields reserved for future room management features
 struct RoomMembership {
     /// Room name
-    name: String,
+    _name: String,
     /// Hashed auth key (if password-protected)
     auth_hash: Option<u64>,
     /// When the room was joined
-    joined_at: std::time::Instant,
+    _joined_at: std::time::Instant,
     /// Topics published in this room
-    topics: Vec<String>,
+    _topics: Vec<String>,
 }
 
 /// Registry for managing room memberships and topic scoping
@@ -472,10 +471,10 @@ impl RoomRegistry {
 
         // Create membership
         let membership = RoomMembership {
-            name: room_name.to_string(),
+            _name: room_name.to_string(),
             auth_hash,
-            joined_at: std::time::Instant::now(),
-            topics: Vec::new(),
+            _joined_at: std::time::Instant::now(),
+            _topics: Vec::new(),
         };
 
         inner.rooms.insert(room_name.to_string(), membership);

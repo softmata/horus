@@ -10,7 +10,6 @@ use std::time::Instant;
 /// This is an optional trait - nodes that don't implement it will use the standard
 /// tick-based execution. Implementing this enables automatic JIT compilation for
 /// deterministic computations.
-#[allow(dead_code)] // Public API - implemented by user nodes, not used internally
 pub trait DataflowNode: Node {
     /// Get the dataflow computation as a simple expression
     /// Returns None if too complex for JIT

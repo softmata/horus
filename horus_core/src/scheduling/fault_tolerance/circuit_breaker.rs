@@ -182,8 +182,6 @@ impl CircuitBreaker {
     }
 
     /// Reset circuit breaker to closed state
-    /// Kept for manual recovery/debugging scenarios
-    #[allow(dead_code)]
     pub fn reset(&self) {
         self.state
             .store(CircuitState::Closed as u8, Ordering::SeqCst);

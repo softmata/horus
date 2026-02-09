@@ -532,8 +532,7 @@ pub struct ZeroCopyReplayer {
     /// Current position in index
     current_index: usize,
     /// Base path
-    #[allow(dead_code)] // Reserved for future recording path reference
-    path: PathBuf,
+    _path: PathBuf,
 }
 
 impl ZeroCopyReplayer {
@@ -599,7 +598,7 @@ impl ZeroCopyReplayer {
             topics: metadata.topics.clone(),
             metadata,
             current_index: 0,
-            path,
+            _path: path,
         })
     }
 

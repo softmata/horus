@@ -51,10 +51,9 @@ pub struct MockRos2Node {
 
 /// Internal topic data
 #[derive(Debug)]
-#[allow(dead_code)]
 struct MockTopicData {
     /// Type ID for type checking
-    type_id: TypeId,
+    _type_id: TypeId,
     /// Message queue
     messages: Arc<Mutex<Vec<Box<dyn Any + Send + Sync>>>>,
     /// Number of subscribers
@@ -106,7 +105,7 @@ impl MockRos2Node {
             let entry = topics
                 .entry(topic_name.clone())
                 .or_insert_with(|| MockTopicData {
-                    type_id,
+                    _type_id: type_id,
                     messages: Arc::new(Mutex::new(Vec::new())),
                     subscriber_count: 0,
                     publisher_count: 0,
@@ -141,7 +140,7 @@ impl MockRos2Node {
             let entry = topics
                 .entry(topic_name.clone())
                 .or_insert_with(|| MockTopicData {
-                    type_id,
+                    _type_id: type_id,
                     messages: Arc::new(Mutex::new(Vec::new())),
                     subscriber_count: 0,
                     publisher_count: 0,

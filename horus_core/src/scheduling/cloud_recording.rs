@@ -31,14 +31,14 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64};
+#[cfg(any(feature = "cloud-gcs", feature = "cloud-azure"))]
 use std::sync::Arc;
-use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+#[cfg(any(feature = "cloud-gcs", feature = "cloud-azure"))]
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -1009,8 +1009,7 @@ impl CloudBackend for S3Backend {
 #[cfg(feature = "cloud-gcs")]
 pub struct GcsBackend {
     bucket: String,
-    #[allow(dead_code)]
-    project_id: Option<String>,
+    _project_id: Option<String>,
     client: google_cloud_storage::client::Client,
     runtime: tokio::runtime::Runtime,
     /// Tracks ongoing multipart uploads: upload_id -> (cloud_path, parts sorted by number)
@@ -1039,7 +1038,7 @@ impl GcsBackend {
 
         Ok(Self {
             bucket: bucket.to_string(),
-            project_id: project_id.map(String::from),
+            _project_id: project_id.map(String::from),
             client,
             runtime,
             uploads: Arc::new(RwLock::new(HashMap::new())),
@@ -1673,19 +1672,6 @@ use std::io::Seek;
 pub struct CloudUploader {
     config: CloudConfig,
     backend: Box<dyn CloudBackend>,
-    #[allow(dead_code)] // Reserved for future multipart upload tracking
-    active_uploads: Arc<RwLock<HashMap<String, ActiveUpload>>>,
-}
-
-#[allow(dead_code)] // Reserved for future multipart upload progress tracking
-struct ActiveUpload {
-    upload_id: String,
-    cloud_path: String,
-    parts: Vec<CloudPart>,
-    uploaded_bytes: AtomicU64,
-    total_bytes: u64,
-    started_at: Instant,
-    cancelled: AtomicBool,
 }
 
 impl CloudUploader {
@@ -1724,7 +1710,6 @@ impl CloudUploader {
         Ok(Self {
             config,
             backend,
-            active_uploads: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 

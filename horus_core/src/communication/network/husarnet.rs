@@ -197,15 +197,16 @@ struct DaemonStatusResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Some fields reserved for future use
 struct DaemonStatusResult {
     #[serde(default)]
     is_joined: bool,
     #[serde(default)]
     is_ready: bool,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from JSON, not used in status mapping
     is_ready_to_join: bool,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from JSON, not used in status mapping
     websetup_address: String,
     #[serde(default)]
     local_ip: String,
@@ -222,8 +223,10 @@ struct WhitelistEntry {
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from JSON
     is_active: bool,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from JSON
     is_tunneled: bool,
 }
 

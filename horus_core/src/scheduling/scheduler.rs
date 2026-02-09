@@ -4264,7 +4264,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Node, TopicMetadata};
+    use crate::core::Node;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -4290,10 +4290,6 @@ mod tests {
             }
         }
 
-        #[allow(dead_code)]
-        fn tick_count(&self) -> usize {
-            self.tick_count.load(Ordering::SeqCst)
-        }
     }
 
     impl Node for CounterNode {
@@ -4303,66 +4299,6 @@ mod tests {
 
         fn tick(&mut self) {
             self.tick_count.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    /// Node that publishes to a topic
-    struct PublisherNode {
-        name: &'static str,
-        topic: String,
-    }
-
-    impl PublisherNode {
-        fn new(name: &'static str, topic: &str) -> Self {
-            Self {
-                name,
-                topic: topic.to_string(),
-            }
-        }
-    }
-
-    impl Node for PublisherNode {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn tick(&mut self) {}
-
-        fn publishers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: self.topic.clone(),
-                type_name: "TestMessage".to_string(),
-            }]
-        }
-    }
-
-    /// Node that subscribes to a topic
-    struct SubscriberNode {
-        name: &'static str,
-        topic: String,
-    }
-
-    impl SubscriberNode {
-        fn new(name: &'static str, topic: &str) -> Self {
-            Self {
-                name,
-                topic: topic.to_string(),
-            }
-        }
-    }
-
-    impl Node for SubscriberNode {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn tick(&mut self) {}
-
-        fn subscribers(&self) -> Vec<TopicMetadata> {
-            vec![TopicMetadata {
-                topic_name: self.topic.clone(),
-                type_name: "TestMessage".to_string(),
-            }]
         }
     }
 
