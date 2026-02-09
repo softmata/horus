@@ -43,6 +43,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::communication::pod::{is_pod, PodMessage};
 use crate::error::{HorusError, HorusResult};
 use crate::memory::shm_region::ShmRegion;
+use crate::memory::simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 
 // ============================================================================
 // Constants
@@ -83,6 +84,55 @@ fn unlikely(b: bool) -> bool {
         cold()
     }
     b
+}
+
+// ============================================================================
+// SIMD-Aware Copy Helpers
+// ============================================================================
+
+/// Write a message to a ring buffer slot, using SIMD streaming stores for large POD types.
+///
+/// For `size_of::<T>() >= SIMD_COPY_THRESHOLD` (4KB): uses non-temporal stores that bypass
+/// the CPU cache, preventing cache pollution when the producer won't read the data again.
+/// For smaller types: uses `std::ptr::write` (the branch is const-eliminated by the compiler).
+///
+/// # Safety
+/// `dst` must be valid for writes of `size_of::<T>()` bytes and properly aligned.
+#[inline(always)]
+unsafe fn simd_aware_write<T>(dst: *mut T, msg: T) {
+    if mem::size_of::<T>() >= SIMD_COPY_THRESHOLD {
+        simd_copy_to_shm(
+            &msg as *const T as *const u8,
+            dst as *mut u8,
+            mem::size_of::<T>(),
+        );
+        mem::forget(msg);
+    } else {
+        std::ptr::write(dst, msg);
+    }
+}
+
+/// Read a message from a ring buffer slot, using SIMD prefetched reads for large POD types.
+///
+/// For `size_of::<T>() >= SIMD_COPY_THRESHOLD` (4KB): uses prefetched reads that hide
+/// memory latency when reading large messages from shared memory (cross-process, cold cache).
+/// For smaller types: uses `std::ptr::read` (the branch is const-eliminated by the compiler).
+///
+/// # Safety
+/// `src` must be valid for reads of `size_of::<T>()` bytes and properly aligned.
+#[inline(always)]
+unsafe fn simd_aware_read<T>(src: *const T) -> T {
+    if mem::size_of::<T>() >= SIMD_COPY_THRESHOLD {
+        let mut msg = mem::MaybeUninit::<T>::uninit();
+        simd_copy_from_shm(
+            src as *const u8,
+            msg.as_mut_ptr() as *mut u8,
+            mem::size_of::<T>(),
+        );
+        msg.assume_init()
+    } else {
+        std::ptr::read(src)
+    }
 }
 
 // ============================================================================
@@ -1752,7 +1802,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Direct write to ring buffer using cached pointer and capacity mask
                 unsafe {
                     let base = local.cached_data_ptr as *mut T;
-                    std::ptr::write(base.add((*head & local.cached_capacity_mask) as usize), msg);
+                    simd_aware_write(base.add((*head & local.cached_capacity_mask) as usize), msg);
                 }
                 // Increment head in thread-local storage
                 *head = head.wrapping_add(1);
@@ -1793,7 +1843,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Write message to ring buffer
             unsafe {
                 let base = local.cached_data_ptr as *mut T;
-                std::ptr::write(base.add((seq & local.cached_capacity_mask) as usize), msg);
+                simd_aware_write(base.add((seq & local.cached_capacity_mask) as usize), msg);
             }
 
             // Update local head and shared memory (Release ensures write is visible)
@@ -1847,7 +1897,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Successfully claimed slot 'head', write message
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        std::ptr::write(base.add((head & mask) as usize), msg);
+                        simd_aware_write(base.add((head & mask) as usize), msg);
                     }
 
                     // Sampled maintenance (cold path)
@@ -1898,7 +1948,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Successfully claimed slot 'head', write message
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        std::ptr::write(base.add((head & mask) as usize), msg);
+                        simd_aware_write(base.add((head & mask) as usize), msg);
                     }
 
                     // Sampled maintenance (cold path)
@@ -1932,7 +1982,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
             unsafe {
                 let base = local.cached_data_ptr as *mut T;
-                std::ptr::write(base.add((seq & mask) as usize), msg);
+                simd_aware_write(base.add((seq & mask) as usize), msg);
             }
 
             let new_seq = seq.wrapping_add(1);
@@ -2025,7 +2075,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Write data to claimed slot
                 unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
-                    std::ptr::write(base.add(index), msg);
+                    simd_aware_write(base.add(index), msg);
                 }
 
                 // Sync local_head for fast path
@@ -2113,7 +2163,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
                 unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
-                    std::ptr::write(base.add(index), msg);
+                    simd_aware_write(base.add(index), msg);
                 }
                 header.sequence_or_head.fetch_add(1, Ordering::Release);
                 // CRITICAL: Sync local_head to prevent fast path from overwriting
@@ -2175,7 +2225,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Direct read using cached pointer
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
-                    std::ptr::read(base.add((*tail & local.cached_capacity_mask) as usize))
+                    simd_aware_read(base.add((*tail & local.cached_capacity_mask) as usize))
                 };
                 // Increment tail in thread-local storage
                 *tail = tail.wrapping_add(1);
@@ -2239,7 +2289,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Read message from ring buffer
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
-                    std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+                    simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
                 };
 
                 // Update local tail and shared memory (Release ensures read is complete)
@@ -2278,7 +2328,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Read message
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
-                std::ptr::read(base.add((tail & mask) as usize))
+                simd_aware_read(base.add((tail & mask) as usize))
             };
 
             // Update local tail and shared memory
@@ -2328,7 +2378,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Successfully claimed slot 'tail', read message
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
-                        std::ptr::read(base.add((tail & mask) as usize))
+                        simd_aware_read(base.add((tail & mask) as usize))
                     };
 
                     // Sampled maintenance (cold path)
@@ -2376,7 +2426,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 {
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
-                        std::ptr::read(base.add((tail & mask) as usize))
+                        simd_aware_read(base.add((tail & mask) as usize))
                     };
 
                     local.msg_counter = local.msg_counter.wrapping_add(1);
@@ -2403,7 +2453,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
-                std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+                simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
             };
             header.tail.fetch_add(1, Ordering::Release);
 
@@ -2439,7 +2489,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Read message using cached data pointer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
-                std::ptr::read(base.add((tail & mask) as usize))
+                simd_aware_read(base.add((tail & mask) as usize))
             };
 
             // Single consumer: store instead of fetch_add
@@ -2492,7 +2542,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Successfully claimed slot 'tail', read message using cached pointer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
-                        std::ptr::read(base.add((tail & mask) as usize))
+                        simd_aware_read(base.add((tail & mask) as usize))
                     };
 
                     local.local_tail = tail.wrapping_add(1);
@@ -2527,7 +2577,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Read message using cached pointer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
-                std::ptr::read(base.add((tail & mask) as usize))
+                simd_aware_read(base.add((tail & mask) as usize))
             };
 
             let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
@@ -2607,7 +2657,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // POD path - direct read
                     unsafe {
                         let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
-                        std::ptr::read(base.add(index))
+                        simd_aware_read(base.add(index))
                     }
                 } else {
                     // Non-POD path - deserialize
@@ -2660,7 +2710,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
                     base.add(index)
                 };
-                let msg = unsafe { std::ptr::read(data_ptr) };
+                let msg = unsafe { simd_aware_read(data_ptr) };
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
                 local.local_tail = new_tail;
@@ -2709,7 +2759,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
                     base.add(index)
                 };
-                let msg = unsafe { std::ptr::read(data_ptr) };
+                let msg = unsafe { simd_aware_read(data_ptr) };
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
                 local.local_tail = new_tail;
