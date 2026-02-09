@@ -164,9 +164,6 @@ struct PendingQuery {
     timeout: Duration,
     /// Response (filled when received)
     response: Option<QueryResponse>,
-    /// Number of retries (for future retry logic)
-    #[allow(dead_code)]
-    retries: u32,
 }
 
 /// Query client for sending queries and receiving responses
@@ -208,7 +205,6 @@ impl QueryClient {
                 sent_at: Instant::now(),
                 timeout: self.config.timeout,
                 response: None,
-                retries: 0,
             },
         );
 

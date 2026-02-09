@@ -158,16 +158,6 @@ pub struct Scheduler {
     // Redundancy manager
     redundancy: Option<super::redundancy::RedundancyManager>,
 
-    // === Deterministic topology tracking ===
-    // Whether topology is locked (no more nodes can be added)
-    #[allow(dead_code)] // Reserved for future deterministic mode
-    topology_locked: bool,
-
-    // Collected topology from all nodes (for validation)
-    #[allow(dead_code)] // Reserved for future deterministic mode
-    collected_publishers: Vec<(String, String, String)>, // (node_name, topic, type)
-    #[allow(dead_code)] // Reserved for future deterministic mode
-    collected_subscribers: Vec<(String, String, String)>, // (node_name, topic, type)
 
     // === Record/Replay System ===
     // Recording configuration (None = recording disabled)
@@ -297,11 +287,6 @@ impl Scheduler {
             blackbox: Some(super::blackbox::BlackBox::new(16)), // 16MB default for crash analysis
             telemetry: None,
             redundancy: None,
-
-            // Deterministic topology tracking
-            topology_locked: false,
-            collected_publishers: Vec::new(),
-            collected_subscribers: Vec::new(),
 
             // Record/Replay system (disabled by default)
             recording_config: None,
@@ -569,13 +554,6 @@ impl Scheduler {
     ///
     /// let mut scheduler = Scheduler::deterministic();
     /// scheduler.add(controller).order(0).done();
-    ///
-    /// // Validate topology before running
-    /// let errors = scheduler.validate_topology();
-    /// if !errors.is_empty() {
-    ///     panic!("Topology errors: {:?}", errors);
-    /// }
-    ///
     /// scheduler.run()?;
     /// ```
     ///
@@ -1834,7 +1812,7 @@ impl Scheduler {
             is_jit_compiled: false,
             jit_stats: None,
             recorder: None,
-            is_replay_node: true,
+
             is_stopped: false,
             is_paused: false,
         });
@@ -2049,139 +2027,6 @@ impl Scheduler {
         manager
             .delete_session(session_name)
             .map_err(|e| horus_internal!("Failed to delete recording: {}", e))
-    }
-
-    // ============================================================================
-    // Deterministic Topology Validation
-    // ============================================================================
-
-    /// Validate the system topology before running.
-    ///
-    /// This checks that:
-    /// - All topics have at least one publisher and one subscriber
-    /// - Type names match between publishers and subscribers
-    /// - No orphaned topics exist
-    ///
-    /// Returns a list of topology errors if validation fails.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let errors = scheduler.validate_topology();
-    /// if !errors.is_empty() {
-    ///     for err in &errors {
-    ///         eprintln!("Topology error: {}", err);
-    ///     }
-    ///     panic!("Topology validation failed");
-    /// }
-    /// ```
-    pub fn validate_topology(&self) -> Vec<String> {
-        let mut errors = Vec::new();
-
-        // Check if deterministic mode requires complete connections
-        let require_complete = self
-            .config
-            .as_ref()
-            .and_then(|c| c.deterministic.as_ref())
-            .map(|d| d.require_complete_connections)
-            .unwrap_or(false);
-
-        // Build topic maps
-        let mut publisher_topics: std::collections::HashMap<String, Vec<(String, String)>> =
-            std::collections::HashMap::new();
-        let mut subscriber_topics: std::collections::HashMap<String, Vec<(String, String)>> =
-            std::collections::HashMap::new();
-
-        for (node_name, topic, type_name) in &self.collected_publishers {
-            publisher_topics
-                .entry(topic.clone())
-                .or_default()
-                .push((node_name.clone(), type_name.clone()));
-        }
-
-        for (node_name, topic, type_name) in &self.collected_subscribers {
-            subscriber_topics
-                .entry(topic.clone())
-                .or_default()
-                .push((node_name.clone(), type_name.clone()));
-        }
-
-        // Check for orphaned publishers (no subscribers)
-        if require_complete {
-            for (topic, publishers) in &publisher_topics {
-                if !subscriber_topics.contains_key(topic) {
-                    errors.push(format!(
-                        "Topic '{}' has publishers {:?} but no subscribers",
-                        topic,
-                        publishers.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                    ));
-                }
-            }
-
-            // Check for orphaned subscribers (no publishers)
-            for (topic, subscribers) in &subscriber_topics {
-                if !publisher_topics.contains_key(topic) {
-                    errors.push(format!(
-                        "Topic '{}' has subscribers {:?} but no publishers",
-                        topic,
-                        subscribers.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                    ));
-                }
-            }
-        }
-
-        // Check for type mismatches
-        for (topic, subscribers) in &subscriber_topics {
-            if let Some(publishers) = publisher_topics.get(topic) {
-                for (sub_node, sub_type) in subscribers {
-                    for (pub_node, pub_type) in publishers {
-                        if sub_type != pub_type {
-                            errors.push(format!(
-                                "Type mismatch on topic '{}': publisher '{}' sends '{}', subscriber '{}' expects '{}'",
-                                topic, pub_node, pub_type, sub_node, sub_type
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        errors
-    }
-
-    /// Lock the topology, preventing further node additions.
-    ///
-    /// After calling this, any attempt to add nodes will panic in strict
-    /// deterministic mode. This ensures the execution plan is fixed.
-    ///
-    /// # Example
-    /// ```ignore
-    /// scheduler.add(node1).order(0).done();
-    /// scheduler.add(node2).order(1).done();
-    /// scheduler.lock_topology();  // No more nodes can be added
-    /// scheduler.run();
-    /// ```
-    pub fn lock_topology(&mut self) -> &mut Self {
-        self.topology_locked = true;
-        println!(
-            "[DETERMINISTIC] Topology locked with {} publishers, {} subscribers",
-            self.collected_publishers.len(),
-            self.collected_subscribers.len()
-        );
-        self
-    }
-
-    /// Get the collected topology for inspection.
-    ///
-    /// Returns (publishers, subscribers) where each is a list of
-    /// (node_name, topic_name, type_name) tuples.
-    #[allow(clippy::type_complexity)]
-    pub fn get_topology(&self) -> (&[(String, String, String)], &[(String, String, String)]) {
-        (&self.collected_publishers, &self.collected_subscribers)
-    }
-
-    /// Check if topology is currently locked.
-    pub fn is_topology_locked(&self) -> bool {
-        self.topology_locked
     }
 
     // ============================================================================
@@ -2505,37 +2350,7 @@ impl Scheduler {
         _request_jit: bool,
         tier: Option<super::intelligence::NodeTier>,
     ) -> &mut Self {
-        // Check if topology is locked (deterministic mode)
-        if self.topology_locked {
-            if let Some(ref config) = self.config {
-                if let Some(ref det_config) = config.deterministic {
-                    if det_config.freeze_topology_after_start {
-                        panic!(
-                            "Cannot add node '{}': topology is locked in deterministic mode",
-                            node.name()
-                        );
-                    }
-                }
-            }
-        }
-
         let node_name = node.name().to_string();
-
-        // Collect topology from node (for deterministic validation)
-        for pub_meta in node.publishers() {
-            self.collected_publishers.push((
-                node_name.clone(),
-                pub_meta.topic_name,
-                pub_meta.type_name,
-            ));
-        }
-        for sub_meta in node.subscribers() {
-            self.collected_subscribers.push((
-                node_name.clone(),
-                sub_meta.topic_name,
-                sub_meta.type_name,
-            ));
-        }
 
         // Check if this node supports JIT compilation
         let is_jit_capable = node.supports_jit();
@@ -2654,7 +2469,7 @@ impl Scheduler {
             is_jit_compiled,
             jit_stats: jit_compiled,
             recorder,
-            is_replay_node: false,
+
             is_stopped: false,
             is_paused: false,
         });
@@ -2908,25 +2723,11 @@ impl Scheduler {
                     // Print classification results
                     if let Some(ref classifier) = self.classifier {
                         classifier.print_classification();
-
-                        let tier_stats = classifier.tier_stats();
-                        print_line("\nTier Distribution:");
-                        print_line(&format!(
-                            "  Ultra-fast nodes: {:.1}%",
-                            tier_stats.ultra_fast_percent()
-                        ));
-                        print_line(&format!(
-                            "  Parallel-capable: {:.1}%",
-                            tier_stats.parallel_capable_percent()
-                        ));
                     }
 
-                    // Print node latency percentiles
-                    let summary = self.profiler.summary();
-                    print_line("\nProfiler Summary:");
-                    print_line(&format!("  Total nodes: {}", summary.total_nodes));
+                    // Print learning progress
                     print_line(&format!(
-                        "  Learning progress: {:.1}%",
+                        "\nLearning progress: {:.1}%",
                         self.profiler.learning_progress() * 100.0
                     ));
 
@@ -3051,23 +2852,10 @@ impl Scheduler {
                         }
                     }
 
-                    // Print dependency graph statistics if available
+                    // Check dependency graph for cycles
                     if let Some(ref graph) = self.dependency_graph {
                         if graph.has_cycles() {
                             print_line("WARNING: Dependency graph contains cycles!");
-                        }
-                        let graph_stats = graph.stats();
-                        // Print graph stats occasionally
-                        use std::sync::atomic::{AtomicU64, Ordering};
-                        static GRAPH_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
-                        let count = GRAPH_LOG_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count.is_multiple_of(100) {
-                            print_line(&format!(
-                                "Dependency Graph - Nodes: {}, Edges: {}, Levels: {}",
-                                graph_stats.total_nodes,
-                                graph_stats.total_edges,
-                                graph_stats.num_levels
-                            ));
                         }
                     }
                 }
@@ -4718,58 +4506,6 @@ mod tests {
         // Setting rate for nonexistent node should not panic
         scheduler.set_node_rate("nonexistent", 50.0);
         assert!(scheduler.is_running());
-    }
-
-    // ============================================================================
-    // Topology Tests
-    // ============================================================================
-
-    #[test]
-    fn test_scheduler_collect_topology() {
-        let mut scheduler = Scheduler::new();
-        scheduler
-            .add(PublisherNode::new("publisher", "topic1"))
-            .order(0)
-            .done();
-        scheduler
-            .add(SubscriberNode::new("subscriber", "topic1"))
-            .order(1)
-            .done();
-
-        let (publishers, subscribers) = scheduler.get_topology();
-        assert_eq!(publishers.len(), 1);
-        assert_eq!(subscribers.len(), 1);
-        assert_eq!(publishers[0].0, "publisher");
-        assert_eq!(publishers[0].1, "topic1");
-        assert_eq!(subscribers[0].0, "subscriber");
-        assert_eq!(subscribers[0].1, "topic1");
-    }
-
-    #[test]
-    fn test_scheduler_validate_topology_matching() {
-        let mut scheduler = Scheduler::new();
-        scheduler
-            .add(PublisherNode::new("pub", "data_topic"))
-            .order(0)
-            .done();
-        scheduler
-            .add(SubscriberNode::new("sub", "data_topic"))
-            .order(1)
-            .done();
-
-        let errors = scheduler.validate_topology();
-        // No errors when publisher and subscriber match
-        assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn test_scheduler_topology_locked() {
-        let mut scheduler = Scheduler::new();
-        scheduler.add(CounterNode::new("node1")).order(0).done();
-
-        assert!(!scheduler.is_topology_locked());
-        scheduler.lock_topology();
-        assert!(scheduler.is_topology_locked());
     }
 
     // ============================================================================

@@ -37,8 +37,6 @@ pub(crate) struct RegisteredNode {
     pub(crate) is_jit_compiled: bool,
     pub(crate) jit_stats: Option<CompiledDataflow>,
     pub(crate) recorder: Option<NodeRecorder>,
-    #[allow(dead_code)]
-    pub(crate) is_replay_node: bool,
     pub(crate) is_stopped: bool,
     pub(crate) is_paused: bool,
 }

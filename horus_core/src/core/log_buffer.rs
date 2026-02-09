@@ -3,7 +3,6 @@ use log::error;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Log entry with timestamp and metadata
@@ -46,8 +45,6 @@ const HEADER_SIZE: usize = 64; // Space for metadata (write_idx, etc.)
 /// Shared memory ring buffer for logs - lock-free, cross-process
 pub struct SharedLogBuffer {
     mmap: Mutex<MmapMut>,
-    #[allow(dead_code)]
-    path: PathBuf,
 }
 
 // Default implementation removed - use SharedLogBuffer::new()? instead
@@ -87,7 +84,6 @@ impl SharedLogBuffer {
 
         Ok(Self {
             mmap: Mutex::new(mmap),
-            path,
         })
     }
 

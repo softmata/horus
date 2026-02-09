@@ -360,9 +360,6 @@ pub struct QuicTransport {
     endpoint: Endpoint,
     /// Cached connections by remote address
     connections: Arc<RwLock<HashMap<SocketAddr, Connection>>>,
-    /// Configuration (kept for future use)
-    #[allow(dead_code)]
-    config: QuicConfig,
     /// Statistics
     stats: Arc<QuicStats>,
     /// Running flag
@@ -385,7 +382,6 @@ impl QuicTransport {
         Ok(Self {
             endpoint,
             connections: Arc::new(RwLock::new(HashMap::new())),
-            config,
             stats: Arc::new(QuicStats::default()),
             running: Arc::new(AtomicBool::new(true)),
             server_name: "horus".to_string(),
@@ -407,7 +403,6 @@ impl QuicTransport {
         Ok(Self {
             endpoint,
             connections: Arc::new(RwLock::new(HashMap::new())),
-            config,
             stats: Arc::new(QuicStats::default()),
             running: Arc::new(AtomicBool::new(true)),
             server_name: "horus".to_string(),

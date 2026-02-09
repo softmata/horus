@@ -805,15 +805,6 @@ impl<T: Clone + Send + Sync + 'static> SpscShmBackend<T> {
         })
     }
 
-    #[allow(dead_code)]
-    fn producer(name: &str) -> HorusResult<Self> {
-        Self::new(name, true)
-    }
-
-    #[allow(dead_code)]
-    fn consumer(name: &str) -> HorusResult<Self> {
-        Self::new(name, false)
-    }
 }
 
 impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T> {
@@ -1480,15 +1471,6 @@ impl<T: PodMessage> PodShmBackend<T> {
         })
     }
 
-    #[allow(dead_code)]
-    fn producer(name: &str) -> HorusResult<Self> {
-        Self::new(name, true)
-    }
-
-    #[allow(dead_code)]
-    fn consumer(name: &str) -> HorusResult<Self> {
-        Self::new(name, false)
-    }
 }
 
 impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {
@@ -1576,18 +1558,6 @@ use std::thread::{self, ThreadId};
 ///
 /// Note: These constants document the padding values used in MpscCounter, MpmcCounter, etc.
 /// The actual padding uses hardcoded values in #[cfg] blocks due to Rust const generics limitations.
-#[allow(dead_code)] // Documents padding values used in cache-aligned structs
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-const CACHE_LINE_SIZE: usize = 64;
-
-#[allow(dead_code)]
-#[cfg(target_arch = "aarch64")]
-const CACHE_LINE_SIZE: usize = 128;
-
-#[allow(dead_code)]
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-const CACHE_LINE_SIZE: usize = 128;
-
 // ============================================================================
 // Prefetch hints for performance
 // ============================================================================
@@ -2968,9 +2938,6 @@ use crate::communication::network::{parse_endpoint, Endpoint, NetworkBackend};
 struct NetworkTopicBackend<T> {
     /// The underlying network backend (wrapped in Mutex for recv mutability)
     inner: std::sync::Mutex<NetworkBackend<T>>,
-    /// Topic name (stored for debugging and future introspection)
-    #[allow(dead_code)]
-    topic: String,
 }
 
 impl<T> NetworkTopicBackend<T>
@@ -2985,23 +2952,10 @@ where
 {
     /// Create a new network backend from an endpoint
     fn new(endpoint: Endpoint) -> HorusResult<Self> {
-        let topic = match &endpoint {
-            Endpoint::Local { topic } => topic.clone(),
-            Endpoint::Localhost { topic, .. } => topic.clone(),
-            Endpoint::Direct { topic, .. } => topic.clone(),
-            Endpoint::Multicast { topic } => topic.clone(),
-            Endpoint::Router { topic, .. } => topic.clone(),
-            Endpoint::Zenoh { topic, .. } => topic.clone(),
-            Endpoint::Mdns { topic, .. } => topic.clone(),
-            Endpoint::Cloud { topic, .. } => topic.clone(),
-            Endpoint::ZenohCloud { topic, .. } => topic.clone(),
-        };
-
         let backend = NetworkBackend::new(endpoint)?;
 
         Ok(Self {
             inner: std::sync::Mutex::new(backend),
-            topic,
         })
     }
 
@@ -4778,7 +4732,7 @@ impl<T: PodMessage> PodTopic<T> {
 
         Ok(Self {
             name: name.clone(),
-            backend: PodShmBackend::producer(&shm_name)?,
+            backend: PodShmBackend::new(&shm_name, true)?,
         })
     }
 
@@ -4789,7 +4743,7 @@ impl<T: PodMessage> PodTopic<T> {
 
         Ok(Self {
             name: name.clone(),
-            backend: PodShmBackend::consumer(&shm_name)?,
+            backend: PodShmBackend::new(&shm_name, false)?,
         })
     }
 

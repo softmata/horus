@@ -434,49 +434,6 @@ struct UsbInfo {
     description: Option<String>,
 }
 
-/// Well-known serial device VID/PIDs
-#[allow(dead_code)]
-pub mod known_devices {
-    /// Arduino Uno
-    pub const ARDUINO_UNO: (u16, u16) = (0x2341, 0x0043);
-    /// Arduino Mega
-    pub const ARDUINO_MEGA: (u16, u16) = (0x2341, 0x0042);
-    /// Arduino Leonardo
-    pub const ARDUINO_LEONARDO: (u16, u16) = (0x2341, 0x8036);
-    /// Arduino Due (Programming Port)
-    pub const ARDUINO_DUE_PROG: (u16, u16) = (0x2341, 0x003D);
-    /// ESP32 (Espressif native USB)
-    pub const ESP32_S2: (u16, u16) = (0x303A, 0x0002);
-    /// ESP32-S3
-    pub const ESP32_S3: (u16, u16) = (0x303A, 0x1001);
-    /// Silicon Labs CP2102
-    pub const CP2102: (u16, u16) = (0x10C4, 0xEA60);
-    /// Silicon Labs CP2104
-    pub const CP2104: (u16, u16) = (0x10C4, 0xEA61);
-    /// WCH CH340
-    pub const CH340: (u16, u16) = (0x1A86, 0x7523);
-    /// WCH CH341
-    pub const CH341: (u16, u16) = (0x1A86, 0x5523);
-    /// FTDI FT232R
-    pub const FT232R: (u16, u16) = (0x0403, 0x6001);
-    /// FTDI FT232H
-    pub const FT232H: (u16, u16) = (0x0403, 0x6014);
-    /// Prolific PL2303
-    pub const PL2303: (u16, u16) = (0x067B, 0x2303);
-    /// STM32 Virtual COM Port
-    pub const STM32_VCP: (u16, u16) = (0x0483, 0x5740);
-    /// Teensy 4.0
-    pub const TEENSY_40: (u16, u16) = (0x16C0, 0x0483);
-    /// Teensy 4.1
-    pub const TEENSY_41: (u16, u16) = (0x16C0, 0x0483);
-    /// Raspberry Pi Pico
-    pub const RPI_PICO: (u16, u16) = (0x2E8A, 0x000A);
-    /// RPLidar
-    pub const RPLIDAR: (u16, u16) = (0x10C4, 0xEA60); // Uses CP210x
-    /// ODrive
-    pub const ODRIVE: (u16, u16) = (0x1209, 0x0D32);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

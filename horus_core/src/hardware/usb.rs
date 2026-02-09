@@ -334,51 +334,6 @@ impl Default for UsbDiscovery {
     }
 }
 
-/// Well-known USB Vendor IDs
-#[allow(dead_code)]
-pub mod vendors {
-    /// Arduino LLC
-    pub const ARDUINO: u16 = 0x2341;
-    /// Arduino LLC (alternate)
-    pub const ARDUINO_ALT: u16 = 0x2A03;
-    /// Espressif (ESP32)
-    pub const ESPRESSIF: u16 = 0x303A;
-    /// Silicon Labs (CP210x - common for ESP32)
-    pub const SILICON_LABS: u16 = 0x10C4;
-    /// WCH (CH340/CH341 - Arduino clones)
-    pub const WCH: u16 = 0x1A86;
-    /// FTDI
-    pub const FTDI: u16 = 0x0403;
-    /// STMicroelectronics
-    pub const STM: u16 = 0x0483;
-    /// Texas Instruments
-    pub const TI: u16 = 0x0451;
-    /// Prolific (PL2303)
-    pub const PROLIFIC: u16 = 0x067B;
-    /// Intel
-    pub const INTEL: u16 = 0x8086;
-    /// Microsoft
-    pub const MICROSOFT: u16 = 0x045E;
-    /// Sony
-    pub const SONY: u16 = 0x054C;
-    /// Logitech
-    pub const LOGITECH: u16 = 0x046D;
-    /// u-blox (GPS)
-    pub const UBLOX: u16 = 0x1546;
-    /// Slamtec (RPLidar)
-    pub const SLAMTEC: u16 = 0x10C4; // Uses Silicon Labs chip
-    /// ODrive Robotics
-    pub const ODRIVE: u16 = 0x1209;
-    /// Peak Systems (CAN)
-    pub const PEAK: u16 = 0x0C72;
-    /// Kvaser (CAN)
-    pub const KVASER: u16 = 0x0BFD;
-    /// Orbbec (depth cameras)
-    pub const ORBBEC: u16 = 0x2BC5;
-    /// Stereolabs (ZED cameras)
-    pub const STEREOLABS: u16 = 0x2B03;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

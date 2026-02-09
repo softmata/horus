@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 
-use super::dag::{build_goal_dag, build_task_dag, ExecutionScheduler, GoalDAG, TaskDAG};
+use super::dag::{build_goal_dag, build_task_dag, ExecutionScheduler};
 #[cfg(test)]
 use super::types::GoalSpec;
 use super::types::{
@@ -186,45 +186,31 @@ impl Default for MissionPlannerConfig {
 struct ActiveMission {
     /// Mission state.
     state: MissionState,
-    /// Goal DAG for ordering goals (used during goal execution scheduling).
-    #[allow(dead_code)] // Populated during construction, read during mission advancement
-    goal_dag: GoalDAG,
     /// Goal schedulers (one per goal).
     goal_schedulers: HashMap<GoalId, ExecutionScheduler<TaskId>>,
-    /// Task DAGs (one per goal, used during task execution scheduling).
-    #[allow(dead_code)] // Populated during construction, read during task advancement
-    task_dags: HashMap<GoalId, TaskDAG>,
     /// Goal execution scheduler.
     goal_scheduler: ExecutionScheduler<GoalId>,
-    /// When this mission was queued (used for priority aging).
-    #[allow(dead_code)] // Reserved for priority-based scheduling with age weighting
-    queued_at: Instant,
 }
 
 impl ActiveMission {
     /// Create a new active mission from a specification.
     fn new(spec: MissionSpec) -> Result<Self, MissionPlannerError> {
         let goal_dag = build_goal_dag(&spec)?;
-        let goal_scheduler = ExecutionScheduler::new(goal_dag.clone());
+        let goal_scheduler = ExecutionScheduler::new(goal_dag);
 
-        let mut task_dags = HashMap::new();
         let mut goal_schedulers = HashMap::new();
 
         for goal in &spec.goals {
             let task_dag = build_task_dag(goal)?;
-            goal_schedulers.insert(goal.id.clone(), ExecutionScheduler::new(task_dag.clone()));
-            task_dags.insert(goal.id.clone(), task_dag);
+            goal_schedulers.insert(goal.id.clone(), ExecutionScheduler::new(task_dag));
         }
 
         let state = MissionState::new(spec);
 
         Ok(Self {
             state,
-            goal_dag,
             goal_schedulers,
-            task_dags,
             goal_scheduler,
-            queued_at: Instant::now(),
         })
     }
 
@@ -267,9 +253,6 @@ pub struct MissionPlanner {
     event_callbacks: Vec<MissionEventCallback>,
     /// Execution metrics.
     metrics: MissionMetrics,
-    /// Whether the planner is running.
-    #[allow(dead_code)]
-    running: bool,
 }
 
 impl MissionPlanner {
@@ -288,7 +271,6 @@ impl MissionPlanner {
             condition_evaluators: HashMap::new(),
             event_callbacks: Vec::new(),
             metrics: MissionMetrics::default(),
-            running: false,
         }
     }
 

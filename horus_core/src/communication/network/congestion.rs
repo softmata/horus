@@ -103,9 +103,6 @@ struct QueuedMessage {
     payload: Vec<u8>,
     /// Message priority (higher = more important)
     priority: u8,
-    /// When the message was queued (for future use in time-based eviction)
-    #[allow(dead_code)]
-    queued_at: Instant,
 }
 
 /// Congestion control result
@@ -290,7 +287,6 @@ impl CongestionController {
         self.send_buffer.push_back(QueuedMessage {
             payload,
             priority,
-            queued_at: Instant::now(),
         });
 
         self.stats.accepted.fetch_add(1, Ordering::Relaxed);

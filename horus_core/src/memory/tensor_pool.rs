@@ -155,8 +155,6 @@ pub struct TensorPool {
     mmap: MmapMut,
     _file: File,
     is_owner: bool,
-    #[allow(dead_code)]
-    header_size: usize,
     slots_offset: usize,
     data_offset: usize,
 }
@@ -202,7 +200,6 @@ impl TensorPool {
             mmap,
             _file: file,
             is_owner,
-            header_size,
             slots_offset: header_size,
             data_offset,
         };
@@ -260,7 +257,6 @@ impl TensorPool {
             mmap,
             _file: file,
             is_owner: false,
-            header_size,
             slots_offset: header_size,
             data_offset,
         })

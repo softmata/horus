@@ -246,11 +246,8 @@ impl<A: Action> Clone for FeedbackSender<A> {
 }
 
 /// Internal state for tracking an active goal.
-#[allow(dead_code)]
-struct GoalState<A: Action> {
-    goal: A::Goal,
+struct GoalState {
     priority: GoalPriority,
-    status: Arc<RwLock<GoalStatus>>,
     cancel_requested: Arc<AtomicBool>,
     preempt_requested: Arc<AtomicBool>,
     started_at: Instant,
@@ -407,12 +404,8 @@ pub struct ActionServerNode<A: Action> {
     status_link: Option<Topic<GoalStatusUpdate>>,
 
     // Active goals
-    active_goals: HashMap<GoalId, GoalState<A>>,
+    active_goals: HashMap<GoalId, GoalState>,
     goal_queue: VecDeque<GoalRequest<A::Goal>>,
-
-    // Result history for client queries
-    #[allow(dead_code)]
-    result_history: VecDeque<(GoalId, ActionResult<A::Result>)>,
 
     // Metrics
     goals_received: AtomicU64,
@@ -452,7 +445,6 @@ where
             status_link: None,
             active_goals: HashMap::new(),
             goal_queue: VecDeque::new(),
-            result_history: VecDeque::new(),
             goals_received: AtomicU64::new(0),
             goals_accepted: AtomicU64::new(0),
             goals_rejected: AtomicU64::new(0),
@@ -585,9 +577,7 @@ where
         let now = Instant::now();
 
         let state = GoalState {
-            goal: request.goal.clone(),
             priority: request.priority,
-            status: status.clone(),
             cancel_requested: cancel_requested.clone(),
             preempt_requested: preempt_requested.clone(),
             started_at: now,

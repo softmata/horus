@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 use std::net::UdpSocket;
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
@@ -109,24 +109,12 @@ pub struct RealIoUringStats {
     pub cqe_overflow_events: AtomicU64,
 }
 
-/// Operation type for tracking in-flight operations
-#[cfg(all(target_os = "linux", feature = "io-uring-net"))]
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-enum OpType {
-    Send { buffer_idx: usize, len: usize },
-    Recv { buffer_idx: usize },
-    SendMsg { buffer_idx: usize },
-    RecvMsg { buffer_idx: usize },
-}
-
 /// In-flight operation tracking
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 #[derive(Clone)]
 struct InFlightOp {
-    op_type: OpType,
-    #[allow(dead_code)]
-    user_data: u64,
+    buffer_idx: usize,
+    is_recv: bool,
 }
 
 /// Real io_uring network backend
@@ -134,14 +122,8 @@ struct InFlightOp {
 pub struct RealIoUringBackend {
     /// The io_uring instance
     ring: IoUring,
-    /// UDP socket (kept alive for the file descriptor)
-    #[allow(dead_code)]
-    socket: UdpSocket,
     /// Socket file descriptor
     socket_fd: RawFd,
-    /// Remote address for connected mode (kept for future use)
-    #[allow(dead_code)]
-    remote_addr: Option<SocketAddr>,
     /// Registered buffers
     buffers: Vec<Vec<u8>>,
     /// Free buffer indices
@@ -154,9 +136,6 @@ pub struct RealIoUringBackend {
     stats: Arc<RealIoUringStats>,
     /// Running flag
     running: AtomicBool,
-    /// Configuration (kept for future use)
-    #[allow(dead_code)]
-    config: RealIoUringConfig,
 }
 
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
@@ -175,7 +154,7 @@ impl RealIoUringBackend {
             socket.connect(remote)?;
         }
 
-        let socket_fd = socket.as_raw_fd();
+        let socket_fd = socket.into_raw_fd();
 
         // Set socket options for performance
         Self::optimize_socket(socket_fd)?;
@@ -227,16 +206,13 @@ impl RealIoUringBackend {
 
         Ok(Self {
             ring,
-            socket,
             socket_fd,
-            remote_addr,
             buffers,
             free_buffers,
             in_flight,
             next_user_data: 0,
             stats: Arc::new(RealIoUringStats::default()),
             running: AtomicBool::new(true),
-            config,
         })
     }
 
@@ -293,9 +269,9 @@ impl RealIoUringBackend {
     }
 
     /// Track an in-flight operation
-    fn track_op(&mut self, user_data: u64, op_type: OpType) {
+    fn track_op(&mut self, user_data: u64, buffer_idx: usize, is_recv: bool) {
         let idx = (user_data as usize) % self.in_flight.len();
-        self.in_flight[idx] = Some(InFlightOp { op_type, user_data });
+        self.in_flight[idx] = Some(InFlightOp { buffer_idx, is_recv });
     }
 
     /// Get and remove tracked operation
@@ -341,7 +317,7 @@ impl RealIoUringBackend {
             return Err(push_result.unwrap_err());
         }
 
-        self.track_op(user_data, OpType::Send { buffer_idx, len });
+        self.track_op(user_data, buffer_idx, false);
         self.stats.submissions.fetch_add(1, Ordering::Relaxed);
 
         Ok(user_data)
@@ -381,7 +357,7 @@ impl RealIoUringBackend {
             return Err(push_result.unwrap_err());
         }
 
-        self.track_op(user_data, OpType::Recv { buffer_idx });
+        self.track_op(user_data, buffer_idx, true);
         self.stats.submissions.fetch_add(1, Ordering::Relaxed);
 
         Ok(user_data)
@@ -419,73 +395,37 @@ impl RealIoUringBackend {
             self.stats.completions.fetch_add(1, Ordering::Relaxed);
 
             if let Some(op) = self.get_op(user_data) {
-                let completion = match op.op_type {
-                    OpType::Send { buffer_idx, len: _ } => {
+                let buffer_idx = op.buffer_idx;
+                let completion = if op.is_recv {
+                    if result >= 0 {
+                        let len = result as usize;
+                        self.stats
+                            .bytes_received
+                            .fetch_add(len as u64, Ordering::Relaxed);
+                        let data = self.buffers[buffer_idx][..len].to_vec();
                         self.release_buffer(buffer_idx);
-                        if result >= 0 {
-                            self.stats
-                                .bytes_sent
-                                .fetch_add(result as u64, Ordering::Relaxed);
-                            CompletionResult::SendComplete {
-                                user_data,
-                                bytes_sent: result as usize,
-                            }
-                        } else {
-                            CompletionResult::Error {
-                                user_data,
-                                error: io::Error::from_raw_os_error(-result),
-                            }
-                        }
-                    }
-                    OpType::Recv { buffer_idx } => {
-                        if result >= 0 {
-                            let len = result as usize;
-                            self.stats
-                                .bytes_received
-                                .fetch_add(len as u64, Ordering::Relaxed);
-                            let data = self.buffers[buffer_idx][..len].to_vec();
-                            self.release_buffer(buffer_idx);
-                            CompletionResult::RecvComplete { user_data, data }
-                        } else {
-                            self.release_buffer(buffer_idx);
-                            CompletionResult::Error {
-                                user_data,
-                                error: io::Error::from_raw_os_error(-result),
-                            }
-                        }
-                    }
-                    OpType::SendMsg { buffer_idx } => {
+                        CompletionResult::RecvComplete { user_data, data }
+                    } else {
                         self.release_buffer(buffer_idx);
-                        if result >= 0 {
-                            self.stats
-                                .bytes_sent
-                                .fetch_add(result as u64, Ordering::Relaxed);
-                            CompletionResult::SendComplete {
-                                user_data,
-                                bytes_sent: result as usize,
-                            }
-                        } else {
-                            CompletionResult::Error {
-                                user_data,
-                                error: io::Error::from_raw_os_error(-result),
-                            }
+                        CompletionResult::Error {
+                            user_data,
+                            error: io::Error::from_raw_os_error(-result),
                         }
                     }
-                    OpType::RecvMsg { buffer_idx } => {
-                        if result >= 0 {
-                            let len = result as usize;
-                            self.stats
-                                .bytes_received
-                                .fetch_add(len as u64, Ordering::Relaxed);
-                            let data = self.buffers[buffer_idx][..len].to_vec();
-                            self.release_buffer(buffer_idx);
-                            CompletionResult::RecvComplete { user_data, data }
-                        } else {
-                            self.release_buffer(buffer_idx);
-                            CompletionResult::Error {
-                                user_data,
-                                error: io::Error::from_raw_os_error(-result),
-                            }
+                } else {
+                    self.release_buffer(buffer_idx);
+                    if result >= 0 {
+                        self.stats
+                            .bytes_sent
+                            .fetch_add(result as u64, Ordering::Relaxed);
+                        CompletionResult::SendComplete {
+                            user_data,
+                            bytes_sent: result as usize,
+                        }
+                    } else {
+                        CompletionResult::Error {
+                            user_data,
+                            error: io::Error::from_raw_os_error(-result),
                         }
                     }
                 };

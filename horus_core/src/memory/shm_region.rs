@@ -43,8 +43,6 @@ pub struct ShmRegion {
     handle: isize, // HANDLE
 
     size: usize,
-    #[allow(dead_code)]
-    name: String,
     owner: bool,
 }
 
@@ -99,7 +97,7 @@ impl ShmRegion {
             size,
             path,
             _file: file,
-            name: name.to_string(),
+
             owner: is_owner,
         })
     }
@@ -128,7 +126,7 @@ impl ShmRegion {
             size,
             path,
             _file: file,
-            name: name.to_string(),
+
             owner: false,
         })
     }
@@ -258,7 +256,7 @@ impl ShmRegion {
             fd,
             shm_name,
             size,
-            name: name.to_string(),
+
             owner: is_owner,
         })
     }
@@ -316,7 +314,7 @@ impl ShmRegion {
             fd,
             shm_name,
             size,
-            name: name.to_string(),
+
             owner: false,
         })
     }
@@ -432,7 +430,7 @@ impl ShmRegion {
             ptr: ptr as *mut u8,
             handle,
             size,
-            name: name.to_string(),
+
             owner: is_owner,
         })
     }
@@ -494,7 +492,7 @@ impl ShmRegion {
             ptr: ptr as *mut u8,
             handle,
             size,
-            name: name.to_string(),
+
             owner: false,
         })
     }
@@ -586,7 +584,7 @@ impl ShmRegion {
             size,
             path,
             _file: file,
-            name: name.to_string(),
+
             owner: is_owner,
         })
     }
@@ -608,7 +606,7 @@ impl ShmRegion {
             size,
             path,
             _file: file,
-            name: name.to_string(),
+
             owner: false,
         })
     }

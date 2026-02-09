@@ -249,46 +249,6 @@ impl RuntimeProfiler {
             .collect()
     }
 
-    /// Generate summary report
-    pub fn summary(&self) -> ProfilerSummary {
-        let total_nodes = self.node_stats.len();
-        let ultra_fast = self.get_ultra_fast_nodes().len();
-        let io_heavy = self.get_io_heavy_nodes().len();
-        let cpu_bound = self.get_cpu_bound_nodes().len();
-
-        let mut total_avg_us: f64 = 0.0;
-        let mut min_avg_us: f64 = f64::MAX;
-        let mut max_avg_us: f64 = 0.0;
-
-        for stats in self.node_stats.values() {
-            total_avg_us += stats.avg_us;
-            min_avg_us = min_avg_us.min(stats.avg_us);
-            max_avg_us = max_avg_us.max(stats.avg_us);
-        }
-
-        let avg_avg_us = if total_nodes > 0 {
-            total_avg_us / total_nodes as f64
-        } else {
-            0.0
-        };
-
-        ProfilerSummary {
-            total_nodes,
-            ultra_fast_nodes: ultra_fast,
-            io_heavy_nodes: io_heavy,
-            cpu_bound_nodes: cpu_bound,
-            avg_execution_us: avg_avg_us,
-            min_execution_us: if min_avg_us == f64::MAX {
-                0.0
-            } else {
-                min_avg_us
-            },
-            max_execution_us: max_avg_us,
-            learning_complete: self.is_learning_complete(),
-            learning_progress: self.learning_progress(),
-        }
-    }
-
     /// Print detailed statistics for all nodes
     pub fn print_stats(&self) {
         println!("\n=== Runtime Profiler Statistics ===");
@@ -331,38 +291,29 @@ impl RuntimeProfiler {
             );
         }
 
-        let summary = self.summary();
+        let total_nodes = self.node_stats.len();
+        let ultra_fast_nodes = self.get_ultra_fast_nodes().len();
+        let io_heavy_nodes = self.get_io_heavy_nodes().len();
+        let cpu_bound_nodes = self.get_cpu_bound_nodes().len();
+
         println!("\n=== Summary ===");
-        println!(
-            "Ultra-Fast Nodes: {} ({:.1}%)",
-            summary.ultra_fast_nodes,
-            (summary.ultra_fast_nodes as f64 / summary.total_nodes as f64) * 100.0
-        );
-        println!(
-            "I/O Heavy Nodes: {} ({:.1}%)",
-            summary.io_heavy_nodes,
-            (summary.io_heavy_nodes as f64 / summary.total_nodes as f64) * 100.0
-        );
-        println!(
-            "CPU Bound Nodes: {} ({:.1}%)",
-            summary.cpu_bound_nodes,
-            (summary.cpu_bound_nodes as f64 / summary.total_nodes as f64) * 100.0
-        );
+        if total_nodes > 0 {
+            println!(
+                "Ultra-Fast Nodes: {} ({:.1}%)",
+                ultra_fast_nodes,
+                (ultra_fast_nodes as f64 / total_nodes as f64) * 100.0
+            );
+            println!(
+                "I/O Heavy Nodes: {} ({:.1}%)",
+                io_heavy_nodes,
+                (io_heavy_nodes as f64 / total_nodes as f64) * 100.0
+            );
+            println!(
+                "CPU Bound Nodes: {} ({:.1}%)",
+                cpu_bound_nodes,
+                (cpu_bound_nodes as f64 / total_nodes as f64) * 100.0
+            );
+        }
         println!();
     }
-}
-
-/// Summary of profiler statistics
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct ProfilerSummary {
-    pub total_nodes: usize,
-    pub ultra_fast_nodes: usize,
-    pub io_heavy_nodes: usize,
-    pub cpu_bound_nodes: usize,
-    pub avg_execution_us: f64,
-    pub min_execution_us: f64,
-    pub max_execution_us: f64,
-    pub learning_complete: bool,
-    pub learning_progress: f64,
 }

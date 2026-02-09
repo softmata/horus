@@ -231,22 +231,6 @@ impl DependencyGraph {
             .is_some_and(|reachable| reachable.contains(to))
     }
 
-    /// Get statistics about the graph
-    pub fn stats(&self) -> GraphStats {
-        GraphStats {
-            total_nodes: self.nodes.len(),
-            total_edges: self.edges.len(),
-            num_levels: self.levels.len(),
-            num_parallel_groups: self.parallel_groups.len(),
-            max_parallel_nodes: self
-                .parallel_groups
-                .iter()
-                .map(|g| g.len())
-                .max()
-                .unwrap_or(0),
-        }
-    }
-
     /// Check if graph has cycles (should be acyclic for valid pub/sub)
     pub fn has_cycles(&self) -> bool {
         let total_nodes_in_levels: usize = self.levels.iter().map(|l| l.len()).sum();
@@ -254,13 +238,4 @@ impl DependencyGraph {
     }
 }
 
-/// Statistics about dependency graph
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct GraphStats {
-    pub total_nodes: usize,
-    pub total_edges: usize,
-    pub num_levels: usize,
-    pub num_parallel_groups: usize,
-    pub max_parallel_nodes: usize,
-}
+

@@ -100,32 +100,28 @@ impl TierClassifier {
             .collect()
     }
 
-    /// Get statistics about tier distribution
-    pub fn tier_stats(&self) -> TierStats {
-        let mut stats = TierStats {
-            total_nodes: self.assignments.len(),
-            ..Default::default()
-        };
-
-        for tier in self.assignments.values() {
-            match tier {
-                ExecutionTier::UltraFast => stats.ultra_fast += 1,
-                ExecutionTier::Fast => stats.fast += 1,
-                ExecutionTier::AsyncIO => stats.async_io += 1,
-                ExecutionTier::Isolated => stats.isolated += 1,
-                ExecutionTier::Background => stats.background += 1,
-            }
-        }
-
-        stats
-    }
-
     /// Print classification results
     pub fn print_classification(&self) {
         println!("\n=== Execution Tier Classification ===");
 
-        let stats = self.tier_stats();
-        println!("Total Nodes: {}", stats.total_nodes);
+        let total_nodes = self.assignments.len();
+        let mut ultra_fast = 0usize;
+        let mut fast = 0usize;
+        let mut async_io = 0usize;
+        let mut isolated = 0usize;
+        let mut background = 0usize;
+
+        for tier in self.assignments.values() {
+            match tier {
+                ExecutionTier::UltraFast => ultra_fast += 1,
+                ExecutionTier::Fast => fast += 1,
+                ExecutionTier::AsyncIO => async_io += 1,
+                ExecutionTier::Isolated => isolated += 1,
+                ExecutionTier::Background => background += 1,
+            }
+        }
+
+        println!("Total Nodes: {}", total_nodes);
         println!("\nTier Distribution:");
         println!(
             "{:<20} {:>8} {:>8} {:>15}",
@@ -134,16 +130,16 @@ impl TierClassifier {
         println!("{}", "-".repeat(60));
 
         let tiers = [
-            (ExecutionTier::UltraFast, stats.ultra_fast),
-            (ExecutionTier::Fast, stats.fast),
-            (ExecutionTier::AsyncIO, stats.async_io),
-            (ExecutionTier::Isolated, stats.isolated),
-            (ExecutionTier::Background, stats.background),
+            (ExecutionTier::UltraFast, ultra_fast),
+            (ExecutionTier::Fast, fast),
+            (ExecutionTier::AsyncIO, async_io),
+            (ExecutionTier::Isolated, isolated),
+            (ExecutionTier::Background, background),
         ];
 
         for (tier, count) in tiers {
-            let percent = if stats.total_nodes > 0 {
-                (count as f64 / stats.total_nodes as f64) * 100.0
+            let percent = if total_nodes > 0 {
+                (count as f64 / total_nodes as f64) * 100.0
             } else {
                 0.0
             };
@@ -175,37 +171,5 @@ impl TierClassifier {
             }
         }
         println!();
-    }
-}
-
-/// Statistics about tier distribution
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
-pub struct TierStats {
-    pub total_nodes: usize,
-    pub ultra_fast: usize,
-    pub fast: usize,
-    pub async_io: usize,
-    pub isolated: usize,
-    pub background: usize,
-}
-
-impl TierStats {
-    /// Get percentage of nodes in ultra-fast tier
-    pub fn ultra_fast_percent(&self) -> f64 {
-        if self.total_nodes == 0 {
-            0.0
-        } else {
-            (self.ultra_fast as f64 / self.total_nodes as f64) * 100.0
-        }
-    }
-
-    /// Get percentage of nodes that can run in parallel (ultra-fast + fast)
-    pub fn parallel_capable_percent(&self) -> f64 {
-        if self.total_nodes == 0 {
-            0.0
-        } else {
-            ((self.ultra_fast + self.fast) as f64 / self.total_nodes as f64) * 100.0
-        }
     }
 }

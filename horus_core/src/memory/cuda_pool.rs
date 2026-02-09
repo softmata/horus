@@ -48,12 +48,9 @@ use crate::error::{HorusError, HorusResult};
 use crate::memory::platform::shm_base_dir;
 use crate::memory::tensor_pool::{TensorDevice, TensorDtype, MAX_TENSOR_DIMS};
 use memmap2::{MmapMut, MmapOptions};
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
 use super::cuda_ffi::{self, CUDA_IPC_HANDLE_SIZE};
@@ -348,15 +345,9 @@ impl CudaTensor {
 pub struct CudaTensorPool {
     pool_id: u32,
     device_id: i32,
-    #[allow(dead_code)]
-    shm_path: PathBuf,
     mmap: MmapMut,
     _file: File,
     is_owner: bool,
-    /// Local cache of opened IPC handles (slot_id -> device_ptr)
-    /// Only used by non-owner processes
-    #[allow(dead_code)]
-    opened_handles: Arc<Mutex<HashMap<u32, *mut c_void>>>,
 }
 
 // Safety: Pool uses atomic operations and IPC handles are process-safe
@@ -402,15 +393,12 @@ impl CudaTensorPool {
 
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
-        #[allow(clippy::arc_with_non_send_sync)]
         let mut pool = Self {
             pool_id,
             device_id,
-            shm_path,
             mmap,
             _file: file,
             is_owner: true,
-            opened_handles: Arc::new(Mutex::new(HashMap::new())),
         };
 
         pool.initialize(config.max_slots)?;
@@ -451,15 +439,12 @@ impl CudaTensorPool {
 
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
-        #[allow(clippy::arc_with_non_send_sync)]
         let pool = Self {
             pool_id,
             device_id,
-            shm_path,
             mmap,
             _file: file,
             is_owner: false,
-            opened_handles: Arc::new(Mutex::new(HashMap::new())),
         };
 
         pool.validate()?;
@@ -904,14 +889,6 @@ impl Drop for CudaTensorPool {
             }
         }
 
-        // Close any opened IPC handles (for non-owner processes)
-        #[cfg(feature = "cuda")]
-        {
-            let handles = self.opened_handles.lock().unwrap();
-            for (_, &ptr) in handles.iter() {
-                let _ = cuda_ffi::ipc_close_mem_handle(ptr);
-            }
-        }
     }
 }
 
