@@ -139,52 +139,6 @@ pub type Error = HorusError;
 pub type Result<T> = std::result::Result<T, HorusError>;
 
 // ============================================
-// Error context extension trait (1.1)
-// ============================================
-
-/// Extension trait for adding context to errors while preserving the source chain.
-///
-/// Instead of:
-/// ```rust,ignore
-/// fs::read_to_string(path)
-///     .map_err(|e| HorusError::Config(format!("Failed to read config: {}", e)))?;
-/// ```
-///
-/// Use:
-/// ```rust,ignore
-/// fs::read_to_string(path)
-///     .horus_context(|| format!("Reading config file: {}", path.display()))?;
-/// ```
-///
-/// The error display will show the chain:
-/// ```text
-/// Reading config file: /etc/horus/config.toml
-///   Caused by: No such file or directory (os error 2)
-/// ```
-pub trait HorusContext<T> {
-    /// Add context to an error, preserving the original error as the source.
-    fn horus_context<F, S>(self, f: F) -> HorusResult<T>
-    where
-        F: FnOnce() -> S,
-        S: Into<String>;
-}
-
-impl<T, E: std::error::Error + Send + Sync + 'static> HorusContext<T>
-    for std::result::Result<T, E>
-{
-    fn horus_context<F, S>(self, f: F) -> HorusResult<T>
-    where
-        F: FnOnce() -> S,
-        S: Into<String>,
-    {
-        self.map_err(|e| HorusError::Contextual {
-            message: f().into(),
-            source: Box::new(e),
-        })
-    }
-}
-
-// ============================================
 // From implementations for common error types
 // ============================================
 
