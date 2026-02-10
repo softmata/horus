@@ -90,6 +90,32 @@ fn test_pod_detection_custom_structs() {
     assert!(is_pod::<MotorCommand>(), "MotorCommand should be POD");
     assert!(is_pod::<Pose3D>(), "Pose3D should be POD");
     assert!(is_pod::<RobotState>(), "Nested POD struct should be POD");
+
+    // Validate struct field access (ensures fields are used)
+    let cmd = MotorCommand {
+        velocities: [1.0; 6],
+        torques: [0.5; 6],
+        timestamp: 42,
+    };
+    assert_eq!(cmd.velocities[0], 1.0);
+    assert_eq!(cmd.torques[0], 0.5);
+    assert_eq!(cmd.timestamp, 42);
+
+    let pose = Pose3D {
+        position: [1.0, 2.0, 3.0],
+        orientation: [0.0, 0.0, 0.0, 1.0],
+    };
+    assert_eq!(pose.position[0], 1.0);
+    assert_eq!(pose.orientation[3], 1.0);
+
+    let state = RobotState {
+        pose,
+        velocity: [0.0; 6],
+        timestamp_ns: 100,
+    };
+    assert_eq!(state.pose.position[0], 1.0);
+    assert_eq!(state.velocity[0], 0.0);
+    assert_eq!(state.timestamp_ns, 100);
 }
 
 #[test]
@@ -97,14 +123,24 @@ fn test_pod_detection_non_pod_types() {
     assert!(!is_pod::<String>(), "String should NOT be POD");
     assert!(!is_pod::<Vec<u8>>(), "Vec should NOT be POD");
     assert!(!is_pod::<Box<u32>>(), "Box should NOT be POD");
-    assert!(
-        !is_pod::<LogMessage>(),
-        "Struct with String should NOT be POD"
-    );
-    assert!(
-        !is_pod::<SensorBatch>(),
-        "Struct with Vec should NOT be POD"
-    );
+
+    let log = LogMessage {
+        level: 1,
+        message: "test".to_string(),
+        timestamp: 42,
+    };
+    assert_eq!(log.level, 1);
+    assert_eq!(log.message, "test");
+    assert_eq!(log.timestamp, 42);
+    assert!(!is_pod::<LogMessage>(), "Struct with String should NOT be POD");
+
+    let batch = SensorBatch {
+        readings: vec![1.0, 2.0],
+        timestamp: 42,
+    };
+    assert_eq!(batch.readings.len(), 2);
+    assert_eq!(batch.timestamp, 42);
+    assert!(!is_pod::<SensorBatch>(), "Struct with Vec should NOT be POD");
 }
 
 #[test]
