@@ -17,14 +17,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scheduler = Scheduler::new()
         .with_config(SchedulerConfig::hard_realtime())
         .with_capacity(128)
-        .disable_learning()
         .with_safety_monitor(3)
         .with_name("CustomRTScheduler");
 
     println!("[OK] Created with builder pattern");
     println!("  Config: hard_realtime preset");
     println!("  Capacity: 128 nodes pre-allocated");
-    println!("  Learning: DISABLED");
     println!("  Safety: ENABLED (max 3 misses)\n");
 
     // OS integration (requires root/capabilities)
@@ -52,12 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--------------------------------------");
 
     let scheduler2 = Scheduler::new()
-        .with_config(SchedulerConfig::hard_realtime())
-        .disable_learning();
+        .with_config(SchedulerConfig::hard_realtime());
 
     println!("[OK] Created with hard_realtime() config");
-    println!("  (Uses builder pattern with preset config)");
-    println!("  Equivalent to Pattern 1\n");
+    println!("  (Uses builder pattern with preset config)\n");
 
     // Same OS integration
     let _ = scheduler2.set_os_priority(50);
@@ -76,14 +72,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _scheduler3 = Scheduler::new()
         .with_config(config)
         .with_capacity(64)
-        // Note: Learning is ENABLED (default) - mixed workload
         .with_safety_monitor(5) // More tolerant (5 misses)
         .with_name("MixedWorkload");
 
     println!("[OK] Custom composition:");
     println!("  Base: hard_realtime preset");
     println!("  Override: 2kHz rate (was 1kHz)");
-    println!("  Learning: ENABLED (default)");
     println!("  Safety: 5 misses allowed\n");
 
     // ========================================================================
@@ -93,11 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--------------------------------------");
 
     let _scheduler4 = Scheduler::new()
-        .disable_learning()
-        .with_name("SimScheduler");
+        .enable_determinism();
 
     println!("[OK] Deterministic scheduler:");
-    println!("  Learning: DISABLED");
     println!("  No OS integration needed");
     println!("  Suitable for testing/simulation\n");
 
@@ -110,9 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _scheduler5 = Scheduler::new();
 
     println!("[OK] Standard scheduler:");
-    println!("  All defaults");
-    println!("  Learning: ENABLED");
-    println!("  Adapts to workload dynamically\n");
+    println!("  All defaults\n");
 
     println!("=== Comparison Summary ===");
     println!();

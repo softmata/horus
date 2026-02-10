@@ -34,15 +34,10 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
 }
 
-// Import intelligence modules
-use super::executors::{
-    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
-    ParallelExecutor,
-};
+use super::executors::ParallelExecutor;
 use super::fault_tolerance::CircuitBreaker;
-use super::intelligence::{DependencyGraph, ExecutionTier, RuntimeProfiler, TierClassifier};
+use super::intelligence::RuntimeProfiler;
 use super::safety_monitor::SafetyMonitor;
-use tokio::sync::mpsc;
 
 // Auto-optimization capabilities
 use super::capabilities::RuntimeCapabilities;
@@ -50,8 +45,6 @@ use super::capabilities::RuntimeCapabilities;
 // Deterministic execution (for simulation mode)
 use super::deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace};
 
-// Debug assistant (for simulation mode)
-use super::ai_debug::DebugAssistant;
 use parking_lot::Mutex as ParkingMutex;
 
 /// Degradation that occurred during auto-optimization.
@@ -120,17 +113,9 @@ pub struct Scheduler {
     scheduler_name: String,
     working_dir: PathBuf,
 
-    // Intelligence layer (internal, not exposed via API)
+    // Profiling (for metrics reporting)
     profiler: RuntimeProfiler,
-    dependency_graph: Option<DependencyGraph>,
-    classifier: Option<TierClassifier>,
     parallel_executor: ParallelExecutor,
-    async_io_executor: Option<AsyncIOExecutor>,
-    async_result_rx: Option<mpsc::UnboundedReceiver<AsyncResult>>,
-    async_result_tx: Option<mpsc::UnboundedSender<AsyncResult>>,
-    background_executor: Option<BackgroundExecutor>,
-    isolated_executor: Option<IsolatedExecutor>,
-    learning_complete: bool,
 
     // Configuration (stored for runtime use)
     config: Option<super::config::SchedulerConfig>,
@@ -142,18 +127,8 @@ pub struct Scheduler {
     // Tick rate enforcement
     tick_period: Duration,
 
-    // Checkpoint system
-    checkpoint_manager: Option<super::checkpoint::CheckpointManager>,
-
     // Black box flight recorder
     blackbox: Option<super::blackbox::BlackBox>,
-
-    // Telemetry
-    telemetry: Option<super::telemetry::TelemetryManager>,
-
-    // Redundancy manager
-    redundancy: Option<super::redundancy::RedundancyManager>,
-
 
     // === Record/Replay System ===
     // Recording configuration (None = recording disabled)
@@ -189,10 +164,6 @@ pub struct Scheduler {
     /// Execution trace for recording and replay (simulation mode only)
     /// Records all node executions with timing for reproducibility verification
     execution_trace: Option<Arc<ParkingMutex<ExecutionTrace>>>,
-
-    /// Debug assistant for AI-powered issue detection (simulation mode only)
-    /// Analyzes execution patterns to find timing violations, jitter, etc.
-    debug_assistant: Option<DebugAssistant>,
 
     /// Deterministic configuration (seed, tick duration, etc.)
     deterministic_config: Option<DeterministicConfig>,
@@ -255,17 +226,9 @@ impl Scheduler {
             scheduler_name: "AutoScheduler".to_string(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
 
-            // Initialize intelligence layer - DETERMINISTIC BY DEFAULT
+            // Profiling for metrics
             profiler: RuntimeProfiler::new_default(),
-            dependency_graph: None,
-            classifier: None,
             parallel_executor: ParallelExecutor::new(),
-            async_io_executor: None,
-            async_result_rx: None,
-            async_result_tx: None,
-            background_executor: None,
-            isolated_executor: None,
-            learning_complete: true,
 
             // Configuration
             config: None,
@@ -276,10 +239,7 @@ impl Scheduler {
 
             // Runtime features
             tick_period: Duration::from_micros(16667), // ~60Hz default
-            checkpoint_manager: None,
             blackbox: Some(super::blackbox::BlackBox::new(16)), // 16MB default for crash analysis
-            telemetry: None,
-            redundancy: None,
 
             // Record/Replay system (disabled by default)
             recording_config: None,
@@ -298,7 +258,6 @@ impl Scheduler {
             // Deterministic execution (disabled in production mode)
             deterministic_clock: None,
             execution_trace: None,
-            debug_assistant: None,
             deterministic_config: None,
         };
 
@@ -418,50 +377,6 @@ impl Scheduler {
         scheduler
     }
 
-    /// Create a **builder** for explicit control over all scheduler features.
-    ///
-    /// The builder pattern allows power users to configure every aspect of
-    /// the scheduler before construction. Unlike `new()` which auto-detects
-    /// and gracefully degrades, the builder with `strict()` will fail if
-    /// requested features cannot be applied.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// // Full control with builder
-    /// let scheduler = Scheduler::builder()
-    ///     .name("MyScheduler")
-    ///     .rt_priority(99)
-    ///     .memory_lock()
-    ///     .cpu_affinity(vec![7])
-    ///     .watchdog(100)
-    ///     .blackbox(16)
-    ///     .build()?;
-    ///
-    /// // Strict mode - fail on errors instead of degrading
-    /// let scheduler = Scheduler::builder()
-    ///     .rt_priority(99)
-    ///     .strict()
-    ///     .build()?;  // Returns Err if RT unavailable
-    /// ```
-    ///
-    /// # Available Methods
-    /// - **RT**: `rt_priority()`, `memory_lock()`, `cpu_affinity()`, `numa_aware()`
-    /// - **Determinism**: `deterministic()`, `seed()`, `virtual_time()`, `enable_tracing()`
-    /// - **Safety**: `watchdog()`, `wcet_enforcement()`, `circuit_breaker()`, `safety_monitor()`
-    /// - **Execution**: `parallel_executor()`, `isolated_executor()`, `async_io_executor()`
-    /// - **Recording**: `blackbox()`, `auto_record()`
-    /// - **Behavior**: `strict()`, `skip_detection()`
-    ///
-    /// # Presets
-    /// - `SchedulerBuilder::hard_realtime()` - Full RT features
-    /// - `SchedulerBuilder::simulation()` - Deterministic virtual time
-    /// - `SchedulerBuilder::prototype()` - Fast dev mode
-    /// - `SchedulerBuilder::safety_critical()` - Zero-tolerance, all safety features
-    pub fn builder() -> super::builder::SchedulerBuilder {
-        super::builder::SchedulerBuilder::new()
-    }
 
     // ========================================================================
     // PRESET CONSTRUCTORS
@@ -705,66 +620,6 @@ impl Scheduler {
             .any(|d| d.severity == DegradationSeverity::High)
     }
 
-    /// Record a degradation (used internally by SchedulerBuilder).
-    ///
-    /// This allows the builder to transfer degradations that occurred during
-    /// configuration to the scheduler instance.
-    pub(crate) fn record_degradation(&mut self, degradation: RtDegradation) {
-        self.rt_degradations.push(degradation);
-    }
-
-    /// Set runtime capabilities (used internally by SchedulerBuilder).
-    ///
-    /// This allows the builder to transfer detected capabilities to the
-    /// scheduler instance.
-    pub(crate) fn set_runtime_capabilities(&mut self, caps: RuntimeCapabilities) {
-        self.runtime_capabilities = Some(caps);
-    }
-
-    /// Set the blackbox flight recorder (used internally by SchedulerBuilder).
-    ///
-    /// This allows the builder to configure a blackbox for the scheduler.
-    pub(crate) fn set_blackbox(&mut self, blackbox: super::blackbox::BlackBox) {
-        self.blackbox = Some(blackbox);
-    }
-
-    /// Set the deterministic clock (used internally by SchedulerBuilder).
-    ///
-    /// This enables simulation mode with virtual time and deterministic RNG.
-    pub(crate) fn set_deterministic_clock(&mut self, clock: Arc<DeterministicClock>) {
-        self.deterministic_clock = Some(clock);
-    }
-
-    /// Set the deterministic config (used internally by SchedulerBuilder).
-    ///
-    /// This stores the configuration used to create the deterministic clock.
-    pub(crate) fn set_deterministic_config(&mut self, config: DeterministicConfig) {
-        self.deterministic_config = Some(config);
-    }
-
-    /// Clear runtime capabilities (used internally by SchedulerBuilder).
-    ///
-    /// This is called when `skip_detection()` is used to remove the
-    /// auto-detected capabilities from `Scheduler::new()`.
-    pub(crate) fn clear_capabilities(&mut self) {
-        self.runtime_capabilities = None;
-    }
-
-    /// Clear the blackbox flight recorder (used internally by SchedulerBuilder).
-    ///
-    /// This is called when the builder's `skip_detection()` is used and
-    /// no explicit blackbox was requested.
-    pub(crate) fn clear_blackbox(&mut self) {
-        self.blackbox = None;
-    }
-
-    /// Clear all RT degradations (used internally by SchedulerBuilder).
-    ///
-    /// This is called when `skip_detection()` is used to remove the
-    /// degradations recorded by `Scheduler::new()`.
-    pub(crate) fn clear_degradations(&mut self) {
-        self.rt_degradations.clear();
-    }
 
     /// Get a reference to the BlackBox flight recorder.
     ///
@@ -1042,22 +897,6 @@ impl Scheduler {
             "  [{}] BlackBox Recorder",
             if self.blackbox.is_some() { "x" } else { " " }
         ));
-        lines.push(format!(
-            "  [{}] Checkpoint Manager",
-            if self.checkpoint_manager.is_some() {
-                "x"
-            } else {
-                " "
-            }
-        ));
-        lines.push(format!(
-            "  [{}] Telemetry",
-            if self.telemetry.is_some() { "x" } else { " " }
-        ));
-        lines.push(format!(
-            "  [{}] Redundancy Manager",
-            if self.redundancy.is_some() { "x" } else { " " }
-        ));
         // Circuit breakers are always enabled per-node
         lines.push("  [x] Circuit Breakers (5 failures, 30s timeout)".to_string());
         // WCET enforcement is enabled when SafetyMonitor is present
@@ -1216,20 +1055,6 @@ impl Scheduler {
         self.execution_trace.clone()
     }
 
-    /// Get the debug assistant (simulation mode only).
-    ///
-    /// The debug assistant provides AI-powered issue detection:
-    /// - Timing violation detection
-    /// - Jitter analysis
-    /// - Message loss detection
-    /// - Sensor anomaly detection
-    /// - Control instability detection
-    ///
-    /// Returns `None` if not in simulation mode.
-    pub fn debug_assistant(&self) -> Option<&DebugAssistant> {
-        self.debug_assistant.as_ref()
-    }
-
     /// Get the deterministic configuration (simulation mode only).
     ///
     /// Contains the seed, tick duration, and tracing settings.
@@ -1265,8 +1090,7 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use horus_core::scheduling::SchedulerConfig;
     /// let mut scheduler = Scheduler::new()
-    ///     .with_config(SchedulerConfig::hard_realtime())
-    ///     .disable_learning();
+    ///     .with_config(SchedulerConfig::hard_realtime());
     /// ```
     pub fn with_config(mut self, config: super::config::SchedulerConfig) -> Self {
         self.apply_config(config);
@@ -1280,25 +1104,12 @@ impl Scheduler {
         // Apply execution mode
         match config.execution {
             ExecutionMode::Parallel => {
-                // Enable full parallelization
                 self.parallel_executor.set_max_threads(num_cpus::get());
                 print_line("Parallel execution mode selected");
             }
-            ExecutionMode::AsyncIO => {
-                // Force async I/O tier for all I/O operations
-                self.profiler.force_async_io_classification = true;
-                print_line("Async I/O mode selected");
-            }
             ExecutionMode::Sequential => {
-                // Disable all optimizations for deterministic execution
-                self.learning_complete = true; // Skip learning phase
-                self.classifier = None;
                 self.parallel_executor.set_max_threads(1);
                 print_line("Sequential execution mode selected");
-            }
-            ExecutionMode::AutoAdaptive => {
-                // Default adaptive behavior
-                print_line("Auto-adaptive mode selected");
             }
         }
 
@@ -1378,21 +1189,7 @@ impl Scheduler {
         self.tick_period =
             std::time::Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
 
-        // 2. Checkpoint system
-        if config.fault.checkpoint_interval_ms > 0 {
-            let checkpoint_dir = std::path::PathBuf::from("/tmp/horus_checkpoints");
-            let cm = super::checkpoint::CheckpointManager::new(
-                checkpoint_dir,
-                config.fault.checkpoint_interval_ms,
-            );
-            self.checkpoint_manager = Some(cm);
-            print_line(&format!(
-                "[SCHEDULER] Checkpoint system enabled (interval: {}ms)",
-                config.fault.checkpoint_interval_ms
-            ));
-        }
-
-        // 3. Black box flight recorder
+        // 2. Black box flight recorder
         if config.monitoring.black_box_enabled && config.monitoring.black_box_size_mb > 0 {
             let mut bb = super::blackbox::BlackBox::new(config.monitoring.black_box_size_mb);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
@@ -1407,34 +1204,7 @@ impl Scheduler {
             ));
         }
 
-        // 4. Telemetry endpoint
-        if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
-            let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
-            let interval_ms = config.monitoring.metrics_interval_ms;
-            let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
-            tm.set_scheduler_name(&self.scheduler_name);
-            self.telemetry = Some(tm);
-            print_line(&format!(
-                "[SCHEDULER] Telemetry enabled (endpoint: {})",
-                endpoint_str
-            ));
-        }
-
-        // 5. Redundancy (TMR)
-        if config.fault.redundancy_factor > 1 {
-            // Default to majority voting strategy
-            let strategy = super::redundancy::VotingStrategy::Majority;
-            self.redundancy = Some(super::redundancy::RedundancyManager::new(
-                config.fault.redundancy_factor as usize,
-                strategy,
-            ));
-            print_line(&format!(
-                "[SCHEDULER] Redundancy enabled (factor: {}, strategy: {:?})",
-                config.fault.redundancy_factor, strategy
-            ));
-        }
-
-        // 6. Real-time optimizations (Linux-specific)
+        // 3. Real-time optimizations (Linux-specific)
         #[cfg(target_os = "linux")]
         {
             // Memory locking
@@ -1540,12 +1310,9 @@ impl Scheduler {
     /// Enable deterministic execution for reproducible, bit-exact behavior
     ///
     /// When enabled:
-    /// - Learning disabled (no adaptive optimizations)
     /// - Deterministic collections (sorted iteration order)
     /// - Logical clock support (opt-in via config)
     /// - Predictable memory allocation (opt-in via config)
-    ///
-    /// Performance impact: ~5-10% slower (optimized deterministic implementation)
     ///
     /// Use cases:
     /// - Simulation (Gazebo, Unity integration)
@@ -1560,34 +1327,7 @@ impl Scheduler {
     ///     .enable_determinism();  // Reproducible execution
     /// ```
     pub fn enable_determinism(self) -> Self {
-        // Disable learning for deterministic behavior
-        self.disable_learning().with_name("DeterministicScheduler")
-    }
-
-    /// Disable the learning phase for predictable startup behavior
-    ///
-    /// When disabled:
-    /// - No ~100-tick profiling phase at startup
-    /// - No automatic tier classification of nodes
-    ///
-    /// Use cases:
-    /// - Real-time systems that need immediate predictable execution
-    /// - Testing/debugging where profiling overhead is unwanted
-    /// - Short-lived schedulers where learning would never complete
-    ///
-    /// For full deterministic behavior (reproducible execution), use
-    /// `enable_determinism()` instead which also disables learning.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use horus_core::Scheduler;
-    /// let scheduler = Scheduler::new()
-    ///     .disable_learning();  // Skip profiling, run immediately
-    /// ```
-    pub fn disable_learning(mut self) -> Self {
-        self.learning_complete = true;
-        self.classifier = None;
-        self
+        self.with_name("DeterministicScheduler")
     }
 
     /// Enable safety monitor with maximum allowed deadline misses
@@ -2017,32 +1757,6 @@ impl Scheduler {
     // Profile-Based Optimization (Deterministic Alternative to Learning)
     // ============================================================================
 
-    /// Enable the learning phase (opt-in for adaptive optimization).
-    ///
-    /// **Warning**: This makes execution non-deterministic!
-    ///
-    /// The learning phase profiles nodes for ~100 ticks and then
-    /// automatically classifies them into execution tiers. Results
-    /// may vary between runs due to system noise.
-    ///
-    /// For deterministic optimization, use `with_profile()` instead.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// // Opt-in to non-deterministic learning
-    /// let scheduler = Scheduler::new()
-    ///     .enable_learning();  // WARNING: Non-deterministic!
-    /// ```
-    pub fn enable_learning(mut self) -> Self {
-        self.learning_complete = false;
-        self.classifier = None;
-        print_line("[WARN] Learning phase enabled - execution will be non-deterministic");
-        print_line("       For deterministic optimization, use Scheduler::with_profile() instead");
-        self
-    }
-
     // ============================================================================
     // OS Integration Methods (low-level, genuinely different from config)
     // ============================================================================
@@ -2329,7 +2043,7 @@ impl Scheduler {
         is_rt_node: bool,
         wcet_budget: Option<std::time::Duration>,
         deadline: Option<std::time::Duration>,
-        tier: Option<super::intelligence::NodeTier>,
+        _tier: Option<super::intelligence::NodeTier>,
     ) -> &mut Self {
         let node_name = node.name().to_string();
 
@@ -2380,20 +2094,6 @@ impl Scheduler {
             is_stopped: false,
             is_paused: false,
         });
-
-        // Set tier if specified
-        if let Some(t) = tier {
-            if self.classifier.is_none() {
-                self.classifier = Some(super::intelligence::TierClassifier {
-                    assignments: std::collections::HashMap::new(),
-                });
-            }
-            if let Some(ref mut classifier) = self.classifier {
-                classifier
-                    .assignments
-                    .insert(node_name.clone(), t.to_execution_tier());
-            }
-        }
 
         if let Some(rate) = node_rate {
             print_line(&format!(
@@ -2581,9 +2281,6 @@ impl Scheduler {
             // Write initial registry
             self.update_registry();
 
-            // Build dependency graph from node pub/sub relationships
-            self.build_dependency_graph();
-
             // Main tick loop
             while self.is_running() {
                 // Check if duration limit has been reached
@@ -2616,52 +2313,6 @@ impl Scheduler {
 
                 let now = Instant::now();
                 self.last_instant = now;
-
-                // Check if learning phase is complete
-                if !self.learning_complete && self.profiler.is_learning_complete() {
-                    print_line("\n=== Learning Phase Complete ===");
-
-                    // Print profiling statistics
-                    self.profiler.print_stats();
-
-                    // Generate tier classification
-                    self.classifier = Some(TierClassifier::from_profiler(&self.profiler));
-
-                    // Print classification results
-                    if let Some(ref classifier) = self.classifier {
-                        classifier.print_classification();
-                    }
-
-                    // Print learning progress
-                    print_line(&format!(
-                        "\nLearning progress: {:.1}%",
-                        self.profiler.learning_progress() * 100.0
-                    ));
-
-                    // Print IO-heavy and CPU-bound nodes
-                    let io_nodes = self.profiler.get_io_heavy_nodes();
-                    if !io_nodes.is_empty() {
-                        print_line(&format!("  IO-heavy nodes: {:?}", io_nodes));
-                    }
-
-                    let cpu_nodes = self.profiler.get_cpu_bound_nodes();
-                    if !cpu_nodes.is_empty() {
-                        print_line(&format!("  CPU-bound nodes: {:?}", cpu_nodes));
-                    }
-
-                    // Initialize async I/O executor and move I/O-heavy nodes
-                    // (after logging is restored so moved nodes retain their logging settings)
-                    self.setup_async_executor().await;
-
-                    // Setup background executor for low-priority nodes
-                    self.setup_background_executor();
-
-                    // Setup isolated executor for fault-tolerant nodes
-                    self.setup_isolated_executor();
-
-                    self.learning_complete = true;
-                    print_line("=== Optimization Complete ===\n");
-                }
 
                 // Re-initialize nodes that need restart (set by control commands)
                 for registered in self.nodes.iter_mut() {
@@ -2696,15 +2347,8 @@ impl Scheduler {
                     }
                 }
 
-                // Execute nodes based on learning phase
-                if self.learning_complete {
-                    // Optimized execution with parallel groups
-                    self.execute_optimized(node_filter).await;
-                } else {
-                    // Learning mode: sequential execution with profiling
-                    self.execute_learning_mode(node_filter).await;
-                    self.profiler.tick();
-                }
+                // Execute nodes in priority order
+                self.execute_nodes(node_filter).await;
 
                 // Check watchdogs and handle emergency stop for RT systems
                 if let Some(ref monitor) = self.safety_monitor {
@@ -2756,12 +2400,6 @@ impl Scheduler {
                         }
                     }
 
-                    // Check dependency graph for cycles
-                    if let Some(ref graph) = self.dependency_graph {
-                        if graph.has_cycles() {
-                            print_line("WARNING: Dependency graph contains cycles!");
-                        }
-                    }
                 }
 
                 // === Runtime feature integrations ===
@@ -2769,97 +2407,6 @@ impl Scheduler {
                 // Black box tick increment
                 if let Some(ref mut bb) = self.blackbox {
                     bb.tick();
-                }
-
-                // Telemetry export (if interval elapsed)
-                if let Some(ref mut tm) = self.telemetry {
-                    if tm.should_export() {
-                        // Record scheduler metrics - use profiler's learning_ticks as tick count
-                        let total_ticks = self
-                            .profiler
-                            .node_stats
-                            .values()
-                            .map(|s| s.count)
-                            .max()
-                            .unwrap_or(0) as u64;
-                        tm.counter("scheduler_ticks", total_ticks);
-                        tm.gauge("scheduler_uptime_secs", start_time.elapsed().as_secs_f64());
-                        tm.gauge("nodes_active", self.nodes.len() as f64);
-
-                        // Record node stats from profiler
-                        for registered in &self.nodes {
-                            let node_name = registered.node.name();
-                            if let Some(stats) = self.profiler.get_stats(node_name) {
-                                let mut labels = std::collections::HashMap::new();
-                                labels.insert("node".to_string(), node_name.to_string());
-                                tm.gauge_with_labels(
-                                    "node_avg_duration_us",
-                                    stats.avg_us,
-                                    labels.clone(),
-                                );
-                                tm.counter_with_labels(
-                                    "node_tick_count",
-                                    stats.count as u64,
-                                    labels,
-                                );
-                            }
-                        }
-
-                        let _ = tm.export();
-                    }
-                }
-
-                // Checkpoint creation (if interval elapsed)
-                if let Some(ref mut cm) = self.checkpoint_manager {
-                    if cm.should_checkpoint() {
-                        // Get tick count estimate
-                        let total_ticks = self
-                            .profiler
-                            .node_stats
-                            .values()
-                            .map(|s| s.count)
-                            .max()
-                            .unwrap_or(0) as u64;
-
-                        // Create checkpoint metadata
-                        let metadata = super::checkpoint::CheckpointMetadata {
-                            scheduler_name: self.scheduler_name.clone(),
-                            total_ticks,
-                            learning_complete: self.learning_complete,
-                            node_count: self.nodes.len(),
-                            uptime_secs: start_time.elapsed().as_secs_f64(),
-                        };
-
-                        // Create checkpoint
-                        if let Some(mut checkpoint) = cm.create_checkpoint(metadata) {
-                            // Add node states
-                            for registered in &self.nodes {
-                                let node_name = registered.node.name();
-                                let (tick_count, last_tick_us, error_count) = self
-                                    .profiler
-                                    .get_stats(node_name)
-                                    .map(|s| {
-                                        (s.count as u64, s.avg_us as u64, s.failure_count as u64)
-                                    })
-                                    .unwrap_or((0, 0, 0));
-
-                                let node_checkpoint = super::checkpoint::NodeCheckpoint {
-                                    name: node_name.to_string(),
-                                    tick_count,
-                                    last_tick_us,
-                                    error_count,
-                                    custom_state: None,
-                                };
-                                checkpoint
-                                    .node_states
-                                    .insert(node_name.to_string(), node_checkpoint);
-                            }
-
-                            if let Err(e) = cm.save_checkpoint(&checkpoint) {
-                                print_line(&format!("[CHECKPOINT] Failed to save: {}", e));
-                            }
-                        }
-                    }
                 }
 
                 // Use pre-computed tick period (from config or default ~60Hz)
@@ -2875,11 +2422,6 @@ impl Scheduler {
 
                 // Increment tick counter for replay tracking
                 self.current_tick += 1;
-            }
-
-            // Shutdown async I/O nodes first
-            if let Some(ref mut executor) = self.async_io_executor {
-                executor.shutdown_all().await;
             }
 
             // Shutdown nodes
@@ -2921,20 +2463,6 @@ impl Scheduler {
                 }
             }
 
-            // === Shutdown runtime features ===
-
-            // Shutdown background executor
-            if let Some(ref mut executor) = self.background_executor {
-                executor.shutdown();
-                print_line("Background executor shutdown complete");
-            }
-
-            // Shutdown isolated executor
-            if let Some(ref mut executor) = self.isolated_executor {
-                executor.shutdown();
-                print_line("Isolated executor shutdown complete");
-            }
-
             // Get total tick count from profiler stats
             let total_ticks = self
                 .profiler
@@ -2953,13 +2481,6 @@ impl Scheduler {
                 if let Err(e) = bb.save() {
                     print_line(&format!("[BLACKBOX] Failed to save: {}", e));
                 }
-            }
-
-            // Final telemetry export
-            if let Some(ref mut tm) = self.telemetry {
-                tm.counter("scheduler_ticks", total_ticks);
-                tm.gauge("scheduler_shutdown", 1.0);
-                let _ = tm.export();
             }
 
             // Clean up registry file and session
@@ -3312,37 +2833,8 @@ impl Scheduler {
         }
     }
 
-    /// Build dependency graph from node pub/sub relationships
-    fn build_dependency_graph(&mut self) {
-        let node_data: Vec<(&str, Vec<String>, Vec<String>)> = self
-            .nodes
-            .iter()
-            .map(|r| {
-                let name = r.node.name();
-                let pubs = r
-                    .node
-                    .publishers()
-                    .iter()
-                    .map(|p| p.topic_name.clone())
-                    .collect();
-                let subs = r
-                    .node
-                    .subscribers()
-                    .iter()
-                    .map(|s| s.topic_name.clone())
-                    .collect();
-                (name, pubs, subs)
-            })
-            .collect();
-
-        if !node_data.is_empty() {
-            let graph = DependencyGraph::from_nodes(&node_data);
-            self.dependency_graph = Some(graph);
-        }
-    }
-
-    /// Execute nodes in learning mode (sequential with profiling)
-    async fn execute_learning_mode(&mut self, node_filter: Option<&[&str]>) {
+    /// Execute nodes in priority order with profiling and RT support
+    async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
         // Sort by priority
         self.nodes.sort_by_key(|r| r.priority);
 
@@ -3523,461 +3015,6 @@ impl Scheduler {
                 }
             }
         }
-    }
-
-    /// Execute nodes in optimized mode (parallel execution based on dependency graph)
-    async fn execute_optimized(&mut self, node_filter: Option<&[&str]>) {
-        // If no dependency graph available, fall back to sequential
-        if self.dependency_graph.is_none() {
-            self.execute_learning_mode(node_filter).await;
-            return;
-        }
-
-        // Trigger async I/O nodes
-        if let Some(ref executor) = self.async_io_executor {
-            executor.tick_all().await;
-        }
-
-        // Trigger background nodes (low-priority, non-blocking)
-        if let Some(ref executor) = self.background_executor {
-            executor.tick_all();
-        }
-
-        // Trigger isolated nodes (fault-tolerant, process-isolated)
-        if let Some(ref mut executor) = self.isolated_executor {
-            let results = executor.tick_all();
-            for result in results {
-                if !result.success {
-                    if let Some(ref error) = result.error {
-                        eprintln!("[Isolated] Node {} failed: {}", result.node_name, error);
-                    }
-                    if result.restart_attempted {
-                        println!("[Isolated] Node {} restart attempted", result.node_name);
-                    }
-                }
-            }
-        }
-
-        // Execute nodes level by level (nodes in same level can run in parallel)
-        let levels = self
-            .dependency_graph
-            .as_ref()
-            .expect("Dependency graph should exist - checked above")
-            .levels
-            .clone();
-
-        for level in &levels {
-            // Find indices of nodes in this level that should run
-            let mut level_indices = Vec::new();
-
-            for node_name in level {
-                for (idx, registered) in self.nodes.iter().enumerate() {
-                    if registered.node.name() == node_name {
-                        // Skip stopped or paused nodes (per-node lifecycle control)
-                        if registered.is_stopped || registered.is_paused {
-                            break;
-                        }
-
-                        let should_run =
-                            node_filter.is_none_or(|filter| filter.contains(&node_name.as_str()));
-
-                        // Check rate limiting
-                        let should_tick = if let Some(rate_hz) = registered.rate_hz {
-                            let current_time = Instant::now();
-                            if let Some(last_tick) = registered.last_tick {
-                                let elapsed_secs = (current_time - last_tick).as_secs_f64();
-                                let period_secs = 1.0 / rate_hz;
-                                elapsed_secs >= period_secs
-                            } else {
-                                true
-                            }
-                        } else {
-                            true
-                        };
-
-                        if should_run && registered.initialized && should_tick {
-                            level_indices.push(idx);
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Execute nodes in this level
-            // NOTE: True parallel execution requires refactoring to allow concurrent
-            // mutable access to different Vec elements. Options:
-            // 1. Use UnsafeCell/RwLock per node (adds overhead)
-            // 2. Restructure nodes into separate Vecs (breaks encapsulation)
-            // 3. Use async/await with message passing (architectural change)
-            //
-            // For now, execute level-by-level sequentially. Since levels are already
-            // topologically sorted, this ensures correctness. Parallelism benefit
-            // would only apply within levels with multiple independent nodes.
-            //
-            // Performance: Still better than original sequential-by-priority because:
-            // - Respects true dependencies (not just priority)
-            // - Enables future parallelization without API changes
-            // - Critical path optimization from dependency analysis
-            for idx in level_indices {
-                self.execute_single_node(idx);
-            }
-        }
-
-        // Process any async I/O results
-        self.process_async_results().await;
-
-        // Process any background executor results (non-blocking)
-        self.process_background_results();
-    }
-
-    /// Execute a single node by index with RT support
-    fn execute_single_node(&mut self, idx: usize) {
-        // Check circuit breaker first
-        if !self.nodes[idx].circuit_breaker.should_allow() {
-            // Circuit is open, skip this node
-            return;
-        }
-
-        // Update rate limit timestamp
-        if self.nodes[idx].rate_hz.is_some() {
-            self.nodes[idx].last_tick = Some(Instant::now());
-        }
-
-        let node_name = self.nodes[idx].node.name();
-        let is_rt_node = self.nodes[idx].is_rt_node;
-        let wcet_budget = self.nodes[idx].wcet_budget;
-        let deadline = self.nodes[idx].deadline;
-
-        // Feed watchdog for RT nodes
-        if is_rt_node {
-            if let Some(ref monitor) = self.safety_monitor {
-                monitor.feed_watchdog(node_name);
-            }
-        }
-
-        let tick_start = Instant::now();
-
-        let tick_result = {
-            let registered = &mut self.nodes[idx];
-            if let Some(ref mut context) = registered.context {
-                context.start_tick();
-
-                // Set node context for hlog!() macro
-                let tick_number = context.metrics().total_ticks;
-                set_node_context(node_name, tick_number);
-
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    registered.node.tick();
-                }));
-                clear_node_context();
-                result
-            } else {
-                return;
-            }
-        };
-
-        let tick_duration = tick_start.elapsed();
-
-        // Check if node execution failed
-        if tick_result.is_err() {
-            // Record failure for Isolated tier classification
-            self.profiler.record_node_failure(node_name);
-            print_line(&format!("Node '{}' panicked during execution", node_name));
-        }
-
-        self.profiler.record(node_name, tick_duration);
-
-        // Check WCET budget for RT nodes
-        if is_rt_node && wcet_budget.is_some() {
-            if let Some(ref monitor) = self.safety_monitor {
-                if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                    print_line(&format!(
-                        " WCET violation in {}: {:?} > {:?}",
-                        violation.node_name, violation.actual, violation.budget
-                    ));
-                }
-            }
-        }
-
-        // Check deadline for RT nodes
-        if is_rt_node {
-            if let Some(deadline_duration) = deadline {
-                let elapsed = tick_start.elapsed();
-                if elapsed > deadline_duration {
-                    if let Some(ref monitor) = self.safety_monitor {
-                        monitor.record_deadline_miss(node_name);
-                        print_line(&format!(
-                            " Deadline miss in {}: {:?} > {:?}",
-                            node_name, elapsed, deadline_duration
-                        ));
-                    }
-                }
-            }
-        }
-
-        match tick_result {
-            Ok(_) => {
-                // Record success with circuit breaker
-                self.nodes[idx].circuit_breaker.record_success();
-
-                if let Some(ref mut context) = self.nodes[idx].context {
-                    context.record_tick();
-                }
-            }
-            Err(panic_err) => {
-                // Record failure with circuit breaker
-                self.nodes[idx].circuit_breaker.record_failure();
-                let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                    format!("Node panicked: {}", s)
-                } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                    format!("Node panicked: {}", s)
-                } else {
-                    "Node panicked with unknown error".to_string()
-                };
-
-                let registered = &mut self.nodes[idx];
-                if let Some(ref mut context) = registered.context {
-                    context.record_tick_failure(error_msg.clone());
-                    print_line(&format!(" {} failed: {}", node_name, error_msg));
-
-                    // Set context for on_error handler
-                    set_node_context(node_name, context.metrics().total_ticks);
-                    registered.node.on_error(&error_msg);
-                    clear_node_context();
-
-                    if context.config().restart_on_failure {
-                        match context.restart() {
-                            Ok(_) => {
-                                print_line(&format!(
-                                    " Node '{}' restarted successfully (attempt {}/{})",
-                                    node_name,
-                                    context.metrics().errors_count,
-                                    context.config().max_restart_attempts
-                                ));
-                                registered.initialized = true;
-                            }
-                            Err(e) => {
-                                print_line(&format!(
-                                    "Node '{}' exceeded max restart attempts: {}",
-                                    node_name, e
-                                ));
-                                context
-                                    .transition_to_crashed(format!("Max restarts exceeded: {}", e));
-                                registered.initialized = false;
-                            }
-                        }
-                    } else {
-                        context.transition_to_error(error_msg);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Setup async executor and move I/O-heavy nodes to it
-    async fn setup_async_executor(&mut self) {
-        // Create async I/O executor
-        let mut async_executor = match AsyncIOExecutor::new() {
-            Ok(exec) => exec,
-            Err(_) => return, // Continue without async tier if creation fails
-        };
-
-        // Create channel for async results
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.async_result_tx = Some(tx.clone());
-        self.async_result_rx = Some(rx);
-
-        // Identify I/O-heavy nodes from classifier
-        if let Some(ref classifier) = self.classifier {
-            let mut nodes_to_move = Vec::new();
-
-            // Find indices of I/O-heavy nodes
-            for (idx, registered) in self.nodes.iter().enumerate() {
-                let node_name = registered.node.name();
-
-                // Check if this node is classified as AsyncIO tier
-                if let Some(tier) = classifier.get_tier(node_name) {
-                    if tier == ExecutionTier::AsyncIO {
-                        nodes_to_move.push(idx);
-                    }
-                }
-            }
-
-            // Move nodes to async executor (in reverse order to maintain indices)
-            for idx in nodes_to_move.into_iter().rev() {
-                // Remove from main scheduler
-                let registered = self.nodes.swap_remove(idx);
-                let node_name = registered.node.name().to_string();
-
-                // Spawn in async executor
-                if let Err(e) =
-                    async_executor.spawn_node(registered.node, registered.context, tx.clone())
-                {
-                    print_line(&format!(
-                        "Failed to move {} to async tier: {}",
-                        node_name, e
-                    ));
-                    // Note: Can't put it back since we've moved ownership
-                    // This is acceptable as the node would be dropped anyway
-                }
-            }
-        }
-
-        self.async_io_executor = Some(async_executor);
-    }
-
-    /// Process async I/O results
-    async fn process_async_results(&mut self) {
-        if let Some(ref mut rx) = self.async_result_rx {
-            // Process all available results without blocking
-            while let Ok(result) = rx.try_recv() {
-                if !result.success {
-                    if let Some(ref error) = result.error {
-                        print_line(&format!(
-                            "Async node {} failed: {}",
-                            result.node_name, error
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Setup background executor and move background-tier nodes to it
-    fn setup_background_executor(&mut self) {
-        // Create background executor
-        let mut bg_executor = match BackgroundExecutor::new() {
-            Ok(exec) => exec,
-            Err(e) => {
-                print_line(&format!("[Background] Failed to create executor: {}", e));
-                return;
-            }
-        };
-
-        // Identify background nodes from classifier
-        if let Some(ref classifier) = self.classifier {
-            let mut nodes_to_move = Vec::new();
-
-            // Find indices of background nodes
-            for (idx, registered) in self.nodes.iter().enumerate() {
-                let node_name = registered.node.name();
-
-                // Check if this node is classified as Background tier
-                if let Some(tier) = classifier.get_tier(node_name) {
-                    if tier == ExecutionTier::Background {
-                        nodes_to_move.push(idx);
-                    }
-                }
-            }
-
-            // Move nodes to background executor (in reverse order to maintain indices)
-            for idx in nodes_to_move.into_iter().rev() {
-                // Remove from main scheduler
-                let registered = self.nodes.swap_remove(idx);
-                let node_name = registered.node.name().to_string();
-
-                // Spawn in background executor
-                if let Err(e) = bg_executor.spawn_node(registered.node, registered.context) {
-                    print_line(&format!(
-                        "Failed to move {} to background tier: {}",
-                        node_name, e
-                    ));
-                }
-            }
-
-            if bg_executor.node_count() > 0 {
-                print_line(&format!(
-                    "[Background] Moved {} nodes to low-priority thread",
-                    bg_executor.node_count()
-                ));
-            }
-        }
-
-        self.background_executor = Some(bg_executor);
-    }
-
-    /// Process background executor results (non-blocking)
-    fn process_background_results(&mut self) {
-        if let Some(ref executor) = self.background_executor {
-            for result in executor.poll_results() {
-                if !result.success {
-                    if let Some(ref error) = result.error {
-                        print_line(&format!(
-                            "[Background] Node {} failed: {}",
-                            result.node_name, error
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Setup isolated executor and move high-failure-rate nodes to it
-    fn setup_isolated_executor(&mut self) {
-        // Create isolated executor with default config
-        let config = IsolatedNodeConfig {
-            max_restarts: 3,
-            restart_delay: std::time::Duration::from_millis(500),
-            response_timeout: std::time::Duration::from_millis(5000),
-            heartbeat_timeout: std::time::Duration::from_secs(10),
-            runner_binary: None, // Use in-process mode by default
-            env_vars: std::collections::HashMap::new(),
-        };
-
-        let mut iso_executor = match IsolatedExecutor::new(config) {
-            Ok(exec) => exec,
-            Err(e) => {
-                print_line(&format!("[Isolated] Failed to create executor: {}", e));
-                return;
-            }
-        };
-
-        // Identify isolated nodes from classifier
-        if let Some(ref classifier) = self.classifier {
-            let mut nodes_to_move = Vec::new();
-
-            // Find indices of isolated nodes
-            for (idx, registered) in self.nodes.iter().enumerate() {
-                let node_name = registered.node.name();
-
-                // Check if this node is classified as Isolated tier
-                if let Some(tier) = classifier.get_tier(node_name) {
-                    if tier == ExecutionTier::Isolated {
-                        nodes_to_move.push(idx);
-                    }
-                }
-            }
-
-            // Move nodes to isolated executor (in reverse order to maintain indices)
-            for idx in nodes_to_move.into_iter().rev() {
-                // Remove from main scheduler
-                let registered = self.nodes.swap_remove(idx);
-                let node_name = registered.node.name().to_string();
-
-                // Spawn in isolated executor
-                // Use the node name as the factory name (for restart capability)
-                if let Err(e) =
-                    iso_executor.spawn_node(registered.node, &node_name, registered.context)
-                {
-                    print_line(&format!(
-                        "Failed to move {} to isolated tier: {}",
-                        node_name, e
-                    ));
-                }
-            }
-
-            if iso_executor.node_count() > 0 {
-                print_line(&format!(
-                    "[Isolated] Moved {} nodes to process isolation",
-                    iso_executor.node_count()
-                ));
-
-                // Start the watchdog for health monitoring
-                iso_executor.start_watchdog();
-            }
-        }
-
-        self.isolated_executor = Some(iso_executor);
     }
 }
 
@@ -4174,12 +3211,6 @@ mod tests {
         assert!(scheduler.is_running());
     }
 
-    #[test]
-    fn test_scheduler_disable_learning() {
-        let scheduler = Scheduler::new().disable_learning();
-        assert!(scheduler.is_running());
-    }
-
     // ============================================================================
     // Node Info Tests
     // ============================================================================
@@ -4325,8 +3356,7 @@ mod tests {
     fn test_scheduler_chainable_api() {
         let mut scheduler = Scheduler::new()
             .with_name("ChainedScheduler")
-            .with_capacity(10)
-            .disable_learning();
+            .with_capacity(10);
 
         scheduler
             .add(CounterNode::new("chain_node"))

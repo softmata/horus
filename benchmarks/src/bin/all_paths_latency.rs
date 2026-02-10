@@ -8,6 +8,7 @@
 //! Uses CmdVel::with_timestamp() to avoid SystemTime::now() syscall overhead (~52ns).
 
 use horus::prelude::Topic;
+use horus_benchmarks::set_cpu_affinity;
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer};
 use horus_library::messages::cmd_vel::CmdVel;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -207,38 +208,45 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     let consumer_ready = Arc::new(AtomicBool::new(false));
     let consumer_ready_clone = consumer_ready.clone();
 
-    // Consumer thread — uses yield_now() instead of spin_loop() to avoid
-    // starving the producer thread on the main thread.
-    let cons_handle = thread::spawn(move || {
-        // Warmup
-        let mut count = 0u64;
-        while count < 1000 {
-            if consumer.recv().is_some() {
-                count += 1;
-            } else {
-                thread::yield_now();
-            }
-        }
-        *backend_clone.lock().unwrap() = consumer.backend_type().to_string();
-        consumer_ready_clone.store(true, Ordering::Release);
+    // Pin producer (main thread) to core 0
+    let _ = set_cpu_affinity(0);
 
-        // Consumption loop — yield when empty to let producer thread run
-        while !done_clone.load(Ordering::Relaxed) {
-            if consumer.recv().is_none() {
-                thread::yield_now();
-            }
-        }
-        while consumer.recv().is_some() {}
-    });
-
-    // Send warmup
+    // Send initial messages BEFORE spawning consumer thread so the ring has data
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
     for _ in 0..2000 {
         producer.send(msg);
     }
 
+    // Consumer thread — pinned to core 2 to avoid contention with producer.
+    let cons_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(2);
+
+        // Warmup — drain pre-sent messages
+        let mut count = 0u64;
+        let warmup_deadline = Instant::now() + Duration::from_secs(5);
+        while count < 1000 && Instant::now() < warmup_deadline {
+            if consumer.recv().is_some() {
+                count += 1;
+            } else {
+                std::hint::spin_loop();
+            }
+        }
+        *backend_clone.lock().unwrap() = consumer.backend_type().to_string();
+        consumer_ready_clone.store(true, Ordering::Release);
+
+        // Aggressive consumption on dedicated core
+        while !done_clone.load(Ordering::Relaxed) {
+            if consumer.recv().is_none() {
+                std::hint::spin_loop();
+            }
+        }
+        while consumer.recv().is_some() {}
+    });
+
     while !consumer_ready.load(Ordering::Acquire) {
-        thread::yield_now();
+        // Keep sending while waiting for consumer to warm up
+        producer.send(msg);
+        std::hint::spin_loop();
     }
 
     // Extra warmup rounds
@@ -384,10 +392,13 @@ fn bench_spsc_intra_detailed_rdtsc(timer: &PrecisionTimer) {
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = done.clone();
 
+    let _ = set_cpu_affinity(0); // Pin producer to core 0
+
     let cons_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(2); // Pin consumer to core 2
         while !done_clone.load(Ordering::Relaxed) {
             if consumer.recv().is_none() {
-                thread::yield_now();
+                std::hint::spin_loop();
             }
         }
         while consumer.recv().is_some() {}

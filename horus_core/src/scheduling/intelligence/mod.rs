@@ -1,16 +1,8 @@
-/// Dependency graph analysis for detecting parallelizable nodes
-pub mod dependency_graph;
-
-/// Runtime profiler for learning node execution characteristics
+/// Runtime profiler for tracking node execution statistics
 pub mod profiler;
 
-/// Execution tier classifier for optimal backend selection
-pub mod classifier;
-
-/// Offline profiling system for deterministic execution
+/// Offline profiling system and node tier annotations
 pub mod profile;
 
-pub use classifier::{ExecutionTier, TierClassifier};
-pub use dependency_graph::DependencyGraph;
 pub use profile::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
 pub use profiler::RuntimeProfiler;

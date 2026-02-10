@@ -81,41 +81,27 @@ pub mod prelude {
         create_shared_blackbox,
         BlackBox,
         BlackBoxEvent,
-        // Checkpointing
-        Checkpoint,
-        CheckpointManager,
-        CheckpointMetadata,
         // Circuit breaker
         CircuitBreaker,
         CircuitState,
-        // Redundancy/TMR voting
-        FaultStats,
-        NodeCheckpoint,
-        RedundancyManager,
-        RedundantValue,
         // Safety monitoring
         SafetyMonitor,
         SafetyState,
         SafetyStats,
         SharedBlackBox,
-        VoteResult,
-        Voter,
-        VotingStrategy,
         WCETEnforcer,
         Watchdog,
     };
 
     // ============================================
-    // Advanced Executors
+    // Parallel Executor
     // ============================================
-    pub use horus_core::scheduling::{
-        AsyncIOExecutor, AsyncResult, BackgroundExecutor, ParallelExecutor,
-    };
+    pub use horus_core::scheduling::ParallelExecutor;
 
     // ============================================
     // Profiling & Intelligence
     // ============================================
-    // NOTE: Internal types (TierClassifier, RuntimeProfiler, DependencyGraph, ExecutionTier)
+    // NOTE: RuntimeProfiler is internal (used by scheduler.rs for metrics)
     // are not exported - use horus_core::scheduling directly if needed for advanced use.
     pub use horus_core::scheduling::{
         NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError,
@@ -129,13 +115,6 @@ pub mod prelude {
         RecordingManager, SchedulerRecording,
     };
 
-    // ============================================
-    // Telemetry
-    // ============================================
-    pub use horus_core::scheduling::{
-        create_shared_telemetry, Metric, MetricValue, SharedTelemetry, TelemetryEndpoint,
-        TelemetryManager, TelemetrySnapshot,
-    };
 
     // ============================================
     // Runtime (OS-level features)

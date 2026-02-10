@@ -37,14 +37,8 @@ mod intelligence;
 // Runtime OS-level features
 pub mod runtime;
 
-// Fault tolerance and monitoring
+// Flight recorder
 pub mod blackbox;
-pub mod checkpoint;
-pub mod redundancy;
-pub mod telemetry;
-
-// AI-powered debugging
-pub mod ai_debug;
 
 // Record/Replay system
 pub mod record_replay;
@@ -58,19 +52,9 @@ pub mod deterministic;
 // Runtime capability detection for auto-optimization
 pub mod capabilities;
 
-// Builder pattern for explicit scheduler configuration
-pub mod builder;
-
 // Node builder for fluent node configuration
 pub mod node_builder;
 
-// Distributed multi-process/robot recording
-pub mod distributed_recording;
-
-// Expose async_io module for AsyncNode
-pub mod async_io {
-    pub use super::executors::async_io::AsyncNode;
-}
 
 pub use config::{
     ConfigValue, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
@@ -86,16 +70,8 @@ pub use runtime::{
     lock_all_memory, set_thread_affinity,
 };
 
-// Re-export fault tolerance
+// Re-export blackbox flight recorder
 pub use blackbox::{create_shared_blackbox, BlackBox, BlackBoxEvent, SharedBlackBox};
-pub use checkpoint::{Checkpoint, CheckpointManager, CheckpointMetadata, NodeCheckpoint};
-pub use redundancy::{
-    FaultStats, RedundancyManager, RedundantValue, VoteResult, Voter, VotingStrategy,
-};
-pub use telemetry::{
-    create_shared_telemetry, Metric, MetricValue, SharedTelemetry, TelemetryEndpoint,
-    TelemetryManager, TelemetrySnapshot,
-};
 
 // Re-export record/replay
 pub use record_replay::{
@@ -132,16 +108,12 @@ pub use record_replay::{
 };
 
 // Re-export intelligence (profiling, classification)
-// NOTE: Internal types (TierClassifier, RuntimeProfiler, DependencyGraph, ExecutionTier)
-// are intentionally NOT exported - they are implementation details used by scheduler.rs.
+// NOTE: RuntimeProfiler is internal (used by scheduler.rs for metrics).
 // Use NodeTier for developer-facing tier annotation.
 pub use intelligence::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
 
 // Re-export executors
-pub use executors::{
-    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
-    IsolatedNodeStats, IsolatedResult, ParallelExecutor,
-};
+pub use executors::ParallelExecutor;
 
 // Re-export fault tolerance
 pub use fault_tolerance::{CircuitBreaker, CircuitState};
@@ -170,24 +142,10 @@ pub use deterministic::{
     ViolationSeverity,
 };
 
-// Re-export distributed recording
-pub use distributed_recording::{
-    DistributedError, DistributedEvent, DistributedEventType, FleetEvent, FleetEventRef,
-    FleetRecorder, HybridReplayConfig, ProcessRecorder, RecordingCoordinator, RobotRecording,
-    SnapshotResult, VectorClock,
-};
-
-// Re-export AI debug assistant
-pub use ai_debug::{
-    AnalysisContext, AnalysisResult, AnalysisStats, AssistantConfig, DebugAssistant, DetectedIssue,
-    IssueCategory, PatternDetector, Severity, TimelineEvent, TimelineEventType,
-};
 
 // Re-export runtime capabilities
 pub use capabilities::RuntimeCapabilities;
 
-// Re-export builder
-pub use builder::{CircuitBreakerConfig, SchedulerBuilder};
 
 // Re-export node builder
 pub use node_builder::{NodeBuilder, NodeConfig};

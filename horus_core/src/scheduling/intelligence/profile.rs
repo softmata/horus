@@ -13,8 +13,6 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use super::classifier::ExecutionTier;
-
 /// Node tier for explicit annotation by developers
 ///
 /// Use this to declare a node's execution characteristics at compile time,
@@ -62,19 +60,6 @@ pub enum NodeTier {
 }
 
 impl NodeTier {
-    /// Convert to internal ExecutionTier
-    pub fn to_execution_tier(&self) -> ExecutionTier {
-        match self {
-            NodeTier::UltraFast => ExecutionTier::UltraFast,
-            NodeTier::Fast => ExecutionTier::Fast,
-            NodeTier::Normal => ExecutionTier::Fast, // Normal maps to Fast internally
-            NodeTier::AsyncIO => ExecutionTier::AsyncIO,
-            NodeTier::Background => ExecutionTier::Background,
-            NodeTier::Isolated => ExecutionTier::Isolated,
-            NodeTier::Auto => ExecutionTier::Fast, // Default to Fast if no profile
-        }
-    }
-
     /// Get human-readable description
     pub fn description(&self) -> &'static str {
         match self {

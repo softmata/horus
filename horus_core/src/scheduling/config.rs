@@ -7,12 +7,8 @@ use std::time::Duration;
 pub enum ExecutionMode {
     /// Parallel execution with dependency resolution
     Parallel,
-    /// Async I/O for network and file operations
-    AsyncIO,
     /// Traditional sequential execution
     Sequential,
-    /// Mixed mode with automatic classification
-    AutoAdaptive,
 }
 
 /// Timing configuration
@@ -35,10 +31,6 @@ pub struct FaultConfig {
     pub recovery_threshold: u32,
     /// Circuit timeout in milliseconds
     pub circuit_timeout_ms: u64,
-    /// Redundancy factor for TMR (1 = disabled, 3 = triple modular redundancy)
-    pub redundancy_factor: u32,
-    /// Checkpointing frequency (0 = disabled)
-    pub checkpoint_interval_ms: u64,
 }
 
 /// Real-time configuration
@@ -78,8 +70,6 @@ pub struct MonitoringConfig {
     pub profiling_enabled: bool,
     /// Metrics export interval in ms
     pub metrics_interval_ms: u64,
-    /// Telemetry endpoint URL
-    pub telemetry_endpoint: Option<String>,
     /// Enable black box recording
     pub black_box_enabled: bool,
     /// Black box buffer size in MB
@@ -321,8 +311,6 @@ impl SchedulerConfig {
                 max_failures: 5,
                 recovery_threshold: 3,
                 circuit_timeout_ms: 5000,
-                redundancy_factor: 1,
-                checkpoint_interval_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -341,7 +329,6 @@ impl SchedulerConfig {
             monitoring: MonitoringConfig {
                 profiling_enabled: false,
                 metrics_interval_ms: 1000,
-                telemetry_endpoint: None,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
             },
@@ -369,7 +356,7 @@ impl SchedulerConfig {
     /// Standard configuration for most robots
     pub fn standard() -> Self {
         Self {
-            execution: ExecutionMode::AutoAdaptive,
+            execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
                 per_node_rates: true,
@@ -379,8 +366,6 @@ impl SchedulerConfig {
                 max_failures: 5,
                 recovery_threshold: 3,
                 circuit_timeout_ms: 5000,
-                redundancy_factor: 1,
-                checkpoint_interval_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -399,7 +384,6 @@ impl SchedulerConfig {
             monitoring: MonitoringConfig {
                 profiling_enabled: true,
                 metrics_interval_ms: 1000,
-                telemetry_endpoint: None,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
             },
@@ -422,8 +406,6 @@ impl SchedulerConfig {
                 max_failures: 0,
                 recovery_threshold: 0,
                 circuit_timeout_ms: 0,
-                redundancy_factor: 1,
-                checkpoint_interval_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -442,7 +424,6 @@ impl SchedulerConfig {
             monitoring: MonitoringConfig {
                 profiling_enabled: false,
                 metrics_interval_ms: 100,
-                telemetry_endpoint: None,
                 black_box_enabled: true,
                 black_box_size_mb: 100,
             },
@@ -465,8 +446,6 @@ impl SchedulerConfig {
                 max_failures: 0,
                 recovery_threshold: 0,
                 circuit_timeout_ms: 0,
-                redundancy_factor: 3,
-                checkpoint_interval_ms: 100,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
@@ -485,7 +464,6 @@ impl SchedulerConfig {
             monitoring: MonitoringConfig {
                 profiling_enabled: false,
                 metrics_interval_ms: 10,
-                telemetry_endpoint: Some("local".to_string()),
                 black_box_enabled: true,
                 black_box_size_mb: 1024,
             },
@@ -508,8 +486,6 @@ impl SchedulerConfig {
                 max_failures: 3,
                 recovery_threshold: 1,
                 circuit_timeout_ms: 100,
-                redundancy_factor: 1,
-                checkpoint_interval_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
@@ -528,7 +504,6 @@ impl SchedulerConfig {
             monitoring: MonitoringConfig {
                 profiling_enabled: false,
                 metrics_interval_ms: 10000,
-                telemetry_endpoint: None,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
             },
@@ -545,7 +520,6 @@ impl SchedulerConfig {
         config.timing.global_rate_hz = 1000.0;
         config.fault.circuit_breaker_enabled = true;
         config.fault.max_failures = 3;
-        config.fault.redundancy_factor = 2;
         config.realtime.wcet_enforcement = true;
         config.realtime.deadline_monitoring = true;
         config.realtime.watchdog_enabled = true;
@@ -617,12 +591,6 @@ impl SchedulerConfig {
     /// Enable or disable profiling
     pub fn with_profiling(mut self, enabled: bool) -> Self {
         self.monitoring.profiling_enabled = enabled;
-        self
-    }
-
-    /// Set the telemetry endpoint
-    pub fn with_telemetry_endpoint(mut self, endpoint: Option<String>) -> Self {
-        self.monitoring.telemetry_endpoint = endpoint;
         self
     }
 
@@ -734,32 +702,6 @@ impl SchedulerConfig {
         self.with_black_box(false, 0)
     }
 
-    /// Set checkpoint interval in milliseconds.
-    ///
-    /// Enables periodic checkpointing at the specified interval.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .checkpoint_ms(5000);  // Checkpoint every 5 seconds
-    /// ```
-    pub fn checkpoint_ms(mut self, ms: u64) -> Self {
-        self.fault.checkpoint_interval_ms = ms;
-        self
-    }
-
-    /// Disable checkpointing.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::safety_critical()
-    ///     .no_checkpoint();  // Disable checkpointing
-    /// ```
-    pub fn no_checkpoint(mut self) -> Self {
-        self.fault.checkpoint_interval_ms = 0;
-        self
-    }
-
     /// Set maximum deadline misses before action.
     ///
     /// # Example
@@ -832,18 +774,6 @@ impl SchedulerConfig {
     /// ```
     pub fn wcet(self) -> Self {
         self.with_wcet_enforcement(true)
-    }
-
-    /// Set telemetry endpoint URL.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .telemetry("udp://localhost:9999");
-    /// ```
-    pub fn telemetry(mut self, endpoint: &str) -> Self {
-        self.monitoring.telemetry_endpoint = Some(endpoint.to_string());
-        self
     }
 
     /// Pin to specific CPU cores.
