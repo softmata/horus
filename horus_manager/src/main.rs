@@ -491,7 +491,6 @@ enum NetCommands {
         #[arg(short = 'm', long = "max-hops", default_value = "30")]
         max_hops: u32,
     },
-
 }
 
 #[derive(Subcommand)]
@@ -523,7 +522,6 @@ enum HusarnetCommands {
         #[arg(short = 't', long = "timeout", default_value = "1000")]
         timeout: u64,
     },
-
 }
 
 #[derive(Subcommand)]

@@ -789,7 +789,6 @@ impl<T: Clone + Send + Sync + 'static> SpscShmBackend<T> {
             _phantom: PhantomData,
         })
     }
-
 }
 
 impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T> {
@@ -1455,7 +1454,6 @@ impl<T: PodMessage> PodShmBackend<T> {
             _phantom: PhantomData,
         })
     }
-
 }
 
 impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {

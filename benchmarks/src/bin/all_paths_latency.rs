@@ -735,7 +735,10 @@ fn bench_mpmc_shm() -> (f64, String) {
         );
     }
 
-    (elapsed.as_nanos() as f64 / actual_measured.max(1) as f64, backend)
+    (
+        elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
+        backend,
+    )
 }
 
 /// Measure Instant::now() overhead

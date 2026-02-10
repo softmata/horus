@@ -67,10 +67,7 @@ fn get_odometry_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     ODOMETRY_CLASS
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
-            Ok(m.getattr("Odometry")?
-                .cast::<PyType>()?
-                .clone()
-                .unbind())
+            Ok(m.getattr("Odometry")?.cast::<PyType>()?.clone().unbind())
         })
         .map(|c| c.bind(py))
 }
@@ -79,10 +76,7 @@ fn get_laserscan_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     LASERSCAN_CLASS
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
-            Ok(m.getattr("LaserScan")?
-                .cast::<PyType>()?
-                .clone()
-                .unbind())
+            Ok(m.getattr("LaserScan")?.cast::<PyType>()?.clone().unbind())
         })
         .map(|c| c.bind(py))
 }

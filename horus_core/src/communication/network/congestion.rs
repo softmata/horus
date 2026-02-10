@@ -284,10 +284,8 @@ impl CongestionController {
 
         // Add message to buffer
         self.current_bytes += payload_size;
-        self.send_buffer.push_back(QueuedMessage {
-            payload,
-            priority,
-        });
+        self.send_buffer
+            .push_back(QueuedMessage { payload, priority });
 
         self.stats.accepted.fetch_add(1, Ordering::Relaxed);
         self.update_utilization();

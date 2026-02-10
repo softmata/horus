@@ -106,7 +106,6 @@ pub struct NodeProfile {
 
     /// Is this node CPU bound?
     pub is_cpu_bound: bool,
-
 }
 
 impl NodeProfile {

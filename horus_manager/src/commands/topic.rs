@@ -9,7 +9,6 @@ use horus_core::memory::shm_topics_dir;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
-
 /// List all active topics
 pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
     let topics = discover_shared_memory()?;

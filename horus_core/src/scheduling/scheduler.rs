@@ -19,7 +19,9 @@ use super::record_replay::{
 };
 
 // Executor imports
-use super::executors::{AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig};
+use super::executors::{
+    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
+};
 use super::intelligence::NodeTier;
 
 // Import types from types module
@@ -410,7 +412,6 @@ impl Scheduler {
         scheduler
     }
 
-
     // ========================================================================
     // PRESET CONSTRUCTORS
     // ========================================================================
@@ -652,7 +653,6 @@ impl Scheduler {
             .iter()
             .any(|d| d.severity == DegradationSeverity::High)
     }
-
 
     /// Get a reference to the BlackBox flight recorder.
     ///
@@ -2450,7 +2450,6 @@ impl Scheduler {
                             ));
                         }
                     }
-
                 }
 
                 // === Runtime feature integrations ===
@@ -3265,8 +3264,7 @@ impl Scheduler {
             let registered = self.nodes.swap_remove(idx);
             let node_name = registered.node.name().to_string();
 
-            if let Err(e) =
-                iso_executor.spawn_node(registered.node, &node_name, registered.context)
+            if let Err(e) = iso_executor.spawn_node(registered.node, &node_name, registered.context)
             {
                 print_line(&format!(
                     "Failed to move {} to isolated tier: {}",
@@ -3345,7 +3343,6 @@ mod tests {
                 tick_count: counter,
             }
         }
-
     }
 
     impl Node for CounterNode {

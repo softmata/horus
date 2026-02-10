@@ -4,7 +4,9 @@ use crate::commands::run::{check_hardware_requirements, parse_horus_yaml_depende
 use crate::dependency_resolver::DependencySource;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
-use horus_core::memory::{has_native_shm, shm_base_dir};
+use horus_core::memory::has_native_shm;
+#[cfg(not(target_os = "linux"))]
+use horus_core::memory::shm_base_dir;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -982,7 +984,6 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
     print!("  {} Checking system requirements... ", "▸".cyan());
     let mut sys_issues = Vec::new();
 
-    let _shm_path = shm_base_dir();
     if has_native_shm() {
         #[cfg(target_os = "linux")]
         {
@@ -1000,7 +1001,8 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        if let Err(_) = std::fs::create_dir_all(&shm_path) {
+        let shm_path = shm_base_dir();
+        if std::fs::create_dir_all(&shm_path).is_err() {
             sys_issues.push("Cannot create shared memory directory");
         }
     }

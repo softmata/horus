@@ -49,8 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Pattern 2: Hard Realtime Configuration");
     println!("--------------------------------------");
 
-    let scheduler2 = Scheduler::new()
-        .with_config(SchedulerConfig::hard_realtime());
+    let scheduler2 = Scheduler::new().with_config(SchedulerConfig::hard_realtime());
 
     println!("[OK] Created with hard_realtime() config");
     println!("  (Uses builder pattern with preset config)\n");
@@ -86,8 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Pattern 4: Deterministic (Simulation)");
     println!("--------------------------------------");
 
-    let _scheduler4 = Scheduler::new()
-        .enable_determinism();
+    let _scheduler4 = Scheduler::new().enable_determinism();
 
     println!("[OK] Deterministic scheduler:");
     println!("  No OS integration needed");

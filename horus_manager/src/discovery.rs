@@ -779,9 +779,6 @@ fn format_duration(duration: std::time::Duration) -> String {
 
 #[cfg(target_os = "macos")]
 fn get_process_info_macos(pid: u32) -> anyhow::Result<ProcessInfo> {
-    use std::ffi::CStr;
-    use std::mem::MaybeUninit;
-
     // Get process name using proc_name
     let name = get_process_name_macos(pid).unwrap_or_else(|| format!("pid_{}", pid));
 

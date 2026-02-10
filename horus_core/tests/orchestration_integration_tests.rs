@@ -10,14 +10,11 @@
 //! - Conditional execution based on sensor data
 
 use horus_core::mission_planner::{
-    ExecutionContext, ExecutionStatus, GoalFailurePolicy, GoalSpec, MissionEvent, MissionMode,
-    MissionPlanner, MissionPlannerBuilder, MissionSpec, Priority, RetryPolicy, TaskCondition,
-    TaskExecutor, TaskSpec,
+    ExecutionContext, ExecutionStatus, GoalSpec, MissionEvent, MissionPlanner,
+    MissionPlannerBuilder, MissionSpec, RetryPolicy, TaskCondition, TaskExecutor, TaskSpec,
 };
 use horus_core::serde_json::{self, json};
-use horus_core::state_machines::{
-    Event, EventPriority, SharedStateMachine, State, StateMachine, StateMachineBuilder, Transition,
-};
+use horus_core::state_machines::{Event, StateMachineBuilder};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -199,7 +196,6 @@ fn test_pick_and_place_workflow() {
     // Build goal with task dependencies
     let nav_pick_id = nav_to_pick.id.clone();
     let detect_id = detect.id.clone();
-    let gripper_close_id = gripper_close.id.clone();
     let nav_place_id = nav_to_place.id.clone();
 
     let pick_goal = GoalSpec::new("pick", "Pick up object")

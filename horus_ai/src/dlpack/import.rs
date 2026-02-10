@@ -150,8 +150,8 @@ fn compute_contiguous_strides(shape: &[u64], elem_size: usize) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
     use crate::dlpack::export::to_dlpack;
+    use std::ffi::c_void;
 
     #[test]
     fn test_dlpack_roundtrip() {

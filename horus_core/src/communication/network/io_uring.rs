@@ -270,7 +270,10 @@ impl RealIoUringBackend {
     /// Track an in-flight operation
     fn track_op(&mut self, user_data: u64, buffer_idx: usize, is_recv: bool) {
         let idx = (user_data as usize) % self.in_flight.len();
-        self.in_flight[idx] = Some(InFlightOp { buffer_idx, is_recv });
+        self.in_flight[idx] = Some(InFlightOp {
+            buffer_idx,
+            is_recv,
+        });
     }
 
     /// Get and remove tracked operation

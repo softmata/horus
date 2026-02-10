@@ -888,7 +888,6 @@ impl Drop for CudaTensorPool {
                 }
             }
         }
-
     }
 }
 
