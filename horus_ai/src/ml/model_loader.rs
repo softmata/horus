@@ -2,7 +2,7 @@
 //
 // Utilities for loading ML models from local paths or URLs with automatic caching.
 
-use crate::error::{HorusError, HorusResult};
+use horus_core::error::{HorusError, HorusResult};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};

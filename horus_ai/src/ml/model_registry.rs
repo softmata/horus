@@ -2,7 +2,7 @@
 //
 // Manages model metadata, versioning, and deployment configuration.
 
-use crate::error::{HorusError, HorusResult};
+use horus_core::error::{HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;

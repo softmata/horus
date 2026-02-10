@@ -59,7 +59,6 @@ pub mod error;
 pub mod hardware;
 pub mod memory;
 pub mod mission_planner;
-pub mod ml;
 pub mod params;
 pub mod plugin;
 pub mod scheduling;

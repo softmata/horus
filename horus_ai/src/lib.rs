@@ -5,6 +5,7 @@
 //! - DLPack interop for PyTorch, JAX, TensorFlow, CuPy
 //! - CUDA tensor support with IPC handles
 //! - Memory pooling for efficient allocation
+//! - ML model registry and loader with caching
 //!
 //! # Example
 //!
@@ -23,11 +24,13 @@
 
 pub mod device;
 pub mod dlpack;
+pub mod ml;
 pub mod tensor;
 
 // Re-export main types at crate root
 pub use device::Device;
 pub use dlpack::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
+pub use ml::{ModelEntry, ModelLoader, ModelRegistry};
 pub use tensor::{TensorDescriptor, TensorDtype};
 
 // Re-export from horus_core for convenience (will be moved here later)
