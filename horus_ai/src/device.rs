@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 //! Device specification for tensor placement
 //!
 //! Defines where tensor data resides (CPU or CUDA GPU).
@@ -50,7 +49,7 @@ impl Device {
     }
 
     /// Parse device from string (e.g., "cpu", "cuda", "cuda:0", "cuda:1")
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         let s = s.to_lowercase();
         match s.as_str() {
             "cpu" => Some(Device::Cpu),
@@ -107,12 +106,12 @@ mod tests {
 
     #[test]
     fn test_device_parse() {
-        assert_eq!(Device::from_str("cpu"), Some(Device::Cpu));
-        assert_eq!(Device::from_str("cuda"), Some(Device::Cuda(0)));
-        assert_eq!(Device::from_str("cuda:0"), Some(Device::Cuda(0)));
-        assert_eq!(Device::from_str("cuda:1"), Some(Device::Cuda(1)));
-        assert_eq!(Device::from_str("gpu:2"), Some(Device::Cuda(2)));
-        assert_eq!(Device::from_str("invalid"), None);
+        assert_eq!(Device::parse("cpu"), Some(Device::Cpu));
+        assert_eq!(Device::parse("cuda"), Some(Device::Cuda(0)));
+        assert_eq!(Device::parse("cuda:0"), Some(Device::Cuda(0)));
+        assert_eq!(Device::parse("cuda:1"), Some(Device::Cuda(1)));
+        assert_eq!(Device::parse("gpu:2"), Some(Device::Cuda(2)));
+        assert_eq!(Device::parse("invalid"), None);
     }
 
     #[test]

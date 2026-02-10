@@ -1,4 +1,3 @@
-#![allow(clippy::io_other_error)]
 //! QUIC transport for reliable, low-latency network communication
 //!
 //! QUIC provides:

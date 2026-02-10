@@ -1,18 +1,3 @@
-#![allow(
-    unused_mut,
-    unused_variables,
-    clippy::manual_div_ceil,
-    clippy::manual_range_contains,
-    clippy::nonminimal_bool,
-    clippy::needless_range_loop,
-    clippy::redundant_pattern_matching,
-    clippy::unnecessary_unwrap,
-    clippy::eq_op,
-    clippy::type_complexity,
-    clippy::identity_op,
-    clippy::erasing_op,
-    clippy::double_comparisons
-)]
 //! # Unified Topic Abstraction for Smart IPC
 //!
 //! This module provides a unified `Topic<T>` type that automatically selects
@@ -696,14 +681,14 @@ impl<T> MpmcShmBackend<T> {
 impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpmcShmBackend<T> {
     #[inline(always)]
     fn push(&self, msg: T) -> Result<(), T> {
-        // Use push_fast() which skips bounds checking for zero-overhead
-        self.inner.push_fast(msg)
+        // Use smart send() which auto-selects copy vs zero-copy based on message size
+        self.inner.send(msg)
     }
 
     #[inline(always)]
     fn pop(&self) -> Option<T> {
-        // Use pop_fast() which skips bounds checking for zero-overhead
-        self.inner.pop_fast()
+        // Use smart recv() which auto-selects copy vs zero-copy based on message size
+        self.inner.recv()
     }
 
     #[inline(always)]
@@ -1551,13 +1536,14 @@ use std::thread::{self, ThreadId};
 // Platform-specific cache line size
 // ============================================================================
 
-/// Cache line size for the target architecture.
-/// - x86/x86_64: 64 bytes
-/// - ARM (including Apple M-series): 128 bytes (conservative for prefetcher)
-/// - Other: 128 bytes (conservative default)
-///
-/// Note: These constants document the padding values used in MpscCounter, MpmcCounter, etc.
-/// The actual padding uses hardcoded values in #[cfg] blocks due to Rust const generics limitations.
+// Cache line size for the target architecture.
+// - x86/x86_64: 64 bytes
+// - ARM (including Apple M-series): 128 bytes (conservative for prefetcher)
+// - Other: 128 bytes (conservative default)
+//
+// Note: These constants document the padding values used in MpscCounter, MpmcCounter, etc.
+// The actual padding uses hardcoded values in #[cfg] blocks due to Rust const generics limitations.
+
 // ============================================================================
 // Prefetch hints for performance
 // ============================================================================

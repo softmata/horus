@@ -1,8 +1,3 @@
-#![allow(
-    clippy::manual_is_multiple_of,
-    clippy::too_many_arguments,
-    clippy::needless_borrows_for_generic_args
-)]
 /// Complete Autonomous Mobile Robot Application
 /// Demonstrates the enhanced HORUS scheduler with a real robotics system
 ///

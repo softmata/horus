@@ -1,10 +1,3 @@
-#![allow(
-    clippy::empty_line_after_outer_attr,
-    clippy::manual_clamp,
-    clippy::if_same_then_else,
-    clippy::unnecessary_unwrap,
-    clippy::manual_strip
-)]
 //! Platform detection for reproducible benchmarks.
 //!
 //! Captures hardware and OS information to contextualize benchmark results:
@@ -166,10 +159,10 @@ fn detect_cpu_info_linux() -> CpuInfo {
 fn read_cache_size(path: &str) -> Option<usize> {
     fs::read_to_string(path).ok().and_then(|s| {
         let s = s.trim();
-        if s.ends_with('K') {
-            s[..s.len() - 1].parse::<usize>().ok()
-        } else if s.ends_with('M') {
-            s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024)
+        if let Some(stripped) = s.strip_suffix('K') {
+            stripped.parse::<usize>().ok()
+        } else if let Some(stripped) = s.strip_suffix('M') {
+            stripped.parse::<usize>().ok().map(|v| v * 1024)
         } else {
             s.parse::<usize>().ok().map(|v| v / 1024)
         }

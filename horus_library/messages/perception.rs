@@ -114,7 +114,7 @@ impl PointCloud {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -304,7 +304,7 @@ impl BoundingBox3D {
             track_id: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -378,7 +378,7 @@ impl BoundingBoxArray3D {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -464,7 +464,7 @@ impl DepthImage {
             depths,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -577,7 +577,7 @@ impl PlaneDetection {
             plane_type: [0; 16],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }

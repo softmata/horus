@@ -1,4 +1,3 @@
-#![allow(clippy::io_other_error, clippy::unnecessary_unwrap)]
 //! Real io_uring implementation using the io-uring crate
 //!
 //! This module provides true zero-copy networking using Linux io_uring.

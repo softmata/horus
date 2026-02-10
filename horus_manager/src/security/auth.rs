@@ -23,11 +23,9 @@ pub struct AuthService {
 /// Session information
 #[derive(Clone)]
 struct SessionInfo {
-    #[allow(dead_code)] // Stored for future session audit logging
-    created_at: Instant,
-    last_used: Instant, // Actively used for session expiry checks
-    #[allow(dead_code)] // Stored for future IP-based tracking
-    ip_address: Option<String>,
+    _created_at: Instant,
+    last_used: Instant,
+    _ip_address: Option<String>,
 }
 
 /// Rate limiter for login attempts
@@ -71,9 +69,9 @@ impl AuthService {
             self.sessions.write().unwrap().insert(
                 session_token.clone(),
                 SessionInfo {
-                    created_at: Instant::now(),
+                    _created_at: Instant::now(),
                     last_used: Instant::now(),
-                    ip_address,
+                    _ip_address: ip_address,
                 },
             );
 

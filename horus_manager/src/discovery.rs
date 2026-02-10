@@ -1,9 +1,3 @@
-#![allow(
-    clippy::manual_strip,
-    clippy::needless_borrows_for_generic_args,
-    clippy::manual_range_contains,
-    clippy::type_complexity
-)]
 use horus_core::core::{HealthStatus, NetworkStatus};
 use horus_core::error::HorusResult;
 use horus_core::memory::{shm_network_dir, shm_topics_dir};
@@ -138,10 +132,8 @@ lazy_static::lazy_static! {
 
 #[derive(Debug, Default)]
 struct ProcessInfo {
-    #[allow(dead_code)] // Stored for potential future debugging/display
-    pid: u32,
-    #[allow(dead_code)] // Stored for potential future debugging/display
-    name: String,
+    _pid: u32,
+    _name: String,
     cmdline: String,
     working_dir: String,
     cpu_percent: f32,
@@ -660,8 +652,8 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
         let start_time = get_process_start_time(pid);
 
         Ok(ProcessInfo {
-            pid,
-            name,
+            _pid: pid,
+            _name: name,
             cmdline,
             working_dir,
             cpu_percent,
@@ -684,8 +676,8 @@ fn get_process_info(pid: u32) -> anyhow::Result<ProcessInfo> {
     {
         // Fallback for other Unix platforms - basic info only
         Ok(ProcessInfo {
-            pid,
-            name: format!("pid_{}", pid),
+            _pid: pid,
+            _name: format!("pid_{}", pid),
             cmdline: String::new(),
             working_dir: String::new(),
             cpu_percent: 0.0,
@@ -809,8 +801,8 @@ fn get_process_info_macos(pid: u32) -> anyhow::Result<ProcessInfo> {
     let start_time = get_start_time_macos(pid).unwrap_or_else(|| "Unknown".to_string());
 
     Ok(ProcessInfo {
-        pid,
-        name,
+        _pid: pid,
+        _name: name,
         cmdline,
         working_dir,
         cpu_percent,
@@ -1210,8 +1202,8 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
 
     if handle.is_null() {
         return Ok(ProcessInfo {
-            pid,
-            name: format!("pid_{}", pid),
+            _pid: pid,
+            _name: format!("pid_{}", pid),
             cmdline: String::new(),
             working_dir: String::new(),
             cpu_percent: 0.0,
@@ -1238,8 +1230,8 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
     unsafe { CloseHandle(handle) };
 
     Ok(ProcessInfo {
-        pid,
-        name,
+        _pid: pid,
+        _name: name,
         cmdline,
         working_dir: String::new(), // Windows doesn't easily expose cwd
         cpu_percent,
@@ -1539,7 +1531,8 @@ fn discover_topics_from_presence() -> Vec<SharedMemoryInfo> {
     use std::collections::HashMap;
 
     // Aggregate topic info from all presence files
-    let mut topic_map: HashMap<String, (Vec<String>, Vec<String>, Option<String>)> = HashMap::new();
+    type TopicInfo = (Vec<String>, Vec<String>, Option<String>);
+    let mut topic_map: HashMap<String, TopicInfo> = HashMap::new();
 
     for presence in NodePresence::read_all() {
         // Add publishers

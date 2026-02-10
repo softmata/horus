@@ -90,7 +90,7 @@ impl CanFrame {
             interface: [0; 16],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         };
         frame.data[..data.len().min(8)].copy_from_slice(&data[..data.len().min(8)]);
@@ -120,7 +120,7 @@ impl CanFrame {
             interface: [0; 16],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -140,7 +140,7 @@ impl CanFrame {
             interface: [0; 16],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         };
         frame.data[..data.len().min(64)].copy_from_slice(&data[..data.len().min(64)]);

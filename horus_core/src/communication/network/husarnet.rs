@@ -124,7 +124,7 @@ impl Default for HusarnetPeer {
 }
 
 /// Local Husarnet status
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HusarnetStatus {
     /// Whether Husarnet daemon is running and accessible
     pub daemon_running: bool,
@@ -140,21 +140,6 @@ pub struct HusarnetStatus {
     pub version: Option<String>,
     /// Number of connected peers
     pub peer_count: usize,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for HusarnetStatus {
-    fn default() -> Self {
-        Self {
-            daemon_running: false,
-            local_address: None,
-            hostname: None,
-            base_connected: false,
-            webrtc_ready: false,
-            version: None,
-            peer_count: 0,
-        }
-    }
 }
 
 /// Configuration for Husarnet discovery
@@ -197,16 +182,15 @@ struct DaemonStatusResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields populated by serde deserialization
 struct DaemonStatusResult {
     #[serde(default)]
     is_joined: bool,
     #[serde(default)]
     is_ready: bool,
     #[serde(default)]
-    #[allow(dead_code)] // Deserialized from JSON, not used in status mapping
     is_ready_to_join: bool,
     #[serde(default)]
-    #[allow(dead_code)] // Deserialized from JSON, not used in status mapping
     websetup_address: String,
     #[serde(default)]
     local_ip: String,
@@ -217,16 +201,15 @@ struct DaemonStatusResult {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields populated by serde deserialization
 struct WhitelistEntry {
     #[serde(default)]
     address: String,
     #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)] // Deserialized from JSON
     is_active: bool,
     #[serde(default)]
-    #[allow(dead_code)] // Deserialized from JSON
     is_tunneled: bool,
 }
 

@@ -31,7 +31,7 @@ impl Twist {
             angular,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -79,7 +79,7 @@ impl Pose2D {
             theta,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -137,7 +137,7 @@ impl TransformStamped {
             rotation,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }

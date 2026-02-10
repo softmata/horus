@@ -1,4 +1,3 @@
-#![allow(clippy::empty_line_after_outer_attr, clippy::too_many_arguments)]
 //! Object detection types
 //!
 //! Types for 2D and 3D object detection results from models like YOLO, SSD, etc.
@@ -117,6 +116,7 @@ impl BoundingBox3D {
     }
 
     /// Create with full rotation
+    #[allow(clippy::too_many_arguments)]
     pub fn with_rotation(
         cx: f32,
         cy: f32,

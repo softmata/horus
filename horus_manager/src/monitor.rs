@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity, clippy::unnecessary_unwrap)]
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},

@@ -1,4 +1,3 @@
-#![allow(clippy::unnecessary_unwrap, clippy::nonminimal_bool)]
 // Simple registry client for HORUS package management
 // Keeps complexity low - just HTTP calls to registry
 

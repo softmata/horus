@@ -10,14 +10,13 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::commands::run;
 
 /// Check if Cargo.toml needs regeneration
-#[allow(clippy::ptr_arg)]
-fn needs_rebuild(horus_dir: &PathBuf) -> bool {
+fn needs_rebuild(horus_dir: &Path) -> bool {
     let cargo_toml = horus_dir.join("Cargo.toml");
     let horus_yaml = PathBuf::from("horus.yaml");
 

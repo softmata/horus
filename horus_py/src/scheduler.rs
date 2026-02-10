@@ -1,10 +1,3 @@
-#![allow(
-    clippy::should_implement_trait,
-    clippy::wrong_self_convention,
-    clippy::len_zero,
-    clippy::too_many_arguments,
-    clippy::empty_line_after_outer_attr
-)]
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
 use horus::{
@@ -1878,7 +1871,7 @@ impl PyScheduler {
             let pid = std::process::id();
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             // Collect node info including state and health

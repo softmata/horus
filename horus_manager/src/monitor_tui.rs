@@ -179,15 +179,14 @@ struct PackageData {
 struct DependencyData {
     name: String,
     declared_version: String, // Version string from horus.yaml (e.g., "package@1.0.0" or just "package")
-    #[allow(dead_code)] // Will be used for future dependency status display
-    status: DependencyStatus,
+    _status: DependencyStatus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum DependencyStatus {
-    Missing, // Declared but not installed
-    #[allow(dead_code)] // Will be used for future dependency status display
-    Installed, // Both declared and installed (shown in packages list)
+    Missing,
+    Installed,
 }
 
 #[derive(Debug, Clone)]
@@ -3547,7 +3546,7 @@ fn get_local_workspaces(current_workspace_path: &Option<std::path::PathBuf>) -> 
                 Some(DependencyData {
                     name: dep_name.to_string(),
                     declared_version: dep_str.clone(),
-                    status: DependencyStatus::Missing,
+                    _status: DependencyStatus::Missing,
                 })
             })
             .collect();
@@ -4172,7 +4171,7 @@ mod tests {
             dependencies: vec![DependencyData {
                 name: "slam".to_string(),
                 declared_version: "2.0.0".to_string(),
-                status: DependencyStatus::Missing,
+                _status: DependencyStatus::Missing,
             }],
             is_current: true,
         };
@@ -4190,9 +4189,9 @@ mod tests {
         let dep = DependencyData {
             name: "test_dep".to_string(),
             declared_version: "1.0.0".to_string(),
-            status: DependencyStatus::Missing,
+            _status: DependencyStatus::Missing,
         };
-        assert_eq!(dep.status, DependencyStatus::Missing);
+        assert_eq!(dep._status, DependencyStatus::Missing);
     }
 
     // ========================================================================

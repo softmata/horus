@@ -248,7 +248,7 @@ impl HorusPacket {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_micros() as u64
     }
 }

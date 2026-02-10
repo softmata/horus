@@ -71,7 +71,7 @@ impl ModbusMessage {
             is_request: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -88,7 +88,7 @@ impl ModbusMessage {
             is_request: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -107,7 +107,7 @@ impl ModbusMessage {
             is_request: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -126,7 +126,7 @@ impl ModbusMessage {
             .copy_from_slice(&data[..response.data_length as usize]);
         response.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
         response
     }
@@ -141,7 +141,7 @@ impl ModbusMessage {
             is_request: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }

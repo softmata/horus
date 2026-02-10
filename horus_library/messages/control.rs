@@ -48,7 +48,7 @@ impl MotorCommand {
             enable: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -65,7 +65,7 @@ impl MotorCommand {
             enable: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -82,7 +82,7 @@ impl MotorCommand {
             enable: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -123,7 +123,7 @@ impl DifferentialDriveCommand {
             enable: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -137,7 +137,7 @@ impl DifferentialDriveCommand {
             enable: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -182,7 +182,7 @@ impl ServoCommand {
             enable: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -196,7 +196,7 @@ impl ServoCommand {
             enable: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -210,7 +210,7 @@ impl ServoCommand {
             enable: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -255,7 +255,7 @@ impl PidConfig {
             anti_windup: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -386,7 +386,7 @@ impl JointCommand {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -499,7 +499,7 @@ impl PwmCommand {
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -525,7 +525,7 @@ impl PwmCommand {
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -541,7 +541,7 @@ impl PwmCommand {
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -640,7 +640,7 @@ impl StepperCommand {
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -658,7 +658,7 @@ impl StepperCommand {
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -676,7 +676,7 @@ impl StepperCommand {
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -694,7 +694,7 @@ impl StepperCommand {
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -712,7 +712,7 @@ impl StepperCommand {
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }

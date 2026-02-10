@@ -382,7 +382,7 @@ where
         // Try SHM first for local delivery
         if use_shm {
             if let Some(ref shm) = self.shm {
-                match shm.push(msg.clone()) {
+                match shm.send(msg.clone()) {
                     Ok(()) => {
                         if self.config.enable_stats {
                             self.stats.shm_sends.fetch_add(1, Ordering::Relaxed);
@@ -439,7 +439,7 @@ where
     pub fn recv(&self) -> Option<T> {
         // Check SHM first (faster)
         if let Some(ref shm) = self.shm {
-            if let Some(msg) = shm.pop() {
+            if let Some(msg) = shm.recv() {
                 if self.config.enable_stats {
                     self.stats.shm_recvs.fetch_add(1, Ordering::Relaxed);
                 }
@@ -633,7 +633,7 @@ where
 
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         if let Some(ref shm) = self.shm {
-            shm.push(msg.clone())
+            shm.send(msg.clone())
                 .map_err(|_| HorusError::Communication("SHM buffer full".to_string()))?;
             self.stats.shm_sends.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -646,7 +646,7 @@ where
 
     pub fn recv(&self) -> Option<T> {
         if let Some(ref shm) = self.shm {
-            if let Some(msg) = shm.pop() {
+            if let Some(msg) = shm.recv() {
                 self.stats.shm_recvs.fetch_add(1, Ordering::Relaxed);
                 return Some(msg);
             }

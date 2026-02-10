@@ -39,7 +39,7 @@ impl Goal {
             goal_id: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -146,7 +146,7 @@ impl GoalResult {
             error_message: [0; 64],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -242,7 +242,7 @@ impl Path {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -362,7 +362,7 @@ impl OccupancyGrid {
             metadata: [0; 64],
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }
@@ -754,7 +754,7 @@ impl PathPlan {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -768,7 +768,7 @@ impl PathPlan {
             goal_pose: goal,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }

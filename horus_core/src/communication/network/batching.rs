@@ -1,4 +1,3 @@
-#![allow(unused_mut, clippy::manual_div_ceil, clippy::unnecessary_unwrap)]
 //! Message batching for network efficiency
 //!
 //! Automatically batches multiple small messages into single network packets

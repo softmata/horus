@@ -159,8 +159,6 @@ struct ProcessedField {
     internal_type: Type,
     is_string: bool,
     is_pod: bool,
-    #[allow(dead_code)]
-    max_len: Option<usize>,
 }
 
 /// Process a field: detect String and convert to FixedString<N>
@@ -181,7 +179,6 @@ fn process_field(field: &FieldInfo) -> ProcessedField {
             internal_type,
             is_string: true,
             is_pod: true, // FixedString is Pod
-            max_len: Some(max_len),
         }
     } else {
         ProcessedField {
@@ -189,7 +186,6 @@ fn process_field(field: &FieldInfo) -> ProcessedField {
             internal_type: field.ty.clone(),
             is_string: false,
             is_pod: is_pod_type(&field.ty),
-            max_len: None,
         }
     }
 }

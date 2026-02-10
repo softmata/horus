@@ -317,7 +317,7 @@ impl IpcRegion {
     pub fn update_heartbeat(&mut self) -> HorusResult<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         self.write_last_heartbeat(now)
     }
@@ -581,7 +581,7 @@ impl IsolatedNodeHandle {
         if let Ok(last_hb) = self.ipc.read_last_heartbeat() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             if now.saturating_sub(last_hb) > self.config.heartbeat_timeout.as_secs() {

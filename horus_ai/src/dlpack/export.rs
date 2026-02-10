@@ -4,7 +4,6 @@
 //! managed tensors for zero-copy sharing with other frameworks.
 
 use std::ffi::c_void;
-use std::sync::Arc;
 
 use super::ffi::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
 use crate::device::Device;
@@ -19,10 +18,6 @@ struct DLPackContext {
     shape: Vec<i64>,
     /// Strides array (owned, will be freed in deleter)
     strides: Vec<i64>,
-    /// Reference to keep source data alive
-    /// Using Arc<dyn Any> would be more flexible, but for now we use a raw pointer
-    /// that the caller must ensure remains valid
-    _data_ref: Option<Arc<[u8]>>,
 }
 
 /// Deleter callback for DLManagedTensor
@@ -92,7 +87,6 @@ pub fn to_dlpack(
     let context = Box::new(DLPackContext {
         shape: shape_vec,
         strides: strides_vec,
-        _data_ref: None,
     });
 
     // Get raw pointers from context (context keeps them alive)
@@ -108,69 +102,6 @@ pub fn to_dlpack(
         data: data_ptr,
         device: dl_device,
         ndim: shape.len() as i32,
-        dtype: dl_dtype,
-        shape: shape_ptr,
-        strides: strides_ptr,
-        byte_offset: 0,
-    };
-
-    // Create managed tensor
-    let context_ptr = Box::into_raw(context) as *mut c_void;
-
-    Box::new(DLManagedTensor {
-        dl_tensor,
-        manager_ctx: context_ptr,
-        deleter: Some(dlpack_deleter),
-    })
-}
-
-/// Convert HORUS tensor to DLPack with data reference
-///
-/// Like `to_dlpack` but takes an Arc to keep the data alive.
-/// This is safer as it ensures the data outlives the DLPack tensor.
-#[allow(dead_code)]
-pub fn to_dlpack_with_ref(
-    data_ptr: *mut c_void,
-    shape: &[i64],
-    strides_elements: &[i64],
-    dtype: TensorDtype,
-    device: Device,
-    data_ref: Arc<[u8]>,
-) -> Box<DLManagedTensor> {
-    // Convert dtype to DLPack format
-    let (code, bits, lanes) = dtype.to_dlpack();
-    let dl_dtype = DLDataType::new(code, bits, lanes);
-
-    // Convert device to DLPack format
-    let dl_device = DLDevice {
-        device_type: device.to_dlpack_device_type(),
-        device_id: device.to_dlpack_device_id(),
-    };
-
-    // Create owned copies of shape and strides
-    let shape_vec: Vec<i64> = shape.to_vec();
-    let strides_vec: Vec<i64> = strides_elements.to_vec();
-
-    // Create context with data reference
-    let context = Box::new(DLPackContext {
-        shape: shape_vec,
-        strides: strides_vec,
-        _data_ref: Some(data_ref),
-    });
-
-    // Get raw pointers from context
-    let shape_ptr = context.shape.as_ptr() as *mut i64;
-    let strides_ptr = if context.strides.is_empty() {
-        std::ptr::null_mut()
-    } else {
-        context.strides.as_ptr() as *mut i64
-    };
-
-    // Create DLTensor
-    let dl_tensor = DLTensor {
-        data: data_ptr,
-        device: dl_device,
-        ndim: context.shape.len() as i32,
         dtype: dl_dtype,
         shape: shape_ptr,
         strides: strides_ptr,

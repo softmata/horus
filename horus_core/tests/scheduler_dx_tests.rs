@@ -1,4 +1,3 @@
-#![allow(clippy::len_zero)]
 //! Integration tests for Scheduler DX (Developer Experience) API
 //!
 //! Tests the intent-based constructors:

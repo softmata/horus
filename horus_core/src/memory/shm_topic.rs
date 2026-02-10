@@ -7,6 +7,10 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Messages >= 4KB use the zero-copy loan/receive path; smaller messages use the fast copy path.
+/// This threshold matches SIMD_COPY_THRESHOLD used elsewhere in HORUS.
+const ZERO_COPY_THRESHOLD: usize = 4096;
+
 // Safety constants to prevent dangerous configurations
 const MAX_CAPACITY: usize = 1_000_000; // Maximum number of elements
 const MIN_CAPACITY: usize = 1; // Minimum number of elements
@@ -141,21 +145,17 @@ unsafe impl<T: Send> Sync for ShmTopic<T> {}
 /// When dropped, automatically marks the slot as available for consumers
 pub struct PublisherSample<'a, T> {
     data_ptr: *mut T,
-    #[allow(dead_code)]
-    slot_index: usize,
-    #[allow(dead_code)]
+    _slot_index: usize,
     topic: &'a ShmTopic<T>,
     _phantom: PhantomData<&'a mut T>,
 }
 
-/// A received sample for zero-copy consumption  
+/// A received sample for zero-copy consumption
 /// When dropped, automatically releases the slot
 pub struct ConsumerSample<'a, T> {
     data_ptr: *const T,
-    #[allow(dead_code)]
-    slot_index: usize,
-    #[allow(dead_code)]
-    topic: &'a ShmTopic<T>,
+    _slot_index: usize,
+    _topic: &'a ShmTopic<T>,
     _phantom: PhantomData<&'a T>,
 }
 
@@ -715,134 +715,6 @@ impl<T> ShmTopic<T> {
         })
     }
 
-    /// Push a message; returns Err(msg) if the buffer is full
-    /// Thread-safe for multiple producers
-    /// Uses sequence numbering instead of tail checking for multi-consumer safety
-    pub fn push(&self, msg: T) -> Result<(), T> {
-        let header = unsafe { self.header.as_ref() };
-
-        loop {
-            let head = header.head.load(Ordering::Relaxed);
-            // PERFORMANCE: Use bitwise AND instead of modulo (capacity is power of 2)
-            let next = (head + 1) & (self.capacity - 1);
-
-            // For multi-consumer, we need to check if buffer would wrap around
-            // and potentially overwrite unread messages. For now, use a simple
-            // heuristic: don't fill more than 75% of buffer capacity
-            let current_sequence = header.sequence_number.load(Ordering::Relaxed);
-            let max_unread = (self.capacity as u64 * 3) / 4; // Allow 75% fill (u64 for sequence comparison)
-
-            if current_sequence >= max_unread
-                && current_sequence - header.sequence_number.load(Ordering::Relaxed) >= max_unread
-            {
-                // Buffer getting too full for safe multi-consumer operation
-                return Err(msg);
-            }
-
-            // Try to claim this slot atomically
-            match header.head.compare_exchange_weak(
-                head,
-                next,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    // Successfully claimed slot, now write data with comprehensive bounds checking
-                    unsafe {
-                        // Comprehensive bounds checking
-                        if head >= self.capacity {
-                            // This should never happen due to modulo arithmetic, but be extra safe
-                            eprintln!(
-                                "Critical safety violation: head index {} >= capacity {}",
-                                head, self.capacity
-                            );
-                            return Err(msg);
-                        }
-
-                        // Calculate byte offset and verify it's within bounds
-                        // Cast u32 index to usize for byte offset calculation
-                        let byte_offset = (head as usize) * mem::size_of::<T>();
-                        let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *mut T;
-
-                        // Verify the write location is within our data region
-                        let data_region_size = (self.capacity as usize) * mem::size_of::<T>();
-                        if byte_offset + mem::size_of::<T>() > data_region_size {
-                            eprintln!(
-                                "Critical safety violation: write would exceed data region bounds"
-                            );
-                            return Err(msg);
-                        }
-
-                        // Safe to write now that we've verified bounds
-                        std::ptr::write(slot_ptr, msg);
-                    }
-
-                    // Increment global sequence number
-                    header.sequence_number.fetch_add(1, Ordering::Relaxed);
-                    return Ok(());
-                }
-                Err(_) => {
-                    // Another thread updated head, retry
-                    continue;
-                }
-            }
-        }
-    }
-
-    /// **Optimistic Push**: Fast-path push that assumes the buffer has space.
-    ///
-    /// This variant skips the 75% fill heuristic check and attempts a single
-    /// compare-exchange operation. If the CAS fails (contention), it returns
-    /// the message back immediately instead of spinning.
-    ///
-    /// # Performance
-    /// - Eliminates sequence number load on fast path
-    /// - Single CAS attempt reduces spinning on contention
-    /// - Best for scenarios where buffer is rarely full
-    ///
-    /// # Returns
-    /// - `Ok(())` if push succeeded
-    /// - `Err(msg)` if CAS failed (caller should retry with regular push or backoff)
-    #[inline]
-    pub fn push_optimistic(&self, msg: T) -> Result<(), T> {
-        let header = unsafe { self.header.as_ref() };
-
-        let head = header.head.load(Ordering::Relaxed);
-        // PERFORMANCE: Use bitwise AND instead of modulo (capacity is power of 2)
-        let next = (head + 1) & (self.capacity - 1);
-
-        // OPTIMISTIC: Skip the 75% fill check - assume space is available
-        // Try a single CAS attempt
-        match header
-            .head
-            .compare_exchange(head, next, Ordering::Release, Ordering::Relaxed)
-        {
-            Ok(_) => {
-                // Successfully claimed slot, write data
-                unsafe {
-                    // Bounds checking (head is from ring buffer, should always be valid)
-                    if head >= self.capacity {
-                        return Err(msg);
-                    }
-
-                    let byte_offset = (head as usize) * mem::size_of::<T>();
-                    let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *mut T;
-
-                    // Write the message
-                    std::ptr::write(slot_ptr, msg);
-                }
-
-                // Increment global sequence number
-                header.sequence_number.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(_) => {
-                // CAS failed - return message for caller to handle
-                Err(msg)
-            }
-        }
-    }
-
     /// **ZERO-OVERHEAD Push**: Ultra-fast push with NO BOUNDS CHECKING.
     ///
     /// This is the fastest possible push for trusted, high-performance scenarios.
@@ -865,7 +737,7 @@ impl<T> ShmTopic<T> {
     /// - `Ok(())` if push succeeded
     /// - `Err(msg)` if CAS failed (contention) - caller should retry or backoff
     #[inline(always)]
-    pub fn push_fast(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn push_fast(&self, msg: T) -> Result<(), T> {
         let header = unsafe { self.header.as_ref() };
 
         let head = header.head.load(Ordering::Relaxed);
@@ -914,7 +786,7 @@ impl<T> ShmTopic<T> {
     /// - `Some(T)` if data was available
     /// - `None` if buffer is empty
     #[inline(always)]
-    pub fn pop_fast(&self) -> Option<T>
+    pub(crate) fn pop_fast(&self) -> Option<T>
     where
         T: Clone,
     {
@@ -953,145 +825,6 @@ impl<T> ShmTopic<T> {
         Some(msg)
     }
 
-    /// Pop a message; returns None if the buffer is empty
-    /// MPMC FIX: Thread-safe for multiple consumers - each consumer tracks position in shared memory
-    ///
-    /// **Rigtorp Optimization**: Uses cached head index to avoid reading shared memory
-    /// on every call. The head is only refreshed when the buffer appears empty
-    /// (my_tail == cached_head). This reduces atomic loads by ~90% in polling loops.
-    pub fn pop(&self) -> Option<T>
-    where
-        T: Clone,
-    {
-        let header = unsafe { self.header.as_ref() };
-
-        // MPMC OPTIMIZED: Get this consumer's current tail position from LOCAL MEMORY
-        let my_tail = self.consumer_tail.load(Ordering::Relaxed);
-
-        // RIGTORP OPTIMIZATION: Use cached head first, only refresh from shared memory
-        // when buffer appears empty. This eliminates ~90% of cross-core cache transfers.
-        let mut cached = self.cached_head.get();
-
-        if my_tail == cached {
-            // Buffer appears empty - refresh from shared memory
-            cached = header.head.load(Ordering::Acquire);
-            self.cached_head.set(cached);
-
-            if my_tail == cached {
-                // Buffer is actually empty
-                return None;
-            }
-        }
-
-        // Validate tail position is within bounds
-        if my_tail >= self.capacity {
-            eprintln!(
-                "Critical safety violation: consumer tail {} >= capacity {}",
-                my_tail, self.capacity
-            );
-            return None;
-        }
-
-        // Validate head position is within bounds (use cached value)
-        if cached >= self.capacity {
-            eprintln!(
-                "Critical safety violation: head {} >= capacity {}",
-                cached, self.capacity
-            );
-            return None;
-        }
-
-        // Calculate next position for this consumer
-        // PERFORMANCE: Use bitwise AND instead of modulo (capacity is power of 2)
-        let next_tail = (my_tail + 1) & (self.capacity - 1);
-
-        // MPMC OPTIMIZED: Update this consumer's tail position in LOCAL MEMORY
-        self.consumer_tail.store(next_tail, Ordering::Relaxed);
-
-        // Read the message (non-destructive - message stays for other consumers)
-        // Bounds already validated above
-        let msg = unsafe {
-            // Calculate byte offset and verify it's within bounds
-            // Cast u32 index to usize for byte offset calculation
-            let byte_offset = (my_tail as usize) * mem::size_of::<T>();
-            let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *const T;
-
-            // Verify the read location is within our data region
-            let data_region_size = (self.capacity as usize) * mem::size_of::<T>();
-            if byte_offset + mem::size_of::<T>() > data_region_size {
-                eprintln!("Critical safety violation: read would exceed data region bounds");
-                return None;
-            }
-
-            // MPMC CRITICAL FIX: Clone instead of read (move) to avoid double-free
-            // Multiple consumers must be able to read the same slot
-            (*slot_ptr).clone()
-        };
-
-        Some(msg)
-    }
-
-    /// **Optimistic Pop**: Fast-path pop that assumes data is available.
-    ///
-    /// This variant skips the empty buffer check and directly advances the
-    /// consumer tail. It only validates bounds, making it faster when data
-    /// is consistently available.
-    ///
-    /// # Performance
-    /// - Eliminates cached_head refresh logic on fast path
-    /// - Skips empty buffer detection (assumes data ready)
-    /// - Best for high-throughput scenarios with consistent data flow
-    ///
-    /// # Returns
-    /// - `Some(T)` if data was available and read successfully
-    /// - `None` if bounds check failed (very rare - indicates corruption)
-    ///
-    /// # Note
-    /// Caller should fall back to regular `pop()` if this returns `None`
-    /// to properly handle empty buffer case.
-    #[inline]
-    pub fn pop_optimistic(&self) -> Option<T>
-    where
-        T: Clone,
-    {
-        // OPTIMISTIC: Skip the cached_head check - assume data is ready
-        let my_tail = self.consumer_tail.load(Ordering::Relaxed);
-
-        // Minimal bounds validation
-        if my_tail >= self.capacity {
-            return None;
-        }
-
-        // Calculate next position for this consumer
-        // PERFORMANCE: Use bitwise AND instead of modulo (capacity is power of 2)
-        let next_tail = (my_tail + 1) & (self.capacity - 1);
-
-        // Advance tail position immediately (optimistic)
-        self.consumer_tail.store(next_tail, Ordering::Relaxed);
-
-        // Read the message
-        let msg = unsafe {
-            let byte_offset = (my_tail as usize) * mem::size_of::<T>();
-            let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *const T;
-
-            // Minimal bounds check (should always pass for valid ring buffer)
-            let data_region_size = (self.capacity as usize) * mem::size_of::<T>();
-            if byte_offset + mem::size_of::<T>() > data_region_size {
-                // Roll back tail on failure
-                self.consumer_tail.store(my_tail, Ordering::Relaxed);
-                return None;
-            }
-
-            (*slot_ptr).clone()
-        };
-
-        // Update cached head for next call (opportunistic refresh)
-        let header = unsafe { self.header.as_ref() };
-        self.cached_head.set(header.head.load(Ordering::Relaxed));
-
-        Some(msg)
-    }
-
     /// Check if the buffer is empty from this consumer's perspective.
     ///
     /// # Performance
@@ -1115,7 +848,7 @@ impl<T> ShmTopic<T> {
 
     /// Loan a slot in the shared memory for zero-copy publishing
     /// Returns a PublisherSample that provides direct access to shared memory
-    pub fn loan(&self) -> crate::error::HorusResult<PublisherSample<'_, T>> {
+    pub(crate) fn loan(&self) -> crate::error::HorusResult<PublisherSample<'_, T>> {
         let header = unsafe { self.header.as_ref() };
 
         loop {
@@ -1170,7 +903,7 @@ impl<T> ShmTopic<T> {
 
                         return Ok(PublisherSample {
                             data_ptr,
-                            slot_index: head as usize,
+                            _slot_index: head as usize,
                             topic: self,
                             _phantom: PhantomData,
                         });
@@ -1266,8 +999,8 @@ impl<T> ShmTopic<T> {
 
             Some(ConsumerSample {
                 data_ptr,
-                slot_index: my_tail as usize,
-                topic: self,
+                _slot_index: my_tail as usize,
+                _topic: self,
                 _phantom: PhantomData,
             })
         }
@@ -1316,8 +1049,8 @@ impl<T> ShmTopic<T> {
 
             Some(ConsumerSample {
                 data_ptr,
-                slot_index: latest_slot as usize,
-                topic: self,
+                _slot_index: latest_slot as usize,
+                _topic: self,
                 _phantom: PhantomData,
             })
         }
@@ -1325,7 +1058,7 @@ impl<T> ShmTopic<T> {
 
     /// Loan a slot and immediately write data (convenience method)
     /// This is equivalent to loan() followed by write(), but more convenient
-    pub fn loan_and_write(&self, value: T) -> Result<(), T> {
+    pub(crate) fn loan_and_write(&self, value: T) -> Result<(), T> {
         match self.loan() {
             Ok(mut sample) => {
                 sample.write(value);
@@ -1333,6 +1066,39 @@ impl<T> ShmTopic<T> {
                 Ok(())
             }
             Err(_) => Err(value),
+        }
+    }
+
+    /// Smart send: auto-selects the optimal publish strategy based on message size.
+    ///
+    /// - Messages < 4KB use `push_fast()` (copy path, no bounds checking overhead)
+    /// - Messages >= 4KB use `loan_and_write()` (zero-copy path via shared memory loan)
+    ///
+    /// This is the recommended publish API for ShmTopic.
+    #[inline]
+    pub fn send(&self, msg: T) -> Result<(), T> {
+        if mem::size_of::<T>() >= ZERO_COPY_THRESHOLD {
+            self.loan_and_write(msg)
+        } else {
+            self.push_fast(msg)
+        }
+    }
+
+    /// Smart recv: auto-selects the optimal consume strategy based on message size.
+    ///
+    /// - Messages < 4KB use `pop_fast()` (copy path, cached head optimization)
+    /// - Messages >= 4KB use `receive()` (zero-copy read, then clone)
+    ///
+    /// This is the recommended consume API for ShmTopic.
+    #[inline]
+    pub fn recv(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        if mem::size_of::<T>() >= ZERO_COPY_THRESHOLD {
+            self.receive().map(|sample| sample.get_ref().clone())
+        } else {
+            self.pop_fast()
         }
     }
 }

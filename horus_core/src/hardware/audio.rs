@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Audio device type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,8 +282,7 @@ impl AudioDiscovery {
         self.read_file_string(&PathBuf::from(path))
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn detect_device_type(&self, sysfs_path: &PathBuf, card_id: &str) -> AudioDeviceType {
+    fn detect_device_type(&self, sysfs_path: &Path, card_id: &str) -> AudioDeviceType {
         // Check device link for type hints
         let device_link = sysfs_path.join("device");
         if let Ok(target) = fs::read_link(&device_link) {
@@ -319,8 +318,7 @@ impl AudioDiscovery {
         }
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_driver(&self, sysfs_path: &PathBuf) -> Option<String> {
+    fn get_driver(&self, sysfs_path: &Path) -> Option<String> {
         let driver_link = sysfs_path.join("device/driver");
         fs::read_link(&driver_link)
             .ok()

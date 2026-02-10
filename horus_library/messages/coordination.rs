@@ -88,7 +88,7 @@ impl RobotState {
             robot_type,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -143,7 +143,7 @@ impl RobotState {
         self.velocity = velocity;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 }
@@ -253,7 +253,7 @@ impl FleetStatus {
         let mut status = Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -357,7 +357,7 @@ impl FleetStatus {
 
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 }
@@ -473,11 +473,11 @@ impl TaskAssignment {
             task_type,
             assigned_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -509,7 +509,7 @@ impl TaskAssignment {
         self.status = status;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
 
         if status == TaskStatus::Completed {
@@ -525,7 +525,7 @@ impl TaskAssignment {
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
 
         current_time > self.deadline
@@ -605,7 +605,7 @@ impl FormationControl {
             enabled: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -634,7 +634,7 @@ impl FormationControl {
             enabled: true,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -645,7 +645,7 @@ impl FormationControl {
         self.enabled = enabled;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 }
@@ -701,11 +701,11 @@ impl AuctionBid {
             bid_value,
             bid_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -727,7 +727,7 @@ impl AuctionBid {
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
 
         current_time <= self.expiration_time && matches!(self.status, BidStatus::Active)

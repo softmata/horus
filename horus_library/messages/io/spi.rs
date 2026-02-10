@@ -87,7 +87,7 @@ impl SpiMessage {
             success: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         };
         msg.tx_data[..data.len().min(256)].copy_from_slice(&data[..data.len().min(256)]);

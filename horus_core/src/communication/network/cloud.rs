@@ -962,7 +962,7 @@ pub fn resolve_cloud_endpoint(mode: &CloudMode) -> Result<SocketAddr, String> {
         CloudMode::HorusCloud { .. } => {
             // HORUS Cloud always connects to cloud.horus.io
             // The actual WebSocket connection is handled by the backend
-            Ok("51.159.62.125:443".parse().unwrap()) // cloud.horus.io placeholder
+            Ok("51.159.62.125:443".parse().expect("valid hardcoded cloud endpoint"))
         }
         CloudMode::SelfHosted { host, port, .. } => {
             // Try to parse as IP address first

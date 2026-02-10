@@ -34,9 +34,8 @@ pub struct HFrameCore {
     static_count: AtomicUsize,
     dynamic_count: AtomicUsize,
 
-    /// Overflow storage for unlimited frames mode
-    #[allow(dead_code)]
-    overflow: Option<RwLock<HashMap<FrameId, OverflowFrame>>>,
+    /// Overflow storage for unlimited frames mode (reserved for future use)
+    _overflow: Option<RwLock<HashMap<FrameId, OverflowFrame>>>,
 
     /// Transform chain cache
     chain_cache: RwLock<ChainCache>,
@@ -45,7 +44,7 @@ pub struct HFrameCore {
     config: HFrameConfig,
 }
 
-/// Overflow frame storage (for unlimited mode)
+/// Overflow frame storage (reserved for unlimited mode)
 #[allow(dead_code)]
 struct OverflowFrame {
     parent: FrameId,
@@ -119,7 +118,7 @@ impl HFrameCore {
             children: RwLock::new(children),
             static_count: AtomicUsize::new(0),
             dynamic_count: AtomicUsize::new(0),
-            overflow,
+            _overflow: overflow,
             chain_cache: RwLock::new(ChainCache::new(config.chain_cache_size)),
             config: config.clone(),
         }

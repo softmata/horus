@@ -117,7 +117,7 @@ impl NetworkStatus {
     pub fn new(node_name: &str, transport_type: &str) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -189,7 +189,7 @@ impl NetworkStatus {
     pub fn is_fresh(&self, max_age_secs: u64) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         now.saturating_sub(self.timestamp_secs) <= max_age_secs

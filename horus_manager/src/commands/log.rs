@@ -51,8 +51,7 @@ struct LogEntry {
     level: LogLevel,
     node: String,
     message: String,
-    #[allow(dead_code)]
-    raw: String,
+    _raw: String,
 }
 
 /// View logs (tail mode)
@@ -330,7 +329,7 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
                 level,
                 node,
                 message,
-                raw: line.to_string(),
+                _raw: line.to_string(),
             });
         }
     }
@@ -363,7 +362,7 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
                 level,
                 node,
                 message,
-                raw: line.to_string(),
+                _raw: line.to_string(),
             });
         }
     }
@@ -374,7 +373,7 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
         level: LogLevel::Info,
         node: "unknown".to_string(),
         message: line.to_string(),
-        raw: line.to_string(),
+        _raw: line.to_string(),
     })
 }
 

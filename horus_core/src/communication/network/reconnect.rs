@@ -1,4 +1,3 @@
-#![allow(unused_mut, clippy::manual_range_contains)]
 /// Connection state machine and reconnection logic for network transports
 ///
 /// Production-grade connection handling with observable state transitions,

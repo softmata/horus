@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Network interface type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,7 +274,7 @@ impl NetworkDiscovery {
         })
     }
 
-    fn detect_interface_type(&self, name: &str, sysfs_path: &PathBuf) -> NetworkInterfaceType {
+    fn detect_interface_type(&self, name: &str, sysfs_path: &Path) -> NetworkInterfaceType {
         // Check by name pattern first
         if name == "lo" {
             return NetworkInterfaceType::Loopback;
@@ -333,8 +333,7 @@ impl NetworkDiscovery {
         NetworkInterfaceType::Unknown
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn is_usb_device(&self, sysfs_path: &PathBuf) -> bool {
+    fn is_usb_device(&self, sysfs_path: &Path) -> bool {
         let device_link = sysfs_path.join("device");
         if let Ok(target) = fs::read_link(&device_link) {
             return target.to_string_lossy().contains("/usb");
@@ -342,8 +341,7 @@ impl NetworkDiscovery {
         false
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_state(&self, sysfs_path: &PathBuf) -> NetworkState {
+    fn get_state(&self, sysfs_path: &Path) -> NetworkState {
         let operstate = self.read_sysfs_string(&sysfs_path.join("operstate"));
         let carrier = self.read_sysfs_string(&sysfs_path.join("carrier"));
 
@@ -361,8 +359,7 @@ impl NetworkDiscovery {
         }
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_driver(&self, sysfs_path: &PathBuf) -> Option<String> {
+    fn get_driver(&self, sysfs_path: &Path) -> Option<String> {
         let driver_link = sysfs_path.join("device/driver");
         fs::read_link(&driver_link)
             .ok()

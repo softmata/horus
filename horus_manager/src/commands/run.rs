@@ -2977,12 +2977,6 @@ fn split_dependencies_with_context(
     (horus_packages, pip_packages, cargo_packages)
 }
 
-/// Backward-compatible wrapper without language context
-#[allow(dead_code)]
-fn split_dependencies(deps: HashSet<String>) -> (Vec<String>, Vec<PipPackage>, Vec<CargoPackage>) {
-    split_dependencies_with_context(deps, None)
-}
-
 /// Git dependency reference type
 #[derive(Debug, Clone)]
 enum GitRef {

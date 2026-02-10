@@ -1,4 +1,3 @@
-#![allow(clippy::manual_clamp)]
 //! Statistical analysis functions for rigorous benchmarking.
 //!
 //! Provides:
@@ -56,7 +55,7 @@ impl Statistics {
     /// Compute statistics from raw latency samples
     pub fn from_samples(samples: &[u64], confidence_level: f64, filter_outliers: bool) -> Self {
         let (filtered, outliers_removed) = if filter_outliers {
-            let f = filter_outliers_tukey(samples);
+            let f = self::filter_outliers(samples);
             let removed = samples.len() - f.len();
             (f, removed)
         } else {
@@ -244,11 +243,6 @@ pub fn bootstrap_ci(samples: &[u64], confidence_level: f64, iterations: usize) -
 /// Removes samples that fall outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
 /// This is standard practice in benchmarking to remove measurement artifacts.
 pub fn filter_outliers(samples: &[u64]) -> Vec<u64> {
-    filter_outliers_tukey(samples)
-}
-
-/// Tukey outlier filtering implementation
-fn filter_outliers_tukey(samples: &[u64]) -> Vec<u64> {
     if samples.len() < 4 {
         return samples.to_vec();
     }
@@ -544,8 +538,8 @@ fn anderson_darling_statistic(values: &[f64], mean: f64, std_dev: f64) -> f64 {
         let cdf_zn_i = standard_normal_cdf(z[n - 1 - i]);
 
         // Avoid log(0) or log(1)
-        let cdf_zi = cdf_zi.max(1e-10).min(1.0 - 1e-10);
-        let cdf_zn_i = cdf_zn_i.max(1e-10).min(1.0 - 1e-10);
+        let cdf_zi = cdf_zi.clamp(1e-10, 1.0 - 1e-10);
+        let cdf_zn_i = cdf_zn_i.clamp(1e-10, 1.0 - 1e-10);
 
         sum += (2.0 * (i + 1) as f64 - 1.0) * (cdf_zi.ln() + (1.0 - cdf_zn_i).ln());
     }

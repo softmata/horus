@@ -1,4 +1,3 @@
-#![allow(clippy::io_other_error)]
 //! Certificate management for HORUS network transports
 //!
 //! Provides automatic certificate generation, persistence, and management for
@@ -502,7 +501,7 @@ impl CertificateManager {
         let validity = cert.validity();
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let not_after = validity.not_after.timestamp();

@@ -3,8 +3,6 @@
 //! This module provides functionality to import DLPack managed tensors
 //! from other frameworks (PyTorch, JAX, TensorFlow, etc.) into HORUS.
 
-use std::ffi::c_void;
-
 use super::ffi::{DLDevice, DLManagedTensor};
 use crate::device::Device;
 use crate::tensor::{TensorDescriptor, TensorDtype};
@@ -149,81 +147,10 @@ fn compute_contiguous_strides(shape: &[u64], elem_size: usize) -> Vec<u64> {
     strides
 }
 
-/// Wrapper that owns a DLManagedTensor and calls deleter on drop
-///
-/// Use this when you want RAII-style management of imported DLPack tensors.
-#[allow(dead_code)]
-pub struct OwnedDLPackTensor {
-    managed: *mut DLManagedTensor,
-    descriptor: TensorDescriptor,
-}
-
-impl OwnedDLPackTensor {
-    /// Create from a DLManagedTensor pointer, taking ownership
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `managed` points to a valid DLManagedTensor
-    /// and that ownership is being transferred (caller won't call deleter).
-    #[allow(dead_code)]
-    pub unsafe fn from_raw(managed: *mut DLManagedTensor) -> Result<Self, DLPackImportError> {
-        let descriptor = from_dlpack(managed)?;
-        Ok(Self {
-            managed,
-            descriptor,
-        })
-    }
-
-    /// Get the tensor descriptor
-    #[allow(dead_code)]
-    pub fn descriptor(&self) -> &TensorDescriptor {
-        &self.descriptor
-    }
-
-    /// Get the data pointer
-    #[allow(dead_code)]
-    pub fn data_ptr(&self) -> *mut c_void {
-        (self.descriptor.data_ptr as usize) as *mut c_void
-    }
-
-    /// Get the shape
-    #[allow(dead_code)]
-    pub fn shape(&self) -> &[u64] {
-        &self.descriptor.shape
-    }
-
-    /// Get the dtype
-    #[allow(dead_code)]
-    pub fn dtype(&self) -> TensorDtype {
-        self.descriptor.dtype
-    }
-
-    /// Get the device
-    #[allow(dead_code)]
-    pub fn device(&self) -> Device {
-        self.descriptor.device
-    }
-}
-
-impl Drop for OwnedDLPackTensor {
-    fn drop(&mut self) {
-        if !self.managed.is_null() {
-            unsafe {
-                let managed = &*self.managed;
-                if let Some(deleter) = managed.deleter {
-                    deleter(self.managed);
-                }
-            }
-        }
-    }
-}
-
-// OwnedDLPackTensor can be sent between threads if the underlying data is thread-safe
-unsafe impl Send for OwnedDLPackTensor {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_void;
     use crate::dlpack::export::to_dlpack;
 
     #[test]

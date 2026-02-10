@@ -49,7 +49,7 @@ impl Heartbeat {
             uptime: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -69,7 +69,7 @@ impl Heartbeat {
         self.uptime = uptime;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 
@@ -134,7 +134,7 @@ impl Status {
             code,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -228,7 +228,7 @@ impl EmergencyStop {
             auto_reset: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -249,7 +249,7 @@ impl EmergencyStop {
             auto_reset: false,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -304,7 +304,7 @@ impl ResourceUsage {
         Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         }
@@ -431,7 +431,7 @@ impl DiagnosticReport {
         let mut report = Self {
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
             ..Default::default()
         };
@@ -606,7 +606,7 @@ impl NodeHeartbeat {
     pub fn new(state: NodeState, health: HealthStatus) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -622,7 +622,7 @@ impl NodeHeartbeat {
     pub fn update_timestamp(&mut self) {
         self.heartbeat_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
     }
 
@@ -630,7 +630,7 @@ impl NodeHeartbeat {
     pub fn is_fresh(&self, max_age_secs: u64) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         now.saturating_sub(self.heartbeat_timestamp) <= max_age_secs
@@ -685,7 +685,7 @@ impl SafetyStatus {
             fault_code: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_nanos() as u64,
         }
     }

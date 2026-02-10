@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// PWM channel information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,8 +175,7 @@ impl PwmDiscovery {
         })
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn scan_channels(&self, chip_number: u8, chip_path: &PathBuf, npwm: u32) -> Vec<PwmChannel> {
+    fn scan_channels(&self, chip_number: u8, chip_path: &Path, npwm: u32) -> Vec<PwmChannel> {
         let mut channels = Vec::new();
 
         for channel_num in 0..npwm {
@@ -209,8 +208,7 @@ impl PwmDiscovery {
         channels
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_device_name(&self, chip_path: &PathBuf) -> Option<String> {
+    fn get_device_name(&self, chip_path: &Path) -> Option<String> {
         // Try device tree name
         let of_name = chip_path.join("device/of_node/name");
         if let Ok(name) = fs::read_to_string(&of_name) {
@@ -231,8 +229,7 @@ impl PwmDiscovery {
         None
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_controller_type(&self, chip_path: &PathBuf) -> Option<String> {
+    fn get_controller_type(&self, chip_path: &Path) -> Option<String> {
         // Try driver name
         let driver_link = chip_path.join("device/driver");
         if let Ok(target) = fs::read_link(&driver_link) {

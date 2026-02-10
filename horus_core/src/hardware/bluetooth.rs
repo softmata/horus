@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Bluetooth adapter state
@@ -222,8 +222,7 @@ impl BluetoothDiscovery {
         })
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn detect_adapter_type(&self, sysfs_path: &PathBuf) -> BluetoothAdapterType {
+    fn detect_adapter_type(&self, sysfs_path: &Path) -> BluetoothAdapterType {
         // Check device subsystem
         let device_link = sysfs_path.join("device");
         if let Ok(target) = fs::read_link(&device_link) {
@@ -264,8 +263,7 @@ impl BluetoothDiscovery {
         BluetoothState::Unknown
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_manufacturer(&self, sysfs_path: &PathBuf) -> Option<String> {
+    fn get_manufacturer(&self, sysfs_path: &Path) -> Option<String> {
         // Try USB manufacturer
         let usb_mfr = sysfs_path.join("device/manufacturer");
         if let Some(mfr) = self.read_sysfs_string(&usb_mfr) {
@@ -324,8 +322,7 @@ impl BluetoothDiscovery {
         }
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn get_bt_version(&self, sysfs_path: &PathBuf) -> Option<String> {
+    fn get_bt_version(&self, sysfs_path: &Path) -> Option<String> {
         // Try to read HCI version
         let hci_version = sysfs_path.join("hci_version");
         if let Some(ver) = self.read_sysfs_string(&hci_version) {
@@ -368,8 +365,7 @@ impl BluetoothDiscovery {
         }
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn check_ble_support(&self, sysfs_path: &PathBuf) -> bool {
+    fn check_ble_support(&self, sysfs_path: &Path) -> bool {
         // BLE is supported from Bluetooth 4.0+
         if let Some(ver) = self.get_bt_version(sysfs_path) {
             if let Some(major) = ver.chars().next().and_then(|c| c.to_digit(10)) {
@@ -382,8 +378,7 @@ impl BluetoothDiscovery {
         le_states.exists()
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn scan_connected_devices(&self, sysfs_path: &PathBuf) -> Vec<BluetoothDevice> {
+    fn scan_connected_devices(&self, sysfs_path: &Path) -> Vec<BluetoothDevice> {
         let mut devices = Vec::new();
 
         // Scan for device entries in the adapter's sysfs directory
@@ -402,8 +397,7 @@ impl BluetoothDiscovery {
         devices
     }
 
-    #[allow(clippy::ptr_arg)]
-    fn probe_device(&self, device_path: &PathBuf, address: &str) -> Option<BluetoothDevice> {
+    fn probe_device(&self, device_path: &Path, address: &str) -> Option<BluetoothDevice> {
         let name = self.read_sysfs_string(&device_path.join("name"));
 
         let connected = self

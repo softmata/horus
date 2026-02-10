@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)]
 //! Tensor data types with DLPack mapping
 //!
 //! Provides enumeration of supported data types and conversion to/from DLPack codes.
@@ -150,7 +149,7 @@ impl TensorDtype {
     }
 
     /// Parse from string (e.g., "float32", "f32", "uint8", "u8")
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "float32" | "f32" | "float" => Some(TensorDtype::F32),
             "float64" | "f64" | "double" => Some(TensorDtype::F64),
@@ -257,10 +256,10 @@ mod tests {
 
     #[test]
     fn test_dtype_parse() {
-        assert_eq!(TensorDtype::from_str("float32"), Some(TensorDtype::F32));
-        assert_eq!(TensorDtype::from_str("f32"), Some(TensorDtype::F32));
-        assert_eq!(TensorDtype::from_str("uint8"), Some(TensorDtype::U8));
-        assert_eq!(TensorDtype::from_str("bf16"), Some(TensorDtype::BF16));
-        assert_eq!(TensorDtype::from_str("invalid"), None);
+        assert_eq!(TensorDtype::parse("float32"), Some(TensorDtype::F32));
+        assert_eq!(TensorDtype::parse("f32"), Some(TensorDtype::F32));
+        assert_eq!(TensorDtype::parse("uint8"), Some(TensorDtype::U8));
+        assert_eq!(TensorDtype::parse("bf16"), Some(TensorDtype::BF16));
+        assert_eq!(TensorDtype::parse("invalid"), None);
     }
 }

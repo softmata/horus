@@ -1,4 +1,3 @@
-#![allow(unused_mut, unused_variables, clippy::manual_div_ceil)]
 //! # Adaptive Topic - Universal Smart Detection IPC
 //!
 //! This module provides fully automatic backend detection for `Topic::new()`.
