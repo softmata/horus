@@ -1421,7 +1421,7 @@ mod tests {
         quality.update_rtt(Duration::from_millis(20));
         // Smoothed: (10 * 7 + 20) / 8 = 11.25 -> 11ms
         let rtt = quality.rtt().as_millis();
-        assert!(rtt >= 10 && rtt <= 15);
+        assert!((10..=15).contains(&rtt));
     }
 
     #[test]

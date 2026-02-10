@@ -244,9 +244,11 @@ mod tests {
 
     #[test]
     fn test_speed_calculation() {
-        let mut track = TrackedObject::default();
-        track.velocity_x = 3.0;
-        track.velocity_y = 4.0;
+        let track = TrackedObject {
+            velocity_x: 3.0,
+            velocity_y: 4.0,
+            ..Default::default()
+        };
         assert!((track.speed() - 5.0).abs() < 0.001);
     }
 }

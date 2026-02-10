@@ -711,10 +711,9 @@ mod tests {
         for i in 0..5 {
             let payload = vec![i as u8; 200]; // 200 bytes each + 4 prefix = 204 bytes
             let result = batcher.add(payload);
-            if result.is_some() {
+            if let Some(batch) = result {
                 flush_triggered = true;
                 // Flush should contain messages 0-3 (4 messages)
-                let batch = result.unwrap();
                 assert_eq!(batch.count, 4);
             }
         }

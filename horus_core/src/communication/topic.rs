@@ -5367,10 +5367,7 @@ mod tests {
                 // Due to single-slot design, we may skip some messages
                 // but IDs should be monotonically increasing
                 if let Some(last) = last_id {
-                    assert!(
-                        msg.id > last || msg.id == last,
-                        "ID should not go backwards"
-                    );
+                    assert!(msg.id >= last, "ID should not go backwards");
                 }
                 last_id = Some(msg.id);
             }
@@ -7027,13 +7024,12 @@ mod tests {
 
         thread::scope(|s| {
             // Spawn consumer threads
-            for i in 0..4 {
+            for counter in &received_counts {
                 let consumer = Topic::<SpmcTinyMsg>::spmc_shm(&unique_name, false).unwrap();
-                let counter = &received_counts[i];
                 let stop_flag = &stop;
                 s.spawn(move || {
                     while !stop_flag.load(Ordering::SeqCst) {
-                        if let Some(_) = consumer.recv() {
+                        if consumer.recv().is_some() {
                             counter.fetch_add(1, Ordering::Relaxed);
                         }
                         std::hint::spin_loop();

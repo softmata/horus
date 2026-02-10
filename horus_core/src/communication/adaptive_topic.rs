@@ -2956,7 +2956,7 @@ mod tests {
         println!(
             "LocalState size: {} bytes ({} cache lines)",
             size,
-            (size + 63) / 64
+            size.div_ceil(64)
         );
         assert!(
             size <= 128,
