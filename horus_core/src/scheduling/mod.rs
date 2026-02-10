@@ -33,7 +33,6 @@ pub mod types;
 pub mod executors;
 pub mod fault_tolerance;
 mod intelligence;
-pub mod jit;
 
 // Runtime OS-level features
 pub mod runtime;
@@ -146,9 +145,6 @@ pub use executors::{
 
 // Re-export fault tolerance
 pub use fault_tolerance::{CircuitBreaker, CircuitState};
-
-// Re-export JIT compiler
-pub use jit::JITCompiler;
 
 // Re-export zero-copy recording
 pub use zero_copy_recording::{

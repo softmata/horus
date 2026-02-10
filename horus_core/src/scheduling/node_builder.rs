@@ -41,8 +41,6 @@ pub struct NodeConfig {
     pub(crate) wcet_budget: Option<Duration>,
     /// Deadline for RT nodes
     pub(crate) deadline: Option<Duration>,
-    /// Request JIT compilation if supported
-    pub(crate) request_jit: bool,
     /// Execution tier override
     pub(crate) tier: Option<super::intelligence::NodeTier>,
 }
@@ -64,7 +62,6 @@ impl NodeConfig {
             is_rt: false,
             wcet_budget: None,
             deadline: None,
-            request_jit: false,
             tier: None,
         }
     }
@@ -188,20 +185,6 @@ impl NodeConfig {
         self
     }
 
-    /// Request JIT compilation for this node (if it supports JIT).
-    ///
-    /// The node must implement the JIT traits for this to have effect.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// NodeConfig::new(arithmetic_node)
-    ///     .jit()  // Request JIT compilation
-    /// ```
-    pub fn jit(mut self) -> Self {
-        self.request_jit = true;
-        self
-    }
-
     /// Set an explicit execution tier.
     ///
     /// Overrides automatic tier classification.
@@ -296,12 +279,6 @@ impl<'a> NodeBuilder<'a> {
     /// Set the WCET budget in milliseconds.
     pub fn wcet_ms(mut self, ms: u64) -> Self {
         self.config = self.config.wcet_ms(ms);
-        self
-    }
-
-    /// Request JIT compilation for this node.
-    pub fn jit(mut self) -> Self {
-        self.config = self.config.jit();
         self
     }
 

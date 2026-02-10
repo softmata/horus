@@ -712,57 +712,6 @@ pub trait Node: Send {
         true
     }
 
-    // ==================== JIT Compilation Support ====================
-    // These methods enable nodes to be JIT-compiled for ultra-fast execution.
-    // Override these in nodes that perform simple, deterministic computations.
-
-    /// Returns true if this node supports JIT compilation.
-    /// JIT-compiled nodes can execute in 20-50ns instead of microseconds.
-    ///
-    /// Override this to return `true` for nodes that:
-    /// - Perform simple arithmetic/logic operations
-    /// - Are deterministic (same input = same output)
-    /// - Have no side effects (pure functions)
-    fn supports_jit(&self) -> bool {
-        false
-    }
-
-    /// Returns true if this node is deterministic (same inputs always produce same outputs).
-    /// Required for JIT compilation.
-    fn is_jit_deterministic(&self) -> bool {
-        false
-    }
-
-    /// Returns true if this node is pure (no side effects).
-    /// Required for JIT compilation.
-    fn is_jit_pure(&self) -> bool {
-        false
-    }
-
-    /// Get the JIT compute function for this node.
-    /// Returns a function pointer that takes an i64 input and returns i64 output.
-    ///
-    /// This is a simplified interface for JIT compilation. For complex nodes,
-    /// implement the full DataflowNode trait in the scheduling module.
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn get_jit_compute(&self) -> Option<fn(i64) -> i64> {
-    ///     Some(|x| x * self.scale + self.offset)
-    /// }
-    /// ```
-    fn get_jit_compute(&self) -> Option<fn(i64) -> i64> {
-        None
-    }
-
-    /// Get JIT parameters for arithmetic nodes: (multiply_factor, offset)
-    /// Used by the Cranelift JIT compiler to generate: output = input * factor + offset
-    ///
-    /// Returns None if this node doesn't support simple arithmetic JIT.
-    fn get_jit_arithmetic_params(&self) -> Option<(i64, i64)> {
-        None
-    }
-
     // ==================== Checkpoint/Restore Support ====================
     // These methods enable automatic state persistence for fault tolerance.
     // Override these in nodes that have internal state to checkpoint.

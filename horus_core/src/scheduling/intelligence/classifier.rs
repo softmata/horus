@@ -4,7 +4,7 @@ use std::collections::HashMap;
 /// Execution tier for a node based on characteristics
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutionTier {
-    /// Ultra-fast deterministic nodes (<5μs) - JIT dataflow
+    /// Ultra-fast deterministic nodes (<5μs) - inline execution
     UltraFast,
     /// Fast nodes (<1ms) - Inline execution
     Fast,
@@ -20,7 +20,7 @@ impl ExecutionTier {
     /// Get human-readable name
     pub fn name(&self) -> &'static str {
         match self {
-            ExecutionTier::UltraFast => "UltraFast (JIT)",
+            ExecutionTier::UltraFast => "UltraFast (Inline)",
             ExecutionTier::Fast => "Fast (Inline)",
             ExecutionTier::AsyncIO => "Async I/O",
             ExecutionTier::Isolated => "Isolated",
@@ -67,7 +67,7 @@ impl TierClassifier {
             return ExecutionTier::Isolated;
         }
 
-        // Priority 2: Ultra-fast deterministic nodes → JIT tier
+        // Priority 2: Ultra-fast deterministic nodes → UltraFast tier
         if stats.avg_us < 5.0 && stats.is_deterministic {
             return ExecutionTier::UltraFast;
         }

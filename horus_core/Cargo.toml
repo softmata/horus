@@ -29,10 +29,6 @@ colored = "2.0"
 tokio = { version = "1.0", features = ["full"] }
 rayon = "1.10"
 parking_lot = "0.12"
-cranelift = "0.110"
-cranelift-jit = "0.110"
-cranelift-module = "0.110"
-cranelift-native = "0.110"
 chrono = { version = "0.4", features = ["serde", "std"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 dirs = "5.0"

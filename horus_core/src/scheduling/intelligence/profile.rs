@@ -122,8 +122,6 @@ pub struct NodeProfile {
     /// Is this node CPU bound?
     pub is_cpu_bound: bool,
 
-    /// JIT arithmetic parameters if applicable (factor, offset)
-    pub jit_params: Option<(f64, f64)>,
 }
 
 impl NodeProfile {
@@ -140,7 +138,6 @@ impl NodeProfile {
             is_deterministic: true,
             is_io_heavy: false,
             is_cpu_bound: false,
-            jit_params: None,
         }
     }
 
@@ -490,7 +487,6 @@ impl OfflineProfiler {
                 is_deterministic: false,
                 is_io_heavy: false,
                 is_cpu_bound: false,
-                jit_params: None,
             };
 
             profile.classify_tier();

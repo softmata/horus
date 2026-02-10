@@ -41,7 +41,6 @@ use super::executors::{
 };
 use super::fault_tolerance::CircuitBreaker;
 use super::intelligence::{DependencyGraph, ExecutionTier, RuntimeProfiler, TierClassifier};
-use super::jit::CompiledDataflow;
 use super::safety_monitor::SafetyMonitor;
 use tokio::sync::mpsc;
 
@@ -132,9 +131,6 @@ pub struct Scheduler {
     background_executor: Option<BackgroundExecutor>,
     isolated_executor: Option<IsolatedExecutor>,
     learning_complete: bool,
-
-    // JIT compilation for ultra-fast nodes
-    jit_compiled_nodes: HashMap<String, CompiledDataflow>,
 
     // Configuration (stored for runtime use)
     config: Option<super::config::SchedulerConfig>,
@@ -270,9 +266,6 @@ impl Scheduler {
             background_executor: None,
             isolated_executor: None,
             learning_complete: true,
-
-            // JIT compilation
-            jit_compiled_nodes: HashMap::new(),
 
             // Configuration
             config: None,
@@ -513,7 +506,7 @@ impl Scheduler {
     /// ```
     ///
     /// # Configuration
-    /// - **Execution**: JITOptimized
+    /// - **Execution**: Parallel
     /// - **Tick Rate**: 10,000 Hz (10kHz)
     /// - **Real-Time**: WCET enforcement, memory locking, SCHED_FIFO
     /// - **Deadline Policy**: Skip (maintain throughput)
@@ -573,7 +566,7 @@ impl Scheduler {
     /// ```
     ///
     /// # Configuration
-    /// - **Execution**: JITOptimized
+    /// - **Execution**: Parallel
     /// - **Tick Rate**: 1000 Hz
     /// - **Jitter**: <5μs
     /// - **Real-Time**: Full enforcement, 10ms watchdog
@@ -1286,11 +1279,6 @@ impl Scheduler {
 
         // Apply execution mode
         match config.execution {
-            ExecutionMode::JITOptimized => {
-                // Force JIT compilation for all nodes
-                self.profiler.force_ultra_fast_classification = true;
-                print_line("JIT optimization mode selected");
-            }
             ExecutionMode::Parallel => {
                 // Enable full parallelization
                 self.parallel_executor.set_max_threads(num_cpus::get());
@@ -1581,8 +1569,6 @@ impl Scheduler {
     /// When disabled:
     /// - No ~100-tick profiling phase at startup
     /// - No automatic tier classification of nodes
-    /// - No auto-JIT compilation of ultra-fast nodes after learning
-    /// - Nodes that declare `supports_jit()` still get compiled at add-time
     ///
     /// Use cases:
     /// - Real-time systems that need immediate predictable execution
@@ -1809,8 +1795,6 @@ impl Scheduler {
             is_rt_node: false,
             wcet_budget: None,
             deadline: None,
-            is_jit_compiled: false,
-            jit_stats: None,
             recorder: None,
 
             is_stopped: false,
@@ -2321,7 +2305,6 @@ impl Scheduler {
         let is_rt = config.is_rt;
         let wcet_budget = config.wcet_budget;
         let deadline = config.deadline;
-        let request_jit = config.request_jit;
         let tier = config.tier;
 
         // Use the internal add logic
@@ -2332,7 +2315,6 @@ impl Scheduler {
             is_rt,
             wcet_budget,
             deadline,
-            request_jit,
             tier,
         )
     }
@@ -2347,84 +2329,11 @@ impl Scheduler {
         is_rt_node: bool,
         wcet_budget: Option<std::time::Duration>,
         deadline: Option<std::time::Duration>,
-        _request_jit: bool,
         tier: Option<super::intelligence::NodeTier>,
     ) -> &mut Self {
         let node_name = node.name().to_string();
 
-        // Check if this node supports JIT compilation
-        let is_jit_capable = node.supports_jit();
-        let jit_arithmetic_params = node.get_jit_arithmetic_params();
-        let jit_compute_fn = node.get_jit_compute();
-
-        // Track the compiled JIT function if available
-        let (is_jit_compiled, jit_compiled) = if is_jit_capable {
-            if let Some((factor, offset)) = jit_arithmetic_params {
-                match super::jit::JITCompiler::new() {
-                    Ok(mut compiler) => {
-                        let unique_name = format!("{}_{}", node_name, self.nodes.len());
-                        match compiler.compile_arithmetic_node(&unique_name, factor, offset) {
-                            Ok(func_ptr) => {
-                                print_line(&format!(
-                                    "[JIT] Compiled node '{}' with factor={}, offset={}",
-                                    node_name, factor, offset
-                                ));
-                                let compiled = CompiledDataflow {
-                                    name: node_name.clone(),
-                                    func_ptr,
-                                    exec_count: 0,
-                                    total_ns: 0,
-                                };
-                                (true, Some(compiled))
-                            }
-                            Err(e) => {
-                                print_line(&format!(
-                                    "[JIT] Failed to compile '{}': {}",
-                                    node_name, e
-                                ));
-                                (false, None)
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        print_line(&format!(
-                            "[JIT] Compiler init failed for '{}': {}",
-                            node_name, e
-                        ));
-                        (false, None)
-                    }
-                }
-            } else if jit_compute_fn.is_some() {
-                print_line(&format!(
-                    "[JIT] Node '{}' provides direct compute function",
-                    node_name
-                ));
-                (true, None)
-            } else {
-                print_line(&format!(
-                    "[JIT] Node '{}' is JIT-capable (tracking stats)",
-                    node_name
-                ));
-                (true, Some(CompiledDataflow::new_stats_only(&node_name)))
-            }
-        } else {
-            (false, None)
-        };
-
         let context = NodeInfo::new(node_name.clone());
-
-        // Store JIT compiled function
-        if let Some(ref compiled) = jit_compiled {
-            self.jit_compiled_nodes.insert(
-                node_name.clone(),
-                CompiledDataflow {
-                    name: compiled.name.clone(),
-                    func_ptr: compiled.func_ptr,
-                    exec_count: 0,
-                    total_ns: 0,
-                },
-            );
-        }
 
         // Create node recorder if recording is enabled
         let recorder = if let Some(ref config) = self.recording_config {
@@ -2466,8 +2375,6 @@ impl Scheduler {
             is_rt_node,
             wcet_budget,
             deadline,
-            is_jit_compiled,
-            jit_stats: jit_compiled,
             recorder,
 
             is_stopped: false,
@@ -2741,9 +2648,6 @@ impl Scheduler {
                     if !cpu_nodes.is_empty() {
                         print_line(&format!("  CPU-bound nodes: {:?}", cpu_nodes));
                     }
-
-                    // Setup JIT compiler for ultra-fast nodes
-                    self.setup_jit_compiler();
 
                     // Initialize async I/O executor and move I/O-heavy nodes
                     // (after logging is restored so moved nodes retain their logging settings)
@@ -3753,58 +3657,7 @@ impl Scheduler {
 
         let tick_start = Instant::now();
 
-        // Check if this node should use JIT execution path
-        let use_jit_path = self.nodes[idx].is_jit_compiled && self.nodes[idx].jit_stats.is_some();
-
-        let (tick_result, jit_executed) = if use_jit_path {
-            // JIT EXECUTION PATH: Use compiled native code for ultra-fast execution
-            let registered = &mut self.nodes[idx];
-            let tick_number = if let Some(ref mut context) = registered.context {
-                context.start_tick();
-                context.metrics().total_ticks
-            } else {
-                0
-            };
-
-            // Set node context for hlog!() macro
-            set_node_context(node_name, tick_number);
-
-            // Try to execute via JIT-compiled function
-            let jit_result = if let Some(ref mut jit_stats) = registered.jit_stats {
-                if !jit_stats.func_ptr.is_null() {
-                    // Execute the JIT-compiled function
-                    // Use a simple incrementing input for demonstration
-                    // In real usage, nodes would provide their own input mechanism
-                    let input = jit_stats.exec_count as i64;
-                    let _result = jit_stats.execute(input);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if jit_result {
-                // JIT execution succeeded
-                clear_node_context();
-                (Ok(()), true)
-            } else {
-                // JIT failed, fall back to regular tick
-                let tick_res = if registered.context.is_some() {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        registered.node.tick();
-                    }));
-                    clear_node_context();
-                    result
-                } else {
-                    clear_node_context();
-                    return;
-                };
-                (tick_res, false)
-            }
-        } else {
-            // REGULAR EXECUTION PATH: Standard node tick
+        let tick_result = {
             let registered = &mut self.nodes[idx];
             if let Some(ref mut context) = registered.context {
                 context.start_tick();
@@ -3814,17 +3667,10 @@ impl Scheduler {
                 set_node_context(node_name, tick_number);
 
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // Check if node provides a direct JIT compute function
-                    if let Some(compute_fn) = registered.node.get_jit_compute() {
-                        // Execute the function pointer directly
-                        let _result = compute_fn(0);
-                    } else {
-                        // Regular tick execution
-                        registered.node.tick();
-                    }
+                    registered.node.tick();
                 }));
                 clear_node_context();
-                (result, false)
+                result
             } else {
                 return;
             }
@@ -3840,39 +3686,6 @@ impl Scheduler {
         }
 
         self.profiler.record(node_name, tick_duration);
-
-        // Update JIT compilation statistics if this is a JIT-compiled node
-        if self.nodes[idx].is_jit_compiled {
-            // Update JIT execution statistics
-            if let Some(ref mut jit_stats) = self.nodes[idx].jit_stats {
-                // Stats are already updated by execute() call if JIT path was used
-                if !jit_executed {
-                    // Only update manually if we didn't use JIT path
-                    jit_stats.exec_count += 1;
-                    jit_stats.total_ns += tick_duration.as_nanos() as u64;
-                }
-
-                // Log performance periodically
-                if jit_stats.exec_count % 1000 == 0 {
-                    let avg_ns = jit_stats.avg_exec_ns();
-                    let is_fast = jit_stats.is_fast_enough();
-                    print_line(&format!(
-                        "[JIT] Node '{}' - {} executions, avg: {:.0}ns (target: 20-50ns) {} {}",
-                        node_name,
-                        jit_stats.exec_count,
-                        avg_ns,
-                        if jit_executed { "[NATIVE]" } else { "[TICK]" },
-                        if is_fast { "x" } else { "SLOW" }
-                    ));
-                }
-            }
-
-            // Also update in the global JIT map
-            if let Some(compiled) = self.jit_compiled_nodes.get_mut(node_name) {
-                compiled.exec_count += 1;
-                compiled.total_ns += tick_duration.as_nanos() as u64;
-            }
-        }
 
         // Check WCET budget for RT nodes
         if is_rt_node && wcet_budget.is_some() {
@@ -3957,99 +3770,6 @@ impl Scheduler {
                         context.transition_to_error(error_msg);
                     }
                 }
-            }
-        }
-    }
-
-    /// Setup JIT compiler for ultra-fast nodes
-    fn setup_jit_compiler(&mut self) {
-        // Identify ultra-fast nodes from classifier
-        if let Some(ref classifier) = self.classifier {
-            let mut jit_compiled_count = 0;
-            let mut already_compiled_count = 0;
-
-            // Automatically JIT-compile ultra-fast nodes
-            for i in 0..self.nodes.len() {
-                let node_name = self.nodes[i].node.name();
-
-                if let Some(tier) = classifier.get_tier(node_name) {
-                    if tier == ExecutionTier::UltraFast {
-                        // Skip if already JIT-compiled at add-time with proper params
-                        if self.nodes[i].is_jit_compiled && self.nodes[i].jit_stats.is_some() {
-                            already_compiled_count += 1;
-                            print_line(&format!(
-                                "[JIT] Node '{}' already compiled at add-time (keeping original)",
-                                node_name
-                            ));
-                            continue;
-                        }
-
-                        // Try to compile using node's JIT params if available
-                        let compiled = if let Some((factor, offset)) =
-                            self.nodes[i].node.get_jit_arithmetic_params()
-                        {
-                            // Use node's actual parameters
-                            match super::jit::JITCompiler::new() {
-                                Ok(mut compiler) => {
-                                    let unique_name = format!("{}_{}_learning", node_name, i);
-                                    match compiler.compile_arithmetic_node(
-                                        &unique_name,
-                                        factor,
-                                        offset,
-                                    ) {
-                                        Ok(func_ptr) => {
-                                            print_line(&format!(
-                                                "[JIT] Learning phase compiled '{}' with factor={}, offset={}",
-                                                node_name, factor, offset
-                                            ));
-                                            Some(CompiledDataflow {
-                                                name: node_name.to_string(),
-                                                func_ptr,
-                                                exec_count: 0,
-                                                total_ns: 0,
-                                            })
-                                        }
-                                        Err(_) => Some(CompiledDataflow::new_stats_only(node_name)),
-                                    }
-                                }
-                                Err(_) => Some(CompiledDataflow::new_stats_only(node_name)),
-                            }
-                        } else {
-                            // No JIT params - use generic function for stats tracking
-                            Some(CompiledDataflow::new_stats_only(node_name))
-                        };
-
-                        if let Some(compiled) = compiled {
-                            // Mark this node as JIT-compiled
-                            self.nodes[i].is_jit_compiled = true;
-
-                            // Store the compiled dataflow for tracking
-                            self.jit_compiled_nodes.insert(
-                                node_name.to_string(),
-                                CompiledDataflow {
-                                    name: compiled.name.clone(),
-                                    func_ptr: compiled.func_ptr,
-                                    exec_count: 0,
-                                    total_ns: 0,
-                                },
-                            );
-                            self.nodes[i].jit_stats = Some(compiled);
-
-                            jit_compiled_count += 1;
-                            print_line(&format!(
-                                "[JIT] Auto-compiled node '{}' for ultra-fast execution (target: 20-50ns)",
-                                node_name
-                            ));
-                        }
-                    }
-                }
-            }
-
-            if jit_compiled_count > 0 || already_compiled_count > 0 {
-                print_line(&format!(
-                    "[JIT] {} nodes auto-compiled, {} already compiled at add-time",
-                    jit_compiled_count, already_compiled_count
-                ));
             }
         }
     }

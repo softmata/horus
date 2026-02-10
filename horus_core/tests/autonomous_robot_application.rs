@@ -2,7 +2,7 @@
 /// Demonstrates the enhanced HORUS scheduler with a real robotics system
 ///
 /// This application implements a full autonomous mobile robot with:
-/// - Motor control (PID) - will be JIT compiled for ultra-fast execution
+/// - Motor control (PID) - ultra-fast inline execution
 /// - Camera perception - will use async I/O tier
 /// - Lidar processing - will use async I/O tier
 /// - Sensor fusion (IMU, encoders, GPS) - fast tier
@@ -115,7 +115,7 @@ impl horus_core::core::LogSummary for IMUData {
     }
 }
 
-// ============ Motor Control Node (Ultra-fast, will be JIT compiled) ============
+// ============ Motor Control Node (Ultra-fast, inline execution) ============
 
 struct MotorControllerNode {
     // Control parameters
@@ -229,7 +229,7 @@ impl Node for MotorControllerNode {
             self.current_angular = odom.vtheta;
         }
 
-        // Compute PID control (this will be JIT compiled for speed)
+        // Compute PID control
         self.compute_pid();
     }
 
@@ -1004,7 +1004,7 @@ fn test_autonomous_robot_complete_system() {
 
     // Add all robot nodes with appropriate priorities
 
-    // Critical control loop (highest priority - will be JIT compiled)
+    // Critical control loop (highest priority)
     scheduler
         .add(MotorControllerNode::new().expect("Failed to create motor controller"))
         .order(0) // Highest priority
@@ -1058,7 +1058,7 @@ fn test_autonomous_robot_complete_system() {
         .done();
 
     println!("Robot system configuration:");
-    println!("- Motor controller: PID control at 1kHz (will be JIT compiled)");
+    println!("- Motor controller: PID control at 1kHz (ultra-fast inline)");
     println!("- Sensor fusion: EKF at 100Hz");
     println!("- Cameras: 2x at 30fps (will use async I/O)");
     println!("- Lidar: 360° at 10Hz (will use async I/O)");
@@ -1078,7 +1078,7 @@ fn test_autonomous_robot_complete_system() {
     println!("Total runtime: {:?}", elapsed);
     println!();
     println!("Enhanced scheduler features demonstrated:");
-    println!(" JIT compilation: Motor controller ran at maximum speed");
+    println!(" Fast execution: Motor controller ran at maximum speed");
     println!(" Async I/O: Cameras and lidar didn't block other nodes");
     println!(" Fault tolerance: Battery monitor failures handled gracefully");
     println!(" Smart scheduling: Automatic optimization after learning phase");
@@ -1155,9 +1155,9 @@ fn test_robot_performance_metrics() {
 
     println!("Performance Results:");
     println!("- Motor controller rate: {:.1} Hz", motor_rate);
-    println!("- Expected rate after JIT: >1000 Hz");
+    println!("- Expected rate: >1000 Hz");
 
-    // The motor controller should run very fast after JIT compilation
+    // The motor controller should run very fast
     assert!(motor_rate > 50.0, "Motor controller should run fast");
 
     println!(" Performance test passed!");

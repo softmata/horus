@@ -132,17 +132,6 @@ fn test_custom_exotic_robot_config() {
 
 #[test]
 fn test_execution_modes() {
-    // Test JIT optimized mode
-    {
-        let mut config = SchedulerConfig::standard();
-        config.execution = ExecutionMode::JITOptimized;
-        let mut scheduler = Scheduler::new().with_config(config);
-
-        scheduler.add(TestNode::new("jit_node")).order(0).done();
-        let result = scheduler.run_for(std::time::Duration::from_millis(50));
-        assert!(result.is_ok());
-    }
-
     // Test Sequential mode
     {
         let mut config = SchedulerConfig::standard();

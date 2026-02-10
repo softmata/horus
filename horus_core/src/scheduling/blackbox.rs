@@ -56,8 +56,6 @@ pub enum BlackBoxEvent {
         duration_ms: u64,
         tier_summary: String,
     },
-    /// JIT compilation
-    JITCompilation { name: String, success: bool },
     /// Emergency stop
     EmergencyStop { reason: String },
     /// Custom event
@@ -192,7 +190,6 @@ impl BlackBox {
                     BlackBoxEvent::WCETViolation { .. } => "WCETViolation",
                     BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
                     BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
-                    BlackBoxEvent::JITCompilation { .. } => "JITCompilation",
                     BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
                     BlackBoxEvent::Custom { .. } => "Custom",
                 };

@@ -5,8 +5,6 @@ use std::time::Duration;
 /// Execution mode for the scheduler
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExecutionMode {
-    /// JIT compilation for ultra-fast control loops (37ns tick time)
-    JITOptimized,
     /// Parallel execution with dependency resolution
     Parallel,
     /// Async I/O for network and file operations
@@ -500,7 +498,7 @@ impl SchedulerConfig {
     /// High-performance configuration (racing, competition)
     pub fn high_performance() -> Self {
         Self {
-            execution: ExecutionMode::JITOptimized,
+            execution: ExecutionMode::Parallel,
             timing: TimingConfig {
                 global_rate_hz: 10000.0,
                 per_node_rates: true,
@@ -543,7 +541,7 @@ impl SchedulerConfig {
     /// Hard real-time configuration for surgical robots, CNC machines
     pub fn hard_realtime() -> Self {
         let mut config = Self::standard();
-        config.execution = ExecutionMode::JITOptimized;
+        config.execution = ExecutionMode::Parallel;
         config.timing.global_rate_hz = 1000.0;
         config.fault.circuit_breaker_enabled = true;
         config.fault.max_failures = 3;

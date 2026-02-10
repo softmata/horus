@@ -175,14 +175,9 @@ pub mod prelude {
     };
 
     // ============================================
-    // JIT Compilation
-    // ============================================
-    pub use horus_core::scheduling::JITCompiler;
-
-    // ============================================
     // ML Model Registry
     // ============================================
-    pub use horus_core::ml::{ModelEntry, ModelRegistry};
+    pub use horus_ai::ml::{ModelEntry, ModelLoader, ModelRegistry};
 
     // ============================================
     // Memory & Tensors

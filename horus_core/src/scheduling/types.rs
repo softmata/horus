@@ -5,7 +5,6 @@
 use std::time::{Duration, Instant};
 
 use super::fault_tolerance::CircuitBreaker;
-use super::jit::CompiledDataflow;
 use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo};
 
@@ -34,8 +33,6 @@ pub(crate) struct RegisteredNode {
     pub(crate) is_rt_node: bool,
     pub(crate) wcet_budget: Option<Duration>,
     pub(crate) deadline: Option<Duration>,
-    pub(crate) is_jit_compiled: bool,
-    pub(crate) jit_stats: Option<CompiledDataflow>,
     pub(crate) recorder: Option<NodeRecorder>,
     pub(crate) is_stopped: bool,
     pub(crate) is_paused: bool,
