@@ -10,7 +10,6 @@ use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::horus_internal;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Check if Husarnet daemon is running and accessible
@@ -253,142 +252,6 @@ pub fn run_test(target: Option<String>, count: u32, timeout_ms: u64) -> HorusRes
     Ok(())
 }
 
-/// Diagnose Husarnet configuration and provide recommendations
-pub fn run_doctor() -> HorusResult<()> {
-    println!("{}", "Husarnet Doctor".cyan().bold());
-    println!("{}", "═".repeat(60));
-    println!("Diagnosing Husarnet configuration...\n");
-
-    let mut issues: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    // Check 1: Husarnet installed
-    println!("{} Checking Husarnet installation...", "●".cyan());
-    if is_husarnet_installed() {
-        println!("  {} husarnet binary found", "✓".green());
-    } else {
-        issues.push("Husarnet is not installed".to_string());
-        println!("  {} husarnet binary not found", "✗".red());
-    }
-
-    // Check 2: Daemon running
-    println!("{} Checking daemon status...", "●".cyan());
-    if check_daemon_running() {
-        println!("  {} Daemon is running", "✓".green());
-    } else {
-        issues.push("Husarnet daemon is not running".to_string());
-        println!("  {} Daemon is not running", "✗".red());
-    }
-
-    // Check 3: hnet0 interface
-    println!("{} Checking hnet0 interface...", "●".cyan());
-    match get_hnet0_address() {
-        Some(addr) => {
-            println!("  {} hnet0 found: {}", "✓".green(), addr);
-        }
-        None => {
-            warnings
-                .push("hnet0 interface not found (normal if not joined to network)".to_string());
-            println!("  {} hnet0 not found", "⚠".yellow());
-        }
-    }
-
-    // Check 4: API access
-    println!("{} Checking API access...", "●".cyan());
-    match query_husarnet_api("/api/status") {
-        Ok(status) => {
-            println!("  {} API accessible", "✓".green());
-
-            // Check if joined
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&status) {
-                if let Some(is_joined) = json.get("is_joined").and_then(|v| v.as_bool()) {
-                    if !is_joined {
-                        warnings.push("Not joined to any Husarnet network".to_string());
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            issues.push(format!("Cannot access daemon API: {}", e));
-            println!("  {} API not accessible", "✗".red());
-        }
-    }
-
-    // Check 5: Peers
-    println!("{} Checking peer connectivity...", "●".cyan());
-    match get_husarnet_peers() {
-        Ok(peers) => {
-            let active = peers.iter().filter(|p| p.is_active).count();
-            println!(
-                "  {} {} peers ({} active)",
-                "✓".green(),
-                peers.len(),
-                active
-            );
-            if !peers.is_empty() && active == 0 {
-                warnings.push("All peers are inactive - check network connectivity".to_string());
-            }
-        }
-        Err(_) => {
-            warnings.push("Could not retrieve peer list".to_string());
-            println!("  {} Could not retrieve peers", "⚠".yellow());
-        }
-    }
-
-    // Check 6: IPv6 support
-    println!("{} Checking IPv6 support...", "●".cyan());
-    if check_ipv6_support() {
-        println!("  {} IPv6 is enabled", "✓".green());
-    } else {
-        issues.push("IPv6 may be disabled on this system".to_string());
-        println!("  {} IPv6 may be disabled", "⚠".yellow());
-    }
-
-    // Summary
-    println!("\n{}", "═".repeat(60));
-    println!("{}", "Summary".cyan().bold());
-
-    if issues.is_empty() && warnings.is_empty() {
-        println!(
-            "\n  {} Husarnet is properly configured!",
-            "✓".green().bold()
-        );
-        println!(
-            "  {}",
-            "HORUS will automatically use Husarnet for topic@* discovery.".dimmed()
-        );
-    } else {
-        if !issues.is_empty() {
-            println!("\n  {} Issues ({}):", "✗".red().bold(), issues.len());
-            for issue in &issues {
-                println!("    • {}", issue.red());
-            }
-        }
-        if !warnings.is_empty() {
-            println!("\n  {} Warnings ({}):", "⚠".yellow().bold(), warnings.len());
-            for warning in &warnings {
-                println!("    • {}", warning.yellow());
-            }
-        }
-    }
-
-    // Recommendations
-    if !issues.is_empty() {
-        println!("\n{}", "Recommendations:".cyan().bold());
-        for issue in &issues {
-            if issue.contains("not installed") {
-                println!("  • Install Husarnet: curl https://install.husarnet.com/install.sh | sudo bash");
-            } else if issue.contains("not running") {
-                println!("  • Start daemon: sudo systemctl start husarnet");
-                println!("  • Enable on boot: sudo systemctl enable husarnet");
-            } else if issue.contains("IPv6") {
-                println!("  • Enable IPv6 in your kernel/sysctl configuration");
-            }
-        }
-    }
-
-    Ok(())
-}
 
 // ============================================================================
 // Helper functions
@@ -537,26 +400,5 @@ fn test_udp_connectivity(target: SocketAddr, timeout: Duration) -> HorusResult<D
             Err(HorusError::communication("Timeout".to_string()))
         }
         Err(e) => Err(HorusError::communication(format!("Recv failed: {}", e))),
-    }
-}
-
-/// Check if husarnet is installed
-fn is_husarnet_installed() -> bool {
-    Command::new("husarnet")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check if IPv6 is enabled on the system
-fn check_ipv6_support() -> bool {
-    #[cfg(unix)]
-    {
-        std::path::Path::new("/proc/net/if_inet6").exists()
-    }
-    #[cfg(not(unix))]
-    {
-        true // Assume enabled on non-Unix
     }
 }

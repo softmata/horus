@@ -221,13 +221,6 @@ enum Commands {
         command: HfCommands,
     },
 
-    /// System diagnostics and health check
-    Doctor {
-        /// Show detailed diagnostic information
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
-
     /// Discover HORUS nodes on the local network via mDNS
     #[cfg(feature = "mdns")]
     Discover {
@@ -499,8 +492,6 @@ enum NetCommands {
         max_hops: u32,
     },
 
-    /// Network troubleshooting with fix suggestions
-    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -533,8 +524,6 @@ enum HusarnetCommands {
         timeout: u64,
     },
 
-    /// Diagnose Husarnet configuration and provide recommendations
-    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -1409,7 +1398,6 @@ fn main() {
                 | "monitor"
                 | "topic"
                 | "node"
-                | "doctor"
                 | "clean"
                 | "launch"
                 | "msg"
@@ -1793,8 +1781,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         },
 
-        Commands::Doctor { verbose } => commands::doctor::run_doctor(verbose),
-
         #[cfg(feature = "mdns")]
         Commands::Discover {
             timeout,
@@ -2039,7 +2025,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             NetCommands::Trace { endpoint, max_hops } => {
                 commands::net::run_trace(&endpoint, max_hops)
             }
-            NetCommands::Doctor => commands::net::run_doctor(),
         },
 
         Commands::Husarnet { command } => match command {
@@ -2050,7 +2035,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 count,
                 timeout,
             } => commands::husarnet::run_test(target, count, timeout),
-            HusarnetCommands::Doctor => commands::husarnet::run_doctor(),
         },
 
         Commands::Completion { shell } => {

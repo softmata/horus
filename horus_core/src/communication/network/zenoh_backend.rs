@@ -1157,7 +1157,7 @@ where
                 "Configure at least one router in your ZenohCloudConfig. \
                 Example: cloud://cloud.horus.dev:7447 or use HORUS_CLOUD_ROUTERS env var.",
             )
-            .with_cli_hint("horus net doctor --check-cloud");
+            .with_cli_hint("horus net check --check-cloud");
             return Err(err.into());
         }
 

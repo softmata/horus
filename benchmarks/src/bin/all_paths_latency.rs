@@ -207,7 +207,8 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     let consumer_ready = Arc::new(AtomicBool::new(false));
     let consumer_ready_clone = consumer_ready.clone();
 
-    // Consumer thread
+    // Consumer thread — uses yield_now() instead of spin_loop() to avoid
+    // starving the producer thread on the main thread.
     let cons_handle = thread::spawn(move || {
         // Warmup
         let mut count = 0u64;
@@ -215,16 +216,16 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
             if consumer.recv().is_some() {
                 count += 1;
             } else {
-                std::hint::spin_loop();
+                thread::yield_now();
             }
         }
         *backend_clone.lock().unwrap() = consumer.backend_type().to_string();
         consumer_ready_clone.store(true, Ordering::Release);
 
-        // Aggressive consumption
+        // Consumption loop — yield when empty to let producer thread run
         while !done_clone.load(Ordering::Relaxed) {
             if consumer.recv().is_none() {
-                std::hint::spin_loop();
+                thread::yield_now();
             }
         }
         while consumer.recv().is_some() {}
@@ -237,7 +238,7 @@ fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
     }
 
     while !consumer_ready.load(Ordering::Acquire) {
-        std::hint::spin_loop();
+        thread::yield_now();
     }
 
     // Extra warmup rounds
@@ -386,7 +387,7 @@ fn bench_spsc_intra_detailed_rdtsc(timer: &PrecisionTimer) {
     let cons_handle = thread::spawn(move || {
         while !done_clone.load(Ordering::Relaxed) {
             if consumer.recv().is_none() {
-                std::hint::spin_loop();
+                thread::yield_now();
             }
         }
         while consumer.recv().is_some() {}
@@ -459,8 +460,9 @@ fn bench_spsc_shm() -> (f64, String) {
         .spawn()
         .expect("Failed to spawn child publisher process");
 
-    // Wait for child to connect and send some warmup
-    thread::sleep(Duration::from_millis(100));
+    // Start receiving immediately — child has a 200ms startup delay,
+    // giving us time to enter the receive loop before messages arrive.
+    // This prevents ring buffer overflow from the publisher outrunning us.
 
     // Warmup - receive some messages to trigger backend detection
     let mut warmup_count = 0u64;
@@ -468,6 +470,8 @@ fn bench_spsc_shm() -> (f64, String) {
     while warmup_count < 1000 && warmup_start.elapsed() < Duration::from_secs(5) {
         if consumer.recv().is_some() {
             warmup_count += 1;
+        } else {
+            std::hint::spin_loop();
         }
     }
 
@@ -515,7 +519,8 @@ fn bench_mpsc_shm() -> (f64, String) {
 
     let msgs_per_child = ITERATIONS / 2;
 
-    // Spawn first publisher - stagger to avoid registration race
+    // Spawn first publisher and wait for it to register before spawning second.
+    // This ensures the topology detects multi-producer (MpscShm) correctly.
     let mut child1 = Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-publisher",
@@ -530,15 +535,17 @@ fn bench_mpsc_shm() -> (f64, String) {
 
     // Wait for child1 to register (receive a message proves registration)
     let mut child1_ready = false;
-    let start = Instant::now();
-    while !child1_ready && start.elapsed() < Duration::from_secs(2) {
+    let reg_start = Instant::now();
+    while !child1_ready && reg_start.elapsed() < Duration::from_secs(5) {
         if consumer.recv().is_some() {
             child1_ready = true;
+        } else {
+            std::hint::spin_loop();
         }
-        thread::yield_now();
     }
 
-    // Now spawn child2 - it will see child1's registration and detect MpscShm
+    // Now spawn child2 — child1 is already registered, so the topic
+    // will detect multi-producer and select MpscShm backend.
     let mut child2 = Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-publisher",
@@ -558,23 +565,15 @@ fn bench_mpsc_shm() -> (f64, String) {
         child2.id()
     );
 
-    // Wait for child2 to register and trigger migration
-    thread::sleep(Duration::from_millis(50));
-
-    // Warmup - receive more messages to stabilize
-    let warmup_start = Instant::now();
+    // Warmup — receive messages from both publishers to stabilize
     let mut warmup_count = 1u64; // Already received 1 above
+    let warmup_start = Instant::now();
     while warmup_count < 100 && warmup_start.elapsed() < Duration::from_secs(5) {
         if consumer.recv().is_some() {
             warmup_count += 1;
         } else {
-            thread::yield_now();
+            std::hint::spin_loop();
         }
-    }
-
-    // Force migration check to update local cache (count this message!)
-    if consumer.recv().is_some() {
-        warmup_count += 1;
     }
 
     // Capture backend after cross-process detection
@@ -593,9 +592,9 @@ fn bench_mpsc_shm() -> (f64, String) {
     }
     let elapsed = start.elapsed();
 
-    // Don't wait indefinitely for children
-    let _ = child1.try_wait();
-    let _ = child2.try_wait();
+    // Wait for children to finish
+    child1.wait().ok();
+    child2.wait().ok();
 
     let actual_measured = received.saturating_sub(warmup_count);
     if actual_measured < ITERATIONS / 4 {
@@ -626,7 +625,7 @@ fn bench_mpmc_shm() -> (f64, String) {
     let msgs_per_publisher = ITERATIONS / 2;
     let msgs_per_consumer = ITERATIONS / 2;
 
-    // Spawn child consumer process first
+    // Spawn child consumer first (has 100ms startup delay)
     let mut child_consumer = Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-consumer",
@@ -639,9 +638,7 @@ fn bench_mpmc_shm() -> (f64, String) {
         .spawn()
         .expect("Failed to spawn child consumer");
 
-    thread::sleep(Duration::from_millis(50));
-
-    // Spawn two publisher child processes
+    // Spawn first publisher and wait for it to register
     let mut child_pub1 = Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-publisher",
@@ -654,6 +651,19 @@ fn bench_mpmc_shm() -> (f64, String) {
         .spawn()
         .expect("Failed to spawn child publisher 1");
 
+    // Wait for pub1 to register (receive a message proves it)
+    let mut pub1_ready = false;
+    let reg_start = Instant::now();
+    while !pub1_ready && reg_start.elapsed() < Duration::from_secs(5) {
+        if consumer_parent.recv().is_some() {
+            pub1_ready = true;
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+
+    // Now spawn pub2 — pub1 + child_consumer already registered,
+    // so the topology detects MPMC correctly.
     let mut child_pub2 = Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-publisher",
@@ -674,15 +684,23 @@ fn bench_mpmc_shm() -> (f64, String) {
         child_pub2.id()
     );
 
-    // Brief wait for children to start
-    thread::sleep(Duration::from_millis(50));
+    // Warmup — receive messages to stabilize backend detection
+    let mut warmup_count = 1u64; // Already received 1 above
+    let warmup_start = Instant::now();
+    while warmup_count < 100 && warmup_start.elapsed() < Duration::from_secs(5) {
+        if consumer_parent.recv().is_some() {
+            warmup_count += 1;
+        } else {
+            std::hint::spin_loop();
+        }
+    }
 
     // Capture backend after cross-process detection
     let backend = consumer_parent.backend_type().to_string();
 
     // Parent consumer receives its share (other consumer gets remainder)
     let start = Instant::now();
-    let mut received = 0u64;
+    let mut received = warmup_count;
     let timeout = start + Duration::from_secs(TIMEOUT_SECS);
     while received < msgs_per_consumer && Instant::now() < timeout {
         if consumer_parent.recv().is_some() {
@@ -693,19 +711,20 @@ fn bench_mpmc_shm() -> (f64, String) {
     }
     let elapsed = start.elapsed();
 
-    // Don't wait indefinitely for children
-    let _ = child_pub1.try_wait();
-    let _ = child_pub2.try_wait();
-    let _ = child_consumer.try_wait();
+    // Wait for children to finish
+    child_pub1.wait().ok();
+    child_pub2.wait().ok();
+    child_consumer.wait().ok();
 
-    if received < msgs_per_consumer / 4 {
+    let actual_measured = received.saturating_sub(warmup_count);
+    if actual_measured < msgs_per_consumer / 4 {
         eprintln!(
             "  (Warning: MpmcShm parent only received {}/{})",
-            received, msgs_per_consumer
+            actual_measured, msgs_per_consumer
         );
     }
 
-    (elapsed.as_nanos() as f64 / received.max(1) as f64, backend)
+    (elapsed.as_nanos() as f64 / actual_measured.max(1) as f64, backend)
 }
 
 /// Measure Instant::now() overhead
@@ -728,13 +747,26 @@ fn run_child_publisher(topic_name: &str, count: u64) {
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
 
-    for _ in 0..count {
+    // Wait for parent consumer to be in receive mode before blasting messages.
+    // Without this, we send all 50k messages in <5ms and the ring buffer wraps
+    // before the parent starts reading, losing nearly all messages.
+    thread::sleep(Duration::from_millis(200));
+
+    for i in 0..count {
         topic.send(msg);
+        // Yield periodically to avoid overwhelming the ring buffer.
+        // This gives the consumer time to drain, preventing overwrites.
+        if i % 500 == 499 {
+            thread::yield_now();
+        }
     }
 }
 
 fn run_child_consumer(topic_name: &str, count: u64) {
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
+
+    // Brief delay to let shared memory topology stabilize
+    thread::sleep(Duration::from_millis(100));
 
     let mut received = 0u64;
     let timeout = Instant::now() + Duration::from_secs(TIMEOUT_SECS);

@@ -6,7 +6,6 @@
 //! - `horus net check` - Full connectivity test
 //! - `horus net ping <endpoint>` - Latency test to endpoint
 //! - `horus net trace <endpoint>` - Path analysis
-//! - `horus net doctor` - Network-specific fix suggestions
 
 use colored::*;
 use horus_core::error::HorusResult;
@@ -121,7 +120,7 @@ pub fn run_check(verbose: bool) -> HorusResult<()> {
     if errors > 0 {
         println!("{} {} error(s), {} warning(s)", "✗".red(), errors, warnings);
         println!(
-            "  {} Run `horus net doctor` for suggested fixes",
+            "  {} Run `horus net check --verbose` for more details",
             "Tip:".dimmed()
         );
     } else if warnings > 0 {
@@ -277,69 +276,6 @@ pub fn run_trace(endpoint: &str, _max_hops: u32) -> HorusResult<()> {
     Ok(())
 }
 
-/// Run network doctor with fix suggestions
-pub fn run_doctor() -> HorusResult<()> {
-    println!("{}", "HORUS Network Doctor".green().bold());
-    println!();
-
-    let mut issues = Vec::new();
-
-    // Run all checks
-    let checks = vec![
-        check_localhost(),
-        check_local_ip(),
-        check_udp_binding(),
-        check_multicast(),
-        check_dns(),
-        check_internet(),
-        check_horus_registry(),
-        check_stun(),
-    ];
-
-    // Collect issues
-    for check in &checks {
-        if check.status != NetStatus::Ok {
-            issues.push(check);
-        }
-    }
-
-    if issues.is_empty() {
-        println!("{} No network issues detected!", "✓".green());
-        println!();
-        println!("{}", "Network Status:".cyan().bold());
-        println!("  • Local networking: OK");
-        println!("  • External connectivity: OK");
-        println!("  • NAT traversal: OK");
-        return Ok(());
-    }
-
-    // Print issues with fixes
-    println!("{} issues found:\n", format!("{}", issues.len()).yellow());
-
-    for (i, issue) in issues.iter().enumerate() {
-        let icon = match issue.status {
-            NetStatus::Error => "✗".red(),
-            NetStatus::Warning => "⚠".yellow(),
-            NetStatus::Ok => "✓".green(),
-        };
-
-        println!(
-            "{}. {} {}: {}",
-            i + 1,
-            icon,
-            issue.name.cyan(),
-            issue.message
-        );
-        println!();
-
-        // Print fix suggestions based on issue
-        print_fix_suggestion(&issue.name, &issue.message);
-        println!();
-    }
-
-    Ok(())
-}
-
 // === Helper Functions ===
 
 fn print_section(name: &str) {
@@ -366,68 +302,6 @@ fn print_result(result: &NetCheckResult, _verbose: bool) {
     };
 
     println!("  {} {:20} {}", icon, result.name.cyan(), colored_msg);
-}
-
-fn print_fix_suggestion(name: &str, _message: &str) {
-    println!("   {}", "Suggested fix:".yellow());
-
-    match name {
-        "Localhost" => {
-            println!("   • Check if loopback interface is up: ip addr show lo");
-            println!("   • Enable loopback: sudo ip link set lo up");
-        }
-        "Local IP" => {
-            println!("   • Check network interfaces: ip addr");
-            println!("   • Verify network manager status: systemctl status NetworkManager");
-            println!("   • Restart networking: sudo systemctl restart NetworkManager");
-        }
-        "UDP Binding" => {
-            println!("   • Check if another process is using the port");
-            println!("   • Verify firewall rules: sudo iptables -L");
-            println!("   • Allow UDP traffic: sudo ufw allow 47808/udp");
-        }
-        "Multicast" => {
-            println!("   • Enable multicast on interface: sudo ip link set <iface> multicast on");
-            println!("   • Add multicast route: sudo ip route add 224.0.0.0/4 dev <iface>");
-            println!("   • Check firewall for multicast: sudo iptables -I INPUT -p udp -m udp --dport 47809 -j ACCEPT");
-        }
-        "DNS" => {
-            println!("   • Check DNS configuration: cat /etc/resolv.conf");
-            println!("   • Test DNS: nslookup google.com");
-            println!("   • Try Google DNS: echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf");
-        }
-        "Internet" => {
-            println!("   • Check default route: ip route show default");
-            println!(
-                "   • Ping gateway: ping -c 3 $(ip route | grep default | awk '{{print $3}}')"
-            );
-            println!("   • Verify DNS: nslookup google.com");
-        }
-        "HORUS Registry" => {
-            println!("   • The registry may be temporarily unavailable");
-            println!("   • HORUS works offline - you can still use local packages");
-            println!("   • Check status at: https://status.horus-robotics.dev");
-        }
-        "STUN/NAT" => {
-            println!("   • NAT traversal may be limited");
-            println!("   • For P2P connectivity, consider:");
-            println!("     - Using a relay server");
-            println!("     - Port forwarding on your router");
-            println!("     - Using a VPN for direct connectivity");
-        }
-        "NAT Type" => {
-            println!("   • Symmetric NAT detected - P2P may not work directly");
-            println!("   • Options:");
-            println!("     - Configure port forwarding");
-            println!("     - Use TURN relay (automatic fallback)");
-            println!("     - Connect via HORUS Cloud relay");
-        }
-        _ => {
-            println!("   • Check system logs: journalctl -xe");
-            println!("   • Restart network services");
-            println!("   • Run: horus net check --verbose");
-        }
-    }
 }
 
 // === Network Checks ===

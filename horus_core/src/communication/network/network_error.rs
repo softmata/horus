@@ -294,7 +294,7 @@ impl NetworkError {
                 "Check that '{}' is a valid hostname. Verify DNS settings or try using an IP address.",
                 host
             ),
-            cli_hint: Some(format!("nslookup {} && horus net doctor", host)),
+            cli_hint: Some(format!("nslookup {} && horus net check", host)),
             context: vec![("cause".to_string(), cause.into())],
         }
     }
@@ -336,7 +336,7 @@ impl NetworkError {
                 "Interface '{}' does not support multicast. Try a different network interface or use direct connections.",
                 iface
             ),
-            cli_hint: Some("horus net doctor --check-multicast".to_string()),
+            cli_hint: Some("horus net check --check-multicast".to_string()),
             context: vec![("interface".to_string(), iface)],
         }
     }
@@ -356,7 +356,7 @@ impl NetworkError {
                 "Your network uses {} NAT which may block peer-to-peer connections. Consider using a TURN relay or cloud bridge.",
                 nt
             ),
-            cli_hint: Some("horus net doctor --check-nat".to_string()),
+            cli_hint: Some("horus net check --check-nat".to_string()),
             context: vec![("nat_type".to_string(), nt)],
         }
     }
@@ -396,7 +396,7 @@ impl NetworkError {
                 "Update HORUS to match the remote version. Local: {}, Remote: {}",
                 local, remote
             ),
-            cli_hint: Some("horus --version && horus net doctor".to_string()),
+            cli_hint: Some("horus --version && horus net check".to_string()),
             context: vec![
                 ("local_version".to_string(), local),
                 ("remote_version".to_string(), remote),
@@ -434,7 +434,7 @@ impl NetworkError {
                 "System {} limit reached ({}). Consider reducing connections or increasing limits.",
                 res, lim
             ),
-            cli_hint: Some("ulimit -a && horus net doctor".to_string()),
+            cli_hint: Some("ulimit -a && horus net check".to_string()),
             context: vec![("resource".to_string(), res), ("limit".to_string(), lim)],
         }
     }
@@ -543,25 +543,25 @@ impl NetworkError {
                 Some("horus net trace <endpoint>".to_string())
             }
             NetworkErrorCode::DnsResolutionFailed => {
-                Some("horus net doctor --check-dns".to_string())
+                Some("horus net check --check-dns".to_string())
             }
             NetworkErrorCode::PortBindFailed | NetworkErrorCode::PortInUse => {
                 Some("horus net check --local-ports".to_string())
             }
             NetworkErrorCode::MulticastJoinFailed | NetworkErrorCode::MulticastNotAvailable => {
-                Some("horus net doctor --check-multicast".to_string())
+                Some("horus net check --check-multicast".to_string())
             }
             NetworkErrorCode::NatTraversalFailed
             | NetworkErrorCode::SymmetricNatDetected
             | NetworkErrorCode::StunBindingFailed => {
-                Some("horus net doctor --check-nat".to_string())
+                Some("horus net check --check-nat".to_string())
             }
             NetworkErrorCode::TlsHandshakeFailed
             | NetworkErrorCode::CertificateInvalid
             | NetworkErrorCode::CertificateExpired => {
-                Some("horus net doctor --check-tls".to_string())
+                Some("horus net check --check-tls".to_string())
             }
-            _ => Some("horus net doctor".to_string()),
+            _ => Some("horus net check".to_string()),
         }
     }
 }
@@ -863,7 +863,7 @@ pub mod errors {
         .with_suggestion(
             "Symmetric NAT makes direct P2P difficult. Use 'cloud://' or a TURN relay instead.",
         )
-        .with_cli_hint("horus net doctor --check-nat")
+        .with_cli_hint("horus net check --check-nat")
     }
 
     /// Too many connections
