@@ -25,15 +25,15 @@ use super::classifier::ExecutionTier;
 /// use horus_core::scheduling::{NodeTier, Scheduler};
 ///
 /// let mut scheduler = Scheduler::new();
-/// scheduler.add(pid_node).order(0).tier(NodeTier::Jit).done();
+/// scheduler.add(pid_node).order(0).tier(NodeTier::UltraFast).done();
 /// scheduler.add(sensor_node).order(1).tier(NodeTier::Fast).done();
 /// scheduler.add(logger_node).order(5).tier(NodeTier::Background).done();
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum NodeTier {
-    /// Ultra-fast nodes (<1μs) - JIT compiled for maximum speed
+    /// Ultra-fast nodes (<1μs) - inline execution for maximum speed
     /// Use for: PID controllers, simple math, data transformations
-    Jit,
+    UltraFast,
 
     /// Fast nodes (<10μs) - Inline execution with minimal overhead
     /// Use for: Sensor readers, filter calculations, state machines
@@ -65,7 +65,7 @@ impl NodeTier {
     /// Convert to internal ExecutionTier
     pub fn to_execution_tier(&self) -> ExecutionTier {
         match self {
-            NodeTier::Jit => ExecutionTier::UltraFast,
+            NodeTier::UltraFast => ExecutionTier::UltraFast,
             NodeTier::Fast => ExecutionTier::Fast,
             NodeTier::Normal => ExecutionTier::Fast, // Normal maps to Fast internally
             NodeTier::AsyncIO => ExecutionTier::AsyncIO,
@@ -78,7 +78,7 @@ impl NodeTier {
     /// Get human-readable description
     pub fn description(&self) -> &'static str {
         match self {
-            NodeTier::Jit => "JIT compiled (<1μs)",
+            NodeTier::UltraFast => "Ultra-fast inline (<1μs)",
             NodeTier::Fast => "Inline execution (<10μs)",
             NodeTier::Normal => "Standard scheduling (<100μs)",
             NodeTier::AsyncIO => "Async I/O (non-blocking)",
@@ -158,7 +158,7 @@ impl NodeProfile {
         self.tier = if self.is_io_heavy {
             NodeTier::AsyncIO
         } else if self.avg_us < 1.0 && self.is_deterministic {
-            NodeTier::Jit
+            NodeTier::UltraFast
         } else if self.avg_us < 10.0 {
             NodeTier::Fast
         } else if self.avg_us < 100.0 {
@@ -551,13 +551,13 @@ mod tests {
             "Expected deterministic (CV = {})",
             profile.stddev_us / profile.avg_us
         );
-        assert_eq!(profile.tier, NodeTier::Jit);
+        assert_eq!(profile.tier, NodeTier::UltraFast);
     }
 
     #[test]
     fn test_profile_data_roundtrip() {
         let mut profile = ProfileData::new("test_profile");
-        profile.add_node(NodeProfile::new("node1", NodeTier::Jit));
+        profile.add_node(NodeProfile::new("node1", NodeTier::UltraFast));
         profile.add_node(NodeProfile::new("node2", NodeTier::Fast));
 
         // Test JSON roundtrip
@@ -566,7 +566,7 @@ mod tests {
 
         assert_eq!(loaded.name, "test_profile");
         assert_eq!(loaded.nodes.len(), 2);
-        assert_eq!(loaded.get_tier("node1"), NodeTier::Jit);
+        assert_eq!(loaded.get_tier("node1"), NodeTier::UltraFast);
     }
 
     #[test]

@@ -176,7 +176,7 @@ See [Built-in Nodes Documentation](horus_library/nodes/README.md) for complete c
 ### Real-Time Performance
 - **Sub-Microsecond Messaging**: Median 87ns (Topic with SPSC), 313ns (Topic with MPMC)
 - **High Throughput**: 6+ million messages per second sustained
-- **Enhanced Smart Scheduler**: Automatic optimization with JIT compilation, async I/O, and fault tolerance
+- **Enhanced Smart Scheduler**: Automatic optimization with async I/O, tiered execution, and fault tolerance
 - **Priority-Based Scheduling**: Deterministic execution order with intelligent tier classification
 - **Wait-Free & Lock-Free Communication**: Topic with SPSC (87ns, wait-free), Topic with MPMC (313ns, lock-free)
 - **Zero-Copy IPC**: Direct shared memory access
@@ -867,7 +867,7 @@ horus env restore a3f9c2b7
 
 The HORUS scheduler now includes intelligent runtime optimization that automatically adapts to your workload:
 
-- **JIT Compilation**: Hot paths compiled to native code for ultra-fast execution
+- **UltraFast Tier**: Sub-microsecond inline execution for deterministic control loops
 - **Async I/O Tier**: Non-blocking execution for I/O-heavy operations prevents system stalls
 - **Fault Tolerance**: Circuit breaker pattern with automatic recovery for resilient operations
 - **Smart Classification**: Automatic node categorization into 5 execution tiers based on runtime profiling
@@ -879,7 +879,7 @@ Latest comprehensive benchmarks show excellent performance across different work
 
 | Workload Type | Performance | Description |
 |--------------|-------------|-------------|
-| **UltraFastControl** | 2.387s | High-frequency control loops with JIT optimization |
+| **UltraFastControl** | 2.387s | High-frequency control loops with inline optimization |
 | **FastSensor** | 2.382s | Rapid sensor processing and fusion |
 | **HeavyIO** | 3.988s | I/O-intensive operations with async handling |
 | **MixedRealistic** | 4.064s | Real-world mixed workload simulation |

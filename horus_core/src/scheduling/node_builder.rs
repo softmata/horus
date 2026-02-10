@@ -194,7 +194,7 @@ impl NodeConfig {
     /// use horus_core::scheduling::intelligence::NodeTier;
     ///
     /// NodeConfig::new(fast_node)
-    ///     .tier(NodeTier::Jit)
+    ///     .tier(NodeTier::UltraFast)
     /// ```
     pub fn tier(mut self, tier: super::intelligence::NodeTier) -> Self {
         self.tier = Some(tier);

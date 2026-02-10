@@ -46,7 +46,6 @@ horus_core/
 ── scheduling/           # Task scheduling
    ── scheduler.rs      # Enhanced smart scheduler
    ── intelligence/     # Runtime profiling & classification
-   ── jit/              # JIT compilation for hot paths
    ── executors/        # Async I/O and parallel execution
    ── fault_tolerance/  # Circuit breaker pattern
 ── params/               # Runtime parameters
@@ -282,7 +281,7 @@ fn main() -> Result<()> {
 The HORUS scheduler has been enhanced with intelligent runtime optimization that automatically adapts to your workload:
 
 **Key Features:**
-- **JIT Compilation**: Hot paths compiled to native code using Cranelift (37ns tick time achieved)
+- **UltraFast Tier**: Sub-microsecond inline execution for deterministic control loops
 - **Async I/O Tier**: Non-blocking execution for I/O-heavy operations via Tokio runtime
 - **Fault Tolerance**: Circuit breaker pattern with automatic recovery
 - **Smart Classification**: 5-tier automatic node categorization based on runtime profiling
@@ -291,7 +290,7 @@ The HORUS scheduler has been enhanced with intelligent runtime optimization that
 **Benchmark Results:**
 | Workload | Performance | Description |
 |----------|-------------|-------------|
-| UltraFastControl | 2.387s | JIT-optimized control loops |
+| UltraFastControl | 2.387s | Ultra-fast inline control loops |
 | FastSensor | 2.382s | High-frequency sensor fusion |
 | HeavyIO | 3.988s | Async I/O handling |
 | MixedRealistic | 4.064s | Real-world mixed workload |
