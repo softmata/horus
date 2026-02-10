@@ -3,7 +3,7 @@
 //! This module contains the fundamental building blocks of the HORUS system:
 //!
 //! - **Node**: The base trait for all computational units in HORUS
-//! - **NodeInfo**: Runtime context and utilities provided to nodes during lifecycle methods (init/shutdown)
+//! - **NodeInfo**: Internal scheduler bookkeeping for node state tracking
 //! - **Contracts**: Message schemas and validation for type-safe communication
 //! - **Data Fields**: Structured data types for robotics sensors and actuators
 //!

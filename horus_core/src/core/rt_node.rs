@@ -1,5 +1,5 @@
 // Real-time node trait for time-critical applications
-use super::{Node, NodeInfo};
+use super::Node;
 use std::time::Duration;
 
 /// Priority levels for real-time scheduling
@@ -233,7 +233,7 @@ pub trait RtNode: Node {
     }
 
     /// Transition to safe state (for emergency stop)
-    fn enter_safe_state(&mut self, _ctx: &mut NodeInfo) {
+    fn enter_safe_state(&mut self) {
         // Default: do nothing (already safe)
     }
 }

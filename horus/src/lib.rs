@@ -52,7 +52,7 @@ pub mod prelude {
     // Core Node Types
     // ============================================
     pub use horus_core::core::node::NodeConfig;
-    pub use horus_core::core::{LogSummary, Node, NodeInfo, NodeState};
+    pub use horus_core::core::{LogSummary, Node, NodeState};
 
     // ============================================
     // Communication (IPC) - Unified Topic API
@@ -395,7 +395,7 @@ pub mod prelude {
     // ============================================
     // Node Infrastructure
     // ============================================
-    // Core node types (Node, NodeInfo, Topic) are re-exported from horus_core above.
+    // Core node types (Node, Topic) are re-exported from horus_core above.
     // Users implement their own nodes using these building blocks.
     // See horus_library::nodes module documentation for usage patterns.
 
