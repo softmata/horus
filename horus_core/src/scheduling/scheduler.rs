@@ -2464,6 +2464,42 @@ impl Scheduler {
                 self.process_async_results().await;
                 self.process_background_results();
 
+                // Telemetry export (if interval elapsed)
+                if let Some(ref mut tm) = self.telemetry {
+                    if tm.should_export() {
+                        let total_ticks = self
+                            .profiler
+                            .node_stats
+                            .values()
+                            .map(|s| s.count)
+                            .max()
+                            .unwrap_or(0) as u64;
+                        tm.counter("scheduler_ticks", total_ticks);
+                        tm.gauge("scheduler_uptime_secs", start_time.elapsed().as_secs_f64());
+                        tm.gauge("nodes_active", self.nodes.len() as f64);
+
+                        for registered in &self.nodes {
+                            let node_name = registered.node.name();
+                            if let Some(stats) = self.profiler.node_stats.get(node_name) {
+                                let mut labels = std::collections::HashMap::new();
+                                labels.insert("node".to_string(), node_name.to_string());
+                                tm.gauge_with_labels(
+                                    "node_avg_duration_us",
+                                    stats.avg_us,
+                                    labels.clone(),
+                                );
+                                tm.counter_with_labels(
+                                    "node_tick_count",
+                                    stats.count as u64,
+                                    labels,
+                                );
+                            }
+                        }
+
+                        let _ = tm.export();
+                    }
+                }
+
                 // Use pre-computed tick period (from config or default ~60Hz)
                 // Apply replay speed adjustment if in replay mode
                 let sleep_duration = if self.replay_mode.is_some() && self.replay_speed != 1.0 {
@@ -2547,6 +2583,13 @@ impl Scheduler {
                 if let Err(e) = bb.save() {
                     print_line(&format!("[BLACKBOX] Failed to save: {}", e));
                 }
+            }
+
+            // Final telemetry export
+            if let Some(ref mut tm) = self.telemetry {
+                tm.counter("scheduler_ticks", total_ticks);
+                tm.gauge("scheduler_shutdown", 1.0);
+                let _ = tm.export();
             }
 
             // Clean up registry file and session
