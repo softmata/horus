@@ -75,7 +75,7 @@ fn test_pick_and_place_workflow() {
                 .and_then(|p| p.get("target"))
                 .and_then(|v| v.as_array());
             if let Some(coords) = target {
-                let x = coords.get(0).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let x = coords.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let y = coords.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let z = coords.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
 
