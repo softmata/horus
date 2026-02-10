@@ -21,7 +21,7 @@ use horus_library::messages::geometry::Pose2D;
 use horus_library::messages::sensor::{Imu, LaserScan, Odometry};
 use horus_library::messages::GenericMessage;
 use pyo3::prelude::*;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyType};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::{Arc, RwLock};
@@ -30,17 +30,17 @@ use std::sync::{Arc, RwLock};
 // Cached Python classes (100x faster than py.import() per call)
 // ============================================================================
 
-static CMDVEL_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
-static POSE2D_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
-static IMU_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
-static ODOMETRY_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
-static LASERSCAN_CLASS: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+static CMDVEL_CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static POSE2D_CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static IMU_CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static ODOMETRY_CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+static LASERSCAN_CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
 
 fn get_cmdvel_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     CMDVEL_CLASS
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
-            Ok(m.getattr("CmdVel")?.downcast::<PyType>()?.clone().unbind())
+            Ok(m.getattr("CmdVel")?.cast::<PyType>()?.clone().unbind())
         })
         .map(|c| c.bind(py))
 }
@@ -49,7 +49,7 @@ fn get_pose2d_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     POSE2D_CLASS
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
-            Ok(m.getattr("Pose2D")?.downcast::<PyType>()?.clone().unbind())
+            Ok(m.getattr("Pose2D")?.cast::<PyType>()?.clone().unbind())
         })
         .map(|c| c.bind(py))
 }
@@ -58,7 +58,7 @@ fn get_imu_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
     IMU_CLASS
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
-            Ok(m.getattr("Imu")?.downcast::<PyType>()?.clone().unbind())
+            Ok(m.getattr("Imu")?.cast::<PyType>()?.clone().unbind())
         })
         .map(|c| c.bind(py))
 }
@@ -68,7 +68,7 @@ fn get_odometry_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
             Ok(m.getattr("Odometry")?
-                .downcast::<PyType>()?
+                .cast::<PyType>()?
                 .clone()
                 .unbind())
         })
@@ -80,7 +80,7 @@ fn get_laserscan_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
         .get_or_try_init(py, || {
             let m = py.import("horus")?;
             Ok(m.getattr("LaserScan")?
-                .downcast::<PyType>()?
+                .cast::<PyType>()?
                 .clone()
                 .unbind())
         })
@@ -91,14 +91,14 @@ fn get_laserscan_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
 // Direct field extraction (bypasses serde, 2-5x faster)
 // ============================================================================
 
-fn extract_cmdvel(py: Python<'_>, obj: &PyObject) -> PyResult<CmdVel> {
+fn extract_cmdvel(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<CmdVel> {
     let linear: f32 = obj.getattr(py, "linear")?.extract(py)?;
     let angular: f32 = obj.getattr(py, "angular")?.extract(py)?;
     let timestamp_ns: u64 = obj.getattr(py, "timestamp_ns")?.extract(py).unwrap_or(0);
     Ok(CmdVel::with_timestamp(linear, angular, timestamp_ns))
 }
 
-fn extract_pose2d(py: Python<'_>, obj: &PyObject) -> PyResult<Pose2D> {
+fn extract_pose2d(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<Pose2D> {
     let x: f64 = obj.getattr(py, "x")?.extract(py)?;
     let y: f64 = obj.getattr(py, "y")?.extract(py)?;
     let theta: f64 = obj.getattr(py, "theta")?.extract(py)?;
@@ -111,7 +111,7 @@ fn extract_pose2d(py: Python<'_>, obj: &PyObject) -> PyResult<Pose2D> {
     })
 }
 
-fn extract_imu(py: Python<'_>, obj: &PyObject) -> PyResult<Imu> {
+fn extract_imu(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<Imu> {
     let ax: f64 = obj.getattr(py, "accel_x")?.extract(py)?;
     let ay: f64 = obj.getattr(py, "accel_y")?.extract(py)?;
     let az: f64 = obj.getattr(py, "accel_z")?.extract(py)?;
@@ -126,7 +126,7 @@ fn extract_imu(py: Python<'_>, obj: &PyObject) -> PyResult<Imu> {
     Ok(imu)
 }
 
-fn extract_odometry(py: Python<'_>, obj: &PyObject) -> PyResult<Odometry> {
+fn extract_odometry(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<Odometry> {
     let x: f64 = obj.getattr(py, "x")?.extract(py)?;
     let y: f64 = obj.getattr(py, "y")?.extract(py)?;
     let theta: f64 = obj.getattr(py, "theta")?.extract(py)?;
@@ -153,21 +153,21 @@ fn extract_odometry(py: Python<'_>, obj: &PyObject) -> PyResult<Odometry> {
 // Python object creation (direct field access, no serde)
 // ============================================================================
 
-fn cmdvel_to_python(py: Python<'_>, cmd: &CmdVel) -> PyResult<PyObject> {
+fn cmdvel_to_python(py: Python<'_>, cmd: &CmdVel) -> PyResult<Py<PyAny>> {
     let cls = get_cmdvel_class(py)?;
     Ok(cls
         .call1((cmd.linear, cmd.angular, cmd.stamp_nanos))?
         .into())
 }
 
-fn pose2d_to_python(py: Python<'_>, pose: &Pose2D) -> PyResult<PyObject> {
+fn pose2d_to_python(py: Python<'_>, pose: &Pose2D) -> PyResult<Py<PyAny>> {
     let cls = get_pose2d_class(py)?;
     Ok(cls
         .call1((pose.x, pose.y, pose.theta, pose.timestamp_ns))?
         .into())
 }
 
-fn imu_to_python(py: Python<'_>, imu: &Imu) -> PyResult<PyObject> {
+fn imu_to_python(py: Python<'_>, imu: &Imu) -> PyResult<Py<PyAny>> {
     let cls = get_imu_class(py)?;
     Ok(cls
         .call1((
@@ -182,7 +182,7 @@ fn imu_to_python(py: Python<'_>, imu: &Imu) -> PyResult<PyObject> {
         .into())
 }
 
-fn odometry_to_python(py: Python<'_>, odom: &Odometry) -> PyResult<PyObject> {
+fn odometry_to_python(py: Python<'_>, odom: &Odometry) -> PyResult<Py<PyAny>> {
     let cls = get_odometry_class(py)?;
     let dict = PyDict::new(py);
     dict.set_item("x", odom.pose.x)?;
@@ -194,7 +194,7 @@ fn odometry_to_python(py: Python<'_>, odom: &Odometry) -> PyResult<PyObject> {
     Ok(cls.call((), Some(&dict))?.into())
 }
 
-fn laserscan_to_python(py: Python<'_>, scan: &LaserScan) -> PyResult<PyObject> {
+fn laserscan_to_python(py: Python<'_>, scan: &LaserScan) -> PyResult<Py<PyAny>> {
     let cls = get_laserscan_class(py)?;
     let dict = PyDict::new(py);
     dict.set_item("angle_min", scan.angle_min)?;
@@ -207,13 +207,13 @@ fn laserscan_to_python(py: Python<'_>, scan: &LaserScan) -> PyResult<PyObject> {
     Ok(cls.call((), Some(&dict))?.into())
 }
 
-fn from_python<T: DeserializeOwned>(py: Python, obj: &PyObject) -> PyResult<T> {
+fn from_python<T: DeserializeOwned>(py: Python, obj: &Py<PyAny>) -> PyResult<T> {
     pythonize::depythonize(obj.bind(py)).map_err(|e| {
         pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert from Python: {}", e))
     })
 }
 
-fn to_python<T: Serialize>(py: Python, value: &T) -> PyResult<PyObject> {
+fn to_python<T: Serialize>(py: Python, value: &T) -> PyResult<Py<PyAny>> {
     pythonize::pythonize(py, value)
         .map(|o| o.into())
         .map_err(|e| {
@@ -302,7 +302,7 @@ impl PyTopic {
     #[pyo3(signature = (msg_type, capacity=None, endpoint=None, backend=None))]
     fn new(
         py: Python,
-        msg_type: PyObject,
+        msg_type: Py<PyAny>,
         capacity: Option<usize>,
         endpoint: Option<String>,
         backend: Option<String>,
@@ -380,7 +380,7 @@ impl PyTopic {
     ///     topic.send(CmdVel(1.5, 0.5), node)  # With logging
     ///     topic.send(Pose2D(1.0, 2.0, 0.5))   # Without logging
     #[pyo3(signature = (message, node=None))]
-    fn send(&self, py: Python, message: PyObject, node: Option<PyObject>) -> PyResult<bool> {
+    fn send(&self, py: Python, message: Py<PyAny>, node: Option<Py<PyAny>>) -> PyResult<bool> {
         use std::time::Instant;
         let start = Instant::now();
 
@@ -388,7 +388,7 @@ impl PyTopic {
             TopicType::CmdVel(topic) => {
                 let cmd = extract_cmdvel(py, &message)?;
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(cmd);
                     true
@@ -414,7 +414,7 @@ impl PyTopic {
             TopicType::Pose2D(topic) => {
                 let pose = extract_pose2d(py, &message)?;
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(pose);
                     true
@@ -440,7 +440,7 @@ impl PyTopic {
             TopicType::Imu(topic) => {
                 let imu = extract_imu(py, &message)?;
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(imu);
                     true
@@ -466,7 +466,7 @@ impl PyTopic {
             TopicType::Odometry(topic) => {
                 let odom = extract_odometry(py, &message)?;
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(odom);
                     true
@@ -498,7 +498,7 @@ impl PyTopic {
                 let log_summary = scan.log_summary();
 
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(scan);
                     true
@@ -543,7 +543,7 @@ impl PyTopic {
                 let log_summary = msg.log_summary();
 
                 let topic_ref = topic.clone();
-                let success = py.allow_threads(|| {
+                let success = py.detach(|| {
                     let topic = topic_ref.write().unwrap();
                     topic.send(msg);
                     true
@@ -582,14 +582,14 @@ impl PyTopic {
     ///     cmd = topic.recv(node)  # With logging
     ///     pose = topic.recv()     # Without logging
     #[pyo3(signature = (node=None))]
-    fn recv(&self, py: Python, node: Option<PyObject>) -> PyResult<Option<PyObject>> {
+    fn recv(&self, py: Python, node: Option<Py<PyAny>>) -> PyResult<Option<Py<PyAny>>> {
         use std::time::Instant;
         let start = Instant::now();
 
         match &self.topic_type {
             TopicType::CmdVel(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -619,7 +619,7 @@ impl PyTopic {
             }
             TopicType::Pose2D(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -649,7 +649,7 @@ impl PyTopic {
             }
             TopicType::Imu(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -679,7 +679,7 @@ impl PyTopic {
             }
             TopicType::Odometry(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -709,7 +709,7 @@ impl PyTopic {
             }
             TopicType::LaserScan(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -739,7 +739,7 @@ impl PyTopic {
             }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.allow_threads(|| {
+                let msg_opt = py.detach(|| {
                     let topic = topic_ref.read().unwrap();
                     topic.recv()
                 });
@@ -814,7 +814,7 @@ impl PyTopic {
     /// Returns:
     ///     Dictionary with keys: messages_sent, messages_received, send_failures, recv_failures
     fn stats(&self) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
 
             let metrics = match &self.topic_type {

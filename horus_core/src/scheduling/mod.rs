@@ -68,9 +68,6 @@ pub mod node_builder;
 // Distributed multi-process/robot recording
 pub mod distributed_recording;
 
-// Cloud storage infrastructure
-pub mod cloud_recording;
-
 // Expose async_io module for AsyncNode
 pub mod async_io {
     pub use super::executors::async_io::AsyncNode;
@@ -188,12 +185,6 @@ pub use distributed_recording::{
 pub use ai_debug::{
     AnalysisContext, AnalysisResult, AnalysisStats, AssistantConfig, DebugAssistant, DetectedIssue,
     IssueCategory, PatternDetector, Severity, TimelineEvent, TimelineEventType,
-};
-
-// Re-export cloud recording
-pub use cloud_recording::{
-    CloudBackend, CloudConfig, CloudError, CloudProvider, CloudRecordingIndex,
-    CloudRecordingMetadata, CloudUploader, RecordingQuery, UploadProgress, UploadStatus,
 };
 
 // Re-export runtime capabilities

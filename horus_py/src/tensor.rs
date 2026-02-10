@@ -94,8 +94,8 @@ impl PyTensorPool {
     }
 
     /// Get pool statistics
-    fn stats(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn stats(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let stats = self.pool.stats();
             let dict = PyDict::new(py);
             dict.set_item("pool_id", stats.pool_id)?;
@@ -169,7 +169,7 @@ impl PyTensorHandle {
     ///
     /// This enables: np.asarray(tensor_handle)
     #[getter]
-    fn __array_interface__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let handle = self
             .handle
             .as_ref()
@@ -211,7 +211,7 @@ impl PyTensorHandle {
     /// This enables: torch.as_tensor(tensor_handle) for GPU tensors
     /// The GPU pointer is extracted from the cuda_ipc_handle field.
     #[getter]
-    fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let handle = self
             .handle
             .as_ref()
@@ -262,7 +262,7 @@ impl PyTensorHandle {
     /// Returns:
     ///     PyCapsule containing DLManagedTensor
     #[pyo3(signature = (stream=None))]
-    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<PyObject> {
+    fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
         let handle = self
             .handle
             .as_ref()
@@ -373,7 +373,7 @@ impl PyTensorHandle {
     /// Returns:
     ///     TensorHandle wrapping the DLPack tensor data
     #[staticmethod]
-    fn from_dlpack(py: Python<'_>, obj: PyObject) -> PyResult<Self> {
+    fn from_dlpack(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Self> {
         // Try to call __dlpack__ on the object to verify it supports DLPack
         let _capsule = obj.call_method1(py, "__dlpack__", ())?;
 

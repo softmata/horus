@@ -982,8 +982,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
     print!("  {} Checking system requirements... ", "▸".cyan());
     let mut sys_issues = Vec::new();
 
-    #[allow(unused_variables)]
-    let shm_path = shm_base_dir();
+    let _shm_path = shm_base_dir();
     if has_native_shm() {
         #[cfg(target_os = "linux")]
         {

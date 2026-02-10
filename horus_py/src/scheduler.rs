@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// Registered node with priority and per-node rate control
 struct RegisteredNode {
-    node: PyObject,
+    node: Py<PyAny>,
     name: String,
     priority: u32,
     context: Arc<Mutex<CoreNodeInfo>>,
@@ -47,7 +47,7 @@ struct RegisteredNode {
 #[pyclass(module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
-    node: PyObject,
+    node: Py<PyAny>,
     order: u32,
     rate_hz: Option<f64>,
     rt: bool,
@@ -206,7 +206,7 @@ impl PyScheduler {
     ///     scheduler.node(sensor_node).order(0).rate_hz(1000.0).rt().done()
     ///     scheduler.node(motor_node).order(1).deadline_ms(5.0).done()
     ///     scheduler.node(logger).order(100).no_logging().done()
-    fn node(slf: Py<Self>, _py: Python, node: PyObject) -> PyResult<PyNodeBuilder> {
+    fn node(slf: Py<Self>, _py: Python, node: Py<PyAny>) -> PyResult<PyNodeBuilder> {
         Ok(PyNodeBuilder {
             scheduler: slf,
             node,
@@ -234,7 +234,7 @@ impl PyScheduler {
     fn add(
         &mut self,
         py: Python,
-        node: PyObject,
+        node: Py<PyAny>,
         order: u32,
         rate_hz: Option<f64>,
         rt: bool,
@@ -428,7 +428,7 @@ impl PyScheduler {
     }
 
     /// Phase 1: Get node statistics
-    fn get_node_stats(&self, py: Python, node_name: String) -> PyResult<PyObject> {
+    fn get_node_stats(&self, py: Python, node_name: String) -> PyResult<Py<PyAny>> {
         let nodes = self
             .nodes
             .lock()
@@ -862,8 +862,6 @@ impl PyScheduler {
     }
 
     /// Run the scheduler indefinitely (until stop() is called)
-
-    /// Run the scheduler indefinitely (until stop() is called)
     fn run(&mut self, py: Python) -> PyResult<()> {
         let tick_duration = Duration::from_secs_f64(1.0 / self.tick_rate_hz);
 
@@ -1261,7 +1259,7 @@ impl PyScheduler {
     /// - failure_count: Total failure count
     /// - consecutive_failures: Current consecutive failure count
     /// - circuit_open: Whether circuit breaker is open
-    fn get_all_nodes(&self, py: Python) -> PyResult<Vec<PyObject>> {
+    fn get_all_nodes(&self, py: Python) -> PyResult<Vec<Py<PyAny>>> {
         let nodes = self
             .nodes
             .lock()
@@ -1765,13 +1763,13 @@ impl PyScheduler {
     }
 
     /// Pickle support: Get state for serialization
-    fn __getstate__(&self, py: Python) -> PyResult<PyObject> {
+    fn __getstate__(&self, py: Python) -> PyResult<Py<PyAny>> {
         use pyo3::types::PyDict;
 
         let state = PyDict::new(py);
         state.set_item("tick_rate_hz", self.tick_rate_hz)?;
 
-        // Note: Registered nodes cannot be serialized (contain PyObject references)
+        // Note: Registered nodes cannot be serialized (contain Py<PyAny> references)
         // After unpickling, users must re-add nodes using scheduler.add()
 
         Ok(state.into())

@@ -74,6 +74,7 @@
 //! | Transform update | ~100ns | ~1μs |
 //! | Real-time safe | Yes | No |
 
+#[cfg(test)]
 mod bench;
 mod config;
 mod core;

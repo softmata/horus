@@ -6,6 +6,9 @@
 use super::*;
 use std::time::Instant;
 
+/// Number of iterations for benchmarks
+const ITERATIONS: u64 = 100_000;
+
 /// Benchmark transform lookup by ID
 #[test]
 #[ignore]

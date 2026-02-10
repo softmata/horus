@@ -140,6 +140,7 @@ pub struct PyDetection {
 impl PyDetection {
     #[new]
     #[pyo3(signature = (class_name, confidence, x, y, width, height, class_id=0, instance_id=0))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         class_name: &str,
         confidence: f32,
@@ -337,7 +338,8 @@ impl PyPointXYZ {
     }
 
     /// Convert to numpy array (requires numpy)
-    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    #[allow(clippy::wrong_self_convention)]
+    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let np = py.import("numpy")?;
         let arr = np.call_method1("array", (vec![self.x, self.y, self.z],))?;
         Ok(arr.unbind())
@@ -848,7 +850,7 @@ impl PyPointCloudBuffer {
     /// Create from numpy array (N, 3) or (N, 4)
     #[staticmethod]
     #[pyo3(signature = (array, frame_id=""))]
-    fn from_numpy(py: Python<'_>, array: PyObject, frame_id: &str) -> PyResult<Self> {
+    fn from_numpy(py: Python<'_>, array: Py<PyAny>, frame_id: &str) -> PyResult<Self> {
         let np = py.import("numpy")?;
 
         // Get array as contiguous float32
@@ -921,7 +923,7 @@ impl PyPointCloudBuffer {
     }
 
     /// Convert to numpy array (N, 3)
-    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn to_numpy<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let np = py.import("numpy")?;
 
         // Create array from flat data

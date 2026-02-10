@@ -247,8 +247,8 @@ impl PyDevice {
 
 /// Get DLPack version info
 #[pyfunction]
-fn dlpack_version() -> PyResult<PyObject> {
-    Python::with_gil(|py| {
+fn dlpack_version() -> PyResult<Py<PyAny>> {
+    Python::attach(|py| {
         let dict = PyDict::new(py);
         dict.set_item("version", "0.8")?;
         dict.set_item("features", vec!["cpu", "cuda", "dlpack"])?;

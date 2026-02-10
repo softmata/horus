@@ -37,7 +37,7 @@ chrono = { version = "0.4", features = ["serde", "std"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 dirs = "5.0"
 lazy_static = "1.4"
-flate2 = "1.0"  # Compression for cloud recording
+flate2 = "1.0"  # Compression for record/replay
 sha2 = "0.10"   # SHA256 checksums for model verification
 
 # Error handling
@@ -61,12 +61,7 @@ horus_macros = { path = "../horus_macros", optional = true }
 # HTTP client for model downloading and Husarnet API (optional)
 reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
 
-# Cloud storage providers (optional)
-aws-sdk-s3 = { version = "1.120", optional = true }
-aws-config = { version = "1.8", optional = true }
-google-cloud-storage = { version = "0.20", optional = true }
-azure_storage = { version = "0.20", optional = true }
-azure_storage_blobs = { version = "0.20", optional = true }
+# Async utilities (optional, needed by zenoh-transport)
 futures = { version = "0.3", optional = true }
 
 # Zenoh transport (optional)
@@ -133,22 +128,6 @@ io-uring-net = ["io-uring"]
 
 # CUDA IPC for cross-process GPU memory sharing (requires NVIDIA GPU)
 cuda = []
-
-# ============================================================================
-# Cloud Storage Backends
-# ============================================================================
-
-# Amazon S3 cloud storage
-cloud-s3 = ["aws-sdk-s3", "aws-config", "futures"]
-
-# Google Cloud Storage
-cloud-gcs = ["google-cloud-storage", "futures"]
-
-# Azure Blob Storage
-cloud-azure = ["azure_storage", "azure_storage_blobs", "futures"]
-
-# Enable all cloud providers
-cloud-all = ["cloud-s3", "cloud-gcs", "cloud-azure"]
 
 # ============================================================================
 # Zenoh Transport (Multi-Robot & ROS2 Interop)

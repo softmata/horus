@@ -389,7 +389,7 @@ impl PyNodeInfo {
 pub struct PyNode {
     #[pyo3(get)]
     pub name: String,
-    pub py_callback: Option<PyObject>,
+    pub py_callback: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -430,7 +430,7 @@ impl PyNode {
     }
 
     /// Set the Python callback object (usually 'self' from Python subclass)
-    fn set_callback(&mut self, callback: PyObject) -> PyResult<()> {
+    fn set_callback(&mut self, callback: Py<PyAny>) -> PyResult<()> {
         self.py_callback = Some(callback);
         Ok(())
     }

@@ -887,16 +887,15 @@ fn is_valid_room_name(name: &str) -> bool {
 }
 
 /// Parse host:port string
-#[allow(clippy::manual_strip)]
 fn parse_host_port(input: &str, default_port: u16) -> Result<(String, u16), String> {
     // Handle IPv6 addresses: [2001:db8::1]:port
-    if input.starts_with('[') {
-        if let Some(bracket_end) = input.find(']') {
-            let host = &input[1..bracket_end];
-            let rest = &input[bracket_end + 1..];
+    if let Some(inner) = input.strip_prefix('[') {
+        if let Some(bracket_end) = inner.find(']') {
+            let host = &inner[..bracket_end];
+            let rest = &inner[bracket_end + 1..];
 
-            let port = if rest.starts_with(':') {
-                rest[1..]
+            let port = if let Some(port_str) = rest.strip_prefix(':') {
+                port_str
                     .parse::<u16>()
                     .map_err(|e| format!("Invalid port: {}", e))?
             } else if rest.is_empty() {

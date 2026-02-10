@@ -1,8 +1,6 @@
 // PyO3 methods MUST return PyResult<T> for Python bindings.
 // Clippy incorrectly flags this as "useless_conversion" but it's required by PyO3.
 // See: https://github.com/PyO3/pyo3/issues/2092
-// PyO3 0.27 deprecates PyObject in favor of Py<PyAny> and with_gil in favor of attach.
-// These are still functional but will be fixed in a future update.
 
 use pyo3::prelude::*;
 
