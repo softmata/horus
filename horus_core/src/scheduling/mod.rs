@@ -34,6 +34,9 @@ pub mod executors;
 pub mod fault_tolerance;
 mod intelligence;
 
+// Telemetry export for live monitoring
+pub mod telemetry;
+
 // Runtime OS-level features
 pub mod runtime;
 
@@ -113,7 +116,13 @@ pub use record_replay::{
 pub use intelligence::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
 
 // Re-export executors
-pub use executors::ParallelExecutor;
+pub use executors::{
+    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
+    IsolatedNodeStats, IsolatedResult, ParallelExecutor,
+};
+
+// Re-export telemetry
+pub use telemetry::{TelemetryEndpoint, TelemetryManager};
 
 // Re-export fault tolerance
 pub use fault_tolerance::{CircuitBreaker, CircuitState};

@@ -94,9 +94,17 @@ pub mod prelude {
     };
 
     // ============================================
-    // Parallel Executor
+    // Executors
     // ============================================
-    pub use horus_core::scheduling::ParallelExecutor;
+    pub use horus_core::scheduling::{
+        AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
+        IsolatedNodeStats, IsolatedResult, ParallelExecutor,
+    };
+
+    // ============================================
+    // Telemetry
+    // ============================================
+    pub use horus_core::scheduling::{TelemetryEndpoint, TelemetryManager};
 
     // ============================================
     // Profiling & Intelligence

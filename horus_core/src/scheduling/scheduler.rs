@@ -18,8 +18,15 @@ use super::record_replay::{
     SchedulerRecording,
 };
 
+// Executor imports
+use super::executors::{AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig};
+use super::intelligence::NodeTier;
+
 // Import types from types module
 use super::types::{RegisteredNode, SchedulerNodeMetrics};
+
+// Tokio channel for async executor results
+use tokio::sync::mpsc;
 
 // Global flag for SIGTERM handling
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -167,6 +174,22 @@ pub struct Scheduler {
 
     /// Deterministic configuration (seed, tick duration, etc.)
     deterministic_config: Option<DeterministicConfig>,
+
+    // === Tier-based executors ===
+    /// Async I/O executor for non-blocking node execution
+    async_io_executor: Option<AsyncIOExecutor>,
+    /// Channel for receiving async executor results
+    async_result_rx: Option<mpsc::UnboundedReceiver<AsyncResult>>,
+    /// Channel sender for async executor (cloned to spawned tasks)
+    async_result_tx: Option<mpsc::UnboundedSender<AsyncResult>>,
+    /// Background executor for low-priority nodes
+    background_executor: Option<BackgroundExecutor>,
+    /// Isolated executor for process-isolated fault-tolerant nodes
+    isolated_executor: Option<IsolatedExecutor>,
+
+    // === Telemetry ===
+    /// Telemetry manager for live metrics export
+    telemetry: Option<super::telemetry::TelemetryManager>,
 }
 
 impl Default for Scheduler {
@@ -259,6 +282,16 @@ impl Scheduler {
             deterministic_clock: None,
             execution_trace: None,
             deterministic_config: None,
+
+            // Tier-based executors (set up during run() based on node tier annotations)
+            async_io_executor: None,
+            async_result_rx: None,
+            async_result_tx: None,
+            background_executor: None,
+            isolated_executor: None,
+
+            // Telemetry (configured via with_config())
+            telemetry: None,
         };
 
         // === Auto-apply RT features based on detected capabilities ===
@@ -1295,6 +1328,19 @@ impl Scheduler {
             }
         }
 
+        // 8. Telemetry export
+        if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
+            let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
+            let interval_ms = config.monitoring.metrics_interval_ms;
+            let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
+            tm.set_scheduler_name(&self.scheduler_name);
+            self.telemetry = Some(tm);
+            print_line(&format!(
+                "[SCHEDULER] Telemetry enabled (endpoint: {})",
+                endpoint_str
+            ));
+        }
+
         // Store config for runtime use
         self.config = Some(config);
     }
@@ -1539,6 +1585,7 @@ impl Scheduler {
 
             is_stopped: false,
             is_paused: false,
+            tier: NodeTier::default(),
         });
 
         // Sort nodes by priority
@@ -2043,7 +2090,7 @@ impl Scheduler {
         is_rt_node: bool,
         wcet_budget: Option<std::time::Duration>,
         deadline: Option<std::time::Duration>,
-        _tier: Option<super::intelligence::NodeTier>,
+        tier: Option<NodeTier>,
     ) -> &mut Self {
         let node_name = node.name().to_string();
 
@@ -2093,6 +2140,7 @@ impl Scheduler {
 
             is_stopped: false,
             is_paused: false,
+            tier: tier.unwrap_or_default(),
         });
 
         if let Some(rate) = node_rate {
@@ -2281,6 +2329,9 @@ impl Scheduler {
             // Write initial registry
             self.update_registry();
 
+            // Set up tier-based executors (moves annotated nodes to specialized executors)
+            self.setup_tier_executors().await;
+
             // Main tick loop
             while self.is_running() {
                 // Check if duration limit has been reached
@@ -2409,6 +2460,10 @@ impl Scheduler {
                     bb.tick();
                 }
 
+                // Process results from tier-based executors
+                self.process_async_results().await;
+                self.process_background_results();
+
                 // Use pre-computed tick period (from config or default ~60Hz)
                 // Apply replay speed adjustment if in replay mode
                 let sleep_duration = if self.replay_mode.is_some() && self.replay_speed != 1.0 {
@@ -2422,6 +2477,17 @@ impl Scheduler {
 
                 // Increment tick counter for replay tracking
                 self.current_tick += 1;
+            }
+
+            // Shutdown tier-based executors
+            if let Some(ref mut exec) = self.async_io_executor {
+                exec.shutdown_all().await;
+            }
+            if let Some(ref mut exec) = self.background_executor {
+                exec.shutdown();
+            }
+            if let Some(ref mut exec) = self.isolated_executor {
+                exec.shutdown();
             }
 
             // Shutdown nodes
@@ -3011,6 +3077,196 @@ impl Scheduler {
                                 context.transition_to_error(error_msg);
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Tier-based executor setup
+    // ========================================================================
+
+    /// Set up specialized executors based on explicit NodeTier annotations.
+    ///
+    /// Scans all registered nodes and moves those with AsyncIO, Background,
+    /// or Isolated tiers to their respective executors.
+    async fn setup_tier_executors(&mut self) {
+        self.setup_async_executor().await;
+        self.setup_background_executor();
+        self.setup_isolated_executor();
+    }
+
+    /// Set up async I/O executor and move AsyncIO-tier nodes to it
+    async fn setup_async_executor(&mut self) {
+        // Find indices of AsyncIO-tier nodes
+        let async_indices: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.tier == NodeTier::AsyncIO)
+            .map(|(i, _)| i)
+            .collect();
+
+        if async_indices.is_empty() {
+            return;
+        }
+
+        // Create async I/O executor
+        let mut async_executor = match AsyncIOExecutor::new() {
+            Ok(exec) => exec,
+            Err(_) => return,
+        };
+
+        // Create channel for async results
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.async_result_tx = Some(tx.clone());
+        self.async_result_rx = Some(rx);
+
+        // Move nodes to async executor (in reverse order to maintain indices)
+        for idx in async_indices.into_iter().rev() {
+            let registered = self.nodes.swap_remove(idx);
+            let node_name = registered.node.name().to_string();
+
+            if let Err(e) =
+                async_executor.spawn_node(registered.node, registered.context, tx.clone())
+            {
+                print_line(&format!(
+                    "Failed to move {} to async tier: {}",
+                    node_name, e
+                ));
+            }
+        }
+
+        print_line("[Async I/O] Nodes moved to non-blocking executor");
+        self.async_io_executor = Some(async_executor);
+    }
+
+    /// Set up background executor and move Background-tier nodes to it
+    fn setup_background_executor(&mut self) {
+        // Find indices of Background-tier nodes
+        let bg_indices: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.tier == NodeTier::Background)
+            .map(|(i, _)| i)
+            .collect();
+
+        if bg_indices.is_empty() {
+            return;
+        }
+
+        let mut bg_executor = match BackgroundExecutor::new() {
+            Ok(exec) => exec,
+            Err(e) => {
+                print_line(&format!("[Background] Failed to create executor: {}", e));
+                return;
+            }
+        };
+
+        for idx in bg_indices.into_iter().rev() {
+            let registered = self.nodes.swap_remove(idx);
+            let node_name = registered.node.name().to_string();
+
+            if let Err(e) = bg_executor.spawn_node(registered.node, registered.context) {
+                print_line(&format!(
+                    "Failed to move {} to background tier: {}",
+                    node_name, e
+                ));
+            }
+        }
+
+        if bg_executor.node_count() > 0 {
+            print_line(&format!(
+                "[Background] Moved {} nodes to low-priority thread",
+                bg_executor.node_count()
+            ));
+        }
+        self.background_executor = Some(bg_executor);
+    }
+
+    /// Set up isolated executor and move Isolated-tier nodes to it
+    fn setup_isolated_executor(&mut self) {
+        // Find indices of Isolated-tier nodes
+        let iso_indices: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.tier == NodeTier::Isolated)
+            .map(|(i, _)| i)
+            .collect();
+
+        if iso_indices.is_empty() {
+            return;
+        }
+
+        let config = IsolatedNodeConfig {
+            max_restarts: 3,
+            restart_delay: std::time::Duration::from_millis(500),
+            response_timeout: std::time::Duration::from_millis(5000),
+            heartbeat_timeout: std::time::Duration::from_secs(10),
+            runner_binary: None,
+            env_vars: std::collections::HashMap::new(),
+        };
+
+        let mut iso_executor = match IsolatedExecutor::new(config) {
+            Ok(exec) => exec,
+            Err(e) => {
+                print_line(&format!("[Isolated] Failed to create executor: {}", e));
+                return;
+            }
+        };
+
+        for idx in iso_indices.into_iter().rev() {
+            let registered = self.nodes.swap_remove(idx);
+            let node_name = registered.node.name().to_string();
+
+            if let Err(e) =
+                iso_executor.spawn_node(registered.node, &node_name, registered.context)
+            {
+                print_line(&format!(
+                    "Failed to move {} to isolated tier: {}",
+                    node_name, e
+                ));
+            }
+        }
+
+        if iso_executor.node_count() > 0 {
+            print_line(&format!(
+                "[Isolated] Moved {} nodes to process-isolated executor",
+                iso_executor.node_count()
+            ));
+        }
+        self.isolated_executor = Some(iso_executor);
+    }
+
+    /// Process results from async I/O executor (non-blocking)
+    async fn process_async_results(&mut self) {
+        if let Some(ref mut rx) = self.async_result_rx {
+            while let Ok(result) = rx.try_recv() {
+                if !result.success {
+                    if let Some(ref error) = result.error {
+                        print_line(&format!(
+                            "Async node {} failed: {}",
+                            result.node_name, error
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process results from background executor (non-blocking)
+    fn process_background_results(&mut self) {
+        if let Some(ref executor) = self.background_executor {
+            for result in executor.poll_results() {
+                if !result.success {
+                    if let Some(ref error) = result.error {
+                        print_line(&format!(
+                            "[Background] Node {} failed: {}",
+                            result.node_name, error
+                        ));
                     }
                 }
             }

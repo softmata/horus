@@ -74,6 +74,8 @@ pub struct MonitoringConfig {
     pub black_box_enabled: bool,
     /// Black box buffer size in MB
     pub black_box_size_mb: usize,
+    /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
+    pub telemetry_endpoint: Option<String>,
 }
 
 /// Recording configuration for record/replay system
@@ -331,6 +333,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 1000,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
+                telemetry_endpoint: None,
             },
             custom: HashMap::new(),
             deterministic: None,
@@ -386,6 +389,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 1000,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
+                telemetry_endpoint: None,
             },
             custom: HashMap::new(),
             deterministic: None,
@@ -426,6 +430,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 100,
                 black_box_enabled: true,
                 black_box_size_mb: 100,
+                telemetry_endpoint: None,
             },
             custom: HashMap::new(),
             deterministic: Some(DeterministicConfig::strict()),
@@ -466,6 +471,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 10,
                 black_box_enabled: true,
                 black_box_size_mb: 1024,
+                telemetry_endpoint: None,
             },
             custom: HashMap::new(),
             deterministic: Some(DeterministicConfig::strict()),
@@ -506,6 +512,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 10000,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
+                telemetry_endpoint: None,
             },
             custom: HashMap::new(),
             deterministic: None,
@@ -785,6 +792,24 @@ impl SchedulerConfig {
     /// ```
     pub fn cpu_cores(mut self, cores: &[usize]) -> Self {
         self.resources.cpu_cores = Some(cores.to_vec());
+        self
+    }
+
+    /// Set telemetry export endpoint.
+    ///
+    /// Supported endpoints:
+    /// - `"udp://host:port"` - UDP broadcast
+    /// - `"file:///path/to/metrics.json"` - Local JSON file
+    /// - `"http://host:port/metrics"` - HTTP POST
+    /// - `"stdout"` - Print to stdout (debugging)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = SchedulerConfig::standard()
+    ///     .telemetry("udp://localhost:9999");
+    /// ```
+    pub fn telemetry(mut self, endpoint: &str) -> Self {
+        self.monitoring.telemetry_endpoint = Some(endpoint.to_string());
         self
     }
 }
