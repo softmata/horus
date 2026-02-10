@@ -334,7 +334,7 @@ fn run_producer(args: &[String]) {
         producer.send(msg);
 
         // Small delay to prevent queue overflow
-        if i % 1000 == 0 {
+        if i.is_multiple_of(1000) {
             std::thread::yield_now();
         }
     }

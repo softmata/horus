@@ -797,7 +797,7 @@ impl PyScheduler {
             let elapsed = tick_start.elapsed();
             if elapsed < tick_duration {
                 thread::sleep(tick_duration - elapsed);
-            } else if tick % 100 == 0 {
+            } else if tick.is_multiple_of(100) {
                 // Warn about timing issues every 100 ticks
                 eprintln!(
                     "Warning: Tick {} took {:?}, longer than period {:?}",

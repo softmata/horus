@@ -1255,7 +1255,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
         // Seqlock write protocol:
         // 1. Increment to odd (signals write in progress)
         let seq = header.sequence.fetch_add(1, Ordering::Acquire);
-        debug_assert!(seq % 2 == 0, "Double write detected in SpmcShm");
+        debug_assert!(seq.is_multiple_of(2), "Double write detected in SpmcShm");
 
         // 2. Write data
         unsafe {

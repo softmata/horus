@@ -211,7 +211,7 @@ impl Node for MotorControllerNode {
             self.cmd_link.send(cmd);
 
             // Print status every 100ms
-            if self.iteration % 100 == 0 {
+            if self.iteration.is_multiple_of(100) {
                 println!(
                     "[{:>15}] Target: {:>6.3} | Position: {:>6.3} | Error: {:>6.3} | Voltage: {:>5.2}V",
                     self.name(),

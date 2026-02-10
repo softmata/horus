@@ -132,7 +132,10 @@ fn test_pod_detection_non_pod_types() {
     assert_eq!(log.level, 1);
     assert_eq!(log.message, "test");
     assert_eq!(log.timestamp, 42);
-    assert!(!is_pod::<LogMessage>(), "Struct with String should NOT be POD");
+    assert!(
+        !is_pod::<LogMessage>(),
+        "Struct with String should NOT be POD"
+    );
 
     let batch = SensorBatch {
         readings: vec![1.0, 2.0],
@@ -140,7 +143,10 @@ fn test_pod_detection_non_pod_types() {
     };
     assert_eq!(batch.readings.len(), 2);
     assert_eq!(batch.timestamp, 42);
-    assert!(!is_pod::<SensorBatch>(), "Struct with Vec should NOT be POD");
+    assert!(
+        !is_pod::<SensorBatch>(),
+        "Struct with Vec should NOT be POD"
+    );
 }
 
 #[test]

@@ -2094,7 +2094,7 @@ fn parse_horus_yaml_dependencies_simple(path: &str) -> Result<HashSet<String>> {
                 let double_quotes = before_comment.matches('"').count();
 
                 // If quotes are balanced, # is a comment. Otherwise, it's part of the string
-                if single_quotes % 2 == 0 && double_quotes % 2 == 0 {
+                if single_quotes.is_multiple_of(2) && double_quotes.is_multiple_of(2) {
                     dep_str[..comment_pos].trim()
                 } else {
                     dep_str

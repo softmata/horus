@@ -843,7 +843,7 @@ impl BatteryMonitorNode {
         // Simulate occasional failures (will trigger circuit breaker)
         self.failure_count += 1;
 
-        if self.failure_count % 20 == 0 {
+        if self.failure_count.is_multiple_of(20) {
             return Err("Battery I2C read failed");
         }
 

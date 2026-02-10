@@ -337,7 +337,7 @@ fn run_determinism_benchmark(
         // Calculate run median
         let mut sorted = run_latencies.clone();
         sorted.sort_unstable();
-        let median = if sorted.len() % 2 == 0 {
+        let median = if sorted.len().is_multiple_of(2) {
             (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) as f64 / 2.0
         } else {
             sorted[sorted.len() / 2] as f64

@@ -30,7 +30,7 @@ impl Node for TelemetryNode {
     fn tick(&mut self) {
         self.counter += 1.0;
         self.telemetry_hub.send(self.counter);
-        if self.counter as u32 % 100 == 0 {
+        if (self.counter as u32).is_multiple_of(100) {
             println!("[TelemetryNode] Published: {}", self.counter);
         }
     }
@@ -68,7 +68,7 @@ impl Node for ControlNode {
 
         // Check for response
         if let Some(response) = self.response_link.recv() {
-            if response as u32 % 100 == 0 {
+            if (response as u32).is_multiple_of(100) {
                 println!("[ControlNode] Got response: {}", response);
             }
         }
@@ -140,7 +140,7 @@ impl Node for LoggerNode {
     fn tick(&mut self) {
         if let Some(telemetry) = self.telemetry_hub.recv() {
             self.logs_received += 1;
-            if self.logs_received % 100 == 0 {
+            if self.logs_received.is_multiple_of(100) {
                 println!(
                     "[LoggerNode] Logged telemetry #{}: value={}",
                     self.logs_received, telemetry
@@ -181,7 +181,7 @@ impl Node for AnalyticsNode {
         if let Some(telemetry) = self.telemetry_hub.recv() {
             self.sum += telemetry;
             self.count += 1;
-            if self.count % 1000 == 0 {
+            if self.count.is_multiple_of(1000) {
                 let avg = self.sum / self.count as f32;
                 println!(
                     "[AnalyticsNode] Average after {} samples: {:.2}",

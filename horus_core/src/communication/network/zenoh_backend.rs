@@ -1051,7 +1051,9 @@ where
                                 consecutive_failures,
                                 q.health_score()
                             );
-                        } else if consecutive_failures >= 5 && consecutive_failures % 5 == 0 {
+                        } else if consecutive_failures >= 5
+                            && consecutive_failures.is_multiple_of(5)
+                        {
                             log::error!(
                                 "zenoh[{}]: Connection unhealthy ({} consecutive failures, score: {})",
                                 key_expr,
