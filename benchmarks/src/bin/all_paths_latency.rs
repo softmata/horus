@@ -467,13 +467,9 @@ fn bench_spsc_shm() -> (f64, String) {
         .args(["--child-publisher", &topic_name, &ITERATIONS.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child publisher process");
-
-    // Start receiving immediately — child has a 200ms startup delay,
-    // giving us time to enter the receive loop before messages arrive.
-    // This prevents ring buffer overflow from the publisher outrunning us.
 
     // Warmup - receive some messages to trigger backend detection
     let mut warmup_count = 0u64;
@@ -489,29 +485,40 @@ fn bench_spsc_shm() -> (f64, String) {
     // Capture backend after cross-process detection
     let backend = consumer.backend_type().to_string();
 
+    // Measure: receive as many messages as possible.
+    // Track last-received time to detect when publisher has finished,
+    // avoiding the full timeout inflating our latency measurement.
     let start = Instant::now();
     let mut received = warmup_count;
+    let mut last_recv_time = start;
     let timeout = start + Duration::from_secs(TIMEOUT_SECS);
     while received < ITERATIONS && Instant::now() < timeout {
         if consumer.recv().is_some() {
             received += 1;
+            last_recv_time = Instant::now();
+        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
+            // No message for 500ms — publisher has likely finished
+            break;
         } else {
             std::hint::spin_loop();
         }
     }
-    let elapsed = start.elapsed();
+    // Use time-to-last-message, not total elapsed (avoids timeout inflation)
+    let elapsed = last_recv_time - start;
 
     child.wait().ok();
 
-    if received < ITERATIONS {
-        eprintln!(
-            "  (Warning: SpscShm only received {}/{})",
-            received, ITERATIONS
-        );
-    }
+    let actual_measured = received.saturating_sub(warmup_count);
+    eprintln!(
+        "  SpscShm: {}/{} received ({:.1}%) in {:?}",
+        received,
+        ITERATIONS,
+        received as f64 / ITERATIONS as f64 * 100.0,
+        elapsed
+    );
 
     (
-        elapsed.as_nanos() as f64 / (received - warmup_count).max(1) as f64,
+        elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
         backend,
     )
 }
@@ -540,7 +547,7 @@ fn bench_mpsc_shm() -> (f64, String) {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child publisher 1");
 
@@ -565,7 +572,7 @@ fn bench_mpsc_shm() -> (f64, String) {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child publisher 2");
 
@@ -590,30 +597,35 @@ fn bench_mpsc_shm() -> (f64, String) {
     // Capture backend after cross-process detection
     let backend = consumer.backend_type().to_string();
 
-    // Receive with timeout (measure from first message)
+    // Measure: receive as many messages as possible.
     let start = Instant::now();
     let mut received = warmup_count;
+    let mut last_recv_time = start;
     let timeout = start + Duration::from_secs(TIMEOUT_SECS);
     while received < ITERATIONS && Instant::now() < timeout {
         if consumer.recv().is_some() {
             received += 1;
+            last_recv_time = Instant::now();
+        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
+            break;
         } else {
             std::hint::spin_loop();
         }
     }
-    let elapsed = start.elapsed();
+    let elapsed = last_recv_time - start;
 
     // Wait for children to finish
     child1.wait().ok();
     child2.wait().ok();
 
     let actual_measured = received.saturating_sub(warmup_count);
-    if actual_measured < ITERATIONS / 4 {
-        eprintln!(
-            "  (Warning: MpscShm only measured {}/{})",
-            actual_measured, ITERATIONS
-        );
-    }
+    eprintln!(
+        "  MpscShm: {}/{} received ({:.1}%) in {:?}",
+        received,
+        ITERATIONS,
+        received as f64 / ITERATIONS as f64 * 100.0,
+        elapsed
+    );
 
     (
         elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
@@ -645,7 +657,7 @@ fn bench_mpmc_shm() -> (f64, String) {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child consumer");
 
@@ -658,7 +670,7 @@ fn bench_mpmc_shm() -> (f64, String) {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child publisher 1");
 
@@ -683,7 +695,7 @@ fn bench_mpmc_shm() -> (f64, String) {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child publisher 2");
 
@@ -712,15 +724,19 @@ fn bench_mpmc_shm() -> (f64, String) {
     // Parent consumer receives its share (other consumer gets remainder)
     let start = Instant::now();
     let mut received = warmup_count;
+    let mut last_recv_time = start;
     let timeout = start + Duration::from_secs(TIMEOUT_SECS);
     while received < msgs_per_consumer && Instant::now() < timeout {
         if consumer_parent.recv().is_some() {
             received += 1;
+            last_recv_time = Instant::now();
+        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
+            break;
         } else {
             std::hint::spin_loop();
         }
     }
-    let elapsed = start.elapsed();
+    let elapsed = last_recv_time - start;
 
     // Wait for children to finish
     child_pub1.wait().ok();
@@ -728,12 +744,13 @@ fn bench_mpmc_shm() -> (f64, String) {
     child_consumer.wait().ok();
 
     let actual_measured = received.saturating_sub(warmup_count);
-    if actual_measured < msgs_per_consumer / 4 {
-        eprintln!(
-            "  (Warning: MpmcShm parent only received {}/{})",
-            actual_measured, msgs_per_consumer
-        );
-    }
+    eprintln!(
+        "  MpmcShm: {}/{} received ({:.1}%) in {:?}",
+        received,
+        msgs_per_consumer,
+        received as f64 / msgs_per_consumer as f64 * 100.0,
+        elapsed
+    );
 
     (
         elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
@@ -761,19 +778,44 @@ fn run_child_publisher(topic_name: &str, count: u64) {
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
 
-    // Wait for parent consumer to be in receive mode before blasting messages.
-    // Without this, we send all 50k messages in <5ms and the ring buffer wraps
-    // before the parent starts reading, losing nearly all messages.
-    thread::sleep(Duration::from_millis(200));
+    // Wait for parent consumer to register in shared memory before we start.
+    thread::sleep(Duration::from_millis(100));
 
+    // Warmup: send a few messages to trigger cross-process backend migration
+    // (SpscIntra → SpscShm). Without this, the first N messages go to the
+    // intra-process ring buffer and are never seen by the cross-process consumer.
+    for _ in 0..100 {
+        topic.send(msg);
+    }
+    // Let migration complete (drain_in_flight takes ≥1ms)
+    thread::sleep(Duration::from_millis(50));
+
+    eprintln!(
+        "  [child-pub] PID={} mode={} pubs={} subs={}",
+        std::process::id(),
+        topic.backend_type(),
+        topic.pub_count(),
+        topic.sub_count()
+    );
+
+    let send_start = Instant::now();
     for i in 0..count {
         topic.send(msg);
-        // Yield periodically to avoid overwhelming the ring buffer.
-        // This gives the consumer time to drain, preventing overwrites.
-        if i % 500 == 499 {
+        // Yield frequently to give cross-process consumer CPU time to drain.
+        // Topic::send() has internal spin-retry on backpressure, but yielding
+        // here further reduces contention and improves throughput.
+        if i % 64 == 63 {
             thread::yield_now();
         }
     }
+    let send_elapsed = send_start.elapsed();
+
+    eprintln!(
+        "  [child-pub] done: {} iters in {:?}, final_mode={}",
+        count,
+        send_elapsed,
+        topic.backend_type()
+    );
 }
 
 fn run_child_consumer(topic_name: &str, count: u64) {

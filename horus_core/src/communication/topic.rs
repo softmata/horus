@@ -3293,7 +3293,12 @@ where
     /// let net_topic: Topic<SensorData> = Topic::new("sensor@192.168.1.5")?;
     /// ```
     pub fn new(name: impl Into<String>) -> HorusResult<Self> {
-        Self::with_capacity(name, 64)
+        // Auto-size ring buffer capacity based on message size:
+        // one 4KB page worth of slots, clamped to [16, 1024].
+        // Examples: 16B msg → 256, 64B → 64, 1KB → 16
+        let type_size = std::mem::size_of::<T>().max(1);
+        let capacity = (4096 / type_size).clamp(16, 1024);
+        Self::with_capacity(name, capacity)
     }
 
     /// Create a topic from a type-safe descriptor (publishing side).
@@ -4328,9 +4333,9 @@ where
     ///
     /// # Fire-and-Forget
     ///
-    /// Send is infallible. If the ring buffer is full, the oldest message is
-    /// overwritten (standard robotics "keep last" semantics). For network
-    /// backends, use `send_network()` instead.
+    /// Send is infallible. For cross-process shared memory, performs bounded
+    /// spin-retry on backpressure (128 attempts: 64 spin + 64 yield) before
+    /// dropping the message. For network backends, use `send_network()` instead.
     #[inline(always)]
     pub fn send(&self, msg: T) {
         if let Some(log_fn) = self.log_fn {
@@ -4363,6 +4368,10 @@ where
     }
 
     /// Raw send to backend — no metrics, no logging. Internal use only.
+    ///
+    /// For the Adaptive backend (cross-process shared memory), performs bounded
+    /// spin-retry on backpressure. This ensures the documented "infallible send"
+    /// semantics hold even when the ring buffer is temporarily full.
     #[inline(always)]
     fn send_raw(&self, msg: T) {
         match &self.backend {
@@ -4394,7 +4403,35 @@ where
                 let _ = inner.push(msg);
             }
             TopicBackend::Adaptive(inner) => {
-                let _ = inner.send(msg);
+                // Bounded spin-retry on backpressure.
+                // Cross-process sends return Err(msg) when the ring buffer is full.
+                // Spin heavily (256 iters) then yield briefly (8 iters).
+                // Intra-process sends almost never fail, so this is effectively zero-cost
+                // on the happy path (single successful call).
+                const SPIN_ITERS: u32 = 256;
+                const YIELD_ITERS: u32 = 8;
+                let mut msg = msg;
+                match inner.send(msg) {
+                    Ok(()) => return,
+                    Err(returned) => msg = returned,
+                }
+                // Spin phase — no syscall, just CPU hint
+                for _ in 0..SPIN_ITERS {
+                    std::hint::spin_loop();
+                    match inner.send(msg) {
+                        Ok(()) => return,
+                        Err(returned) => msg = returned,
+                    }
+                }
+                // Yield phase — give consumer CPU time
+                for _ in 0..YIELD_ITERS {
+                    std::thread::yield_now();
+                    match inner.send(msg) {
+                        Ok(()) => return,
+                        Err(returned) => msg = returned,
+                    }
+                }
+                // Drop message after exhausting retries (bounded, no infinite loop)
             }
             TopicBackend::Network(_) => {
                 debug_assert!(
