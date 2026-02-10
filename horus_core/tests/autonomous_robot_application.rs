@@ -279,7 +279,7 @@ impl CameraPerceptionNode {
             camera_id,
             resolution: (640, 480),
             fps: 30,
-            image_pub: Topic::new(&format!("camera_{}/compressed", camera_id))?,
+            image_pub: Topic::new(format!("camera_{}/compressed", camera_id))?,
             detected_obstacles: Arc::new(Mutex::new(Vec::new())),
         })
     }
