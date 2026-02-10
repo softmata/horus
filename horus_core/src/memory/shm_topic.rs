@@ -166,26 +166,11 @@ unsafe impl<T: Send> Send for ConsumerSample<'_, T> {}
 unsafe impl<T: Sync> Sync for ConsumerSample<'_, T> {}
 
 impl<T> PublisherSample<'_, T> {
-    /// Get a mutable reference to the loaned memory
-    pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.data_ptr
-    }
-
     /// Write data directly into the loaned memory
     pub fn write(&mut self, value: T) {
         unsafe {
             std::ptr::write(self.data_ptr, value);
         }
-    }
-
-    /// Get a mutable reference to the data (unsafe because it bypasses borrow checker)
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that no other references to this data exist,
-    /// and that the data pointer is valid and properly aligned.
-    pub unsafe fn as_mut(&mut self) -> &mut T {
-        &mut *self.data_ptr
     }
 }
 
@@ -193,19 +178,6 @@ impl<T> ConsumerSample<'_, T> {
     /// Get a const reference to the received data
     pub fn get_ref(&self) -> &T {
         unsafe { &*self.data_ptr }
-    }
-
-    /// Get the raw pointer to the data
-    pub fn as_ptr(&self) -> *const T {
-        self.data_ptr
-    }
-
-    /// Read the data by copy (for types that implement Copy)
-    pub fn read(&self) -> T
-    where
-        T: Copy,
-    {
-        unsafe { std::ptr::read(self.data_ptr) }
     }
 }
 
