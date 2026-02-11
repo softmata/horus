@@ -225,7 +225,7 @@ impl BackgroundExecutor {
 
 impl Default for BackgroundExecutor {
     fn default() -> Self {
-        Self::new().expect("Failed to create background executor")
+        Self::new().expect("Failed to create background executor: check HORUS_SCHEDULER_THREADS env var and system resources")
     }
 }
 

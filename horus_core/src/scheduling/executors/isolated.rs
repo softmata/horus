@@ -847,7 +847,7 @@ impl IsolatedExecutor {
                     // Watchdog work is done in tick_all via health checks
                 }
             })
-            .expect("Failed to spawn watchdog thread");
+            .expect("Failed to spawn watchdog thread: check system thread limits (ulimit -u)");
 
         self.watchdog_handle = Some(handle);
     }
@@ -879,7 +879,7 @@ impl IsolatedExecutor {
                     node_name: node_name.to_string(),
                     duration: Duration::ZERO,
                     success: false,
-                    error: Some("Node not found".to_string()),
+                    error: Some(format!("Node '{}' not found in isolated executor (was it registered?)", node_name)),
                     restart_attempted: false,
                 };
             }
