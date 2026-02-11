@@ -168,7 +168,7 @@ impl HorusPacket {
             payload_len: self.payload.len() as u32,
         };
 
-        // Write header (unsafe but fast)
+        // SAFETY: PacketHeader is repr(C, packed) with no padding invariants. Reading its bytes is safe.
         unsafe {
             let header_bytes = std::slice::from_raw_parts(
                 &header as *const PacketHeader as *const u8,
@@ -192,7 +192,7 @@ impl HorusPacket {
             return Err("Buffer too small for header");
         }
 
-        // Read header
+        // SAFETY: Buffer length is checked above. read_unaligned handles packed struct alignment.
         let header = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const PacketHeader) };
 
         // Validate magic

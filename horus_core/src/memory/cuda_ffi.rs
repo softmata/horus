@@ -21,6 +21,19 @@
 //! - Linux: Full support
 //! - Windows: Limited (performance penalty)
 //! - macOS: Not supported (no CUDA)
+//!
+//! # Safety
+//!
+//! All `unsafe` blocks in this module call CUDA Runtime API C functions via FFI.
+//! Safety invariants for each call:
+//! - Pointer arguments are valid, properly aligned, and point to caller-owned memory
+//! - Output pointers (`&mut` references) are initialized by the CUDA call on success
+//! - Device pointers passed to CUDA functions were obtained from prior `cudaMalloc`
+//!   or `cudaIpcOpenMemHandle` calls
+//! - IPC handles are 64-byte opaque blobs obtained from `cudaIpcGetMemHandle`
+//! - Stream and event handles are obtained from `cudaStreamCreate`/`cudaEventCreate`
+//! - The CUDA runtime is initialized (first CUDA call auto-initializes)
+//! - Error codes are checked after each call; resources are not used on failure
 
 use std::ffi::c_void;
 use std::ptr;

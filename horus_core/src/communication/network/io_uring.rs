@@ -217,6 +217,8 @@ impl RealIoUringBackend {
 
     /// Optimize socket for high performance
     fn optimize_socket(fd: RawFd) -> io::Result<()> {
+        // SAFETY: fd is a valid socket file descriptor; option value pointers
+        // and lengths match the expected c_int type for each socket option.
         unsafe {
             // Large buffers
             let buf_size: libc::c_int = 4 * 1024 * 1024;
@@ -302,7 +304,8 @@ impl RealIoUringBackend {
         .build()
         .user_data(user_data);
 
-        // Submit to ring - check fullness and push in separate scopes
+        // SAFETY: The io_uring instance is valid; the send SQE references a buffer that
+        // is owned by self.buffers and will live until the completion is processed.
         let push_result = unsafe {
             let mut sq = self.ring.submission();
             if sq.is_full() {
@@ -342,7 +345,8 @@ impl RealIoUringBackend {
         .build()
         .user_data(user_data);
 
-        // Submit to ring - check fullness and push in separate scopes
+        // SAFETY: The io_uring instance is valid; the recv SQE references a buffer that
+        // is owned by self.buffers and will live until the completion is processed.
         let push_result = unsafe {
             let mut sq = self.ring.submission();
             if sq.is_full() {
@@ -544,6 +548,7 @@ pub fn is_sqpoll_available() -> bool {
                 }
                 // Older kernels: check if we're root
                 if major >= 5 && minor >= 6 {
+                    // SAFETY: geteuid() has no preconditions and is always safe to call.
                     return unsafe { libc::geteuid() == 0 };
                 }
             }

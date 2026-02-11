@@ -110,7 +110,7 @@ pub fn shm_logs_path() -> PathBuf {
 pub fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // On Unix, kill(pid, 0) checks if process exists without sending signal
+        // SAFETY: kill(pid, 0) sends no signal; only checks if process exists. No memory is accessed.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 
@@ -121,6 +121,8 @@ pub fn is_process_running(pid: u32) -> bool {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
+        // SAFETY: OpenProcess with limited query rights is safe for existence check.
+        // Handle is closed immediately after.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle == 0 {

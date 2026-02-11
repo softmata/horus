@@ -77,6 +77,7 @@ impl SharedLogBuffer {
             file.set_len(total_size as u64)?;
         }
 
+        // SAFETY: file is a valid open file with size set to total_size above
         let mmap = unsafe {
             MmapMut::map_mut(&file)
                 .map_err(|e| crate::error::HorusError::Memory(format!("Failed to mmap: {}", e)))?

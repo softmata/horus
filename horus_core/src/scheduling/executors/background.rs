@@ -90,6 +90,7 @@ impl BackgroundExecutor {
                 // Try to set lower thread priority (best effort)
                 #[cfg(unix)]
                 {
+                    // SAFETY: nice() adjusts thread scheduling priority. No memory safety concerns.
                     unsafe {
                         // Set nice value to 10 (lower priority)
                         libc::nice(10);

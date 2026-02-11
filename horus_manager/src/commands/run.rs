@@ -4001,6 +4001,7 @@ fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bool) -> Resu
             r.store(false, Ordering::SeqCst);
             // Send SIGINT to child process on Unix systems
             #[cfg(unix)]
+            // SAFETY: child_id is a valid PID of a child process we spawned. SIGINT requests interruption.
             unsafe {
                 libc::kill(child_id as i32, libc::SIGINT);
             }
@@ -4037,6 +4038,7 @@ fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bool) -> Resu
             r.store(false, Ordering::SeqCst);
             // Send SIGINT to child process on Unix systems
             #[cfg(unix)]
+            // SAFETY: child_id is a valid PID of a child process we spawned. SIGINT requests interruption.
             unsafe {
                 libc::kill(child_id as i32, libc::SIGINT);
             }

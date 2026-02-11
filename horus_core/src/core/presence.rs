@@ -149,13 +149,15 @@ impl NodePresence {
 fn process_exists(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // On Unix, sending signal 0 checks if process exists
+        // SAFETY: kill(pid, 0) sends no signal; only checks if process exists. No memory is accessed.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 
     #[cfg(windows)]
     {
         use std::ptr::null_mut;
+        // SAFETY: OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION is safe for existence check.
+        // Handle is closed immediately after.
         unsafe {
             let handle = winapi::um::processthreadsapi::OpenProcess(
                 winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION,

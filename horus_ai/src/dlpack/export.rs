@@ -143,6 +143,7 @@ mod tests {
         assert_eq!(managed.dl_tensor.dtype.bits, 32);
 
         // Verify shape
+        // SAFETY: shape pointer is valid for ndim (2) elements, allocated by to_dlpack.
         unsafe {
             assert_eq!(*managed.dl_tensor.shape, 2);
             assert_eq!(*managed.dl_tensor.shape.add(1), 3);
@@ -150,6 +151,7 @@ mod tests {
 
         // Call deleter to clean up
         if let Some(deleter) = managed.deleter {
+            // SAFETY: managed was created by to_dlpack and has not been freed yet.
             unsafe { deleter(Box::into_raw(managed)) };
         }
     }
@@ -172,6 +174,7 @@ mod tests {
         assert_eq!(managed.dl_tensor.device.device_id, 1);
 
         if let Some(deleter) = managed.deleter {
+            // SAFETY: managed was created by to_dlpack and has not been freed yet.
             unsafe { deleter(Box::into_raw(managed)) };
         }
     }

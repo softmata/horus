@@ -68,6 +68,7 @@ fn is_terminal_in_raw_mode() -> bool {
     }
 
     // Use libc to get terminal attributes
+    // SAFETY: stdout fd is valid; termios is zeroed C struct; tcgetattr reads into it
     unsafe {
         let fd = std::io::stdout().as_raw_fd();
         let mut termios: libc::termios = std::mem::zeroed();

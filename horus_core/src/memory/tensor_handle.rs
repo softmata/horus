@@ -114,6 +114,7 @@ impl TensorHandle {
     pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
         let bytes = self.data_slice();
         let len = bytes.len() / std::mem::size_of::<T>();
+        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid for `len` elements.
         std::slice::from_raw_parts(bytes.as_ptr() as *const T, len)
     }
 
@@ -126,6 +127,7 @@ impl TensorHandle {
     pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
         let bytes = self.data_slice_mut();
         let len = bytes.len() / std::mem::size_of::<T>();
+        // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid and writable for `len` elements.
         std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
     }
 

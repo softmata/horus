@@ -124,7 +124,8 @@ impl FrameSlot {
             .store(FrameType::Unallocated as u8, Ordering::Release);
         self.sequence.store(0, Ordering::Release);
 
-        // Clear history
+        // SAFETY: Write is serialized via the version counter (odd = write in progress).
+        // No concurrent reader will observe a partial write.
         unsafe {
             let history = &mut *self.history.get();
             for entry in history.iter_mut() {
@@ -183,7 +184,8 @@ impl FrameSlot {
         let seq = self.sequence.fetch_add(1, Ordering::AcqRel);
         let idx = (seq as usize) % self.history_capacity;
 
-        // Step 3: Write transform
+        // SAFETY: Seqlock protocol ensures readers see either old or new value.
+        // Version is odd during write, preventing readers from using stale data.
         unsafe {
             let history = &mut *self.history.get();
             history[idx] = TransformEntry {
@@ -200,6 +202,7 @@ impl FrameSlot {
     pub fn set_static_transform(&self, transform: &Transform) {
         let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;
 
+        // SAFETY: Write is serialized via the version counter. Readers retry on version mismatch.
         unsafe {
             let history = &mut *self.history.get();
             history[0] = TransformEntry {
@@ -239,9 +242,11 @@ impl FrameSlot {
             // Step 3: Copy transform
             let entry = if self.is_static() {
                 // Static frames always use index 0
+                // SAFETY: Version was even (no write in progress). Value is validated by v2 == v1 check below.
                 unsafe { (&*self.history.get())[0] }
             } else {
                 let idx = ((seq - 1) as usize) % self.history_capacity;
+                // SAFETY: Version was even (no write in progress). Value is validated by v2 == v1 check below.
                 unsafe { (&*self.history.get())[idx] }
             };
 
@@ -273,6 +278,7 @@ impl FrameSlot {
                 return None;
             }
 
+            // SAFETY: Version was even (stable). Read is validated by v2 == v1 check below.
             let result = unsafe { self.find_at_timestamp(&*self.history.get(), seq, target_ts) };
 
             let v2 = self.version.load(Ordering::Acquire);
@@ -301,6 +307,7 @@ impl FrameSlot {
                 return None;
             }
 
+            // SAFETY: Version was even (stable). Read is validated by v2 == v1 check below.
             let result =
                 unsafe { self.interpolate_at_timestamp(&*self.history.get(), seq, target_ts) };
 
@@ -403,6 +410,7 @@ impl FrameSlot {
                 return None;
             }
 
+            // SAFETY: Version was even (stable). Read is validated by v2 == v1 check below.
             let (oldest_ts, newest_ts) = unsafe {
                 let history = &*self.history.get();
                 let available = seq.min(self.history_capacity as u64) as usize;

@@ -391,6 +391,7 @@ impl CudaTensorPool {
             .open(&shm_path)?;
         file.set_len(total_size as u64)?;
 
+        // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
         let mut pool = Self {
@@ -437,6 +438,7 @@ impl CudaTensorPool {
         let metadata = file.metadata()?;
         let total_size = metadata.len() as usize;
 
+        // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
         let pool = Self {
@@ -743,6 +745,7 @@ impl CudaTensorPool {
 
         // Add offset for views/slices
         if tensor.offset > 0 {
+            // SAFETY: offset is within bounds of the allocated GPU memory region.
             unsafe { base.add(tensor.offset as usize) }
         } else {
             base
@@ -778,16 +781,19 @@ impl CudaTensorPool {
     // === Private helpers ===
 
     fn header(&self) -> &CudaPoolHeader {
+        // SAFETY: mmap region is properly sized and aligned for CudaPoolHeader; initialized at creation.
         unsafe { &*(self.mmap.as_ptr() as *const CudaPoolHeader) }
     }
 
     fn header_mut(&mut self) -> &mut CudaPoolHeader {
+        // SAFETY: exclusive access via &mut self; mmap is properly sized and aligned for CudaPoolHeader.
         unsafe { &mut *(self.mmap.as_mut_ptr() as *mut CudaPoolHeader) }
     }
 
     fn slot(&self, index: u32) -> &CudaSlotHeader {
         let offset = std::mem::size_of::<CudaPoolHeader>()
             + (index as usize) * std::mem::size_of::<CudaSlotHeader>();
+        // SAFETY: offset is within bounds of mmap region; properly aligned for CudaSlotHeader.
         unsafe { &*(self.mmap.as_ptr().add(offset) as *const CudaSlotHeader) }
     }
 
@@ -795,6 +801,7 @@ impl CudaTensorPool {
     fn slot_mut(&self, index: u32) -> &mut CudaSlotHeader {
         let offset = std::mem::size_of::<CudaPoolHeader>()
             + (index as usize) * std::mem::size_of::<CudaSlotHeader>();
+        // SAFETY: offset is within bounds of mmap region; properly aligned for CudaSlotHeader.
         unsafe { &mut *(self.mmap.as_ptr().add(offset) as *mut CudaSlotHeader) }
     }
 

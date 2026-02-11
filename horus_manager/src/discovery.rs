@@ -582,6 +582,7 @@ fn process_exists(pid: u32) -> bool {
     #[cfg(target_os = "macos")]
     {
         // macOS: use kill(0) to check if process exists
+        // SAFETY: pid is a valid process ID from /proc or system API; signal 0 only checks existence.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
     #[cfg(target_os = "windows")]
@@ -597,6 +598,7 @@ fn process_exists(pid: u32) -> bool {
             ) -> *mut std::ffi::c_void;
             fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
         }
+        // SAFETY: OpenProcess returns a valid handle or null; CloseHandle is called on success.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle != null_mut() {
@@ -610,6 +612,7 @@ fn process_exists(pid: u32) -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         // Fallback for other Unix-like systems
+        // SAFETY: pid is a valid process ID; signal 0 only checks existence without sending a signal.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 }
@@ -819,9 +822,11 @@ fn get_process_name_macos(pid: u32) -> Option<String> {
         fn proc_name(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
     }
 
+    // SAFETY: buf is a properly sized buffer; pid is a valid process ID from the caller.
     let result = unsafe { proc_name(pid as i32, buf.as_mut_ptr(), buf.len() as u32) };
 
     if result > 0 {
+        // SAFETY: proc_name wrote a null-terminated string into buf (result > 0 confirms success).
         let name = unsafe { CStr::from_ptr(buf.as_ptr() as *const i8) };
         Some(name.to_string_lossy().into_owned())
     } else {
@@ -843,6 +848,7 @@ fn get_cmdline_macos(pid: u32) -> Option<String> {
     let mut size: usize = 0;
 
     // First call to get size
+    // SAFETY: mib is a valid 3-element array for KERN_PROCARGS2; null output buffer queries size only.
     let result = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
@@ -861,6 +867,7 @@ fn get_cmdline_macos(pid: u32) -> Option<String> {
     let mut buf = vec![0u8; size];
 
     // Second call to get data
+    // SAFETY: buf is allocated to the size returned by the first sysctl call; mib unchanged.
     let result = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
@@ -948,9 +955,11 @@ fn get_cwd_macos(pid: u32) -> Option<String> {
         ) -> i32;
     }
 
+    // SAFETY: VnodePathInfo is a C-compatible repr(C) struct where all-zeros is a valid representation.
     let mut info: VnodePathInfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<VnodePathInfo>() as i32;
 
+    // SAFETY: pid is a valid process ID; buffer is properly sized for PROC_PIDVNODEPATHINFO flavor.
     let result = unsafe {
         proc_pidinfo(
             pid as i32,
@@ -1012,9 +1021,11 @@ fn get_memory_macos(pid: u32) -> Option<u64> {
         ) -> i32;
     }
 
+    // SAFETY: TaskInfo is a repr(C) struct where all-zeros is a valid representation.
     let mut info: TaskInfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<TaskInfo>() as i32;
 
+    // SAFETY: pid is a valid process ID; buffer is properly sized for PROC_PIDTASKINFO flavor.
     let result = unsafe {
         proc_pidinfo(
             pid as i32,
@@ -1063,9 +1074,11 @@ fn calculate_cpu_usage_macos(pid: u32) -> f32 {
         ) -> i32;
     }
 
+    // SAFETY: TaskInfo is a repr(C) struct where all-zeros is a valid representation.
     let mut info: TaskInfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<TaskInfo>() as i32;
 
+    // SAFETY: pid is a valid process ID; buffer is properly sized for PROC_PIDTASKINFO flavor.
     let result = unsafe {
         proc_pidinfo(
             pid as i32,
@@ -1145,9 +1158,11 @@ fn get_start_time_macos(pid: u32) -> Option<String> {
         ) -> i32;
     }
 
+    // SAFETY: BsdInfo is a repr(C) struct where all-zeros is a valid representation.
     let mut info: BsdInfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<BsdInfo>() as i32;
 
+    // SAFETY: pid is a valid process ID; buffer is properly sized for PROC_PIDTBSDINFO flavor.
     let result = unsafe {
         proc_pidinfo(
             pid as i32,
@@ -1195,6 +1210,7 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
     }
 
     // Open process with query access
+    // SAFETY: pid is a valid process ID; requesting query-only access flags.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
 
     if handle.is_null() {
@@ -1224,6 +1240,7 @@ fn get_process_info_windows(pid: u32) -> anyhow::Result<ProcessInfo> {
     // Get start time
     let start_time = get_start_time_windows(handle).unwrap_or_else(|| "Unknown".to_string());
 
+    // SAFETY: handle is a valid process handle obtained from OpenProcess above.
     unsafe { CloseHandle(handle) };
 
     Ok(ProcessInfo {
@@ -1254,6 +1271,7 @@ fn get_process_name_windows(handle: *mut std::ffi::c_void) -> Option<String> {
     }
 
     let mut buf = vec![0u16; MAX_PATH];
+    // SAFETY: handle is a valid process handle with PROCESS_QUERY_INFORMATION access; buf is MAX_PATH-sized.
     let len = unsafe {
         K32GetModuleBaseNameW(
             handle,
@@ -1296,6 +1314,7 @@ fn get_cmdline_windows(pid: u32) -> Option<String> {
         ) -> i32;
     }
 
+    // SAFETY: pid is a valid process ID; requesting limited query access.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         return None;
@@ -1304,8 +1323,10 @@ fn get_cmdline_windows(pid: u32) -> Option<String> {
     let mut buf = vec![0u16; MAX_PATH];
     let mut size = MAX_PATH as u32;
 
+    // SAFETY: handle is valid from OpenProcess; buf is MAX_PATH-sized; size is in/out parameter.
     let result = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
 
+    // SAFETY: handle is a valid process handle obtained from OpenProcess above.
     unsafe { CloseHandle(handle) };
 
     if result != 0 && size > 0 {
@@ -1340,9 +1361,11 @@ fn get_memory_windows(handle: *mut std::ffi::c_void) -> Option<u64> {
         ) -> i32;
     }
 
+    // SAFETY: ProcessMemoryCounters is a repr(C) struct where all-zeros is a valid representation.
     let mut counters: ProcessMemoryCounters = unsafe { std::mem::zeroed() };
     counters.cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
 
+    // SAFETY: handle is a valid process handle; counters.cb is set to the correct struct size.
     let result = unsafe { K32GetProcessMemoryInfo(handle, &mut counters, counters.cb) };
 
     if result != 0 {
@@ -1382,6 +1405,7 @@ fn calculate_cpu_usage_windows(pid: u32, handle: *mut std::ffi::c_void) -> f32 {
     let mut kernel = Filetime { low: 0, high: 0 };
     let mut user = Filetime { low: 0, high: 0 };
 
+    // SAFETY: handle is a valid process handle; all Filetime output pointers are properly initialized.
     let result =
         unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
 
@@ -1438,6 +1462,7 @@ fn get_start_time_windows(handle: *mut std::ffi::c_void) -> Option<String> {
     let mut kernel = Filetime { low: 0, high: 0 };
     let mut user = Filetime { low: 0, high: 0 };
 
+    // SAFETY: handle is a valid process handle; all Filetime output pointers are properly initialized.
     let result =
         unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
 

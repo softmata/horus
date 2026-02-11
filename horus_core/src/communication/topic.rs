@@ -764,10 +764,12 @@ impl<T: Clone + Send + Sync + 'static> SpscShmBackend<T> {
             ));
         }
 
+        // SAFETY: header_ptr verified non-null above
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
         // Initialize header if owner
         if is_owner {
+            // SAFETY: header pointer is valid; we are the owner so exclusive access is guaranteed
             unsafe {
                 (*header.as_ptr())
                     .element_size
@@ -777,6 +779,7 @@ impl<T: Clone + Send + Sync + 'static> SpscShmBackend<T> {
         }
 
         // Calculate data pointer (after header)
+        // SAFETY: region.as_ptr() is non-null; offset is within bounds of allocated shm region
         let data_ptr =
             unsafe { NonNull::new_unchecked(region.as_ptr().add(header_size) as *mut u8) };
 
@@ -796,9 +799,11 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T
     fn push(&self, msg: T) -> Result<(), T> {
         // ZERO-OVERHEAD: Skip is_producer check in hot path
         // SPSC design assumes correct usage - producer pushes, consumer pops
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Write data directly to shared memory
+        // SAFETY: src/dst don't overlap; dst is within bounds of mmap'd shm region
         unsafe {
             let src = &msg as *const T as *const u8;
             std::ptr::copy_nonoverlapping(src, self.data_ptr.as_ptr(), mem::size_of::<T>());
@@ -814,6 +819,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T
 
     #[inline(always)]
     fn pop(&self) -> Option<T> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Check if new data available (Acquire ensures we see the write)
@@ -825,6 +831,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T
         }
 
         // Read data using MaybeUninit to avoid zero-initialization
+        // SAFETY: data region is within bounds; producer wrote valid T; sequence check guarantees initialization
         let msg = unsafe {
             let mut result = mem::MaybeUninit::<T>::uninit();
             std::ptr::copy_nonoverlapping(
@@ -843,6 +850,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscShmBackend<T
 
     #[inline(always)]
     fn is_empty(&self) -> bool {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let current_seq = header.sequence.load(Ordering::Acquire);
         let last = self.last_seen.load(Ordering::Relaxed);
@@ -949,10 +957,13 @@ impl<T: Clone + Send + Sync + 'static> MpscShmBackend<T> {
                 "Null pointer for MpscShm header".into(),
             ));
         }
+        // SAFETY: header_ptr verified non-null above
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
         // Initialize if owner
         if is_owner {
+            // SAFETY: header is valid; we are the owner so exclusive init access is guaranteed;
+            // all slot offsets are within bounds of the allocated shm region
             unsafe {
                 let h = header.as_ptr();
                 (*h).capacity = capacity as u64;
@@ -971,6 +982,7 @@ impl<T: Clone + Send + Sync + 'static> MpscShmBackend<T> {
             }
         } else {
             // Validate existing region
+            // SAFETY: header pointer is valid; region was created by another process with same layout
             let h = unsafe { header.as_ref() };
             if h.magic != MPSC_SHM_MAGIC {
                 return Err(HorusError::Communication(
@@ -985,6 +997,7 @@ impl<T: Clone + Send + Sync + 'static> MpscShmBackend<T> {
             }
         }
 
+        // SAFETY: region.as_ptr() is non-null; offset is within bounds of allocated shm region
         let slots_ptr =
             unsafe { NonNull::new_unchecked(region.as_ptr().add(header_size) as *mut u8) };
 
@@ -1008,11 +1021,13 @@ impl<T: Clone + Send + Sync + 'static> MpscShmBackend<T> {
 
     #[inline]
     fn get_slot(&self, index: usize) -> *mut MpscShmSlot {
+        // SAFETY: index is masked to capacity (power of 2); offset is within bounds of slot array
         unsafe { self.slots_ptr.as_ptr().add(index * self.slot_stride) as *mut MpscShmSlot }
     }
 
     #[inline]
     fn get_data_ptr(&self, slot: *mut MpscShmSlot) -> *mut u8 {
+        // SAFETY: data region immediately follows slot header; within bounds of allocated slot
         unsafe { (slot as *mut u8).add(mem::size_of::<MpscShmSlot>()) }
     }
 }
@@ -1024,6 +1039,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
             return Err(msg);
         }
 
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let mask = header.mask as usize;
 
@@ -1032,6 +1048,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
             let index = (tail as usize) & mask;
             let slot = self.get_slot(index);
 
+            // SAFETY: slot pointer is valid; within bounds of slot array
             let seq = unsafe { (*slot).sequence.load(Ordering::Acquire) };
             let diff = seq as i64 - tail as i64;
 
@@ -1043,6 +1060,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
                     .is_ok()
                 {
                     // Write data
+                    // SAFETY: CAS succeeded so we have exclusive slot access; src/dst don't overlap;
+                    // both within bounds of allocated shm region
                     unsafe {
                         let data_ptr = self.get_data_ptr(slot);
                         std::ptr::copy_nonoverlapping(
@@ -1070,6 +1089,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
             return None;
         }
 
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let mask = header.mask as usize;
         let capacity = header.capacity as usize;
@@ -1078,11 +1098,14 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
         let index = (head as usize) & mask;
         let slot = self.get_slot(index);
 
+        // SAFETY: slot pointer is valid; within bounds of slot array
         let seq = unsafe { (*slot).sequence.load(Ordering::Acquire) };
         let diff = seq as i64 - (head + 1) as i64;
 
         if diff == 0 {
             // Data ready, read it
+            // SAFETY: sequence check confirms data was written by producer; src/dst don't overlap;
+            // both within bounds of shm region; slot is exclusively consumed by single consumer
             let msg = unsafe {
                 let data_ptr = self.get_data_ptr(slot);
                 let mut result = mem::MaybeUninit::<T>::uninit();
@@ -1107,6 +1130,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for MpscShmBackend<T
 
     #[inline]
     fn is_empty(&self) -> bool {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let head = header.head.load(Ordering::Relaxed);
         let tail = header.tail.load(Ordering::Relaxed);
@@ -1195,10 +1219,12 @@ impl<T: Clone + Send + Sync + 'static> SpmcShmBackend<T> {
                 "Null pointer for SpmcShm header".into(),
             ));
         }
+        // SAFETY: header_ptr verified non-null above
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
         // Initialize if owner
         if is_owner {
+            // SAFETY: header is valid; we are the owner so exclusive init access is guaranteed
             unsafe {
                 let h = header.as_ptr();
                 (*h).sequence.store(0, Ordering::Relaxed);
@@ -1207,6 +1233,7 @@ impl<T: Clone + Send + Sync + 'static> SpmcShmBackend<T> {
             }
         } else {
             // Validate existing region
+            // SAFETY: header pointer is valid; region was created by another process with same layout
             let h = unsafe { header.as_ref() };
             if h.magic != SPMC_SHM_MAGIC {
                 return Err(HorusError::Communication(
@@ -1221,6 +1248,7 @@ impl<T: Clone + Send + Sync + 'static> SpmcShmBackend<T> {
             }
         }
 
+        // SAFETY: region.as_ptr() is non-null; offset is within bounds of allocated shm region
         let data_ptr =
             unsafe { NonNull::new_unchecked(region.as_ptr().add(header_size) as *mut u8) };
 
@@ -1250,6 +1278,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
             return Err(msg);
         }
 
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Seqlock write protocol:
@@ -1258,6 +1287,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
         debug_assert!(seq.is_multiple_of(2), "Double write detected in SpmcShm");
 
         // 2. Write data
+        // SAFETY: src/dst don't overlap; dst is within bounds of mmap'd shm region
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &msg as *const T as *const u8,
@@ -1279,6 +1309,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
             return None;
         }
 
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Seqlock read protocol:
@@ -1299,6 +1330,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
             }
 
             // 2. Read data
+            // SAFETY: data region is within bounds; sequence is even so no concurrent write;
+            // data was written by producer; validity verified by post-read sequence check
             let msg = unsafe {
                 let mut result = mem::MaybeUninit::<T>::uninit();
                 std::ptr::copy_nonoverlapping(
@@ -1326,6 +1359,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcShmBackend<T
 
     #[inline]
     fn is_empty(&self) -> bool {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let seq = header.sequence.load(Ordering::Acquire);
         let last = self.last_seen.load(Ordering::Relaxed);
@@ -1412,10 +1446,12 @@ impl<T: PodMessage> PodShmBackend<T> {
             ));
         }
 
+        // SAFETY: header_ptr verified non-null above
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
         // Initialize header if owner
         if is_owner {
+            // SAFETY: header is valid; we are the owner so exclusive init access is guaranteed
             unsafe {
                 (*header.as_ptr()).element_size = data_size as u64;
                 (*header.as_ptr()).magic = POD_SHM_MAGIC;
@@ -1423,6 +1459,7 @@ impl<T: PodMessage> PodShmBackend<T> {
             }
         } else {
             // Validate magic
+            // SAFETY: header is valid; reading field for validation
             let magic = unsafe { (*header.as_ptr()).magic };
             if magic != POD_SHM_MAGIC {
                 return Err(HorusError::Communication(format!(
@@ -1432,6 +1469,7 @@ impl<T: PodMessage> PodShmBackend<T> {
             }
 
             // Validate element size
+            // SAFETY: header is valid; reading field for validation
             let stored_size = unsafe { (*header.as_ptr()).element_size };
             if stored_size != data_size as u64 {
                 return Err(HorusError::Communication(format!(
@@ -1442,6 +1480,7 @@ impl<T: PodMessage> PodShmBackend<T> {
         }
 
         // Calculate data pointer (after header)
+        // SAFETY: region.as_ptr() is non-null; offset is within bounds of allocated shm region
         let data_ptr =
             unsafe { NonNull::new_unchecked(region.as_ptr().add(header_size) as *mut u8) };
 
@@ -1463,9 +1502,11 @@ impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {
             return Err(msg);
         }
 
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Zero-copy write using PodMessage trait
+        // SAFETY: data_ptr is valid, properly aligned, and within bounds of shm region
         unsafe {
             msg.write_to_ptr(self.data_ptr.as_ptr());
         }
@@ -1478,6 +1519,7 @@ impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {
 
     #[inline]
     fn pop(&self) -> Option<T> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
 
         // Check if new data available
@@ -1489,6 +1531,7 @@ impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {
         }
 
         // Zero-copy read using PodMessage trait
+        // SAFETY: data_ptr is valid, properly aligned, and points to initialized T written by producer
         let msg = unsafe { T::read_from_ptr(self.data_ptr.as_ptr()) };
 
         // Update last seen
@@ -1499,6 +1542,7 @@ impl<T: PodMessage> TopicBackendTrait<T> for PodShmBackend<T> {
 
     #[inline]
     fn is_empty(&self) -> bool {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor
         let header = unsafe { self.header.as_ref() };
         let current_seq = header.sequence.load(Ordering::Acquire);
         let last = self.last_seen.load(Ordering::Relaxed);
@@ -1550,10 +1594,12 @@ use std::thread::{self, ThreadId};
 #[inline(always)]
 fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: ptr is a valid pointer; prefetch is a hint with no side effects on invalid addresses
     unsafe {
         std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
     }
     #[cfg(target_arch = "x86")]
+    // SAFETY: ptr is a valid pointer; prefetch is a hint with no side effects on invalid addresses
     unsafe {
         std::arch::x86::_mm_prefetch(ptr as *const i8, std::arch::x86::_MM_HINT_T0);
     }
@@ -1728,7 +1774,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for DirectChannelBac
         // DirectChannel is designed for single-thread use - caller is responsible
         // for ensuring correct thread affinity. Use send_sync() for thread-safe variant.
         //
-        // Safety: DirectChannel users must ensure single-thread access
+        // SAFETY: single-threaded access guaranteed by DirectChannel contract; UnsafeCell
+        // access is exclusive (no concurrent readers/writers)
         unsafe {
             *self.slot.get() = Some(msg);
             *self.has_data.get() = true;
@@ -1739,7 +1786,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for DirectChannelBac
     #[inline(always)]
     fn pop(&self) -> Option<T> {
         // ZERO-OVERHEAD: Skip thread check in hot path (~50ns savings)
-        // Safety: DirectChannel users must ensure single-thread access
+        // SAFETY: single-threaded access guaranteed by DirectChannel contract; UnsafeCell
+        // access is exclusive (no concurrent readers/writers)
         unsafe {
             if *self.has_data.get() {
                 *self.has_data.get() = false;
@@ -1753,7 +1801,7 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for DirectChannelBac
     #[inline(always)]
     fn is_empty(&self) -> bool {
         // ZERO-OVERHEAD: Skip thread check
-        // Safety: DirectChannel users must ensure single-thread access
+        // SAFETY: single-threaded access guaranteed by DirectChannel contract
         unsafe { !*self.has_data.get() }
     }
 
@@ -1954,7 +2002,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscIntraBackend
         self.slot.sequence.value.store(seq + 1, Ordering::Release);
 
         // 2. Write data
-        // Safety: We're the only producer, sequence is odd so consumer won't read
+        // SAFETY: we are the only producer; sequence is odd so consumer won't read;
+        // UnsafeCell grants interior mutability for this exclusive write
         unsafe {
             self.slot.data.data.get().write(mem::MaybeUninit::new(msg));
         }
@@ -1991,7 +2040,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpscIntraBackend
         prefetch_read(self.slot.data.data.get());
 
         // 2. Read data
-        // Safety: Sequence is even, so no write in progress
+        // SAFETY: sequence is even so no write in progress; data was initialized by producer;
+        // validity verified by post-read sequence check below
         let data = unsafe { (*self.slot.data.data.get()).assume_init_read() };
 
         // 3. Verify sequence didn't change during read (acquire fence)
@@ -2133,6 +2183,7 @@ impl<T> MpscRing<T> {
         loop {
             let tail = self.tail.value.load(Ordering::Relaxed);
             let index = (tail as usize) & self.mask;
+            // SAFETY: index is masked to buffer size (power of 2), always in bounds
             let slot = unsafe { self.buffer.get_unchecked(index) };
 
             // Prefetch next slot's sequence for next iteration
@@ -2156,6 +2207,7 @@ impl<T> MpscRing<T> {
                     .is_ok()
                 {
                     // We claimed the slot, write the data
+                    // SAFETY: CAS succeeded so we have exclusive slot access; UnsafeCell grants mutability
                     unsafe {
                         slot.data.get().write(mem::MaybeUninit::new(value));
                     }
@@ -2182,7 +2234,7 @@ impl<T> MpscRing<T> {
         let head = self.head.value.load(Ordering::Relaxed);
         let index = (head as usize) & self.mask;
 
-        // SAFETY: index is always < capacity due to mask
+        // SAFETY: index is masked to buffer size (power of 2), always in bounds
         let slot = unsafe { self.buffer.get_unchecked(index) };
 
         // Prefetch the data before checking sequence - likely to succeed
@@ -2194,6 +2246,7 @@ impl<T> MpscRing<T> {
 
         if likely(seq == expected) {
             // Fast path: data is ready, prefetch already brought it into cache
+            // SAFETY: slot data was written by a producer; sequence check guarantees initialization
             let value = unsafe { (*slot.data.get()).assume_init_read() };
             // Mark slot as empty for next round (sequence = head + capacity)
             slot.sequence
@@ -2484,7 +2537,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcIntraBackend
         debug_assert!(seq.is_multiple_of(2), "Double push detected");
 
         // 2. Write data
-        // Safety: We're the only producer, sequence is odd so consumers will retry
+        // SAFETY: we are the only producer; sequence is odd so consumers will retry;
+        // UnsafeCell grants interior mutability for this exclusive write
         unsafe {
             self.slot.data.get().write(mem::MaybeUninit::new(msg));
         }
@@ -2519,7 +2573,8 @@ impl<T: Clone + Send + Sync + 'static> TopicBackendTrait<T> for SpmcIntraBackend
             }
 
             // 2. Read data
-            // Safety: Sequence is even, so no write in progress
+            // SAFETY: sequence is even so no write in progress; data was initialized by producer;
+            // validity verified by post-read sequence check below
             let data = unsafe { (*self.slot.data.get()).assume_init_read() };
 
             // 3. Verify sequence didn't change during read
@@ -2695,6 +2750,7 @@ impl<T> MpmcRing<T> {
         loop {
             let tail = self.tail.value.load(Ordering::Relaxed);
             let index = (tail as usize) & self.mask;
+            // SAFETY: index is masked to buffer size (power of 2), always in bounds
             let slot = unsafe { self.buffer.get_unchecked(index) };
 
             // Prefetch next slot's sequence for next iteration
@@ -2713,6 +2769,7 @@ impl<T> MpmcRing<T> {
                     .is_ok()
                 {
                     // We claimed the slot, write the data
+                    // SAFETY: CAS succeeded so we have exclusive slot access; UnsafeCell grants mutability
                     unsafe {
                         slot.data.get().write(mem::MaybeUninit::new(value));
                     }
@@ -2742,6 +2799,7 @@ impl<T> MpmcRing<T> {
         loop {
             let head = self.head.value.load(Ordering::Relaxed);
             let index = (head as usize) & self.mask;
+            // SAFETY: index is masked to buffer size (power of 2), always in bounds
             let slot = unsafe { self.buffer.get_unchecked(index) };
 
             // Prefetch data early - gives more time for cache line to arrive
@@ -2759,6 +2817,8 @@ impl<T> MpmcRing<T> {
                     .is_ok()
                 {
                     // We claimed the slot, read the data (already in cache)
+                    // SAFETY: CAS succeeded so we have exclusive read access; data was written by producer;
+                    // sequence check guarantees initialization
                     let value = unsafe { (*slot.data.get()).assume_init_read() };
                     // Mark slot as empty for next round
                     slot.sequence

@@ -546,7 +546,7 @@ pub fn resolve_mdns_hostname_with_timeout(
 fn get_local_hostname() -> HorusResult<String> {
     let mut buf = [0u8; 256];
 
-    // SAFETY: gethostname writes to the buffer and returns 0 on success
+    // SAFETY: buf is a valid 256-byte buffer. gethostname writes a null-terminated hostname into it.
     let result = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
 
     if result != 0 {
@@ -555,7 +555,7 @@ fn get_local_hostname() -> HorusResult<String> {
         ));
     }
 
-    // Find the null terminator and convert to string
+    // SAFETY: gethostname succeeded (result == 0), so buf contains a valid null-terminated C string.
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
     hostname

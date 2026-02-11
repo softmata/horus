@@ -169,8 +169,10 @@ impl BatchUdpSender {
                 batch_size
             ],
             #[cfg(target_os = "linux")]
+            // SAFETY: mmsghdr is a C struct where all-zeros is a valid initial state.
             msg_headers: vec![unsafe { std::mem::zeroed() }; batch_size],
             #[cfg(target_os = "linux")]
+            // SAFETY: sockaddr_storage is a C struct where all-zeros is a valid initial state.
             addrs: vec![unsafe { std::mem::zeroed() }; batch_size],
             config,
         })
@@ -260,6 +262,8 @@ impl BatchUdpSender {
 
         // Send all packets in one syscall
         let fd = self.socket.as_raw_fd();
+        // SAFETY: fd is a valid socket; msg_headers and iovecs are properly initialized
+        // with valid pointers and lengths pointing into self.pending packet data.
         let sent = unsafe {
             libc::sendmmsg(
                 fd,
@@ -392,8 +396,10 @@ impl BatchUdpReceiver {
                 batch_size
             ],
             #[cfg(target_os = "linux")]
+            // SAFETY: mmsghdr is a C struct where all-zeros is a valid initial state.
             msg_headers: vec![unsafe { std::mem::zeroed() }; batch_size],
             #[cfg(target_os = "linux")]
+            // SAFETY: sockaddr_storage is a C struct where all-zeros is a valid initial state.
             addrs: vec![unsafe { std::mem::zeroed() }; batch_size],
             #[cfg(target_os = "linux")]
             recv_buffers,
@@ -441,6 +447,8 @@ impl BatchUdpReceiver {
         };
 
         let fd = self.socket.as_raw_fd();
+        // SAFETY: fd is a valid socket; msg_headers and iovecs are properly initialized
+        // with valid pointers and lengths pointing into self.recv_buffers.
         let received = unsafe {
             libc::recvmmsg(
                 fd,
@@ -561,6 +569,8 @@ fn create_optimized_socket(addr: SocketAddr, config: &BatchUdpConfig) -> io::Res
     {
         let fd = socket.as_raw_fd();
 
+        // SAFETY: fd is a valid socket from UdpSocket::bind; option value pointers
+        // and lengths match the expected c_int type for each socket option.
         unsafe {
             // Set larger buffer sizes
             let send_buf = config.send_buffer_size as libc::c_int;
@@ -634,6 +644,8 @@ fn socket_addr_to_raw(
     match addr {
         SocketAddr::V4(v4) => {
             let sin = storage as *mut _ as *mut libc::sockaddr_in;
+            // SAFETY: sockaddr_in is layout-compatible with sockaddr_storage;
+            // the cast is valid because storage is properly aligned and large enough.
             unsafe {
                 (*sin).sin_family = libc::AF_INET as libc::sa_family_t;
                 (*sin).sin_port = v4.port().to_be();
@@ -646,6 +658,8 @@ fn socket_addr_to_raw(
         }
         SocketAddr::V6(v6) => {
             let sin6 = storage as *mut _ as *mut libc::sockaddr_in6;
+            // SAFETY: sockaddr_in6 is layout-compatible with sockaddr_storage;
+            // the cast is valid because storage is properly aligned and large enough.
             unsafe {
                 (*sin6).sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 (*sin6).sin6_port = v6.port().to_be();
@@ -667,6 +681,8 @@ fn raw_to_socket_addr(storage: &libc::sockaddr_storage) -> SocketAddr {
     match storage.ss_family as libc::c_int {
         libc::AF_INET => {
             let sin = storage as *const _ as *const libc::sockaddr_in;
+            // SAFETY: ss_family == AF_INET guarantees the storage contains a valid
+            // sockaddr_in, which is layout-compatible with sockaddr_storage.
             unsafe {
                 let ip = std::net::Ipv4Addr::from(u32::from_be((*sin).sin_addr.s_addr));
                 let port = u16::from_be((*sin).sin_port);
@@ -675,6 +691,8 @@ fn raw_to_socket_addr(storage: &libc::sockaddr_storage) -> SocketAddr {
         }
         libc::AF_INET6 => {
             let sin6 = storage as *const _ as *const libc::sockaddr_in6;
+            // SAFETY: ss_family == AF_INET6 guarantees the storage contains a valid
+            // sockaddr_in6, which is layout-compatible with sockaddr_storage.
             unsafe {
                 let ip = std::net::Ipv6Addr::from((*sin6).sin6_addr.s6_addr);
                 let port = u16::from_be((*sin6).sin6_port);
@@ -831,6 +849,8 @@ fn create_simple_receiver(addr: SocketAddr, config: &BatchUdpConfig) -> io::Resu
     #[cfg(target_os = "linux")]
     {
         let fd = socket.as_raw_fd();
+        // SAFETY: fd is a valid socket from UdpSocket::bind; option value pointers
+        // and lengths match the expected c_int type for each socket option.
         unsafe {
             // Enable SO_REUSEPORT
             let reuse: libc::c_int = 1;

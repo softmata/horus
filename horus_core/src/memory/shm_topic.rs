@@ -168,6 +168,8 @@ unsafe impl<T: Sync> Sync for ConsumerSample<'_, T> {}
 impl<T> PublisherSample<'_, T> {
     /// Write data directly into the loaned memory
     pub fn write(&mut self, value: T) {
+        // SAFETY: data_ptr points to a valid, properly aligned slot in the mmap'd region,
+        // exclusively owned by this PublisherSample (claimed via CAS on head index).
         unsafe {
             std::ptr::write(self.data_ptr, value);
         }
@@ -177,6 +179,8 @@ impl<T> PublisherSample<'_, T> {
 impl<T> ConsumerSample<'_, T> {
     /// Get a const reference to the received data
     pub fn get_ref(&self) -> &T {
+        // SAFETY: data_ptr points to a valid, initialized T within the mmap'd region;
+        // the slot is held by this ConsumerSample for the lifetime of the borrow.
         unsafe { &*self.data_ptr }
     }
 }
@@ -184,6 +188,7 @@ impl<T> ConsumerSample<'_, T> {
 impl<T> Drop for PublisherSample<'_, T> {
     fn drop(&mut self) {
         // When the publisher sample is dropped, publish it by updating sequence number
+        // SAFETY: header pointer is valid for the lifetime of the ShmTopic which outlives this sample.
         let header = unsafe { self.topic.header.as_ref() };
         header.sequence_number.fetch_add(1, Ordering::Release);
     }
@@ -302,6 +307,7 @@ impl<T> ShmTopic<T> {
             ));
         }
 
+        // SAFETY: header_ptr verified non-null and properly aligned above.
         let header = unsafe {
             // This is now safe because we've validated the pointer
             NonNull::new_unchecked(header_ptr)
@@ -320,6 +326,8 @@ impl<T> ShmTopic<T> {
                 ))
             })?;
 
+            // SAFETY: header pointer is valid and aligned (checked above); we are the owner
+            // so exclusive initialization access is guaranteed before magic is published.
             unsafe {
                 // Initialize all fields BEFORE setting magic (prevents race condition)
                 (*header.as_ptr())
@@ -353,6 +361,8 @@ impl<T> ShmTopic<T> {
             // This prevents the race condition where we read capacity before it's initialized
             let mut wait_iters = 0u32;
             loop {
+                // SAFETY: header pointer is valid and aligned (checked above);
+                // atomic load provides synchronization with the owner's Release store.
                 let magic = unsafe { (*header.as_ptr()).magic.load(Ordering::Acquire) };
                 if magic == MAGIC_INITIALIZED {
                     // Header is fully initialized, safe to read
@@ -380,6 +390,7 @@ impl<T> ShmTopic<T> {
 
             // Now safe to read capacity with Acquire ordering (synchronized with owner's Release)
             // Capacity is stored as u32 (32-bit index optimization)
+            // SAFETY: header is valid; magic check above ensures initialization is complete.
             let existing_capacity = unsafe { (*header.as_ptr()).capacity.load(Ordering::Acquire) };
 
             // CRITICAL: Validate existing capacity is power of 2 for bitwise AND optimization
@@ -435,6 +446,8 @@ impl<T> ShmTopic<T> {
         });
 
         // Data starts after aligned header with comprehensive safety checks
+        // SAFETY: pointer arithmetic within bounds of mmap'd region; aligned_header_size
+        // is computed to maintain T's alignment. All bounds and alignment are verified below.
         let data_ptr = unsafe {
             let raw_ptr = (region.as_ptr() as *mut u8).add(aligned_header_size);
 
@@ -473,6 +486,7 @@ impl<T> ShmTopic<T> {
 
         // MPMC FIX: Register this consumer and get a unique ID
         // 32-bit indices: consumer_id and current_head are u32
+        // SAFETY: header pointer is valid; atomic operations provide cross-process synchronization.
         let (consumer_id, current_head): (u32, u32) = unsafe {
             let id = (*header.as_ptr())
                 .consumer_count
@@ -531,12 +545,15 @@ impl<T> ShmTopic<T> {
             ));
         }
 
+        // SAFETY: header_ptr verified non-null and properly aligned above.
         let header = unsafe { NonNull::new_unchecked(header_ptr) };
 
         // Wait for initialization to complete by spinning on magic number
         // This prevents reading uninitialized data if owner is still setting up
         let mut wait_iters = 0u32;
         loop {
+            // SAFETY: header pointer is valid and aligned (checked above);
+            // atomic load provides synchronization with the owner's Release store.
             let magic = unsafe { (*header.as_ptr()).magic.load(Ordering::Acquire) };
             if magic == MAGIC_INITIALIZED {
                 // Header is fully initialized, safe to read
@@ -564,6 +581,7 @@ impl<T> ShmTopic<T> {
 
         // Now safe to read with Acquire ordering (synchronized with owner's Release)
         // Capacity is stored as u32 (32-bit index optimization)
+        // SAFETY: header is valid; magic check above ensures initialization is complete.
         let capacity: u32 = unsafe { (*header.as_ptr()).capacity.load(Ordering::Acquire) };
 
         // Validate capacity is within safe bounds (compare as usize for constants)
@@ -576,6 +594,8 @@ impl<T> ShmTopic<T> {
         }
 
         // Validate element size matches
+        // SAFETY: header is valid; magic check ensures initialization is complete;
+        // Acquire ordering synchronizes with the owner's Release store.
         let stored_element_size =
             unsafe { (*header.as_ptr()).element_size.load(Ordering::Acquire) };
         let expected_element_size = mem::size_of::<T>();
@@ -610,6 +630,8 @@ impl<T> ShmTopic<T> {
         let header_size = mem::size_of::<RingBufferHeader>();
         let aligned_header_size = header_size.div_ceil(element_align) * element_align;
 
+        // SAFETY: pointer arithmetic within bounds of mmap'd region; aligned_header_size
+        // maintains T's alignment. All bounds and alignment are verified below.
         let data_ptr = unsafe {
             let raw_ptr = (region.as_ptr() as *mut u8).add(aligned_header_size);
 
@@ -654,6 +676,7 @@ impl<T> ShmTopic<T> {
 
         // MPMC FIX: Register as a new consumer and get current head position to start from
         // 32-bit indices: consumer_id and current_head are u32
+        // SAFETY: header pointer is valid; atomic operations provide cross-process synchronization.
         let (consumer_id, current_head): (u32, u32) = unsafe {
             let id = (*header.as_ptr())
                 .consumer_count
@@ -710,6 +733,7 @@ impl<T> ShmTopic<T> {
     /// - `Err(msg)` if CAS failed (contention) - caller should retry or backoff
     #[inline(always)]
     pub(crate) fn push_fast(&self, msg: T) -> Result<(), T> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
 
         let head = header.head.load(Ordering::Relaxed);
@@ -723,7 +747,9 @@ impl<T> ShmTopic<T> {
         {
             Ok(_) => {
                 // Write directly - NO BOUNDS CHECKING
-                // Safety: head is always < capacity due to bitwise AND modulo
+                // SAFETY: head is always < capacity due to bitwise AND modulo, so
+                // byte_offset is within bounds of the mmap'd data region. slot_ptr is
+                // properly aligned for T (guaranteed by aligned_header_size calculation).
                 unsafe {
                     let byte_offset = (head as usize) * mem::size_of::<T>();
                     let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *mut T;
@@ -762,6 +788,7 @@ impl<T> ShmTopic<T> {
     where
         T: Clone,
     {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
 
         // Get this consumer's current tail position from LOCAL MEMORY
@@ -787,7 +814,8 @@ impl<T> ShmTopic<T> {
         self.consumer_tail.store(next_tail, Ordering::Relaxed);
 
         // Read directly - NO BOUNDS CHECKING
-        // Safety: my_tail is always < capacity due to bitwise AND modulo
+        // SAFETY: my_tail is always < capacity due to bitwise AND modulo, so byte_offset
+        // is within bounds of the mmap'd data region. slot_ptr is properly aligned for T.
         let msg = unsafe {
             let byte_offset = (my_tail as usize) * mem::size_of::<T>();
             let slot_ptr = self.data_ptr.as_ptr().add(byte_offset) as *const T;
@@ -808,6 +836,7 @@ impl<T> ShmTopic<T> {
     /// `true` if no messages are available for this consumer, `false` otherwise.
     #[inline]
     pub fn is_empty(&self) -> bool {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
         let my_tail = self.consumer_tail.load(Ordering::Relaxed);
 
@@ -821,6 +850,7 @@ impl<T> ShmTopic<T> {
     /// Loan a slot in the shared memory for zero-copy publishing
     /// Returns a PublisherSample that provides direct access to shared memory
     pub(crate) fn loan(&self) -> crate::error::HorusResult<PublisherSample<'_, T>> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
 
         loop {
@@ -838,6 +868,9 @@ impl<T> ShmTopic<T> {
             ) {
                 Ok(_) => {
                     // Successfully claimed slot, return sample pointing to it
+                    // SAFETY: head index is bounds-checked below; byte offset is within the
+                    // mmap'd data region. Pointer is properly aligned for T. Slot is exclusively
+                    // owned via successful CAS on head.
                     unsafe {
                         // Bounds checking
                         if head >= self.capacity {
@@ -896,6 +929,7 @@ impl<T> ShmTopic<T> {
     /// on every call. The head is only refreshed when the buffer appears empty
     /// (my_tail == cached_head). This reduces atomic loads by ~90% in polling loops.
     pub fn receive(&self) -> Option<ConsumerSample<'_, T>> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
 
         // MPMC OPTIMIZED: Get this consumer's current tail position from LOCAL MEMORY
@@ -907,7 +941,8 @@ impl<T> ShmTopic<T> {
         #[cfg(target_arch = "x86_64")]
         {
             use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
-            // Safe: prefetch with invalid address is a no-op on x86
+            // SAFETY: pointer arithmetic on data_ptr; prefetch is a hint and is
+            // safe even if the address is not yet valid (no-op on x86 for bad addresses).
             let slot_offset = (my_tail as usize) * mem::size_of::<T>();
             let slot_addr = unsafe { self.data_ptr.as_ptr().add(slot_offset) };
             unsafe {
@@ -953,6 +988,8 @@ impl<T> ShmTopic<T> {
         self.consumer_tail.store(next_tail, Ordering::Relaxed);
 
         // Return sample pointing to the message in shared memory
+        // SAFETY: my_tail is bounds-checked above (< capacity); byte_offset is within the
+        // mmap'd data region. Pointer is properly aligned for T. Bounds verified below.
         unsafe {
             // Cast u32 index to usize for byte offset calculation
             let byte_offset = (my_tail as usize) * mem::size_of::<T>();
@@ -983,6 +1020,7 @@ impl<T> ShmTopic<T> {
     /// regardless of when this consumer started reading.
     /// This is useful for reading static/infrequently-updated data.
     pub fn read_latest(&self) -> Option<ConsumerSample<'_, T>> {
+        // SAFETY: header pointer is valid for the lifetime of self; initialized in constructor.
         let header = unsafe { self.header.as_ref() };
         let current_head = header.head.load(Ordering::Acquire);
 
@@ -1007,6 +1045,8 @@ impl<T> ShmTopic<T> {
         // Return sample pointing to the most recent message
         // Note: This does NOT advance consumer_tail, so the same message
         // will be returned on subsequent calls until a new message is written
+        // SAFETY: latest_slot is bounds-checked above (< capacity); byte_offset is within the
+        // mmap'd data region. Pointer is properly aligned for T. Bounds verified below.
         unsafe {
             // Cast u32 index to usize for byte offset calculation
             let byte_offset = (latest_slot as usize) * mem::size_of::<T>();
@@ -1080,6 +1120,8 @@ impl<T> Drop for ShmTopic<T> {
         // MPMC FIX: Decrement consumer count when this consumer is dropped
         // This prevents the "Maximum number of consumers exceeded" error
         // when consumers exit without proper cleanup
+        // SAFETY: header pointer is valid for the lifetime of self; atomic operation
+        // provides cross-process synchronization for consumer count tracking.
         let prev_count = unsafe {
             (*self.header.as_ptr())
                 .consumer_count

@@ -193,6 +193,7 @@ impl CameraDiscovery {
             reserved: [0; 3],
         };
 
+        // SAFETY: fd is a valid open file descriptor. cap is a properly sized struct for VIDIOC_QUERYCAP.
         let result = unsafe { libc::ioctl(fd, VIDIOC_QUERYCAP as libc::c_ulong, &mut cap) };
 
         if result < 0 {
@@ -325,6 +326,7 @@ impl CameraDiscovery {
                 reserved: [0; 4],
             };
 
+            // SAFETY: fd is a valid open file descriptor. fmt is a properly sized struct for VIDIOC_ENUM_FMT.
             let result = unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT as libc::c_ulong, &mut fmt) };
 
             if result < 0 {

@@ -263,7 +263,8 @@ impl ZeroCopyRecorder {
         // Pre-allocate file
         data_file.set_len(capacity as u64)?;
 
-        // Memory map the file
+        // SAFETY: File was just created and pre-allocated to `capacity` bytes.
+        // We have exclusive write access; no other process maps this file yet.
         let mmap = unsafe { MmapOptions::new().len(capacity).map_mut(&data_file)? };
 
         let mut recorder = Self {
@@ -549,6 +550,7 @@ impl ZeroCopyReplayer {
         // Memory map data file
         let data_path = path.join("data.bin");
         let data_file = File::open(&data_path)?;
+        // SAFETY: File is opened read-only for replay. Header is validated immediately after mapping.
         let mmap = unsafe { MmapOptions::new().map(&data_file)? };
 
         // Verify header

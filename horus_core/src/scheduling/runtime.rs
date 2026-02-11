@@ -77,6 +77,7 @@ pub fn get_core_count() -> usize {
 /// Pin a thread by its native handle (for spawned threads)
 #[cfg(target_os = "linux")]
 pub fn set_thread_affinity_by_id(thread_id: libc::pthread_t, core: usize) -> RuntimeResult<()> {
+    // SAFETY: thread_id is a valid pthread handle; cpuset is properly zeroed and initialized.
     unsafe {
         let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_ZERO(&mut cpuset);
@@ -114,6 +115,7 @@ pub fn set_thread_affinity_by_id(_thread_id: u64, _core: usize) -> RuntimeResult
 /// Requires CAP_IPC_LOCK capability or root on Linux
 #[cfg(target_os = "linux")]
 pub fn lock_all_memory() -> RuntimeResult<()> {
+    // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
     unsafe {
         // MCL_CURRENT | MCL_FUTURE
         let flags = libc::MCL_CURRENT | libc::MCL_FUTURE;
@@ -148,6 +150,7 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
 /// Unlock all memory pages
 #[cfg(target_os = "linux")]
 pub fn unlock_all_memory() -> RuntimeResult<()> {
+    // SAFETY: munlockall requires no arguments and is always safe to call.
     unsafe {
         let result = libc::munlockall();
         if result == 0 {
@@ -193,6 +196,7 @@ pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
 /// Requires CAP_SYS_NICE capability or root on Linux
 #[cfg(target_os = "linux")]
 pub fn set_realtime_priority(priority: i32) -> RuntimeResult<()> {
+    // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
     unsafe {
         let param = libc::sched_param {
             sched_priority: priority,
@@ -230,6 +234,7 @@ pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
 /// Get the maximum real-time priority available
 #[cfg(target_os = "linux")]
 pub fn get_max_rt_priority() -> i32 {
+    // SAFETY: SCHED_FIFO is a valid scheduling policy constant.
     unsafe { libc::sched_get_priority_max(libc::SCHED_FIFO) }
 }
 
@@ -241,6 +246,7 @@ pub fn get_max_rt_priority() -> i32 {
 /// Get the minimum real-time priority available
 #[cfg(target_os = "linux")]
 pub fn get_min_rt_priority() -> i32 {
+    // SAFETY: SCHED_FIFO is a valid scheduling policy constant.
     unsafe { libc::sched_get_priority_min(libc::SCHED_FIFO) }
 }
 
@@ -252,6 +258,7 @@ pub fn get_min_rt_priority() -> i32 {
 /// Set thread to round-robin scheduling (less aggressive than FIFO)
 #[cfg(target_os = "linux")]
 pub fn set_round_robin_priority(priority: i32) -> RuntimeResult<()> {
+    // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
     unsafe {
         let param = libc::sched_param {
             sched_priority: priority,
@@ -281,6 +288,7 @@ pub fn set_round_robin_priority(_priority: i32) -> RuntimeResult<()> {
 /// Reset to normal scheduling
 #[cfg(target_os = "linux")]
 pub fn reset_to_normal_scheduling() -> RuntimeResult<()> {
+    // SAFETY: pid 0 = current thread; sched_param with priority 0 is valid for SCHED_OTHER.
     unsafe {
         let param = libc::sched_param { sched_priority: 0 };
         let result = libc::sched_setscheduler(0, libc::SCHED_OTHER, &param);

@@ -509,7 +509,8 @@ where
             })?;
 
         // Store publisher - use unsafe transmute to handle lifetime
-        // This is safe because the session outlives the publisher
+        // SAFETY: The session (stored in self) outlives the publisher, so extending
+        // the publisher's lifetime to 'static is valid.
         let static_publisher: zenoh::pubsub::Publisher<'static> =
             unsafe { std::mem::transmute(publisher) };
         self.publisher = Some(Box::new(static_publisher));

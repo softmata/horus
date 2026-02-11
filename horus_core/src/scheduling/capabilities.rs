@@ -517,6 +517,7 @@ impl RuntimeCapabilities {
         {
             // Try to query if we could set SCHED_FIFO
             // This checks CAP_SYS_NICE or RLIMIT_RTPRIO
+            // SAFETY: getrlimit/geteuid are always safe to call with valid constants
             unsafe {
                 // Check RLIMIT_RTPRIO
                 let mut rlim = libc::rlimit {

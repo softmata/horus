@@ -541,6 +541,7 @@ impl Scheduler {
     /// Internal: Apply RT priority without error on failure.
     fn apply_rt_priority_internal(&self, priority: i32) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
+        // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
         unsafe {
             use libc::{sched_param, sched_setscheduler, SCHED_FIFO};
 
@@ -566,6 +567,7 @@ impl Scheduler {
     /// Internal: Apply memory locking without error on failure.
     fn apply_memory_lock_internal(&self) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
+        // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
         unsafe {
             use libc::{mlockall, MCL_CURRENT, MCL_FUTURE};
 
@@ -587,6 +589,7 @@ impl Scheduler {
     /// Internal: Apply CPU affinity without error on failure.
     fn apply_cpu_affinity_internal(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
+        // SAFETY: pid 0 = current thread; cpuset is properly zeroed and initialized with valid cpu_id.
         unsafe {
             use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
 
@@ -1836,6 +1839,7 @@ impl Scheduler {
         }
 
         #[cfg(target_os = "linux")]
+        // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
         unsafe {
             use libc::{sched_param, sched_setscheduler, SCHED_FIFO};
 
@@ -1884,6 +1888,7 @@ impl Scheduler {
     /// ```
     pub fn pin_to_cpu(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
+        // SAFETY: pid 0 = current thread; cpuset is properly zeroed and initialized with valid cpu_id.
         unsafe {
             use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
 
@@ -1927,6 +1932,7 @@ impl Scheduler {
     /// ```
     pub fn lock_memory(&self) -> crate::error::HorusResult<()> {
         #[cfg(target_os = "linux")]
+        // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
         unsafe {
             use libc::{mlockall, MCL_CURRENT, MCL_FUTURE};
 
@@ -1972,6 +1978,7 @@ impl Scheduler {
         for i in 0..pages {
             let offset = i * page_size;
             let mut dummy_stack = vec![0u8; page_size];
+            // SAFETY: pointer is within bounds of the allocated dummy_stack buffer.
             unsafe {
                 std::ptr::write_volatile(&mut dummy_stack[offset % page_size], 0xFF);
             }
@@ -2266,6 +2273,7 @@ impl Scheduler {
 
             // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
             #[cfg(unix)]
+            // SAFETY: SIGTERM is a valid signal; sigterm_handler is a valid function pointer.
             unsafe {
                 libc::signal(
                     libc::SIGTERM,

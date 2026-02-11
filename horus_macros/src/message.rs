@@ -284,6 +284,7 @@ fn generate_zero_copy_impl(name: &Ident) -> TokenStream {
             #[inline]
             pub fn from_bytes_copy(bytes: &[u8]) -> Option<Self> {
                 if bytes.len() >= Self::SIZE {
+                    // SAFETY: Self is Pod + Zeroable (all fields are primitive/FixedString), so zeroed memory is valid.
                     let mut result: Self = unsafe { ::std::mem::zeroed() };
                     let dst = ::horus::core::bytemuck::bytes_of_mut(&mut result);
                     dst.copy_from_slice(&bytes[..Self::SIZE]);

@@ -379,9 +379,9 @@ impl PluginLoader {
     /// Load a dynamic plugin from a shared library
     #[cfg(feature = "dynamic-plugins")]
     fn load_dynamic(&self, path: &Path) -> PluginResult<LoadedPlugin> {
-        // Safety: We trust that plugin libraries export the correct symbol
+        // SAFETY: We trust that plugin libraries export the correct symbol
         // with the correct signature. This is inherently unsafe as we're
-        // loading arbitrary code.
+        // loading arbitrary code from a user-specified .so/.dll/.dylib path.
         unsafe {
             let library = Library::new(path).map_err(|e| {
                 PluginError::LoadError(format!("Failed to load library {:?}: {}", path, e))

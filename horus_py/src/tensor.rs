@@ -137,6 +137,8 @@ impl PyTensorHandle {
             )));
         }
 
+        // SAFETY: descriptor_bytes length is validated above to match size_of::<HorusTensor>().
+        // HorusTensor is a POD type (repr(C), all primitive fields).
         let tensor: HorusTensor =
             unsafe { std::ptr::read(descriptor_bytes.as_ptr() as *const HorusTensor) };
 
@@ -156,6 +158,7 @@ impl PyTensorHandle {
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
 
         let tensor = handle.tensor();
+        // SAFETY: HorusTensor is repr(C) with only POD fields. Reading its bytes is safe.
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 tensor as *const HorusTensor as *const u8,

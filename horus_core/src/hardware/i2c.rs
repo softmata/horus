@@ -213,6 +213,7 @@ impl I2cDiscovery {
         const I2C_SLAVE: u64 = 0x0703;
 
         let fd = file.as_raw_fd();
+        // SAFETY: fd is a valid open I2C device. I2C_SLAVE sets the target slave address for subsequent operations.
         let result = unsafe { libc::ioctl(fd, I2C_SLAVE as libc::c_ulong, addr as libc::c_int) };
 
         if result < 0 {
@@ -240,6 +241,7 @@ impl I2cDiscovery {
             data: std::ptr::null_mut(),
         };
 
+        // SAFETY: fd is a valid open I2C device. data is a properly initialized I2cSmbusIoctlData struct.
         let result = unsafe { libc::ioctl(fd, I2C_SMBUS as libc::c_ulong, &mut data as *mut _) };
 
         result >= 0

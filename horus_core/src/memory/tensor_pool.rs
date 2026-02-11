@@ -191,6 +191,7 @@ impl TensorPool {
             (file, true)
         };
 
+        // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
         let mut pool = Self {
@@ -230,9 +231,11 @@ impl TensorPool {
         let metadata = file.metadata()?;
         let total_size = metadata.len() as usize;
 
+        // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
         let mmap = unsafe { MmapOptions::new().len(total_size).map_mut(&file)? };
 
         // Read header to get config
+        // SAFETY: mmap region is properly sized and aligned for PoolHeader; initialized at creation.
         let header = unsafe { &*(mmap.as_ptr() as *const PoolHeader) };
 
         if header.magic != POOL_MAGIC {
@@ -424,6 +427,7 @@ impl TensorPool {
             return std::ptr::null_mut();
         }
 
+        // SAFETY: data_offset + tensor.offset is within bounds of the mmap region.
         unsafe {
             self.mmap
                 .as_ptr()
@@ -437,6 +441,7 @@ impl TensorPool {
             return &[];
         }
 
+        // SAFETY: data_offset + tensor.offset is within bounds; size is valid for the allocation.
         unsafe {
             let ptr = self
                 .mmap
@@ -453,6 +458,7 @@ impl TensorPool {
             return &mut [];
         }
 
+        // SAFETY: data_offset + tensor.offset is within bounds; size is valid for the allocation.
         unsafe {
             let ptr = self
                 .mmap
@@ -523,21 +529,25 @@ impl TensorPool {
     // === Private helpers ===
 
     fn header(&self) -> &PoolHeader {
+        // SAFETY: mmap region is properly sized and aligned for PoolHeader; initialized at creation.
         unsafe { &*(self.mmap.as_ptr() as *const PoolHeader) }
     }
 
     fn header_mut(&mut self) -> &mut PoolHeader {
+        // SAFETY: exclusive access via &mut self; mmap is properly sized and aligned for PoolHeader.
         unsafe { &mut *(self.mmap.as_mut_ptr() as *mut PoolHeader) }
     }
 
     fn slot(&self, index: u32) -> &SlotHeader {
         let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
+        // SAFETY: offset is within bounds of mmap region; properly aligned for SlotHeader.
         unsafe { &*(self.mmap.as_ptr().add(offset) as *const SlotHeader) }
     }
 
     #[allow(clippy::mut_from_ref)]
     fn slot_mut(&self, index: u32) -> &mut SlotHeader {
         let offset = self.slots_offset + (index as usize) * std::mem::size_of::<SlotHeader>();
+        // SAFETY: offset is within bounds of mmap region; properly aligned for SlotHeader.
         unsafe { &mut *(self.mmap.as_ptr().add(offset) as *mut SlotHeader) }
     }
 

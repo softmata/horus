@@ -169,6 +169,7 @@ mod tests {
         );
 
         // Import back
+        // SAFETY: managed was just created by to_dlpack with valid data, shape, and strides.
         let descriptor = unsafe { from_dlpack(Box::into_raw(managed)).unwrap() };
 
         assert_eq!(descriptor.shape, vec![2, 3]);

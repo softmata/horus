@@ -278,6 +278,7 @@ pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> Horu
         print!("  {} Stopping {}...", "".yellow(), name);
         // First try SIGTERM
         #[cfg(unix)]
+        // SAFETY: proc.id() is a valid PID of a child process we spawned. SIGTERM requests graceful shutdown.
         unsafe {
             libc::kill(proc.id() as i32, libc::SIGTERM);
         }

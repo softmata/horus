@@ -154,6 +154,7 @@ impl GpioDiscovery {
             lines: 0,
         };
 
+        // SAFETY: fd is a valid open file descriptor. info is a properly sized struct for GPIO_GET_CHIPINFO_IOCTL.
         let result =
             unsafe { libc::ioctl(fd, GPIO_GET_CHIPINFO_IOCTL as libc::c_ulong, &mut info) };
 
@@ -238,6 +239,7 @@ impl GpioDiscovery {
                 consumer: [0; 32],
             };
 
+            // SAFETY: fd is a valid open file descriptor. info is a properly sized struct for GPIO_GET_LINEINFO_IOCTL.
             let result =
                 unsafe { libc::ioctl(fd, GPIO_GET_LINEINFO_IOCTL as libc::c_ulong, &mut info) };
 

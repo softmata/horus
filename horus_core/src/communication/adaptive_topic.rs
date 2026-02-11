@@ -1419,6 +1419,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
 
         // Initialize header if we're the creator
+        // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for AdaptiveTopicHeader
         let header = unsafe { &mut *(storage.as_ptr() as *mut AdaptiveTopicHeader) };
 
         // Use Acquire fence before checking magic to ensure we see all initialized fields
@@ -1496,6 +1497,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// Get header reference - HOT PATH for SpscIntra and cross-process backends
     #[inline(always)]
     fn header(&self) -> &AdaptiveTopicHeader {
+        // SAFETY: storage is properly sized and aligned for AdaptiveTopicHeader; initialized in constructor
         unsafe { &*(self.storage.as_ptr() as *const AdaptiveTopicHeader) }
     }
 
@@ -1504,6 +1506,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     #[inline(always)]
     #[allow(clippy::mut_from_ref)] // Intentional interior mutability using UnsafeCell
     fn local(&self) -> &mut LocalState {
+        // SAFETY: LocalState access is thread-local; no concurrent mutation
         unsafe { &mut *self.local.get() }
     }
 
@@ -1523,6 +1526,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // see role=Producer and immediately dereference cached_header_ptr.
         // Setting pointers first ensures they are valid when can_send() becomes true.
         local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every send
@@ -1570,6 +1574,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         local.slot_index = slot as i32;
         // Cache pointers BEFORE setting role (same reasoning as ensure_producer)
         local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Cache is_same_process to avoid std::process::id() call on every recv
@@ -1763,6 +1768,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Check for epoch change (mode migration) before fast paths
         // This is needed because subscriber registration can trigger migration to DirectChannel
         if local.role.can_send() {
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
             let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
             if current_epoch != local.cached_epoch {
@@ -1799,6 +1805,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 }
 
                 // Direct write to ring buffer using cached pointer and capacity mask
+                // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
                 unsafe {
                     let base = local.cached_data_ptr as *mut T;
                     simd_aware_write(base.add((*head & local.cached_capacity_mask) as usize), msg);
@@ -1809,6 +1816,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             })?;
             // Also update shared memory so slow path consumers can see the data
             // (needed when clones with fresh LocalState use slow path)
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
             header.sequence_or_head.store(new_head, Ordering::Release);
             return Ok(());
@@ -1826,7 +1834,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // local_tail = cached consumer's tail (reload only when "full")
             let seq = local.local_head;
             // Use cached header pointer - avoids Arc dereference on every call
-            // SAFETY: cached_header_ptr is valid for AdaptiveTopic lifetime
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
 
             // Backpressure: check if buffer is full using cached values (no atomics)
@@ -1840,6 +1848,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
 
             // Write message to ring buffer
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
             unsafe {
                 let base = local.cached_data_ptr as *mut T;
                 simd_aware_write(base.add((seq & local.cached_capacity_mask) as usize), msg);
@@ -1894,6 +1903,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     .is_ok()
                 {
                     // Successfully claimed slot 'head', write message
+                    // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
                         simd_aware_write(base.add((head & mask) as usize), msg);
@@ -1945,6 +1955,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     .is_ok()
                 {
                     // Successfully claimed slot 'head', write message
+                    // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
                         simd_aware_write(base.add((head & mask) as usize), msg);
@@ -1979,6 +1990,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 }
             }
 
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
             unsafe {
                 let base = local.cached_data_ptr as *mut T;
                 simd_aware_write(base.add((seq & mask) as usize), msg);
@@ -2072,6 +2084,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let index = (seq & mask) as usize;
 
                 // Write data to claimed slot
+                // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds; aligned for T
                 unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
                     simd_aware_write(base.add(index), msg);
@@ -2108,6 +2121,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     return Err(msg);
                 }
 
+                // SAFETY: slot_ptr is within storage bounds; seq/len/data offsets are within slot_size;
+                // copy_nonoverlapping src/dst don't overlap (serialized buffer vs shm region)
                 unsafe {
                     let slot_ptr = self
                         .storage
@@ -2141,6 +2156,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let index = (seq & mask) as usize;
                 let slot_offset = index * slot_size;
 
+                // SAFETY: slot_ptr is within storage bounds; seq/len/data offsets are within slot_size;
+                // copy_nonoverlapping src/dst don't overlap (serialized buffer vs shm region)
                 unsafe {
                     let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
                     let len_ptr = slot_ptr.add(8) as *mut u64;
@@ -2160,6 +2177,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let mask = local.cached_capacity_mask;
                 let index = (seq & mask) as usize;
 
+                // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds; aligned for T
                 unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
                     simd_aware_write(base.add(index), msg);
@@ -2222,6 +2240,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     return None; // No data available
                 }
                 // Direct read using cached pointer
+                // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
                     simd_aware_read(base.add((*tail & local.cached_capacity_mask) as usize))
@@ -2233,6 +2252,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             if let Some((msg, new_tail)) = result {
                 // Also update shared memory so slow path senders can check backpressure
                 // (needed when clones with fresh LocalState use slow path)
+                // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
                 let header = unsafe { &*local.cached_header_ptr };
                 header.tail.store(new_tail, Ordering::Release);
                 return Some(msg);
@@ -2248,7 +2268,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // but recv() must register as consumer before using the fast path
         if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::SpscIntra {
             // Use cached header pointer - avoids Arc dereference on every call
-            // SAFETY: cached_header_ptr is valid for AdaptiveTopic lifetime
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
 
             // CRITICAL: Check if topology has changed (epoch mismatch)
@@ -2286,6 +2306,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 }
 
                 // Read message from ring buffer
+                // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
                     simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
@@ -2325,6 +2346,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
 
             // Read message
+            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & mask) as usize))
@@ -2375,6 +2397,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     .is_ok()
                 {
                     // Successfully claimed slot 'tail', read message
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
                         simd_aware_read(base.add((tail & mask) as usize))
@@ -2423,6 +2446,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     )
                     .is_ok()
                 {
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
                         simd_aware_read(base.add((tail & mask) as usize))
@@ -2450,6 +2474,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 return None;
             }
 
+            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
@@ -2474,6 +2499,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         {
             let tail = local.local_tail;
             // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
             let mask = local.cached_capacity_mask;
 
@@ -2486,6 +2512,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
 
             // Read message using cached data pointer
+            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & mask) as usize))
@@ -2512,6 +2539,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 || local.cached_mode == AdaptiveBackendMode::MpmcShm)
         {
             // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
             let mask = local.cached_capacity_mask;
 
@@ -2539,6 +2567,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     .is_ok()
                 {
                     // Successfully claimed slot 'tail', read message using cached pointer
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
                         simd_aware_read(base.add((tail & mask) as usize))
@@ -2564,6 +2593,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             && local.cached_mode == AdaptiveBackendMode::PodShm
         {
             // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
             let header = unsafe { &*local.cached_header_ptr };
             let mask = local.cached_capacity_mask;
             let head = header.sequence_or_head.load(Ordering::Acquire);
@@ -2574,6 +2604,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
 
             // Read message using cached pointer
+            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & mask) as usize))
@@ -2654,6 +2685,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
                 let msg = if is_pod {
                     // POD path - direct read
+                    // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds; aligned for T
                     unsafe {
                         let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
                         simd_aware_read(base.add(index))
@@ -2663,6 +2695,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     let slot_size = local.slot_size;
                     let slot_offset = index * slot_size;
 
+                    // SAFETY: slot_ptr is within storage bounds; seq/len/data reads are within slot_size;
+                    // from_raw_parts len is validated against max_data_size before use
                     unsafe {
                         let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
 
@@ -2705,10 +2739,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // Cross-process POD with multi-producer/consumer - use fetch_add for safety
                 let mask = local.cached_capacity_mask;
                 let index = (tail & mask) as usize;
+                // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds; aligned for T
                 let data_ptr = unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
                     base.add(index)
                 };
+                // SAFETY: data_ptr is valid, aligned, and points to initialized data written by producer
                 let msg = unsafe { simd_aware_read(data_ptr) };
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
@@ -2721,6 +2757,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let index = (tail & mask) as usize;
                 let slot_offset = index * slot_size;
 
+                // SAFETY: slot_ptr is within storage bounds; seq/len/data reads are within slot_size;
+                // from_raw_parts len is validated against max_data_size before use
                 let msg = unsafe {
                     let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
 
@@ -2754,10 +2792,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             _ => {
                 let mask = local.cached_capacity_mask;
                 let index = (tail & mask) as usize;
+                // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds; aligned for T
                 let data_ptr = unsafe {
                     let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
                     base.add(index)
                 };
+                // SAFETY: data_ptr is valid, aligned, and points to initialized data written by producer
                 let msg = unsafe { simd_aware_read(data_ptr) };
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
@@ -2911,6 +2951,7 @@ impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'stati
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
 
+        // SAFETY: storage is properly sized (>= HEADER_SIZE + type_size) and aligned for AdaptiveTopicHeader
         let header = unsafe { &mut *(storage.as_ptr() as *mut AdaptiveTopicHeader) };
 
         if header.magic != ADAPTIVE_MAGIC {

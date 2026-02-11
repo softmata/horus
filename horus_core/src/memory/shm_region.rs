@@ -86,6 +86,7 @@ impl ShmRegion {
             (file, true)
         };
 
+        // SAFETY: file is a valid open file with sufficient size set above; len(size) matches the file size
         let mut mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
 
         if is_owner {
@@ -119,6 +120,7 @@ impl ShmRegion {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let metadata = file.metadata()?;
         let size = metadata.len() as usize;
+        // SAFETY: file is a valid open file; len(size) matches the actual file size from metadata
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
 
         Ok(Self {
@@ -182,6 +184,7 @@ impl ShmRegion {
             .map_err(|e| HorusError::Memory(format!("Invalid shm name: {}", e)))?;
 
         // Try to open existing first
+        // SAFETY: c_name is a valid null-terminated CString; flags are valid POSIX constants
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
 
         let (fd, is_owner) = if fd >= 0 {
@@ -189,6 +192,7 @@ impl ShmRegion {
             (fd, false)
         } else {
             // Create new
+            // SAFETY: c_name is a valid null-terminated CString; O_CREAT|O_RDWR|O_EXCL are valid POSIX flags
             let fd = unsafe {
                 libc::shm_open(
                     c_name.as_ptr(),
@@ -198,6 +202,7 @@ impl ShmRegion {
             };
             if fd < 0 {
                 // Race condition: someone else created it, try opening again
+                // SAFETY: c_name is still a valid null-terminated CString
                 let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
                 if fd < 0 {
                     return Err(HorusError::Memory(format!(
@@ -209,8 +214,11 @@ impl ShmRegion {
                 (fd, false)
             } else {
                 // Set size for new region
+                // SAFETY: fd is a valid open file descriptor from shm_open above
                 if unsafe { libc::ftruncate(fd, size as libc::off_t) } != 0 {
+                    // SAFETY: fd is a valid open file descriptor
                     unsafe { libc::close(fd) };
+                    // SAFETY: c_name is a valid null-terminated CString
                     unsafe { libc::shm_unlink(c_name.as_ptr()) };
                     return Err(HorusError::Memory(format!(
                         "Failed to set shm size: {}",
@@ -222,6 +230,7 @@ impl ShmRegion {
         };
 
         // Memory map the shared memory
+        // SAFETY: fd is valid, size > 0, and flags are valid POSIX mmap constants
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -234,8 +243,10 @@ impl ShmRegion {
         };
 
         if ptr == libc::MAP_FAILED {
+            // SAFETY: fd is a valid open file descriptor
             unsafe { libc::close(fd) };
             if is_owner {
+                // SAFETY: c_name is a valid null-terminated CString
                 unsafe { libc::shm_unlink(c_name.as_ptr()) };
             }
             return Err(HorusError::Memory(format!(
@@ -246,6 +257,7 @@ impl ShmRegion {
 
         // Initialize to zero if owner
         if is_owner {
+            // SAFETY: ptr is valid from mmap (MAP_FAILED checked above), size matches the mapped region
             unsafe {
                 std::ptr::write_bytes(ptr as *mut u8, 0, size);
             }
@@ -270,6 +282,7 @@ impl ShmRegion {
         let c_name = CString::new(shm_name.clone())
             .map_err(|e| HorusError::Memory(format!("Invalid shm name: {}", e)))?;
 
+        // SAFETY: c_name is a valid null-terminated CString; O_RDWR is a valid POSIX flag
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
 
         if fd < 0 {
@@ -280,8 +293,11 @@ impl ShmRegion {
         }
 
         // Get size
+        // SAFETY: libc::stat is a C struct where all-zeros is a valid representation
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is a valid open file descriptor; stat is a valid mutable reference
         if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+            // SAFETY: fd is a valid open file descriptor
             unsafe { libc::close(fd) };
             return Err(HorusError::Memory(format!(
                 "Failed to stat shm: {}",
@@ -290,6 +306,7 @@ impl ShmRegion {
         }
         let size = stat.st_size as usize;
 
+        // SAFETY: fd is valid from shm_open, size > 0 from fstat, flags are valid POSIX mmap constants
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -302,6 +319,7 @@ impl ShmRegion {
         };
 
         if ptr == libc::MAP_FAILED {
+            // SAFETY: fd is a valid open file descriptor
             unsafe { libc::close(fd) };
             return Err(HorusError::Memory(format!(
                 "Failed to mmap shm: {}",
@@ -339,6 +357,7 @@ impl ShmRegion {
     /// This bypasses the owner check and removes the shm unconditionally
     pub fn force_cleanup(&self) {
         if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
+            // SAFETY: c_name is a valid null-terminated CString
             unsafe { libc::shm_unlink(c_name.as_ptr()) };
         }
     }
@@ -348,6 +367,8 @@ impl ShmRegion {
 impl Drop for ShmRegion {
     fn drop(&mut self) {
         // Unmap memory
+        // SAFETY: self.ptr is a valid mmap'd pointer and self.size matches the mapped region;
+        // self.fd is a valid open file descriptor
         unsafe {
             libc::munmap(self.ptr as *mut libc::c_void, self.size);
             libc::close(self.fd);
@@ -356,6 +377,7 @@ impl Drop for ShmRegion {
         // Unlink if owner
         if self.owner {
             if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
+                // SAFETY: c_name is a valid null-terminated CString
                 unsafe { libc::shm_unlink(c_name.as_ptr()) };
             }
         }
@@ -388,6 +410,8 @@ impl ShmRegion {
             .collect();
 
         // Create or open file mapping (INVALID_HANDLE_VALUE = pagefile-backed)
+        // SAFETY: INVALID_HANDLE_VALUE creates pagefile-backed mapping; wide_name is a valid
+        // null-terminated wide string; PAGE_READWRITE and size parameters are valid
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE as isize,
@@ -402,25 +426,31 @@ impl ShmRegion {
         if handle == 0 {
             return Err(HorusError::Memory(format!(
                 "CreateFileMappingW failed: error {}",
+                // SAFETY: GetLastError is always safe to call after a Windows API failure
                 unsafe { GetLastError() }
             )));
         }
 
+        // SAFETY: GetLastError is always safe to call; checks if mapping already existed
         let is_owner = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
 
         // Map view of file
+        // SAFETY: handle is a valid file mapping from CreateFileMappingW (non-zero checked above)
         let ptr = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size) };
 
         if ptr.is_null() {
+            // SAFETY: handle is a valid file mapping handle from CreateFileMappingW
             unsafe { CloseHandle(handle) };
             return Err(HorusError::Memory(format!(
                 "MapViewOfFile failed: error {}",
+                // SAFETY: GetLastError is always safe to call after a Windows API failure
                 unsafe { GetLastError() }
             )));
         }
 
         // Initialize to zero if owner
         if is_owner {
+            // SAFETY: ptr is valid from MapViewOfFile (null checked above), size matches the mapped region
             unsafe {
                 std::ptr::write_bytes(ptr as *mut u8, 0, size);
             }
@@ -449,6 +479,7 @@ impl ShmRegion {
             .chain(std::iter::once(0))
             .collect();
 
+        // SAFETY: wide_name is a valid null-terminated wide string; FILE_MAP_ALL_ACCESS is a valid flag
         let handle = unsafe {
             OpenFileMappingW(
                 FILE_MAP_ALL_ACCESS,
@@ -465,6 +496,7 @@ impl ShmRegion {
         }
 
         // Map view - we don't know size, map entire region
+        // SAFETY: handle is a valid file mapping from OpenFileMappingW (non-zero checked above)
         let ptr = unsafe {
             MapViewOfFile(
                 handle,
@@ -476,9 +508,11 @@ impl ShmRegion {
         };
 
         if ptr.is_null() {
+            // SAFETY: handle is a valid file mapping handle from OpenFileMappingW
             unsafe { CloseHandle(handle) };
             return Err(HorusError::Memory(format!(
                 "MapViewOfFile failed: error {}",
+                // SAFETY: GetLastError is always safe to call after a Windows API failure
                 unsafe { GetLastError() }
             )));
         }
@@ -527,6 +561,8 @@ impl Drop for ShmRegion {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Memory::UnmapViewOfFile;
 
+        // SAFETY: self.ptr is a valid mapped view from MapViewOfFile;
+        // self.handle is a valid file mapping handle from CreateFileMappingW/OpenFileMappingW
         unsafe {
             UnmapViewOfFile(self.ptr as *const std::ffi::c_void);
             CloseHandle(self.handle);
@@ -536,6 +572,8 @@ impl Drop for ShmRegion {
 }
 
 // Thread safety - shared memory regions can be sent between threads
+// SAFETY: ShmRegion uses OS-level shared memory with no thread-local state;
+// concurrent access is managed by atomic operations at the topic/transport layer
 unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
 
@@ -574,6 +612,7 @@ impl ShmRegion {
             (file, true)
         };
 
+        // SAFETY: file is a valid open file with sufficient size set above; len(size) matches the file size
         let mut mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
         if is_owner {
             mmap.fill(0);
@@ -600,6 +639,7 @@ impl ShmRegion {
         }
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let size = file.metadata()?.len() as usize;
+        // SAFETY: file is a valid open file; len(size) matches the actual file size from metadata
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
         Ok(Self {
             mmap,

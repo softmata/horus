@@ -283,6 +283,7 @@ mod tests {
         let src = vec![42u8; 100];
         let mut dst = vec![0u8; 100];
 
+        // SAFETY: src and dst are valid, non-overlapping Vec buffers of equal length.
         unsafe {
             simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), 100);
         }
@@ -297,6 +298,7 @@ mod tests {
         let src: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
         let mut dst = vec![0u8; size];
 
+        // SAFETY: src and dst are valid, non-overlapping Vec buffers of equal length.
         unsafe {
             simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), size);
         }
@@ -310,6 +312,7 @@ mod tests {
         let src: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
         let mut dst = vec![0u8; size];
 
+        // SAFETY: src and dst are valid, non-overlapping Vec buffers of equal length.
         unsafe {
             simd_copy_from_shm(src.as_ptr(), dst.as_mut_ptr(), size);
         }
@@ -326,6 +329,7 @@ mod tests {
 
         // Copy starting at offset 3 (unaligned)
         let offset = 3;
+        // SAFETY: src and dst are valid, non-overlapping, and offset range is within bounds.
         unsafe {
             simd_copy_to_shm(
                 src.as_ptr().add(offset),
@@ -344,6 +348,7 @@ mod tests {
         let src: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
         let mut dst = vec![0u8; size];
 
+        // SAFETY: src and dst are valid, non-overlapping Vec buffers of equal length.
         unsafe {
             simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), size);
         }
