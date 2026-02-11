@@ -81,7 +81,7 @@ zenoh = { version = "1.0", optional = true }
 # Security dependencies
 rustls = "0.21"
 tokio-rustls = "0.24"
-jsonwebtoken = "9.2"
+jsonwebtoken = "10.3"
 argon2 = "0.5"
 base64 = "0.21"
 rpassword = "7.3"
