@@ -3877,12 +3877,9 @@ fn find_cached_versions(cache_dir: &Path, package: &str) -> Result<Vec<PathBuf>>
         // First entry is exact match (if found), don't sort it out
         let exact_match = versions.first().cloned();
         let is_exact = exact_match.as_ref().is_some_and(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| {
-                    requested_version
-                        .is_some_and(|v| n == format!("{}@{}", base_package, v))
-                })
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                requested_version.is_some_and(|v| n == format!("{}@{}", base_package, v))
+            })
         });
 
         if is_exact {
