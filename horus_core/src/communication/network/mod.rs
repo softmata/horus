@@ -169,17 +169,13 @@ pub use smart_transport::{
 
 // io_uring re-exports (real implementation)
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
-pub use io_uring::{
-    is_real_io_uring_available, is_sqpoll_available, CompletionResult, RealIoUringBackend,
-    RealIoUringConfig, RealIoUringStats,
-};
+pub use io_uring::{CompletionResult, RealIoUringBackend, RealIoUringConfig, RealIoUringStats};
 
 #[cfg(feature = "quic")]
 pub use quic::{
-    generate_self_signed_cert, QuicBackend, QuicConfig, QuicCongestionControl, QuicQosProfile,
-    QuicStats, QuicStreamPriority, QuicTransport,
+    QuicBackend, QuicConfig, QuicCongestionControl, QuicQosProfile, QuicStats,
+    QuicStreamPriority, QuicTransport,
 };
-
 #[cfg(all(feature = "quic", feature = "tls"))]
 pub use quic::{get_or_create_cert, get_or_create_cert_with_config};
 
@@ -216,7 +212,6 @@ pub use mdns::{
     resolve_mdns_hostname,
     resolve_mdns_hostname_with_timeout,
     // Registration API
-    sanitize_hostname,
     to_json,
     watch,
     watch_with_interval,
@@ -274,10 +269,7 @@ pub use locality::{
 // No re-exports here to avoid circular dependencies
 
 // Network error re-exports - developer-friendly error handling
-pub use network_error::{
-    colors as net_colors, errors as net_errors, format_error_report, format_error_report_colored,
-    NetworkError, NetworkErrorCode, NetworkErrorContext,
-};
+pub use network_error::{NetworkError, NetworkErrorCode, NetworkErrorContext};
 
 // Testing utilities re-exports (mock ROS2 nodes without ROS2 installation)
 pub use testing::{MockPublisher, MockRos2Node, MockScenarioBuilder, MockSubscriber, TopicStats};

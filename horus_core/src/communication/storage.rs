@@ -54,26 +54,26 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Magic number indicating V4 unified layout: "HORUS_V4" in ASCII hex
-pub const MAGIC_V4: u64 = 0x484F5255535F5634;
+pub(crate) const MAGIC_V4: u64 = 0x484F5255535F5634;
 
 /// Maximum capacity (number of slots) - 1 million entries
-pub const MAX_CAPACITY: u32 = 1_000_000;
+pub(crate) const MAX_CAPACITY: u32 = 1_000_000;
 
 /// Maximum element size - 1MB per element
-pub const MAX_ELEMENT_SIZE: u32 = 1_000_000;
+pub(crate) const MAX_ELEMENT_SIZE: u32 = 1_000_000;
 
 /// Maximum total shared memory size - 100MB
-pub const MAX_TOTAL_SIZE: usize = 100_000_000;
+pub(crate) const MAX_TOTAL_SIZE: usize = 100_000_000;
 
 /// Maximum number of consumers per topic
-pub const MAX_CONSUMERS: u32 = 16;
+pub(crate) const MAX_CONSUMERS: u32 = 16;
 
 /// Maximum spin iterations waiting for initialization (~100ms)
-pub const MAX_INIT_WAIT_ITERS: u32 = 1_000_000;
+pub(crate) const MAX_INIT_WAIT_ITERS: u32 = 1_000_000;
 
 /// Header size for memory calculations
 /// Note: 384 bytes due to 128-byte alignment padding after CoreHeader
-pub const UNIFIED_HEADER_SIZE: usize = 384; // 64 + (64 padding) + 128 + 128
+pub(crate) const UNIFIED_HEADER_SIZE: usize = 384; // 64 + (64 padding) + 128 + 128
 
 /// Access mode for the topic
 ///
@@ -166,7 +166,7 @@ pub enum TopicFlag {
 /// all other fields are initialized. Non-owners spin on this field
 /// with Acquire ordering before reading other fields.
 #[repr(C, align(64))]
-pub struct CoreHeader {
+pub(crate) struct CoreHeader {
     /// Magic number "HORUS_V4" (0x484F5255535F5634)
     ///
     /// Written LAST during initialization to signal completion.
@@ -278,7 +278,7 @@ impl CoreHeader {
 /// By aligning producer fields to 128 bytes, we ensure that consumer
 /// reads don't inadvertently pull in producer-written cache lines.
 #[repr(C, align(128))]
-pub struct ProducerLine {
+pub(crate) struct ProducerLine {
     /// Next write position (ring buffer index)
     ///
     /// For Pod mode: always 0 (single slot)
@@ -312,7 +312,7 @@ const _: () = assert!(std::mem::size_of::<ProducerLine>() == 128);
 /// Contains fields polled by consumers. Aligned to 128 bytes to prevent
 /// false sharing with producer-written fields.
 #[repr(C, align(128))]
-pub struct ConsumerLine {
+pub(crate) struct ConsumerLine {
     /// Minimum tail position across all consumers
     ///
     /// Used for backpressure in MPMC mode. The producer checks that
@@ -342,7 +342,7 @@ const _: () = assert!(std::mem::size_of::<ConsumerLine>() == 128);
 /// Note: Due to 128-byte alignment requirements of ProducerLine and
 /// ConsumerLine, there is 64 bytes of implicit padding after CoreHeader.
 #[repr(C)]
-pub struct UnifiedShmHeader {
+pub(crate) struct UnifiedShmHeader {
     /// Core metadata (64 bytes, cache line 0)
     pub core: CoreHeader,
 
