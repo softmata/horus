@@ -349,7 +349,10 @@ impl TuiDashboard {
         Ok(())
     }
 
-    fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+    fn run_app<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()>
+    where
+        B::Error: Send + Sync + 'static,
+    {
         loop {
             // Update data if not paused (250ms refresh for real-time feel)
             if !self.paused && self.last_update.elapsed() > Duration::from_millis(250) {

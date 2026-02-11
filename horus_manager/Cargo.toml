@@ -60,7 +60,7 @@ rayon = "1.10"
 notify = "6.1"
 
 # TUI dependencies
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 rand = "0.8"
 
