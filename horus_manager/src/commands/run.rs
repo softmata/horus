@@ -3881,7 +3881,7 @@ fn find_cached_versions(cache_dir: &Path, package: &str) -> Result<Vec<PathBuf>>
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| {
                     requested_version
-                        .map_or(false, |v| n == format!("{}@{}", base_package, v))
+                        .is_some_and(|v| n == format!("{}@{}", base_package, v))
                 })
         });
 
