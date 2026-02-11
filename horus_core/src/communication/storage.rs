@@ -53,23 +53,8 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// Magic number indicating V4 unified layout: "HORUS_V4" in ASCII hex
-pub(crate) const MAGIC_V4: u64 = 0x484F5255535F5634;
-
-/// Maximum capacity (number of slots) - 1 million entries
-pub(crate) const MAX_CAPACITY: u32 = 1_000_000;
-
-/// Maximum element size - 1MB per element
-pub(crate) const MAX_ELEMENT_SIZE: u32 = 1_000_000;
-
 /// Maximum total shared memory size - 100MB
-pub(crate) const MAX_TOTAL_SIZE: usize = 100_000_000;
-
-/// Maximum number of consumers per topic
-pub(crate) const MAX_CONSUMERS: u32 = 16;
-
-/// Maximum spin iterations waiting for initialization (~100ms)
-pub(crate) const MAX_INIT_WAIT_ITERS: u32 = 1_000_000;
+const MAX_TOTAL_SIZE: usize = 100_000_000;
 
 /// Header size for memory calculations
 /// Note: 384 bytes due to 128-byte alignment padding after CoreHeader
@@ -215,6 +200,7 @@ pub(crate) struct CoreHeader {
 // Verify CoreHeader is exactly 64 bytes
 const _: () = assert!(std::mem::size_of::<CoreHeader>() == 64);
 
+#[allow(dead_code)] // Methods used in tests and reserved for runtime mode upgrades
 impl CoreHeader {
     /// Pack version, flags, and mode into a single u32
     #[inline]
@@ -356,6 +342,7 @@ pub(crate) struct UnifiedShmHeader {
 // Verify UnifiedShmHeader is exactly 320 bytes
 const _: () = assert!(std::mem::size_of::<UnifiedShmHeader>() == UNIFIED_HEADER_SIZE);
 
+#[allow(dead_code)] // Methods used in tests and for size calculations
 impl UnifiedShmHeader {
     /// Calculate the data offset for a given element alignment
     ///
