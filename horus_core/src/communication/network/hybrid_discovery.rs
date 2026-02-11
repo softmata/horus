@@ -421,9 +421,12 @@ impl HybridDiscovery {
     #[cfg(feature = "husarnet")]
     pub fn refresh_husarnet(&self) -> HorusResult<()> {
         if let Some(ref husarnet) = self.husarnet {
-            husarnet
-                .refresh_status()
-                .map_err(|e| format!("Failed to refresh Husarnet: {}", e).into())
+            husarnet.refresh_status().map_err(|e| {
+                crate::error::HorusError::communication(format!(
+                    "Failed to refresh Husarnet: {}",
+                    e
+                ))
+            })
         } else {
             Ok(())
         }

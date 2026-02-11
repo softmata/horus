@@ -1,3 +1,7 @@
+// Raw pointer arguments are intentional in this CUDA FFI module —
+// all pointers are passed directly to the CUDA Runtime API.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 //! Custom CUDA FFI bindings for IPC memory sharing
 //!
 //! This module provides minimal, hand-crafted bindings to the CUDA Runtime API

@@ -365,6 +365,8 @@ pub struct QuicTransport {
     running: Arc<AtomicBool>,
     /// Server name for TLS
     server_name: String,
+    /// QUIC configuration
+    config: QuicConfig,
 }
 
 #[cfg(feature = "quic")]
@@ -384,6 +386,7 @@ impl QuicTransport {
             stats: Arc::new(QuicStats::default()),
             running: Arc::new(AtomicBool::new(true)),
             server_name: "horus".to_string(),
+            config,
         })
     }
 
@@ -405,6 +408,7 @@ impl QuicTransport {
             stats: Arc::new(QuicStats::default()),
             running: Arc::new(AtomicBool::new(true)),
             server_name: "horus".to_string(),
+            config,
         })
     }
 

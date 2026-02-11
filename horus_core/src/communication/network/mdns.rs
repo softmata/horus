@@ -101,8 +101,9 @@ impl HorusMdns {
     /// This starts the mDNS daemon which will handle multicast DNS queries
     /// and responses in a background thread.
     pub fn new() -> HorusResult<Self> {
-        let daemon =
-            ServiceDaemon::new().map_err(|e| format!("Failed to create mDNS daemon: {}", e))?;
+        let daemon = ServiceDaemon::new().map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to create mDNS daemon: {}", e))
+        })?;
 
         Ok(Self {
             daemon,
@@ -155,13 +156,15 @@ impl HorusMdns {
             port,
             &properties[..],
         )
-        .map_err(|e| format!("Failed to create service info: {}", e))?
+        .map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to create service info: {}", e))
+        })?
         .enable_addr_auto();
 
         // Register the service
-        self.daemon
-            .register(service_info)
-            .map_err(|e| format!("Failed to register service: {}", e))?;
+        self.daemon.register(service_info).map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to register service: {}", e))
+        })?;
 
         // Store registered service name for cleanup
         *self.registered_service.lock().unwrap() = Some(full_name.clone());
@@ -180,9 +183,12 @@ impl HorusMdns {
     pub fn unregister_service(&self) -> HorusResult<()> {
         let mut registered = self.registered_service.lock().unwrap();
         if let Some(full_name) = registered.take() {
-            self.daemon
-                .unregister(&full_name)
-                .map_err(|e| format!("Failed to unregister service: {}", e))?;
+            self.daemon.unregister(&full_name).map_err(|e| {
+                crate::error::HorusError::communication(format!(
+                    "Failed to unregister service: {}",
+                    e
+                ))
+            })?;
             log::info!("Unregistered mDNS service: {}", full_name);
         }
         Ok(())
@@ -220,10 +226,9 @@ impl HorusMdns {
         let full_hostname = format!("{}.local.", hostname);
 
         // Browse for our service type to find the hostname
-        let receiver = self
-            .daemon
-            .browse(HORUS_SERVICE_TYPE)
-            .map_err(|e| format!("Failed to browse mDNS: {}", e))?;
+        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+        })?;
 
         let start = Instant::now();
         while start.elapsed() < MDNS_TIMEOUT {
@@ -299,10 +304,9 @@ impl HorusMdns {
             }
         }
 
-        let receiver = self
-            .daemon
-            .browse(HORUS_SERVICE_TYPE)
-            .map_err(|e| format!("Failed to browse mDNS: {}", e))?;
+        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+        })?;
 
         let full_hostname = format!("{}.local.", hostname);
         let start = Instant::now();
@@ -367,10 +371,9 @@ impl HorusMdns {
 
     /// Browse for services with a custom timeout
     pub fn browse_services_with_timeout(&self, timeout: Duration) -> HorusResult<Vec<ServiceInfo>> {
-        let receiver = self
-            .daemon
-            .browse(HORUS_SERVICE_TYPE)
-            .map_err(|e| format!("Failed to browse mDNS: {}", e))?;
+        let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
+            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+        })?;
 
         let start = Instant::now();
         let mut discovered: HashMap<String, ServiceInfo> = HashMap::new();
@@ -491,9 +494,12 @@ impl HorusMdns {
             }
         }
 
-        self.daemon
-            .shutdown()
-            .map_err(|e| format!("Failed to shutdown mDNS daemon: {}", e))?;
+        self.daemon.shutdown().map_err(|e| {
+            crate::error::HorusError::communication(format!(
+                "Failed to shutdown mDNS daemon: {}",
+                e
+            ))
+        })?;
 
         Ok(())
     }
