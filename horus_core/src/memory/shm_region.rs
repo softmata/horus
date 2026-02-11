@@ -180,13 +180,12 @@ impl ShmRegion {
 
         // Use flat namespace - all topics share same prefix (ROS-like simplicity)
         let shm_name = format!("/horus_{}", name);
-        let c_name = CString::new(shm_name.clone())
-            .map_err(|e| {
-                HorusError::Memory(format!(
-                    "Invalid shm name '{}': topic names cannot contain null bytes: {}",
-                    shm_name, e
-                ))
-            })?;
+        let c_name = CString::new(shm_name.clone()).map_err(|e| {
+            HorusError::Memory(format!(
+                "Invalid shm name '{}': topic names cannot contain null bytes: {}",
+                shm_name, e
+            ))
+        })?;
 
         // Try to open existing first
         // SAFETY: c_name is a valid null-terminated CString; flags are valid POSIX constants
@@ -284,13 +283,12 @@ impl ShmRegion {
 
         // Use flat namespace - all topics share same prefix
         let shm_name = format!("/horus_{}", name);
-        let c_name = CString::new(shm_name.clone())
-            .map_err(|e| {
-                HorusError::Memory(format!(
-                    "Invalid shm name '{}': topic names cannot contain null bytes: {}",
-                    shm_name, e
-                ))
-            })?;
+        let c_name = CString::new(shm_name.clone()).map_err(|e| {
+            HorusError::Memory(format!(
+                "Invalid shm name '{}': topic names cannot contain null bytes: {}",
+                shm_name, e
+            ))
+        })?;
 
         // SAFETY: c_name is a valid null-terminated CString; O_RDWR is a valid POSIX flag
         let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };

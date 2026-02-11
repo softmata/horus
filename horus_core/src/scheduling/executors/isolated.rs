@@ -879,7 +879,10 @@ impl IsolatedExecutor {
                     node_name: node_name.to_string(),
                     duration: Duration::ZERO,
                     success: false,
-                    error: Some(format!("Node '{}' not found in isolated executor (was it registered?)", node_name)),
+                    error: Some(format!(
+                        "Node '{}' not found in isolated executor (was it registered?)",
+                        node_name
+                    )),
                     restart_attempted: false,
                 };
             }

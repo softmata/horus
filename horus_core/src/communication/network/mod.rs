@@ -171,13 +171,13 @@ pub use smart_transport::{
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 pub use io_uring::{CompletionResult, RealIoUringBackend, RealIoUringConfig, RealIoUringStats};
 
-#[cfg(feature = "quic")]
-pub use quic::{
-    QuicBackend, QuicConfig, QuicCongestionControl, QuicQosProfile, QuicStats,
-    QuicStreamPriority, QuicTransport,
-};
 #[cfg(all(feature = "quic", feature = "tls"))]
 pub use quic::{get_or_create_cert, get_or_create_cert_with_config};
+#[cfg(feature = "quic")]
+pub use quic::{
+    QuicBackend, QuicConfig, QuicCongestionControl, QuicQosProfile, QuicStats, QuicStreamPriority,
+    QuicTransport,
+};
 
 // Hybrid discovery re-exports (LAN multicast + Husarnet unicast)
 pub use hybrid_discovery::{
