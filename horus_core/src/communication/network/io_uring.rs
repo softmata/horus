@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 use std::net::UdpSocket;
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
-use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{IntoRawFd, RawFd};
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(all(target_os = "linux", feature = "io-uring-net"))]
