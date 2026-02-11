@@ -41,22 +41,12 @@ const QUICK_ITERATIONS: usize = 1_000;
 const QUICK_WARMUP: usize = 100;
 
 /// Message with embedded high-resolution timestamp
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct BenchMessage {
     seq: u64,
     send_time_ns: u64,
     #[serde(with = "serde_bytes")]
     payload: Vec<u8>,
-}
-
-impl Default for BenchMessage {
-    fn default() -> Self {
-        Self {
-            seq: 0,
-            send_time_ns: 0,
-            payload: Vec::new(),
-        }
-    }
 }
 
 impl horus_core::core::LogSummary for BenchMessage {
@@ -106,26 +96,11 @@ fn main() {
         (DEFAULT_ITERATIONS, DEFAULT_WARMUP)
     };
 
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════════════════════════════╗"
-    );
-    println!(
-        "{}",
-        "║           HORUS Zenoh Transport Benchmark                        ║"
-    );
-    println!(
-        "{}",
-        "╠══════════════════════════════════════════════════════════════════╣"
-    );
-    println!(
-        "{}",
-        "║  Comparing Zenoh transport vs native HORUS IPC                   ║"
-    );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════════════════════════════╝"
-    );
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║           HORUS Zenoh Transport Benchmark                        ║");
+    println!("╠══════════════════════════════════════════════════════════════════╣");
+    println!("║  Comparing Zenoh transport vs native HORUS IPC                   ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝");
     println!();
 
     let platform = detect_platform();
@@ -179,16 +154,16 @@ fn main() {
         report.results.push(zenoh_bincode_result.clone());
         print_latency_result("Zenoh Bincode", &zenoh_bincode_result);
 
-        // Benchmark Zenoh (MessagePack)
-        let zenoh_msgpack_result = rt.block_on(benchmark_zenoh(
+        // Benchmark Zenoh (CDR)
+        let zenoh_cdr_result = rt.block_on(benchmark_zenoh(
             *size,
             iterations,
             warmup,
             &platform,
-            SerializationFormat::MessagePack,
+            SerializationFormat::Cdr,
         ));
-        report.results.push(zenoh_msgpack_result.clone());
-        print_latency_result("Zenoh MsgPack", &zenoh_msgpack_result);
+        report.results.push(zenoh_cdr_result.clone());
+        print_latency_result("Zenoh CDR", &zenoh_cdr_result);
 
         // Print comparison
         let native_median = native_result.statistics.median;
@@ -407,9 +382,7 @@ async fn benchmark_zenoh(
 
     let format_name = match format {
         SerializationFormat::Bincode => "Bincode",
-        SerializationFormat::Json => "JSON",
         SerializationFormat::Cdr => "CDR",
-        SerializationFormat::MessagePack => "MessagePack",
     };
 
     build_result(

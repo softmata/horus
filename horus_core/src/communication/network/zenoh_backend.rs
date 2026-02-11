@@ -111,7 +111,7 @@ impl SessionPoolKey {
         Self {
             connect,
             listen,
-            mode: config.mode.clone(),
+            mode: config.mode,
             ros2_mode: config.ros2_mode,
             ros2_domain_id: config.ros2_domain_id,
         }
@@ -898,13 +898,11 @@ where
 
         // Spawn a task to respond to the query
         let queryable_handle = tokio::spawn(async move {
-            if let Ok(query) =
+            if let Ok(Ok(query)) =
                 tokio::time::timeout(std::time::Duration::from_secs(5), queryable.recv_async())
                     .await
             {
-                if let Ok(query) = query {
-                    let _ = query.reply(&health_key_reply, "pong").await;
-                }
+                let _ = query.reply(&health_key_reply, "pong").await;
             }
         });
 
@@ -1113,11 +1111,11 @@ where
             Self::try_connect_with_failover(&routers, cloud_config.connection_timeout).await?;
 
         // Create ZenohConfig from cloud config
-        let mut config = ZenohConfig::default();
-        config.connect = vec![connected_router.clone()];
-        if let Some(ns) = &cloud_config.namespace {
-            config.namespace = Some(ns.clone());
-        }
+        let config = ZenohConfig {
+            connect: vec![connected_router.clone()],
+            namespace: cloud_config.namespace.clone(),
+            ..ZenohConfig::default()
+        };
 
         let key_expr = config.topic_to_key_expr(topic);
 
@@ -2082,8 +2080,10 @@ mod tests {
     /// Test that empty/None namespace produces raw topic names
     #[test]
     fn test_empty_namespace_behavior() {
-        let mut config = ZenohConfig::default();
-        config.namespace = None;
+        let config = ZenohConfig {
+            namespace: None,
+            ..ZenohConfig::default()
+        };
 
         let topic = "test_topic";
         let key = config.topic_to_key_expr(topic);

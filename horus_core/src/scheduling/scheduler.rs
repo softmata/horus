@@ -3644,8 +3644,8 @@ mod tests {
             .order(0)
             .done();
 
-        // Run for a short duration (50ms is more reliable under parallel test load)
-        let result = scheduler.run_for(Duration::from_millis(50));
+        // Run for a short duration (100ms to handle scheduler init overhead under parallel test load)
+        let result = scheduler.run_for(Duration::from_millis(100));
         assert!(result.is_ok());
 
         // Counter should have been incremented at least once

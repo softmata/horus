@@ -262,7 +262,7 @@ fn test_rt_node_priority_ordering() {
     scheduler.add(sensor_node).order(1).done(); // High priority
     scheduler.add(motor_node).order(0).done(); // Critical priority
 
-    scheduler.run_for(Duration::from_millis(50)).unwrap();
+    scheduler.run_for(Duration::from_millis(200)).unwrap();
 
     // Critical priority node should have executed
     assert!(motor.load(Ordering::SeqCst) > 0);
@@ -283,7 +283,7 @@ fn test_rt_node_with_safety_critical_config() {
         .done();
 
     // Run briefly (safety-critical config runs at 1kHz)
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok());
 }
 

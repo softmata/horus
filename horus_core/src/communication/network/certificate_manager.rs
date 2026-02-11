@@ -217,13 +217,10 @@ impl CertificateManager {
         // Ensure certificate directory exists
         if !config.cert_dir.exists() {
             fs::create_dir_all(&config.cert_dir).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Failed to create certificate directory {:?}: {}",
-                        config.cert_dir, e
-                    ),
-                )
+                io::Error::other(format!(
+                    "Failed to create certificate directory {:?}: {}",
+                    config.cert_dir, e
+                ))
             })?;
             log::info!("Created certificate directory: {:?}", config.cert_dir);
         }
@@ -345,20 +342,13 @@ impl CertificateManager {
         params.subject_alt_names = san;
 
         // Generate key pair
-        let key_pair = rcgen::KeyPair::generate().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to generate key pair: {}", e),
-            )
-        })?;
+        let key_pair = rcgen::KeyPair::generate()
+            .map_err(|e| io::Error::other(format!("Failed to generate key pair: {}", e)))?;
 
         // Generate self-signed certificate
-        let cert = params.self_signed(&key_pair).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to generate certificate: {}", e),
-            )
-        })?;
+        let cert = params
+            .self_signed(&key_pair)
+            .map_err(|e| io::Error::other(format!("Failed to generate certificate: {}", e)))?;
 
         // Get PEM-encoded versions
         let cert_pem = cert.pem();
@@ -366,25 +356,19 @@ impl CertificateManager {
 
         // Save to files
         fs::write(self.cert_path(), &cert_pem).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Failed to write certificate to {:?}: {}",
-                    self.cert_path(),
-                    e
-                ),
-            )
+            io::Error::other(format!(
+                "Failed to write certificate to {:?}: {}",
+                self.cert_path(),
+                e
+            ))
         })?;
 
         fs::write(self.key_path(), &key_pem).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Failed to write private key to {:?}: {}",
-                    self.key_path(),
-                    e
-                ),
-            )
+            io::Error::other(format!(
+                "Failed to write private key to {:?}: {}",
+                self.key_path(),
+                e
+            ))
         })?;
 
         // Set restrictive permissions on the key file (Unix only)

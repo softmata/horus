@@ -375,8 +375,7 @@ impl QuicTransport {
     pub async fn new_client(bind_addr: SocketAddr, config: QuicConfig) -> io::Result<Self> {
         let client_config = Self::create_client_config(&config)?;
 
-        let mut endpoint =
-            Endpoint::client(bind_addr).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut endpoint = Endpoint::client(bind_addr).map_err(io::Error::other)?;
 
         endpoint.set_default_client_config(client_config);
 
@@ -399,8 +398,7 @@ impl QuicTransport {
     ) -> io::Result<Self> {
         let server_config = Self::create_server_config(cert_chain, private_key, &config)?;
 
-        let endpoint = Endpoint::server(server_config, bind_addr)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let endpoint = Endpoint::server(server_config, bind_addr).map_err(io::Error::other)?;
 
         Ok(Self {
             endpoint,
@@ -436,8 +434,7 @@ impl QuicTransport {
         // The actual algorithm selection is done in the endpoint configuration
 
         let mut client_config = ClientConfig::new(Arc::new(
-            quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(io::Error::other)?,
         ));
         client_config.transport_config(Arc::new(transport));
 
@@ -461,8 +458,8 @@ impl QuicTransport {
             transport.datagram_send_buffer_size(config.max_datagram_size as usize * 100);
         }
 
-        let mut server_config = ServerConfig::with_single_cert(cert_chain, private_key)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut server_config =
+            ServerConfig::with_single_cert(cert_chain, private_key).map_err(io::Error::other)?;
 
         server_config.transport_config(Arc::new(transport));
 
@@ -485,7 +482,7 @@ impl QuicTransport {
         let connecting = self
             .endpoint
             .connect(addr, &self.server_name)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         let connection = connecting
             .await
@@ -508,28 +505,17 @@ impl QuicTransport {
     pub async fn send(&self, addr: SocketAddr, data: &[u8]) -> io::Result<()> {
         let conn = self.get_connection(addr).await?;
 
-        let mut stream = conn
-            .open_uni()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut stream = conn.open_uni().await.map_err(io::Error::other)?;
 
         self.stats.streams_opened.fetch_add(1, Ordering::Relaxed);
 
         // Write length prefix + data
         let len = (data.len() as u32).to_le_bytes();
-        stream
-            .write_all(&len)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.write_all(&len).await.map_err(io::Error::other)?;
 
-        stream
-            .write_all(data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.write_all(data).await.map_err(io::Error::other)?;
 
-        stream
-            .finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.finish().map_err(io::Error::other)?;
 
         self.stats
             .bytes_sent
@@ -544,23 +530,15 @@ impl QuicTransport {
     pub async fn send_recv(&self, addr: SocketAddr, data: &[u8]) -> io::Result<Vec<u8>> {
         let conn = self.get_connection(addr).await?;
 
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let (mut send, mut recv) = conn.open_bi().await.map_err(io::Error::other)?;
 
         self.stats.streams_opened.fetch_add(1, Ordering::Relaxed);
 
         // Send request
         let len = (data.len() as u32).to_le_bytes();
-        send.write_all(&len)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        send.write_all(data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        send.finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.write_all(&len).await.map_err(io::Error::other)?;
+        send.write_all(data).await.map_err(io::Error::other)?;
+        send.finish().map_err(io::Error::other)?;
 
         self.stats
             .bytes_sent
@@ -571,13 +549,13 @@ impl QuicTransport {
         let mut len_buf = [0u8; 4];
         recv.read_exact(&mut len_buf)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         let response_len = u32::from_le_bytes(len_buf) as usize;
         let mut response = vec![0u8; response_len];
         recv.read_exact(&mut response)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         self.stats
             .bytes_received
@@ -595,9 +573,7 @@ impl QuicTransport {
                 io::Error::new(io::ErrorKind::ConnectionAborted, "Endpoint closed")
             })?;
 
-        let conn = incoming
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let conn = incoming.await.map_err(io::Error::other)?;
 
         let addr = conn.remote_address();
 
@@ -616,10 +592,7 @@ impl QuicTransport {
 
     /// Accept incoming unidirectional stream
     pub async fn accept_uni(&self, conn: &Connection) -> io::Result<(Vec<u8>, SocketAddr)> {
-        let mut recv = conn
-            .accept_uni()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut recv = conn.accept_uni().await.map_err(io::Error::other)?;
 
         self.stats.streams_opened.fetch_add(1, Ordering::Relaxed);
 
@@ -627,13 +600,11 @@ impl QuicTransport {
         let mut len_buf = [0u8; 4];
         recv.read_exact(&mut len_buf)
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
         let data_len = u32::from_le_bytes(len_buf) as usize;
         let mut data = vec![0u8; data_len];
-        recv.read_exact(&mut data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        recv.read_exact(&mut data).await.map_err(io::Error::other)?;
 
         self.stats
             .bytes_received
@@ -760,10 +731,7 @@ impl QuicTransport {
 
         let conn = self.get_connection(addr).await?;
 
-        let mut stream = conn
-            .open_uni()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let mut stream = conn.open_uni().await.map_err(io::Error::other)?;
 
         // Set stream priority - lower values are higher priority
         let _ = stream.set_priority(priority.as_i32());
@@ -772,19 +740,11 @@ impl QuicTransport {
 
         // Write length prefix + data
         let len = (data.len() as u32).to_le_bytes();
-        stream
-            .write_all(&len)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.write_all(&len).await.map_err(io::Error::other)?;
 
-        stream
-            .write_all(data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.write_all(data).await.map_err(io::Error::other)?;
 
-        stream
-            .finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        stream.finish().map_err(io::Error::other)?;
 
         self.stats
             .bytes_sent
@@ -902,7 +862,7 @@ impl QuicTransport {
             }
             Err(e) => {
                 self.stats.datagrams_dropped.fetch_add(1, Ordering::Relaxed);
-                Err(io::Error::new(io::ErrorKind::Other, e))
+                Err(io::Error::other(e))
             }
         }
     }
@@ -912,10 +872,7 @@ impl QuicTransport {
     /// Returns the next available datagram or waits for one.
     /// Datagrams may arrive out of order or be dropped entirely.
     pub async fn recv_datagram(&self, conn: &Connection) -> io::Result<Vec<u8>> {
-        let datagram = conn
-            .read_datagram()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let datagram = conn.read_datagram().await.map_err(io::Error::other)?;
 
         self.stats
             .datagrams_received
@@ -955,25 +912,17 @@ impl QuicTransport {
         let conn = self.get_connection(addr).await?;
 
         // Use bidirectional stream for ordering - sender closes their side after sending
-        let (mut send, _recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let (mut send, _recv) = conn.open_bi().await.map_err(io::Error::other)?;
 
         self.stats.streams_opened.fetch_add(1, Ordering::Relaxed);
 
         // Write length prefix + data
         let len = (data.len() as u32).to_le_bytes();
-        send.write_all(&len)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.write_all(&len).await.map_err(io::Error::other)?;
 
-        send.write_all(data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.write_all(data).await.map_err(io::Error::other)?;
 
-        send.finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.finish().map_err(io::Error::other)?;
 
         self.stats
             .bytes_sent
@@ -993,10 +942,7 @@ impl QuicTransport {
     ) -> io::Result<()> {
         let conn = self.get_connection(addr).await?;
 
-        let (mut send, _recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let (mut send, _recv) = conn.open_bi().await.map_err(io::Error::other)?;
 
         // Set stream priority
         let _ = send.set_priority(priority.as_i32());
@@ -1004,16 +950,11 @@ impl QuicTransport {
         self.stats.streams_opened.fetch_add(1, Ordering::Relaxed);
 
         let len = (data.len() as u32).to_le_bytes();
-        send.write_all(&len)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.write_all(&len).await.map_err(io::Error::other)?;
 
-        send.write_all(data)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.write_all(data).await.map_err(io::Error::other)?;
 
-        send.finish()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        send.finish().map_err(io::Error::other)?;
 
         self.stats
             .bytes_sent
@@ -1413,11 +1354,11 @@ pub fn generate_self_signed_cert() -> io::Result<(
 )> {
     let cert =
         rcgen::generate_simple_self_signed(vec!["horus".to_string(), "localhost".to_string()])
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
 
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::try_from(cert.key_pair.serialize_der())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     Ok((vec![cert_der], key_der))
 }

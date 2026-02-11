@@ -90,8 +90,8 @@ fn run_robot(robot_id: &str, start_x: f64, start_y: f64) -> Result<(), Box<dyn s
         robot_id
     );
 
-    let mut x = start_x;
-    let mut y = start_y;
+    let mut x;
+    let mut y;
     let mut theta = 0.0f64;
     let mut tick = 0u64;
 

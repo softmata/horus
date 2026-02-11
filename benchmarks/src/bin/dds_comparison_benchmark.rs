@@ -492,7 +492,7 @@ fn print_result(name: &str, result: &BenchmarkResult) {
 // Placeholder for actual DDS benchmarks (enabled with --features dds)
 #[cfg(feature = "dds")]
 fn benchmark_cyclonedds(
-    iterations: usize,
+    _iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
     // This would use cyclonedds-rs crate
@@ -503,7 +503,7 @@ fn benchmark_cyclonedds(
 
 #[cfg(feature = "dds")]
 fn benchmark_fastdds(
-    iterations: usize,
+    _iterations: usize,
     platform: &horus_benchmarks::PlatformInfo,
 ) -> BenchmarkResult {
     // This would use fastdds-rs crate

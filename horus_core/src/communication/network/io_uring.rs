@@ -313,13 +313,13 @@ impl RealIoUringBackend {
                 Err(io::Error::new(io::ErrorKind::WouldBlock, "SQ full"))
             } else {
                 sq.push(&send_e)
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to push SQE"))
+                    .map_err(|_| io::Error::other("Failed to push SQE"))
             }
         };
 
-        if push_result.is_err() {
+        if let Err(e) = push_result {
             self.release_buffer(buffer_idx);
-            return Err(push_result.unwrap_err());
+            return Err(e);
         }
 
         self.track_op(user_data, buffer_idx, false);
@@ -354,13 +354,13 @@ impl RealIoUringBackend {
                 Err(io::Error::new(io::ErrorKind::WouldBlock, "SQ full"))
             } else {
                 sq.push(&recv_e)
-                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to push SQE"))
+                    .map_err(|_| io::Error::other("Failed to push SQE"))
             }
         };
 
-        if push_result.is_err() {
+        if let Err(e) = push_result {
             self.release_buffer(buffer_idx);
-            return Err(push_result.unwrap_err());
+            return Err(e);
         }
 
         self.track_op(user_data, buffer_idx, true);
@@ -371,16 +371,12 @@ impl RealIoUringBackend {
 
     /// Submit the ring (required for non-SQPOLL mode)
     pub fn submit(&self) -> io::Result<usize> {
-        self.ring
-            .submit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        self.ring.submit().map_err(io::Error::other)
     }
 
     /// Submit and wait for at least one completion
     pub fn submit_and_wait(&self, want: usize) -> io::Result<usize> {
-        self.ring
-            .submit_and_wait(want)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+        self.ring.submit_and_wait(want).map_err(io::Error::other)
     }
 
     /// Process completions
@@ -457,7 +453,7 @@ impl RealIoUringBackend {
             }
         }
 
-        Err(io::Error::new(io::ErrorKind::Other, "No completion"))
+        Err(io::Error::other("No completion"))
     }
 
     /// Synchronous receive (convenience method)
@@ -474,7 +470,7 @@ impl RealIoUringBackend {
             }
         }
 
-        Err(io::Error::new(io::ErrorKind::Other, "No completion"))
+        Err(io::Error::other("No completion"))
     }
 
     /// Get statistics
