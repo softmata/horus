@@ -921,7 +921,7 @@ impl RegistryClient {
                 "python"
             };
             Command::new(python_cmd)
-                .args(["-m", "venv", temp_venv.to_str().unwrap()])
+                .args(["-m", "venv", &*temp_venv.to_string_lossy()])
                 .status()?;
         }
 
@@ -949,7 +949,7 @@ impl RegistryClient {
 
         spinner.set_message(format!("Installing {} with pip...", package_name));
         let output = Command::new(&pip_path)
-            .args(["install", "--target", pkg_dir.to_str().unwrap()])
+            .args(["install", "--target", &*pkg_dir.to_string_lossy()])
             .arg(&requirement)
             .output()?;
 
@@ -1370,7 +1370,7 @@ impl RegistryClient {
                     use crate::commands::run::parse_horus_yaml_dependencies_v2;
                     use crate::dependency_resolver::DependencySource;
 
-                    match parse_horus_yaml_dependencies_v2(yaml_path.to_str().unwrap()) {
+                    match parse_horus_yaml_dependencies_v2(&yaml_path.to_string_lossy()) {
                         Ok(deps) => {
                             let mut has_path_deps = false;
 

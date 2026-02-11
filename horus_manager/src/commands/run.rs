@@ -3261,7 +3261,7 @@ fn clone_git_dependency(git_pkg: &GitPackage) -> Result<(String, PathBuf)> {
         GitRef::Default => {}
     }
 
-    clone_cmd.args([&git_pkg.url, cache_path.to_str().unwrap()]);
+    clone_cmd.args([&git_pkg.url, &*cache_path.to_string_lossy()]);
 
     let output = clone_cmd.output().context("Failed to run git clone")?;
 
@@ -3407,7 +3407,7 @@ fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
                 "pip",
                 "install",
                 "--target",
-                pkg_cache_dir.to_str().unwrap(),
+                &*pkg_cache_dir.to_string_lossy(),
             ]);
             cmd.arg(pkg.requirement_string());
 
@@ -3879,7 +3879,10 @@ fn find_cached_versions(cache_dir: &Path, package: &str) -> Result<Vec<PathBuf>>
         let is_exact = exact_match.as_ref().is_some_and(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n == format!("{}@{}", base_package, requested_version.unwrap()))
+                .is_some_and(|n| {
+                    requested_version
+                        .map_or(false, |v| n == format!("{}@{}", base_package, v))
+                })
         });
 
         if is_exact {
@@ -4131,7 +4134,10 @@ fn detect_horus_usage_python(file: &Path) -> Result<bool> {
 fn create_python_wrapper(original_file: &Path) -> Result<PathBuf> {
     let wrapper_path = env::temp_dir().join(format!(
         "horus_wrapper_{}.py",
-        original_file.file_stem().unwrap().to_string_lossy()
+        original_file
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
     ));
 
     let wrapper_content = format!(

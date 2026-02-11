@@ -634,7 +634,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
     // 3. Parse Dependencies
     print!("  {} Parsing dependencies... ", "▸".cyan());
-    let dep_specs = match parse_horus_yaml_dependencies_v2(horus_yaml_path.to_str().unwrap()) {
+    let dep_specs = match parse_horus_yaml_dependencies_v2(&horus_yaml_path.to_string_lossy()) {
         Ok(specs) => {
             println!("{}", "✓".green());
             specs
@@ -730,7 +730,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
             let target_yaml = resolved_path.join("horus.yaml");
             if target_yaml.exists() {
                 if let Ok(target_deps) =
-                    parse_horus_yaml_dependencies_v2(target_yaml.to_str().unwrap())
+                    parse_horus_yaml_dependencies_v2(&target_yaml.to_string_lossy())
                 {
                     let our_name = yaml_value
                         .as_ref()
