@@ -20,6 +20,17 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 // Security imports
 use crate::security::{security_headers_middleware, AuthService};
 
+/// Validate a path component (session name, filename) to prevent directory traversal.
+///
+/// Rejects components containing `..`, `/`, `\`, or null bytes.
+fn is_safe_path_component(component: &str) -> bool {
+    !component.is_empty()
+        && !component.contains("..")
+        && !component.contains('/')
+        && !component.contains('\\')
+        && !component.contains('\0')
+}
+
 /// Cache for workspace discovery to avoid repeated filesystem scanning
 struct WorkspaceCache {
     workspaces: Vec<crate::workspace::DiscoveredWorkspace>,
@@ -1694,6 +1705,15 @@ pub async fn recordings_list_handler() -> impl IntoResponse {
 
 /// Get detailed info about a specific recording
 pub async fn recordings_info_handler(Path(session): Path<String>) -> impl IntoResponse {
+    if !is_safe_path_component(&session) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid session name"
+            })),
+        );
+    }
+
     let recordings_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".horus/recordings")
@@ -1808,6 +1828,15 @@ pub async fn recordings_info_handler(Path(session): Path<String>) -> impl IntoRe
 
 /// Delete a recording session
 pub async fn recordings_delete_handler(Path(session): Path<String>) -> impl IntoResponse {
+    if !is_safe_path_component(&session) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid session name"
+            })),
+        );
+    }
+
     let recordings_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".horus/recordings")
@@ -1961,6 +1990,17 @@ pub async fn debug_sessions_list_handler() -> impl IntoResponse {
 pub async fn debug_session_create_handler(
     Json(req): Json<CreateDebugSessionRequest>,
 ) -> impl IntoResponse {
+    if !is_safe_path_component(&req.recording_session)
+        || !is_safe_path_component(&req.recording_file)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid recording session or file name"
+            })),
+        );
+    }
+
     let recordings_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".horus/recordings")
