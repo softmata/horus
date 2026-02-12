@@ -3,6 +3,7 @@
 //! Provides commands for listing, inspecting, and managing running nodes.
 
 use crate::discovery::{discover_nodes, ProcessCategory};
+use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::memory::platform::shm_control_dir;
@@ -413,18 +414,6 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
     Ok(())
 }
 
-/// Format bytes in human-readable form
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
 
 /// Truncate name to fit in column
 fn truncate_name(name: &str, max_len: usize) -> String {

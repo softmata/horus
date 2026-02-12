@@ -1032,7 +1032,7 @@ impl RtCpuInfo {
 }
 
 /// Parse a CPU list string like "2-5,7,9-11" into individual CPU indices.
-fn parse_cpu_list(s: &str) -> Vec<usize> {
+pub(crate) fn parse_cpu_list(s: &str) -> Vec<usize> {
     let mut cpus = Vec::new();
 
     if s.is_empty() {

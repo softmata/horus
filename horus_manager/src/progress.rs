@@ -79,53 +79,17 @@ pub fn spinner(message: &str) -> ProgressBar {
 
 /// Create a build spinner
 pub fn build_spinner(message: &str) -> ProgressBar {
-    if is_quiet() {
-        return ProgressBar::hidden();
-    }
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(BRAILLE_SPINNER)
-            .template("{spinner} {msg}")
-            .unwrap(),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb
+    spinner(message)
 }
 
 /// Create a run spinner
 pub fn run_spinner(message: &str) -> ProgressBar {
-    if is_quiet() {
-        return ProgressBar::hidden();
-    }
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(BRAILLE_SPINNER)
-            .template("{spinner} {msg}")
-            .unwrap(),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb
+    spinner(message)
 }
 
 /// Create a download/install spinner
 pub fn download_spinner(message: &str) -> ProgressBar {
-    if is_quiet() {
-        return ProgressBar::hidden();
-    }
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .tick_strings(BRAILLE_SPINNER)
-            .template("{spinner} {msg}")
-            .unwrap(),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-    pb
+    spinner(message)
 }
 
 /// Create a thinking spinner

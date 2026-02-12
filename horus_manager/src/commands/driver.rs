@@ -11,7 +11,7 @@ struct DriverInfo {
     description: &'static str,
 }
 
-fn resolve_driver_alias_local(alias: &str) -> Option<Vec<&'static str>> {
+pub(crate) fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
     match alias {
         "vision" => Some(vec!["camera", "depth-camera"]),
         "navigation" => Some(vec!["lidar", "gps", "imu"]),
@@ -298,7 +298,7 @@ pub fn run_info(driver: String) -> HorusResult<()> {
     let built_in = built_in_drivers();
 
     // Check if it's an alias first
-    if let Some(expanded) = resolve_driver_alias_local(&driver) {
+    if let Some(expanded) = resolve_driver_alias(&driver) {
         println!(
             "{} Driver Alias: {}\n",
             "[LINK]".cyan().bold(),

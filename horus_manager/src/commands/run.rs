@@ -1,3 +1,4 @@
+use crate::commands::driver::resolve_driver_alias;
 use crate::dependency_resolver::DependencySpec;
 use crate::progress::{self, finish_error, finish_success};
 use crate::version;
@@ -2331,18 +2332,6 @@ pub struct DriverConfig {
     pub backends: std::collections::HashMap<String, String>,
 }
 
-/// Resolve driver aliases to their expanded forms
-/// e.g., "vision" -> ["camera", "depth-camera"]
-fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
-    match alias {
-        "vision" => Some(vec!["camera", "depth-camera"]),
-        "navigation" => Some(vec!["lidar", "gps", "imu"]),
-        "manipulation" => Some(vec!["servo", "motor", "force-torque"]),
-        "locomotion" => Some(vec!["motor", "encoder", "imu"]),
-        "sensing" => Some(vec!["camera", "lidar", "ultrasonic", "imu"]),
-        _ => None,
-    }
-}
 
 /// Parse drivers section from horus.yaml
 ///

@@ -35,7 +35,7 @@
 //! Detection runs once at Scheduler construction. After that, all capability
 //! checks are simple field reads with zero overhead.
 
-use crate::core::rt_config::{RtCpuInfo, RtKernelInfo};
+use crate::core::rt_config::{parse_cpu_list, RtCpuInfo, RtKernelInfo};
 use crate::hardware::{Platform, PlatformCapabilities, PlatformDetector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -447,40 +447,7 @@ impl RuntimeCapabilities {
 
     /// Parse a CPU list string like "0-3,7,9-11" into individual CPU indices.
     fn parse_cpu_list(s: &str) -> Vec<usize> {
-        let mut cpus = Vec::new();
-
-        if s.is_empty() {
-            return cpus;
-        }
-
-        for part in s.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-
-            if let Some(dash_pos) = part.find('-') {
-                // Range like "2-5"
-                let start_str = &part[..dash_pos];
-                let end_str = &part[dash_pos + 1..];
-
-                if let (Ok(start), Ok(end)) = (start_str.parse::<usize>(), end_str.parse::<usize>())
-                {
-                    for cpu in start..=end {
-                        cpus.push(cpu);
-                    }
-                }
-            } else {
-                // Single CPU like "7"
-                if let Ok(cpu) = part.parse::<usize>() {
-                    cpus.push(cpu);
-                }
-            }
-        }
-
-        cpus.sort();
-        cpus.dedup();
-        cpus
+        parse_cpu_list(s)
     }
 
     /// Get the current RLIMIT_MEMLOCK soft limit.

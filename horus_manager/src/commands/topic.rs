@@ -3,6 +3,7 @@
 //! Provides commands for listing, echoing, and publishing to topics.
 
 use crate::discovery::discover_shared_memory;
+use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
@@ -438,16 +439,6 @@ pub fn publish_topic(
     Ok(())
 }
 
-/// Format bytes in human-readable form
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct TopicInfo {
