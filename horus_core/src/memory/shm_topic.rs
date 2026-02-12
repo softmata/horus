@@ -494,6 +494,10 @@ impl<T> ShmTopic<T> {
 
             // Check if we've exceeded max consumers (MAX_CONSUMERS fits in u32)
             if id as usize >= MAX_CONSUMERS {
+                // Undo the increment — failed registration must not leak a counter slot
+                (*header.as_ptr())
+                    .consumer_count
+                    .fetch_sub(1, Ordering::Relaxed);
                 return Err(HorusError::Memory(format!(
                     "Maximum number of consumers ({}) exceeded for topic '{}'",
                     MAX_CONSUMERS, name
@@ -684,6 +688,10 @@ impl<T> ShmTopic<T> {
 
             // Check if we've exceeded max consumers (MAX_CONSUMERS fits in u32)
             if id as usize >= MAX_CONSUMERS {
+                // Undo the increment — failed registration must not leak a counter slot
+                (*header.as_ptr())
+                    .consumer_count
+                    .fetch_sub(1, Ordering::Relaxed);
                 return Err(HorusError::Memory(format!(
                     "Maximum number of consumers ({}) exceeded for topic '{}'",
                     MAX_CONSUMERS, name
