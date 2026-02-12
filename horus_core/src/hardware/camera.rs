@@ -93,7 +93,6 @@ impl Camera {
         const V4L2_CAP_STREAMING: u32 = 0x04000000;
         (self.capabilities & V4L2_CAP_STREAMING) != 0
     }
-
 }
 
 /// Camera discovery
