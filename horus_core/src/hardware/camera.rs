@@ -94,11 +94,6 @@ impl Camera {
         (self.capabilities & V4L2_CAP_STREAMING) != 0
     }
 
-    /// Check if device supports mmap
-    pub fn supports_mmap(&self) -> bool {
-        const V4L2_CAP_STREAMING: u32 = 0x04000000;
-        (self.capabilities & V4L2_CAP_STREAMING) != 0
-    }
 }
 
 /// Camera discovery

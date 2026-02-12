@@ -491,7 +491,12 @@ impl DriverPlugin for PluginWrapper {
     }
 }
 
-// Make PluginWrapper Send + Sync
+// SAFETY: PluginWrapper is Send + Sync because:
+// - The inner `Arc<LoadedPlugin>` contains `Box<dyn DriverPlugin>` which is Send + Sync
+//   (DriverPlugin: Send + Sync bound)
+// - The `_library` field (when dynamic-plugins feature is enabled) is only kept alive
+//   to prevent the shared library from being unloaded. It is never accessed after
+//   initial plugin loading, and all runtime access goes through the DriverPlugin trait.
 unsafe impl Send for PluginWrapper {}
 unsafe impl Sync for PluginWrapper {}
 
