@@ -9,8 +9,6 @@ use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-mod common;
-
 // Test node that tracks lifecycle
 struct LifecycleNode {
     name: &'static str,

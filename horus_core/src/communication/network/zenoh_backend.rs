@@ -1717,6 +1717,10 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
 
+    /// Mutex to serialize session pool tests since they share global static state.
+    /// Without this, parallel test execution causes pool tests to interfere with each other.
+    static POOL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     struct TestMessage {
         value: i32,
@@ -2346,7 +2350,9 @@ mod tests {
 
     /// Test session pool basic operations
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[allow(clippy::await_holding_lock)] // Lock serializes test execution, not concurrent access
     async fn test_session_pool_basic() {
+        let _guard = POOL_TEST_LOCK.lock().unwrap();
         // Clear pool before test
         ZenohSessionPool::clear();
 
@@ -2393,7 +2399,9 @@ mod tests {
 
     /// Test session pool with different configs
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[allow(clippy::await_holding_lock)] // Lock serializes test execution, not concurrent access
     async fn test_session_pool_different_configs() {
+        let _guard = POOL_TEST_LOCK.lock().unwrap();
         // Clear pool before test
         ZenohSessionPool::clear();
 
@@ -2424,7 +2432,9 @@ mod tests {
 
     /// Test pooled backend creation
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[allow(clippy::await_holding_lock)] // Lock serializes test execution, not concurrent access
     async fn test_pooled_backend_creation() {
+        let _guard = POOL_TEST_LOCK.lock().unwrap();
         // Clear pool before test
         ZenohSessionPool::clear();
 

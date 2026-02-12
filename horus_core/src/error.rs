@@ -216,8 +216,9 @@ impl From<Box<dyn std::error::Error>> for HorusError {
 
 impl From<Box<dyn std::error::Error + Send + Sync>> for HorusError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        let message = err.to_string();
         HorusError::Contextual {
-            message: "Error".to_string(),
+            message,
             source: err,
         }
     }
