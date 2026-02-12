@@ -24,9 +24,14 @@ impl<const N: usize> FixedString<N> {
     /// Maximum capacity of this fixed string
     pub const CAPACITY: usize = N;
 
+    // Compile-time check: len is u8, so N must not exceed 255
+    const _ASSERT_N_FITS_U8: () = assert!(N <= 255, "FixedString<N>: N must be <= 255 (len is u8)");
+
     /// Create a new empty fixed string
     #[inline]
     pub const fn new() -> Self {
+        // Trigger the compile-time assertion
+        let _ = Self::_ASSERT_N_FITS_U8;
         Self {
             data: [0; N],
             len: 0,
