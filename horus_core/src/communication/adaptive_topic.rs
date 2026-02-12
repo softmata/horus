@@ -1384,6 +1384,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// )?;
     /// ```
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
+        if capacity == 0 {
+            return Err(crate::HorusError::InvalidInput(
+                "AdaptiveTopic capacity must be >= 1".to_string(),
+            ));
+        }
         let is_pod = Self::check_is_pod();
         let type_size = mem::size_of::<T>() as u32;
         let type_align = mem::align_of::<T>() as u32;
@@ -1399,7 +1404,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
         // Calculate total storage size: header + data buffer
         // Both POD and non-POD need full ring buffer with capacity slots
-        let data_size = (capacity as usize) * actual_slot_size;
+        // Must use power-of-two capacity to match what init() rounds up to,
+        // otherwise slots beyond the original capacity would be out-of-bounds
+        let actual_capacity = capacity.next_power_of_two() as usize;
+        let data_size = actual_capacity * actual_slot_size;
         let total_size = Self::HEADER_SIZE + data_size;
 
         // Create or open shared memory
