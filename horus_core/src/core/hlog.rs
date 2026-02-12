@@ -104,13 +104,14 @@ pub fn log_with_context(level: LogType, message: String) {
     // Also emit to stderr/stdout for console visibility
     let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
 
+    use std::io::{self, Write};
+
     match level {
         LogType::Info => {
             let msg = format!(
                 "\x1b[34m[INFO]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
                 node_name, message, line_ending
             );
-            use std::io::{self, Write};
             let _ = io::stderr().write_all(msg.as_bytes());
             let _ = io::stderr().flush();
         }
@@ -119,27 +120,24 @@ pub fn log_with_context(level: LogType, message: String) {
                 "\x1b[33m[WARN]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
                 node_name, message, line_ending
             );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
+            let _ = io::stderr().write_all(msg.as_bytes());
+            let _ = io::stderr().flush();
         }
         LogType::Error => {
             let msg = format!(
                 "\x1b[31m[ERROR]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
                 node_name, message, line_ending
             );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
+            let _ = io::stderr().write_all(msg.as_bytes());
+            let _ = io::stderr().flush();
         }
         LogType::Debug => {
             let msg = format!(
                 "\x1b[90m[DEBUG]\x1b[0m \x1b[33m[{}]\x1b[0m {}{}",
                 node_name, message, line_ending
             );
-            use std::io::{self, Write};
-            let _ = io::stdout().write_all(msg.as_bytes());
-            let _ = io::stdout().flush();
+            let _ = io::stderr().write_all(msg.as_bytes());
+            let _ = io::stderr().flush();
         }
         _ => {
             // Other log types (Publish, Subscribe, etc.) - just to shared memory

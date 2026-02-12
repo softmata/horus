@@ -551,7 +551,16 @@ pub fn is_private_address(addr: &str) -> bool {
         || addr.starts_with("172.17.")
         || addr.starts_with("172.18.")
         || addr.starts_with("172.19.")
-        || addr.starts_with("172.2")
+        || addr.starts_with("172.20.")
+        || addr.starts_with("172.21.")
+        || addr.starts_with("172.22.")
+        || addr.starts_with("172.23.")
+        || addr.starts_with("172.24.")
+        || addr.starts_with("172.25.")
+        || addr.starts_with("172.26.")
+        || addr.starts_with("172.27.")
+        || addr.starts_with("172.28.")
+        || addr.starts_with("172.29.")
         || addr.starts_with("172.30.")
         || addr.starts_with("172.31.")
         || addr.starts_with("192.168.")
@@ -609,9 +618,14 @@ mod tests {
     fn test_is_private_address() {
         assert!(is_private_address("10.0.0.1"));
         assert!(is_private_address("172.16.0.1"));
+        assert!(is_private_address("172.20.0.1"));
+        assert!(is_private_address("172.29.255.1"));
+        assert!(is_private_address("172.31.0.1"));
         assert!(is_private_address("192.168.1.1"));
         assert!(is_private_address("fe80::1"));
         assert!(!is_private_address("8.8.8.8"));
+        assert!(!is_private_address("172.200.0.1")); // NOT private — outside 172.16-31 range
+        assert!(!is_private_address("172.32.0.1")); // NOT private — outside 172.16-31 range
         assert!(!is_private_address("cloud.example.com"));
     }
 
