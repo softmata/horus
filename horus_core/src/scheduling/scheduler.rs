@@ -2290,8 +2290,20 @@ impl Scheduler {
                     if let Some(ref mut ctx) = registered.context {
                         // Set node context for hlog!() macro
                         set_node_context(node_name, 0);
-                        let init_result = registered.node.init();
+                        let init_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                registered.node.init()
+                            }));
                         clear_node_context();
+
+                        // Convert panic to error
+                        let init_result = match init_result {
+                            Ok(result) => result,
+                            Err(_) => Err(crate::HorusError::Node {
+                                node: node_name.to_string(),
+                                message: "panicked during init".to_string(),
+                            }),
+                        };
 
                         match init_result {
                             Ok(()) => {
@@ -2544,8 +2556,20 @@ impl Scheduler {
 
                         // Set node context for hlog!() macro
                         set_node_context(node_name, ctx.metrics().total_ticks);
-                        let shutdown_result = registered.node.shutdown();
+                        let shutdown_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                registered.node.shutdown()
+                            }));
                         clear_node_context();
+
+                        // Convert panic to error
+                        let shutdown_result = match shutdown_result {
+                            Ok(result) => result,
+                            Err(_) => Err(crate::HorusError::Node {
+                                node: node_name.to_string(),
+                                message: "panicked during shutdown".to_string(),
+                            }),
+                        };
 
                         match shutdown_result {
                             Ok(()) => {

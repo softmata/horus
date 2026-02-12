@@ -1064,12 +1064,19 @@ impl InProcessIsolatedRunner {
     fn handle_init(&mut self) {
         let _ = self.ipc.write_status(IpcStatus::Processing);
 
-        match self.node.init() {
-            Ok(_) => {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.node.init()));
+        match result {
+            Ok(Ok(_)) => {
                 let _ = self.ipc.write_status(IpcStatus::Success);
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = self.ipc.write_error_message(&e.to_string());
+                let _ = self.ipc.write_status(IpcStatus::Error);
+            }
+            Err(_) => {
+                let _ = self
+                    .ipc
+                    .write_error_message("Node panicked during init");
                 let _ = self.ipc.write_status(IpcStatus::Error);
             }
         }
@@ -1128,8 +1135,18 @@ impl InProcessIsolatedRunner {
 
     fn handle_shutdown(&mut self) {
         let _ = self.ipc.write_status(IpcStatus::Processing);
-        let _ = self.node.shutdown();
-        let _ = self.ipc.write_status(IpcStatus::Success);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.node.shutdown()));
+        match result {
+            Ok(Ok(_)) | Err(_) => {
+                // Shutdown succeeded or panicked — either way, mark as complete
+                let _ = self.ipc.write_status(IpcStatus::Success);
+            }
+            Ok(Err(e)) => {
+                let _ = self.ipc.write_error_message(&e.to_string());
+                let _ = self.ipc.write_status(IpcStatus::Error);
+            }
+        }
     }
 
     fn handle_health_check(&mut self) {
@@ -1202,12 +1219,19 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
                 IpcCommand::Init => {
                     ipc.write_status(IpcStatus::Processing)?;
 
-                    match node.init() {
-                        Ok(_) => {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        node.init()
+                    }));
+                    match result {
+                        Ok(Ok(_)) => {
                             ipc.write_status(IpcStatus::Success)?;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             ipc.write_error_message(&e.to_string())?;
+                            ipc.write_status(IpcStatus::Error)?;
+                        }
+                        Err(_) => {
+                            ipc.write_error_message("Node panicked during init")?;
                             ipc.write_status(IpcStatus::Error)?;
                         }
                     }
@@ -1253,7 +1277,9 @@ pub fn run_isolated_node(mut node: Box<dyn Node>, ipc_path: &std::path::Path) ->
                 }
                 IpcCommand::Shutdown => {
                     ipc.write_status(IpcStatus::Processing)?;
-                    let _ = node.shutdown();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        node.shutdown()
+                    }));
                     ipc.write_status(IpcStatus::Success)?;
                     ipc.sync()?;
 
