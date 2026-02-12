@@ -663,7 +663,10 @@ impl ZeroCopyReplayer {
             header_bytes.copy_from_slice(&self.mmap[offset..offset + EntryHeader::SIZE]);
             offset += EntryHeader::SIZE;
 
-            let data_end = offset + header.data_len as usize;
+            let data_end = match offset.checked_add(header.data_len as usize) {
+                Some(end) => end,
+                None => break,
+            };
             if data_end > self.mmap.len() {
                 break;
             }
@@ -727,7 +730,10 @@ impl ZeroCopyReplayer {
     pub fn raw_tick_data(&self, tick_index: usize) -> Option<&[u8]> {
         let idx_entry = self.index.get(tick_index)?;
         let start = idx_entry.data_offset as usize;
-        let end = start + idx_entry.total_size as usize;
+        let end = match start.checked_add(idx_entry.total_size as usize) {
+            Some(end) => end,
+            None => return None,
+        };
         if end <= self.mmap.len() {
             Some(&self.mmap[start..end])
         } else {

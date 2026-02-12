@@ -179,6 +179,10 @@ impl TensorPool {
         // Try to open existing or create new
         let (file, is_owner) = if shm_path.exists() {
             let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+            let actual_size = file.metadata()?.len();
+            if actual_size < total_size as u64 {
+                file.set_len(total_size as u64)?;
+            }
             (file, false)
         } else {
             let file = OpenOptions::new()
