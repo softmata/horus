@@ -202,8 +202,8 @@ where
 
             let packet_len = u32::from_le_bytes(len_buffer) as usize;
             if packet_len > BUFFER_SIZE {
-                warn!("[Router] Packet too large: {}", packet_len);
-                continue;
+                warn!("[Router] Packet too large: {} bytes, closing connection", packet_len);
+                break; // Cannot continue — stream is desynchronized
             }
 
             // Read packet data

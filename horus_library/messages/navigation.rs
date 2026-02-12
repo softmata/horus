@@ -351,7 +351,7 @@ impl Default for OccupancyGrid {
 impl OccupancyGrid {
     /// Create a new occupancy grid
     pub fn new(width: u32, height: u32, resolution: f32, origin: Pose2D) -> Self {
-        let data_size = (width * height) as usize;
+        let data_size = (width as usize) * (height as usize);
         Self {
             resolution,
             width,

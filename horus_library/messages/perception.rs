@@ -134,10 +134,10 @@ impl PointCloud {
         cloud.field_count = 3;
 
         cloud.point_step = 12; // 3 * 4 bytes
-        cloud.row_step = cloud.point_step * cloud.width;
+        cloud.row_step = cloud.point_step.saturating_mul(cloud.width);
 
-        // Serialize points to binary data
-        let mut data = Vec::with_capacity((cloud.point_step * cloud.width) as usize);
+        // Serialize points to binary data — use usize arithmetic to avoid u32 overflow
+        let mut data = Vec::with_capacity((cloud.point_step as usize) * (cloud.width as usize));
         for point in points {
             data.extend_from_slice(&(point.x as f32).to_le_bytes());
             data.extend_from_slice(&(point.y as f32).to_le_bytes());
@@ -163,10 +163,10 @@ impl PointCloud {
         cloud.field_count = 4;
 
         cloud.point_step = 16; // 3*4 + 4 bytes
-        cloud.row_step = cloud.point_step * cloud.width;
+        cloud.row_step = cloud.point_step.saturating_mul(cloud.width);
 
-        // Serialize points to binary data
-        let mut data = Vec::with_capacity((cloud.point_step * cloud.width) as usize);
+        // Serialize points to binary data — use usize arithmetic to avoid u32 overflow
+        let mut data = Vec::with_capacity((cloud.point_step as usize) * (cloud.width as usize));
         for (point, color) in points {
             data.extend_from_slice(&(point.x as f32).to_le_bytes());
             data.extend_from_slice(&(point.y as f32).to_le_bytes());

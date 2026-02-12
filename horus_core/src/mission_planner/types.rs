@@ -1015,7 +1015,7 @@ impl MissionMetrics {
         }
         self.total_execution_time += duration;
         if self.total_missions > 0 {
-            self.avg_mission_duration = self.total_execution_time / self.total_missions as u32;
+            self.avg_mission_duration = self.total_execution_time / (self.total_missions.min(u32::MAX as u64) as u32).max(1);
         }
     }
 
