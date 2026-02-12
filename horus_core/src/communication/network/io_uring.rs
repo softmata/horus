@@ -494,6 +494,19 @@ impl RealIoUringBackend {
     }
 }
 
+#[cfg(all(target_os = "linux", feature = "io-uring-net"))]
+impl Drop for RealIoUringBackend {
+    fn drop(&mut self) {
+        // SAFETY: socket_fd was obtained from UdpSocket::into_raw_fd() in new(),
+        // making us the sole owner. It has not been closed elsewhere, and the
+        // IoUring ring (which references this fd) is dropped after this field
+        // due to struct drop order (fields drop in declaration order).
+        unsafe {
+            libc::close(self.socket_fd);
+        }
+    }
+}
+
 /// Completion result from io_uring
 #[derive(Debug)]
 pub enum CompletionResult {
