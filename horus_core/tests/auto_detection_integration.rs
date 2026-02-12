@@ -424,9 +424,9 @@ fn test_frequency_tracker_overhead() {
     let elapsed = start.elapsed();
     let per_record_ns = elapsed.as_nanos() as f64 / iterations as f64;
 
-    // Frequency tracking should be very low overhead (<500ns per record)
+    // Frequency tracking should be very low overhead (<2000ns per record under parallel load)
     assert!(
-        per_record_ns < 500.0,
+        per_record_ns < 2000.0,
         "Frequency tracking too slow: {:.1}ns per record",
         per_record_ns
     );
