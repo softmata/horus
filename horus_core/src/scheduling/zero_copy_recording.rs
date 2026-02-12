@@ -575,10 +575,18 @@ impl ZeroCopyReplayer {
             )));
         }
 
-        // Read index
+        // Read index (cap at 256MB to prevent OOM from corrupted files)
         let index_path = path.join("index.bin");
         let mut index_file = File::open(&index_path)?;
-        let mut index_data = Vec::new();
+        let index_size = index_file.metadata()?.len();
+        const MAX_INDEX_SIZE: u64 = 256 * 1024 * 1024;
+        if index_size > MAX_INDEX_SIZE {
+            return Err(ZeroCopyError::InvalidFormat(format!(
+                "Index file too large: {} bytes (max {})",
+                index_size, MAX_INDEX_SIZE
+            )));
+        }
+        let mut index_data = Vec::with_capacity(index_size as usize);
         index_file.read_to_end(&mut index_data)?;
 
         // Parse index entries safely (copy to aligned buffer)
