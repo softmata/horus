@@ -477,15 +477,20 @@ impl<'de> Deserialize<'de> for GenericMessage {
                 // Copy the data into fixed buffers
                 let inline_copy_len = inline_data.len().min(INLINE_BUFFER_SIZE);
                 msg.inline_data[..inline_copy_len].copy_from_slice(&inline_data[..inline_copy_len]);
+                // Clamp inline_len to actual copied data to prevent OOB in data()
+                msg.inline_len = (msg.inline_len as usize).min(inline_copy_len) as u16;
 
                 let overflow_copy_len = overflow_data
                     .len()
                     .min(MAX_GENERIC_PAYLOAD - INLINE_BUFFER_SIZE);
                 msg.overflow_data[..overflow_copy_len]
                     .copy_from_slice(&overflow_data[..overflow_copy_len]);
+                // Clamp overflow_len to actual copied data to prevent OOB in data()
+                msg.overflow_len = (msg.overflow_len as usize).min(overflow_copy_len) as u32;
 
                 let metadata_copy_len = metadata.len().min(256);
                 msg.metadata[..metadata_copy_len].copy_from_slice(&metadata[..metadata_copy_len]);
+                msg.metadata_len = (msg.metadata_len as usize).min(metadata_copy_len) as u16;
 
                 Ok(msg)
             }

@@ -25,7 +25,7 @@
 //! drop(handle2); // Tensor memory is freed when last handle is dropped
 //! ```
 
-use super::tensor_pool::{HorusTensor, TensorDevice, TensorDtype, TensorPool};
+use super::tensor_pool::{HorusTensor, TensorDevice, TensorDtype, TensorPool, MAX_TENSOR_DIMS};
 use crate::error::HorusResult;
 use std::sync::Arc;
 
@@ -161,13 +161,15 @@ impl TensorHandle {
     /// Get tensor shape
     #[inline]
     pub fn shape(&self) -> &[u64] {
-        &self.tensor.shape[..self.tensor.ndim as usize]
+        let ndim = (self.tensor.ndim as usize).min(MAX_TENSOR_DIMS);
+        &self.tensor.shape[..ndim]
     }
 
     /// Get tensor strides
     #[inline]
     pub fn strides(&self) -> &[u64] {
-        &self.tensor.strides[..self.tensor.ndim as usize]
+        let ndim = (self.tensor.ndim as usize).min(MAX_TENSOR_DIMS);
+        &self.tensor.strides[..ndim]
     }
 
     /// Get tensor dtype

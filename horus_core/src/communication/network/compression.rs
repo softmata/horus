@@ -360,6 +360,11 @@ impl Compressor {
         }
 
         let original_size = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        // Cap allocation to prevent decompression bombs (max 64 MB)
+        const MAX_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
+        if original_size > MAX_DECOMPRESSED_SIZE {
+            return Err(CompressionError::InvalidData);
+        }
         let mut output = Vec::with_capacity(original_size);
 
         let mut i = 8;
@@ -378,7 +383,10 @@ impl Compressor {
                 i += 2;
 
                 let distance = dist_lo | (dist_hi << 8);
-                let start = output.len().saturating_sub(distance);
+                if distance == 0 || distance > output.len() {
+                    return Err(CompressionError::InvalidData);
+                }
+                let start = output.len() - distance;
 
                 for j in 0..length {
                     let byte = output[start + j];

@@ -37,6 +37,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Maximum allowed message size for QUIC receive paths (64 MB).
+/// Prevents memory exhaustion from malicious length prefixes.
+const MAX_QUIC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
 #[cfg(feature = "quic")]
 use tokio::sync::RwLock;
 
@@ -552,6 +556,15 @@ impl QuicTransport {
             .map_err(io::Error::other)?;
 
         let response_len = u32::from_le_bytes(len_buf) as usize;
+        if response_len > MAX_QUIC_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "QUIC response too large: {} bytes (max {})",
+                    response_len, MAX_QUIC_MESSAGE_SIZE
+                ),
+            ));
+        }
         let mut response = vec![0u8; response_len];
         recv.read_exact(&mut response)
             .await
@@ -603,6 +616,15 @@ impl QuicTransport {
             .map_err(io::Error::other)?;
 
         let data_len = u32::from_le_bytes(len_buf) as usize;
+        if data_len > MAX_QUIC_MESSAGE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "QUIC message too large: {} bytes (max {})",
+                    data_len, MAX_QUIC_MESSAGE_SIZE
+                ),
+            ));
+        }
         let mut data = vec![0u8; data_len];
         recv.read_exact(&mut data).await.map_err(io::Error::other)?;
 

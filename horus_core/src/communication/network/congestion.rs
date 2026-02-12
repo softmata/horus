@@ -143,6 +143,7 @@ pub struct TokenBucket {
 
 impl TokenBucket {
     pub fn new(rate: u64) -> Self {
+        assert!(rate > 0, "TokenBucket rate must be > 0 to avoid division by zero");
         let rate = rate as f64;
         Self {
             tokens: rate, // Start full
