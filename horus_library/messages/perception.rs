@@ -193,8 +193,8 @@ impl PointCloud {
     }
 
     /// Get total number of points
-    pub fn point_count(&self) -> u32 {
-        self.width * self.height
+    pub fn point_count(&self) -> u64 {
+        (self.width as u64) * (self.height as u64)
     }
 
     /// Check if point cloud is valid
@@ -203,7 +203,7 @@ impl PointCloud {
             && self.height > 0
             && self.field_count > 0
             && self.point_step > 0
-            && self.data.len() >= (self.point_step * self.point_count()) as usize
+            && self.data.len() >= (self.point_step as u64 * self.point_count()) as usize
     }
 
     /// Extract XYZ coordinates (if available)
