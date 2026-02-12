@@ -131,7 +131,7 @@ impl Landmark3D {
 /// - MediaPipe hands: 21 landmarks per hand
 /// - MediaPipe face mesh: 468 landmarks
 ///
-/// Size: 32 bytes
+/// Size: 40 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
 pub struct LandmarkArray {

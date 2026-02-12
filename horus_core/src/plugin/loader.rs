@@ -32,7 +32,7 @@ use super::types::{PluginError, PluginId, PluginManifest, PluginResult};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(feature = "dynamic-plugins")]
 use libloading::Library;
@@ -104,7 +104,8 @@ pub struct PluginLoader {
     loaded: RwLock<HashMap<PluginId, Arc<LoadedPlugin>>>,
 
     /// Static plugins registered at compile time
-    static_plugins: HashMap<PluginId, Box<dyn DriverPlugin>>,
+    /// Uses Mutex for interior mutability so load_static() can take ownership
+    static_plugins: Mutex<HashMap<PluginId, Box<dyn DriverPlugin>>>,
 
     /// Current HORUS version for compatibility checking
     horus_version: String,
@@ -122,7 +123,7 @@ impl PluginLoader {
             search_paths: Vec::new(),
             discovered: HashMap::new(),
             loaded: RwLock::new(HashMap::new()),
-            static_plugins: HashMap::new(),
+            static_plugins: Mutex::new(HashMap::new()),
             horus_version: horus_version.to_string(),
         }
     }
@@ -196,7 +197,7 @@ impl PluginLoader {
         );
 
         // Store the plugin
-        self.static_plugins.insert(id, plugin);
+        self.static_plugins.lock().unwrap().insert(id, plugin);
     }
 
     /// Discover available plugins in search paths
@@ -364,16 +365,27 @@ impl PluginLoader {
         Ok(Arc::new(PluginWrapper(arc)))
     }
 
-    /// Load a static plugin
+    /// Load a static plugin by taking ownership from the static registry.
+    /// Once loaded, the plugin lives in the `loaded` cache and subsequent
+    /// `load()` calls will hit the cache directly.
     fn load_static(&self, id: &str) -> PluginResult<LoadedPlugin> {
-        // For static plugins, we need to clone the Box<dyn DriverPlugin>
-        // This is a limitation - static plugins need to implement Clone
-        // For now, we return an error suggesting re-registration
-        Err(PluginError::LoadError(format!(
-            "Static plugin '{}' should be accessed via register_static(). \
-             Consider using get_static() instead.",
-            id
-        )))
+        let plugin = self
+            .static_plugins
+            .lock()
+            .unwrap()
+            .remove(id)
+            .ok_or_else(|| {
+                PluginError::NotFound(format!(
+                    "Static plugin '{}' not found or already loaded",
+                    id
+                ))
+            })?;
+
+        Ok(LoadedPlugin {
+            plugin,
+            #[cfg(feature = "dynamic-plugins")]
+            _library: None,
+        })
     }
 
     /// Load a dynamic plugin from a shared library
