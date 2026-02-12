@@ -49,12 +49,17 @@ where
             crate::error::HorusError::Communication(format!("Failed to set nonblocking: {}", e))
         })?;
 
-        // Wait for first subscriber with timeout
+        // Wait for first subscriber with timeout (30 seconds)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let stream = loop {
             match listener.accept() {
                 Ok((stream, _addr)) => break stream,
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connection yet, sleep briefly
+                    if std::time::Instant::now() >= deadline {
+                        return Err(crate::error::HorusError::Communication(
+                            "Timed out waiting for Unix socket subscriber (30s)".to_string(),
+                        ));
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) => {
@@ -69,6 +74,14 @@ where
         stream.set_nonblocking(false).map_err(|e| {
             crate::error::HorusError::Communication(format!("Failed to set blocking: {}", e))
         })?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to set read timeout: {}",
+                    e
+                ))
+            })?;
 
         Ok(Self {
             topic_name: topic.to_string(),
@@ -94,6 +107,14 @@ where
         stream.set_nonblocking(false).map_err(|e| {
             crate::error::HorusError::Communication(format!("Failed to set blocking: {}", e))
         })?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .map_err(|e| {
+                crate::error::HorusError::Communication(format!(
+                    "Failed to set read timeout: {}",
+                    e
+                ))
+            })?;
 
         Ok(Self {
             topic_name: topic.to_string(),
