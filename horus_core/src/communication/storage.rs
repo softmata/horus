@@ -387,30 +387,26 @@ impl UnifiedShmHeader {
     }
 }
 
-/// Helper to round up to next power of 2
-///
-/// Used for ring buffer capacity to enable efficient modulo via bitwise AND.
-#[inline]
-pub const fn next_power_of_2(n: u32) -> u32 {
-    if n == 0 {
-        return 1;
-    }
-    let mut power = 1u32;
-    while power < n {
-        power <<= 1;
-    }
-    power
-}
-
-/// Check if a value is a power of 2
-#[inline]
-pub const fn is_power_of_2(n: u32) -> bool {
-    n > 0 && (n & (n - 1)) == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to round up to next power of 2
+    const fn next_power_of_2(n: u32) -> u32 {
+        if n == 0 {
+            return 1;
+        }
+        let mut power = 1u32;
+        while power < n {
+            power <<= 1;
+        }
+        power
+    }
+
+    /// Check if a value is a power of 2
+    const fn is_power_of_2(n: u32) -> bool {
+        n > 0 && (n & (n - 1)) == 0
+    }
 
     #[test]
     fn test_header_sizes() {

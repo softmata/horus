@@ -985,9 +985,10 @@ impl<T: Clone + Send + Sync + 'static> MpscShmBackend<T> {
             // SAFETY: header pointer is valid; region was created by another process with same layout
             let h = unsafe { header.as_ref() };
             if h.magic != MPSC_SHM_MAGIC {
-                return Err(HorusError::Communication(
-                    "Invalid MpscShm magic number".into(),
-                ));
+                return Err(HorusError::Communication(format!(
+                    "Invalid MpscShm magic number: expected 0x{:016X}, got 0x{:016X}",
+                    MPSC_SHM_MAGIC, h.magic
+                )));
             }
             if h.element_size != data_size as u64 {
                 return Err(HorusError::Communication(format!(
@@ -1236,9 +1237,10 @@ impl<T: Clone + Send + Sync + 'static> SpmcShmBackend<T> {
             // SAFETY: header pointer is valid; region was created by another process with same layout
             let h = unsafe { header.as_ref() };
             if h.magic != SPMC_SHM_MAGIC {
-                return Err(HorusError::Communication(
-                    "Invalid SpmcShm magic number".into(),
-                ));
+                return Err(HorusError::Communication(format!(
+                    "Invalid SpmcShm magic number: expected 0x{:016X}, got 0x{:016X}",
+                    SPMC_SHM_MAGIC, h.magic
+                )));
             }
             if h.element_size != data_size as u64 {
                 return Err(HorusError::Communication(format!(
