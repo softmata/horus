@@ -1017,7 +1017,16 @@ mod tests {
 
     #[test]
     fn test_heartbeat_round_trip() {
-        let monitor = HealthMonitor::default_monitor();
+        // Use generous thresholds so the test is stable under CPU contention
+        // (thread::sleep can overshoot significantly during parallel test execution)
+        let config = HealthMonitorConfig {
+            rtt_warning_threshold: Duration::from_secs(5),
+            rtt_critical_threshold: Duration::from_secs(10),
+            jitter_warning_threshold: Duration::from_secs(5),
+            jitter_critical_threshold: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let monitor = HealthMonitor::new(config);
         monitor.start();
 
         // Create heartbeat

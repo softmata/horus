@@ -1609,28 +1609,7 @@ fn prefetch_read<T>(ptr: *const T) {
     }
 }
 
-/// Hint that a branch is unlikely to be taken (cold path)
-#[inline(always)]
-#[cold]
-fn cold() {}
-
-/// Mark a condition as unlikely (branch prediction hint)
-#[inline(always)]
-fn unlikely(b: bool) -> bool {
-    if b {
-        cold()
-    }
-    b
-}
-
-/// Mark a condition as likely (branch prediction hint)
-#[inline(always)]
-fn likely(b: bool) -> bool {
-    if !b {
-        cold()
-    }
-    b
-}
+use crate::utils::{likely, unlikely};
 
 /// DirectChannel backend - fastest possible path for same-thread communication
 ///

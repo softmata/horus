@@ -22,7 +22,7 @@
 //! - AVX2: 256-bit operations (most modern x86-64 CPUs)
 //! - Fallback: Standard library copy (always works)
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 // ============================================================================
 // SIMD THRESHOLDS AND CONSTANTS
@@ -35,31 +35,22 @@ pub const SIMD_COPY_THRESHOLD: usize = 4096; // 4KB
 /// Alignment requirement for SIMD operations (AVX2 = 32 bytes)
 const SIMD_ALIGNMENT: usize = 32;
 
-// Runtime feature detection cache
-static AVX2_CHECKED: AtomicBool = AtomicBool::new(false);
-static AVX2_AVAILABLE: AtomicBool = AtomicBool::new(false);
+// Runtime feature detection — initialized exactly once, race-free
+static AVX2_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 /// Check if AVX2 is available on the current CPU
 #[inline]
 fn is_avx2_available() -> bool {
-    // Use cached result if already checked
-    if AVX2_CHECKED.load(Ordering::Relaxed) {
-        return AVX2_AVAILABLE.load(Ordering::Relaxed);
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        let available = is_x86_feature_detected!("avx2");
-        AVX2_AVAILABLE.store(available, Ordering::Relaxed);
-        AVX2_CHECKED.store(true, Ordering::Release);
-        available
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        AVX2_CHECKED.store(true, Ordering::Release);
-        false
-    }
+    *AVX2_AVAILABLE.get_or_init(|| {
+        #[cfg(target_arch = "x86_64")]
+        {
+            is_x86_feature_detected!("avx2")
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            false
+        }
+    })
 }
 
 /// Copy data TO shared memory using SIMD streaming stores.

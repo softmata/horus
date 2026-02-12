@@ -70,20 +70,7 @@ const MIGRATION_LOCKED: u8 = 1;
 // Branch Prediction Hints (HOT PATH OPTIMIZATION)
 // ============================================================================
 
-/// Hint that a branch is unlikely to be taken (cold path)
-#[inline(always)]
-#[cold]
-fn cold() {}
-
-/// Mark a condition as unlikely (branch prediction hint for cold paths)
-/// Use for: error paths, rare conditions, buffer-full checks
-#[inline(always)]
-fn unlikely(b: bool) -> bool {
-    if b {
-        cold()
-    }
-    b
-}
+use crate::utils::unlikely;
 
 // ============================================================================
 // SIMD-Aware Copy Helpers

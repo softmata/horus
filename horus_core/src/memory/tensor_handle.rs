@@ -310,14 +310,15 @@ mod tests {
         let handle = TensorHandle::alloc(pool.clone(), &[4], TensorDtype::F32, TensorDevice::Cpu)
             .expect("Failed to allocate");
 
-        // Write data
+        // SAFETY: Handle was allocated with shape [4] and dtype F32, so data_as_mut::<f32>()
+        // returns a valid &mut [f32; 4] slice backed by the tensor's shared memory region.
         let data = unsafe { handle.data_as_mut::<f32>() };
         data[0] = 1.0;
         data[1] = 2.0;
         data[2] = 3.0;
         data[3] = 4.0;
 
-        // Read data
+        // SAFETY: Same allocation as above; data_as::<f32>() reads the previously written values.
         let data = unsafe { handle.data_as::<f32>() };
         assert_eq!(data, &[1.0, 2.0, 3.0, 4.0]);
 

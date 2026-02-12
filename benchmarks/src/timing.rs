@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn rdtsc() -> u64 {
+    // SAFETY: _rdtsc is a read-only x86_64 intrinsic with no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -36,6 +37,7 @@ pub fn rdtsc() -> u64 {
 #[inline(always)]
 pub fn rdtscp() -> u64 {
     let mut aux: u32 = 0;
+    // SAFETY: __rdtscp is a read-only x86_64 intrinsic. aux is a valid stack pointer.
     unsafe { core::arch::x86_64::__rdtscp(&mut aux) }
 }
 
@@ -49,6 +51,8 @@ pub fn rdtscp() -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn serialize() {
+    // SAFETY: _mm_mfence and _mm_lfence are x86_64 fence intrinsics with no
+    // memory safety implications — they only enforce instruction ordering.
     unsafe {
         core::arch::x86_64::_mm_mfence();
         core::arch::x86_64::_mm_lfence();

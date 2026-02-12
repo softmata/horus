@@ -165,6 +165,9 @@ pub fn set_cpu_affinity(core: usize) -> Result<(), Box<dyn std::error::Error>> {
     use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
     use std::mem;
 
+    // SAFETY: cpu_set is stack-allocated and zeroed before use. CPU_SET sets the
+    // specified core bit. sched_setaffinity(0, ...) targets the current thread.
+    // All pointers reference valid stack memory with correct sizes.
     unsafe {
         let mut cpu_set: cpu_set_t = mem::zeroed();
         CPU_ZERO(&mut cpu_set);

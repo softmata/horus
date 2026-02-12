@@ -65,6 +65,7 @@ pub mod scheduling;
 pub mod state_machines;
 pub mod terminal;
 pub mod types;
+pub(crate) mod utils;
 
 // Re-export commonly used types for easy access
 // Unified Topic API - the single way to create IPC channels

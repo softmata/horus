@@ -177,6 +177,7 @@ pub fn detect_cpu_frequency() -> Option<f64> {
     // Measure over 100ms for reasonable accuracy
     let measure_duration = Duration::from_millis(100);
 
+    // SAFETY: _rdtsc is a read-only x86_64 intrinsic with no side effects.
     let start_cycles = unsafe { core::arch::x86_64::_rdtsc() };
     let start_time = Instant::now();
 
@@ -185,6 +186,7 @@ pub fn detect_cpu_frequency() -> Option<f64> {
         std::hint::spin_loop();
     }
 
+    // SAFETY: _rdtsc is a read-only x86_64 intrinsic with no side effects.
     let end_cycles = unsafe { core::arch::x86_64::_rdtsc() };
     let elapsed = start_time.elapsed();
 

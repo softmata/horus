@@ -4,16 +4,8 @@ use horus_core::error::Result;
 use horus_core::hlog;
 use horus_core::scheduling::{ConfigValue, ExecutionMode, Scheduler, SchedulerConfig};
 
-/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
-/// The discovery topic persists in /dev/shm and can have incompatible layouts
-/// across different test binaries.
-fn cleanup_stale_shm() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
-    });
-}
+mod common;
+use common::cleanup_stale_shm;
 
 /// Simple test node for configuration testing
 struct TestNode {

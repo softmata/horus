@@ -335,7 +335,8 @@ fn test_auto_detection_workflow() {
             timestamp: start.elapsed().as_nanos() as u64,
         };
 
-        // In real code, this would be serialized (or zero-copy for POD)
+        // SAFETY: MotorCommand is a POD struct (repr(C), all primitive fields).
+        // Reading its bytes as a &[u8] is safe for any bit pattern.
         let payload = unsafe {
             std::slice::from_raw_parts(
                 &cmd as *const _ as *const u8,
