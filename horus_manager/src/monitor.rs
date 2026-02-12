@@ -1082,6 +1082,17 @@ pub async fn packages_install_handler(Json(req): Json<InstallRequest>) -> impl I
     use crate::registry::RegistryClient;
     use std::path::PathBuf;
 
+    // Validate package name to prevent directory traversal
+    if !is_safe_path_component(&req.package) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid package name"
+            })),
+        )
+            .into_response();
+    }
+
     let package_name = req.package.clone();
     let target = req.target.clone();
 
