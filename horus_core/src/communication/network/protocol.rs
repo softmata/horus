@@ -220,9 +220,13 @@ impl HorusPacket {
 
         let header_size = mem::size_of::<PacketHeader>();
         let topic_start = header_size;
-        let topic_end = topic_start + header.topic_len as usize;
+        let topic_end = topic_start
+            .checked_add(header.topic_len as usize)
+            .ok_or("Topic length overflow")?;
         let payload_start = topic_end;
-        let payload_end = payload_start + header.payload_len as usize;
+        let payload_end = payload_start
+            .checked_add(header.payload_len as usize)
+            .ok_or("Payload length overflow")?;
 
         if buf.len() < payload_end {
             return Err("Buffer too small for payload");
