@@ -182,7 +182,10 @@ impl TactileArray {
 
     /// Calculate center of pressure for grid arrangement
     pub fn center_of_pressure(&self) -> Option<(f32, f32)> {
-        if self.arrangement != Self::ARRANGEMENT_GRID || self.sensor_count == 0 {
+        if self.arrangement != Self::ARRANGEMENT_GRID
+            || self.sensor_count == 0
+            || self.grid_width == 0
+        {
             return None;
         }
 

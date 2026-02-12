@@ -2213,6 +2213,13 @@ impl Scheduler {
     ///     .set_node_rate("sensor", 100.0);  // Run sensor at 100Hz
     /// ```
     pub fn set_node_rate(&mut self, name: &str, rate_hz: f64) -> &mut Self {
+        if !rate_hz.is_finite() || rate_hz <= 0.0 {
+            print_line(&format!(
+                "Warning: ignoring invalid rate {:.1} Hz for node '{}'",
+                rate_hz, name
+            ));
+            return self;
+        }
         for registered in self.nodes.iter_mut() {
             if registered.node.name() == name {
                 registered.rate_hz = Some(rate_hz);
