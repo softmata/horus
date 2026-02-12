@@ -7,6 +7,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 /// Critical control node that must never miss deadlines
 struct CriticalControlNode {
     name: String,
@@ -93,6 +104,7 @@ impl RtNode for CriticalControlNode {
 
 #[test]
 fn test_scheduler_with_rt_nodes() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     // Add RT node with fluent API
@@ -126,6 +138,7 @@ fn test_scheduler_with_rt_nodes() {
 
 #[test]
 fn test_scheduler_with_safety_critical_config() {
+    cleanup_stale_shm();
     // Configure for safety-critical operation
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
@@ -153,6 +166,7 @@ fn test_scheduler_with_safety_critical_config() {
 
 #[test]
 fn test_wcet_violation_detection() {
+    cleanup_stale_shm();
     // Enable RT monitoring
     let mut config = SchedulerConfig::standard();
     config.realtime.wcet_enforcement = true;
@@ -178,6 +192,7 @@ fn test_wcet_violation_detection() {
 
 #[test]
 fn test_deadline_miss_detection() {
+    cleanup_stale_shm();
     // Enable deadline monitoring
     let mut config = SchedulerConfig::standard();
     config.realtime.deadline_monitoring = true;
@@ -202,6 +217,7 @@ fn test_deadline_miss_detection() {
 
 #[test]
 fn test_mixed_rt_and_normal_nodes() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
 
     // Mix of RT and normal nodes
@@ -238,6 +254,7 @@ fn test_mixed_rt_and_normal_nodes() {
 
 #[test]
 fn test_watchdog_functionality() {
+    cleanup_stale_shm();
     // Enable watchdog monitoring
     let mut config = SchedulerConfig::standard();
     config.realtime.watchdog_enabled = true;
@@ -262,6 +279,7 @@ fn test_watchdog_functionality() {
 
 #[test]
 fn test_high_performance_rt_config() {
+    cleanup_stale_shm();
     // Configure for high-performance racing robot
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 

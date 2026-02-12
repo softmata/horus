@@ -7,6 +7,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 /// Example: Motor control node with real-time constraints
 struct MotorControlNode {
     name: String,
@@ -223,6 +234,7 @@ impl RtNode for LoggingNode {
 
 #[test]
 fn test_rt_node_basic() {
+    cleanup_stale_shm();
     // Use standard config (RT features disabled)
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
@@ -244,6 +256,7 @@ fn test_rt_node_basic() {
 
 #[test]
 fn test_rt_node_priority_ordering() {
+    cleanup_stale_shm();
     let motor = Arc::new(AtomicU64::new(0));
     let sensor = Arc::new(AtomicU64::new(0));
     let logger = Arc::new(AtomicU64::new(0));
@@ -270,6 +283,7 @@ fn test_rt_node_priority_ordering() {
 
 #[test]
 fn test_rt_node_with_safety_critical_config() {
+    cleanup_stale_shm();
     // Use safety-critical configuration (all RT features enabled)
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 

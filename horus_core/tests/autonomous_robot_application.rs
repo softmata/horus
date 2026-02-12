@@ -14,6 +14,17 @@ use std::f64::consts::PI;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 // ============ Message Types ============
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -993,6 +1004,7 @@ fn cleanup_test_topics() {
 
 #[test]
 fn test_autonomous_robot_complete_system() {
+    cleanup_stale_shm();
     // Clean up any stale shared memory from previous runs
     cleanup_test_topics();
 
@@ -1095,6 +1107,7 @@ fn test_autonomous_robot_complete_system() {
 
 #[test]
 fn test_robot_performance_metrics() {
+    cleanup_stale_shm();
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Clean up any stale shared memory from previous tests

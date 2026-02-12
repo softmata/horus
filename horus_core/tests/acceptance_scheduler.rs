@@ -9,6 +9,18 @@ use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+#[allow(dead_code)]
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 // Test node that tracks lifecycle
 struct LifecycleNode {
     name: &'static str,

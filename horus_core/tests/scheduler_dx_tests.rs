@@ -14,6 +14,17 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 /// Simple test node that counts ticks
 struct TickCounterNode {
     name: &'static str,
@@ -53,6 +64,7 @@ impl Node for TickCounterNode {
 
 #[test]
 fn test_new_creates_scheduler() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -74,6 +86,7 @@ fn test_new_creates_scheduler() {
 
 #[test]
 fn test_new_detects_capabilities() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     let caps = scheduler.capabilities();
@@ -88,6 +101,7 @@ fn test_new_detects_capabilities() {
 
 #[test]
 fn test_new_records_degradations_gracefully() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let degradations = scheduler.degradations();
     let _ = degradations.len();
@@ -95,6 +109,7 @@ fn test_new_records_degradations_gracefully() {
 
 #[test]
 fn test_new_with_capacity() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::new().with_capacity(100);
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -113,6 +128,7 @@ fn test_new_with_capacity() {
 
 #[test]
 fn test_safety_critical_creates_scheduler() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::safety_critical();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -127,6 +143,7 @@ fn test_safety_critical_creates_scheduler() {
 
 #[test]
 fn test_high_performance_creates_scheduler() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::high_performance();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -141,6 +158,7 @@ fn test_high_performance_creates_scheduler() {
 
 #[test]
 fn test_deterministic_creates_scheduler() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::deterministic();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -155,6 +173,7 @@ fn test_deterministic_creates_scheduler() {
 
 #[test]
 fn test_hard_realtime_creates_scheduler() {
+    cleanup_stale_shm();
     let mut scheduler = Scheduler::hard_realtime();
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -173,6 +192,7 @@ fn test_hard_realtime_creates_scheduler() {
 
 #[test]
 fn test_status_returns_formatted_string() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -192,6 +212,7 @@ fn test_status_returns_formatted_string() {
 
 #[test]
 fn test_status_shows_capabilities() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -211,6 +232,7 @@ fn test_status_shows_capabilities() {
 
 #[test]
 fn test_new_auto_creates_blackbox() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     assert!(
@@ -221,6 +243,7 @@ fn test_new_auto_creates_blackbox() {
 
 #[test]
 fn test_blackbox_mut_accessor() {
+    cleanup_stale_shm();
     use horus_core::scheduling::BlackBoxEvent;
 
     let mut scheduler = Scheduler::new();
@@ -234,6 +257,7 @@ fn test_blackbox_mut_accessor() {
 
 #[test]
 fn test_status_shows_blackbox() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -254,6 +278,7 @@ fn test_status_shows_blackbox() {
 
 #[test]
 fn test_circuit_breakers_enabled_by_default() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
@@ -269,6 +294,7 @@ fn test_circuit_breakers_enabled_by_default() {
 
 #[test]
 fn test_circuit_summary_empty_scheduler() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     let (closed, open, half_open) = scheduler.circuit_summary();
@@ -279,6 +305,7 @@ fn test_circuit_summary_empty_scheduler() {
 
 #[test]
 fn test_circuit_state_nonexistent_node() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     assert!(
@@ -293,6 +320,7 @@ fn test_circuit_state_nonexistent_node() {
 
 #[test]
 fn test_status_shows_wcet_enforcement() {
+    cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 

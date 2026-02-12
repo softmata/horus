@@ -4,6 +4,17 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 /// Test node that simulates CPU-intensive work
 struct CpuNode {
     name: &'static str,
@@ -132,6 +143,7 @@ impl Node for FlakyNode {
 
 #[test]
 fn test_enhanced_scheduler() {
+    cleanup_stale_shm();
     // Create shared counters
     let cpu_counter = Arc::new(AtomicUsize::new(0));
     let io_counter = Arc::new(AtomicUsize::new(0));
@@ -216,6 +228,7 @@ fn test_enhanced_scheduler() {
 
 #[test]
 fn test_circuit_breaker_protection() {
+    cleanup_stale_shm();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();

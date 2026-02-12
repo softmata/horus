@@ -4,6 +4,17 @@ use horus_core::error::Result;
 use horus_core::hlog;
 use horus_core::scheduling::{ConfigValue, ExecutionMode, Scheduler, SchedulerConfig};
 
+/// Clean up stale shared memory from previous test runs to prevent SIGSEGV.
+/// The discovery topic persists in /dev/shm and can have incompatible layouts
+/// across different test binaries.
+fn cleanup_stale_shm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
+    });
+}
+
 /// Simple test node for configuration testing
 struct TestNode {
     name: String,
@@ -46,6 +57,7 @@ impl Node for TestNode {
 
 #[test]
 fn test_standard_config() {
+    cleanup_stale_shm();
     // Apply standard robot configuration
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
@@ -59,6 +71,7 @@ fn test_standard_config() {
 
 #[test]
 fn test_safety_critical_config() {
+    cleanup_stale_shm();
     // Apply safety-critical robot configuration
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
 
@@ -77,6 +90,7 @@ fn test_safety_critical_config() {
 
 #[test]
 fn test_high_performance_config() {
+    cleanup_stale_shm();
     // Apply high-performance robot configuration
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
@@ -89,6 +103,7 @@ fn test_high_performance_config() {
 
 #[test]
 fn test_space_robot_config() {
+    cleanup_stale_shm();
     // Apply space robot configuration using standard config
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
@@ -101,6 +116,7 @@ fn test_space_robot_config() {
 
 #[test]
 fn test_custom_exotic_robot_config() {
+    cleanup_stale_shm();
     // Create fully custom configuration for an exotic robot type
     let mut config = SchedulerConfig::standard();
     config
@@ -132,6 +148,7 @@ fn test_custom_exotic_robot_config() {
 
 #[test]
 fn test_execution_modes() {
+    cleanup_stale_shm();
     // Test Sequential mode
     {
         let mut config = SchedulerConfig::standard();
@@ -158,6 +175,7 @@ fn test_execution_modes() {
 
 #[test]
 fn test_swarm_config() {
+    cleanup_stale_shm();
     // Apply swarm robotics configuration using standard config
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
@@ -173,6 +191,7 @@ fn test_swarm_config() {
 
 #[test]
 fn test_soft_robotics_config() {
+    cleanup_stale_shm();
     // Apply soft robotics configuration using standard config
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
@@ -191,6 +210,7 @@ fn test_soft_robotics_config() {
 
 #[test]
 fn test_high_performance_optimizer_nodes() {
+    cleanup_stale_shm();
     // Test high-performance configuration with optimizer nodes
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
