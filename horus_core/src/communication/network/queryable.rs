@@ -384,7 +384,7 @@ impl Default for QueryServer {
 }
 
 /// Query error types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
     /// Query timed out
     Timeout,
@@ -395,7 +395,7 @@ pub enum QueryError {
     /// Service returned error
     ServiceError(ResponseStatus),
     /// Serialization error
-    SerializationError,
+    SerializationError(String),
 }
 
 impl std::fmt::Display for QueryError {
@@ -405,7 +405,7 @@ impl std::fmt::Display for QueryError {
             Self::NotFound => write!(f, "Query not found"),
             Self::TooManyPending => write!(f, "Too many pending queries"),
             Self::ServiceError(status) => write!(f, "Service error: {:?}", status),
-            Self::SerializationError => write!(f, "Serialization error"),
+            Self::SerializationError(e) => write!(f, "Serialization error: {}", e),
         }
     }
 }
@@ -416,12 +416,12 @@ impl std::error::Error for QueryError {}
 pub trait Queryable: Sized + serde::Serialize + serde::de::DeserializeOwned {
     /// Convert to query payload
     fn to_query_payload(&self) -> Result<Vec<u8>, QueryError> {
-        bincode::serialize(self).map_err(|_| QueryError::SerializationError)
+        bincode::serialize(self).map_err(|e| QueryError::SerializationError(e.to_string()))
     }
 
     /// Create from response payload
     fn from_response_payload(data: &[u8]) -> Result<Self, QueryError> {
-        bincode::deserialize(data).map_err(|_| QueryError::SerializationError)
+        bincode::deserialize(data).map_err(|e| QueryError::SerializationError(e.to_string()))
     }
 }
 
