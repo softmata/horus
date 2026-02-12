@@ -93,7 +93,7 @@ struct RingBufferHeader {
     // These are written once during initialization and rarely change thereafter
     magic: AtomicU64,    // 8 bytes - written LAST to signal initialization complete
     capacity: AtomicU32, // 4 bytes - fixed after init (32-bit: max 4B entries)
-    tail: AtomicU32,     // 4 bytes - unused, kept for compatibility
+    tail: AtomicU32,     // 4 bytes - repurposed as "has_data" flag (0=no writes, 1=data written)
     element_size: AtomicUsize, // 8 bytes - fixed after init (stays usize for large elements)
     consumer_count: AtomicU32, // 4 bytes - written occasionally on register/unregister
     _padding0: [u8; 100], // Pad to 128 bytes (8 + 4 + 4 + 8 + 4 = 28, 128 - 28 = 100)
@@ -765,6 +765,15 @@ impl<T> ShmTopic<T> {
                 }
                 // NOTE: No sequence_number update - consumers use cached_head
                 // This saves one atomic operation (~5-10ns on x86_64)
+
+                // When writing to slot 0 (first publish or head wrap), mark that
+                // data has been written. The tail field is otherwise unused and
+                // initialized to 0. read_latest() checks this to disambiguate
+                // "head==0 because no messages" from "head==0 because it wrapped."
+                if head == 0 {
+                    header.tail.store(1, Ordering::Release);
+                }
+
                 Ok(())
             }
             Err(_) => Err(msg),
@@ -914,6 +923,12 @@ impl<T> ShmTopic<T> {
                             ));
                         }
 
+                        // Mark that data has been written when writing to slot 0
+                        // (see push_fast for explanation)
+                        if head == 0 {
+                            header.tail.store(1, Ordering::Release);
+                        }
+
                         return Ok(PublisherSample {
                             data_ptr,
                             _slot_index: head as usize,
@@ -1032,14 +1047,20 @@ impl<T> ShmTopic<T> {
         let header = unsafe { self.header.as_ref() };
         let current_head = header.head.load(Ordering::Acquire);
 
-        // If head is 0, no messages have been written yet
-        if current_head == 0 {
-            return None;
-        }
-
-        // The most recent message is at (head - 1) in a ring buffer
-        // Handle wrap-around for ring buffer (already checked head != 0 above)
-        let latest_slot = current_head - 1;
+        // The most recent message is at (head - 1) in a ring buffer.
+        // head stores masked indices (0 to capacity-1). When head is 0, it could mean:
+        //   (a) No messages have been written yet (initial state, tail==0)
+        //   (b) Head wrapped after capacity writes (tail!=0, latest slot is capacity-1)
+        // The tail field (otherwise unused) is set to 1 on first write to slot 0.
+        let latest_slot = if current_head == 0 {
+            if header.tail.load(Ordering::Acquire) == 0 {
+                return None; // Truly no messages written
+            }
+            // Head wrapped: latest slot is the last one in the ring
+            self.capacity - 1
+        } else {
+            current_head - 1
+        };
 
         // Validate position
         if latest_slot >= self.capacity {
