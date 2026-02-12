@@ -81,7 +81,7 @@ pub unsafe fn from_dlpack(
     // Validate ndim is non-negative and within reasonable bounds before casting to usize
     if tensor.ndim < 0 || tensor.ndim > 64 {
         return Err(DLPackImportError::InvalidTensor(
-            format!("invalid ndim: {} (must be 0..=64)", tensor.ndim).into(),
+            format!("invalid ndim: {} (must be 0..=64)", tensor.ndim),
         ));
     }
     let ndim = tensor.ndim as usize;
