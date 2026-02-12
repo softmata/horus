@@ -12,6 +12,28 @@ use crate::driver::DriverCategory;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Compare two version strings numerically (e.g., "1.10.0" > "1.2.0").
+/// Returns negative if a < b, zero if equal, positive if a > b.
+/// Falls back to lexicographic comparison for non-numeric parts.
+fn compare_version_parts(a: &str, b: &str) -> i32 {
+    let mut a_parts = a.split('.');
+    let mut b_parts = b.split('.');
+    loop {
+        match (a_parts.next(), b_parts.next()) {
+            (Some(ap), Some(bp)) => {
+                let an = ap.parse::<u64>().unwrap_or(0);
+                let bn = bp.parse::<u64>().unwrap_or(0);
+                if an != bn {
+                    return if an > bn { 1 } else { -1 };
+                }
+            }
+            (Some(_), None) => return 1,
+            (None, Some(_)) => return -1,
+            (None, None) => return 0,
+        }
+    }
+}
+
 /// Unique identifier for a plugin
 pub type PluginId = String;
 
@@ -145,8 +167,7 @@ impl PluginManifest {
 
         if let Some(min_version) = req.strip_prefix(">=") {
             let min = min_version.trim();
-            // Simple string comparison works for semver if formatted consistently
-            return horus_version >= min;
+            return compare_version_parts(horus_version, min) >= 0;
         }
 
         if let Some(prefix) = req.strip_prefix('^') {
@@ -475,6 +496,17 @@ mod tests {
         assert!(manifest.is_compatible_with("0.5.0"));
         assert!(manifest.is_compatible_with("0.6.0"));
         assert!(!manifest.is_compatible_with("0.4.0"));
+
+        // Test multi-digit version comparison (would fail with string comparison)
+        let manifest2 = PluginManifest {
+            horus_version: ">=1.10.0".into(),
+            ..manifest.clone()
+        };
+        assert!(manifest2.is_compatible_with("1.10.0"));
+        assert!(manifest2.is_compatible_with("1.11.0"));
+        assert!(manifest2.is_compatible_with("2.0.0"));
+        assert!(!manifest2.is_compatible_with("1.2.0")); // 1.2 < 1.10
+        assert!(!manifest2.is_compatible_with("1.9.0")); // 1.9 < 1.10
     }
 
     #[test]
