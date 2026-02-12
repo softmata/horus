@@ -2135,6 +2135,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
             _ if is_cross_process_non_pod => {
                 // Cross-process non-POD: use bincode serialization
+                // Handles MpscShm/SpmcShm/MpmcShm non-POD — must use fetch_add
+                // for multi-producer safety (load+store would race)
                 let serialized = match bincode::serialize(&msg) {
                     Ok(data) => data,
                     Err(_) => return Err(msg),
@@ -2146,8 +2148,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     return Err(msg);
                 }
 
-                let seq = header.sequence_or_head.load(Ordering::Acquire);
                 let mask = local.cached_capacity_mask;
+                let capacity = local.cached_capacity;
+
+                // Backpressure check
+                let current_head = header.sequence_or_head.load(Ordering::Acquire);
+                let current_tail = header.tail.load(Ordering::Acquire);
+                if current_head.wrapping_sub(current_tail) >= capacity {
+                    return Err(msg);
+                }
+
+                // Atomically claim slot — safe for multi-producer (MpscShm/MpmcShm)
+                let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
                 let index = (seq & mask) as usize;
                 let slot_offset = index * slot_size;
 
@@ -2162,7 +2174,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     let seq_ptr = slot_ptr as *mut u64;
                     std::ptr::write_volatile(seq_ptr, seq + 1);
                 }
-                header.sequence_or_head.store(seq + 1, Ordering::Release);
+
                 // Sync local_head to prevent fast path from overwriting
                 local.local_head = seq + 1;
             }
@@ -2527,9 +2539,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             return Some(msg);
         }
 
-        // FAST PATH: SpmcShm/MpmcShm cross-process - Multiple consumers need CAS
+        // FAST PATH: SpmcShm/MpmcShm cross-process POD - Multiple consumers need CAS
+        // Non-POD types must use serialization slow path (raw reads would interpret
+        // serialized [seq, len, data] bytes as T — UB for types with pointers)
         if local.role.can_recv()
             && !local.is_same_process
+            && local.is_pod
             && (local.cached_mode == AdaptiveBackendMode::SpmcShm
                 || local.cached_mode == AdaptiveBackendMode::MpmcShm)
         {
@@ -2747,42 +2762,77 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 msg
             }
             _ if is_cross_process_non_pod => {
+                // Cross-process non-POD recv: handles SpmcShm/MpmcShm non-POD
+                // Uses CAS to atomically claim slot before reading, preventing
+                // multi-consumer races (duplicate reads / message loss)
                 let slot_size = local.slot_size;
                 let mask = local.cached_capacity_mask;
-                let index = (tail & mask) as usize;
-                let slot_offset = index * slot_size;
 
-                // SAFETY: slot_ptr is within storage bounds; seq/len/data reads are within slot_size;
-                // from_raw_parts len is validated against max_data_size before use
-                let msg = unsafe {
-                    let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
-
-                    let seq_ptr = slot_ptr as *const u64;
-                    let seq = std::ptr::read_volatile(seq_ptr);
-                    if seq != tail + 1 {
+                loop {
+                    let current_tail = header.tail.load(Ordering::Acquire);
+                    let current_head = header.sequence_or_head.load(Ordering::Acquire);
+                    if current_tail >= current_head {
                         return None;
                     }
 
-                    let len_ptr = slot_ptr.add(8) as *const u64;
-                    let len = std::ptr::read_volatile(len_ptr) as usize;
+                    let index = (current_tail & mask) as usize;
+                    let slot_offset = index * slot_size;
 
-                    let max_data_size = slot_size.saturating_sub(16);
-                    if len > max_data_size {
-                        return None;
+                    // Check per-slot seq to verify producer has finished writing
+                    // SAFETY: slot_ptr is within storage bounds; seq read is within slot_size
+                    let seq = unsafe {
+                        let slot_ptr =
+                            self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                        let seq_ptr = slot_ptr as *const u64;
+                        std::ptr::read_volatile(seq_ptr)
+                    };
+                    if seq != current_tail + 1 {
+                        return None; // Data not ready yet
                     }
 
-                    let data_ptr = slot_ptr.add(16);
-                    let slice = std::slice::from_raw_parts(data_ptr, len);
-
-                    match bincode::deserialize(slice) {
-                        Ok(msg) => msg,
-                        Err(_) => return None,
+                    // Atomically claim this slot via CAS
+                    if header
+                        .tail
+                        .compare_exchange_weak(
+                            current_tail,
+                            current_tail.wrapping_add(1),
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_err()
+                    {
+                        // Another consumer claimed this slot, retry
+                        std::hint::spin_loop();
+                        continue;
                     }
-                };
-                let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
-                // Sync local_tail to prevent fast path from re-reading
-                local.local_tail = new_tail;
-                msg
+
+                    // Successfully claimed slot — read and deserialize
+                    // SAFETY: slot_ptr is within storage bounds; len/data reads are within slot_size;
+                    // from_raw_parts len is validated against max_data_size before use
+                    let msg = unsafe {
+                        let slot_ptr =
+                            self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                        let len_ptr = slot_ptr.add(8) as *const u64;
+                        let len = std::ptr::read_volatile(len_ptr) as usize;
+
+                        let max_data_size = slot_size.saturating_sub(16);
+                        if len > max_data_size {
+                            return None;
+                        }
+
+                        let data_ptr = slot_ptr.add(16);
+                        let slice = std::slice::from_raw_parts(data_ptr, len);
+
+                        match bincode::deserialize(slice) {
+                            Ok(msg) => msg,
+                            Err(_) => return None,
+                        }
+                    };
+
+                    // Sync local_tail
+                    local.local_tail = current_tail.wrapping_add(1);
+                    break msg;
+                }
             }
             _ => {
                 let mask = local.cached_capacity_mask;
