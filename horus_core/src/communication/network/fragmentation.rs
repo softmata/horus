@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_MTU: usize = 1400; // Conservative MTU (1500 - headers)
 const FRAGMENT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum number of concurrent in-flight fragment groups to prevent memory exhaustion
+/// from malicious or misbehaving senders flooding unique fragment IDs.
+const MAX_PENDING_GROUPS: usize = 256;
 
 /// A single fragment of a larger message
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -92,7 +95,14 @@ impl FragmentManager {
             return Some(fragment.data);
         }
 
-        // Multi-fragment message
+        // Multi-fragment message — limit pending groups to prevent memory exhaustion
+        if !pending.contains_key(&fragment.fragment_id)
+            && pending.len() >= MAX_PENDING_GROUPS
+        {
+            // Drop fragment when too many groups are in flight
+            return None;
+        }
+
         let fragmented = pending
             .entry(fragment.fragment_id)
             .or_insert_with(|| FragmentedMessage::new(fragment.total));
