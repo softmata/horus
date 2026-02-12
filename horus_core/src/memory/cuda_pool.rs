@@ -74,6 +74,19 @@ const SLOT_ALLOCATED: u32 = 1;
 /// Invalid slot index (sentinel for free list)
 const INVALID_SLOT: u32 = u32::MAX;
 
+/// Pack a generation counter and slot index into a single u64 for ABA-safe CAS.
+/// Upper 32 bits: generation counter, lower 32 bits: slot index.
+fn pack_tagged_head(generation: u32, slot_id: u32) -> u64 {
+    ((generation as u64) << 32) | slot_id as u64
+}
+
+/// Unpack a tagged head into (generation, slot_id).
+fn unpack_tagged_head(tagged: u64) -> (u32, u32) {
+    let generation = (tagged >> 32) as u32;
+    let slot_id = (tagged & 0xFFFF_FFFF) as u32;
+    (generation, slot_id)
+}
+
 /// CUDA pool header stored in shared memory
 #[repr(C)]
 struct CudaPoolHeader {
@@ -806,20 +819,26 @@ impl CudaTensorPool {
     }
 
     fn find_free_slot(&self) -> HorusResult<u32> {
-        // Try to pop from free stack first (O(1) fast path)
+        // Try to pop from free stack first (Treiber stack with ABA prevention
+        // via generation counter in upper 32 bits of tagged head)
         let header = self.header();
 
         loop {
-            let head = header.free_stack_head.load(Ordering::Acquire);
-            if head != INVALID_SLOT as u64 {
-                let slot_id = head as u32;
+            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
+            let (generation, slot_id) = unpack_tagged_head(tagged_head);
+            if slot_id != INVALID_SLOT {
                 let slot = self.slot(slot_id);
                 let next = slot.next_free.load(Ordering::Acquire);
 
-                // Try to pop this slot from the free stack
+                let new_tagged = pack_tagged_head(generation.wrapping_add(1), next);
                 if header
                     .free_stack_head
-                    .compare_exchange_weak(head, next as u64, Ordering::AcqRel, Ordering::Relaxed)
+                    .compare_exchange_weak(
+                        tagged_head,
+                        new_tagged,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
                 {
                     // Successfully popped, now mark as allocated
@@ -861,14 +880,21 @@ impl CudaTensorPool {
         // Mark as free
         slot.state.store(SLOT_FREE, Ordering::Release);
 
-        // Push to free stack
+        // Push to free stack (ABA-safe via generation counter)
         loop {
-            let head = header.free_stack_head.load(Ordering::Acquire);
-            slot.next_free.store(head as u32, Ordering::Release);
+            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
+            let (generation, current_head) = unpack_tagged_head(tagged_head);
+            slot.next_free.store(current_head, Ordering::Release);
 
+            let new_tagged = pack_tagged_head(generation.wrapping_add(1), slot_id);
             if header
                 .free_stack_head
-                .compare_exchange_weak(head, slot_id as u64, Ordering::AcqRel, Ordering::Relaxed)
+                .compare_exchange_weak(
+                    tagged_head,
+                    new_tagged,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
