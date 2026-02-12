@@ -537,7 +537,8 @@ impl DepthImage {
 
         let min = *valid_depths.iter().min().unwrap() as f32;
         let max = *valid_depths.iter().max().unwrap() as f32;
-        let mean = valid_depths.iter().sum::<u16>() as f32 / valid_depths.len() as f32;
+        let mean = valid_depths.iter().map(|&d| d as u64).sum::<u64>() as f32
+            / valid_depths.len() as f32;
 
         (min, max, mean)
     }
