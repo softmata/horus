@@ -1189,6 +1189,17 @@ pub async fn packages_uninstall_handler(Json(req): Json<UninstallRequest>) -> im
     use std::fs;
     use std::path::PathBuf;
 
+    // Validate package names to prevent directory traversal
+    if !is_safe_path_component(&req.parent_package) || !is_safe_path_component(&req.package) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid package name"
+            })),
+        )
+            .into_response();
+    }
+
     let parent_package = req.parent_package.clone();
     let package = req.package.clone();
     let parent_package_msg = parent_package.clone();
