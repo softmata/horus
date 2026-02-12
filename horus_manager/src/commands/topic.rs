@@ -439,7 +439,6 @@ pub fn publish_topic(
     Ok(())
 }
 
-
 #[derive(Debug, Clone)]
 pub struct TopicInfo {
     pub name: String,

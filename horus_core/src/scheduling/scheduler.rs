@@ -1222,12 +1222,12 @@ impl Scheduler {
         // === Apply new runtime features ===
 
         // 1. Global tick rate enforcement
-        let rate_hz = if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0
-        {
-            config.timing.global_rate_hz
-        } else {
-            100.0 // Safe fallback for invalid rate
-        };
+        let rate_hz =
+            if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
+                config.timing.global_rate_hz
+            } else {
+                100.0 // Safe fallback for invalid rate
+            };
         self.tick_period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
 
         // 2. Black box flight recorder

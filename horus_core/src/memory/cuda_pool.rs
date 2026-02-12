@@ -889,12 +889,7 @@ impl CudaTensorPool {
             let new_tagged = pack_tagged_head(generation.wrapping_add(1), slot_id);
             if header
                 .free_stack_head
-                .compare_exchange_weak(
-                    tagged_head,
-                    new_tagged,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(tagged_head, new_tagged, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
                 break;

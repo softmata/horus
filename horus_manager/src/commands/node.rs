@@ -414,7 +414,6 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
     Ok(())
 }
 
-
 /// Truncate name to fit in column
 fn truncate_name(name: &str, max_len: usize) -> String {
     if name.len() <= max_len {

@@ -2332,7 +2332,6 @@ pub struct DriverConfig {
     pub backends: std::collections::HashMap<String, String>,
 }
 
-
 /// Parse drivers section from horus.yaml
 ///
 /// Supports two formats:

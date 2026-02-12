@@ -2781,8 +2781,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Check per-slot seq to verify producer has finished writing
                     // SAFETY: slot_ptr is within storage bounds; seq read is within slot_size
                     let seq = unsafe {
-                        let slot_ptr =
-                            self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                        let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
                         let seq_ptr = slot_ptr as *const u64;
                         std::ptr::read_volatile(seq_ptr)
                     };
@@ -2810,8 +2809,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // SAFETY: slot_ptr is within storage bounds; len/data reads are within slot_size;
                     // from_raw_parts len is validated against max_data_size before use
                     let msg = unsafe {
-                        let slot_ptr =
-                            self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                        let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
                         let len_ptr = slot_ptr.add(8) as *const u64;
                         let len = std::ptr::read_volatile(len_ptr) as usize;
 
