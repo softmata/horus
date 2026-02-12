@@ -738,10 +738,7 @@ impl ZeroCopyReplayer {
     pub fn raw_tick_data(&self, tick_index: usize) -> Option<&[u8]> {
         let idx_entry = self.index.get(tick_index)?;
         let start = idx_entry.data_offset as usize;
-        let end = match start.checked_add(idx_entry.total_size as usize) {
-            Some(end) => end,
-            None => return None,
-        };
+        let end = start.checked_add(idx_entry.total_size as usize)?;
         if end <= self.mmap.len() {
             Some(&self.mmap[start..end])
         } else {
