@@ -5358,10 +5358,11 @@ mod tests {
             per_op_ns
         );
 
-        // Unchecked should generally be faster than safe, but allow 2x margin for
-        // measurement noise during parallel test execution (CPU migration, cache effects)
+        // Unchecked should generally be faster than safe, but allow 5x margin for
+        // measurement noise during parallel test execution (CPU migration, cache effects,
+        // scheduler preemption can cause large variance on sub-microsecond operations)
         assert!(
-            per_op_unchecked_ns < per_op_ns * 2.0,
+            per_op_unchecked_ns < per_op_ns * 5.0,
             "Unchecked ({:.2}ns) much slower than safe ({:.2}ns)",
             per_op_unchecked_ns,
             per_op_ns

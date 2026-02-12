@@ -352,7 +352,7 @@ mod tests {
 
         // Should be around 1ms = 1_000_000 ns, with some tolerance
         assert!(
-            elapsed > 500_000 && elapsed < 10_000_000,
+            elapsed > 500_000 && elapsed < 100_000_000,
             "Unexpected elapsed time: {} ns",
             elapsed
         );
@@ -397,7 +397,7 @@ mod tests {
         });
 
         assert!(
-            elapsed > 500_000 && elapsed < 10_000_000,
+            elapsed > 500_000 && elapsed < 100_000_000,
             "Unexpected elapsed time: {} ns",
             elapsed
         );

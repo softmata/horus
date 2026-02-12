@@ -1298,21 +1298,21 @@ mod tests {
             numel,
             offset: 0,
             dtype,
-            ndim: shape.len() as u8,
+            ndim: shape.len().min(MAX_TENSOR_DIMS) as u8,
             _pad: [0; 6],
             shape: [0; MAX_TENSOR_DIMS],
             strides: [0; MAX_TENSOR_DIMS],
             ipc_handle: [0; CUDA_IPC_HANDLE_SIZE],
         };
 
-        // Set shape
-        for (i, &dim) in shape.iter().enumerate() {
+        // Set shape (clamped to MAX_TENSOR_DIMS)
+        for (i, &dim) in shape.iter().take(MAX_TENSOR_DIMS).enumerate() {
             tensor.shape[i] = dim;
         }
 
         // Compute contiguous strides
         let mut stride = 1u64;
-        for i in (0..shape.len()).rev() {
+        for i in (0..shape.len().min(MAX_TENSOR_DIMS)).rev() {
             tensor.strides[i] = stride;
             stride *= shape[i];
         }
