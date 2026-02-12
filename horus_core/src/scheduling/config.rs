@@ -565,7 +565,15 @@ impl SchedulerConfig {
     }
 
     /// Set the global tick rate in Hz
+    ///
+    /// # Panics
+    /// Panics if `rate_hz` is not a positive finite number.
     pub fn with_tick_rate(mut self, rate_hz: f64) -> Self {
+        assert!(
+            rate_hz.is_finite() && rate_hz > 0.0,
+            "global_rate_hz must be a positive finite number, got {}",
+            rate_hz
+        );
         self.timing.global_rate_hz = rate_hz;
         self
     }
