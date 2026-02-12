@@ -441,13 +441,18 @@ impl TensorPool {
             return &[];
         }
 
-        // SAFETY: data_offset + tensor.offset is within bounds; size is valid for the allocation.
+        // Bounds check: ensure offset + size fits within the mmap'd data region
+        let offset = tensor.offset as usize;
+        let size = tensor.size as usize;
+        let data_region_size = self.mmap.len().saturating_sub(self.data_offset);
+        if offset.checked_add(size).is_none_or(|end| end > data_region_size) {
+            return &[];
+        }
+
+        // SAFETY: data_offset + tensor.offset + tensor.size is within mmap bounds (checked above).
         unsafe {
-            let ptr = self
-                .mmap
-                .as_ptr()
-                .add(self.data_offset + tensor.offset as usize);
-            std::slice::from_raw_parts(ptr, tensor.size as usize)
+            let ptr = self.mmap.as_ptr().add(self.data_offset + offset);
+            std::slice::from_raw_parts(ptr, size)
         }
     }
 
@@ -458,13 +463,21 @@ impl TensorPool {
             return &mut [];
         }
 
-        // SAFETY: data_offset + tensor.offset is within bounds; size is valid for the allocation.
+        // Bounds check: ensure offset + size fits within the mmap'd data region
+        let offset = tensor.offset as usize;
+        let size = tensor.size as usize;
+        let data_region_size = self.mmap.len().saturating_sub(self.data_offset);
+        if offset.checked_add(size).is_none_or(|end| end > data_region_size) {
+            return &mut [];
+        }
+
+        // SAFETY: data_offset + tensor.offset + tensor.size is within mmap bounds (checked above).
         unsafe {
             let ptr = self
                 .mmap
                 .as_ptr()
-                .add(self.data_offset + tensor.offset as usize) as *mut u8;
-            std::slice::from_raw_parts_mut(ptr, tensor.size as usize)
+                .add(self.data_offset + offset) as *mut u8;
+            std::slice::from_raw_parts_mut(ptr, size)
         }
     }
 
