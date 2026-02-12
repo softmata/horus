@@ -213,9 +213,8 @@ impl<N: Node> AsyncNode<N> {
 
     /// Execute node tick with timeout protection
     ///
-    /// Returns error if:
-    /// - Node execution exceeds timeout
-    /// - Node panics during execution
+    /// Returns error if node execution exceeds timeout.
+    /// Note: panics in the node will propagate (not caught).
     pub async fn tick_with_timeout(&mut self) -> Result<(), String> {
         let timeout_duration = self.timeout;
 
