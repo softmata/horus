@@ -11,6 +11,9 @@ const FRAGMENT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum number of concurrent in-flight fragment groups to prevent memory exhaustion
 /// from malicious or misbehaving senders flooding unique fragment IDs.
 const MAX_PENDING_GROUPS: usize = 256;
+/// Maximum total reassembled message size (64 MB) to prevent fragment bombs
+/// where many small fragments reassemble into a multi-GB message.
+const MAX_REASSEMBLED_SIZE: usize = 64 * 1024 * 1024;
 
 /// A single fragment of a larger message
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -100,6 +103,12 @@ impl FragmentManager {
             && pending.len() >= MAX_PENDING_GROUPS
         {
             // Drop fragment when too many groups are in flight
+            return None;
+        }
+
+        // Reject fragments that would reassemble into an oversized message
+        let estimated_total = fragment.total as usize * fragment.data.len();
+        if estimated_total > MAX_REASSEMBLED_SIZE {
             return None;
         }
 
