@@ -65,7 +65,7 @@ fn test_new_creates_scheduler() {
         .order(0)
         .done();
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(
         result.is_ok(),
         "Scheduler::new() should create a working scheduler"
