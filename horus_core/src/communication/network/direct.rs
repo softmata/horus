@@ -207,7 +207,10 @@ where
 
             let msg_len = u32::from_le_bytes(len_buffer) as usize;
             if msg_len > read_buffer.len() {
-                warn!("[Direct] Message too large: {} bytes, closing connection", msg_len);
+                warn!(
+                    "[Direct] Message too large: {} bytes, closing connection",
+                    msg_len
+                );
                 break; // Cannot continue — stream is desynchronized
             }
 

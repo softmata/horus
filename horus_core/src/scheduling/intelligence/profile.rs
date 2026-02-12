@@ -346,7 +346,11 @@ impl ProfileData {
         println!("{}", "-".repeat(60));
 
         let mut nodes: Vec<_> = self.nodes.values().collect();
-        nodes.sort_by(|a, b| a.avg_us.partial_cmp(&b.avg_us).unwrap_or(std::cmp::Ordering::Equal));
+        nodes.sort_by(|a, b| {
+            a.avg_us
+                .partial_cmp(&b.avg_us)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         for profile in nodes {
             println!(

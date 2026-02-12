@@ -80,9 +80,10 @@ pub unsafe fn from_dlpack(
 
     // Validate ndim is non-negative and within reasonable bounds before casting to usize
     if tensor.ndim < 0 || tensor.ndim > 64 {
-        return Err(DLPackImportError::InvalidTensor(
-            format!("invalid ndim: {} (must be 0..=64)", tensor.ndim),
-        ));
+        return Err(DLPackImportError::InvalidTensor(format!(
+            "invalid ndim: {} (must be 0..=64)",
+            tensor.ndim
+        )));
     }
     let ndim = tensor.ndim as usize;
 
@@ -91,9 +92,10 @@ pub unsafe fn from_dlpack(
         let mut shape = Vec::with_capacity(ndim);
         for (i, &x) in raw_shape.iter().enumerate() {
             if x < 0 {
-                return Err(DLPackImportError::InvalidTensor(
-                    format!("negative shape[{}] = {}", i, x),
-                ));
+                return Err(DLPackImportError::InvalidTensor(format!(
+                    "negative shape[{}] = {}",
+                    i, x
+                )));
             }
             shape.push(x as u64);
         }
@@ -113,9 +115,10 @@ pub unsafe fn from_dlpack(
         let mut strides = Vec::with_capacity(ndim);
         for (i, &x) in raw_strides.iter().enumerate() {
             if x < 0 {
-                return Err(DLPackImportError::InvalidTensor(
-                    format!("negative stride[{}] = {}", i, x),
-                ));
+                return Err(DLPackImportError::InvalidTensor(format!(
+                    "negative stride[{}] = {}",
+                    i, x
+                )));
             }
             strides.push(x as u64 * elem_size);
         }

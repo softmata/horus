@@ -513,7 +513,7 @@ impl<T> ShmTopic<T> {
             capacity: actual_capacity,
             _consumer_id: consumer_id, // MPMC: Consumer ID for registration (u32)
             consumer_tail: AtomicU32::new(current_head), // MPMC OPTIMIZED: Local tail tracking (32-bit)
-            cached_head: AtomicU32::new(current_head), // Rigtorp: Cache head locally (32-bit)
+            cached_head: AtomicU32::new(current_head),   // Rigtorp: Cache head locally (32-bit)
             _phantom: std::marker::PhantomData,
             _padding: [0; 16],
         })
@@ -704,7 +704,7 @@ impl<T> ShmTopic<T> {
             capacity,
             _consumer_id: consumer_id, // MPMC: Consumer ID for registration (u32)
             consumer_tail: AtomicU32::new(current_head), // MPMC OPTIMIZED: Local tail tracking (32-bit)
-            cached_head: AtomicU32::new(current_head), // Rigtorp: Cache head locally (32-bit)
+            cached_head: AtomicU32::new(current_head),   // Rigtorp: Cache head locally (32-bit)
             _phantom: std::marker::PhantomData,
             _padding: [0; 16],
         })

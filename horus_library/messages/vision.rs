@@ -136,7 +136,8 @@ impl Image {
         }
 
         let bytes_per_pixel = self.encoding.bytes_per_pixel() as usize;
-        let mut roi_data = Vec::with_capacity((width as usize) * (height as usize) * bytes_per_pixel);
+        let mut roi_data =
+            Vec::with_capacity((width as usize) * (height as usize) * bytes_per_pixel);
 
         for row in y..y + height {
             let start = (row * self.step + x * self.encoding.bytes_per_pixel()) as usize;

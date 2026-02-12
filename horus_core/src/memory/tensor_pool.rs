@@ -449,7 +449,10 @@ impl TensorPool {
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let data_region_size = self.mmap.len().saturating_sub(self.data_offset);
-        if offset.checked_add(size).is_none_or(|end| end > data_region_size) {
+        if offset
+            .checked_add(size)
+            .is_none_or(|end| end > data_region_size)
+        {
             return &[];
         }
 
@@ -471,16 +474,16 @@ impl TensorPool {
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let data_region_size = self.mmap.len().saturating_sub(self.data_offset);
-        if offset.checked_add(size).is_none_or(|end| end > data_region_size) {
+        if offset
+            .checked_add(size)
+            .is_none_or(|end| end > data_region_size)
+        {
             return &mut [];
         }
 
         // SAFETY: data_offset + tensor.offset + tensor.size is within mmap bounds (checked above).
         unsafe {
-            let ptr = self
-                .mmap
-                .as_ptr()
-                .add(self.data_offset + offset) as *mut u8;
+            let ptr = self.mmap.as_ptr().add(self.data_offset + offset) as *mut u8;
             std::slice::from_raw_parts_mut(ptr, size)
         }
     }

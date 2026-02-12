@@ -99,9 +99,7 @@ impl FragmentManager {
         }
 
         // Multi-fragment message — limit pending groups to prevent memory exhaustion
-        if !pending.contains_key(&fragment.fragment_id)
-            && pending.len() >= MAX_PENDING_GROUPS
-        {
+        if !pending.contains_key(&fragment.fragment_id) && pending.len() >= MAX_PENDING_GROUPS {
             // Drop fragment when too many groups are in flight
             return None;
         }
