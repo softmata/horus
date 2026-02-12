@@ -105,7 +105,12 @@ impl SharedLogBuffer {
         // Truncate message if too long (BEFORE serialization to keep metadata intact)
         let mut entry = entry;
         if entry.message.len() > MAX_MESSAGE_LEN {
-            entry.message.truncate(MAX_MESSAGE_LEN - 3);
+            // Find a valid UTF-8 char boundary for truncation
+            let mut end = MAX_MESSAGE_LEN - 3;
+            while end > 0 && !entry.message.is_char_boundary(end) {
+                end -= 1;
+            }
+            entry.message.truncate(end);
             entry.message.push_str("...");
         }
 

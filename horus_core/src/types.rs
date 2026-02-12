@@ -40,10 +40,19 @@ impl<const N: usize> FixedString<N> {
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         let mut result = Self::new();
-        let bytes = s.as_bytes();
-        let copy_len = bytes.len().min(N);
-        result.data[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        result.len = copy_len as u8;
+        // Truncate at a valid UTF-8 char boundary to avoid splitting multi-byte characters
+        let truncated = if s.len() <= N {
+            s
+        } else {
+            let mut end = N;
+            while end > 0 && !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            &s[..end]
+        };
+        let bytes = truncated.as_bytes();
+        result.data[..bytes.len()].copy_from_slice(bytes);
+        result.len = bytes.len() as u8;
         result
     }
 
@@ -51,8 +60,9 @@ impl<const N: usize> FixedString<N> {
     #[inline]
     pub fn as_str(&self) -> &str {
         let len = (self.len as usize).min(N);
-        // SAFETY: We only store valid UTF-8 and track the length
-        unsafe { std::str::from_utf8_unchecked(&self.data[..len]) }
+        // Use checked conversion to handle data from shared memory or bytemuck casts
+        // that may contain invalid UTF-8
+        std::str::from_utf8(&self.data[..len]).unwrap_or("")
     }
 
     /// Get the current length

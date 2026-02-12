@@ -555,7 +555,9 @@ fn get_local_hostname() -> HorusResult<String> {
         ));
     }
 
-    // SAFETY: gethostname succeeded (result == 0), so buf contains a valid null-terminated C string.
+    // Ensure null-termination — POSIX gethostname may not null-terminate if hostname
+    // is exactly buf.len() bytes long.
+    buf[buf.len() - 1] = 0;
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
     hostname

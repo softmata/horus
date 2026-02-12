@@ -510,9 +510,10 @@ pub fn get_hostname() -> String {
         use std::ffi::CStr;
         let mut buf = [0u8; 256];
         // SAFETY: buf is a valid 256-byte buffer. gethostname writes a null-terminated string into it.
-        // CStr::from_ptr reads up to the null terminator within the buffer.
+        // Ensure null-termination — POSIX may not null-terminate if hostname fills buf.
         unsafe {
             if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
+                buf[buf.len() - 1] = 0; // Force null-termination
                 if let Ok(cstr) = CStr::from_ptr(buf.as_ptr() as *const libc::c_char).to_str() {
                     return cstr.to_string();
                 }

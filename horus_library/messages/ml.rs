@@ -347,7 +347,8 @@ impl horus_core::core::LogSummary for LLMRequest {
         }
         let last_msg = &self.messages[self.messages.len() - 1];
         let preview = if last_msg.content.len() > 50 {
-            format!("{}...", &last_msg.content[..50])
+            let end = last_msg.content.char_indices().take_while(|&(i, _)| i < 50).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
+            format!("{}...", &last_msg.content[..end])
         } else {
             last_msg.content.clone()
         };
@@ -358,7 +359,8 @@ impl horus_core::core::LogSummary for LLMRequest {
 impl horus_core::core::LogSummary for LLMResponse {
     fn log_summary(&self) -> String {
         let preview = if self.response.len() > 50 {
-            format!("{}...", &self.response[..50])
+            let end = self.response.char_indices().take_while(|&(i, _)| i < 50).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
+            format!("{}...", &self.response[..end])
         } else {
             self.response.clone()
         };
@@ -372,7 +374,8 @@ impl horus_core::core::LogSummary for LLMResponse {
 impl horus_core::core::LogSummary for ChatMessage {
     fn log_summary(&self) -> String {
         let preview = if self.content.len() > 40 {
-            format!("{}...", &self.content[..40])
+            let end = self.content.char_indices().take_while(|&(i, _)| i < 40).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
+            format!("{}...", &self.content[..end])
         } else {
             self.content.clone()
         };
