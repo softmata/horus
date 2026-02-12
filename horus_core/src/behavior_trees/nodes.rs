@@ -175,6 +175,13 @@ impl<C: Send + Sync> BTNode<C> for ActionNode<C> {
         if let Some(guard) = &self.guard {
             if !guard(ctx) {
                 self.status = NodeStatus::Failure;
+                // If we were running, call on_exit for proper cleanup
+                // (e.g., stop motor, release resources) and reset is_running
+                // so on_enter is called again when the guard passes next time.
+                if self.is_running {
+                    self.on_exit(ctx, self.status);
+                    self.is_running = false;
+                }
                 return self.status;
             }
         }
