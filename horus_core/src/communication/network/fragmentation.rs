@@ -93,6 +93,11 @@ impl FragmentManager {
     pub fn reassemble(&self, fragment: Fragment) -> Option<Vec<u8>> {
         let mut pending = self.pending_fragments.lock().unwrap();
 
+        // Reject invalid fragment count
+        if fragment.total == 0 {
+            return None;
+        }
+
         // Single fragment (not fragmented)
         if fragment.total == 1 {
             return Some(fragment.data);
