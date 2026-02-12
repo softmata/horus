@@ -1222,8 +1222,13 @@ impl Scheduler {
         // === Apply new runtime features ===
 
         // 1. Global tick rate enforcement
-        self.tick_period =
-            std::time::Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
+        let rate_hz = if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0
+        {
+            config.timing.global_rate_hz
+        } else {
+            100.0 // Safe fallback for invalid rate
+        };
+        self.tick_period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
 
         // 2. Black box flight recorder
         if config.monitoring.black_box_enabled && config.monitoring.black_box_size_mb > 0 {
@@ -1297,7 +1302,7 @@ impl Scheduler {
                 // Convert YAML config to internal RecordingConfig
                 let mut recording_config = RecordingConfig::new(session_name.clone());
                 recording_config.compress = recording_yaml.compress;
-                recording_config.interval = recording_yaml.interval as u64;
+                recording_config.interval = (recording_yaml.interval as u64).max(1);
 
                 if let Some(ref output_dir) = recording_yaml.output_dir {
                     recording_config.base_dir = PathBuf::from(output_dir);
