@@ -139,8 +139,9 @@ impl PyTensorHandle {
 
         // SAFETY: descriptor_bytes length is validated above to match size_of::<HorusTensor>().
         // HorusTensor is a POD type (repr(C), all primitive fields).
+        // Use read_unaligned since Python byte arrays may not meet HorusTensor alignment requirements.
         let tensor: HorusTensor =
-            unsafe { std::ptr::read(descriptor_bytes.as_ptr() as *const HorusTensor) };
+            unsafe { std::ptr::read_unaligned(descriptor_bytes.as_ptr() as *const HorusTensor) };
 
         let pool = get_or_create_pool(pool_id, None)?;
         let handle = TensorHandle::new(tensor, pool);
