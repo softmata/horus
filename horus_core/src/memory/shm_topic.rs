@@ -133,7 +133,7 @@ pub struct ShmTopic<T> {
     /// Only refreshed when buffer appears empty (cached_head == consumer_tail).
     /// This single optimization provides 10-20x throughput improvement in SPSC scenarios
     /// by eliminating cross-core cache line transfers on the hot path.
-    cached_head: std::cell::Cell<u32>, // 32-bit for reduced instruction cache pressure
+    cached_head: AtomicU32, // Relaxed atomic: same perf as Cell on x86/ARM, but sound with Sync
     _phantom: std::marker::PhantomData<T>,
     _padding: [u8; 16], // Padding adjusted for 32-bit fields
 }
@@ -513,7 +513,7 @@ impl<T> ShmTopic<T> {
             capacity: actual_capacity,
             _consumer_id: consumer_id, // MPMC: Consumer ID for registration (u32)
             consumer_tail: AtomicU32::new(current_head), // MPMC OPTIMIZED: Local tail tracking (32-bit)
-            cached_head: std::cell::Cell::new(current_head), // Rigtorp: Cache head locally (32-bit)
+            cached_head: AtomicU32::new(current_head), // Rigtorp: Cache head locally (32-bit)
             _phantom: std::marker::PhantomData,
             _padding: [0; 16],
         })
@@ -704,7 +704,7 @@ impl<T> ShmTopic<T> {
             capacity,
             _consumer_id: consumer_id, // MPMC: Consumer ID for registration (u32)
             consumer_tail: AtomicU32::new(current_head), // MPMC OPTIMIZED: Local tail tracking (32-bit)
-            cached_head: std::cell::Cell::new(current_head), // Rigtorp: Cache head locally (32-bit)
+            cached_head: AtomicU32::new(current_head), // Rigtorp: Cache head locally (32-bit)
             _phantom: std::marker::PhantomData,
             _padding: [0; 16],
         })
@@ -795,12 +795,12 @@ impl<T> ShmTopic<T> {
         let my_tail = self.consumer_tail.load(Ordering::Relaxed);
 
         // RIGTORP OPTIMIZATION: Use cached head first
-        let mut cached = self.cached_head.get();
+        let mut cached = self.cached_head.load(Ordering::Relaxed);
 
         if my_tail == cached {
             // Buffer appears empty - refresh from shared memory
             cached = header.head.load(Ordering::Acquire);
-            self.cached_head.set(cached);
+            self.cached_head.store(cached, Ordering::Relaxed);
 
             if my_tail == cached {
                 return None; // Buffer is actually empty
@@ -842,7 +842,7 @@ impl<T> ShmTopic<T> {
 
         // Refresh cached head from shared memory for accurate answer
         let head = header.head.load(Ordering::Acquire);
-        self.cached_head.set(head);
+        self.cached_head.store(head, Ordering::Relaxed);
 
         my_tail == head
     }
@@ -952,12 +952,12 @@ impl<T> ShmTopic<T> {
 
         // RIGTORP OPTIMIZATION: Use cached head first, only refresh from shared memory
         // when buffer appears empty. This eliminates ~90% of cross-core cache transfers.
-        let mut cached = self.cached_head.get();
+        let mut cached = self.cached_head.load(Ordering::Relaxed);
 
         if my_tail == cached {
             // Buffer appears empty - refresh from shared memory
             cached = header.head.load(Ordering::Acquire);
-            self.cached_head.set(cached);
+            self.cached_head.store(cached, Ordering::Relaxed);
 
             if my_tail == cached {
                 // Buffer is actually empty
