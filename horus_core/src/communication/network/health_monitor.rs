@@ -482,13 +482,14 @@ impl HeartbeatRequest {
         }
         let sequence = u64::from_be_bytes(data[1..9].try_into().ok()?);
         let payload_len = u64::from_be_bytes(data[9..17].try_into().ok()?) as usize;
-        if data.len() < 17 + payload_len {
+        let end = 17usize.checked_add(payload_len)?;
+        if data.len() < end {
             return None;
         }
         Some(Self {
             sequence,
             sent_at: Instant::now(), // Will be overwritten by caller
-            payload: data[17..17 + payload_len].to_vec(),
+            payload: data[17..end].to_vec(),
         })
     }
 }
