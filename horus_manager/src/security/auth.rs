@@ -197,7 +197,16 @@ pub fn load_password_hash() -> Result<String> {
 /// Save password hash to file
 pub fn save_password_hash(hash: &str) -> Result<()> {
     let path = get_password_file_path()?;
-    std::fs::write(&path, hash).context("Failed to write password hash file")
+    std::fs::write(&path, hash).context("Failed to write password hash file")?;
+
+    // Restrict permissions to owner-only (contains password hash)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(())
 }
 
 /// Check if password has been set up

@@ -139,6 +139,13 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
     fs::write(&config_path, config_json)
         .map_err(|e| HorusError::Config(format!("Failed to save auth config: {}", e)))?;
 
+    // Restrict permissions to owner-only (contains API token)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
+    }
+
     println!();
     println!("API key saved successfully!");
     println!("  {} {}", "Registry:".dimmed(), registry_url);
