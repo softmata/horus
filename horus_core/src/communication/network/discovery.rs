@@ -220,12 +220,17 @@ impl DiscoveryService {
                                             });
                                     }
                                     MessageType::Heartbeat => {
-                                        // Update last_seen for peer
-                                        let peer_addr = SocketAddr::new(src_addr.ip(), 9870);
+                                        // Update last_seen for all peer entries matching
+                                        // the sender's IP. Peers are keyed by (ip, port)
+                                        // where port is their ephemeral data port, not a
+                                        // fixed value — so we match by IP.
+                                        let sender_ip = src_addr.ip();
                                         let mut peers_lock = peers.lock().unwrap();
 
-                                        if let Some(info) = peers_lock.get_mut(&peer_addr) {
-                                            info.last_seen = Instant::now();
+                                        for info in peers_lock.values_mut() {
+                                            if info.addr.ip() == sender_ip {
+                                                info.last_seen = Instant::now();
+                                            }
                                         }
                                     }
                                     _ => {
