@@ -113,9 +113,17 @@ impl TensorHandle {
     #[inline]
     pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
         let bytes = self.data_slice();
+        let ptr = bytes.as_ptr() as *const T;
+        debug_assert!(
+            ptr.is_aligned(),
+            "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
+            std::any::type_name::<T>(),
+            std::mem::align_of::<T>(),
+            ptr
+        );
         let len = bytes.len() / std::mem::size_of::<T>();
         // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid for `len` elements.
-        std::slice::from_raw_parts(bytes.as_ptr() as *const T, len)
+        std::slice::from_raw_parts(ptr, len)
     }
 
     /// Get tensor data as a mutable typed slice
@@ -126,9 +134,17 @@ impl TensorHandle {
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
         let bytes = self.data_slice_mut();
+        let ptr = bytes.as_mut_ptr() as *mut T;
+        debug_assert!(
+            ptr.is_aligned(),
+            "tensor data pointer is not aligned for type {} (requires {} bytes, got address {:p})",
+            std::any::type_name::<T>(),
+            std::mem::align_of::<T>(),
+            ptr
+        );
         let len = bytes.len() / std::mem::size_of::<T>();
         // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid and writable for `len` elements.
-        std::slice::from_raw_parts_mut(bytes.as_mut_ptr() as *mut T, len)
+        std::slice::from_raw_parts_mut(ptr, len)
     }
 
     /// Get the current reference count
