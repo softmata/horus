@@ -87,10 +87,17 @@ pub unsafe fn from_dlpack(
     let ndim = tensor.ndim as usize;
 
     let shape: Vec<u64> = if ndim > 0 {
-        std::slice::from_raw_parts(tensor.shape, ndim)
-            .iter()
-            .map(|&x| x as u64)
-            .collect()
+        let raw_shape = std::slice::from_raw_parts(tensor.shape, ndim);
+        let mut shape = Vec::with_capacity(ndim);
+        for (i, &x) in raw_shape.iter().enumerate() {
+            if x < 0 {
+                return Err(DLPackImportError::InvalidTensor(
+                    format!("negative shape[{}] = {}", i, x),
+                ));
+            }
+            shape.push(x as u64);
+        }
+        shape
     } else {
         vec![]
     };
@@ -102,10 +109,17 @@ pub unsafe fn from_dlpack(
     } else {
         // Convert element strides to byte strides
         let elem_size = dtype.size_bytes() as u64;
-        std::slice::from_raw_parts(tensor.strides, ndim)
-            .iter()
-            .map(|&x| (x as u64) * elem_size)
-            .collect()
+        let raw_strides = std::slice::from_raw_parts(tensor.strides, ndim);
+        let mut strides = Vec::with_capacity(ndim);
+        for (i, &x) in raw_strides.iter().enumerate() {
+            if x < 0 {
+                return Err(DLPackImportError::InvalidTensor(
+                    format!("negative stride[{}] = {}", i, x),
+                ));
+            }
+            strides.push(x as u64 * elem_size);
+        }
+        strides
     };
 
     // Compute total size
