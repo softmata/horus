@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// Execution mode for the scheduler
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// Parallel execution with dependency resolution
     Parallel,

@@ -30,7 +30,7 @@ use pyo3::types::PyDict;
 
 /// Supported tensor data types
 #[pyclass(name = "dtype")]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PyDtype {
     code: u8,
     bits: u8,

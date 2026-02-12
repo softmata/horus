@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 /// Python wrapper for NodeState
 #[pyclass(module = "horus._horus")]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PyNodeState {
     #[pyo3(get)]
     pub name: String,

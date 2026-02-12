@@ -10,7 +10,7 @@ use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo};
 
 /// Node control command for IPC-based lifecycle management
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeControlCommand {
     /// Stop the node (won't tick anymore)
     Stop,
