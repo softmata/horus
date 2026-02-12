@@ -29,6 +29,7 @@ impl<const N: usize> FixedString<N> {
 
     /// Create a new empty fixed string
     #[inline]
+    #[allow(clippy::let_unit_value)]
     pub const fn new() -> Self {
         // Trigger the compile-time assertion
         let _ = Self::_ASSERT_N_FITS_U8;
