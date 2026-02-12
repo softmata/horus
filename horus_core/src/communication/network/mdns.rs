@@ -558,6 +558,8 @@ fn get_local_hostname() -> HorusResult<String> {
     // Ensure null-termination — POSIX gethostname may not null-terminate if hostname
     // is exactly buf.len() bytes long.
     buf[buf.len() - 1] = 0;
+    // SAFETY: buf is stack-allocated, non-empty, and we just ensured null-termination above.
+    // The pointer is valid for the lifetime of buf which outlives this CStr usage.
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
     hostname

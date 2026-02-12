@@ -48,7 +48,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Result of goal execution.
@@ -387,6 +387,7 @@ where
 #[allow(clippy::type_complexity)]
 pub struct ActionServerNode<A: Action> {
     name: String,
+    static_name: OnceLock<&'static str>,
 
     // Callbacks
     goal_callback: Option<GoalCallback<A>>,
@@ -434,6 +435,7 @@ where
     ) -> Self {
         Self {
             name: format!("{}_server", A::name()),
+            static_name: OnceLock::new(),
             goal_callback,
             cancel_callback,
             execute_callback,
@@ -823,10 +825,8 @@ where
     A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
 {
     fn name(&self) -> &'static str {
-        // We need to return a static str, but our name is dynamic
-        // Use the action name with "_server" suffix
-        // This is a limitation - we leak memory here for the static lifetime
-        Box::leak(self.name.clone().into_boxed_str())
+        self.static_name
+            .get_or_init(|| Box::leak(self.name.clone().into_boxed_str()))
     }
 
     fn init(&mut self) -> HorusResult<()> {
