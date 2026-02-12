@@ -78,8 +78,16 @@ pub unsafe fn from_dlpack(
         ));
     }
 
-    let shape: Vec<u64> = if tensor.ndim > 0 {
-        std::slice::from_raw_parts(tensor.shape, tensor.ndim as usize)
+    // Validate ndim is non-negative and within reasonable bounds before casting to usize
+    if tensor.ndim < 0 || tensor.ndim > 64 {
+        return Err(DLPackImportError::InvalidTensor(
+            format!("invalid ndim: {} (must be 0..=64)", tensor.ndim).into(),
+        ));
+    }
+    let ndim = tensor.ndim as usize;
+
+    let shape: Vec<u64> = if ndim > 0 {
+        std::slice::from_raw_parts(tensor.shape, ndim)
             .iter()
             .map(|&x| x as u64)
             .collect()
@@ -94,7 +102,7 @@ pub unsafe fn from_dlpack(
     } else {
         // Convert element strides to byte strides
         let elem_size = dtype.size_bytes() as u64;
-        std::slice::from_raw_parts(tensor.strides, tensor.ndim as usize)
+        std::slice::from_raw_parts(tensor.strides, ndim)
             .iter()
             .map(|&x| (x as u64) * elem_size)
             .collect()

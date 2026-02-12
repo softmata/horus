@@ -87,6 +87,7 @@ fn main() {
                 runs = args
                     .get(i + 1)
                     .and_then(|s| s.parse().ok())
+                    .filter(|&r: &usize| r > 0)
                     .unwrap_or(DEFAULT_RUNS);
                 i += 2;
             }

@@ -84,8 +84,15 @@ impl Device {
     /// Create from DLPack device type and id
     pub const fn from_dlpack(device_type: i32, device_id: i32) -> Option<Self> {
         match device_type {
-            1 => Some(Device::Cpu),                    // kDLCPU
-            2 => Some(Device::Cuda(device_id as u32)), // kDLCUDA
+            1 => Some(Device::Cpu), // kDLCPU
+            2 => {
+                // Validate device_id is non-negative before casting to u32
+                if device_id < 0 {
+                    None
+                } else {
+                    Some(Device::Cuda(device_id as u32)) // kDLCUDA
+                }
+            }
             _ => None,
         }
     }
