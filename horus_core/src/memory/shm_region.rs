@@ -225,7 +225,7 @@ impl ShmRegion {
                     // SAFETY: c_name is a valid null-terminated CString
                     unsafe { libc::shm_unlink(c_name.as_ptr()) };
                     return Err(HorusError::Memory(format!(
-                        "Failed to set shm '{}' to {} bytes: {} (check /dev/shm space with 'df -h /dev/shm')",
+                        "Failed to set shm '{}' to {} bytes: {} (macOS: check available memory with 'vm_stat')",
                         shm_name, size, std::io::Error::last_os_error()
                     )));
                 }
