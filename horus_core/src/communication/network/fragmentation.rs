@@ -59,6 +59,16 @@ impl FragmentManager {
         // Need fragmentation
         let fragment_id = self.next_fragment_id.fetch_add(1, Ordering::Relaxed);
         let chunks: Vec<&[u8]> = data.chunks(self.mtu).collect();
+        if chunks.len() > u16::MAX as usize {
+            // Message too large for fragment count to fit in u16.
+            // Return single unfragmented chunk — the receiver will handle the oversize data.
+            return vec![Fragment {
+                fragment_id,
+                index: 0,
+                total: 1,
+                data: data.to_vec(),
+            }];
+        }
         let total = chunks.len() as u16;
 
         chunks

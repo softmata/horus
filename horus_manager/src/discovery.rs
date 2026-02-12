@@ -889,7 +889,11 @@ fn get_cmdline_macos(pid: u32) -> Option<String> {
     }
 
     // Skip argc (4 bytes) and find the executable path
-    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let argc_raw = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    if argc_raw < 0 {
+        return None;
+    }
+    let argc = argc_raw as usize;
     let mut pos = 4;
 
     // Skip executable path
