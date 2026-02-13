@@ -215,17 +215,19 @@ fn test_enhanced_scheduler() {
     println!("\n Enhanced scheduler test passed!");
     println!("- Dependency graph analysis worked");
     println!("- Async I/O tier handled blocking operations");
-    println!("- Circuit breaker protected against failures");
+    println!("- Failure policies protected against failures");
 }
 
 #[test]
-fn test_circuit_breaker_protection() {
+fn test_skip_policy_protection() {
+    use horus_core::scheduling::{FailurePolicy, NodeTier};
+
     cleanup_stale_shm();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();
 
-    // Add a node that always fails
+    // Add a node that always fails with Background tier (Skip policy by default)
     scheduler
         .add(FlakyNode {
             name: "always_fails",
@@ -233,6 +235,7 @@ fn test_circuit_breaker_protection() {
             fail_rate: 1.0, // Always fails
         })
         .order(10)
+        .tier(NodeTier::Background)
         .done();
 
     // Run for 1 second
@@ -243,16 +246,17 @@ fn test_circuit_breaker_protection() {
     // The node should have attempted a few times before circuit breaker opened
     let attempts = counter.load(Ordering::SeqCst);
     println!(
-        "Failed node attempted {} times before circuit opened",
+        "Failed node attempted {} times before skip policy activated",
         attempts
     );
 
-    // Circuit breaker should have limited attempts (default threshold is 5)
+    // Skip policy (circuit breaker) should have limited attempts (default threshold is 5)
     assert!(
         attempts <= 10,
-        "Circuit breaker should have limited attempts"
+        "Skip policy should have limited attempts, got {}",
+        attempts
     );
     assert!(attempts >= 1, "Should have attempted at least once");
 
-    println!(" Circuit breaker successfully protected against cascading failures");
+    println!(" Skip policy successfully protected against cascading failures");
 }

@@ -265,22 +265,24 @@ fn test_status_shows_blackbox() {
 }
 
 // =============================================================================
-// Circuit Breaker Integration Tests
+// Failure Policy Integration Tests
 // =============================================================================
 
 #[test]
-fn test_circuit_breakers_enabled_by_default() {
+fn test_failure_policies_enabled_by_default() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
     let status = scheduler.status();
 
     assert!(
-        status.contains("Circuit Breakers"),
-        "status() should mention Circuit Breakers"
+        status.contains("Failure Policies"),
+        "status() should mention Failure Policies: {}",
+        status
     );
     assert!(
-        status.contains("[x] Circuit Breakers"),
-        "status() should show Circuit Breakers as enabled"
+        status.contains("[x] Failure Policies"),
+        "status() should show Failure Policies as enabled: {}",
+        status
     );
 }
 
@@ -289,20 +291,24 @@ fn test_circuit_summary_empty_scheduler() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
-    let (closed, open, half_open) = scheduler.circuit_summary();
-    assert_eq!(closed, 0, "No nodes should mean 0 closed circuits");
-    assert_eq!(open, 0, "No nodes should mean 0 open circuits");
-    assert_eq!(half_open, 0, "No nodes should mean 0 half-open circuits");
+    let (healthy, suppressed, recovering) = scheduler.circuit_summary();
+    assert_eq!(healthy, 0, "No nodes should mean 0 healthy");
+    assert_eq!(suppressed, 0, "No nodes should mean 0 suppressed");
+    assert_eq!(recovering, 0, "No nodes should mean 0 recovering");
 }
 
 #[test]
-fn test_circuit_state_nonexistent_node() {
+fn test_failure_stats_nonexistent_node() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     assert!(
-        scheduler.circuit_state("nonexistent_node").is_none(),
+        scheduler.failure_stats("nonexistent_node").is_none(),
         "Should return None for nonexistent node"
+    );
+    assert!(
+        scheduler.circuit_state("nonexistent_node").is_none(),
+        "Should return None for nonexistent node (compat API)"
     );
 }
 

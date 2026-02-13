@@ -1,6 +1,6 @@
 //! Modbus communication message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
@@ -8,7 +8,7 @@ use serde_arrays;
 ///
 /// Standard industrial protocol message for communicating with
 /// PLCs, sensors, and other Modbus-compatible devices.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct ModbusMessage {
     /// Slave/unit address (1-255)
     pub unit_id: u8,
@@ -150,11 +150,5 @@ impl ModbusMessage {
     /// Check if this is an exception response
     pub fn is_exception(&self) -> bool {
         (self.function_code & 0x80) != 0
-    }
-}
-
-impl LogSummary for ModbusMessage {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

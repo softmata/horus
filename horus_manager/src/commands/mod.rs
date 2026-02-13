@@ -7,7 +7,6 @@ pub mod discover;
 pub mod driver;
 pub mod env;
 pub mod github_auth;
-pub mod hardware;
 pub mod hf;
 pub mod husarnet;
 pub mod init;

@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Geometric and spatial message types for robotics
 //
 // This module provides fundamental geometric primitives used throughout
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Twist {
     /// Linear velocity [x, y, z] in m/s
     pub linear: [f64; 3],
@@ -58,7 +58,7 @@ impl Twist {
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Pose2D {
     /// X position in meters
     pub x: f64,
@@ -119,7 +119,7 @@ impl Pose2D {
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TransformStamped {
     /// Translation [x, y, z] in meters
     pub translation: [f64; 3],
@@ -185,7 +185,7 @@ impl TransformStamped {
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Point3 {
     pub x: f64,
     pub y: f64,
@@ -213,7 +213,7 @@ impl Point3 {
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Vector3 {
     pub x: f64,
     pub y: f64,
@@ -259,7 +259,7 @@ impl Vector3 {
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Quaternion {
     pub x: f64,
     pub y: f64,
@@ -313,42 +313,6 @@ impl Quaternion {
     }
 }
 
-impl LogSummary for Twist {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Pose2D {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TransformStamped {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Point3 {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Vector3 {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Quaternion {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
 // =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
@@ -385,6 +349,7 @@ unsafe impl horus_core::communication::PodMessage for Quaternion {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horus_core::core::LogSummary;
     use std::f64::consts::PI;
 
     // ============================================================================

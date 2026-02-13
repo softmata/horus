@@ -1,10 +1,10 @@
 //! Safety relay status message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Safety relay status
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct SafetyRelayStatus {
     /// Relay identifier
     pub relay_id: [u8; 16],
@@ -63,11 +63,5 @@ impl SafetyRelayStatus {
     /// Get active input count
     pub fn active_input_count(&self) -> u8 {
         self.input_channels.iter().filter(|&&state| state).count() as u8
-    }
-}
-
-impl LogSummary for SafetyRelayStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

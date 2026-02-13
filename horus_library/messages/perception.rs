@@ -5,13 +5,14 @@
 
 use crate::messages::geometry::{Point3, Quaternion, Vector3};
 use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Point field description for flexible point cloud data
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(Default)]
+#[derive(Default, LogSummary)]
 pub enum PointFieldType {
     /// 8-bit integer
     Int8 = 1,
@@ -644,12 +645,6 @@ impl LogSummary for PointCloud {
 impl LogSummary for PointField {
     fn log_summary(&self) -> String {
         format!("PointField('{}', {:?})", self.name_str(), self.datatype)
-    }
-}
-
-impl LogSummary for PointFieldType {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 

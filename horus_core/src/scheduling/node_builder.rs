@@ -43,6 +43,8 @@ pub struct NodeConfig {
     pub(crate) deadline: Option<Duration>,
     /// Execution tier override
     pub(crate) tier: Option<super::intelligence::NodeTier>,
+    /// Failure policy override (None = use tier default)
+    pub(crate) failure_policy: Option<super::fault_tolerance::FailurePolicy>,
 }
 
 impl NodeConfig {
@@ -63,6 +65,7 @@ impl NodeConfig {
             wcet_budget: None,
             deadline: None,
             tier: None,
+            failure_policy: None,
         }
     }
 
@@ -200,6 +203,29 @@ impl NodeConfig {
         self.tier = Some(tier);
         self
     }
+
+    /// Override the failure policy for this node.
+    ///
+    /// By default, the policy is derived from the node's tier:
+    /// - `UltraFast`/`Fast` → `Fatal` (stop scheduler on failure)
+    /// - `Normal`/`Isolated`/`Auto` → `Restart` (exponential backoff)
+    /// - `Background`/`AsyncIO` → `Skip` (circuit breaker)
+    ///
+    /// Use this to override when the default doesn't fit:
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use horus_core::scheduling::FailurePolicy;
+    ///
+    /// // A fast node that should restart instead of killing the scheduler
+    /// NodeConfig::new(sensor_node)
+    ///     .tier(NodeTier::Fast)
+    ///     .failure_policy(FailurePolicy::restart(3, 50))
+    /// ```
+    pub fn failure_policy(mut self, policy: super::fault_tolerance::FailurePolicy) -> Self {
+        self.failure_policy = Some(policy);
+        self
+    }
 }
 
 /// Builder for adding a node to the scheduler with fluent configuration.
@@ -285,6 +311,15 @@ impl<'a> NodeBuilder<'a> {
     /// Set an explicit execution tier.
     pub fn tier(mut self, tier: super::intelligence::NodeTier) -> Self {
         self.config = self.config.tier(tier);
+        self
+    }
+
+    /// Override the failure policy for this node.
+    ///
+    /// By default, the policy is derived from the node's tier.
+    /// Use this when you need different failure behavior than the tier default.
+    pub fn failure_policy(mut self, policy: super::fault_tolerance::FailurePolicy) -> Self {
+        self.config = self.config.failure_policy(policy);
         self
     }
 

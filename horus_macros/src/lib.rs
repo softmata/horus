@@ -17,6 +17,7 @@
 
 use proc_macro::TokenStream;
 
+mod log_summary;
 mod message;
 mod node;
 mod ros2_msg;
@@ -238,6 +239,33 @@ pub fn message(input: TokenStream) -> TokenStream {
 /// Generated types are wire-compatible with ROS2 when serialized with
 /// `cdr-encoding`. This enables direct communication with ROS2 nodes
 /// via Zenoh or DDS.
+/// Derive the `LogSummary` trait for a type.
+///
+/// Generates a default implementation that uses `Debug` formatting:
+///
+/// ```rust,ignore
+/// #[derive(Debug, LogSummary)]
+/// pub struct MyMessage {
+///     pub x: f32,
+///     pub y: f32,
+/// }
+///
+/// // Equivalent to:
+/// // impl LogSummary for MyMessage {
+/// //     fn log_summary(&self) -> String {
+/// //         format!("{:?}", self)
+/// //     }
+/// // }
+/// ```
+///
+/// For types that need custom log output (e.g., large data like images or
+/// point clouds), implement `LogSummary` manually instead of deriving.
+#[proc_macro_derive(LogSummary)]
+pub fn derive_log_summary(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    TokenStream::from(log_summary::derive_log_summary(input))
+}
+
 #[proc_macro]
 pub fn ros2_msg(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as ros2_msg::Ros2MsgInput);

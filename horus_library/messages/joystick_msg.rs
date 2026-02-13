@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Joystick/gamepad input message type for HORUS framework
 //
 // Provides a standardized way to represent gamepad and joystick events across all HORUS components.
@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(connected.is_connection_event());
 /// assert!(connected.is_connected());
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct JoystickInput {
     pub joystick_id: u32,       // Joystick/controller ID (0, 1, 2, 3...)
     pub event_type: [u8; 16],   // Fixed-size event type buffer (null-terminated)
@@ -198,8 +198,3 @@ impl JoystickInput {
     }
 }
 
-impl LogSummary for JoystickInput {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}

@@ -9,7 +9,6 @@
 //! - **Memory Locking**: mlockall() permission via RLIMIT_MEMLOCK
 //! - **CPU Topology**: Isolated CPUs, nohz_full, NUMA nodes
 //! - **Kernel Features**: PREEMPT_RT patch, kernel version
-//! - **Platform**: Hardware platform (Jetson, RPi, etc.) and capabilities
 //!
 //! # Usage
 //!
@@ -36,7 +35,6 @@
 //! checks are simple field reads with zero overhead.
 
 use crate::core::rt_config::{parse_cpu_list, RtCpuInfo, RtKernelInfo};
-use crate::hardware::{Platform, PlatformCapabilities, PlatformDetector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -115,17 +113,6 @@ pub struct RuntimeCapabilities {
     pub is_linux: bool,
 
     // =========================================================================
-    // Platform Information
-    // =========================================================================
-    /// Detected hardware platform (Jetson, RPi, x86, etc.)
-    pub platform: Platform,
-
-    /// Platform-specific capabilities (GPIO, CUDA, NPU, etc.)
-    /// Note: Skipped in serialization as PlatformCapabilities doesn't implement Serde
-    #[serde(skip)]
-    pub platform_capabilities: PlatformCapabilities,
-
-    // =========================================================================
     // Detection Metadata
     // =========================================================================
     /// Time taken to detect capabilities (microseconds)
@@ -149,8 +136,6 @@ impl Default for RuntimeCapabilities {
             numa_topology: HashMap::new(),
             kernel_version: String::new(),
             is_linux: cfg!(target_os = "linux"),
-            platform: Platform::Unknown,
-            platform_capabilities: PlatformCapabilities::default(),
             detection_time_us: 0,
         }
     }
@@ -163,7 +148,6 @@ impl RuntimeCapabilities {
     /// - RT scheduling availability and permissions
     /// - Memory locking permissions
     /// - CPU topology (isolated, nohz_full, NUMA)
-    /// - Hardware platform detection
     ///
     /// # Performance
     ///
@@ -188,10 +172,6 @@ impl RuntimeCapabilities {
 
         // Detect NUMA topology
         let (numa_node_count, numa_topology) = Self::detect_numa_topology();
-
-        // Detect platform
-        let platform = PlatformDetector::detect();
-        let platform_capabilities = PlatformDetector::capabilities(&platform);
 
         // Get memlock limit
         let memlock_limit_bytes = Self::get_memlock_limit();
@@ -218,8 +198,6 @@ impl RuntimeCapabilities {
             numa_topology,
             kernel_version: kernel_info.kernel_version,
             is_linux: cfg!(target_os = "linux"),
-            platform,
-            platform_capabilities,
             detection_time_us,
         }
     }
@@ -266,18 +244,6 @@ impl RuntimeCapabilities {
         self.numa_node_count > 1
     }
 
-    /// Check if CUDA is available (Jetson platforms).
-    #[inline]
-    pub fn has_cuda(&self) -> bool {
-        self.platform_capabilities.cuda_available
-    }
-
-    /// Check if NPU/AI accelerator is available.
-    #[inline]
-    pub fn has_npu(&self) -> bool {
-        self.platform_capabilities.npu_available
-    }
-
     /// Get the best CPUs for RT tasks (up to `count` CPUs).
     ///
     /// Returns CPUs in order of preference for RT workloads.
@@ -318,11 +284,6 @@ impl RuntimeCapabilities {
         s.push_str(&format!(
             "RuntimeCapabilities (detected in {}μs):\n",
             self.detection_time_us
-        ));
-        s.push_str(&format!(
-            "  Platform: {:?} ({})\n",
-            self.platform,
-            self.platform.name()
         ));
         s.push_str(&format!(
             "  Kernel: {} {}\n",
@@ -369,17 +330,6 @@ impl RuntimeCapabilities {
                 "  Recommended RT CPUs: {:?}\n",
                 &self.recommended_rt_cpus[..self.recommended_rt_cpus.len().min(8)]
             ));
-        }
-
-        if self.platform_capabilities.cuda_available {
-            s.push_str("  CUDA: available\n");
-        }
-        if self.platform_capabilities.npu_available {
-            if let Some(tops) = self.platform_capabilities.npu_tops {
-                s.push_str(&format!("  NPU: available ({} TOPS)\n", tops));
-            } else {
-                s.push_str("  NPU: available\n");
-            }
         }
 
         s
@@ -600,8 +550,6 @@ mod tests {
         let _ = caps.can_lock_memory();
         let _ = caps.has_isolated_cpus();
         let _ = caps.is_numa_system();
-        let _ = caps.has_cuda();
-        let _ = caps.has_npu();
     }
 
     #[test]
@@ -610,7 +558,6 @@ mod tests {
         let summary = caps.summary();
 
         // Should contain key information
-        assert!(summary.contains("Platform:"));
         assert!(summary.contains("RT Priority:"));
         assert!(summary.contains("Memory Lock:"));
         assert!(summary.contains("CPUs:"));

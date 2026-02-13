@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Navigation and path planning message types for robotics
 //
 // This module provides messages for autonomous navigation, path planning,
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Navigation goal specification
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Goal {
     /// Target pose to reach
     pub target_pose: Pose2D,
@@ -79,7 +79,7 @@ impl Goal {
 }
 
 /// Goal status enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum GoalStatus {
@@ -101,7 +101,7 @@ pub enum GoalStatus {
 }
 
 /// Goal status feedback
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct GoalResult {
     /// Goal identifier
     pub goal_id: u32,
@@ -162,7 +162,7 @@ impl GoalResult {
 }
 
 /// Waypoint in a path
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Waypoint {
     /// Pose at this waypoint
     pub pose: Pose2D,
@@ -203,7 +203,7 @@ impl Waypoint {
 }
 
 /// Navigation path message
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct Path {
     /// Array of waypoints (max 256)
     #[serde(with = "serde_arrays")]
@@ -312,7 +312,7 @@ impl Path {
 }
 
 /// Occupancy grid map
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct OccupancyGrid {
     /// Map resolution (meters per pixel)
     pub resolution: f32,
@@ -438,7 +438,7 @@ impl OccupancyGrid {
 }
 
 /// Cost map for navigation planning
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct CostMap {
     /// Base occupancy grid
     pub occupancy_grid: OccupancyGrid,
@@ -582,7 +582,7 @@ impl CostMap {
 }
 
 /// Velocity obstacle for dynamic obstacle avoidance
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct VelocityObstacle {
     /// Obstacle position
     pub position: [f64; 2],
@@ -597,7 +597,7 @@ pub struct VelocityObstacle {
 }
 
 /// Array of velocity obstacles
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, LogSummary)]
 pub struct VelocityObstacles {
     /// Array of obstacles (max 32)
     #[serde(with = "serde_arrays")]
@@ -606,66 +606,6 @@ pub struct VelocityObstacles {
     pub count: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
-}
-
-impl LogSummary for Goal {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for GoalResult {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Waypoint {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Path {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for OccupancyGrid {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for CostMap {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for VelocityObstacle {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for VelocityObstacles {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for PathPlan {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for GoalStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
 }
 
 #[cfg(test)]
@@ -725,7 +665,7 @@ mod tests {
 }
 
 /// Simplified path plan message for basic navigation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct PathPlan {
     /// Array of waypoints as [x, y, theta] coordinates
     pub waypoints: Vec<[f32; 3]>,

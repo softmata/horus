@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Force and tactile feedback message types for robotics
 //
 // This module provides messages for force sensors, tactile arrays,
@@ -12,7 +12,7 @@ use serde_arrays;
 ///
 /// Represents 6-DOF force and torque measurements from force/torque sensors,
 /// commonly used in manipulation and contact tasks.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct WrenchStamped {
     /// Force vector [fx, fy, fz] in Newtons
     pub force: Vector3,
@@ -95,7 +95,7 @@ impl WrenchStamped {
 ///
 /// Represents pressure/force measurements from multiple tactile sensors
 /// arranged in an array (e.g., fingertip sensors, skin patches).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct TactileArray {
     /// Array of pressure/force readings
     #[serde(with = "serde_arrays")]
@@ -231,7 +231,7 @@ impl TactileArray {
 /// Impedance control parameters
 ///
 /// Defines the impedance behavior for force-controlled manipulation tasks.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ImpedanceParameters {
     /// Stiffness matrix diagonal [Kx, Ky, Kz, Krx, Kry, Krz]
     pub stiffness: [f64; 6],
@@ -304,7 +304,7 @@ impl ImpedanceParameters {
 /// Force control command
 ///
 /// Commands for force-controlled manipulation tasks.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ForceCommand {
     /// Desired force vector [fx, fy, fz]
     pub target_force: Vector3,
@@ -400,7 +400,7 @@ impl ForceCommand {
 /// Contact state detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
-#[derive(Default)]
+#[derive(Default, LogSummary)]
 pub enum ContactState {
     /// No contact detected
     #[default]
@@ -418,7 +418,7 @@ pub enum ContactState {
 }
 
 /// Contact detection and classification
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ContactInfo {
     /// Current contact state
     pub state: ContactState,
@@ -481,7 +481,7 @@ impl ContactInfo {
 }
 
 /// Haptic feedback command
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct HapticFeedback {
     /// Vibration intensity (0.0 to 1.0)
     pub vibration_intensity: f32,
@@ -545,44 +545,3 @@ impl HapticFeedback {
     }
 }
 
-impl LogSummary for WrenchStamped {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TactileArray {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ImpedanceParameters {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ForceCommand {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ContactInfo {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for HapticFeedback {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ContactState {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}

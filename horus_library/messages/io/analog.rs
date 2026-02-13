@@ -1,6 +1,6 @@
 //! Analog I/O message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
@@ -8,7 +8,7 @@ use serde_arrays;
 ///
 /// Represents analog input/output channels, typically used for
 /// sensors, actuators, and continuous control signals.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct AnalogIO {
     /// Channel values (in volts or engineering units)
     #[serde(with = "serde_arrays")]
@@ -132,11 +132,5 @@ impl AnalogIO {
         } else {
             false
         }
-    }
-}
-
-impl LogSummary for AnalogIO {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

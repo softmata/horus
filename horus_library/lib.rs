@@ -61,9 +61,6 @@
 //!     KeyboardInput, CmdVel, LaserScan, Image, Twist,
 //! };
 //!
-//! // Or import from specific modules
-//! use horus_library::messages::{Direction, SnakeState};
-//!
 //! // Use HFrame for coordinate transforms
 //! use horus_library::hframe::{HFrame, Transform};
 //!

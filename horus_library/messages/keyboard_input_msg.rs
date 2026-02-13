@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Keyboard input message type for HORUS framework
 //
 // Provides a standardized way to represent keyboard events across all HORUS components.
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(ctrl_s.is_ctrl());
 /// assert!(!key_press.has_modifier("Shift"));
 /// ```
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct KeyboardInput {
     pub key_name: [u8; 32],  // Fixed-size key name buffer (null-terminated)
     pub code: u32,           // Raw key code
@@ -150,8 +150,3 @@ impl KeyboardInput {
     }
 }
 
-impl LogSummary for KeyboardInput {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}

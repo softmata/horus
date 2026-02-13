@@ -124,7 +124,9 @@ pub use executors::{
 pub use telemetry::{TelemetryEndpoint, TelemetryManager};
 
 // Re-export fault tolerance
-pub use fault_tolerance::{CircuitBreaker, CircuitState};
+pub use fault_tolerance::{
+    CircuitBreaker, CircuitState, FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy,
+};
 
 // Re-export zero-copy recording
 pub use zero_copy_recording::{

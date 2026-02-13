@@ -56,7 +56,6 @@ pub mod config;
 pub mod core;
 pub mod driver;
 pub mod error;
-pub mod hardware;
 pub mod memory;
 pub mod mission_planner;
 pub mod params;

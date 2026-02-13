@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Multi-robot coordination and fleet management message types
 //
 // This module provides messages for coordinating multiple robots,
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Robot state information for fleet management
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct RobotState {
     /// Unique robot identifier
     pub robot_id: [u8; 32],
@@ -39,7 +39,7 @@ pub struct RobotState {
 }
 
 /// Robot type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum RobotType {
@@ -149,7 +149,7 @@ impl RobotState {
 }
 
 /// Robot capability flags
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, LogSummary)]
 #[repr(u32)]
 pub enum RobotCapability {
     /// Can navigate autonomously
@@ -187,7 +187,7 @@ pub enum RobotCapability {
 }
 
 /// Fleet status overview
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct FleetStatus {
     /// Array of robot states (max 64 robots)
     #[serde(with = "serde_arrays")]
@@ -213,7 +213,7 @@ pub struct FleetStatus {
 }
 
 /// Coordination mode for fleet operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum CoordinationMode {
@@ -363,7 +363,7 @@ impl FleetStatus {
 }
 
 /// Task assignment message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct TaskAssignment {
     /// Unique task identifier
     pub task_id: u32,
@@ -393,7 +393,7 @@ pub struct TaskAssignment {
 }
 
 /// Task type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum TaskType {
@@ -425,7 +425,7 @@ pub enum TaskType {
 }
 
 /// Task execution status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum TaskStatus {
@@ -543,7 +543,7 @@ impl TaskAssignment {
 }
 
 /// Formation control parameters for coordinated movement
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct FormationControl {
     /// Formation type
     pub formation_type: FormationType,
@@ -570,7 +570,7 @@ pub struct FormationControl {
 }
 
 /// Formation type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum FormationType {
@@ -651,7 +651,7 @@ impl FormationControl {
 }
 
 /// Auction bid for task allocation (market-based coordination)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct AuctionBid {
     /// Task being bid on
     pub task_id: u32,
@@ -676,7 +676,7 @@ pub struct AuctionBid {
 }
 
 /// Bid status enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum BidStatus {
@@ -741,74 +741,3 @@ impl AuctionBid {
     }
 }
 
-impl LogSummary for RobotState {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for FleetStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TaskAssignment {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for FormationControl {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for AuctionBid {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for RobotType {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for RobotCapability {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for CoordinationMode {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TaskType {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TaskStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for FormationType {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for BidStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}

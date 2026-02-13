@@ -4,13 +4,14 @@
 // cameras, images, and visual perception systems.
 
 use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Image encoding formats
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
-#[derive(Default)]
+#[derive(Default, LogSummary)]
 pub enum ImageEncoding {
     /// 8-bit monochrome
     Mono8 = 0,
@@ -564,12 +565,6 @@ impl LogSummary for StereoInfo {
             "StereoInfo({}x{}, baseline={:.3}m)",
             self.left_camera.width, self.left_camera.height, self.baseline
         )
-    }
-}
-
-impl LogSummary for ImageEncoding {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 

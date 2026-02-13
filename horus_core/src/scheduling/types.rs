@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::fault_tolerance::CircuitBreaker;
+use super::fault_tolerance::FailureHandler;
 use super::intelligence::NodeTier;
 use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo};
@@ -30,7 +30,7 @@ pub(crate) struct RegisteredNode {
     pub(crate) context: Option<NodeInfo>,
     pub(crate) rate_hz: Option<f64>,
     pub(crate) last_tick: Option<Instant>,
-    pub(crate) circuit_breaker: CircuitBreaker,
+    pub(crate) failure_handler: FailureHandler,
     pub(crate) is_rt_node: bool,
     pub(crate) wcet_budget: Option<Duration>,
     pub(crate) deadline: Option<Duration>,

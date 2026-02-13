@@ -1,12 +1,12 @@
 //! Ethernet/IP communication message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Ethernet/IP communication message
 ///
 /// Industrial Ethernet protocol commonly used with Allen-Bradley PLCs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct EtherNetIPMessage {
     /// Service code
     pub service: u8,
@@ -44,11 +44,5 @@ impl Default for EtherNetIPMessage {
             is_request: true,
             timestamp_ns: 0,
         }
-    }
-}
-
-impl LogSummary for EtherNetIPMessage {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

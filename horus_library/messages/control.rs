@@ -1,4 +1,5 @@
 use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Control message types for robotics
 //
 // This module provides messages for controlling actuators,
@@ -10,7 +11,7 @@ use serde_arrays;
 /// Motor command for direct motor control
 ///
 /// Supports various control modes including velocity, position, and torque control.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct MotorCommand {
     /// Motor ID (for multi-motor systems)
     pub motor_id: u8,
@@ -99,7 +100,7 @@ impl MotorCommand {
 /// Differential drive motor commands
 ///
 /// Commands for a two-wheeled differential drive robot.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct DifferentialDriveCommand {
     /// Left wheel velocity in rad/s
     pub left_velocity: f64,
@@ -158,7 +159,7 @@ impl DifferentialDriveCommand {
 }
 
 /// Servo command for position-controlled servos
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ServoCommand {
     /// Servo ID (for multi-servo systems)
     pub servo_id: u8,
@@ -222,7 +223,7 @@ impl ServoCommand {
 }
 
 /// PID gains configuration message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct PidConfig {
     /// Controller ID
     pub controller_id: u8,
@@ -296,7 +297,7 @@ impl PidConfig {
 }
 
 /// Trajectory point for path following
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TrajectoryPoint {
     /// Position [x, y, z]
     pub position: [f64; 3],
@@ -339,7 +340,7 @@ impl TrajectoryPoint {
 }
 
 /// Joint command for multi-DOF systems
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct JointCommand {
     /// Joint names (max 16 joints)
     #[serde(with = "serde_arrays")]
@@ -432,36 +433,6 @@ impl JointCommand {
         self.joint_count += 1;
 
         Ok(())
-    }
-}
-
-impl LogSummary for MotorCommand {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for DifferentialDriveCommand {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ServoCommand {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for PidConfig {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TrajectoryPoint {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 
@@ -586,12 +557,6 @@ impl LogSummary for PwmCommand {
             self.duty_cycle * 100.0,
             self.frequency
         )
-    }
-}
-
-impl LogSummary for JointCommand {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 

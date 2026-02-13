@@ -1,4 +1,5 @@
 use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Sensor data message types for robotics
 //
 // This module provides standard sensor data formats for common
@@ -12,7 +13,7 @@ use serde_arrays;
 ///
 /// Fixed-size array for shared memory safety. Supports up to 360-degree
 /// scanning with 1-degree resolution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct LaserScan {
     /// Range measurements in meters (0 = invalid reading)
     #[serde(with = "serde_arrays")]
@@ -102,7 +103,7 @@ impl LaserScan {
 ///
 /// Provides orientation, angular velocity, and linear acceleration
 /// measurements from an IMU sensor.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Imu {
     /// Orientation as quaternion [x, y, z, w]
     pub orientation: [f64; 4],
@@ -178,7 +179,7 @@ impl Imu {
 ///
 /// Typically computed from wheel encoders or visual odometry,
 /// provides the robot's estimated position and velocity.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Odometry {
     /// Current pose estimate
     pub pose: Pose2D,
@@ -264,7 +265,7 @@ impl Odometry {
 ///
 /// Single-point distance measurement from sensors like
 /// ultrasonic or infrared rangers.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Range {
     /// Sensor type (0=ultrasonic, 1=infrared)
     pub sensor_type: u8,
@@ -306,7 +307,7 @@ impl Range {
 }
 
 /// Battery status message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct BatteryState {
     /// Voltage in volts
     pub voltage: f32,
@@ -390,30 +391,6 @@ impl BatteryState {
         } else {
             None
         }
-    }
-}
-
-impl LogSummary for LaserScan {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Imu {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Odometry {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Range {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 
@@ -551,8 +528,3 @@ impl LogSummary for NavSatFix {
     }
 }
 
-impl LogSummary for BatteryState {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}

@@ -11,7 +11,7 @@
 // - Control: Actuator commands (MotorCommand, ServoCommand, PID, etc.)
 // - Diagnostics: System health (Status, Heartbeat, EmergencyStop, etc.)
 // - Input: User input (KeyboardInput, JoystickInput)
-// - Application: App-specific messages (SnakeState, Direction, etc.)
+// - Application: App-specific messages (CmdVel, etc.)
 //
 // All message types are re-exported at the crate root for convenience.
 
@@ -35,7 +35,6 @@ pub mod keyboard_input_msg;
 
 // Application-specific messages
 pub mod cmd_vel;
-pub mod snake_state;
 
 // Re-export all message types for convenience
 // Geometry
@@ -99,7 +98,7 @@ pub use keyboard_input_msg::KeyboardInput;
 
 // Application (existing)
 pub use cmd_vel::CmdVel;
-pub use snake_state::{Direction, SnakeState};
+
 
 // Imports for GenericMessage definition
 use horus_core::core::LogSummary;

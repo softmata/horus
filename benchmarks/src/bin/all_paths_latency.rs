@@ -1,167 +1,306 @@
-//! Measure actual latency of all AdaptiveTopic backend paths
+//! HORUS IPC Latency Benchmark — All Backend Paths
 //!
-//! Tests REAL user experience by using Topic::new() only (smart selection).
-//! Verifies that each benchmark scenario triggers the EXPECTED backend route.
-//! Cross-process tests use actual separate processes (not just threads).
+//! Measures true per-message latency across every AdaptiveTopic backend route.
 //!
-//! Uses RDTSC for accurate sub-10ns timing (Instant::now() has ~50-80ns overhead).
-//! Uses CmdVel::with_timestamp() to avoid SystemTime::now() syscall overhead (~52ns).
+//! ## Methodology
+//!
+//! **Intra-process** (DirectChannel, SpscIntra):
+//! - Measures `send()` latency via RDTSC with overhead subtraction
+//! - Producer and consumer in same process, consumer on separate core
+//!
+//! **Cross-process** (SpscShm, MpscShm, MpmcShm/PodShm):
+//! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.stamp_nanos`
+//! - Producer writes `rdtsc()` → `send()`, consumer reads `recv()` → `rdtscp()`
+//! - Requires `constant_tsc` for cross-core TSC synchronization
+//! - No `yield_now()` or `sleep()` in measurement hot loops
+//!
+//! ## Statistical Analysis
+//!
+//! Each scenario: 100K samples, Tukey IQR outlier filtering, bootstrap 95% CI,
+//! full percentile distribution (p1–p99.99), CPU-pinned processes.
+//!
+//! ## Usage
+//!
+//! ```sh
+//! # Standard run (human-readable)
+//! cargo run --release --bin all_paths_latency
+//!
+//! # Machine-readable JSON output for CI/regression tracking
+//! cargo run --release --bin all_paths_latency -- --json results.json
+//!
+//! # Best results: set performance governor first
+//! sudo cpupower frequency-set -g performance
+//! ```
 
 use horus::prelude::Topic;
+use horus_benchmarks::output::{write_json_report, BenchmarkReport};
+use horus_benchmarks::platform::{detect_platform, has_constant_tsc, PlatformInfo};
 use horus_benchmarks::set_cpu_affinity;
-use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer};
+use horus_benchmarks::stats::Statistics;
+use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
+use horus_benchmarks::{
+    BenchmarkConfig, BenchmarkResult, DeterminismMetrics, ThroughputMetrics,
+};
 use horus_library::messages::cmd_vel::CmdVel;
+use std::hint::spin_loop;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const ITERATIONS: u64 = 50_000;
-const WARMUP: u64 = 500;
-const TIMEOUT_SECS: u64 = 10;
+// ============================================================================
+// Configuration
+// ============================================================================
+
+const ITERATIONS: u64 = 100_000;
+const WARMUP: u64 = 5_000;
+const MIGRATION_BOOT: u64 = 200;
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// CPU core pinning assignments.
+/// Spaced by 2 to avoid hyperthreading siblings on most Intel/AMD layouts.
+const CORE_MAIN: usize = 0;
+const CORE_AUX: usize = 2;
+const CORE_PUB2: usize = 4;
+const CORE_CHILD_CONS: usize = 6;
+
+/// Width of the output box (interior, excluding border characters)
+const BOX_W: usize = 72;
+
+// ============================================================================
+// Result
+// ============================================================================
+
+struct ScenarioResult {
+    name: &'static str,
+    backend: String,
+    expected_backend: &'static str,
+    measurement: &'static str,
+    latencies_ns: Vec<u64>,
+    total_sent: u64,
+    total_received: u64,
+    note: Option<&'static str>,
+}
+
+impl ScenarioResult {
+    fn stats(&self) -> Statistics {
+        if self.latencies_ns.is_empty() {
+            return Statistics::from_samples(&[], 95.0, false);
+        }
+        Statistics::from_samples(&self.latencies_ns, 95.0, true)
+    }
+
+    fn backend_ok(&self) -> bool {
+        self.backend.contains(self.expected_backend)
+    }
+
+    fn loss_pct(&self) -> f64 {
+        if self.total_sent == 0 {
+            return 0.0;
+        }
+        let loss = self.total_sent.saturating_sub(self.total_received);
+        loss as f64 / self.total_sent as f64 * 100.0
+    }
+
+    /// Short backend name for summary table (e.g. "SpscShm" from "SpscShm (Adaptive)")
+    fn backend_short(&self) -> &str {
+        self.backend
+            .split_once(" (")
+            .map(|(name, _)| name)
+            .unwrap_or(&self.backend)
+    }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
 
 fn main() {
-    // Check for child process mode
     let args: Vec<String> = std::env::args().collect();
-    if args.len() >= 4 && args[1] == "--child-publisher" {
-        let topic = &args[2];
-        let count: u64 = args[3].parse().unwrap_or(10000);
-        run_child_publisher(topic, count);
+
+    // --- Child process entry points ---
+    if args.len() >= 5 && args[1] == "--child-publisher" {
+        run_child_publisher(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap());
         return;
     }
-    if args.len() >= 4 && args[1] == "--child-consumer" {
-        let topic = &args[2];
-        let count: u64 = args[3].parse().unwrap_or(10000);
-        run_child_consumer(topic, count);
+    if args.len() >= 5 && args[1] == "--child-consumer" {
+        run_child_consumer(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap());
         return;
     }
 
-    // Calibrate RDTSC timer
-    let timer = PrecisionTimer::new();
+    // --- Parse CLI flags ---
+    let json_path = args
+        .windows(2)
+        .find(|w| w[0] == "--json")
+        .map(|w| w[1].clone());
+
+    // --- Initialization ---
+    let platform = detect_platform();
+    let timer = PrecisionTimer::with_calibration(500);
     let cal = timer.calibration();
-    println!("╔═══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║              AdaptiveTopic - All Routes Latency Benchmark                     ║");
-    println!("║          Using Topic::new() ONLY - measures real smart-selection             ║");
+
+    print_header(&platform, cal);
+    validate_platform(&platform);
+    let _ = set_cpu_affinity(CORE_MAIN);
+
+    let mut results: Vec<ScenarioResult> = Vec::new();
+
+    // === Intra-process ===
     println!(
-        "║  RDTSC timing: {:.2} GHz, ~{}ns overhead (vs ~70ns for Instant::now())       ║",
-        cal.freq_hz / 1e9,
-        cal.cycles_to_ns(cal.overhead_cycles)
+        "{} Intra-Process {}",
+        "───",
+        "─".repeat(BOX_W - 19)
     );
-    println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║ Scenario          │ Target   │ Actual  │ Overhead │ Backend Selected         ║");
-    println!("╠═══════════════════╪══════════╪═════════╪══════════╪══════════════════════════╣");
-
-    // ============================================================
-    // INTRA-PROCESS ROUTES (same process, different thread configs)
-    // ============================================================
-
-    // 1. DirectChannel - Same thread (0 atomics)
-    // Target: 60ns = ~36ns actual + ~20ns RDTSC measurement overhead
-    // Detailed breakdown shows p50=36ns for send-only
-    let (latency, backend) = bench_direct_channel_rdtsc(&timer);
-    print_row("SameThread", 60, latency, &backend, "DirectChannel");
-
-    // 2. SpscIntra - Cross-thread 1P-1C
-    // Target: 60ns = ~30ns actual + ~20ns RDTSC overhead + thread variance
-    // Detailed breakdown shows p50=29-30ns consistently
-    let (latency, backend) = bench_spsc_intra_rdtsc(&timer);
-    print_row("CrossThread-1P1C", 60, latency, &backend, "Intra");
-
-    // Note: Multi-producer intra-process tests skipped - smart selection
-    // currently routes these through SpscIntra regardless of producer count.
-    // This is expected behavior: AdaptiveTopic optimizes for the common case.
-
-    println!("╠═══════════════════╪══════════╪═════════╪══════════╪══════════════════════════╣");
-
-    // ============================================================
-    // CROSS-PROCESS ROUTES (actual separate processes via fork/spawn)
-    // ============================================================
-
-    // 3. SpscShm - Cross-process 1P-1C (1 child publisher process)
-    // Target: 100ns = shared memory atomic + cache coherency across processes
-    let (latency, backend) = bench_spsc_shm();
-    print_row("CrossProc-1P1C", 100, latency, &backend, "Shm");
-
-    // 4. MpscShm - Cross-process MP-1C (2 child publisher processes)
-    // Target: 150ns = multi-producer CAS contention
-    let (latency, backend) = bench_mpsc_shm();
-    print_row("CrossProc-2P1C", 150, latency, &backend, "Shm");
-
-    // 5. MpmcShm - Cross-process MPMC (2 publisher procs + 1 consumer proc)
-    // Target: 200ns = full MPMC coordination
-    let (latency, backend) = bench_mpmc_shm();
-    print_row("CrossProc-2P2C", 200, latency, &backend, "Shm");
-
-    println!("╚═══════════════════════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("Note: Target = idealized baseline; Actual = includes smart-selection overhead");
-    println!("      Smart selection uses Topic::new() only - no explicit backend selection");
     println!();
 
-    // Detailed breakdown for DirectChannel
-    println!("=== Detailed DirectChannel Breakdown (RDTSC) ===");
-    bench_direct_channel_detailed_rdtsc(&timer);
+    let r = bench_direct_channel(&timer);
+    print_detail(&r);
+    results.push(r);
 
-    // Detailed breakdown for SpscIntra
-    println!("\n=== Detailed SpscIntra Breakdown (RDTSC) ===");
-    bench_spsc_intra_detailed_rdtsc(&timer);
+    let r = bench_spsc_intra(&timer);
+    print_detail(&r);
+    results.push(r);
 
-    // Measurement overhead comparison
-    println!("\n=== Timing Overhead Comparison ===");
-    let rdtsc_overhead = cal.cycles_to_ns(cal.overhead_cycles);
-    let instant_overhead = measure_instant_overhead();
+    // === Cross-process ===
     println!(
-        "  RDTSC overhead:        ~{}ns (what we use)",
-        rdtsc_overhead
+        "{} Cross-Process (RDTSC-in-payload) {}",
+        "───",
+        "─".repeat(BOX_W - 37)
     );
-    println!(
-        "  Instant::now() median: ~{}ns (70x worse!)",
-        instant_overhead
-    );
-}
+    println!();
 
-fn print_row(name: &str, target: u64, actual: f64, backend: &str, expected_backend: &str) {
-    let overhead = actual - target as f64;
+    let r = bench_spsc_shm(&timer);
+    print_detail(&r);
+    results.push(r);
 
-    // Check if backend contains the expected name (handles both "SpscIntra" and "SpscIntra (Adaptive)")
-    let (backend_ok, backend_status) = if expected_backend.is_empty() {
-        (true, "•") // No specific expectation, just informational
-    } else if backend.contains(expected_backend) {
-        (true, "✓")
-    } else {
-        (false, "✗")
-    };
+    let r = bench_mpsc_shm(&timer);
+    print_detail(&r);
+    results.push(r);
 
-    // Truncate backend name for display
-    let backend_display = if backend.len() > 22 {
-        format!("{}...", &backend[..19])
-    } else {
-        backend.to_string()
-    };
+    let r = bench_mpmc_shm(&timer);
+    print_detail(&r);
+    results.push(r);
 
-    println!(
-        "║ {:17} │ {:>6}ns │ {:>6.0}ns │ {:>+7.0}ns │ {} {:22} ║",
-        name, target, actual, overhead, backend_status, backend_display
-    );
+    // === Summary ===
+    print_summary(&results);
+    print_methodology(cal);
 
-    if !backend_ok && !expected_backend.is_empty() {
-        eprintln!(
-            "  ⚠️  WARNING: Expected {} but got {}",
-            expected_backend, backend
-        );
+    // === JSON output ===
+    if let Some(path) = json_path {
+        write_json_output(&path, &platform, &results);
     }
 }
 
-// ============================================================
-// RDTSC-BASED INTRA-PROCESS BENCHMARKS (accurate sub-10ns timing)
-// ============================================================
+// ============================================================================
+// Platform header & validation
+// ============================================================================
 
-/// DirectChannel - Same thread, no atomics (RDTSC version)
-fn bench_direct_channel_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
-    let topic: Topic<CmdVel> = Topic::new("bench_direct_rdtsc").unwrap();
+fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
+    let commit = detect_git_commit_short();
 
-    // Warmup - establishes DirectChannel mode
+    println!();
+    println!("{}", box_top());
+    println!("{}", box_center("HORUS IPC Latency Benchmark v2.0"));
+    println!(
+        "{}",
+        box_center("Per-Message RDTSC-Instrumented Latency")
+    );
+    println!("{}", box_sep());
+
+    let model = truncate(&platform.cpu.model, BOX_W - 8);
+    println!("{}", box_left(&format!("CPU: {}", model)));
+    println!(
+        "{}",
+        box_left(&format!(
+            "Cores: {} physical / {} logical, NUMA: {} node(s)",
+            platform.cpu.physical_cores, platform.cpu.logical_cores, platform.numa_nodes,
+        ))
+    );
+    println!(
+        "{}",
+        box_left(&format!(
+            "RDTSC: {:.2} GHz, ~{}ns overhead, constant_tsc: {}",
+            cal.freq_hz / 1e9,
+            cal.cycles_to_ns(cal.overhead_cycles),
+            if has_constant_tsc() { "YES" } else { "NO" },
+        ))
+    );
+
+    let gov = platform.cpu_governor.as_deref().unwrap_or("unknown");
+    println!(
+        "{}",
+        box_left(&format!(
+            "Governor: {}, VM: {}",
+            gov,
+            if platform.virtualized { "Yes" } else { "No" },
+        ))
+    );
+    println!(
+        "{}",
+        box_left(&format!(
+            "Pinning: main=core{}, aux=core{}, pub2=core{}, cons=core{}",
+            CORE_MAIN, CORE_AUX, CORE_PUB2, CORE_CHILD_CONS,
+        ))
+    );
+    println!(
+        "{}",
+        box_left(&format!(
+            "Config: {} iterations, {} warmup, {} boot msgs",
+            ITERATIONS, WARMUP, MIGRATION_BOOT,
+        ))
+    );
+
+    println!("{}", box_sep());
+    println!("{}", box_left(&format!("Date: {}", now)));
+    if let Some(ref c) = commit {
+        println!("{}", box_left(&format!("Commit: {}", c)));
+    }
+    println!("{}", box_bot());
+    println!();
+}
+
+fn validate_platform(platform: &PlatformInfo) {
+    let mut warnings = Vec::new();
+
+    if !has_constant_tsc() {
+        warnings
+            .push("constant_tsc not detected -- cross-process RDTSC may be inaccurate".to_string());
+    }
+    if let Some(ref gov) = platform.cpu_governor {
+        if gov != "performance" {
+            warnings.push(format!(
+                "CPU governor is '{}' (want 'performance'). Run: sudo cpupower frequency-set -g performance",
+                gov
+            ));
+        }
+    }
+    if platform.virtualized {
+        warnings.push("Running in VM -- RDTSC timing may be unreliable".to_string());
+    }
+
+    if !warnings.is_empty() {
+        for w in &warnings {
+            eprintln!("  WARNING: {}", w);
+        }
+        println!();
+    }
+}
+
+// ============================================================================
+// Intra-Process Benchmarks
+// ============================================================================
+
+/// DirectChannel -- same thread, no atomics.
+/// Measures send() latency with RDTSC overhead subtracted.
+fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
+    let topic: Topic<CmdVel> = Topic::new("bench_dc_v2").unwrap();
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
+
+    // Warmup
     for _ in 0..WARMUP {
         topic.send(msg);
         let _ = topic.recv();
@@ -170,667 +309,707 @@ fn bench_direct_channel_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
 
     let backend = topic.backend_type().to_string();
 
-    // Measure send-only latency with RDTSC (more accurate than round-trip/2)
+    // Measure send-only latency
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
         topic.send(std::hint::black_box(msg));
         let end = rdtscp();
-        latencies.push(end.wrapping_sub(start));
-        // Must recv to avoid buffer full
+        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
         let _ = topic.recv();
     }
 
-    // Convert to ns and subtract overhead, then take median
-    let cal = timer.calibration();
-    let overhead_ns = cal.cycles_to_ns(cal.overhead_cycles);
-    let mut ns_latencies: Vec<u64> = latencies
-        .iter()
-        .map(|&c| cal.cycles_to_ns(c).saturating_sub(overhead_ns))
-        .collect();
-    ns_latencies.sort_unstable();
-    let median = ns_latencies[ns_latencies.len() / 2] as f64;
-
-    (median, backend)
+    ScenarioResult {
+        name: "SameThread",
+        backend,
+        expected_backend: "DirectChannel",
+        measurement: "send",
+        latencies_ns: latencies,
+        total_sent: ITERATIONS,
+        total_received: ITERATIONS,
+        note: None,
+    }
 }
 
-/// SpscIntra - Cross-thread 1P-1C (RDTSC version)
-fn bench_spsc_intra_rdtsc(timer: &PrecisionTimer) -> (f64, String) {
-    let topic_name = format!("bench_spsc_rdtsc_{}", std::process::id());
+/// SpscIntra -- cross-thread 1P-1C.
+/// Measures send() latency on producer thread while consumer spins on another core.
+fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+    let topic_name = format!("bench_si_v2_{}", std::process::id());
     let producer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
 
     let done = Arc::new(AtomicBool::new(false));
-    let done_clone = done.clone();
-    let backend_result = Arc::new(std::sync::Mutex::new(String::new()));
-    let backend_clone = backend_result.clone();
-    let consumer_ready = Arc::new(AtomicBool::new(false));
-    let consumer_ready_clone = consumer_ready.clone();
+    let done_c = done.clone();
+    let backend_out = Arc::new(std::sync::Mutex::new(String::new()));
+    let backend_c = backend_out.clone();
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready_c = ready.clone();
 
-    // Pin producer (main thread) to core 0
-    let _ = set_cpu_affinity(0);
-
-    // Send initial messages BEFORE spawning consumer thread so the ring has data
-    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    // Pre-fill ring to establish SpscIntra before consumer starts
     for _ in 0..2000 {
         producer.send(msg);
     }
 
-    // Consumer thread — pinned to core 2 to avoid contention with producer.
-    let cons_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(2);
-
-        // Warmup — drain pre-sent messages
+    // Consumer thread pinned to separate core
+    let handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_AUX);
         let mut count = 0u64;
-        let warmup_deadline = Instant::now() + Duration::from_secs(5);
-        while count < 1000 && Instant::now() < warmup_deadline {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 1000 && Instant::now() < deadline {
             if consumer.recv().is_some() {
                 count += 1;
             } else {
-                std::hint::spin_loop();
+                spin_loop();
             }
         }
-        *backend_clone.lock().unwrap() = consumer.backend_type().to_string();
-        consumer_ready_clone.store(true, Ordering::Release);
+        *backend_c.lock().unwrap() = consumer.backend_type().to_string();
+        ready_c.store(true, Ordering::Release);
 
-        // Aggressive consumption on dedicated core
-        while !done_clone.load(Ordering::Relaxed) {
+        while !done_c.load(Ordering::Relaxed) {
             if consumer.recv().is_none() {
-                std::hint::spin_loop();
+                spin_loop();
             }
         }
         while consumer.recv().is_some() {}
     });
 
-    while !consumer_ready.load(Ordering::Acquire) {
-        // Keep sending while waiting for consumer to warm up
+    // Wait for consumer ready
+    while !ready.load(Ordering::Acquire) {
         producer.send(msg);
-        std::hint::spin_loop();
+        spin_loop();
     }
 
-    // Extra warmup rounds
-    for _ in 0..3 {
-        for _ in 0..1000 {
-            producer.send(msg);
-        }
-        thread::sleep(Duration::from_millis(2));
+    // Extra warmup after consumer is ready
+    for _ in 0..WARMUP {
+        producer.send(msg);
     }
+    thread::sleep(Duration::from_millis(5));
 
-    // Measure send latency with RDTSC (no overhead subtraction)
-    let cal = timer.calibration();
+    // Measure send latency
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
-
     for _ in 0..ITERATIONS {
         serialize();
         let start = rdtsc();
         producer.send(msg);
         let end = rdtscp();
-        latencies.push(end.wrapping_sub(start));
+        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
     }
 
     thread::sleep(Duration::from_millis(50));
     done.store(true, Ordering::Relaxed);
-    cons_handle.join().unwrap();
+    handle.join().unwrap();
 
-    let backend = backend_result.lock().unwrap().clone();
+    let backend = backend_out.lock().unwrap().clone();
 
-    // Convert to ns, subtract overhead, and get median
-    let overhead_ns = cal.cycles_to_ns(cal.overhead_cycles);
-    let mut ns_latencies: Vec<u64> = latencies
-        .iter()
-        .map(|&c| cal.cycles_to_ns(c).saturating_sub(overhead_ns))
-        .collect();
-    ns_latencies.sort_unstable();
-
-    let p50 = ns_latencies
-        .get(ns_latencies.len() * 50 / 100)
-        .copied()
-        .unwrap_or(0);
-    let p95 = ns_latencies
-        .get(ns_latencies.len() * 95 / 100)
-        .copied()
-        .unwrap_or(0);
-    let p99 = ns_latencies
-        .get(ns_latencies.len() * 99 / 100)
-        .copied()
-        .unwrap_or(0);
-    eprintln!(
-        "  SpscIntra RDTSC: p50={}ns p95={}ns p99={}ns (n={})",
-        p50,
-        p95,
-        p99,
-        ns_latencies.len()
-    );
-
-    (p50 as f64, backend)
+    ScenarioResult {
+        name: "CrossThread-1P1C",
+        backend,
+        expected_backend: "Intra",
+        measurement: "send",
+        latencies_ns: latencies,
+        total_sent: ITERATIONS,
+        total_received: ITERATIONS,
+        note: None,
+    }
 }
 
-/// Detailed DirectChannel breakdown (RDTSC)
-fn bench_direct_channel_detailed_rdtsc(timer: &PrecisionTimer) {
-    let topic: Topic<CmdVel> = Topic::new("bench_direct_detailed").unwrap();
-    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+// ============================================================================
+// Cross-Process Benchmarks
+// ============================================================================
 
-    // Warmup
-    for _ in 0..WARMUP {
-        topic.send(msg);
-        let _ = topic.recv();
-    }
-    while topic.recv().is_some() {}
-
-    println!("Backend type: {}", topic.backend_type());
+/// SpscShm -- cross-process 1 publisher, 1 consumer.
+/// Parent = consumer, child = publisher.
+/// Measures one-way latency via RDTSC timestamps in message payload.
+fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
-    let overhead_ns = cal.cycles_to_ns(cal.overhead_cycles);
-
-    // Measure send-only (subtract overhead for true latency)
-    let mut send_latencies = Vec::with_capacity(ITERATIONS as usize);
-    for _ in 0..ITERATIONS {
-        serialize();
-        let start = rdtsc();
-        topic.send(std::hint::black_box(msg));
-        let end = rdtscp();
-        send_latencies.push(
-            cal.cycles_to_ns(end.wrapping_sub(start))
-                .saturating_sub(overhead_ns),
-        );
-        let _ = topic.recv();
-    }
-    send_latencies.sort_unstable();
-    let send_p50 = send_latencies[send_latencies.len() / 2];
-    println!(
-        "  Send only:  p50={}ns (true latency, overhead subtracted)",
-        send_p50
-    );
-
-    // Measure recv-only (after send)
-    for _ in 0..1000 {
-        topic.send(msg);
-    }
-    let mut recv_latencies = Vec::with_capacity(1000);
-    for _ in 0..1000 {
-        serialize();
-        let start = rdtsc();
-        let _ = std::hint::black_box(topic.recv());
-        let end = rdtscp();
-        recv_latencies.push(
-            cal.cycles_to_ns(end.wrapping_sub(start))
-                .saturating_sub(overhead_ns),
-        );
-        topic.send(msg);
-    }
-    recv_latencies.sort_unstable();
-    let recv_p50 = recv_latencies[recv_latencies.len() / 2];
-    println!("  Recv only:  p50={}ns (true latency)", recv_p50);
-
-    // Round-trip (single measurement, subtract once)
-    let mut rt_latencies = Vec::with_capacity(ITERATIONS as usize);
-    for _ in 0..ITERATIONS {
-        serialize();
-        let start = rdtsc();
-        topic.send(std::hint::black_box(msg));
-        let _ = std::hint::black_box(topic.recv());
-        let end = rdtscp();
-        rt_latencies.push(
-            cal.cycles_to_ns(end.wrapping_sub(start))
-                .saturating_sub(overhead_ns),
-        );
-    }
-    rt_latencies.sort_unstable();
-    let rt_p50 = rt_latencies[rt_latencies.len() / 2];
-    println!(
-        "  Round-trip: p50={}ns (send+recv, single measurement)",
-        rt_p50
-    );
-}
-
-/// Detailed SpscIntra breakdown (RDTSC)
-fn bench_spsc_intra_detailed_rdtsc(timer: &PrecisionTimer) {
-    let topic_name = format!("bench_spsc_detail_{}", std::process::id());
-    let producer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let topic_name = format!("bench_spsc_{}", std::process::id());
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv(); // Register as consumer
 
-    let done = Arc::new(AtomicBool::new(false));
-    let done_clone = done.clone();
+    let child_count = WARMUP + ITERATIONS;
+    let mut child = spawn_publisher(&topic_name, child_count, CORE_AUX);
 
-    let _ = set_cpu_affinity(0); // Pin producer to core 0
-
-    let cons_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(2); // Pin consumer to core 2
-        while !done_clone.load(Ordering::Relaxed) {
-            if consumer.recv().is_none() {
-                std::hint::spin_loop();
-            }
-        }
-        while consumer.recv().is_some() {}
-    });
-
-    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
-
-    // Warmup
-    for _ in 0..5000 {
-        producer.send(msg);
-    }
-    thread::sleep(Duration::from_millis(10));
-
-    println!("Backend type: {}", producer.backend_type());
-    let cal = timer.calibration();
-    let overhead_ns = cal.cycles_to_ns(cal.overhead_cycles);
-
-    // Multiple runs to show variance (subtract overhead for true latency)
-    println!("  Variance across 5 runs (true latency, overhead subtracted):");
-    for run in 1..=5 {
-        let mut latencies = Vec::with_capacity(10000);
-        for _ in 0..10000 {
-            serialize();
-            let start = rdtsc();
-            producer.send(msg);
-            let end = rdtscp();
-            latencies.push(
-                cal.cycles_to_ns(end.wrapping_sub(start))
-                    .saturating_sub(overhead_ns),
-            );
-        }
-        latencies.sort_unstable();
-        let p50 = latencies
-            .get(latencies.len() * 50 / 100)
-            .copied()
-            .unwrap_or(0);
-        let p99 = latencies
-            .get(latencies.len() * 99 / 100)
-            .copied()
-            .unwrap_or(0);
-        println!("    Run {}: p50={}ns p99={}ns", run, p50, p99);
-        thread::sleep(Duration::from_millis(5));
-    }
-
-    done.store(true, Ordering::Relaxed);
-    cons_handle.join().unwrap();
-}
-
-// ============================================================
-// CROSS-PROCESS BENCHMARKS (actual separate processes)
-// ============================================================
-
-/// SpscShm - Cross-process 1P-1C
-/// Setup: Parent = consumer, 1 child process = publisher
-fn bench_spsc_shm() -> (f64, String) {
-    use std::process::{Command, Stdio};
-
-    let topic_name = format!("bench_spsc_shm_{}", std::process::id());
-    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
-
-    // CRITICAL: Register parent as consumer BEFORE spawning child
-    let _ = consumer.recv(); // Triggers registration
-
-    // Spawn publisher child process
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--child-publisher", &topic_name, &ITERATIONS.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher process");
-
-    // Warmup - receive some messages to trigger backend detection
-    let mut warmup_count = 0u64;
-    let warmup_start = Instant::now();
-    while warmup_count < 1000 && warmup_start.elapsed() < Duration::from_secs(5) {
-        if consumer.recv().is_some() {
-            warmup_count += 1;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    // Capture backend after cross-process detection
+    // Wait for migration (child sends MIGRATION_BOOT + sleeps)
+    let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
     let backend = consumer.backend_type().to_string();
 
-    // Measure: receive as many messages as possible.
-    // Track last-received time to detect when publisher has finished,
-    // avoiding the full timeout inflating our latency measurement.
-    let start = Instant::now();
-    let mut received = warmup_count;
-    let mut last_recv_time = start;
-    let timeout = start + Duration::from_secs(TIMEOUT_SECS);
-    while received < ITERATIONS && Instant::now() < timeout {
-        if consumer.recv().is_some() {
-            received += 1;
-            last_recv_time = Instant::now();
-        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
-            // No message for 500ms — publisher has likely finished
-            break;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-    // Use time-to-last-message, not total elapsed (avoids timeout inflation)
-    let elapsed = last_recv_time - start;
-
+    // Collect: first WARMUP discarded, then ITERATIONS measured
+    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
     child.wait().ok();
 
-    let actual_measured = received.saturating_sub(warmup_count);
-    eprintln!(
-        "  SpscShm: {}/{} received ({:.1}%) in {:?}",
-        received,
-        ITERATIONS,
-        received as f64 / ITERATIONS as f64 * 100.0,
-        elapsed
-    );
-
-    (
-        elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
+    let total_received = migration_recv + measure_recv;
+    ScenarioResult {
+        name: "CrossProc-1P1C",
         backend,
-    )
+        expected_backend: "Shm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: MIGRATION_BOOT + child_count,
+        total_received,
+        note: None,
+    }
 }
 
-/// MpscShm - Cross-process MP-1C
-/// Setup: Parent = consumer, 2 child processes = publishers
-fn bench_mpsc_shm() -> (f64, String) {
-    use std::process::{Command, Stdio};
-
-    let topic_name = format!("bench_mpsc_shm_{}", std::process::id());
+/// MpscShm -- cross-process 2 publishers, 1 consumer.
+/// Parent = consumer, 2 children = publishers.
+fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
+    let cal = timer.calibration();
+    let topic_name = format!("bench_mpsc_{}", std::process::id());
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv();
 
-    // CRITICAL: Register parent as consumer BEFORE spawning children
-    // This ensures children see the parent's PID and correctly detect cross-process
-    let _ = consumer.recv(); // Triggers registration
+    let msgs_per_pub = (WARMUP + ITERATIONS) / 2;
 
-    let msgs_per_child = ITERATIONS / 2;
+    let mut pub1 = spawn_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    let migration1 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
 
-    // Spawn first publisher and wait for it to register before spawning second.
-    // This ensures the topology detects multi-producer (MpscShm) correctly.
-    let mut child1 = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--child-publisher",
-            &topic_name,
-            &msgs_per_child.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher 1");
+    let mut pub2 = spawn_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    let migration2 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
 
-    // Wait for child1 to register (receive a message proves registration)
-    let mut child1_ready = false;
-    let reg_start = Instant::now();
-    while !child1_ready && reg_start.elapsed() < Duration::from_secs(5) {
-        if consumer.recv().is_some() {
-            child1_ready = true;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    // Now spawn child2 — child1 is already registered, so the topic
-    // will detect multi-producer and select MpscShm backend.
-    let mut child2 = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--child-publisher",
-            &topic_name,
-            &msgs_per_child.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher 2");
-
-    eprintln!(
-        "  [MpscShm: Parent={}, Pub1={}, Pub2={}]",
-        std::process::id(),
-        child1.id(),
-        child2.id()
-    );
-
-    // Warmup — receive messages from both publishers to stabilize
-    let mut warmup_count = 1u64; // Already received 1 above
-    let warmup_start = Instant::now();
-    while warmup_count < 100 && warmup_start.elapsed() < Duration::from_secs(5) {
-        if consumer.recv().is_some() {
-            warmup_count += 1;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    // Capture backend after cross-process detection
     let backend = consumer.backend_type().to_string();
 
-    // Measure: receive as many messages as possible.
-    let start = Instant::now();
-    let mut received = warmup_count;
-    let mut last_recv_time = start;
-    let timeout = start + Duration::from_secs(TIMEOUT_SECS);
-    while received < ITERATIONS && Instant::now() < timeout {
-        if consumer.recv().is_some() {
-            received += 1;
-            last_recv_time = Instant::now();
-        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
-            break;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-    let elapsed = last_recv_time - start;
+    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+    pub1.wait().ok();
+    pub2.wait().ok();
 
-    // Wait for children to finish
-    child1.wait().ok();
-    child2.wait().ok();
+    let total_received = migration1 + migration2 + measure_recv;
 
-    let actual_measured = received.saturating_sub(warmup_count);
-    eprintln!(
-        "  MpscShm: {}/{} received ({:.1}%) in {:?}",
-        received,
-        ITERATIONS,
-        received as f64 / ITERATIONS as f64 * 100.0,
-        elapsed
-    );
-
-    (
-        elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
+    ScenarioResult {
+        name: "CrossProc-2P1C",
         backend,
-    )
+        expected_backend: "Shm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
+        total_received,
+        note: None,
+    }
 }
 
-/// MpmcShm - Cross-process MPMC
-/// Setup: 2 child publisher processes + 1 child consumer process + parent consumer
-/// This ensures we have multiple processes for both producers AND consumers
-fn bench_mpmc_shm() -> (f64, String) {
-    use std::process::{Command, Stdio};
+/// MpmcShm -- cross-process 2 publishers, 2 consumers.
+/// Parent + child = consumers, 2 children = publishers.
+///
+/// Registration order: parent consumer -> pub1 -> pub2 -> child consumer.
+/// The adaptive topology may select PodShm (single-slot overwrite) instead of
+/// MpmcShm depending on registration timing. PodShm uses a different protocol
+/// (last-value store, not a queue), resulting in higher measured latencies that
+/// reflect its polling semantics rather than true queue propagation delay.
+fn bench_mpmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
+    let cal = timer.calibration();
+    let topic_name = format!("bench_mpmc_{}", std::process::id());
+    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv();
 
-    let topic_name = format!("bench_mpmc_shm_{}", std::process::id());
-    let consumer_parent: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let msgs_per_pub = WARMUP + ITERATIONS;
 
-    // CRITICAL: Register parent as consumer BEFORE spawning children
-    let _ = consumer_parent.recv(); // Triggers registration
+    // Spawn publishers first so parent establishes data path
+    let mut pub1 = spawn_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
-    let msgs_per_publisher = ITERATIONS / 2;
-    let msgs_per_consumer = ITERATIONS / 2;
+    let mut pub2 = spawn_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    let migration2 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
-    // Spawn child consumer first (has 100ms startup delay)
-    let mut child_consumer = Command::new(std::env::current_exe().unwrap())
+    // Add child consumer -> triggers multi-consumer detection
+    let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub, CORE_CHILD_CONS);
+    thread::sleep(Duration::from_millis(300));
+
+    let backend = consumer.backend_type().to_string();
+
+    let is_pod = backend.contains("Pod");
+    let note = if is_pod {
+        Some("PodShm selected (single-slot overwrite); latency reflects poll interval, not queue delay")
+    } else {
+        None
+    };
+
+    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+    pub1.wait().ok();
+    pub2.wait().ok();
+    child_cons.wait().ok();
+
+    let total_received = migration1 + migration2 + measure_recv;
+
+    ScenarioResult {
+        name: "CrossProc-2P2C",
+        backend,
+        expected_backend: "Shm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
+        total_received,
+        note,
+    }
+}
+
+// ============================================================================
+// Cross-Process Helpers
+// ============================================================================
+
+fn spawn_publisher(topic: &str, count: u64, core: usize) -> std::process::Child {
+    Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--child-publisher",
+            topic,
+            &count.to_string(),
+            &core.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn child publisher")
+}
+
+fn spawn_consumer(topic: &str, count: u64, core: usize) -> std::process::Child {
+    Command::new(std::env::current_exe().unwrap())
         .args([
             "--child-consumer",
-            &topic_name,
-            &msgs_per_consumer.to_string(),
+            topic,
+            &count.to_string(),
+            &core.to_string(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("Failed to spawn child consumer");
-
-    // Spawn first publisher and wait for it to register
-    let mut child_pub1 = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--child-publisher",
-            &topic_name,
-            &msgs_per_publisher.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher 1");
-
-    // Wait for pub1 to register (receive a message proves it)
-    let mut pub1_ready = false;
-    let reg_start = Instant::now();
-    while !pub1_ready && reg_start.elapsed() < Duration::from_secs(5) {
-        if consumer_parent.recv().is_some() {
-            pub1_ready = true;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    // Now spawn pub2 — pub1 + child_consumer already registered,
-    // so the topology detects MPMC correctly.
-    let mut child_pub2 = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--child-publisher",
-            &topic_name,
-            &msgs_per_publisher.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher 2");
-
-    eprintln!(
-        "  [MpmcShm: Parent={}, Cons={}, Pub1={}, Pub2={}]",
-        std::process::id(),
-        child_consumer.id(),
-        child_pub1.id(),
-        child_pub2.id()
-    );
-
-    // Warmup — receive messages to stabilize backend detection
-    let mut warmup_count = 1u64; // Already received 1 above
-    let warmup_start = Instant::now();
-    while warmup_count < 100 && warmup_start.elapsed() < Duration::from_secs(5) {
-        if consumer_parent.recv().is_some() {
-            warmup_count += 1;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    // Capture backend after cross-process detection
-    let backend = consumer_parent.backend_type().to_string();
-
-    // Parent consumer receives its share (other consumer gets remainder)
-    let start = Instant::now();
-    let mut received = warmup_count;
-    let mut last_recv_time = start;
-    let timeout = start + Duration::from_secs(TIMEOUT_SECS);
-    while received < msgs_per_consumer && Instant::now() < timeout {
-        if consumer_parent.recv().is_some() {
-            received += 1;
-            last_recv_time = Instant::now();
-        } else if last_recv_time.elapsed() > Duration::from_millis(500) {
-            break;
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-    let elapsed = last_recv_time - start;
-
-    // Wait for children to finish
-    child_pub1.wait().ok();
-    child_pub2.wait().ok();
-    child_consumer.wait().ok();
-
-    let actual_measured = received.saturating_sub(warmup_count);
-    eprintln!(
-        "  MpmcShm: {}/{} received ({:.1}%) in {:?}",
-        received,
-        msgs_per_consumer,
-        received as f64 / msgs_per_consumer as f64 * 100.0,
-        elapsed
-    );
-
-    (
-        elapsed.as_nanos() as f64 / actual_measured.max(1) as f64,
-        backend,
-    )
+        .expect("Failed to spawn child consumer")
 }
 
-/// Measure Instant::now() overhead
-fn measure_instant_overhead() -> u64 {
-    let mut times: Vec<u64> = Vec::with_capacity(10000);
-    for _ in 0..10000 {
+/// Spin-receive until `count` messages arrive or timeout.
+fn wait_for_messages(consumer: &Topic<CmdVel>, count: u64, timeout: Duration) -> u64 {
+    let mut received = 0u64;
+    let deadline = Instant::now() + timeout;
+    while received < count && Instant::now() < deadline {
+        if consumer.recv().is_some() {
+            received += 1;
+        } else {
+            spin_loop();
+        }
+    }
+    received
+}
+
+/// Collect cross-process latencies from RDTSC timestamps in message payload.
+///
+/// Phase 1: Discard `warmup` messages (cache/TLB warming).
+/// Phase 2: Collect up to `iterations` per-message one-way latencies.
+///
+/// Returns (latencies_ns, total_messages_received_in_both_phases).
+fn collect_cross_proc(
+    consumer: &Topic<CmdVel>,
+    warmup: u64,
+    iterations: u64,
+    cal: &RdtscCalibration,
+) -> (Vec<u64>, u64) {
+    let mut total = 0u64;
+    let deadline = Instant::now() + TIMEOUT;
+    let mut last_recv = Instant::now();
+
+    // Phase 1: Warmup -- receive and discard
+    while total < warmup && Instant::now() < deadline {
+        if consumer.recv().is_some() {
+            total += 1;
+            last_recv = Instant::now();
+        } else if last_recv.elapsed() > Duration::from_secs(2) {
+            break;
+        } else {
+            spin_loop();
+        }
+    }
+
+    // Phase 2: Measurement
+    let mut latencies = Vec::with_capacity(iterations as usize);
+    while (latencies.len() as u64) < iterations && Instant::now() < deadline {
+        if let Some(msg) = consumer.recv() {
+            let recv_cycles = rdtscp();
+            let send_cycles = msg.stamp_nanos;
+            let delta = recv_cycles.wrapping_sub(send_cycles);
+            latencies.push(cal.cycles_to_ns(delta));
+            total += 1;
+            last_recv = Instant::now();
+        } else if last_recv.elapsed() > Duration::from_millis(500) {
+            break; // Publisher likely finished
+        } else {
+            spin_loop();
+        }
+    }
+
+    (latencies, total)
+}
+
+// ============================================================================
+// Child Process Entry Points
+// ============================================================================
+
+fn run_child_publisher(topic_name: &str, count: u64, core: usize) {
+    let _ = set_cpu_affinity(core);
+    let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
+
+    // Wait for parent consumer to register
+    thread::sleep(Duration::from_millis(100));
+
+    // Boot messages: trigger cross-process backend migration
+    for _ in 0..MIGRATION_BOOT {
+        serialize();
+        let t = rdtsc();
+        topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
+    }
+    thread::sleep(Duration::from_millis(50));
+
+    eprintln!(
+        "  [pub] PID={} core={} backend={} pubs={} subs={}",
+        std::process::id(),
+        core,
+        topic.backend_type(),
+        topic.pub_count(),
+        topic.sub_count(),
+    );
+
+    // === MEASUREMENT HOT LOOP ===
+    // RDTSC timestamp embedded in payload. No yield, no sleep.
+    for _ in 0..count {
+        serialize();
+        let t = rdtsc();
+        topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
+    }
+}
+
+fn run_child_consumer(topic_name: &str, count: u64, core: usize) {
+    let _ = set_cpu_affinity(core);
+    let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
+    let _ = topic.recv(); // Register as subscriber
+    thread::sleep(Duration::from_millis(50));
+
+    let mut received = 0u64;
+    let deadline = Instant::now() + TIMEOUT;
+    while received < count && Instant::now() < deadline {
+        if topic.recv().is_some() {
+            received += 1;
+        } else {
+            spin_loop();
+        }
+    }
+}
+
+// ============================================================================
+// Reporting: Detail
+// ============================================================================
+
+fn print_detail(r: &ScenarioResult) {
+    let check = if r.backend_ok() { "ok" } else { "MISMATCH" };
+
+    println!("  {} [{}]", r.name, r.measurement);
+    println!(
+        "  Backend: {} ({}, expected {})",
+        r.backend_short(),
+        check,
+        r.expected_backend
+    );
+
+    if r.latencies_ns.is_empty() {
+        println!("  NO SAMPLES -- topology did not route messages to parent consumer");
+        println!(
+            "  Messages: {}/{} received",
+            r.total_received, r.total_sent
+        );
+        println!();
+        return;
+    }
+
+    let s = r.stats();
+    println!(
+        "  Samples: {} (outliers removed: {})",
+        s.count, s.outliers_removed
+    );
+
+    if r.total_sent != r.total_received {
+        println!(
+            "  Messages: {}/{} received ({:.1}% loss)",
+            r.total_received,
+            r.total_sent,
+            r.loss_pct()
+        );
+    }
+
+    if let Some(note) = r.note {
+        println!("  Note: {}", note);
+    }
+
+    println!();
+    println!(
+        "    {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "p50", "p95", "p99", "p99.9", "p99.99", "max"
+    );
+    println!(
+        "    {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        fmt_ns(s.median as u64),
+        fmt_ns(s.p95),
+        fmt_ns(s.p99),
+        fmt_ns(s.p999),
+        fmt_ns(s.p9999),
+        fmt_ns(s.max),
+    );
+    println!();
+
+    let cv = if s.mean > 0.0 {
+        s.std_dev / s.mean
+    } else {
+        0.0
+    };
+    println!(
+        "    Mean: {}  CI95: [{:.1}, {:.1}]ns  StdDev: {:.1}ns  CV: {:.3}",
+        fmt_ns(s.mean as u64),
+        s.ci_low,
+        s.ci_high,
+        s.std_dev,
+        cv,
+    );
+    println!(
+        "    Jitter: {} (max-min)  IQR: [{}, {}]",
+        fmt_ns(s.max - s.min),
+        fmt_ns(s.p25),
+        fmt_ns(s.p75),
+    );
+    println!();
+}
+
+// ============================================================================
+// Reporting: Summary Table
+// ============================================================================
+
+fn print_summary(results: &[ScenarioResult]) {
+    let w = BOX_W + 4;
+    println!("{}", "=".repeat(w));
+    println!(
+        "  {:<18} {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {}",
+        "Scenario", "Type", "p50", "p95", "p99", "p99.9", "max", "Backend"
+    );
+    println!("{}", "-".repeat(w));
+
+    for r in results {
+        if r.latencies_ns.is_empty() {
+            println!(
+                "  {:<18} {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {} {}",
+                r.name,
+                r.measurement,
+                "--",
+                "--",
+                "--",
+                "--",
+                "--",
+                if r.backend_ok() { "ok" } else { "!!" },
+                r.backend_short(),
+            );
+            continue;
+        }
+
+        let s = r.stats();
+        let mark = if r.backend_ok() { "ok" } else { "!!" };
+
+        println!(
+            "  {:<18} {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {} {}",
+            r.name,
+            r.measurement,
+            fmt_ns(s.median as u64),
+            fmt_ns(s.p95),
+            fmt_ns(s.p99),
+            fmt_ns(s.p999),
+            fmt_ns(s.max),
+            mark,
+            r.backend_short(),
+        );
+    }
+
+    println!("{}", "=".repeat(w));
+    println!();
+}
+
+// ============================================================================
+// Reporting: Methodology
+// ============================================================================
+
+fn print_methodology(cal: &RdtscCalibration) {
+    println!(
+        "{} Methodology {}",
+        "───",
+        "─".repeat(BOX_W - 18)
+    );
+    println!();
+    println!("  Measurement types:");
+    println!("    send    = producer-side send() latency (RDTSC, overhead subtracted)");
+    println!("    one-way = producer-to-consumer via RDTSC timestamp in CmdVel.stamp_nanos");
+    println!();
+    println!("  Statistical processing:");
+    println!("    - Tukey IQR outlier removal (1.5x fence)");
+    println!("    - Bootstrap 95% CI (10K resamples, LCG PRNG)");
+    println!("    - Full percentile distribution (p1 through p99.99)");
+    println!();
+    println!("  Timing infrastructure:");
+    println!(
+        "    RDTSC overhead: ~{}ns (serialize + rdtsc/rdtscp pair)",
+        cal.cycles_to_ns(cal.overhead_cycles)
+    );
+
+    // Measure Instant::now() for comparison
+    let mut times: Vec<u64> = Vec::with_capacity(10_000);
+    for _ in 0..10_000 {
         let start = Instant::now();
         std::hint::black_box(());
         times.push(start.elapsed().as_nanos() as u64);
     }
     times.sort_unstable();
-    times[times.len() / 2]
+    println!(
+        "    Instant::now(): ~{}ns (for comparison)",
+        times[times.len() / 2]
+    );
+    println!("    Intra-process: RDTSC overhead subtracted from each sample");
+    println!("    Cross-process: raw producer-to-consumer delta (overhead NOT subtracted)");
+    println!();
+
+    println!("  Known limitations:");
+    println!("    - AdaptiveTopic may select different backends depending on registration order");
+    println!("    - MPMC scenario may use PodShm (single-slot overwrite) instead of MpmcShm");
+    println!("    - Cross-process latency includes serialization + SHM + deserialization");
+    println!("    - Governor 'powersave' significantly inflates latencies vs 'performance'");
+    println!();
 }
 
-// ============================================================
-// CHILD PROCESS ENTRY POINTS
-// ============================================================
+// ============================================================================
+// JSON Output
+// ============================================================================
 
-fn run_child_publisher(topic_name: &str, count: u64) {
-    let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
-    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioResult]) {
+    let mut report = BenchmarkReport::new(platform.clone());
 
-    // Wait for parent consumer to register in shared memory before we start.
-    thread::sleep(Duration::from_millis(100));
-
-    // Warmup: send a few messages to trigger cross-process backend migration
-    // (SpscIntra → SpscShm). Without this, the first N messages go to the
-    // intra-process ring buffer and are never seen by the cross-process consumer.
-    for _ in 0..100 {
-        topic.send(msg);
-    }
-    // Let migration complete (drain_in_flight takes ≥1ms)
-    thread::sleep(Duration::from_millis(50));
-
-    eprintln!(
-        "  [child-pub] PID={} mode={} pubs={} subs={}",
-        std::process::id(),
-        topic.backend_type(),
-        topic.pub_count(),
-        topic.sub_count()
-    );
-
-    let send_start = Instant::now();
-    for i in 0..count {
-        topic.send(msg);
-        // Yield frequently to give cross-process consumer CPU time to drain.
-        // Topic::send() has internal spin-retry on backpressure, but yielding
-        // here further reduces contention and improves throughput.
-        if i % 64 == 63 {
-            thread::yield_now();
-        }
-    }
-    let send_elapsed = send_start.elapsed();
-
-    eprintln!(
-        "  [child-pub] done: {} iters in {:?}, final_mode={}",
-        count,
-        send_elapsed,
-        topic.backend_type()
-    );
-}
-
-fn run_child_consumer(topic_name: &str, count: u64) {
-    let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
-
-    // Brief delay to let shared memory topology stabilize
-    thread::sleep(Duration::from_millis(100));
-
-    let mut received = 0u64;
-    let timeout = Instant::now() + Duration::from_secs(TIMEOUT_SECS);
-    while received < count && Instant::now() < timeout {
-        if topic.recv().is_some() {
-            received += 1;
+    for r in results {
+        let s = r.stats();
+        let cv = if s.mean > 0.0 {
+            s.std_dev / s.mean
         } else {
-            std::hint::spin_loop();
-        }
+            0.0
+        };
+
+        let result = BenchmarkResult {
+            name: format!("all_paths_latency/{}", r.name),
+            subject: format!("{} ({})", r.backend_short(), r.measurement),
+            message_size: std::mem::size_of::<CmdVel>(),
+            config: BenchmarkConfig {
+                warmup_iterations: WARMUP as usize,
+                iterations: ITERATIONS as usize,
+                runs: 1,
+                cpu_affinity: Some((CORE_MAIN, CORE_AUX)),
+                filter_outliers: true,
+                confidence_level: 95.0,
+            },
+            platform: platform.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            raw_latencies_ns: r.latencies_ns.clone(),
+            statistics: s.clone(),
+            throughput: ThroughputMetrics {
+                messages_per_sec: if s.mean > 0.0 {
+                    1e9 / s.mean
+                } else {
+                    0.0
+                },
+                bytes_per_sec: if s.mean > 0.0 {
+                    (std::mem::size_of::<CmdVel>() as f64) * 1e9 / s.mean
+                } else {
+                    0.0
+                },
+                total_messages: r.latencies_ns.len() as u64,
+                total_bytes: (r.latencies_ns.len() * std::mem::size_of::<CmdVel>()) as u64,
+                duration_secs: (s.mean * r.latencies_ns.len() as f64) / 1e9,
+            },
+            determinism: DeterminismMetrics {
+                cv,
+                max_jitter_ns: s.max - s.min,
+                p999: s.p999,
+                p9999: s.p9999,
+                deadline_misses: 0,
+                deadline_threshold_ns: 0,
+                run_variance: 0.0,
+            },
+        };
+        report.add_result(result);
     }
+
+    match write_json_report(&report, path) {
+        Ok(()) => println!("  JSON report written to: {}", path),
+        Err(e) => eprintln!("  ERROR: Failed to write JSON report: {}", e),
+    }
+}
+
+// ============================================================================
+// Formatting Helpers
+// ============================================================================
+
+fn fmt_ns(ns: u64) -> String {
+    if ns < 10_000 {
+        format!("{}ns", ns)
+    } else if ns < 1_000_000 {
+        format!("{:.1}us", ns as f64 / 1_000.0)
+    } else if ns < 1_000_000_000 {
+        format!("{:.1}ms", ns as f64 / 1_000_000.0)
+    } else {
+        format!("{:.2}s", ns as f64 / 1_000_000_000.0)
+    }
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() > max {
+        &s[..max]
+    } else {
+        s
+    }
+}
+
+// Box-drawing helpers (fixed-width interior = BOX_W)
+fn box_top() -> String {
+    format!("╔{}╗", "═".repeat(BOX_W + 2))
+}
+fn box_bot() -> String {
+    format!("╚{}╝", "═".repeat(BOX_W + 2))
+}
+fn box_sep() -> String {
+    format!("╠{}╣", "═".repeat(BOX_W + 2))
+}
+fn box_center(text: &str) -> String {
+    let pad = BOX_W.saturating_sub(text.len());
+    let left = pad / 2;
+    let right = pad - left;
+    format!(
+        "║ {}{}{} ║",
+        " ".repeat(left),
+        text,
+        " ".repeat(right)
+    )
+}
+fn box_left(text: &str) -> String {
+    let content = if text.len() > BOX_W {
+        &text[..BOX_W]
+    } else {
+        text
+    };
+    let pad = BOX_W - content.len();
+    format!("║ {}{} ║", content, " ".repeat(pad))
+}
+
+fn detect_git_commit_short() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        })
 }

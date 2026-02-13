@@ -44,7 +44,7 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
 }
 
 use super::executors::ParallelExecutor;
-use super::fault_tolerance::CircuitBreaker;
+use super::fault_tolerance::{FailureAction, FailurePolicy};
 use super::intelligence::RuntimeProfiler;
 use super::safety_monitor::SafetyMonitor;
 
@@ -735,44 +735,74 @@ impl Scheduler {
     ///     }
     /// }
     /// ```
-    pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
-        self.nodes
-            .iter()
-            .find(|n| n.node.name() == node_name)
-            .map(|n| n.circuit_breaker.get_state())
-    }
-
-    /// Get a summary of all circuit breaker states.
+    /// Get the failure handler statistics for a specific node.
     ///
-    /// Returns counts of circuits in each state:
-    /// - `closed` - Normal operation, requests allowed
-    /// - `open` - Failing, requests blocked
-    /// - `half_open` - Testing recovery
+    /// Returns `None` if the node doesn't exist.
     ///
     /// # Example
     /// ```rust,ignore
     /// use horus_core::Scheduler;
     ///
     /// let scheduler = Scheduler::new();
-    /// // ... add some nodes ...
-    ///
-    /// let (closed, open, half_open) = scheduler.circuit_summary();
-    /// println!("{} healthy, {} isolated, {} recovering", closed, open, half_open);
+    /// if let Some(stats) = scheduler.failure_stats("my_node") {
+    ///     println!("Policy: {}, State: {}", stats.policy, stats.state);
+    /// }
     /// ```
+    pub fn failure_stats(
+        &self,
+        node_name: &str,
+    ) -> Option<super::fault_tolerance::FailureHandlerStats> {
+        self.nodes
+            .iter()
+            .find(|n| n.node.name() == node_name)
+            .map(|n| n.failure_handler.stats())
+    }
+
+    /// Get the circuit breaker state for a specific node (backward compatibility).
+    ///
+    /// For nodes with `Skip` policy, returns the underlying circuit state.
+    /// For other policies, maps to the closest circuit breaker equivalent:
+    /// - Healthy/allowed → `Closed`
+    /// - Suppressed/in-backoff → `Open`
+    pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
+        self.nodes
+            .iter()
+            .find(|n| n.node.name() == node_name)
+            .map(|n| {
+                let stats = n.failure_handler.stats();
+                if stats.is_suppressed {
+                    super::fault_tolerance::CircuitState::Open
+                } else {
+                    super::fault_tolerance::CircuitState::Closed
+                }
+            })
+    }
+
+    /// Get a summary of all node failure handler states.
+    ///
+    /// Returns counts of nodes in each state:
+    /// - `healthy` - Normal operation, node allowed to tick
+    /// - `suppressed` - Node is being skipped (backoff/circuit open)
+    /// - `recovering` - Node had failures but is currently allowed
+    ///
+    /// For backward compatibility, the tuple maps to (healthy, suppressed, recovering).
     pub fn circuit_summary(&self) -> (usize, usize, usize) {
-        let mut closed = 0;
-        let mut open = 0;
-        let mut half_open = 0;
+        let mut healthy = 0;
+        let mut suppressed = 0;
+        let mut recovering = 0;
 
         for node in &self.nodes {
-            match node.circuit_breaker.get_state() {
-                super::fault_tolerance::CircuitState::Closed => closed += 1,
-                super::fault_tolerance::CircuitState::Open => open += 1,
-                super::fault_tolerance::CircuitState::HalfOpen => half_open += 1,
+            let stats = node.failure_handler.stats();
+            if stats.is_suppressed {
+                suppressed += 1;
+            } else if stats.failure_count > 0 {
+                recovering += 1;
+            } else {
+                healthy += 1;
             }
         }
 
-        (closed, open, half_open)
+        (healthy, suppressed, recovering)
     }
 
     /// Get safety statistics including WCET overruns, deadline misses, and watchdog expirations.
@@ -933,8 +963,8 @@ impl Scheduler {
             "  [{}] BlackBox Recorder",
             if self.blackbox.is_some() { "x" } else { " " }
         ));
-        // Circuit breakers are always enabled per-node
-        lines.push("  [x] Circuit Breakers (5 failures, 30s timeout)".to_string());
+        // Tier-aware failure policies
+        lines.push("  [x] Failure Policies (tier-aware)".to_string());
         // WCET enforcement is enabled when SafetyMonitor is present
         let has_wcet =
             self.safety_monitor.is_some() && self.nodes.iter().any(|n| n.wcet_budget.is_some());
@@ -965,46 +995,50 @@ impl Scheduler {
             }
         }
 
-        // Node Health (circuit breaker states)
+        // Node Health (failure policy states)
         if !self.nodes.is_empty() {
             lines.push(thin_sep.to_string());
-            lines.push("Node Health (Circuit Breakers):".to_string());
-            let mut open_circuits = 0;
-            let mut half_open_circuits = 0;
+            lines.push("Node Health (Failure Policies):".to_string());
+            let mut suppressed_count = 0;
+            let mut failing_count = 0;
             for node in &self.nodes {
-                let state = node.circuit_breaker.get_state();
-                match state {
-                    super::fault_tolerance::CircuitState::Open => open_circuits += 1,
-                    super::fault_tolerance::CircuitState::HalfOpen => half_open_circuits += 1,
-                    super::fault_tolerance::CircuitState::Closed => {}
+                let stats = node.failure_handler.stats();
+                if stats.is_suppressed {
+                    suppressed_count += 1;
+                } else if stats.failure_count > 0 {
+                    failing_count += 1;
                 }
             }
-            if open_circuits == 0 && half_open_circuits == 0 {
+            if suppressed_count == 0 && failing_count == 0 {
                 lines.push(format!(
-                    "  [OK] All {} nodes healthy (circuits closed)",
+                    "  [OK] All {} nodes healthy",
                     self.nodes.len()
                 ));
             } else {
                 lines.push(format!(
-                    "  [WARN] {} open, {} half-open, {} closed",
-                    open_circuits,
-                    half_open_circuits,
-                    self.nodes.len() - open_circuits - half_open_circuits
+                    "  [WARN] {} suppressed, {} with failures, {} healthy",
+                    suppressed_count,
+                    failing_count,
+                    self.nodes.len() - suppressed_count - failing_count
                 ));
                 // List unhealthy nodes
                 for node in &self.nodes {
-                    let state = node.circuit_breaker.get_state();
-                    match state {
-                        super::fault_tolerance::CircuitState::Open => {
-                            lines.push(format!("    - {}: OPEN (isolated)", node.node.name()));
-                        }
-                        super::fault_tolerance::CircuitState::HalfOpen => {
-                            lines.push(format!(
-                                "    - {}: HALF-OPEN (testing recovery)",
-                                node.node.name()
-                            ));
-                        }
-                        super::fault_tolerance::CircuitState::Closed => {}
+                    let stats = node.failure_handler.stats();
+                    if stats.is_suppressed {
+                        lines.push(format!(
+                            "    - {}: SUPPRESSED ({}, {})",
+                            node.node.name(),
+                            stats.policy,
+                            stats.state
+                        ));
+                    } else if stats.failure_count > 0 {
+                        lines.push(format!(
+                            "    - {}: {} failures ({}, {})",
+                            node.node.name(),
+                            stats.failure_count,
+                            stats.policy,
+                            stats.state
+                        ));
                     }
                 }
             }
@@ -1192,14 +1226,12 @@ impl Scheduler {
         // Apply fault tolerance
         for registered in self.nodes.iter_mut() {
             if config.fault.circuit_breaker_enabled {
-                registered.circuit_breaker = CircuitBreaker::new(
-                    config.fault.max_failures,
-                    config.fault.recovery_threshold,
-                    config.fault.circuit_timeout_ms,
-                );
+                // Tier-based defaults are already set; reset handlers to clear any accumulated state
+                registered.failure_handler.reset();
             } else {
-                // Disable circuit breaker by setting impossibly high threshold
-                registered.circuit_breaker = CircuitBreaker::new(u32::MAX, 0, 0);
+                // Disable fault handling entirely — all nodes get Ignore policy
+                registered.failure_handler =
+                    super::fault_tolerance::FailureHandler::new(FailurePolicy::Ignore);
             }
         }
 
@@ -1578,6 +1610,7 @@ impl Scheduler {
         self.replay_nodes.insert(node_name.clone(), replayer);
 
         // Add as a registered node with replay flag
+        let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
             node: Box::new(replay_node),
             priority,
@@ -1585,7 +1618,9 @@ impl Scheduler {
             context: None,
             rate_hz: None,
             last_tick: None,
-            circuit_breaker: CircuitBreaker::new(5, 3, 30000), // 5 failures, 3 success, 30s timeout
+            failure_handler: super::fault_tolerance::FailureHandler::new(
+                replay_tier.default_failure_policy(),
+            ),
             is_rt_node: false,
             wcet_budget: None,
             deadline: None,
@@ -1593,7 +1628,7 @@ impl Scheduler {
 
             is_stopped: false,
             is_paused: false,
-            tier: NodeTier::default(),
+            tier: replay_tier,
         });
 
         // Sort nodes by priority
@@ -2079,6 +2114,7 @@ impl Scheduler {
         let wcet_budget = config.wcet_budget;
         let deadline = config.deadline;
         let tier = config.tier;
+        let failure_policy = config.failure_policy;
 
         // Use the internal add logic
         self.add_configured_internal(
@@ -2089,6 +2125,7 @@ impl Scheduler {
             wcet_budget,
             deadline,
             tier,
+            failure_policy,
         )
     }
 
@@ -2103,6 +2140,7 @@ impl Scheduler {
         wcet_budget: Option<std::time::Duration>,
         deadline: Option<std::time::Duration>,
         tier: Option<NodeTier>,
+        failure_policy: Option<super::fault_tolerance::FailurePolicy>,
     ) -> &mut Self {
         let node_name = node.name().to_string();
 
@@ -2133,6 +2171,8 @@ impl Scheduler {
         // Use custom rate or node's declared rate
         let node_rate = custom_rate.or_else(|| node.rate_hz());
 
+        let resolved_tier = tier.unwrap_or_default();
+        let policy = failure_policy.unwrap_or_else(|| resolved_tier.default_failure_policy());
         self.nodes.push(RegisteredNode {
             node,
             priority,
@@ -2144,7 +2184,7 @@ impl Scheduler {
             } else {
                 None
             },
-            circuit_breaker: CircuitBreaker::new(5, 3, 30000),
+            failure_handler: super::fault_tolerance::FailureHandler::new(policy),
             is_rt_node,
             wcet_budget,
             deadline,
@@ -2152,7 +2192,7 @@ impl Scheduler {
 
             is_stopped: false,
             is_paused: false,
-            tier: tier.unwrap_or_default(),
+            tier: resolved_tier,
         });
 
         if let Some(rate) = node_rate {
@@ -2462,23 +2502,26 @@ impl Scheduler {
                     self.snapshot_state_to_registry();
                     self.last_snapshot = Instant::now();
 
-                    // Log circuit breaker status for nodes with failures
-                    let mut has_breaker_issues = false;
+                    // Log failure handler status for nodes with issues
+                    let mut has_failure_issues = false;
                     for registered in &self.nodes {
-                        let stats = registered.circuit_breaker.stats();
-                        if stats.failure_count > 0
-                            || matches!(stats.state, super::fault_tolerance::CircuitState::Open)
-                        {
-                            if !has_breaker_issues {
-                                print_line("\nCircuit Breaker Status:");
-                                has_breaker_issues = true;
+                        let stats = registered.failure_handler.stats();
+                        if stats.failure_count > 0 || stats.is_suppressed {
+                            if !has_failure_issues {
+                                print_line("\nFailure Handler Status:");
+                                has_failure_issues = true;
                             }
                             print_line(&format!(
-                                "  {} - State: {:?}, Failures: {}, Successes: {}",
+                                "  {} - Policy: {}, State: {}, Failures: {}{}",
                                 registered.node.name(),
+                                stats.policy,
                                 stats.state,
                                 stats.failure_count,
-                                stats.success_count
+                                if stats.is_suppressed {
+                                    " [SUPPRESSED]"
+                                } else {
+                                    ""
+                                }
                             ));
                         }
                     }
@@ -3024,9 +3067,8 @@ impl Scheduler {
                 continue;
             }
 
-            // Check circuit breaker
-            if !self.nodes[i].circuit_breaker.should_allow() {
-                // Circuit is open, skip this node
+            // Check failure handler (circuit breaker / backoff / skip)
+            if !self.nodes[i].failure_handler.should_allow() {
                 continue;
             }
 
@@ -3105,19 +3147,17 @@ impl Scheduler {
                     }
                 }
 
-                // Handle tick result
+                // Handle tick result with policy-driven dispatch
                 match tick_result {
                     Ok(_) => {
-                        // Record success with circuit breaker
-                        self.nodes[i].circuit_breaker.record_success();
+                        self.nodes[i].failure_handler.record_success();
 
                         if let Some(ref mut context) = self.nodes[i].context {
                             context.record_tick();
                         }
                     }
                     Err(panic_err) => {
-                        // Record failure with circuit breaker
-                        self.nodes[i].circuit_breaker.record_failure();
+                        let action = self.nodes[i].failure_handler.record_failure();
                         let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
                             format!("Node panicked: {}", s)
                         } else if let Some(s) = panic_err.downcast_ref::<String>() {
@@ -3129,38 +3169,70 @@ impl Scheduler {
                         let registered = &mut self.nodes[i];
                         if let Some(ref mut context) = registered.context {
                             context.record_tick_failure(error_msg.clone());
-                            print_line(&format!(" {} failed: {}", node_name, error_msg));
 
                             // Set context for on_error handler
                             set_node_context(node_name, context.metrics().total_ticks);
                             registered.node.on_error(&error_msg);
                             clear_node_context();
 
-                            if context.config().restart_on_failure {
-                                match context.restart() {
-                                    Ok(_) => {
-                                        print_line(&format!(
-                                            " Node '{}' restarted successfully (attempt {}/{})",
-                                            node_name,
-                                            context.metrics().errors_count,
-                                            context.config().max_restart_attempts
-                                        ));
-                                        registered.initialized = true;
-                                    }
-                                    Err(e) => {
-                                        print_line(&format!(
-                                            "Node '{}' exceeded max restart attempts: {}",
-                                            node_name, e
-                                        ));
-                                        context.transition_to_crashed(format!(
-                                            "Max restarts exceeded: {}",
-                                            e
-                                        ));
-                                        registered.initialized = false;
+                            match action {
+                                FailureAction::StopScheduler => {
+                                    print_line(&format!(
+                                        " FATAL: Node '{}' failed — stopping scheduler: {}",
+                                        node_name, error_msg
+                                    ));
+                                    context.transition_to_crashed(error_msg);
+                                    return;
+                                }
+                                FailureAction::FatalAfterRestarts => {
+                                    print_line(&format!(
+                                        " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
+                                        node_name
+                                    ));
+                                    context.transition_to_crashed(format!(
+                                        "Max restarts exceeded: {}",
+                                        error_msg
+                                    ));
+                                    return;
+                                }
+                                FailureAction::RestartNode => {
+                                    let stats = registered.failure_handler.stats();
+                                    print_line(&format!(
+                                        " Node '{}' failed, restarting (attempt {}): {}",
+                                        node_name, stats.restart_count, error_msg
+                                    ));
+                                    // Re-initialize the node
+                                    match context.restart() {
+                                        Ok(_) => {
+                                            registered.initialized = true;
+                                        }
+                                        Err(e) => {
+                                            print_line(&format!(
+                                                " Node '{}' restart failed: {}",
+                                                node_name, e
+                                            ));
+                                            context.transition_to_crashed(format!(
+                                                "Restart failed: {}",
+                                                e
+                                            ));
+                                            registered.initialized = false;
+                                        }
                                     }
                                 }
-                            } else {
-                                context.transition_to_error(error_msg);
+                                FailureAction::SkipNode => {
+                                    print_line(&format!(
+                                        " Node '{}' circuit opened — skipping until cooldown: {}",
+                                        node_name, error_msg
+                                    ));
+                                    context.transition_to_error(error_msg);
+                                }
+                                FailureAction::Continue => {
+                                    // Ignore policy or still within failure threshold
+                                    print_line(&format!(
+                                        " Node '{}' failed (continuing): {}",
+                                        node_name, error_msg
+                                    ));
+                                }
                             }
                         }
                     }

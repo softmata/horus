@@ -1,6 +1,6 @@
 //! Digital I/O message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
@@ -8,7 +8,7 @@ use serde_arrays;
 ///
 /// Represents the state of digital input/output pins, typically used
 /// for interfacing with sensors, actuators, and industrial equipment.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct DigitalIO {
     /// Pin states (true = high/on, false = low/off)
     #[serde(with = "serde_arrays")]
@@ -122,11 +122,5 @@ impl DigitalIO {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-    }
-}
-
-impl LogSummary for DigitalIO {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

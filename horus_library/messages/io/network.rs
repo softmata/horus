@@ -1,10 +1,10 @@
 //! Industrial network status message type
 
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Industrial network status
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct NetworkStatus {
     /// Network interface name
     pub interface_name: [u8; 16],
@@ -85,11 +85,5 @@ impl NetworkStatus {
             return 0.0;
         }
         (self.tx_errors as f32 / self.tx_packets as f32) * 100.0
-    }
-}
-
-impl LogSummary for NetworkStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

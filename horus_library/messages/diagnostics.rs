@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Diagnostic and system health message types
 //
 // This module provides messages for system monitoring, health checks,
@@ -10,7 +10,7 @@ use serde_arrays;
 /// System heartbeat message
 ///
 /// Periodic signal indicating a node is alive and operational.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Heartbeat {
     /// Node name (null-terminated string)
     pub node_name: [u8; 32],
@@ -81,7 +81,7 @@ impl Heartbeat {
 }
 
 /// Status level enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum StatusLevel {
@@ -99,7 +99,7 @@ pub enum StatusLevel {
 /// System status message
 ///
 /// General-purpose status reporting for any component.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Status {
     /// Severity level
     pub level: StatusLevel,
@@ -193,7 +193,7 @@ impl Status {
 /// Emergency stop message
 ///
 /// Critical safety message to immediately stop all robot motion.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct EmergencyStop {
     /// Emergency stop is active
     pub engaged: bool,
@@ -274,7 +274,7 @@ impl EmergencyStop {
 /// System resource usage
 ///
 /// Reports CPU, memory, and other resource utilization.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ResourceUsage {
     /// CPU usage percentage (0-100)
     pub cpu_percent: f32,
@@ -327,7 +327,7 @@ impl ResourceUsage {
 }
 
 /// Diagnostic key-value pair
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct DiagnosticValue {
     /// Key name (null-terminated)
     pub key: [u8; 32],
@@ -398,7 +398,7 @@ impl DiagnosticValue {
 }
 
 /// Diagnostic report with multiple key-value pairs
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct DiagnosticReport {
     /// Component name
     pub component: [u8; 32],
@@ -485,7 +485,7 @@ impl DiagnosticReport {
 /// Node execution state
 ///
 /// Represents the current execution state of a HORUS node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum NodeState {
@@ -521,7 +521,7 @@ impl NodeState {
 /// Node health status
 ///
 /// Indicates the operational health of a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum HealthStatus {
@@ -566,7 +566,7 @@ impl HealthStatus {
 ///
 /// Written to the shared memory heartbeats directory for monitoring.
 /// Path is platform-specific (Linux: /dev/shm/horus/heartbeats, macOS: /tmp/horus/heartbeats).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct NodeHeartbeat {
     /// Node execution state
     pub state: NodeState,
@@ -648,7 +648,7 @@ impl NodeHeartbeat {
 }
 
 /// Safety system status
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct SafetyStatus {
     /// Safety system is active
     pub enabled: bool,
@@ -712,71 +712,5 @@ impl SafetyStatus {
     pub fn clear_faults(&mut self) {
         self.fault_code = 0;
         self.mode = Self::MODE_NORMAL;
-    }
-}
-
-impl LogSummary for Heartbeat {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Status {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for EmergencyStop {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ResourceUsage {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for DiagnosticValue {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for DiagnosticReport {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for NodeHeartbeat {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for SafetyStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for StatusLevel {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for NodeState {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for HealthStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }

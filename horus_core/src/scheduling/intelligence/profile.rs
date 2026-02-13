@@ -72,6 +72,25 @@ impl NodeTier {
             NodeTier::Auto => "Auto-detect from profile",
         }
     }
+
+    /// Get the default failure policy for this tier.
+    ///
+    /// Each tier has a sensible default that matches its criticality:
+    /// - **UltraFast/Fast**: `Fatal` — these are control-loop nodes; failure = stop.
+    /// - **Normal/Isolated/Auto**: `Restart` with exponential backoff (5 attempts, 100ms initial).
+    /// - **Background/AsyncIO**: `Skip` via circuit breaker (5 failures, 30s cooldown).
+    pub fn default_failure_policy(
+        &self,
+    ) -> super::super::fault_tolerance::failure_policy::FailurePolicy {
+        use super::super::fault_tolerance::failure_policy::FailurePolicy;
+        match self {
+            NodeTier::UltraFast | NodeTier::Fast => FailurePolicy::Fatal,
+            NodeTier::Normal | NodeTier::Isolated | NodeTier::Auto => {
+                FailurePolicy::restart(5, 100)
+            }
+            NodeTier::Background | NodeTier::AsyncIO => FailurePolicy::skip(5, 30_000),
+        }
+    }
 }
 
 /// Statistics for a profiled node

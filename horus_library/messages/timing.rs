@@ -1,4 +1,4 @@
-use horus_core::core::LogSummary;
+use horus_macros::LogSummary;
 // Time synchronization and scheduling message types for robotics
 //
 // This module provides messages for time synchronization across distributed
@@ -11,7 +11,7 @@ use serde_arrays;
 ///
 /// Based on Network Time Protocol (NTP) and Precision Time Protocol (PTP)
 /// concepts for synchronizing clocks across multiple robots/computers.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TimeSync {
     /// Master/reference time in nanoseconds since epoch
     pub master_time: u64,
@@ -40,7 +40,7 @@ pub struct TimeSync {
 }
 
 /// Time synchronization quality levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum SyncQuality {
@@ -152,7 +152,7 @@ impl TimeSync {
 }
 
 /// Scheduled task/event message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ScheduledEvent {
     /// Unique event identifier
     pub event_id: u32,
@@ -187,7 +187,7 @@ pub struct ScheduledEvent {
 }
 
 /// Event type enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum EventType {
@@ -219,7 +219,7 @@ pub enum EventType {
 }
 
 /// Event execution status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum EventStatus {
@@ -328,7 +328,7 @@ impl ScheduledEvent {
 }
 
 /// Timeline/schedule of events
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
 pub struct Timeline {
     /// Array of scheduled events (max 64)
     #[serde(with = "serde_arrays")]
@@ -354,7 +354,7 @@ pub struct Timeline {
 }
 
 /// Timeline execution status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum TimelineStatus {
@@ -516,7 +516,7 @@ impl Timeline {
 }
 
 /// Clock synchronization statistics
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ClockStats {
     /// Current clock offset from master (nanoseconds)
     pub current_offset: i64,
@@ -610,54 +610,6 @@ impl ClockStats {
             SyncQuality::Poor => 10_000_000,  // 10 milliseconds
             SyncQuality::None => u64::MAX,
         }
-    }
-}
-
-impl LogSummary for TimeSync {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ScheduledEvent {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for Timeline {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for ClockStats {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for SyncQuality {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for EventType {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for EventStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl LogSummary for TimelineStatus {
-    fn log_summary(&self) -> String {
-        format!("{:?}", self)
     }
 }
 
