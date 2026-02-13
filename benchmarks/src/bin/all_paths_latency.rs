@@ -907,7 +907,9 @@ fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioRes
             },
             platform: platform.clone(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            raw_latencies_ns: r.latencies_ns.clone(),
+            // Exclude raw latencies to keep JSON compact (~500K entries would be 7+ MB).
+            // Statistics already capture full percentile distribution for regression tracking.
+            raw_latencies_ns: Vec::new(),
             statistics: s.clone(),
             throughput: ThroughputMetrics {
                 messages_per_sec: if s.mean > 0.0 {

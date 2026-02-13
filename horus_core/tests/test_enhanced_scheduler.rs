@@ -164,7 +164,7 @@ fn test_enhanced_scheduler() {
         .order(20)
         .done();
 
-    // Add flaky node (to test circuit breaker)
+    // Add flaky node with Ignore policy (tolerates failures without stopping)
     scheduler
         .add(FlakyNode {
             name: "processor",
@@ -172,6 +172,7 @@ fn test_enhanced_scheduler() {
             fail_rate: 0.3, // 30% failure rate
         })
         .order(30)
+        .failure_policy(horus_core::scheduling::FailurePolicy::Ignore)
         .done();
 
     // Run scheduler for 3 seconds
@@ -220,14 +221,15 @@ fn test_enhanced_scheduler() {
 
 #[test]
 fn test_skip_policy_protection() {
-    use horus_core::scheduling::{FailurePolicy, NodeTier};
+    use horus_core::scheduling::FailurePolicy;
 
     cleanup_stale_shm();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();
 
-    // Add a node that always fails with Background tier (Skip policy by default)
+    // Add a node that always fails with explicit Skip policy
+    // (using default Fast tier so the node stays in the main loop, not the background executor)
     scheduler
         .add(FlakyNode {
             name: "always_fails",
@@ -235,7 +237,7 @@ fn test_skip_policy_protection() {
             fail_rate: 1.0, // Always fails
         })
         .order(10)
-        .tier(NodeTier::Background)
+        .failure_policy(FailurePolicy::skip(5, 30_000))
         .done();
 
     // Run for 1 second

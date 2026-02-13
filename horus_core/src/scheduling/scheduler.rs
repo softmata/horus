@@ -3182,6 +3182,7 @@ impl Scheduler {
                                         node_name, error_msg
                                     ));
                                     context.transition_to_crashed(error_msg);
+                                    self.stop();
                                     return;
                                 }
                                 FailureAction::FatalAfterRestarts => {
@@ -3193,6 +3194,7 @@ impl Scheduler {
                                         "Max restarts exceeded: {}",
                                         error_msg
                                     ));
+                                    self.stop();
                                     return;
                                 }
                                 FailureAction::RestartNode => {
