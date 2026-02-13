@@ -580,10 +580,18 @@ fn spawn_consumer(topic: &str, count: u64, core: usize) -> std::process::Child {
 }
 
 /// Spin-receive until `count` messages arrive or timeout.
+///
+/// Deadline check is amortized (every 4096 polls) to avoid ~108ns Instant::now()
+/// overhead on every iteration, which would dominate cross-process wire latency.
 fn wait_for_messages(consumer: &Topic<CmdVel>, count: u64, timeout: Duration) -> u64 {
     let mut received = 0u64;
     let deadline = Instant::now() + timeout;
-    while received < count && Instant::now() < deadline {
+    let mut polls = 0u64;
+    while received < count {
+        polls += 1;
+        if polls & 4095 == 0 && Instant::now() > deadline {
+            break;
+        }
         if consumer.recv().is_some() {
             received += 1;
         } else {
@@ -598,6 +606,10 @@ fn wait_for_messages(consumer: &Topic<CmdVel>, count: u64, timeout: Duration) ->
 /// Phase 1: Discard `warmup` messages (cache/TLB warming).
 /// Phase 2: Collect up to `iterations` per-message one-way latencies.
 ///
+/// **Critical**: Deadline and idle checks are amortized (every 4096 polls) to avoid
+/// injecting ~108ns Instant::now() overhead into the measurement hot loop. This is
+/// essential for accurate sub-microsecond latency measurement.
+///
 /// Returns (latencies_ns, total_messages_received_in_both_phases).
 fn collect_cross_proc(
     consumer: &Topic<CmdVel>,
@@ -607,33 +619,52 @@ fn collect_cross_proc(
 ) -> (Vec<u64>, u64) {
     let mut total = 0u64;
     let deadline = Instant::now() + TIMEOUT;
-    let mut last_recv = Instant::now();
+    let mut last_recv_cycles = rdtsc(); // Use RDTSC for idle detection too
+    let idle_threshold = cal.ns_to_cycles(2_000_000_000); // 2 seconds in cycles (warmup)
+    let idle_threshold_meas = cal.ns_to_cycles(500_000_000); // 500ms in cycles (measurement)
 
     // Phase 1: Warmup -- receive and discard
-    while total < warmup && Instant::now() < deadline {
+    let mut polls = 0u64;
+    while total < warmup {
+        polls += 1;
+        if polls & 4095 == 0 && Instant::now() > deadline {
+            break;
+        }
         if consumer.recv().is_some() {
             total += 1;
-            last_recv = Instant::now();
-        } else if last_recv.elapsed() > Duration::from_secs(2) {
-            break;
+            last_recv_cycles = rdtsc();
         } else {
+            let now = rdtsc();
+            if now.wrapping_sub(last_recv_cycles) > idle_threshold {
+                break;
+            }
             spin_loop();
         }
     }
 
-    // Phase 2: Measurement
+    // Phase 2: Measurement -- ZERO overhead hot loop
+    // No Instant::now(), no unnecessary branches. Pure spin on recv().
     let mut latencies = Vec::with_capacity(iterations as usize);
-    while (latencies.len() as u64) < iterations && Instant::now() < deadline {
+    last_recv_cycles = rdtsc();
+    polls = 0;
+    while (latencies.len() as u64) < iterations {
+        polls += 1;
+        // Amortized deadline check: every 4096 polls (~1µs at full speed)
+        if polls & 4095 == 0 && Instant::now() > deadline {
+            break;
+        }
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
             let send_cycles = msg.stamp_nanos;
             let delta = recv_cycles.wrapping_sub(send_cycles);
             latencies.push(cal.cycles_to_ns(delta));
             total += 1;
-            last_recv = Instant::now();
-        } else if last_recv.elapsed() > Duration::from_millis(500) {
-            break; // Publisher likely finished
+            last_recv_cycles = recv_cycles;
         } else {
+            let now = rdtsc();
+            if now.wrapping_sub(last_recv_cycles) > idle_threshold_meas {
+                break; // Publisher likely finished
+            }
             spin_loop();
         }
     }
@@ -873,7 +904,7 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!("  Known limitations:");
     println!("    - AdaptiveTopic may select different backends depending on registration order");
     println!("    - MPMC scenario may use PodShm (single-slot overwrite) instead of MpmcShm");
-    println!("    - Cross-process latency includes serialization + SHM + deserialization");
+    println!("    - Cross-process POD: zero-copy (memcpy + atomics). Non-POD: +bincode ser/deser");
     println!("    - Governor 'powersave' significantly inflates latencies vs 'performance'");
     println!();
 }

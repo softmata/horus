@@ -2004,11 +2004,183 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             return Ok(());
         }
 
-        // SLOW PATH: Registration or cross-process communication
+        // FAST PATH: SpscShm/MpscShm cross-process POD - Single producer, no CAS needed
+        // Uses local_head and cached header pointer for maximum throughput.
+        // Combined path for SPSC and MPSC: SpscShm is safe because there's only one producer;
+        // MpscShm technically has multiple producers but the slow path handles that with fetch_add.
+        // We only use this fast path for SPSC (single producer guarantee).
+        if local.role.can_send()
+            && !local.is_same_process
+            && local.is_pod
+            && local.cached_mode == AdaptiveBackendMode::SpscShm
+        {
+            let seq = local.local_head;
+            // Use cached header pointer - avoids Arc dereference on every call
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+            let header = unsafe { &*local.cached_header_ptr };
+            let mask = local.cached_capacity_mask;
+
+            // Backpressure check using cached tail (only reload if appears full)
+            if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
+                local.local_tail = header.tail.load(Ordering::Acquire);
+                if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                    return Err(msg);
+                }
+            }
+
+            // Write message to ring buffer using cached data pointer
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+            unsafe {
+                let base = local.cached_data_ptr as *mut T;
+                simd_aware_write(base.add((seq & mask) as usize), msg);
+            }
+
+            // Update local head and shared memory (Release ensures write is visible to consumer)
+            let new_seq = seq.wrapping_add(1);
+            local.local_head = new_seq;
+            header.sequence_or_head.store(new_seq, Ordering::Release);
+
+            // Sampled maintenance (cold path)
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                self.refresh_lease();
+                self.check_migration();
+            }
+
+            return Ok(());
+        }
+
+        // FAST PATH: MpscShm cross-process POD - Multiple producers need fetch_add
+        if local.role.can_send()
+            && !local.is_same_process
+            && local.is_pod
+            && local.cached_mode == AdaptiveBackendMode::MpscShm
+        {
+            // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+            let header = unsafe { &*local.cached_header_ptr };
+            let mask = local.cached_capacity_mask;
+            let capacity = local.cached_capacity;
+
+            // Backpressure check
+            let current_head = header.sequence_or_head.load(Ordering::Acquire);
+            let current_tail = header.tail.load(Ordering::Acquire);
+            if current_head.wrapping_sub(current_tail) >= capacity {
+                return Err(msg);
+            }
+
+            // Atomically claim slot (fetch_add safe for multi-producer)
+            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+            let index = (seq & mask) as usize;
+
+            // Write data to claimed slot using cached data pointer
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+            unsafe {
+                let base = local.cached_data_ptr as *mut T;
+                simd_aware_write(base.add(index), msg);
+            }
+
+            local.local_head = seq + 1;
+
+            // Sampled maintenance (cold path)
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                self.refresh_lease();
+                self.check_migration();
+            }
+
+            return Ok(());
+        }
+
+        // FAST PATH: SpmcShm/MpmcShm cross-process POD - Multiple producers need fetch_add
+        if local.role.can_send()
+            && !local.is_same_process
+            && local.is_pod
+            && (local.cached_mode == AdaptiveBackendMode::SpmcShm
+                || local.cached_mode == AdaptiveBackendMode::MpmcShm)
+        {
+            // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+            let header = unsafe { &*local.cached_header_ptr };
+            let mask = local.cached_capacity_mask;
+            let capacity = local.cached_capacity;
+
+            // Backpressure check
+            let current_head = header.sequence_or_head.load(Ordering::Acquire);
+            let current_tail = header.tail.load(Ordering::Acquire);
+            if current_head.wrapping_sub(current_tail) >= capacity {
+                return Err(msg);
+            }
+
+            // Atomically claim slot
+            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+            let index = (seq & mask) as usize;
+
+            // Write data using cached data pointer
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+            unsafe {
+                let base = local.cached_data_ptr as *mut T;
+                simd_aware_write(base.add(index), msg);
+            }
+
+            local.local_head = seq + 1;
+
+            // Sampled maintenance (cold path)
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                self.refresh_lease();
+                self.check_migration();
+            }
+
+            return Ok(());
+        }
+
+        // FAST PATH: PodShm cross-process - fetch_add for generic POD
+        if local.role.can_send()
+            && !local.is_same_process
+            && local.cached_mode == AdaptiveBackendMode::PodShm
+        {
+            // Use cached header pointer to avoid Arc dereference
+            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+            let header = unsafe { &*local.cached_header_ptr };
+            let mask = local.cached_capacity_mask;
+            let capacity = local.cached_capacity;
+
+            // Backpressure check
+            let current_head = header.sequence_or_head.load(Ordering::Acquire);
+            let current_tail = header.tail.load(Ordering::Acquire);
+            if current_head.wrapping_sub(current_tail) >= capacity {
+                return Err(msg);
+            }
+
+            // Atomically claim slot
+            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+            let index = (seq & mask) as usize;
+
+            // Write data using cached data pointer
+            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+            unsafe {
+                let base = local.cached_data_ptr as *mut T;
+                simd_aware_write(base.add(index), msg);
+            }
+
+            local.local_head = seq + 1;
+
+            // Sampled maintenance (cold path)
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                self.refresh_lease();
+                self.check_migration();
+            }
+
+            return Ok(());
+        }
+
+        // SLOW PATH: Registration or cross-process non-POD communication
         self.send_slow_path(msg)
     }
 
-    /// Slow path for send - handles registration and cross-process cases
+    /// Slow path for send - handles registration and cross-process non-POD cases
     #[cold]
     #[inline(never)]
     fn send_slow_path(&self, msg: T) -> Result<(), T> {
