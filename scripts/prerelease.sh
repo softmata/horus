@@ -212,7 +212,7 @@ section "2. Compilation Check (cargo check)"
 if [ "$QUICK_MODE" = true ]; then
     # In quick mode, only check core crates
     info "Quick mode: checking core crates only..."
-    if timeout 300 cargo check -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai -p horus_perception 2>&1 | tail -5; then
+    if timeout 300 cargo check -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai 2>&1 | tail -5; then
         pass "Core crates compile"
     else
         fail "Core crates compilation failed"
@@ -234,7 +234,7 @@ section "3. Linting (cargo clippy)"
 if [ "$QUICK_MODE" = true ]; then
     # In quick mode, only lint core crates with timeout
     info "Quick mode: linting core crates only..."
-    CLIPPY_OUTPUT=$(timeout 300 cargo clippy -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai -p horus_perception 2>&1 || true)
+    CLIPPY_OUTPUT=$(timeout 300 cargo clippy -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai 2>&1 || true)
 else
     # Full lint with 10 minute timeout
     CLIPPY_OUTPUT=$(timeout 600 cargo clippy --workspace --all-targets 2>&1 || true)
@@ -775,7 +775,6 @@ if [ -n "$MAIN_VERSION" ]; then
         "horus_py/Cargo.toml"
         "horus_router/Cargo.toml"
         "horus_ai/Cargo.toml"
-        "horus_perception/Cargo.toml"
         "benchmarks/Cargo.toml"
     )
 

@@ -35,12 +35,13 @@ use serde::{Deserialize, Serialize};
 /// assert!(ctrl_s.is_ctrl());
 /// assert!(!key_press.has_modifier("Shift"));
 /// ```
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct KeyboardInput {
     pub key_name: [u8; 32],  // Fixed-size key name buffer (null-terminated)
     pub code: u32,           // Raw key code
     pub modifier_flags: u32, // Bit flags for modifiers instead of Vec<String>
-    pub pressed: bool,       // True for press, false for release
+    pub pressed: u8,          // 1 for press, 0 for release
     pub timestamp_ms: u64,   // Unix timestamp_ms in milliseconds
     pub _padding: [u8; 16],  // Padding to match JoystickInput size (72 bytes)
 }
@@ -55,6 +56,7 @@ pub const MODIFIER_META: u32 = 1 << 5;
 
 impl KeyboardInput {
     pub fn new(key: String, code: u32, modifiers: Vec<String>, pressed: bool) -> Self {
+        let pressed_u8 = pressed as u8;
         // Convert key name to fixed-size array
         let mut key_name = [0u8; 32];
         let key_bytes = key.as_bytes();
@@ -79,7 +81,7 @@ impl KeyboardInput {
             key_name,
             code,
             modifier_flags,
-            pressed,
+            pressed: pressed_u8,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -148,5 +150,18 @@ impl KeyboardInput {
     pub fn is_alt(&self) -> bool {
         self.has_modifier("Alt")
     }
+
+    /// Check if key is pressed
+    pub fn is_pressed(&self) -> bool {
+        self.pressed != 0
+    }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for KeyboardInput {}
+unsafe impl horus_core::bytemuck::Zeroable for KeyboardInput {}
+unsafe impl horus_core::communication::PodMessage for KeyboardInput {}
 

@@ -8,7 +8,8 @@ use serde_arrays;
 ///
 /// I2C read/write transaction for communicating with I2C devices like
 /// sensors, displays, EEPROMs, and other peripherals.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct I2cMessage {
     /// I2C device address (7-bit or 10-bit)
     pub device_address: u16,
@@ -25,8 +26,8 @@ pub struct I2cMessage {
     pub bus_number: u8,
     /// Clock speed in Hz (typically 100kHz or 400kHz)
     pub clock_speed: u32,
-    /// Transaction successful
-    pub success: bool,
+    /// Transaction successful (0 = no, 1 = yes)
+    pub success: u8,
     /// Error code (0=no error)
     pub error_code: u8,
     /// Timestamp in nanoseconds since epoch
@@ -43,7 +44,7 @@ impl Default for I2cMessage {
             data_length: 0,
             bus_number: 1,
             clock_speed: 100000, // 100kHz default
-            success: false,
+            success: 0,
             error_code: 0,
             timestamp_ns: 0,
         }
@@ -162,3 +163,11 @@ impl LogSummary for I2cMessage {
         )
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for I2cMessage {}
+unsafe impl horus_core::bytemuck::Zeroable for I2cMessage {}
+unsafe impl horus_core::communication::PodMessage for I2cMessage {}

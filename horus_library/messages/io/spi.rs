@@ -8,6 +8,7 @@ use serde_arrays;
 ///
 /// Standard SPI transaction for communicating with SPI devices.
 /// Supports full-duplex communication with configurable modes.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SpiMessage {
     /// SPI bus number (e.g., 0 for /dev/spidev0.0)
@@ -28,14 +29,14 @@ pub struct SpiMessage {
     pub rx_data: [u8; 256],
     /// Transaction length in bytes
     pub length: u16,
-    /// Chip select active high (default: false = active low)
-    pub cs_high: bool,
-    /// LSB first (default: false = MSB first)
-    pub lsb_first: bool,
-    /// 3-wire mode (bidirectional)
-    pub three_wire: bool,
-    /// Transaction successful
-    pub success: bool,
+    /// Chip select active high (0 = active low, 1 = active high)
+    pub cs_high: u8,
+    /// LSB first (0 = MSB first, 1 = LSB first)
+    pub lsb_first: u8,
+    /// 3-wire mode (0 = normal, 1 = bidirectional)
+    pub three_wire: u8,
+    /// Transaction successful (0 = no, 1 = yes)
+    pub success: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -51,10 +52,10 @@ impl Default for SpiMessage {
             tx_data: [0; 256],
             rx_data: [0; 256],
             length: 0,
-            cs_high: false,
-            lsb_first: false,
-            three_wire: false,
-            success: false,
+            cs_high: 0,
+            lsb_first: 0,
+            three_wire: 0,
+            success: 0,
             timestamp_ns: 0,
         }
     }
@@ -81,10 +82,10 @@ impl SpiMessage {
             tx_data: [0; 256],
             rx_data: [0; 256],
             length: data.len().min(256) as u16,
-            cs_high: false,
-            lsb_first: false,
-            three_wire: false,
-            success: false,
+            cs_high: 0,
+            lsb_first: 0,
+            three_wire: 0,
+            success: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -136,3 +137,11 @@ impl LogSummary for SpiMessage {
         )
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for SpiMessage {}
+unsafe impl horus_core::bytemuck::Zeroable for SpiMessage {}
+unsafe impl horus_core::communication::PodMessage for SpiMessage {}

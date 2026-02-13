@@ -1,6 +1,7 @@
-//! Landmark/keypoint types
+//! Landmark/keypoint types for zero-copy IPC
 //!
-//! Types for pose estimation, facial landmarks, hand tracking, etc.
+//! Pod/Zeroable types for pose estimation, facial landmarks, hand tracking.
+//! These are fixed-size types suitable for shared memory transport.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -263,5 +264,31 @@ mod tests {
         let a = Landmark::visible(0.0, 0.0, 0);
         let b = Landmark::visible(3.0, 4.0, 1);
         assert!((a.distance_to(&b) - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_landmark3d_to_2d() {
+        let lm3d = Landmark3D::new(1.0, 2.0, 3.0, 0.9, 5);
+        let lm2d = lm3d.to_2d();
+        assert_eq!(lm2d.x, 1.0);
+        assert_eq!(lm2d.y, 2.0);
+        assert_eq!(lm2d.visibility, 0.9);
+        assert_eq!(lm2d.index, 5);
+    }
+
+    #[test]
+    fn test_landmark_visibility() {
+        let lm = Landmark::new(0.0, 0.0, 0.5, 0);
+        assert!(lm.is_visible(0.3));
+        assert!(!lm.is_visible(0.8));
+    }
+
+    #[test]
+    fn test_landmark_array_data_size() {
+        let arr = LandmarkArray::coco_pose();
+        assert_eq!(arr.data_size(), 17 * 16); // 17 landmarks * 16 bytes each (2D)
+
+        let arr3d = LandmarkArray::mediapipe_pose();
+        assert_eq!(arr3d.data_size(), 33 * 20); // 33 landmarks * 20 bytes each (3D)
     }
 }

@@ -19,11 +19,6 @@ coverage:
         paths:
           - "horus_core/src/**"
 
-      horus_perception:
-        target: 50%
-        paths:
-          - "horus_perception/src/**"
-
       horus_manager:
         target: 40%
         paths:
@@ -60,11 +55,6 @@ flags:
   horus_core:
     paths:
       - horus_core/src/
-    carryforward: true
-
-  horus_perception:
-    paths:
-      - horus_perception/src/
     carryforward: true
 
   horus_manager:

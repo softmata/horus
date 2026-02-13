@@ -8,7 +8,8 @@ use serde_arrays;
 ///
 /// Represents analog input/output channels, typically used for
 /// sensors, actuators, and continuous control signals.
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct AnalogIO {
     /// Channel values (in volts or engineering units)
     #[serde(with = "serde_arrays")]
@@ -134,3 +135,11 @@ impl AnalogIO {
         }
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for AnalogIO {}
+unsafe impl horus_core::bytemuck::Zeroable for AnalogIO {}
+unsafe impl horus_core::communication::PodMessage for AnalogIO {}

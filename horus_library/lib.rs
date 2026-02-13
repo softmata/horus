@@ -120,6 +120,14 @@ pub mod prelude {
         HFrameError, StaticTransformStamped, TFMessage, Transform, TransformStamped,
     };
 
+    // Pod/Zeroable perception types (zero-copy IPC)
+    pub use crate::messages::{
+        detection_pod::{BoundingBox2DPod, DetectionPod},
+        landmark::Landmark,
+        pointcloud_pod::{PointXYZ, PointXYZRGB},
+        tracking::TrackedObject,
+    };
+
     // Note: sim2d and sim3d are separate crates to avoid cyclic dependencies.
     // Import them directly: use sim2d::*; or use sim3d::*;
 }

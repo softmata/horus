@@ -8,7 +8,8 @@ use serde_arrays;
 ///
 /// Raw byte data for serial/UART communication with devices like
 /// GPS modules, sensors, Arduino boards, and other serial peripherals.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SerialData {
     /// Serial port identifier (e.g., "/dev/ttyUSB0", "COM3")
     #[serde(with = "serde_arrays")]
@@ -115,3 +116,11 @@ impl LogSummary for SerialData {
         )
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for SerialData {}
+unsafe impl horus_core::bytemuck::Zeroable for SerialData {}
+unsafe impl horus_core::communication::PodMessage for SerialData {}

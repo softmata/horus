@@ -23,15 +23,20 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency
 
 ### Topic Backend Latencies (`all_paths_latency`)
 
-| Backend | Type | Expected Latency |
-|---------|------|------------------|
-| DirectChannel | Same thread | ~3ns |
-| SpscIntra | Cross-thread 1P-1C | ~18ns |
-| MpscIntra | Cross-thread MP-1C | ~26ns |
-| MpmcIntra | Cross-thread MPMC | ~36ns |
-| SpscShm | Cross-process 1P-1C | ~85ns |
-| MpscShm | Cross-process MP-1C | ~65ns |
-| MpmcShm | Cross-process MPMC | ~167ns |
+9 of 10 backends are benchmarked directly. MpmcShm only activates for non-POD types
+and shares dispatch paths with PodShm (plus serialization overhead).
+
+| Scenario | Backend | Topology | Expected Latency |
+|----------|---------|----------|------------------|
+| SameThread | DirectChannel | same thread, 1P-1C, POD | ~3ns |
+| CrossThread-1P1C | SpscIntra | same process, 1P-1C | ~18ns |
+| CrossThread-1PMC | SpmcIntra | same process, 1P-2C | ~24ns |
+| CrossThread-MP1C | MpscIntra | same process, 2P-1C | ~26ns |
+| CrossThread-MPMC | MpmcIntra | same process, 2P-2C | ~36ns |
+| CrossProc-PodShm | PodShm | cross process, 2P-2C, POD | ~50ns |
+| CrossProc-2P1C | MpscShm | cross process, 2P-1C | ~65ns |
+| CrossProc-1PMC | SpmcShm | cross process, 1P-2C | ~70ns |
+| CrossProc-1P1C | SpscShm | cross process, 1P-1C | ~85ns |
 
 ### Real-Time Suitability
 

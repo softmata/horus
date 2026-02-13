@@ -2885,15 +2885,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "horus_perception"
-version = "0.1.8"
-dependencies = [
- "bytemuck",
- "horus_core",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "horus_py"
 version = "0.1.8"
 dependencies = [

@@ -10,6 +10,7 @@ use serde_arrays;
 /// System heartbeat message
 ///
 /// Periodic signal indicating a node is alive and operational.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Heartbeat {
     /// Node name (null-terminated string)
@@ -19,7 +20,7 @@ pub struct Heartbeat {
     /// Sequence number (increments each heartbeat)
     pub sequence: u64,
     /// Node is alive and responding
-    pub alive: bool,
+    pub alive: u8,
     /// Time since startup in seconds
     pub uptime: f64,
     /// Timestamp in nanoseconds since epoch
@@ -32,7 +33,7 @@ impl Default for Heartbeat {
             node_name: [0; 32],
             node_id: 0,
             sequence: 0,
-            alive: true,
+            alive: 1,
             uptime: 0.0,
             timestamp_ns: 0,
         }
@@ -44,7 +45,7 @@ impl Heartbeat {
     pub fn new(node_name: &str, node_id: u32) -> Self {
         let mut hb = Self {
             node_id,
-            alive: true,
+            alive: 1,
             sequence: 0,
             uptime: 0.0,
             timestamp_ns: std::time::SystemTime::now()
@@ -99,10 +100,11 @@ pub enum StatusLevel {
 /// System status message
 ///
 /// General-purpose status reporting for any component.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Status {
     /// Severity level
-    pub level: StatusLevel,
+    pub level: u8,
     /// Error/status code (component-specific)
     pub code: u32,
     /// Human-readable message (null-terminated)
@@ -117,7 +119,7 @@ pub struct Status {
 impl Default for Status {
     fn default() -> Self {
         Self {
-            level: StatusLevel::Ok,
+            level: StatusLevel::Ok as u8,
             code: 0,
             message: [0; 128],
             component: [0; 32],
@@ -130,7 +132,7 @@ impl Status {
     /// Create a new status message
     pub fn new(level: StatusLevel, code: u32, message: &str) -> Self {
         let mut status = Self {
-            level,
+            level: level as u8,
             code,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -193,17 +195,18 @@ impl Status {
 /// Emergency stop message
 ///
 /// Critical safety message to immediately stop all robot motion.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct EmergencyStop {
     /// Emergency stop is active
-    pub engaged: bool,
+    pub engaged: u8,
     /// Reason for emergency stop
     #[serde(with = "serde_arrays")]
     pub reason: [u8; 64],
     /// Source that triggered the stop
     pub source: [u8; 32],
     /// Auto-reset allowed after clearing
-    pub auto_reset: bool,
+    pub auto_reset: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -211,10 +214,10 @@ pub struct EmergencyStop {
 impl Default for EmergencyStop {
     fn default() -> Self {
         Self {
-            engaged: false,
+            engaged: 0,
             reason: [0; 64],
             source: [0; 32],
-            auto_reset: false,
+            auto_reset: 0,
             timestamp_ns: 0,
         }
     }
@@ -224,8 +227,8 @@ impl EmergencyStop {
     /// Create an emergency stop signal
     pub fn engage(reason: &str) -> Self {
         let mut estop = Self {
-            engaged: true,
-            auto_reset: false,
+            engaged: 1,
+            auto_reset: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -245,8 +248,8 @@ impl EmergencyStop {
     /// Create a release signal
     pub fn release() -> Self {
         Self {
-            engaged: false,
-            auto_reset: false,
+            engaged: 0,
+            auto_reset: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -274,6 +277,7 @@ impl EmergencyStop {
 /// System resource usage
 ///
 /// Reports CPU, memory, and other resource utilization.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ResourceUsage {
     /// CPU usage percentage (0-100)
@@ -327,6 +331,7 @@ impl ResourceUsage {
 }
 
 /// Diagnostic key-value pair
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct DiagnosticValue {
     /// Key name (null-terminated)
@@ -398,7 +403,8 @@ impl DiagnosticValue {
 }
 
 /// Diagnostic report with multiple key-value pairs
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct DiagnosticReport {
     /// Component name
     pub component: [u8; 32],
@@ -408,7 +414,7 @@ pub struct DiagnosticReport {
     /// Number of valid values
     pub value_count: u8,
     /// Overall status level
-    pub level: StatusLevel,
+    pub level: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -419,7 +425,7 @@ impl Default for DiagnosticReport {
             component: [0; 32],
             values: [DiagnosticValue::default(); 16],
             value_count: 0,
-            level: StatusLevel::Ok,
+            level: StatusLevel::Ok as u8,
             timestamp_ns: 0,
         }
     }
@@ -478,7 +484,7 @@ impl DiagnosticReport {
 
     /// Set the overall status level
     pub fn set_level(&mut self, level: StatusLevel) {
-        self.level = level;
+        self.level = level as u8;
     }
 }
 
@@ -566,12 +572,13 @@ impl HealthStatus {
 ///
 /// Written to the shared memory heartbeats directory for monitoring.
 /// Path is platform-specific (Linux: /dev/shm/horus/heartbeats, macOS: /tmp/horus/heartbeats).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct NodeHeartbeat {
     /// Node execution state
-    pub state: NodeState,
+    pub state: u8,
     /// Health status
-    pub health: HealthStatus,
+    pub health: u8,
     /// Tick count
     pub tick_count: u64,
     /// Target tick rate (Hz)
@@ -589,8 +596,8 @@ pub struct NodeHeartbeat {
 impl Default for NodeHeartbeat {
     fn default() -> Self {
         Self {
-            state: NodeState::Idle,
-            health: HealthStatus::Unknown,
+            state: NodeState::Idle as u8,
+            health: HealthStatus::Unknown as u8,
             tick_count: 0,
             target_rate_hz: 0,
             actual_rate_hz: 0,
@@ -610,8 +617,8 @@ impl NodeHeartbeat {
             .as_secs();
 
         Self {
-            state,
-            health,
+            state: state as u8,
+            health: health as u8,
             heartbeat_timestamp: now,
             last_tick_timestamp: now,
             ..Default::default()
@@ -648,18 +655,19 @@ impl NodeHeartbeat {
 }
 
 /// Safety system status
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct SafetyStatus {
     /// Safety system is active
-    pub enabled: bool,
+    pub enabled: u8,
     /// Emergency stop is engaged
-    pub estop_engaged: bool,
+    pub estop_engaged: u8,
     /// Watchdog timer is OK
-    pub watchdog_ok: bool,
+    pub watchdog_ok: u8,
     /// All limits are within bounds
-    pub limits_ok: bool,
+    pub limits_ok: u8,
     /// Communication is healthy
-    pub comms_ok: bool,
+    pub comms_ok: u8,
     /// Safety mode (0=normal, 1=reduced, 2=safe_stop)
     pub mode: u8,
     /// Fault code if any
@@ -676,11 +684,11 @@ impl SafetyStatus {
     /// Create a new safety status
     pub fn new() -> Self {
         Self {
-            enabled: true,
-            estop_engaged: false,
-            watchdog_ok: true,
-            limits_ok: true,
-            comms_ok: true,
+            enabled: 1,
+            estop_engaged: 0,
+            watchdog_ok: 1,
+            limits_ok: 1,
+            comms_ok: 1,
             mode: Self::MODE_NORMAL,
             fault_code: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -692,11 +700,11 @@ impl SafetyStatus {
 
     /// Check if system is safe to operate
     pub fn is_safe(&self) -> bool {
-        self.enabled
-            && !self.estop_engaged
-            && self.watchdog_ok
-            && self.limits_ok
-            && self.comms_ok
+        self.enabled != 0
+            && self.estop_engaged == 0
+            && self.watchdog_ok != 0
+            && self.limits_ok != 0
+            && self.comms_ok != 0
             && self.fault_code == 0
     }
 
@@ -714,3 +722,39 @@ impl SafetyStatus {
         self.mode = Self::MODE_NORMAL;
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for Heartbeat {}
+unsafe impl horus_core::bytemuck::Zeroable for Heartbeat {}
+unsafe impl horus_core::communication::PodMessage for Heartbeat {}
+
+unsafe impl horus_core::bytemuck::Pod for Status {}
+unsafe impl horus_core::bytemuck::Zeroable for Status {}
+unsafe impl horus_core::communication::PodMessage for Status {}
+
+unsafe impl horus_core::bytemuck::Pod for EmergencyStop {}
+unsafe impl horus_core::bytemuck::Zeroable for EmergencyStop {}
+unsafe impl horus_core::communication::PodMessage for EmergencyStop {}
+
+unsafe impl horus_core::bytemuck::Pod for ResourceUsage {}
+unsafe impl horus_core::bytemuck::Zeroable for ResourceUsage {}
+unsafe impl horus_core::communication::PodMessage for ResourceUsage {}
+
+unsafe impl horus_core::bytemuck::Pod for DiagnosticValue {}
+unsafe impl horus_core::bytemuck::Zeroable for DiagnosticValue {}
+unsafe impl horus_core::communication::PodMessage for DiagnosticValue {}
+
+unsafe impl horus_core::bytemuck::Pod for DiagnosticReport {}
+unsafe impl horus_core::bytemuck::Zeroable for DiagnosticReport {}
+unsafe impl horus_core::communication::PodMessage for DiagnosticReport {}
+
+unsafe impl horus_core::bytemuck::Pod for NodeHeartbeat {}
+unsafe impl horus_core::bytemuck::Zeroable for NodeHeartbeat {}
+unsafe impl horus_core::communication::PodMessage for NodeHeartbeat {}
+
+unsafe impl horus_core::bytemuck::Pod for SafetyStatus {}
+unsafe impl horus_core::bytemuck::Zeroable for SafetyStatus {}
+unsafe impl horus_core::communication::PodMessage for SafetyStatus {}

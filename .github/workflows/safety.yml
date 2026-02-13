@@ -72,10 +72,10 @@ jobs:
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 
-      # Run MIRI on horus_perception types (has Pod/Zeroable derives)
-      - name: MIRI - horus_perception types
+      # Run MIRI on horus_library Pod types (landmark, tracking, detection_pod, etc.)
+      - name: MIRI - horus_library Pod types
         run: |
-          cargo miri test -p horus_perception --lib || true
+          cargo miri test -p horus_library -- landmark:: tracking:: detection_pod:: pointcloud_pod:: segmentation_pod:: || true
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 

@@ -125,12 +125,6 @@ jobs:
       - name: Wait for crates.io
         run: sleep 30
 
-      - name: Publish horus_perception
-        run: |
-          cd horus_perception
-          cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true
-
       - name: Wait for crates.io
         run: sleep 30
 

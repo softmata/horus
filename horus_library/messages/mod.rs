@@ -29,6 +29,13 @@ pub mod sensor;
 pub mod timing;
 pub mod vision;
 
+// Pod/Zeroable types for zero-copy IPC
+pub mod detection_pod;
+pub mod landmark;
+pub mod pointcloud_pod;
+pub mod segmentation_pod;
+pub mod tracking;
+
 // Input messages
 pub mod joystick_msg;
 pub mod keyboard_input_msg;
@@ -61,7 +68,7 @@ pub use vision::{
 };
 
 // Navigation
-pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
+pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan, PathPlanPod};
 
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
@@ -91,6 +98,13 @@ pub use ml::{
 // Tensor types for zero-copy ML workloads
 pub mod tensor;
 pub use tensor::{HorusTensor, TensorDevice, TensorDtype};
+
+// Pod/Zeroable perception types (zero-copy IPC)
+pub use detection_pod::{BoundingBox2DPod, BoundingBox3DPod, Detection3DPod, DetectionPod};
+pub use landmark::{Landmark, Landmark3D, LandmarkArray};
+pub use pointcloud_pod::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
+pub use segmentation_pod::SegmentationMaskPod;
+pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
 // Input (existing)
 pub use joystick_msg::JoystickInput;

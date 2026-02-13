@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// // Create a button press event
 /// let button_press = JoystickInput::new_button(0, 0, "A".to_string(), true);
 /// assert!(button_press.is_button());
-/// assert!(button_press.pressed);
+/// assert!(button_press.is_pressed());
 ///
 /// // Create an axis movement event
 /// let stick_move = JoystickInput::new_axis(0, 0, "LeftStickX".to_string(), 0.75);
@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(connected.is_connection_event());
 /// assert!(connected.is_connected());
 /// ```
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct JoystickInput {
     pub joystick_id: u32,       // Joystick/controller ID (0, 1, 2, 3...)
@@ -43,7 +44,7 @@ pub struct JoystickInput {
     pub element_id: u32,        // Button/axis/hat number
     pub element_name: [u8; 32], // Fixed-size element name buffer (null-terminated)
     pub value: f32,             // Button: 0.0/1.0, Axis: -1.0 to 1.0, Hat: directional
-    pub pressed: bool,          // For buttons: true when pressed
+    pub pressed: u8,             // For buttons: 1 when pressed, 0 when released
     pub timestamp_ms: u64,      // Unix timestamp_ms in milliseconds
 }
 
@@ -69,7 +70,7 @@ impl JoystickInput {
             element_id: button_id,
             element_name,
             value: if pressed { 1.0 } else { 0.0 },
-            pressed,
+            pressed: pressed as u8,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -93,7 +94,7 @@ impl JoystickInput {
             element_id: axis_id,
             element_name,
             value,
-            pressed: false,
+            pressed: 0,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -117,7 +118,7 @@ impl JoystickInput {
             element_id: hat_id,
             element_name,
             value,
-            pressed: false,
+            pressed: 0,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -145,7 +146,7 @@ impl JoystickInput {
             element_id: 0,
             element_name,
             value: if connected { 1.0 } else { 0.0 },
-            pressed: false,
+            pressed: 0,
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -196,5 +197,18 @@ impl JoystickInput {
     pub fn is_connected(&self) -> bool {
         self.is_connection_event() && self.value > 0.0
     }
+
+    /// Check if button is pressed
+    pub fn is_pressed(&self) -> bool {
+        self.pressed != 0
+    }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for JoystickInput {}
+unsafe impl horus_core::bytemuck::Zeroable for JoystickInput {}
+unsafe impl horus_core::communication::PodMessage for JoystickInput {}
 

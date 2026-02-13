@@ -30,7 +30,6 @@
 //! let msg = topic.recv();
 //! ```
 
-use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -226,17 +225,9 @@ const MAX_PARTICIPANTS: usize = 16;
 // DirectChannel Thread-Local Indices
 // ============================================================================
 
-// Thread-local storage for DirectChannel head/tail indices.
-//
-// This enables DirectChannel to work with separate Topic::new() instances
-// on the same thread. Both instances share the same slot_index (assigned
-// per pid+thread_id), so they access the same entry in this array.
-//
-// Format: (head, tail) pairs indexed by slot_index
-thread_local! {
-    static DIRECT_INDICES: RefCell<[(u64, u64); MAX_PARTICIPANTS]> =
-        const { RefCell::new([(0, 0); MAX_PARTICIPANTS]) };
-}
+// DirectChannel now uses LocalState.local_head/local_tail fields directly,
+// coordinating through header atomics (Release/Acquire). On x86, these are
+// just compiler barriers — cheaper than TLS lookup + RefCell borrow.
 
 /// Participant entry in the header (24 bytes, cache-friendly)
 #[repr(C)]
@@ -769,7 +760,7 @@ impl AdaptiveTopicHeader {
             (_, _, 0, 0, _) => AdaptiveBackendMode::Unknown,
 
             // DirectChannel: Same thread, 1 producer, 1 consumer, POD only (~3-5ns)
-            // Uses thread-local DIRECT_INDICES array indexed by slot_index.
+            // Uses local_head/local_tail + Release/Acquire atomics.
             // Both separate Topic::new() instances share the same slot_index
             // (assigned per pid+thread_id), so they access the same entry.
             // IMPORTANT: Only for POD types - DirectChannel uses ptr::read which
@@ -1604,16 +1595,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         Ok(())
     }
 
-    /// Sync DIRECT_INDICES from shared memory when entering DirectChannel mode.
-    /// This ensures that data written via SpscIntra is visible to DirectChannel.
-    #[inline]
-    fn sync_direct_indices_from_shm(slot: usize, head: u64, tail: u64) {
-        DIRECT_INDICES.with(|indices| {
-            let mut indices = indices.borrow_mut();
-            indices[slot] = (head, tail);
-        });
-    }
-
     /// Check if we need to migrate backends and do so if needed
     fn check_migration(&self) {
         let header = self.header();
@@ -1632,14 +1613,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             // Sync local indices from shared memory
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
             local.local_tail = header.tail.load(Ordering::Acquire);
-            // If entering DirectChannel mode, sync thread-local indices
-            if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                Self::sync_direct_indices_from_shm(
-                    local.slot_index as usize,
-                    local.local_head,
-                    local.local_tail,
-                );
-            }
             self.metrics.estimated_latency_ns.store(
                 local.cached_mode.expected_latency_ns() as u32,
                 Ordering::Relaxed,
@@ -1663,14 +1636,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         // Sync local indices from shared memory
                         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                         local.local_tail = header.tail.load(Ordering::Acquire);
-                        // If entering DirectChannel mode, sync thread-local indices
-                        if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                            Self::sync_direct_indices_from_shm(
-                                local.slot_index as usize,
-                                local.local_head,
-                                local.local_tail,
-                            );
-                        }
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         self.metrics.estimated_latency_ns.store(
                             local.cached_mode.expected_latency_ns() as u32,
@@ -1692,14 +1657,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             local.cached_capacity_mask = header.capacity_mask as u64;
                             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                             local.local_tail = header.tail.load(Ordering::Acquire);
-                            // If entering DirectChannel mode, sync thread-local indices
-                            if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                                Self::sync_direct_indices_from_shm(
-                                    local.slot_index as usize,
-                                    local.local_head,
-                                    local.local_tail,
-                                );
-                            }
                             self.metrics.estimated_latency_ns.store(
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
@@ -1751,433 +1708,215 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     ///
     /// Returns `Err(msg)` if the send fails (for backpressure/retry).
     ///
-    /// # Performance
-    /// - DirectChannel (same-thread): ~3-5ns - LOCAL indices, NO atomics, bitwise AND
-    /// - SpscIntra (cross-thread): ~15-20ns - atomic with separate cache lines
-    /// - Cross-process: ~80-150ns - shared memory coordination
+    /// # Performance (two-level dispatch: process locality → backend mode)
+    /// - DirectChannel (same-thread): ~3-5ns - local indices + Release store
+    /// - SpscIntra/SpmcIntra (cross-thread, 1P): ~15-20ns - atomic with separate cache lines
+    /// - MpscIntra/MpmcIntra (cross-thread, MP): ~25-36ns - CAS loop
+    /// - Cross-process POD: ~50-167ns - shared memory coordination
     #[inline(always)]
     pub fn send(&self, msg: T) -> Result<(), T> {
         // Get local state ONCE - single pointer dereference for entire function
         let local = self.local();
 
-        // Check for epoch change (mode migration) before fast paths
-        // This is needed because subscriber registration can trigger migration to DirectChannel
-        if local.role.can_send() {
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
-            if current_epoch != local.cached_epoch {
-                // Epoch changed - update cache
-                local.cached_epoch = current_epoch;
-                local.cached_mode = header.mode();
-                local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                local.local_tail = header.tail.load(Ordering::Acquire);
-                // If entering DirectChannel mode, sync thread-local indices
-                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                    Self::sync_direct_indices_from_shm(
-                        local.slot_index as usize,
-                        local.local_head,
-                        local.local_tail,
-                    );
-                }
-            }
+        // Early exit if not registered as sender — cold path handles registration
+        if unlikely(!local.role.can_send()) {
+            return self.send_slow_path(msg);
         }
 
-        // ULTRA-FAST PATH: DirectChannel mode (same thread, 1P-1C)
-        // Uses thread-local DIRECT_INDICES array indexed by slot_index.
-        // This enables separate Topic::new() instances to share indices.
-        // NOTE: Must check can_send() for consistency - DirectChannel requires both roles registered
-        if local.role.can_send() && local.cached_mode == AdaptiveBackendMode::DirectChannel {
-            let slot = local.slot_index as usize;
-            // Access thread-local indices - shared across all instances on this thread
-            let new_head = DIRECT_INDICES.with(|indices| {
-                let mut indices = indices.borrow_mut();
-                let (head, tail) = &mut indices[slot];
+        // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+        let header = unsafe { &*local.cached_header_ptr };
 
-                // Backpressure check: is buffer full?
-                if head.wrapping_sub(*tail) >= local.cached_capacity {
-                    return Err(msg);
-                }
-
-                // Direct write to ring buffer using cached pointer and capacity mask
-                // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
-                unsafe {
-                    let base = local.cached_data_ptr as *mut T;
-                    simd_aware_write(base.add((*head & local.cached_capacity_mask) as usize), msg);
-                }
-                // Increment head in thread-local storage
-                *head = head.wrapping_add(1);
-                Ok(*head)
-            })?;
-            // Also update shared memory so slow path consumers can see the data
-            // (needed when clones with fresh LocalState use slow path)
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            header.sequence_or_head.store(new_head, Ordering::Release);
-            return Ok(());
+        // Check for epoch change (mode migration) — Relaxed is sufficient since
+        // we only need to detect the change, not synchronize with it
+        let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
+        if unlikely(current_epoch != local.cached_epoch) {
+            local.cached_epoch = current_epoch;
+            local.cached_mode = header.mode();
+            local.is_same_process = header.is_same_process();
+            local.is_pod = header.is_pod_type();
+            local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+            local.local_tail = header.tail.load(Ordering::Acquire);
         }
 
-        // FAST PATH: SpscIntra - optimized for single producer/single consumer
-        // OPTIMIZATION: Use local indices and cached header pointer - avoid atomic loads and Arc deref
-        // Producer uses local_head for own head, local_tail to cache consumer's tail
-        // Only reload cached_tail when buffer appears full
-        // NOTE: Must check can_send() - a consumer-only Topic may have cached_mode=SpscIntra
-        // but send() must register as producer before using the fast path
-        if local.role.can_send() && local.cached_mode == AdaptiveBackendMode::SpscIntra {
-            // Use LOCAL indices - no atomic load needed!
-            // local_head = producer's own head (we're the only producer)
-            // local_tail = cached consumer's tail (reload only when "full")
-            let seq = local.local_head;
-            // Use cached header pointer - avoids Arc dereference on every call
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-
-            // Backpressure: check if buffer is full using cached values (no atomics)
-            // UNLIKELY: Buffer is rarely full in well-designed systems
-            if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
-                // Buffer appears full - reload consumer's actual tail
-                local.local_tail = header.tail.load(Ordering::Acquire);
-                if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
-                    return Err(msg); // Actually full
-                }
-            }
-
-            // Write message to ring buffer
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add((seq & local.cached_capacity_mask) as usize), msg);
-            }
-
-            // Update local head and shared memory (Release ensures write is visible)
-            let new_seq = seq.wrapping_add(1);
-            local.local_head = new_seq;
-            header.sequence_or_head.store(new_seq, Ordering::Release);
-
-            // Sampled maintenance - only every N messages (cold path)
-            // UNLIKELY: Only triggers every 1024 messages
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
-        }
-
-        // FAST PATH: MpscIntra - Multiple producers, single consumer
-        // Use CAS to atomically claim a slot with backpressure check
-        // Cache tail locally to reduce atomic loads
-        if local.role.can_send() && local.cached_mode == AdaptiveBackendMode::MpscIntra {
-            let header = self.header();
-            let mask = local.cached_capacity_mask;
-            let capacity = local.cached_capacity;
-
-            // CAS loop to atomically claim a slot with backpressure check
-            loop {
-                let head = header.sequence_or_head.load(Ordering::Acquire);
-
-                // Backpressure check using cached tail (only reload if appears full)
-                if head.wrapping_sub(local.local_tail) >= capacity {
-                    // Appears full - reload actual tail
-                    local.local_tail = header.tail.load(Ordering::Acquire);
-                    if head.wrapping_sub(local.local_tail) >= capacity {
-                        return Err(msg); // Actually full
+        // === TWO-LEVEL DISPATCH ===
+        // Level 1: is_same_process (single boolean check, already cached)
+        // Level 2: match on cached_mode (compiles to jump table = O(1) dispatch)
+        // This replaces the linear if-else cascade that caused 6-7 failed branch checks.
+        if local.is_same_process {
+            match local.cached_mode {
+                // DirectChannel: same-thread 1P1C (~3-5ns)
+                // Uses local_head/local_tail fields + Release store (on x86, just compiler barrier)
+                AdaptiveBackendMode::DirectChannel => {
+                    // Backpressure check (cached tail, reload only if appears full)
+                    if local.local_head.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if local.local_head.wrapping_sub(local.local_tail)
+                            >= local.cached_capacity
+                        {
+                            return Err(msg);
+                        }
                     }
-                }
-
-                // Try to claim this slot atomically
-                if header
-                    .sequence_or_head
-                    .compare_exchange_weak(
-                        head,
-                        head.wrapping_add(1),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Successfully claimed slot 'head', write message
                     // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(base.add((head & mask) as usize), msg);
+                        simd_aware_write(
+                            base.add(
+                                (local.local_head & local.cached_capacity_mask) as usize,
+                            ),
+                            msg,
+                        );
                     }
-
-                    // Sampled maintenance (cold path)
-                    local.msg_counter = local.msg_counter.wrapping_add(1);
-                    if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                        self.refresh_lease();
-                        self.check_migration();
-                    }
-
-                    return Ok(());
-                }
-                // CAS failed (another producer claimed it), retry
-                std::hint::spin_loop();
-            }
-        }
-
-        // FAST PATH: MpmcIntra - Multiple producers, multiple consumers
-        // Same CAS approach as MpscIntra
-        if local.role.can_send() && local.cached_mode == AdaptiveBackendMode::MpmcIntra {
-            let header = self.header();
-            let mask = local.cached_capacity_mask;
-            let capacity = local.cached_capacity;
-
-            // CAS loop to atomically claim a slot with backpressure check
-            loop {
-                let head = header.sequence_or_head.load(Ordering::Acquire);
-
-                // Backpressure check using cached tail (only reload if appears full)
-                if head.wrapping_sub(local.local_tail) >= capacity {
-                    // Appears full - reload actual tail
-                    local.local_tail = header.tail.load(Ordering::Acquire);
-                    if head.wrapping_sub(local.local_tail) >= capacity {
-                        return Err(msg); // Actually full
-                    }
+                    local.local_head = local.local_head.wrapping_add(1);
+                    header.sequence_or_head.store(local.local_head, Ordering::Release);
+                    Ok(())
                 }
 
-                // Try to claim this slot atomically
-                if header
-                    .sequence_or_head
-                    .compare_exchange_weak(
-                        head,
-                        head.wrapping_add(1),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Successfully claimed slot 'head', write message
-                    // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
+                // SpscIntra/SpmcIntra: single producer, local head (~18-24ns)
+                AdaptiveBackendMode::SpscIntra | AdaptiveBackendMode::SpmcIntra => {
+                    let seq = local.local_head;
+                    if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                            return Err(msg);
+                        }
+                    }
+                    // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(base.add((head & mask) as usize), msg);
+                        simd_aware_write(
+                            base.add((seq & local.cached_capacity_mask) as usize),
+                            msg,
+                        );
                     }
+                    let new_seq = seq.wrapping_add(1);
+                    local.local_head = new_seq;
+                    header.sequence_or_head.store(new_seq, Ordering::Release);
 
-                    // Sampled maintenance (cold path)
                     local.msg_counter = local.msg_counter.wrapping_add(1);
-                    if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
                         self.refresh_lease();
                         self.check_migration();
                     }
-
-                    return Ok(());
+                    Ok(())
                 }
-                // CAS failed (another producer claimed it), retry
-                std::hint::spin_loop();
-            }
-        }
 
-        // FAST PATH: Fallback for other intra-process modes (SpmcIntra uses SpscIntra-like path)
-        if local.role.can_send() && local.is_same_process {
-            let header = self.header();
-            let seq = local.local_head;
-            let mask = local.cached_capacity_mask;
-
-            // For SpmcIntra (single producer), use local head like SpscIntra
-            // Backpressure check
-            if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
-                local.local_tail = header.tail.load(Ordering::Acquire);
-                if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
-                    return Err(msg);
+                // MpscIntra/MpmcIntra: multiple producers, CAS loop (~26-36ns)
+                AdaptiveBackendMode::MpscIntra | AdaptiveBackendMode::MpmcIntra => {
+                    let mask = local.cached_capacity_mask;
+                    let capacity = local.cached_capacity;
+                    loop {
+                        let head = header.sequence_or_head.load(Ordering::Acquire);
+                        if head.wrapping_sub(local.local_tail) >= capacity {
+                            local.local_tail = header.tail.load(Ordering::Acquire);
+                            if head.wrapping_sub(local.local_tail) >= capacity {
+                                return Err(msg);
+                            }
+                        }
+                        if header
+                            .sequence_or_head
+                            .compare_exchange_weak(
+                                head,
+                                head.wrapping_add(1),
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
+                            unsafe {
+                                let base = local.cached_data_ptr as *mut T;
+                                simd_aware_write(
+                                    base.add((head & mask) as usize),
+                                    msg,
+                                );
+                            }
+                            local.msg_counter = local.msg_counter.wrapping_add(1);
+                            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
+                                self.refresh_lease();
+                                self.check_migration();
+                            }
+                            return Ok(());
+                        }
+                        std::hint::spin_loop();
+                    }
                 }
+
+                // Same-process but unexpected mode — fall through to slow path
+                _ => self.send_slow_path(msg),
             }
+        } else if local.is_pod {
+            match local.cached_mode {
+                // SpscShm: single producer cross-process POD (~85ns)
+                AdaptiveBackendMode::SpscShm => {
+                    let seq = local.local_head;
+                    if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                            return Err(msg);
+                        }
+                    }
+                    // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+                    unsafe {
+                        let base = local.cached_data_ptr as *mut T;
+                        simd_aware_write(
+                            base.add((seq & local.cached_capacity_mask) as usize),
+                            msg,
+                        );
+                    }
+                    let new_seq = seq.wrapping_add(1);
+                    local.local_head = new_seq;
+                    header.sequence_or_head.store(new_seq, Ordering::Release);
 
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add((seq & mask) as usize), msg);
-            }
-
-            let new_seq = seq.wrapping_add(1);
-            local.local_head = new_seq;
-            header.sequence_or_head.store(new_seq, Ordering::Release);
-
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
-        }
-
-        // FAST PATH: SpscShm/MpscShm cross-process POD - Single producer, no CAS needed
-        // Uses local_head and cached header pointer for maximum throughput.
-        // Combined path for SPSC and MPSC: SpscShm is safe because there's only one producer;
-        // MpscShm technically has multiple producers but the slow path handles that with fetch_add.
-        // We only use this fast path for SPSC (single producer guarantee).
-        if local.role.can_send()
-            && !local.is_same_process
-            && local.is_pod
-            && local.cached_mode == AdaptiveBackendMode::SpscShm
-        {
-            let seq = local.local_head;
-            // Use cached header pointer - avoids Arc dereference on every call
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-
-            // Backpressure check using cached tail (only reload if appears full)
-            if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
-                local.local_tail = header.tail.load(Ordering::Acquire);
-                if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
-                    return Err(msg);
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Ok(())
                 }
+
+                // MpscShm/SpmcShm/MpmcShm/PodShm: multi-producer cross-process POD
+                // Uses fetch_add to atomically claim slot + cached tail for backpressure
+                AdaptiveBackendMode::MpscShm
+                | AdaptiveBackendMode::SpmcShm
+                | AdaptiveBackendMode::MpmcShm
+                | AdaptiveBackendMode::PodShm => {
+                    let mask = local.cached_capacity_mask;
+                    let capacity = local.cached_capacity;
+
+                    // Backpressure check with cached tail (avoids loading tail every call)
+                    let current_head = header.sequence_or_head.load(Ordering::Acquire);
+                    if current_head.wrapping_sub(local.local_tail) >= capacity {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if current_head.wrapping_sub(local.local_tail) >= capacity {
+                            return Err(msg);
+                        }
+                    }
+
+                    // Atomically claim slot (fetch_add safe for multi-producer)
+                    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                    // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+                    unsafe {
+                        let base = local.cached_data_ptr as *mut T;
+                        simd_aware_write(base.add((seq & mask) as usize), msg);
+                    }
+                    local.local_head = seq + 1;
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Ok(())
+                }
+
+                // Cross-process POD but unexpected mode
+                _ => self.send_slow_path(msg),
             }
-
-            // Write message to ring buffer using cached data pointer
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add((seq & mask) as usize), msg);
-            }
-
-            // Update local head and shared memory (Release ensures write is visible to consumer)
-            let new_seq = seq.wrapping_add(1);
-            local.local_head = new_seq;
-            header.sequence_or_head.store(new_seq, Ordering::Release);
-
-            // Sampled maintenance (cold path)
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
+        } else {
+            // Cross-process non-POD: use serialization slow path
+            self.send_slow_path(msg)
         }
-
-        // FAST PATH: MpscShm cross-process POD - Multiple producers need fetch_add
-        if local.role.can_send()
-            && !local.is_same_process
-            && local.is_pod
-            && local.cached_mode == AdaptiveBackendMode::MpscShm
-        {
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-            let capacity = local.cached_capacity;
-
-            // Backpressure check
-            let current_head = header.sequence_or_head.load(Ordering::Acquire);
-            let current_tail = header.tail.load(Ordering::Acquire);
-            if current_head.wrapping_sub(current_tail) >= capacity {
-                return Err(msg);
-            }
-
-            // Atomically claim slot (fetch_add safe for multi-producer)
-            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
-            let index = (seq & mask) as usize;
-
-            // Write data to claimed slot using cached data pointer
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add(index), msg);
-            }
-
-            local.local_head = seq + 1;
-
-            // Sampled maintenance (cold path)
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
-        }
-
-        // FAST PATH: SpmcShm/MpmcShm cross-process POD - Multiple producers need fetch_add
-        if local.role.can_send()
-            && !local.is_same_process
-            && local.is_pod
-            && (local.cached_mode == AdaptiveBackendMode::SpmcShm
-                || local.cached_mode == AdaptiveBackendMode::MpmcShm)
-        {
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-            let capacity = local.cached_capacity;
-
-            // Backpressure check
-            let current_head = header.sequence_or_head.load(Ordering::Acquire);
-            let current_tail = header.tail.load(Ordering::Acquire);
-            if current_head.wrapping_sub(current_tail) >= capacity {
-                return Err(msg);
-            }
-
-            // Atomically claim slot
-            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
-            let index = (seq & mask) as usize;
-
-            // Write data using cached data pointer
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add(index), msg);
-            }
-
-            local.local_head = seq + 1;
-
-            // Sampled maintenance (cold path)
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
-        }
-
-        // FAST PATH: PodShm cross-process - fetch_add for generic POD
-        if local.role.can_send()
-            && !local.is_same_process
-            && local.cached_mode == AdaptiveBackendMode::PodShm
-        {
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-            let capacity = local.cached_capacity;
-
-            // Backpressure check
-            let current_head = header.sequence_or_head.load(Ordering::Acquire);
-            let current_tail = header.tail.load(Ordering::Acquire);
-            if current_head.wrapping_sub(current_tail) >= capacity {
-                return Err(msg);
-            }
-
-            // Atomically claim slot
-            let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
-            let index = (seq & mask) as usize;
-
-            // Write data using cached data pointer
-            // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
-            unsafe {
-                let base = local.cached_data_ptr as *mut T;
-                simd_aware_write(base.add(index), msg);
-            }
-
-            local.local_head = seq + 1;
-
-            // Sampled maintenance (cold path)
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Ok(());
-        }
-
-        // SLOW PATH: Registration or cross-process non-POD communication
-        self.send_slow_path(msg)
     }
 
     /// Slow path for send - handles registration and cross-process non-POD cases
@@ -2365,14 +2104,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 // CRITICAL: Sync local_head to prevent fast path from overwriting
                 // The fast path uses local_head, so we must keep it in sync
                 local.local_head = seq + 1;
-                // If in DirectChannel mode, sync thread-local indices
-                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                    Self::sync_direct_indices_from_shm(
-                        local.slot_index as usize,
-                        seq + 1,
-                        local.local_tail,
-                    );
-                }
             }
         }
 
@@ -2395,417 +2126,244 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// On first call, registers as a consumer and triggers backend detection.
     /// Returns None if no message is available.
     ///
-    /// # Performance
-    /// - DirectChannel (same-thread): ~3-5ns - no migration checks, direct read
-    /// - SpscIntra (cross-thread): ~15-20ns - minimal synchronization
-    /// - Cross-process: ~80-150ns - shared memory coordination
+    /// # Performance (two-level dispatch: process locality → backend mode)
+    /// - DirectChannel (same-thread): ~3-5ns - local indices + Acquire load
+    /// - SpscIntra/MpscIntra (cross-thread, 1C): ~18-26ns - local tail, cached head
+    /// - SpmcIntra/MpmcIntra (cross-thread, MC): ~24-36ns - CAS loop
+    /// - Cross-process POD: ~50-167ns - shared memory coordination
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         // Get local state ONCE - single pointer dereference for entire function
         let local = self.local();
 
-        // ULTRA-FAST PATH: DirectChannel mode (same thread, 1P-1C)
-        // Uses thread-local DIRECT_INDICES array indexed by slot_index.
-        // This enables separate Topic::new() instances to share indices.
-        // NOTE: Must check can_recv() for consistency - DirectChannel requires both roles registered
-        if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::DirectChannel {
-            let slot = local.slot_index as usize;
-            // Access thread-local indices - shared across all instances on this thread
-            let result = DIRECT_INDICES.with(|indices| {
-                let mut indices = indices.borrow_mut();
-                let (head, tail) = &mut indices[slot];
-
-                if *tail >= *head {
-                    return None; // No data available
-                }
-                // Direct read using cached pointer
-                // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-                let msg = unsafe {
-                    let base = local.cached_data_ptr as *const T;
-                    simd_aware_read(base.add((*tail & local.cached_capacity_mask) as usize))
-                };
-                // Increment tail in thread-local storage
-                *tail = tail.wrapping_add(1);
-                Some((msg, *tail))
-            });
-            if let Some((msg, new_tail)) = result {
-                // Also update shared memory so slow path senders can check backpressure
-                // (needed when clones with fresh LocalState use slow path)
-                // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-                let header = unsafe { &*local.cached_header_ptr };
-                header.tail.store(new_tail, Ordering::Release);
-                return Some(msg);
-            }
-            return None;
+        // Early exit if not registered as consumer — cold path handles registration
+        if unlikely(!local.role.can_recv()) {
+            return self.recv_slow_path();
         }
 
-        // FAST PATH: SpscIntra - optimized for single producer/single consumer
-        // OPTIMIZATION: Use local indices and cached header pointer - avoid atomic loads and Arc deref
-        // Consumer uses local_tail for own tail, local_head to cache producer's head
-        // Only reload cached_head when buffer appears empty
-        // NOTE: Must check can_recv() - a producer-only Topic may have cached_mode=SpscIntra
-        // but recv() must register as consumer before using the fast path
-        if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::SpscIntra {
-            // Use cached header pointer - avoids Arc dereference on every call
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
+        // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
+        let header = unsafe { &*local.cached_header_ptr };
 
-            // CRITICAL: Check if topology has changed (epoch mismatch)
-            // If epoch changed, our cached is_same_process/cached_mode may be stale
-            // Fall through to slow path to update cache
-            let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
-            if current_epoch != local.cached_epoch {
-                // Epoch changed - update cache and re-evaluate path
-                local.cached_epoch = current_epoch;
-                local.is_same_process = header.is_same_process();
-                local.is_pod = header.is_pod_type();
-                local.slot_size = header.slot_size as usize;
-                local.cached_mode = header.mode();
-                local.cached_capacity = header.capacity as u64;
-                local.cached_capacity_mask = header.capacity_mask as u64;
-                local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                local.local_tail = header.tail.load(Ordering::Acquire);
-                // Re-evaluate which fast path to use with updated cache
-                // (fall through to next checks with updated values)
-            } else {
-                // Epoch unchanged - use SPSC fast path
-                // Use LOCAL indices - no atomic load needed!
-                // local_tail = consumer's own tail (we're the only consumer)
-                // local_head = cached producer's head (reload only when "empty")
-                let tail = local.local_tail;
+        // Check for epoch change (mode migration) — same as send()
+        let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
+        if unlikely(current_epoch != local.cached_epoch) {
+            local.cached_epoch = current_epoch;
+            local.cached_mode = header.mode();
+            local.is_same_process = header.is_same_process();
+            local.is_pod = header.is_pod_type();
+            local.slot_size = header.slot_size as usize;
+            local.cached_capacity = header.capacity as u64;
+            local.cached_capacity_mask = header.capacity_mask as u64;
+            local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+            local.local_tail = header.tail.load(Ordering::Acquire);
+        }
 
-                // Empty check using cached values (no atomics)
-                // Note: In tight loops, buffer may appear empty when recv catches up to producer
-                if tail >= local.local_head {
-                    // Buffer appears empty - reload producer's actual head
-                    local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+        // === TWO-LEVEL DISPATCH ===
+        if local.is_same_process {
+            match local.cached_mode {
+                // DirectChannel: same-thread 1P1C (~3-5ns)
+                // Uses local_tail + Acquire load of head (on x86, just a regular load)
+                AdaptiveBackendMode::DirectChannel => {
+                    let tail = local.local_tail;
+                    // Empty check: cache head, reload only if appears empty
                     if tail >= local.local_head {
-                        return None; // Actually empty
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
                     }
-                }
-
-                // Read message from ring buffer
-                // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-                let msg = unsafe {
-                    let base = local.cached_data_ptr as *const T;
-                    simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
-                };
-
-                // Update local tail and shared memory (Release ensures read is complete)
-                let new_tail = tail.wrapping_add(1);
-                local.local_tail = new_tail;
-                header.tail.store(new_tail, Ordering::Release);
-
-                // Sampled maintenance - only every N messages (cold path)
-                // UNLIKELY: Only triggers every 1024 messages
-                local.msg_counter = local.msg_counter.wrapping_add(1);
-                if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                    self.refresh_lease();
-                    self.check_migration();
-                }
-
-                return Some(msg);
-            }
-        }
-
-        // FAST PATH: MpscIntra - Multiple producers, single consumer
-        // Single consumer can use local tail (like SpscIntra), cache head
-        if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::MpscIntra {
-            let tail = local.local_tail;
-            let header = self.header();
-            let mask = local.cached_capacity_mask;
-
-            // Empty check using cached head
-            if tail >= local.local_head {
-                // Appears empty - reload actual head
-                local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                if tail >= local.local_head {
-                    return None; // Actually empty
-                }
-            }
-
-            // Read message
-            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-            let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                simd_aware_read(base.add((tail & mask) as usize))
-            };
-
-            // Update local tail and shared memory
-            let new_tail = tail.wrapping_add(1);
-            local.local_tail = new_tail;
-            header.tail.store(new_tail, Ordering::Release);
-
-            // Sampled maintenance (cold path)
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Some(msg);
-        }
-
-        // FAST PATH: MpmcIntra - Multiple producers, multiple consumers
-        // Multiple consumers need CAS to atomically claim a slot
-        if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::MpmcIntra {
-            let header = self.header();
-            let mask = local.cached_capacity_mask;
-
-            // CAS loop to atomically claim a slot
-            loop {
-                let tail = header.tail.load(Ordering::Acquire);
-
-                // Empty check using cached head (only reload if appears empty)
-                if tail >= local.local_head {
-                    local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                    if tail >= local.local_head {
-                        return None; // Actually empty
-                    }
-                }
-
-                // Try to claim this slot atomically
-                if header
-                    .tail
-                    .compare_exchange_weak(
-                        tail,
-                        tail.wrapping_add(1),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Successfully claimed slot 'tail', read message
                     // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
-                        simd_aware_read(base.add((tail & mask) as usize))
+                        simd_aware_read(
+                            base.add((tail & local.cached_capacity_mask) as usize),
+                        )
                     };
-
-                    // Sampled maintenance (cold path)
-                    local.msg_counter = local.msg_counter.wrapping_add(1);
-                    if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                        self.refresh_lease();
-                        self.check_migration();
-                    }
-
-                    return Some(msg);
-                }
-                // CAS failed (another consumer claimed it), retry
-                std::hint::spin_loop();
-            }
-        }
-
-        // FAST PATH: SpmcIntra - Single producer, multiple consumers
-        // Multiple consumers need CAS
-        if local.role.can_recv() && local.cached_mode == AdaptiveBackendMode::SpmcIntra {
-            let header = self.header();
-            let mask = local.cached_capacity_mask;
-
-            // CAS loop to atomically claim a slot
-            loop {
-                let tail = header.tail.load(Ordering::Acquire);
-
-                // Empty check using cached head
-                if tail >= local.local_head {
-                    local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                    if tail >= local.local_head {
-                        return None; // Actually empty
-                    }
-                }
-
-                // Try to claim this slot atomically
-                if header
-                    .tail
-                    .compare_exchange_weak(
-                        tail,
-                        tail.wrapping_add(1),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-                    let msg = unsafe {
-                        let base = local.cached_data_ptr as *const T;
-                        simd_aware_read(base.add((tail & mask) as usize))
-                    };
-
-                    local.msg_counter = local.msg_counter.wrapping_add(1);
-                    if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                        self.refresh_lease();
-                        self.check_migration();
-                    }
-
-                    return Some(msg);
-                }
-                std::hint::spin_loop();
-            }
-        }
-
-        // FAST PATH: Fallback for other registered intra-process modes
-        if local.role.can_recv() && local.is_same_process {
-            let header = self.header();
-            let head = header.sequence_or_head.load(Ordering::Acquire);
-            let tail = header.tail.load(Ordering::Acquire);
-
-            if tail >= head {
-                return None;
-            }
-
-            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-            let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                simd_aware_read(base.add((tail & local.cached_capacity_mask) as usize))
-            };
-            header.tail.fetch_add(1, Ordering::Release);
-
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Some(msg);
-        }
-
-        // FAST PATH: SpscShm/MpscShm cross-process - Single consumer, no CAS needed
-        // Combined path for SPSC and MPSC since recv behavior is identical for single consumer
-        if local.role.can_recv()
-            && !local.is_same_process
-            && (local.cached_mode == AdaptiveBackendMode::SpscShm
-                || local.cached_mode == AdaptiveBackendMode::MpscShm)
-        {
-            let tail = local.local_tail;
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-
-            // Empty check using cached head
-            if tail >= local.local_head {
-                local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                if tail >= local.local_head {
-                    return None;
-                }
-            }
-
-            // Read message using cached data pointer
-            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-            let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                simd_aware_read(base.add((tail & mask) as usize))
-            };
-
-            // Single consumer: store instead of fetch_add
-            let new_tail = tail.wrapping_add(1);
-            local.local_tail = new_tail;
-            header.tail.store(new_tail, Ordering::Release);
-
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Some(msg);
-        }
-
-        // FAST PATH: SpmcShm/MpmcShm cross-process POD - Multiple consumers need CAS
-        // Non-POD types must use serialization slow path (raw reads would interpret
-        // serialized [seq, len, data] bytes as T — UB for types with pointers)
-        if local.role.can_recv()
-            && !local.is_same_process
-            && local.is_pod
-            && (local.cached_mode == AdaptiveBackendMode::SpmcShm
-                || local.cached_mode == AdaptiveBackendMode::MpmcShm)
-        {
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-
-            // CAS loop to atomically claim a slot
-            loop {
-                let tail = header.tail.load(Ordering::Acquire);
-
-                // Empty check using cached head
-                if tail >= local.local_head {
-                    local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                    if tail >= local.local_head {
-                        return None;
-                    }
-                }
-
-                // Try to claim this slot atomically
-                if header
-                    .tail
-                    .compare_exchange_weak(
-                        tail,
-                        tail.wrapping_add(1),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Successfully claimed slot 'tail', read message using cached pointer
-                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-                    let msg = unsafe {
-                        let base = local.cached_data_ptr as *const T;
-                        simd_aware_read(base.add((tail & mask) as usize))
-                    };
-
                     local.local_tail = tail.wrapping_add(1);
+                    header.tail.store(local.local_tail, Ordering::Release);
+                    Some(msg)
+                }
+
+                // SpscIntra/MpscIntra: single consumer, local tail (~18-26ns)
+                AdaptiveBackendMode::SpscIntra | AdaptiveBackendMode::MpscIntra => {
+                    let tail = local.local_tail;
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
+                    let msg = unsafe {
+                        let base = local.cached_data_ptr as *const T;
+                        simd_aware_read(
+                            base.add((tail & local.cached_capacity_mask) as usize),
+                        )
+                    };
+                    let new_tail = tail.wrapping_add(1);
+                    local.local_tail = new_tail;
+                    header.tail.store(new_tail, Ordering::Release);
 
                     local.msg_counter = local.msg_counter.wrapping_add(1);
                     if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
                         self.refresh_lease();
                         self.check_migration();
                     }
-
-                    return Some(msg);
+                    Some(msg)
                 }
-                std::hint::spin_loop();
+
+                // SpmcIntra/MpmcIntra: multiple consumers, CAS loop (~24-36ns)
+                AdaptiveBackendMode::SpmcIntra | AdaptiveBackendMode::MpmcIntra => {
+                    let mask = local.cached_capacity_mask;
+                    loop {
+                        let tail = header.tail.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            local.local_head =
+                                header.sequence_or_head.load(Ordering::Acquire);
+                            if tail >= local.local_head {
+                                return None;
+                            }
+                        }
+                        if header
+                            .tail
+                            .compare_exchange_weak(
+                                tail,
+                                tail.wrapping_add(1),
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
+                            let msg = unsafe {
+                                let base = local.cached_data_ptr as *const T;
+                                simd_aware_read(
+                                    base.add((tail & mask) as usize),
+                                )
+                            };
+                            local.msg_counter = local.msg_counter.wrapping_add(1);
+                            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)
+                            {
+                                self.refresh_lease();
+                                self.check_migration();
+                            }
+                            return Some(msg);
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+
+                // Same-process but unexpected mode
+                _ => self.recv_slow_path(),
             }
+        } else if local.is_pod {
+            match local.cached_mode {
+                // SpscShm/MpscShm: single consumer cross-process POD (~65-85ns)
+                AdaptiveBackendMode::SpscShm | AdaptiveBackendMode::MpscShm => {
+                    let tail = local.local_tail;
+                    let mask = local.cached_capacity_mask;
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
+                    let msg = unsafe {
+                        let base = local.cached_data_ptr as *const T;
+                        simd_aware_read(base.add((tail & mask) as usize))
+                    };
+                    let new_tail = tail.wrapping_add(1);
+                    local.local_tail = new_tail;
+                    header.tail.store(new_tail, Ordering::Release);
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Some(msg)
+                }
+
+                // SpmcShm/MpmcShm: multiple consumers cross-process POD, CAS (~70-167ns)
+                AdaptiveBackendMode::SpmcShm | AdaptiveBackendMode::MpmcShm => {
+                    let mask = local.cached_capacity_mask;
+                    loop {
+                        let tail = header.tail.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            local.local_head =
+                                header.sequence_or_head.load(Ordering::Acquire);
+                            if tail >= local.local_head {
+                                return None;
+                            }
+                        }
+                        if header
+                            .tail
+                            .compare_exchange_weak(
+                                tail,
+                                tail.wrapping_add(1),
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
+                            let msg = unsafe {
+                                let base = local.cached_data_ptr as *const T;
+                                simd_aware_read(
+                                    base.add((tail & mask) as usize),
+                                )
+                            };
+                            local.local_tail = tail.wrapping_add(1);
+                            local.msg_counter = local.msg_counter.wrapping_add(1);
+                            if unlikely(
+                                local
+                                    .msg_counter
+                                    .is_multiple_of(LEASE_REFRESH_INTERVAL),
+                            ) {
+                                self.refresh_lease();
+                                self.check_migration();
+                            }
+                            return Some(msg);
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+
+                // PodShm: generic POD cross-process (~50ns)
+                AdaptiveBackendMode::PodShm => {
+                    let mask = local.cached_capacity_mask;
+                    let head = header.sequence_or_head.load(Ordering::Acquire);
+                    let tail = header.tail.load(Ordering::Acquire);
+                    if tail >= head {
+                        return None;
+                    }
+                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
+                    let msg = unsafe {
+                        let base = local.cached_data_ptr as *const T;
+                        simd_aware_read(base.add((tail & mask) as usize))
+                    };
+                    let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
+                    local.local_tail = new_tail;
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Some(msg)
+                }
+
+                // Cross-process POD but unexpected mode
+                _ => self.recv_slow_path(),
+            }
+        } else {
+            // Cross-process non-POD: use deserialization slow path
+            self.recv_slow_path()
         }
-
-        // FAST PATH: PodShm cross-process - Generic POD with fetch_add
-        if local.role.can_recv()
-            && !local.is_same_process
-            && local.cached_mode == AdaptiveBackendMode::PodShm
-        {
-            // Use cached header pointer to avoid Arc dereference
-            // SAFETY: cached_header_ptr set from valid storage pointer in constructor; valid for lifetime of self
-            let header = unsafe { &*local.cached_header_ptr };
-            let mask = local.cached_capacity_mask;
-            let head = header.sequence_or_head.load(Ordering::Acquire);
-            let tail = header.tail.load(Ordering::Acquire);
-
-            if tail >= head {
-                return None;
-            }
-
-            // Read message using cached pointer
-            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
-            let msg = unsafe {
-                let base = local.cached_data_ptr as *const T;
-                simd_aware_read(base.add((tail & mask) as usize))
-            };
-
-            let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
-            local.local_tail = new_tail;
-
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                self.refresh_lease();
-                self.check_migration();
-            }
-
-            return Some(msg);
-        }
-
-        // SLOW PATH: Registration or cross-process non-POD communication
-        self.recv_slow_path()
     }
 
     /// Slow path for recv - handles registration and cross-process cases
@@ -3017,14 +2575,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
                 // Sync local_tail to prevent fast path from re-reading
                 local.local_tail = new_tail;
-                // If in DirectChannel mode, sync thread-local indices
-                if local.cached_mode == AdaptiveBackendMode::DirectChannel {
-                    Self::sync_direct_indices_from_shm(
-                        local.slot_index as usize,
-                        local.local_head,
-                        new_tail,
-                    );
-                }
                 msg
             }
         };
@@ -3553,8 +3103,8 @@ mod tests {
     fn test_separate_topic_instances() {
         // Test that mimics user's temperature sensor pattern (Issue #45):
         // Two separate Topic::new() calls with the same name (like sensor + monitor)
-        // This pattern was broken because DirectChannel mode was incorrectly selected,
-        // which uses thread-local storage that doesn't work across separate instances.
+        // DirectChannel uses local_head/local_tail + Release/Acquire atomics,
+        // so separate instances coordinate correctly through the shared memory header.
         let unique_name = format!("test_separate_{}", std::process::id());
 
         // Create "publisher" instance (like TemperatureSensor)

@@ -8,19 +8,20 @@ use serde_arrays;
 ///
 /// Represents the state of digital input/output pins, typically used
 /// for interfacing with sensors, actuators, and industrial equipment.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct DigitalIO {
-    /// Pin states (true = high/on, false = low/off)
+    /// Pin states (1 = high/on, 0 = low/off)
     #[serde(with = "serde_arrays")]
-    pub pins: [bool; 32],
+    pub pins: [u8; 32],
     /// Number of active pins
     pub pin_count: u8,
-    /// Pin direction mask (true = output, false = input)
+    /// Pin direction mask (1 = output, 0 = input)
     #[serde(with = "serde_arrays")]
-    pub pin_directions: [bool; 32],
-    /// Pull-up resistor enable mask
+    pub pin_directions: [u8; 32],
+    /// Pull-up resistor enable mask (1 = enabled, 0 = disabled)
     #[serde(with = "serde_arrays")]
-    pub pullup_enable: [bool; 32],
+    pub pullup_enable: [u8; 32],
     /// Pin labels for identification
     pub pin_labels: [[u8; 16]; 32],
     /// I/O board identifier
@@ -45,7 +46,7 @@ impl DigitalIO {
     /// Set pin state
     pub fn set_pin(&mut self, pin: u8, state: bool) -> bool {
         if pin < self.pin_count && (pin as usize) < self.pins.len() {
-            self.pins[pin as usize] = state;
+            self.pins[pin as usize] = state as u8;
             true
         } else {
             false
@@ -55,7 +56,7 @@ impl DigitalIO {
     /// Get pin state
     pub fn get_pin(&self, pin: u8) -> Option<bool> {
         if pin < self.pin_count && (pin as usize) < self.pins.len() {
-            Some(self.pins[pin as usize])
+            Some(self.pins[pin as usize] != 0)
         } else {
             None
         }
@@ -64,7 +65,7 @@ impl DigitalIO {
     /// Set pin direction (true = output, false = input)
     pub fn set_pin_direction(&mut self, pin: u8, is_output: bool) -> bool {
         if pin < self.pin_count && (pin as usize) < self.pin_directions.len() {
-            self.pin_directions[pin as usize] = is_output;
+            self.pin_directions[pin as usize] = is_output as u8;
             true
         } else {
             false
@@ -98,7 +99,7 @@ impl DigitalIO {
     /// Count active (high) pins
     pub fn count_active(&self) -> u8 {
         (0..self.pin_count)
-            .filter(|&pin| self.pins[pin as usize])
+            .filter(|&pin| self.pins[pin as usize] != 0)
             .count() as u8
     }
 
@@ -106,7 +107,7 @@ impl DigitalIO {
     pub fn as_bitmask(&self) -> u32 {
         let mut mask = 0u32;
         for i in 0..self.pin_count.min(32) {
-            if self.pins[i as usize] {
+            if self.pins[i as usize] != 0 {
                 mask |= 1 << i;
             }
         }
@@ -116,7 +117,7 @@ impl DigitalIO {
     /// Set from bitmask
     pub fn from_bitmask(&mut self, mask: u32) {
         for i in 0..self.pin_count.min(32) {
-            self.pins[i as usize] = (mask & (1 << i)) != 0;
+            self.pins[i as usize] = ((mask & (1 << i)) != 0) as u8;
         }
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -124,3 +125,11 @@ impl DigitalIO {
             .as_nanos() as u64;
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for DigitalIO {}
+unsafe impl horus_core::bytemuck::Zeroable for DigitalIO {}
+unsafe impl horus_core::communication::PodMessage for DigitalIO {}

@@ -8,7 +8,8 @@ use serde_arrays;
 ///
 /// Standard industrial protocol message for communicating with
 /// PLCs, sensors, and other Modbus-compatible devices.
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct ModbusMessage {
     /// Slave/unit address (1-255)
     pub unit_id: u8,
@@ -27,8 +28,8 @@ pub struct ModbusMessage {
     pub exception_code: u8,
     /// Transaction ID for matching requests/responses
     pub transaction_id: u16,
-    /// Message direction (true = request, false = response)
-    pub is_request: bool,
+    /// Message direction (1 = request, 0 = response)
+    pub is_request: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -44,7 +45,7 @@ impl Default for ModbusMessage {
             data_length: 0,
             exception_code: 0,
             transaction_id: 0,
-            is_request: true,
+            is_request: 1,
             timestamp_ns: 0,
         }
     }
@@ -68,7 +69,7 @@ impl ModbusMessage {
             function_code: Self::FUNC_READ_HOLDING_REGISTERS,
             start_address: start_addr,
             quantity: count,
-            is_request: true,
+            is_request: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -85,7 +86,7 @@ impl ModbusMessage {
             start_address: address,
             quantity: 1,
             data_length: 1,
-            is_request: true,
+            is_request: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -104,7 +105,7 @@ impl ModbusMessage {
             start_address: start_addr,
             quantity: values.len() as u16,
             data_length: values.len().min(32) as u8,
-            is_request: true,
+            is_request: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -119,8 +120,8 @@ impl ModbusMessage {
 
     /// Create a response message
     pub fn create_response(&self, data: &[u16]) -> Self {
-        let mut response = self.clone();
-        response.is_request = false;
+        let mut response = *self;
+        response.is_request = 0;
         response.data_length = data.len().min(32) as u8;
         response.data[..response.data_length as usize]
             .copy_from_slice(&data[..response.data_length as usize]);
@@ -138,7 +139,7 @@ impl ModbusMessage {
             function_code: self.function_code | 0x80, // Set exception bit
             exception_code,
             transaction_id: self.transaction_id,
-            is_request: false,
+            is_request: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -152,3 +153,11 @@ impl ModbusMessage {
         (self.function_code & 0x80) != 0
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for ModbusMessage {}
+unsafe impl horus_core::bytemuck::Zeroable for ModbusMessage {}
+unsafe impl horus_core::communication::PodMessage for ModbusMessage {}

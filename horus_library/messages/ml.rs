@@ -161,7 +161,7 @@ pub struct ModelInfo {
 ///
 /// Represents a single detected object from ML inference with bounding box,
 /// class, and confidence score. Named `MlDetection` to distinguish from
-/// `vision::Detection` (sensor-level) and `horus_perception::Detection` (zero-copy Pod).
+/// `vision::Detection` (sensor-level) and `detection_pod::DetectionPod` (zero-copy Pod).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlDetection {
     /// Bounding box [x, y, width, height] in pixels
@@ -234,7 +234,7 @@ pub struct SegmentationMask {
 /// Human pose keypoint
 ///
 /// Represents a single keypoint in pose estimation. Named `PoseKeypoint`
-/// to distinguish from `horus_perception::Landmark` (zero-copy Pod for IPC).
+/// to distinguish from `landmark::Landmark` (zero-copy Pod for IPC).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoseKeypoint {
     /// X coordinate in pixels

@@ -1,9 +1,52 @@
-//! Object tracking types
+//! Object tracking types for zero-copy IPC
 //!
-//! Types for multi-object tracking (MOT) and tracked object state.
+//! Pod/Zeroable types for multi-object tracking (MOT) and tracked object state.
+//! These are fixed-size types suitable for shared memory transport.
 
-use super::detection::BoundingBox2D;
 use bytemuck::{Pod, Zeroable};
+
+/// 2D bounding box (x, y, width, height in pixels) for tracking
+///
+/// Size: 16 bytes
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+pub struct TrackingBBox {
+    /// X coordinate of top-left corner (pixels)
+    pub x: f32,
+    /// Y coordinate of top-left corner (pixels)
+    pub y: f32,
+    /// Width of bounding box (pixels)
+    pub width: f32,
+    /// Height of bounding box (pixels)
+    pub height: f32,
+}
+
+impl TrackingBBox {
+    /// Create a new bounding box
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Get center x coordinate
+    pub fn center_x(&self) -> f32 {
+        self.x + self.width / 2.0
+    }
+
+    /// Get center y coordinate
+    pub fn center_y(&self) -> f32 {
+        self.y + self.height / 2.0
+    }
+
+    /// Get area
+    pub fn area(&self) -> f32 {
+        self.width * self.height
+    }
+}
 
 /// Tracked object state
 ///
@@ -14,9 +57,9 @@ use bytemuck::{Pod, Zeroable};
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct TrackedObject {
     /// Bounding box (x, y, width, height)
-    pub bbox: BoundingBox2D,
+    pub bbox: TrackingBBox,
     /// Predicted bounding box (Kalman filter output)
-    pub predicted_bbox: BoundingBox2D,
+    pub predicted_bbox: TrackingBBox,
     /// Unique tracking ID (persistent across frames)
     pub track_id: u64,
     /// Detection confidence (0.0 - 1.0)
@@ -46,8 +89,8 @@ pub struct TrackedObject {
 impl Default for TrackedObject {
     fn default() -> Self {
         Self {
-            bbox: BoundingBox2D::default(),
-            predicted_bbox: BoundingBox2D::default(),
+            bbox: TrackingBBox::default(),
+            predicted_bbox: TrackingBBox::default(),
             track_id: 0,
             confidence: 0.0,
             class_id: 0,
@@ -66,7 +109,7 @@ impl Default for TrackedObject {
 
 impl TrackedObject {
     /// Create a new tracked object from a detection
-    pub fn new(track_id: u64, bbox: BoundingBox2D, class_id: u32, confidence: f32) -> Self {
+    pub fn new(track_id: u64, bbox: TrackingBBox, class_id: u32, confidence: f32) -> Self {
         Self {
             bbox,
             predicted_bbox: bbox,
@@ -119,7 +162,7 @@ impl TrackedObject {
     }
 
     /// Update with new detection
-    pub fn update(&mut self, bbox: BoundingBox2D, confidence: f32) {
+    pub fn update(&mut self, bbox: TrackingBBox, confidence: f32) {
         // Calculate velocity from bbox movement
         self.velocity_x = bbox.center_x() - self.bbox.center_x();
         self.velocity_y = bbox.center_y() - self.bbox.center_y();
@@ -137,7 +180,7 @@ impl TrackedObject {
         self.age += 1;
 
         // Predict next position based on velocity
-        self.predicted_bbox = BoundingBox2D {
+        self.predicted_bbox = TrackingBBox {
             x: self.bbox.x + self.velocity_x,
             y: self.bbox.y + self.velocity_y,
             width: self.bbox.width,
@@ -157,7 +200,7 @@ impl TrackedObject {
 }
 
 /// Track state constants
-pub mod state {
+pub mod track_state {
     pub const TENTATIVE: u32 = 0;
     pub const CONFIRMED: u32 = 1;
     pub const DELETED: u32 = 2;
@@ -222,9 +265,14 @@ mod tests {
     }
 
     #[test]
+    fn test_tracking_bbox_size() {
+        assert_eq!(std::mem::size_of::<TrackingBBox>(), 16);
+    }
+
+    #[test]
     fn test_track_lifecycle() {
         let mut track =
-            TrackedObject::new(1, BoundingBox2D::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
+            TrackedObject::new(1, TrackingBBox::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
 
         assert!(track.is_tentative());
 
@@ -232,7 +280,7 @@ mod tests {
         assert!(track.is_confirmed());
 
         // Update with new detection
-        track.update(BoundingBox2D::new(110.0, 105.0, 50.0, 50.0), 0.93);
+        track.update(TrackingBBox::new(110.0, 105.0, 50.0, 50.0), 0.93);
         assert_eq!(track.hits, 2);
         assert!((track.velocity_x - 10.0).abs() < 0.01);
 
@@ -250,5 +298,12 @@ mod tests {
             ..Default::default()
         };
         assert!((track.speed() - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_class_name() {
+        let mut track = TrackedObject::default();
+        track.set_class_name("person");
+        assert_eq!(track.get_class_name(), "person");
     }
 }

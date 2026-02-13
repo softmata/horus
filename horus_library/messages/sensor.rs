@@ -13,7 +13,8 @@ use serde_arrays;
 ///
 /// Fixed-size array for shared memory safety. Supports up to 360-degree
 /// scanning with 1-degree resolution.
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct LaserScan {
     /// Range measurements in meters (0 = invalid reading)
     #[serde(with = "serde_arrays")]
@@ -103,6 +104,7 @@ impl LaserScan {
 ///
 /// Provides orientation, angular velocity, and linear acceleration
 /// measurements from an IMU sensor.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Imu {
     /// Orientation as quaternion [x, y, z, w]
@@ -179,6 +181,7 @@ impl Imu {
 ///
 /// Typically computed from wheel encoders or visual odometry,
 /// provides the robot's estimated position and velocity.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Odometry {
     /// Current pose estimate
@@ -265,6 +268,7 @@ impl Odometry {
 ///
 /// Single-point distance measurement from sensors like
 /// ultrasonic or infrared rangers.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Range {
     /// Sensor type (0=ultrasonic, 1=infrared)
@@ -307,6 +311,7 @@ impl Range {
 }
 
 /// Battery status message
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct BatteryState {
     /// Voltage in volts
@@ -399,6 +404,7 @@ impl BatteryState {
 /// Standard GNSS position data from GPS, GLONASS, Galileo, or other
 /// satellite navigation systems. Provides latitude, longitude, altitude,
 /// and accuracy information.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NavSatFix {
     /// Latitude in degrees (positive = North, negative = South)
@@ -527,4 +533,34 @@ impl LogSummary for NavSatFix {
         )
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+// These implementations enable ultra-fast zero-serialization transfer (~50ns)
+// for real-time robotics sensor data. Topic automatically uses POD backend.
+
+unsafe impl horus_core::bytemuck::Pod for LaserScan {}
+unsafe impl horus_core::bytemuck::Zeroable for LaserScan {}
+unsafe impl horus_core::communication::PodMessage for LaserScan {}
+
+unsafe impl horus_core::bytemuck::Pod for Imu {}
+unsafe impl horus_core::bytemuck::Zeroable for Imu {}
+unsafe impl horus_core::communication::PodMessage for Imu {}
+
+unsafe impl horus_core::bytemuck::Pod for Odometry {}
+unsafe impl horus_core::bytemuck::Zeroable for Odometry {}
+unsafe impl horus_core::communication::PodMessage for Odometry {}
+
+unsafe impl horus_core::bytemuck::Pod for Range {}
+unsafe impl horus_core::bytemuck::Zeroable for Range {}
+unsafe impl horus_core::communication::PodMessage for Range {}
+
+unsafe impl horus_core::bytemuck::Pod for BatteryState {}
+unsafe impl horus_core::bytemuck::Zeroable for BatteryState {}
+unsafe impl horus_core::communication::PodMessage for BatteryState {}
+
+unsafe impl horus_core::bytemuck::Pod for NavSatFix {}
+unsafe impl horus_core::bytemuck::Zeroable for NavSatFix {}
+unsafe impl horus_core::communication::PodMessage for NavSatFix {}
 

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Robot state information for fleet management
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct RobotState {
     /// Unique robot identifier
@@ -19,7 +20,7 @@ pub struct RobotState {
     /// Current velocity
     pub velocity: Twist,
     /// Current operational status
-    pub status: StatusLevel,
+    pub status: u8,
     /// Current battery level (0-100)
     pub battery_level: f32,
     /// Current task ID (0 = no task)
@@ -29,7 +30,7 @@ pub struct RobotState {
     /// Load/cargo capacity utilization (0.0-1.0)
     pub load_factor: f32,
     /// Robot type classification
-    pub robot_type: RobotType,
+    pub robot_type: u8,
     /// Priority level (0 = highest)
     pub priority: u8,
     /// Communication quality (0.0-1.0)
@@ -68,12 +69,12 @@ impl Default for RobotState {
             robot_id: [0; 32],
             pose: Pose2D::default(),
             velocity: Twist::default(),
-            status: StatusLevel::Ok,
+            status: StatusLevel::Ok as u8,
             battery_level: 100.0,
             current_task_id: 0,
             capabilities: 0,
             load_factor: 0.0,
-            robot_type: RobotType::Mobile,
+            robot_type: RobotType::Mobile as u8,
             priority: 5, // Medium priority
             comm_quality: 1.0,
             timestamp_ns: 0,
@@ -85,7 +86,7 @@ impl RobotState {
     /// Create a new robot state
     pub fn new(robot_id: &str, robot_type: RobotType) -> Self {
         let mut state = Self {
-            robot_type,
+            robot_type: robot_type as u8,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -110,7 +111,7 @@ impl RobotState {
 
     /// Check if robot is available for new tasks
     pub fn is_available(&self) -> bool {
-        matches!(self.status, StatusLevel::Ok)
+        self.status == StatusLevel::Ok as u8
             && self.current_task_id == 0
             && self.battery_level > 20.0
             && self.comm_quality > 0.5
@@ -119,7 +120,8 @@ impl RobotState {
     /// Check if robot needs maintenance
     pub fn needs_maintenance(&self) -> bool {
         self.battery_level < 15.0
-            || matches!(self.status, StatusLevel::Error | StatusLevel::Fatal)
+            || self.status == StatusLevel::Error as u8
+            || self.status == StatusLevel::Fatal as u8
             || self.comm_quality < 0.3
     }
 
@@ -187,7 +189,8 @@ pub enum RobotCapability {
 }
 
 /// Fleet status overview
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct FleetStatus {
     /// Array of robot states (max 64 robots)
     #[serde(with = "serde_arrays")]
@@ -199,11 +202,11 @@ pub struct FleetStatus {
     /// Total active tasks
     pub active_tasks: u32,
     /// Fleet coordination mode
-    pub coordination_mode: CoordinationMode,
+    pub coordination_mode: u8,
     /// Central coordinator robot ID (if any)
     pub coordinator_id: [u8; 32],
     /// Fleet-wide emergency status
-    pub emergency_active: bool,
+    pub emergency_active: u8,
     /// Average fleet battery level
     pub average_battery: f32,
     /// Fleet communication health (0.0-1.0)
@@ -237,9 +240,9 @@ impl Default for FleetStatus {
             robot_count: 0,
             fleet_id: [0; 32],
             active_tasks: 0,
-            coordination_mode: CoordinationMode::Decentralized,
+            coordination_mode: CoordinationMode::Decentralized as u8,
             coordinator_id: [0; 32],
-            emergency_active: false,
+            emergency_active: 0,
             average_battery: 0.0,
             comm_health: 1.0,
             timestamp_ns: 0,
@@ -353,7 +356,7 @@ impl FleetStatus {
         // Check emergency status
         self.emergency_active = self.robots[..self.robot_count as usize]
             .iter()
-            .any(|r| matches!(r.status, StatusLevel::Fatal));
+            .any(|r| r.status == StatusLevel::Fatal as u8) as u8;
 
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -363,6 +366,7 @@ impl FleetStatus {
 }
 
 /// Task assignment message
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct TaskAssignment {
     /// Unique task identifier
@@ -370,7 +374,7 @@ pub struct TaskAssignment {
     /// Robot assigned to this task
     pub robot_id: [u8; 32],
     /// Task type/category
-    pub task_type: TaskType,
+    pub task_type: u8,
     /// Task priority (0 = highest)
     pub priority: u8,
     /// Task deadline (0 = no deadline)
@@ -387,7 +391,7 @@ pub struct TaskAssignment {
     /// Expected completion time
     pub expected_completion: u64,
     /// Task status
-    pub status: TaskStatus,
+    pub status: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -451,7 +455,7 @@ impl Default for TaskAssignment {
         Self {
             task_id: 0,
             robot_id: [0; 32],
-            task_type: TaskType::Navigation,
+            task_type: TaskType::Navigation as u8,
             priority: 5,
             deadline: 0,
             estimated_duration: 0.0,
@@ -459,7 +463,7 @@ impl Default for TaskAssignment {
             parameters: [0; 64],
             assigned_time: 0,
             expected_completion: 0,
-            status: TaskStatus::Assigned,
+            status: TaskStatus::Assigned as u8,
             timestamp_ns: 0,
         }
     }
@@ -470,7 +474,7 @@ impl TaskAssignment {
     pub fn new(task_id: u32, robot_id: &str, task_type: TaskType) -> Self {
         let mut assignment = Self {
             task_id,
-            task_type,
+            task_type: task_type as u8,
             assigned_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -506,13 +510,13 @@ impl TaskAssignment {
 
     /// Update task status
     pub fn update_status(&mut self, status: TaskStatus) {
-        self.status = status;
+        self.status = status as u8;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        if status == TaskStatus::Completed {
+        if status as u8 == TaskStatus::Completed as u8 {
             self.expected_completion = self.timestamp_ns;
         }
     }
@@ -529,10 +533,9 @@ impl TaskAssignment {
             .as_nanos() as u64;
 
         current_time > self.deadline
-            && !matches!(
-                self.status,
-                TaskStatus::Completed | TaskStatus::Cancelled | TaskStatus::Aborted
-            )
+            && self.status != TaskStatus::Completed as u8
+            && self.status != TaskStatus::Cancelled as u8
+            && self.status != TaskStatus::Aborted as u8
     }
 
     /// Get robot ID as string
@@ -543,10 +546,11 @@ impl TaskAssignment {
 }
 
 /// Formation control parameters for coordinated movement
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct FormationControl {
     /// Formation type
-    pub formation_type: FormationType,
+    pub formation_type: u8,
     /// Leader robot ID (for leader-follower formations)
     pub leader_id: [u8; 32],
     /// Robot's position in formation (index)
@@ -564,7 +568,7 @@ pub struct FormationControl {
     /// Stiffness of formation (0.0-1.0)
     pub stiffness: f32,
     /// Enable formation keeping
-    pub enabled: bool,
+    pub enabled: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -597,12 +601,12 @@ impl FormationControl {
     /// Create a leader-follower formation
     pub fn leader_follower(leader_id: &str, relative_pos: [f64; 2]) -> Self {
         let mut formation = Self {
-            formation_type: FormationType::LeaderFollower,
+            formation_type: FormationType::LeaderFollower as u8,
             relative_position: relative_pos,
             spacing: 1.0,
             scale: 1.0,
             stiffness: 0.8,
-            enabled: true,
+            enabled: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -625,13 +629,13 @@ impl FormationControl {
         let relative_pos = [radius * angle.cos(), radius * angle.sin()];
 
         Self {
-            formation_type: FormationType::Circle,
+            formation_type: FormationType::Circle as u8,
             formation_index: index,
             relative_position: relative_pos,
             spacing: radius,
             scale: 1.0,
             stiffness: 0.8,
-            enabled: true,
+            enabled: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -642,7 +646,7 @@ impl FormationControl {
 
     /// Enable/disable formation control
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        self.enabled = enabled as u8;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -651,6 +655,7 @@ impl FormationControl {
 }
 
 /// Auction bid for task allocation (market-based coordination)
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct AuctionBid {
     /// Task being bid on
@@ -670,7 +675,7 @@ pub struct AuctionBid {
     /// Bid expiration time
     pub expiration_time: u64,
     /// Bid status
-    pub status: BidStatus,
+    pub status: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -722,7 +727,7 @@ impl AuctionBid {
     /// Check if bid is still valid
     pub fn is_valid(&self) -> bool {
         if self.expiration_time == 0 {
-            return matches!(self.status, BidStatus::Active);
+            return self.status == BidStatus::Active as u8;
         }
 
         let current_time = std::time::SystemTime::now()
@@ -730,7 +735,7 @@ impl AuctionBid {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        current_time <= self.expiration_time && matches!(self.status, BidStatus::Active)
+        current_time <= self.expiration_time && self.status == BidStatus::Active as u8
     }
 
     /// Calculate total bid score (lower is better)
@@ -740,4 +745,28 @@ impl AuctionBid {
             / (self.capability_score as f64 * self.availability as f64).max(0.1)
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for RobotState {}
+unsafe impl horus_core::bytemuck::Zeroable for RobotState {}
+unsafe impl horus_core::communication::PodMessage for RobotState {}
+
+unsafe impl horus_core::bytemuck::Pod for FleetStatus {}
+unsafe impl horus_core::bytemuck::Zeroable for FleetStatus {}
+unsafe impl horus_core::communication::PodMessage for FleetStatus {}
+
+unsafe impl horus_core::bytemuck::Pod for TaskAssignment {}
+unsafe impl horus_core::bytemuck::Zeroable for TaskAssignment {}
+unsafe impl horus_core::communication::PodMessage for TaskAssignment {}
+
+unsafe impl horus_core::bytemuck::Pod for FormationControl {}
+unsafe impl horus_core::bytemuck::Zeroable for FormationControl {}
+unsafe impl horus_core::communication::PodMessage for FormationControl {}
+
+unsafe impl horus_core::bytemuck::Pod for AuctionBid {}
+unsafe impl horus_core::bytemuck::Zeroable for AuctionBid {}
+unsafe impl horus_core::communication::PodMessage for AuctionBid {}
 

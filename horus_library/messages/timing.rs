@@ -11,6 +11,7 @@ use serde_arrays;
 ///
 /// Based on Network Time Protocol (NTP) and Precision Time Protocol (PTP)
 /// concepts for synchronizing clocks across multiple robots/computers.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TimeSync {
     /// Master/reference time in nanoseconds since epoch
@@ -34,7 +35,7 @@ pub struct TimeSync {
     /// Sync message sequence number
     pub sequence: u32,
     /// Time synchronization quality indicator
-    pub sync_quality: SyncQuality,
+    pub sync_quality: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -110,25 +111,30 @@ impl TimeSync {
 
             // Determine sync quality
             self.sync_quality = if self.accuracy_estimate < 1_000 {
-                SyncQuality::Precision
+                SyncQuality::Precision as u8
             } else if self.accuracy_estimate < 10_000 {
-                SyncQuality::Excellent
+                SyncQuality::Excellent as u8
             } else if self.accuracy_estimate < 100_000 {
-                SyncQuality::Good
+                SyncQuality::Good as u8
             } else if self.accuracy_estimate < 1_000_000 {
-                SyncQuality::Fair
+                SyncQuality::Fair as u8
             } else {
-                SyncQuality::Poor
+                SyncQuality::Poor as u8
             };
 
             // Update confidence based on quality
-            self.confidence = match self.sync_quality {
-                SyncQuality::Precision => 0.95,
-                SyncQuality::Excellent => 0.9,
-                SyncQuality::Good => 0.8,
-                SyncQuality::Fair => 0.6,
-                SyncQuality::Poor => 0.3,
-                SyncQuality::None => 0.0,
+            self.confidence = if self.sync_quality == SyncQuality::Precision as u8 {
+                0.95
+            } else if self.sync_quality == SyncQuality::Excellent as u8 {
+                0.9
+            } else if self.sync_quality == SyncQuality::Good as u8 {
+                0.8
+            } else if self.sync_quality == SyncQuality::Fair as u8 {
+                0.6
+            } else if self.sync_quality == SyncQuality::Poor as u8 {
+                0.3
+            } else {
+                0.0
             };
         }
     }
@@ -141,7 +147,7 @@ impl TimeSync {
 
     /// Check if synchronization is valid
     pub fn is_valid(&self) -> bool {
-        self.confidence > 0.1 && self.sync_quality != SyncQuality::None
+        self.confidence > 0.1 && self.sync_quality != SyncQuality::None as u8
     }
 
     /// Get master ID as string
@@ -152,12 +158,13 @@ impl TimeSync {
 }
 
 /// Scheduled task/event message
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ScheduledEvent {
     /// Unique event identifier
     pub event_id: u32,
     /// Event type/category
-    pub event_type: EventType,
+    pub event_type: u8,
     /// Scheduled execution time (synchronized time)
     pub scheduled_time: u64,
     /// Event duration in nanoseconds (0 = instantaneous)
@@ -171,7 +178,7 @@ pub struct ScheduledEvent {
     /// Current repeat count
     pub repeat_count: u32,
     /// Event status
-    pub status: EventStatus,
+    pub status: u8,
     /// Event parameters (flexible data)
     pub parameters: [u8; 32],
     /// Time tolerance (acceptable execution window)
@@ -245,7 +252,7 @@ impl ScheduledEvent {
     pub fn new(event_id: u32, event_type: EventType, scheduled_time: u64) -> Self {
         Self {
             event_id,
-            event_type,
+            event_type: event_type as u8,
             scheduled_time,
             tolerance: 1_000_000, // 1ms default tolerance
             created_time: TimeSync::current_time_ns(),
@@ -258,7 +265,7 @@ impl ScheduledEvent {
     pub fn repeating(event_id: u32, event_type: EventType, start_time: u64, interval: u64) -> Self {
         Self {
             event_id,
-            event_type,
+            event_type: event_type as u8,
             scheduled_time: start_time,
             repeat_interval: interval,
             tolerance: 1_000_000,
@@ -270,7 +277,7 @@ impl ScheduledEvent {
 
     /// Check if event is due for execution
     pub fn is_due(&self, current_time: u64) -> bool {
-        if self.status != EventStatus::Scheduled {
+        if self.status != EventStatus::Scheduled as u8 {
             return false;
         }
 
@@ -280,7 +287,7 @@ impl ScheduledEvent {
 
     /// Check if event has missed its execution window
     pub fn is_missed(&self, current_time: u64) -> bool {
-        if self.status != EventStatus::Scheduled {
+        if self.status != EventStatus::Scheduled as u8 {
             return false;
         }
 
@@ -289,10 +296,10 @@ impl ScheduledEvent {
 
     /// Update event status
     pub fn update_status(&mut self, status: EventStatus) {
-        self.status = status;
+        self.status = status as u8;
         self.timestamp_ns = TimeSync::current_time_ns();
 
-        if status == EventStatus::Completed || status == EventStatus::Failed {
+        if status as u8 == EventStatus::Completed as u8 || status as u8 == EventStatus::Failed as u8 {
             self.last_execution = self.timestamp_ns;
 
             // Schedule next repeat if applicable
@@ -302,7 +309,7 @@ impl ScheduledEvent {
                 // Only reschedule if we haven't reached max repeats
                 if self.max_repeats == 0 || self.repeat_count < self.max_repeats {
                     self.scheduled_time += self.repeat_interval;
-                    self.status = EventStatus::Scheduled;
+                    self.status = EventStatus::Scheduled as u8;
                 }
             }
         }
@@ -310,7 +317,7 @@ impl ScheduledEvent {
 
     /// Calculate time until execution
     pub fn time_until_execution(&self, current_time: u64) -> Option<u64> {
-        if self.status == EventStatus::Scheduled && current_time < self.scheduled_time {
+        if self.status == EventStatus::Scheduled as u8 && current_time < self.scheduled_time {
             Some(self.scheduled_time - current_time)
         } else {
             None
@@ -328,7 +335,8 @@ impl ScheduledEvent {
 }
 
 /// Timeline/schedule of events
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Timeline {
     /// Array of scheduled events (max 64)
     #[serde(with = "serde_arrays")]
@@ -344,7 +352,7 @@ pub struct Timeline {
     /// Current timeline position
     pub current_time: u64,
     /// Timeline execution status
-    pub status: TimelineStatus,
+    pub status: u8,
     /// Timeline owner/coordinator
     pub coordinator_id: [u8; 32],
     /// Synchronization reference time
@@ -382,7 +390,7 @@ impl Default for Timeline {
             start_time: 0,
             end_time: 0,
             current_time: 0,
-            status: TimelineStatus::Created,
+            status: TimelineStatus::Created as u8,
             coordinator_id: [0; 32],
             sync_reference: 0,
             timestamp_ns: 0,
@@ -396,7 +404,7 @@ impl Timeline {
         let mut timeline = Self {
             start_time,
             current_time: start_time,
-            status: TimelineStatus::Created,
+            status: TimelineStatus::Created as u8,
             sync_reference: TimeSync::current_time_ns(),
             timestamp_ns: TimeSync::current_time_ns(),
             ..Default::default()
@@ -465,19 +473,16 @@ impl Timeline {
         }
 
         // Check if timeline is complete
-        if self.status == TimelineStatus::Running {
+        if self.status == TimelineStatus::Running as u8 {
             let all_complete = self.get_events().iter().all(|event| {
-                matches!(
-                    event.status,
-                    EventStatus::Completed
-                        | EventStatus::Failed
-                        | EventStatus::Cancelled
-                        | EventStatus::Missed
-                )
+                event.status == EventStatus::Completed as u8
+                    || event.status == EventStatus::Failed as u8
+                    || event.status == EventStatus::Cancelled as u8
+                    || event.status == EventStatus::Missed as u8
             });
 
             if all_complete {
-                self.status = TimelineStatus::Completed;
+                self.status = TimelineStatus::Completed as u8;
             }
         }
 
@@ -486,36 +491,37 @@ impl Timeline {
 
     /// Start timeline execution
     pub fn start(&mut self) {
-        if self.status == TimelineStatus::Created {
-            self.status = TimelineStatus::Running;
+        if self.status == TimelineStatus::Created as u8 {
+            self.status = TimelineStatus::Running as u8;
             self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
     /// Pause timeline execution
     pub fn pause(&mut self) {
-        if self.status == TimelineStatus::Running {
-            self.status = TimelineStatus::Paused;
+        if self.status == TimelineStatus::Running as u8 {
+            self.status = TimelineStatus::Paused as u8;
             self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
     /// Resume timeline execution
     pub fn resume(&mut self) {
-        if self.status == TimelineStatus::Paused {
-            self.status = TimelineStatus::Running;
+        if self.status == TimelineStatus::Paused as u8 {
+            self.status = TimelineStatus::Running as u8;
             self.timestamp_ns = TimeSync::current_time_ns();
         }
     }
 
     /// Stop timeline execution
     pub fn stop(&mut self) {
-        self.status = TimelineStatus::Stopped;
+        self.status = TimelineStatus::Stopped as u8;
         self.timestamp_ns = TimeSync::current_time_ns();
     }
 }
 
 /// Clock synchronization statistics
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ClockStats {
     /// Current clock offset from master (nanoseconds)
@@ -535,7 +541,7 @@ pub struct ClockStats {
     /// Sync interval in nanoseconds
     pub sync_interval: u64,
     /// Current sync quality
-    pub sync_quality: SyncQuality,
+    pub sync_quality: u8,
     /// Master clock identifier
     pub master_id: [u8; 32],
     /// Statistics collection period
@@ -566,7 +572,7 @@ impl ClockStats {
     /// Update statistics with new sync measurement
     pub fn update_sync(&mut self, offset: i64, quality: SyncQuality) {
         self.current_offset = offset;
-        self.sync_quality = quality;
+        self.sync_quality = quality as u8;
         self.sync_count += 1;
         self.last_sync_time = TimeSync::current_time_ns();
 
@@ -595,20 +601,25 @@ impl ClockStats {
         let current_time = TimeSync::current_time_ns();
         let time_since_sync = current_time.saturating_sub(self.last_sync_time);
 
-        self.sync_quality >= SyncQuality::Fair &&
+        self.sync_quality >= SyncQuality::Fair as u8 &&
         time_since_sync < self.sync_interval * 3 && // Allow up to 3 missed syncs
         self.sync_success_rate() > 0.8
     }
 
     /// Get estimated time accuracy in nanoseconds
     pub fn estimated_accuracy(&self) -> u64 {
-        match self.sync_quality {
-            SyncQuality::Precision => 1_000,  // 1 microsecond
-            SyncQuality::Excellent => 10_000, // 10 microseconds
-            SyncQuality::Good => 100_000,     // 100 microseconds
-            SyncQuality::Fair => 1_000_000,   // 1 millisecond
-            SyncQuality::Poor => 10_000_000,  // 10 milliseconds
-            SyncQuality::None => u64::MAX,
+        if self.sync_quality == SyncQuality::Precision as u8 {
+            1_000       // 1 microsecond
+        } else if self.sync_quality == SyncQuality::Excellent as u8 {
+            10_000      // 10 microseconds
+        } else if self.sync_quality == SyncQuality::Good as u8 {
+            100_000     // 100 microseconds
+        } else if self.sync_quality == SyncQuality::Fair as u8 {
+            1_000_000   // 1 millisecond
+        } else if self.sync_quality == SyncQuality::Poor as u8 {
+            10_000_000  // 10 milliseconds
+        } else {
+            u64::MAX
         }
     }
 }
@@ -621,7 +632,7 @@ mod tests {
     fn test_time_sync() {
         let mut sync = TimeSync::new("master_clock");
         assert_eq!(sync.master_id_str(), "master_clock");
-        assert_eq!(sync.sync_quality, SyncQuality::None);
+        assert_eq!(sync.sync_quality, SyncQuality::None as u8);
 
         // Simulate message round trip
         sync.local_send_time = 1000000000; // 1 second
@@ -643,7 +654,7 @@ mod tests {
 
         // Test status updates
         event.update_status(EventStatus::Completed);
-        assert_eq!(event.status, EventStatus::Completed);
+        assert_eq!(event.status, EventStatus::Completed as u8);
         assert!(event.last_execution > 0);
     }
 
@@ -660,14 +671,14 @@ mod tests {
         event.update_status(EventStatus::Completed);
         assert_eq!(event.repeat_count, 1);
         assert_eq!(event.scheduled_time, 1500000000); // +500ms
-        assert_eq!(event.status, EventStatus::Scheduled); // Auto-rescheduled
+        assert_eq!(event.status, EventStatus::Scheduled as u8); // Auto-rescheduled
 
         // Complete remaining executions
         event.update_status(EventStatus::Completed);
         event.update_status(EventStatus::Completed);
 
         assert_eq!(event.repeat_count, 3);
-        assert_eq!(event.status, EventStatus::Completed); // No more repeats
+        assert_eq!(event.status, EventStatus::Completed as u8); // No more repeats
     }
 
     #[test]
@@ -686,7 +697,7 @@ mod tests {
         assert_eq!(timeline.events[1].scheduled_time, 1100000000);
 
         timeline.start();
-        assert_eq!(timeline.status, TimelineStatus::Running);
+        assert_eq!(timeline.status, TimelineStatus::Running as u8);
 
         // Test due events
         let due_events = timeline.get_due_events(1050000000);
@@ -724,3 +735,23 @@ mod tests {
         assert!(SyncQuality::Poor > SyncQuality::None);
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for TimeSync {}
+unsafe impl horus_core::bytemuck::Zeroable for TimeSync {}
+unsafe impl horus_core::communication::PodMessage for TimeSync {}
+
+unsafe impl horus_core::bytemuck::Pod for ScheduledEvent {}
+unsafe impl horus_core::bytemuck::Zeroable for ScheduledEvent {}
+unsafe impl horus_core::communication::PodMessage for ScheduledEvent {}
+
+unsafe impl horus_core::bytemuck::Pod for Timeline {}
+unsafe impl horus_core::bytemuck::Zeroable for Timeline {}
+unsafe impl horus_core::communication::PodMessage for Timeline {}
+
+unsafe impl horus_core::bytemuck::Pod for ClockStats {}
+unsafe impl horus_core::bytemuck::Zeroable for ClockStats {}
+unsafe impl horus_core::communication::PodMessage for ClockStats {}

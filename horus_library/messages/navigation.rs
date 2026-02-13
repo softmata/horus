@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 /// Navigation goal specification
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Goal {
     /// Target pose to reach
@@ -101,12 +102,13 @@ pub enum GoalStatus {
 }
 
 /// Goal status feedback
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct GoalResult {
     /// Goal identifier
     pub goal_id: u32,
     /// Current status
-    pub status: GoalStatus,
+    pub status: u8,
     /// Distance to goal in meters
     pub distance_to_goal: f64,
     /// Estimated time to reach goal in seconds
@@ -124,7 +126,7 @@ impl Default for GoalResult {
     fn default() -> Self {
         Self {
             goal_id: 0,
-            status: GoalStatus::Pending,
+            status: GoalStatus::Pending as u8,
             distance_to_goal: 0.0,
             eta_seconds: 0.0,
             progress: 0.0,
@@ -139,7 +141,7 @@ impl GoalResult {
     pub fn new(goal_id: u32, status: GoalStatus) -> Self {
         Self {
             goal_id,
-            status,
+            status: status as u8,
             distance_to_goal: 0.0,
             eta_seconds: 0.0,
             progress: 0.0,
@@ -162,6 +164,7 @@ impl GoalResult {
 }
 
 /// Waypoint in a path
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct Waypoint {
     /// Pose at this waypoint
@@ -173,7 +176,7 @@ pub struct Waypoint {
     /// Curvature at this point (1/radius)
     pub curvature: f32,
     /// Whether to stop at this waypoint
-    pub stop_required: bool,
+    pub stop_required: u8,
 }
 
 impl Waypoint {
@@ -184,7 +187,7 @@ impl Waypoint {
             velocity: Twist::default(),
             time_from_start: 0.0,
             curvature: 0.0,
-            stop_required: false,
+            stop_required: 0,
         }
     }
 
@@ -196,14 +199,15 @@ impl Waypoint {
 
     /// Create waypoint requiring stop
     pub fn with_stop(mut self) -> Self {
-        self.stop_required = true;
+        self.stop_required = 1;
         self.velocity = Twist::stop();
         self
     }
 }
 
 /// Navigation path message
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Path {
     /// Array of waypoints (max 256)
     #[serde(with = "serde_arrays")]
@@ -582,6 +586,7 @@ impl CostMap {
 }
 
 /// Velocity obstacle for dynamic obstacle avoidance
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct VelocityObstacle {
     /// Obstacle position
@@ -597,7 +602,8 @@ pub struct VelocityObstacle {
 }
 
 /// Array of velocity obstacles
-#[derive(Debug, Clone, Serialize, Deserialize, Default, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct VelocityObstacles {
     /// Array of obstacles (max 32)
     #[serde(with = "serde_arrays")]
@@ -724,3 +730,118 @@ impl PathPlan {
         self.waypoints.is_empty()
     }
 }
+
+/// Fixed-size path plan for zero-copy transfer
+///
+/// Fixed-size alternative to PathPlan for Pod/zero-copy transfer.
+/// Stores up to 256 waypoints as [x, y, theta] coordinates.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct PathPlanPod {
+    /// Waypoint data: 256 waypoints × 3 floats (x, y, theta)
+    #[serde(with = "serde_arrays")]
+    pub waypoint_data: [f32; 768],
+    /// Goal pose [x, y, theta]
+    pub goal_pose: [f32; 3],
+    /// Number of valid waypoints
+    pub waypoint_count: u16,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for PathPlanPod {
+    fn default() -> Self {
+        Self {
+            waypoint_data: [0.0; 768],
+            goal_pose: [0.0; 3],
+            waypoint_count: 0,
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl PathPlanPod {
+    /// Create a new empty path plan
+    pub fn new() -> Self {
+        Self {
+            timestamp_ns: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64,
+            ..Default::default()
+        }
+    }
+
+    /// Add a waypoint
+    pub fn add_waypoint(&mut self, x: f32, y: f32, theta: f32) -> bool {
+        if self.waypoint_count >= 256 {
+            return false;
+        }
+        let idx = self.waypoint_count as usize * 3;
+        self.waypoint_data[idx] = x;
+        self.waypoint_data[idx + 1] = y;
+        self.waypoint_data[idx + 2] = theta;
+        self.waypoint_count += 1;
+        true
+    }
+
+    /// Get waypoint at index as [x, y, theta]
+    pub fn get_waypoint(&self, index: u16) -> Option<[f32; 3]> {
+        if index >= self.waypoint_count {
+            return None;
+        }
+        let idx = index as usize * 3;
+        Some([self.waypoint_data[idx], self.waypoint_data[idx + 1], self.waypoint_data[idx + 2]])
+    }
+
+    /// Check if path is empty
+    pub fn is_empty(&self) -> bool {
+        self.waypoint_count == 0
+    }
+
+    /// Convert from PathPlan (truncating to 256 waypoints)
+    pub fn from_path_plan(plan: &PathPlan) -> Self {
+        let mut pod = Self::new();
+        pod.goal_pose = plan.goal_pose;
+        let count = plan.waypoints.len().min(256);
+        for (i, wp) in plan.waypoints.iter().take(count).enumerate() {
+            pod.waypoint_data[i * 3] = wp[0];
+            pod.waypoint_data[i * 3 + 1] = wp[1];
+            pod.waypoint_data[i * 3 + 2] = wp[2];
+        }
+        pod.waypoint_count = count as u16;
+        pod
+    }
+}
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for Goal {}
+unsafe impl horus_core::bytemuck::Zeroable for Goal {}
+unsafe impl horus_core::communication::PodMessage for Goal {}
+
+unsafe impl horus_core::bytemuck::Pod for GoalResult {}
+unsafe impl horus_core::bytemuck::Zeroable for GoalResult {}
+unsafe impl horus_core::communication::PodMessage for GoalResult {}
+
+unsafe impl horus_core::bytemuck::Pod for Waypoint {}
+unsafe impl horus_core::bytemuck::Zeroable for Waypoint {}
+unsafe impl horus_core::communication::PodMessage for Waypoint {}
+
+unsafe impl horus_core::bytemuck::Pod for Path {}
+unsafe impl horus_core::bytemuck::Zeroable for Path {}
+unsafe impl horus_core::communication::PodMessage for Path {}
+
+unsafe impl horus_core::bytemuck::Pod for VelocityObstacle {}
+unsafe impl horus_core::bytemuck::Zeroable for VelocityObstacle {}
+unsafe impl horus_core::communication::PodMessage for VelocityObstacle {}
+
+unsafe impl horus_core::bytemuck::Pod for VelocityObstacles {}
+unsafe impl horus_core::bytemuck::Zeroable for VelocityObstacles {}
+unsafe impl horus_core::communication::PodMessage for VelocityObstacles {}
+
+unsafe impl horus_core::bytemuck::Pod for PathPlanPod {}
+unsafe impl horus_core::bytemuck::Zeroable for PathPlanPod {}
+unsafe impl horus_core::communication::PodMessage for PathPlanPod {}

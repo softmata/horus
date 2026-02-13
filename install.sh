@@ -1942,7 +1942,6 @@ build_with_recovery() {
         "horus_core"
         "horus"
         "horus_ai"
-        "horus_perception"
         "horus_ros2_bridge"
         "horus_manager"
         "horus_library"
@@ -1958,7 +1957,6 @@ build_with_recovery() {
         ["horus_core"]=350
         ["horus"]=50
         ["horus_ai"]=20
-        ["horus_perception"]=15
         ["horus_ros2_bridge"]=80
         ["horus_manager"]=150
         ["horus_library"]=50
@@ -2309,7 +2307,6 @@ HORUS_CORE_VERSION=$(grep -m1 '^version' horus_core/Cargo.toml | sed 's/.*"\(.*\
 HORUS_MACROS_VERSION=$(grep -m1 '^version' horus_macros/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_LIBRARY_VERSION=$(grep -m1 '^version' horus_library/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_AI_VERSION=$(grep -m1 '^version' horus_ai/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-HORUS_PERCEPTION_VERSION=$(grep -m1 '^version' horus_perception/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_ROS2_BRIDGE_VERSION=$(grep -m1 '^version' horus_ros2_bridge/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_PY_VERSION=$(grep -m1 '^version' horus_py/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 
@@ -2319,7 +2316,6 @@ echo "    horus_core: $HORUS_CORE_VERSION"
 echo "    horus_macros: $HORUS_MACROS_VERSION"
 echo "    horus_library: $HORUS_LIBRARY_VERSION"
 echo "    horus_ai: $HORUS_AI_VERSION"
-echo "    horus_perception: $HORUS_PERCEPTION_VERSION"
 echo "    horus_ros2_bridge: $HORUS_ROS2_BRIDGE_VERSION"
 echo "    horus_py: $HORUS_PY_VERSION"
 echo ""
@@ -2338,7 +2334,6 @@ if [ -f "$VERSION_FILE" ]; then
         rm -rf "$CACHE_DIR/horus_macros@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_library@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_ai@$OLD_VERSION" 2>/dev/null || true
-        rm -rf "$CACHE_DIR/horus_perception@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_ros2_bridge@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_py@$OLD_VERSION" 2>/dev/null || true
 
@@ -2436,11 +2431,6 @@ cp -r horus_library/algorithms "$HORUS_DIR/horus_library/" 2>/dev/null || true
 mkdir -p "$HORUS_DIR/horus_ai"
 cp horus_ai/Cargo.toml "$HORUS_DIR/horus_ai/" 2>/dev/null || true
 cp -r horus_ai/src "$HORUS_DIR/horus_ai/" 2>/dev/null || true
-
-# Copy horus_perception crate
-mkdir -p "$HORUS_DIR/horus_perception"
-cp horus_perception/Cargo.toml "$HORUS_DIR/horus_perception/" 2>/dev/null || true
-cp -r horus_perception/src "$HORUS_DIR/horus_perception/" 2>/dev/null || true
 
 # Copy horus_ros2_bridge crate
 mkdir -p "$HORUS_DIR/horus_ros2_bridge"
@@ -2550,26 +2540,7 @@ EOF
 
 echo -e "${GREEN}${NC} Installed horus_ai"
 
-# Step 7c: Install horus_perception
-echo -e "${CYAN}${NC} Installing horus_perception@$HORUS_PERCEPTION_VERSION..."
-HORUS_PERCEPTION_DIR="$CACHE_DIR/horus_perception@$HORUS_PERCEPTION_VERSION"
-mkdir -p "$HORUS_PERCEPTION_DIR/lib"
-
-cp -r target/release/libhorus_perception.* "$HORUS_PERCEPTION_DIR/lib/" 2>/dev/null || true
-cp -r target/release/deps/libhorus_perception*.rlib "$HORUS_PERCEPTION_DIR/lib/" 2>/dev/null || true
-
-cat > "$HORUS_PERCEPTION_DIR/metadata.json" << EOF
-{
-  "name": "horus_perception",
-  "version": "$HORUS_PERCEPTION_VERSION",
-  "description": "HORUS Perception - AI-friendly detection, point cloud, and landmark types",
-  "install_type": "source"
-}
-EOF
-
-echo -e "${GREEN}${NC} Installed horus_perception"
-
-# Step 7d: Install horus_ros2_bridge
+# Step 7c: Install horus_ros2_bridge
 echo -e "${CYAN}${NC} Installing horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION..."
 HORUS_ROS2_BRIDGE_DIR="$CACHE_DIR/horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION"
 mkdir -p "$HORUS_ROS2_BRIDGE_DIR/lib"
@@ -2941,12 +2912,6 @@ if [ -d "$HORUS_AI_DIR" ]; then
     echo -e "${GREEN}${NC} horus_ai: OK"
 else
     echo -e "${RED}${NC} horus_ai: Missing"
-fi
-
-if [ -d "$HORUS_PERCEPTION_DIR" ]; then
-    echo -e "${GREEN}${NC} horus_perception: OK"
-else
-    echo -e "${RED}${NC} horus_perception: Missing"
 fi
 
 if [ -d "$HORUS_ROS2_BRIDGE_DIR" ]; then

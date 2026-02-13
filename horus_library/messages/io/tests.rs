@@ -56,7 +56,7 @@ fn test_modbus_message() {
     );
     assert_eq!(msg.start_address, 100);
     assert_eq!(msg.quantity, 10);
-    assert!(msg.is_request);
+    assert!(msg.is_request != 0);
 
     let write_msg = ModbusMessage::write_single_register(1, 200, 1234);
     assert_eq!(
@@ -84,11 +84,11 @@ fn test_safety_relay() {
     let mut relay = SafetyRelayStatus::new("SR001");
     assert!(relay.is_safe_state()); // Default state should be safe
 
-    relay.fault_present = true;
+    relay.fault_present = 1;
     assert!(!relay.is_safe_state());
 
-    relay.fault_present = false;
-    relay.safety_outputs[0] = true;
-    relay.safety_outputs[2] = true;
+    relay.fault_present = 0;
+    relay.safety_outputs[0] = 1;
+    relay.safety_outputs[2] = 1;
     assert_eq!(relay.active_output_count(), 2);
 }

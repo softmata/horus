@@ -4,6 +4,7 @@ use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 
 /// Industrial network status
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct NetworkStatus {
     /// Network interface name
@@ -14,12 +15,12 @@ pub struct NetworkStatus {
     pub subnet_mask: u32,
     /// Gateway address
     pub gateway: u32,
-    /// Link status (true = up, false = down)
-    pub link_up: bool,
+    /// Link status (1 = up, 0 = down)
+    pub link_up: u8,
     /// Link speed in Mbps
     pub link_speed: u16,
-    /// Duplex mode (true = full, false = half)
-    pub full_duplex: bool,
+    /// Duplex mode (1 = full, 0 = half)
+    pub full_duplex: u8,
     /// Packets transmitted
     pub tx_packets: u64,
     /// Packets received
@@ -87,3 +88,11 @@ impl NetworkStatus {
         (self.tx_errors as f32 / self.tx_packets as f32) * 100.0
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for NetworkStatus {}
+unsafe impl horus_core::bytemuck::Zeroable for NetworkStatus {}
+unsafe impl horus_core::communication::PodMessage for NetworkStatus {}

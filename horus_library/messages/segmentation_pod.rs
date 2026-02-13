@@ -1,10 +1,14 @@
-//! Segmentation types
+//! Segmentation types for zero-copy IPC
 //!
-//! Types for semantic and instance segmentation masks.
+//! Pod/Zeroable types for semantic and instance segmentation masks.
+//! These are fixed-size headers suitable for shared memory transport.
+//! The mask pixel data follows the header as a raw byte array.
+//!
+//! For the Serde-based `SegmentationMask` with `Vec<u8>` data, see `ml.rs`.
 
 use bytemuck::{Pod, Zeroable};
 
-/// Segmentation mask header
+/// Segmentation mask header (Pod/zero-copy variant)
 ///
 /// The mask data follows this header as a raw byte/uint8 array.
 /// Each pixel contains either:
@@ -14,7 +18,7 @@ use bytemuck::{Pod, Zeroable};
 /// Size: 64 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
-pub struct SegmentationMask {
+pub struct SegmentationMaskPod {
     /// Image width
     pub width: u32,
     /// Image height
@@ -31,7 +35,7 @@ pub struct SegmentationMask {
     pub frame_id: [u8; 32],
 }
 
-impl SegmentationMask {
+impl SegmentationMaskPod {
     /// Create a semantic segmentation mask header
     pub fn semantic(width: u32, height: u32, num_classes: u32) -> Self {
         Self {
@@ -138,7 +142,6 @@ pub mod classes {
     pub const BIRD: u8 = 16;
     pub const CAT: u8 = 17;
     pub const DOG: u8 = 18;
-    // ... more classes can be added
 }
 
 #[cfg(test)]
@@ -146,24 +149,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_segmentation_mask_size() {
-        assert_eq!(std::mem::size_of::<SegmentationMask>(), 64);
+    fn test_segmentation_mask_pod_size() {
+        assert_eq!(std::mem::size_of::<SegmentationMaskPod>(), 64);
     }
 
     #[test]
     fn test_data_size() {
-        let mask = SegmentationMask::semantic(1920, 1080, 80);
+        let mask = SegmentationMaskPod::semantic(1920, 1080, 80);
         assert_eq!(mask.data_size(), 1920 * 1080);
     }
 
     #[test]
     fn test_mask_type() {
-        let semantic = SegmentationMask::semantic(100, 100, 20);
+        let semantic = SegmentationMaskPod::semantic(100, 100, 20);
         assert!(semantic.is_semantic());
         assert!(!semantic.is_instance());
 
-        let instance = SegmentationMask::instance(100, 100);
+        let instance = SegmentationMaskPod::instance(100, 100);
         assert!(!instance.is_semantic());
         assert!(instance.is_instance());
+
+        let panoptic = SegmentationMaskPod::panoptic(100, 100, 80);
+        assert!(panoptic.is_panoptic());
+    }
+
+    #[test]
+    fn test_frame_id() {
+        let mask = SegmentationMaskPod::semantic(640, 480, 20)
+            .with_frame_id("camera_front");
+        assert_eq!(mask.get_frame_id(), "camera_front");
     }
 }

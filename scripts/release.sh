@@ -106,9 +106,8 @@ CARGO_FILES=(
     "horus_router/Cargo.toml"
     # Library crates
     "horus_library/Cargo.toml"
-    # AI and Perception crates
+    # AI crate
     "horus_ai/Cargo.toml"
-    "horus_perception/Cargo.toml"
     # Python bindings
     "horus_py/Cargo.toml"
     # Benchmarks

@@ -1,13 +1,20 @@
-//! Object detection types
+//! Object detection types for zero-copy IPC
 //!
-//! Types for 2D and 3D object detection results from models like YOLO, SSD, etc.
+//! Pod/Zeroable types for 2D and 3D object detection results from models
+//! like YOLO, SSD, etc. These are fixed-size types suitable for shared
+//! memory transport.
+//!
+//! For the Serde-based `Detection` with flexible fields, see `vision.rs`.
+//! For the Serde-based `BoundingBox3D` with Quaternion orientation, see `perception.rs`.
 
 use bytemuck::{Pod, Zeroable};
 
-/// 2D bounding box (x, y, width, height in pixels)
+/// 2D bounding box (x, y, width, height in pixels) — Pod variant
+///
+/// Size: 16 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
-pub struct BoundingBox2D {
+pub struct BoundingBox2DPod {
     /// X coordinate of top-left corner (pixels)
     pub x: f32,
     /// Y coordinate of top-left corner (pixels)
@@ -18,7 +25,7 @@ pub struct BoundingBox2D {
     pub height: f32,
 }
 
-impl BoundingBox2D {
+impl BoundingBox2DPod {
     /// Create a new 2D bounding box
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
@@ -29,7 +36,7 @@ impl BoundingBox2D {
         }
     }
 
-    /// Create from center coordinates (cx, cy, w, h) - YOLO format
+    /// Create from center coordinates (cx, cy, w, h) — YOLO format
     pub fn from_center(cx: f32, cy: f32, width: f32, height: f32) -> Self {
         Self {
             x: cx - width / 2.0,
@@ -55,7 +62,7 @@ impl BoundingBox2D {
     }
 
     /// Calculate Intersection over Union (IoU) with another box
-    pub fn iou(&self, other: &BoundingBox2D) -> f32 {
+    pub fn iou(&self, other: &BoundingBox2DPod) -> f32 {
         let x1 = self.x.max(other.x);
         let y1 = self.y.max(other.y);
         let x2 = (self.x + self.width).min(other.x + other.width);
@@ -72,10 +79,14 @@ impl BoundingBox2D {
     }
 }
 
-/// 3D bounding box (center + dimensions + rotation)
+/// 3D bounding box (center + dimensions + rotation) — Pod variant
+///
+/// Uses Euler angles (roll/pitch/yaw) instead of Quaternion for Pod compatibility.
+///
+/// Size: 48 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
-pub struct BoundingBox3D {
+pub struct BoundingBox3DPod {
     /// Center X coordinate (meters)
     pub cx: f32,
     /// Center Y coordinate (meters)
@@ -98,7 +109,7 @@ pub struct BoundingBox3D {
     _pad: [f32; 3],
 }
 
-impl BoundingBox3D {
+impl BoundingBox3DPod {
     /// Create a new 3D bounding box with yaw rotation only
     pub fn new(cx: f32, cy: f32, cz: f32, length: f32, width: f32, height: f32, yaw: f32) -> Self {
         Self {
@@ -148,7 +159,7 @@ impl BoundingBox3D {
     }
 }
 
-/// 2D object detection result
+/// 2D object detection result — Pod variant
 ///
 /// Fixed-size struct suitable for zero-copy IPC. The class is stored as a
 /// 32-byte UTF-8 string (truncated if longer).
@@ -156,9 +167,9 @@ impl BoundingBox3D {
 /// Size: 72 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct Detection {
+pub struct DetectionPod {
     /// Bounding box (x, y, width, height)
-    pub bbox: BoundingBox2D,
+    pub bbox: BoundingBox2DPod,
     /// Confidence score (0.0 - 1.0)
     pub confidence: f32,
     /// Class ID (numeric identifier)
@@ -171,10 +182,10 @@ pub struct Detection {
     _pad: [u8; 12],
 }
 
-impl Default for Detection {
+impl Default for DetectionPod {
     fn default() -> Self {
         Self {
-            bbox: BoundingBox2D::default(),
+            bbox: BoundingBox2DPod::default(),
             confidence: 0.0,
             class_id: 0,
             class_name: [0u8; 32],
@@ -184,11 +195,11 @@ impl Default for Detection {
     }
 }
 
-impl Detection {
+impl DetectionPod {
     /// Create a new detection
     pub fn new(class_name: &str, confidence: f32, x: f32, y: f32, width: f32, height: f32) -> Self {
         let mut det = Self {
-            bbox: BoundingBox2D::new(x, y, width, height),
+            bbox: BoundingBox2DPod::new(x, y, width, height),
             confidence,
             class_id: 0,
             class_name: [0u8; 32],
@@ -200,7 +211,7 @@ impl Detection {
     }
 
     /// Create with class ID
-    pub fn with_class_id(class_id: u32, confidence: f32, bbox: BoundingBox2D) -> Self {
+    pub fn with_class_id(class_id: u32, confidence: f32, bbox: BoundingBox2DPod) -> Self {
         Self {
             bbox,
             confidence,
@@ -231,16 +242,16 @@ impl Detection {
     }
 }
 
-/// 3D object detection result
+/// 3D object detection result — Pod variant
 ///
 /// For 3D object detection from point clouds or depth-aware models.
 ///
 /// Size: 104 bytes
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct Detection3D {
+pub struct Detection3DPod {
     /// 3D bounding box
-    pub bbox: BoundingBox3D,
+    pub bbox: BoundingBox3DPod,
     /// Confidence score (0.0 - 1.0)
     pub confidence: f32,
     /// Class ID (numeric identifier)
@@ -257,10 +268,10 @@ pub struct Detection3D {
     pub instance_id: u32,
 }
 
-impl Default for Detection3D {
+impl Default for Detection3DPod {
     fn default() -> Self {
         Self {
-            bbox: BoundingBox3D::default(),
+            bbox: BoundingBox3DPod::default(),
             confidence: 0.0,
             class_id: 0,
             class_name: [0u8; 32],
@@ -272,9 +283,9 @@ impl Default for Detection3D {
     }
 }
 
-impl Detection3D {
+impl Detection3DPod {
     /// Create a new 3D detection
-    pub fn new(class_name: &str, confidence: f32, bbox: BoundingBox3D) -> Self {
+    pub fn new(class_name: &str, confidence: f32, bbox: BoundingBox3DPod) -> Self {
         let mut det = Self {
             bbox,
             confidence,
@@ -312,18 +323,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detection_size() {
-        assert_eq!(std::mem::size_of::<Detection>(), 72);
+    fn test_bbox2d_size() {
+        assert_eq!(std::mem::size_of::<BoundingBox2DPod>(), 16);
     }
 
     #[test]
-    fn test_detection3d_size() {
-        assert_eq!(std::mem::size_of::<Detection3D>(), 104);
+    fn test_bbox3d_size() {
+        assert_eq!(std::mem::size_of::<BoundingBox3DPod>(), 48);
+    }
+
+    #[test]
+    fn test_detection_pod_size() {
+        assert_eq!(std::mem::size_of::<DetectionPod>(), 72);
+    }
+
+    #[test]
+    fn test_detection3d_pod_size() {
+        assert_eq!(std::mem::size_of::<Detection3DPod>(), 104);
     }
 
     #[test]
     fn test_detection_class_name() {
-        let mut det = Detection::default();
+        let mut det = DetectionPod::default();
         det.set_class_name("person");
         assert_eq!(det.get_class_name(), "person");
 
@@ -334,8 +355,8 @@ mod tests {
 
     #[test]
     fn test_bbox_iou() {
-        let a = BoundingBox2D::new(0.0, 0.0, 100.0, 100.0);
-        let b = BoundingBox2D::new(50.0, 50.0, 100.0, 100.0);
+        let a = BoundingBox2DPod::new(0.0, 0.0, 100.0, 100.0);
+        let b = BoundingBox2DPod::new(50.0, 50.0, 100.0, 100.0);
 
         // Intersection is 50x50 = 2500
         // Union is 100x100 + 100x100 - 2500 = 17500
@@ -345,10 +366,36 @@ mod tests {
 
     #[test]
     fn test_bbox_from_center() {
-        let bbox = BoundingBox2D::from_center(100.0, 100.0, 50.0, 30.0);
+        let bbox = BoundingBox2DPod::from_center(100.0, 100.0, 50.0, 30.0);
         assert_eq!(bbox.x, 75.0);
         assert_eq!(bbox.y, 85.0);
         assert_eq!(bbox.width, 50.0);
         assert_eq!(bbox.height, 30.0);
+    }
+
+    #[test]
+    fn test_bbox3d_volume() {
+        let bbox = BoundingBox3DPod::new(0.0, 0.0, 0.0, 2.0, 3.0, 4.0, 0.0);
+        assert!((bbox.volume() - 24.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_detection3d_velocity() {
+        let det = Detection3DPod::new(
+            "car",
+            0.9,
+            BoundingBox3DPod::new(1.0, 2.0, 0.5, 4.5, 2.0, 1.5, 0.1),
+        )
+        .with_velocity(10.0, 5.0, 0.0);
+        assert_eq!(det.velocity_x, 10.0);
+        assert_eq!(det.velocity_y, 5.0);
+        assert_eq!(det.get_class_name(), "car");
+    }
+
+    #[test]
+    fn test_detection_confident() {
+        let det = DetectionPod::new("person", 0.85, 10.0, 20.0, 50.0, 100.0);
+        assert!(det.is_confident(0.5));
+        assert!(!det.is_confident(0.9));
     }
 }

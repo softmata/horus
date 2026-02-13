@@ -4,15 +4,19 @@
 //!
 //! ## Methodology
 //!
-//! **Intra-process** (DirectChannel, SpscIntra):
+//! **Intra-process** (DirectChannel, SpscIntra, MpscIntra, SpmcIntra, MpmcIntra):
 //! - Measures `send()` latency via RDTSC with overhead subtraction
 //! - Producer and consumer in same process, consumer on separate core
 //!
-//! **Cross-process** (SpscShm, MpscShm, MpmcShm/PodShm):
+//! **Cross-process** (SpscShm, MpscShm, SpmcShm, PodShm):
 //! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.stamp_nanos`
 //! - Producer writes `rdtsc()` → `send()`, consumer reads `recv()` → `rdtscp()`
 //! - Requires `constant_tsc` for cross-core TSC synchronization
 //! - No `yield_now()` or `sleep()` in measurement hot loops
+//!
+//! **Note**: MpmcShm only activates for non-POD types (POD multi-pub/sub gets PodShm).
+//! Since CmdVel is POD, MpmcShm is not directly benchmarked here — it shares the same
+//! dispatch paths as PodShm with added serialization overhead.
 //!
 //! ## Statistical Analysis
 //!
@@ -64,6 +68,7 @@ const CORE_MAIN: usize = 0;
 const CORE_AUX: usize = 2;
 const CORE_PUB2: usize = 4;
 const CORE_CHILD_CONS: usize = 6;
+const CORE_CONS2: usize = 8;
 
 /// Width of the output box (interior, excluding border characters)
 const BOX_W: usize = 72;
@@ -146,7 +151,7 @@ fn main() {
 
     let mut results: Vec<ScenarioResult> = Vec::new();
 
-    // === Intra-process ===
+    // === Intra-process (5 scenarios) ===
     println!(
         "{} Intra-Process {}",
         "───",
@@ -162,7 +167,19 @@ fn main() {
     print_detail(&r);
     results.push(r);
 
-    // === Cross-process ===
+    let r = bench_mpsc_intra(&timer);
+    print_detail(&r);
+    results.push(r);
+
+    let r = bench_spmc_intra(&timer);
+    print_detail(&r);
+    results.push(r);
+
+    let r = bench_mpmc_intra(&timer);
+    print_detail(&r);
+    results.push(r);
+
+    // === Cross-process (4 scenarios) ===
     println!(
         "{} Cross-Process (RDTSC-in-payload) {}",
         "───",
@@ -178,7 +195,11 @@ fn main() {
     print_detail(&r);
     results.push(r);
 
-    let r = bench_mpmc_shm(&timer);
+    let r = bench_spmc_shm(&timer);
+    print_detail(&r);
+    results.push(r);
+
+    let r = bench_pod_shm(&timer);
     print_detail(&r);
     results.push(r);
 
@@ -240,8 +261,8 @@ fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
     println!(
         "{}",
         box_left(&format!(
-            "Pinning: main=core{}, aux=core{}, pub2=core{}, cons=core{}",
-            CORE_MAIN, CORE_AUX, CORE_PUB2, CORE_CHILD_CONS,
+            "Pinning: main={}, aux={}, pub2={}, cons={}, cons2={}",
+            CORE_MAIN, CORE_AUX, CORE_PUB2, CORE_CHILD_CONS, CORE_CONS2,
         ))
     );
     println!(
@@ -417,6 +438,362 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
+/// MpscIntra -- cross-thread 2P-1C.
+/// Measures send() latency on main thread while second producer runs on another core.
+/// Multi-producer contention via CAS loop.
+fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+    let topic_name = format!("bench_mi_{}", std::process::id());
+    let producer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let producer2: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
+
+    let done = Arc::new(AtomicBool::new(false));
+    let cons_ready = Arc::new(AtomicBool::new(false));
+    let p2_ready = Arc::new(AtomicBool::new(false));
+
+    // Pre-fill from producer1 only (registers it on main thread)
+    for _ in 0..2000 {
+        producer1.send(msg);
+    }
+
+    // Consumer thread pinned to CORE_AUX
+    let done_c = done.clone();
+    let cons_ready_c = cons_ready.clone();
+    let cons_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_AUX);
+        let mut count = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 1000 && Instant::now() < deadline {
+            if consumer.recv().is_some() {
+                count += 1;
+            } else {
+                spin_loop();
+            }
+        }
+        cons_ready_c.store(true, Ordering::Release);
+        while !done_c.load(Ordering::Relaxed) {
+            if consumer.recv().is_none() {
+                spin_loop();
+            }
+        }
+        while consumer.recv().is_some() {}
+    });
+
+    // Wait for consumer to register
+    while !cons_ready.load(Ordering::Acquire) {
+        producer1.send(msg);
+        spin_loop();
+    }
+
+    // Producer2 thread pinned to CORE_PUB2
+    let done_p2 = done.clone();
+    let p2_ready_c = p2_ready.clone();
+    let p2_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_PUB2);
+        // Send to register as 2nd publisher, triggers MpscIntra migration
+        for _ in 0..2000 {
+            producer2.send(msg);
+        }
+        p2_ready_c.store(true, Ordering::Release);
+        // Keep sending to create realistic multi-producer contention
+        while !done_p2.load(Ordering::Relaxed) {
+            producer2.send(msg);
+        }
+    });
+
+    // Wait for producer2 to register
+    while !p2_ready.load(Ordering::Acquire) {
+        producer1.send(msg);
+        spin_loop();
+    }
+
+    // Extra warmup after all participants registered
+    for _ in 0..WARMUP {
+        producer1.send(msg);
+    }
+    thread::sleep(Duration::from_millis(5));
+
+    let backend = producer1.backend_type().to_string();
+
+    // Measure send() latency on main thread (contended with producer2)
+    let mut latencies = Vec::with_capacity(ITERATIONS as usize);
+    for _ in 0..ITERATIONS {
+        serialize();
+        let start = rdtsc();
+        producer1.send(std::hint::black_box(msg));
+        let end = rdtscp();
+        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
+    }
+
+    thread::sleep(Duration::from_millis(50));
+    done.store(true, Ordering::Relaxed);
+    cons_handle.join().unwrap();
+    p2_handle.join().unwrap();
+
+    ScenarioResult {
+        name: "CrossThread-MP1C",
+        backend,
+        expected_backend: "Intra",
+        measurement: "send",
+        latencies_ns: latencies,
+        total_sent: ITERATIONS,
+        total_received: ITERATIONS,
+        note: Some("contended: 2 producers active"),
+    }
+}
+
+/// SpmcIntra -- cross-thread 1P-2C.
+/// Measures send() latency while 2 consumer threads compete via CAS.
+fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+    let topic_name = format!("bench_smi_{}", std::process::id());
+    let producer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let consumer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let consumer2: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
+
+    let done = Arc::new(AtomicBool::new(false));
+    let c1_ready = Arc::new(AtomicBool::new(false));
+    let c2_ready = Arc::new(AtomicBool::new(false));
+
+    // Pre-fill from producer (registers on main thread)
+    for _ in 0..2000 {
+        producer.send(msg);
+    }
+
+    // Consumer 1 thread pinned to CORE_AUX
+    let done_c1 = done.clone();
+    let c1_ready_c = c1_ready.clone();
+    let c1_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_AUX);
+        let mut count = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 500 && Instant::now() < deadline {
+            if consumer1.recv().is_some() {
+                count += 1;
+            } else {
+                spin_loop();
+            }
+        }
+        c1_ready_c.store(true, Ordering::Release);
+        while !done_c1.load(Ordering::Relaxed) {
+            if consumer1.recv().is_none() {
+                spin_loop();
+            }
+        }
+        while consumer1.recv().is_some() {}
+    });
+
+    // Wait for consumer1 to register
+    while !c1_ready.load(Ordering::Acquire) {
+        producer.send(msg);
+        spin_loop();
+    }
+
+    // Consumer 2 thread pinned to CORE_CONS2
+    let done_c2 = done.clone();
+    let c2_ready_c = c2_ready.clone();
+    let c2_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_CONS2);
+        let mut count = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 500 && Instant::now() < deadline {
+            if consumer2.recv().is_some() {
+                count += 1;
+            } else {
+                spin_loop();
+            }
+        }
+        c2_ready_c.store(true, Ordering::Release);
+        while !done_c2.load(Ordering::Relaxed) {
+            if consumer2.recv().is_none() {
+                spin_loop();
+            }
+        }
+        while consumer2.recv().is_some() {}
+    });
+
+    // Wait for consumer2 to register
+    while !c2_ready.load(Ordering::Acquire) {
+        producer.send(msg);
+        spin_loop();
+    }
+
+    // Extra warmup after all participants registered
+    for _ in 0..WARMUP {
+        producer.send(msg);
+    }
+    thread::sleep(Duration::from_millis(5));
+
+    let backend = producer.backend_type().to_string();
+
+    // Measure send() latency (single producer, 2 consumers draining)
+    let mut latencies = Vec::with_capacity(ITERATIONS as usize);
+    for _ in 0..ITERATIONS {
+        serialize();
+        let start = rdtsc();
+        producer.send(std::hint::black_box(msg));
+        let end = rdtscp();
+        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
+    }
+
+    thread::sleep(Duration::from_millis(50));
+    done.store(true, Ordering::Relaxed);
+    c1_handle.join().unwrap();
+    c2_handle.join().unwrap();
+
+    ScenarioResult {
+        name: "CrossThread-1PMC",
+        backend,
+        expected_backend: "Intra",
+        measurement: "send",
+        latencies_ns: latencies,
+        total_sent: ITERATIONS,
+        total_received: ITERATIONS,
+        note: None,
+    }
+}
+
+/// MpmcIntra -- cross-thread 2P-2C.
+/// Measures send() latency with multi-producer contention and multi-consumer drain.
+fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
+    let topic_name = format!("bench_mmi_{}", std::process::id());
+    let producer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let consumer1: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let consumer2: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let producer2: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
+
+    let done = Arc::new(AtomicBool::new(false));
+    let c1_ready = Arc::new(AtomicBool::new(false));
+    let c2_ready = Arc::new(AtomicBool::new(false));
+    let p2_ready = Arc::new(AtomicBool::new(false));
+
+    // Pre-fill from producer1 (registers on main thread)
+    for _ in 0..2000 {
+        producer1.send(msg);
+    }
+
+    // Consumer 1 thread pinned to CORE_AUX
+    let done_c1 = done.clone();
+    let c1_ready_c = c1_ready.clone();
+    let c1_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_AUX);
+        let mut count = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 500 && Instant::now() < deadline {
+            if consumer1.recv().is_some() {
+                count += 1;
+            } else {
+                spin_loop();
+            }
+        }
+        c1_ready_c.store(true, Ordering::Release);
+        while !done_c1.load(Ordering::Relaxed) {
+            if consumer1.recv().is_none() {
+                spin_loop();
+            }
+        }
+        while consumer1.recv().is_some() {}
+    });
+
+    // Wait for consumer1
+    while !c1_ready.load(Ordering::Acquire) {
+        producer1.send(msg);
+        spin_loop();
+    }
+
+    // Consumer 2 thread pinned to CORE_CONS2
+    let done_c2 = done.clone();
+    let c2_ready_c = c2_ready.clone();
+    let c2_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_CONS2);
+        let mut count = 0u64;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while count < 500 && Instant::now() < deadline {
+            if consumer2.recv().is_some() {
+                count += 1;
+            } else {
+                spin_loop();
+            }
+        }
+        c2_ready_c.store(true, Ordering::Release);
+        while !done_c2.load(Ordering::Relaxed) {
+            if consumer2.recv().is_none() {
+                spin_loop();
+            }
+        }
+        while consumer2.recv().is_some() {}
+    });
+
+    // Wait for consumer2
+    while !c2_ready.load(Ordering::Acquire) {
+        producer1.send(msg);
+        spin_loop();
+    }
+
+    // Producer2 thread pinned to CORE_PUB2
+    let done_p2 = done.clone();
+    let p2_ready_c = p2_ready.clone();
+    let p2_handle = thread::spawn(move || {
+        let _ = set_cpu_affinity(CORE_PUB2);
+        for _ in 0..2000 {
+            producer2.send(msg);
+        }
+        p2_ready_c.store(true, Ordering::Release);
+        while !done_p2.load(Ordering::Relaxed) {
+            producer2.send(msg);
+        }
+    });
+
+    // Wait for producer2
+    while !p2_ready.load(Ordering::Acquire) {
+        producer1.send(msg);
+        spin_loop();
+    }
+
+    // Extra warmup after all registered
+    for _ in 0..WARMUP {
+        producer1.send(msg);
+    }
+    thread::sleep(Duration::from_millis(5));
+
+    let backend = producer1.backend_type().to_string();
+
+    // Measure send() latency (contended: 2 producers, 2 consumers)
+    let mut latencies = Vec::with_capacity(ITERATIONS as usize);
+    for _ in 0..ITERATIONS {
+        serialize();
+        let start = rdtsc();
+        producer1.send(std::hint::black_box(msg));
+        let end = rdtscp();
+        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
+    }
+
+    thread::sleep(Duration::from_millis(50));
+    done.store(true, Ordering::Relaxed);
+    c1_handle.join().unwrap();
+    c2_handle.join().unwrap();
+    p2_handle.join().unwrap();
+
+    ScenarioResult {
+        name: "CrossThread-MPMC",
+        backend,
+        expected_backend: "Intra",
+        measurement: "send",
+        latencies_ns: latencies,
+        total_sent: ITERATIONS,
+        total_received: ITERATIONS,
+        note: Some("contended: 2 producers, 2 consumers"),
+    }
+}
+
 // ============================================================================
 // Cross-Process Benchmarks
 // ============================================================================
@@ -490,17 +867,54 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     }
 }
 
-/// MpmcShm -- cross-process 2 publishers, 2 consumers.
+/// SpmcShm -- cross-process 1 publisher, 2 consumers.
+/// Parent = consumer 1, child = consumer 2, child = publisher.
+/// Measures one-way latency via RDTSC timestamps in message payload.
+fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
+    let cal = timer.calibration();
+    let topic_name = format!("bench_spmc_{}", std::process::id());
+    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv(); // Register parent as consumer
+
+    // Spawn child consumer first (registers as 2nd subscriber)
+    let child_count = WARMUP + ITERATIONS;
+    let mut child_cons = spawn_consumer(&topic_name, child_count, CORE_CHILD_CONS);
+    thread::sleep(Duration::from_millis(200));
+
+    // Spawn child publisher (registers as 1st and only publisher)
+    let mut child_pub = spawn_publisher(&topic_name, child_count, CORE_AUX);
+
+    // Wait for migration (1 pub, 2 subs, cross-process → SpmcShm)
+    let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+    let backend = consumer.backend_type().to_string();
+
+    // Collect one-way latencies
+    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+    child_pub.wait().ok();
+    child_cons.wait().ok();
+
+    let total_received = migration_recv + measure_recv;
+    ScenarioResult {
+        name: "CrossProc-1PMC",
+        backend,
+        expected_backend: "SpmcShm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: MIGRATION_BOOT + child_count,
+        total_received,
+        note: None,
+    }
+}
+
+/// PodShm -- cross-process 2 publishers, 2 consumers, POD type.
 /// Parent + child = consumers, 2 children = publishers.
 ///
-/// Registration order: parent consumer -> pub1 -> pub2 -> child consumer.
-/// The adaptive topology may select PodShm (single-slot overwrite) instead of
-/// MpmcShm depending on registration timing. PodShm uses a different protocol
-/// (last-value store, not a queue), resulting in higher measured latencies that
-/// reflect its polling semantics rather than true queue propagation delay.
-fn bench_mpmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
+/// For POD types (like CmdVel), multi-pub/multi-sub cross-process always selects
+/// PodShm (zero-copy atomic slot). MpmcShm only activates for non-POD types
+/// (which require serialization). Both share the same dispatch paths.
+fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
-    let topic_name = format!("bench_mpmc_{}", std::process::id());
+    let topic_name = format!("bench_pod_{}", std::process::id());
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let _ = consumer.recv();
 
@@ -519,13 +933,6 @@ fn bench_mpmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     let backend = consumer.backend_type().to_string();
 
-    let is_pod = backend.contains("Pod");
-    let note = if is_pod {
-        Some("PodShm selected (single-slot overwrite); latency reflects poll interval, not queue delay")
-    } else {
-        None
-    };
-
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
     pub1.wait().ok();
     pub2.wait().ok();
@@ -534,14 +941,14 @@ fn bench_mpmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let total_received = migration1 + migration2 + measure_recv;
 
     ScenarioResult {
-        name: "CrossProc-2P2C",
+        name: "CrossProc-PodShm",
         backend,
-        expected_backend: "Shm",
+        expected_backend: "PodShm",
         measurement: "one-way",
         latencies_ns: latencies,
         total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
         total_received,
-        note,
+        note: None,
     }
 }
 
@@ -902,8 +1309,8 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!();
 
     println!("  Known limitations:");
-    println!("    - AdaptiveTopic may select different backends depending on registration order");
-    println!("    - MPMC scenario may use PodShm (single-slot overwrite) instead of MpmcShm");
+    println!("    - AdaptiveTopic selects backends based on topology and type (POD vs non-POD)");
+    println!("    - MpmcShm only activates for non-POD types; POD multi-pub/sub uses PodShm");
     println!("    - Cross-process POD: zero-copy (memcpy + atomics). Non-POD: +bincode ser/deser");
     println!("    - Governor 'powersave' significantly inflates latencies vs 'performance'");
     println!();

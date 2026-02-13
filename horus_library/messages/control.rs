@@ -11,6 +11,7 @@ use serde_arrays;
 /// Motor command for direct motor control
 ///
 /// Supports various control modes including velocity, position, and torque control.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct MotorCommand {
     /// Motor ID (for multi-motor systems)
@@ -25,8 +26,8 @@ pub struct MotorCommand {
     pub max_acceleration: f64,
     /// Feed-forward term
     pub feed_forward: f64,
-    /// Enable motor (false = brake/coast depending on config)
-    pub enable: bool,
+    /// Enable motor (0 = brake/coast depending on config)
+    pub enable: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -46,7 +47,7 @@ impl MotorCommand {
             max_velocity: f64::INFINITY,
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
-            enable: true,
+            enable: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -63,7 +64,7 @@ impl MotorCommand {
             max_velocity,
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
-            enable: true,
+            enable: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -80,7 +81,7 @@ impl MotorCommand {
             max_velocity: f64::INFINITY,
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
-            enable: false,
+            enable: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -100,6 +101,7 @@ impl MotorCommand {
 /// Differential drive motor commands
 ///
 /// Commands for a two-wheeled differential drive robot.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct DifferentialDriveCommand {
     /// Left wheel velocity in rad/s
@@ -109,7 +111,7 @@ pub struct DifferentialDriveCommand {
     /// Maximum acceleration in rad/s²
     pub max_acceleration: f64,
     /// Enable motors
-    pub enable: bool,
+    pub enable: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -121,7 +123,7 @@ impl DifferentialDriveCommand {
             left_velocity: left,
             right_velocity: right,
             max_acceleration: f64::INFINITY,
-            enable: true,
+            enable: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -135,7 +137,7 @@ impl DifferentialDriveCommand {
             left_velocity: 0.0,
             right_velocity: 0.0,
             max_acceleration: f64::INFINITY,
-            enable: false,
+            enable: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -159,6 +161,7 @@ impl DifferentialDriveCommand {
 }
 
 /// Servo command for position-controlled servos
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ServoCommand {
     /// Servo ID (for multi-servo systems)
@@ -168,7 +171,7 @@ pub struct ServoCommand {
     /// Movement speed (0-1, 0=max speed)
     pub speed: f32,
     /// Torque enable
-    pub enable: bool,
+    pub enable: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -180,7 +183,7 @@ impl ServoCommand {
             servo_id,
             position,
             speed: 0.5,
-            enable: true,
+            enable: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -194,7 +197,7 @@ impl ServoCommand {
             servo_id,
             position,
             speed: speed.clamp(0.0, 1.0),
-            enable: true,
+            enable: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -208,7 +211,7 @@ impl ServoCommand {
             servo_id,
             position: 0.0,
             speed: 0.0,
-            enable: false,
+            enable: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -223,6 +226,7 @@ impl ServoCommand {
 }
 
 /// PID gains configuration message
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct PidConfig {
     /// Controller ID
@@ -238,7 +242,7 @@ pub struct PidConfig {
     /// Output limit
     pub output_limit: f64,
     /// Enable anti-windup
-    pub anti_windup: bool,
+    pub anti_windup: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -253,7 +257,7 @@ impl PidConfig {
             kd,
             integral_limit: f64::INFINITY,
             output_limit: f64::INFINITY,
-            anti_windup: true,
+            anti_windup: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -297,6 +301,7 @@ impl PidConfig {
 }
 
 /// Trajectory point for path following
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct TrajectoryPoint {
     /// Position [x, y, z]
@@ -340,7 +345,8 @@ impl TrajectoryPoint {
 }
 
 /// Joint command for multi-DOF systems
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct JointCommand {
     /// Joint names (max 16 joints)
     #[serde(with = "serde_arrays")]
@@ -440,6 +446,7 @@ impl JointCommand {
 ///
 /// Controls DC motors using PWM signals for speed/direction control.
 /// Commonly used with motor drivers like L298N, TB6612, DRV8833.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct PwmCommand {
     /// Motor channel ID (0-15)
@@ -449,9 +456,9 @@ pub struct PwmCommand {
     /// PWM frequency in Hz (typically 1kHz-20kHz)
     pub frequency: u32,
     /// Enable motor driver output
-    pub enable: bool,
-    /// Brake mode (true = brake, false = coast when disabled)
-    pub brake_mode: bool,
+    pub enable: u8,
+    /// Brake mode (1 = brake, 0 = coast when disabled)
+    pub brake_mode: u8,
     /// Current limit in amperes (0 = no limit)
     pub current_limit: f32,
     /// Timestamp in nanoseconds since epoch
@@ -465,8 +472,8 @@ impl PwmCommand {
             channel_id: channel,
             duty_cycle: duty_cycle.clamp(-1.0, 1.0),
             frequency: 10000, // 10kHz default
-            enable: true,
-            brake_mode: false,
+            enable: 1,
+            brake_mode: 0,
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -491,8 +498,8 @@ impl PwmCommand {
             channel_id: channel,
             duty_cycle: 0.0,
             frequency: 10000,
-            enable: false,
-            brake_mode: false,
+            enable: 0,
+            brake_mode: 0,
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -507,8 +514,8 @@ impl PwmCommand {
             channel_id: channel,
             duty_cycle: 0.0,
             frequency: 10000,
-            enable: true,
-            brake_mode: true,
+            enable: 1,
+            brake_mode: 1,
             current_limit: 0.0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -564,6 +571,7 @@ impl LogSummary for PwmCommand {
 ///
 /// Controls stepper motors with step/direction interface.
 /// Compatible with drivers like A4988, DRV8825, TMC2208, etc.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct StepperCommand {
     /// Motor ID (for multi-motor systems)
@@ -576,8 +584,8 @@ pub struct StepperCommand {
     pub max_velocity: f64,
     /// Acceleration in steps/sec² (0 = use default)
     pub acceleration: f64,
-    /// Enable motor (false = disable holding torque)
-    pub enable: bool,
+    /// Enable motor (0 = disable holding torque)
+    pub enable: u8,
     /// Microstepping mode (1, 2, 4, 8, 16, 32, 64, 128, 256)
     pub microsteps: u16,
     /// Current limit in milliamps (0 = use default)
@@ -600,7 +608,7 @@ impl StepperCommand {
             target: steps as f64,
             max_velocity: 0.0,
             acceleration: 0.0,
-            enable: true,
+            enable: 1,
             microsteps: 16,
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -618,7 +626,7 @@ impl StepperCommand {
             target: position,
             max_velocity,
             acceleration: 0.0,
-            enable: true,
+            enable: 1,
             microsteps: 16,
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -636,7 +644,7 @@ impl StepperCommand {
             target: velocity,
             max_velocity: f64::INFINITY,
             acceleration: 0.0,
-            enable: true,
+            enable: 1,
             microsteps: 16,
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -654,7 +662,7 @@ impl StepperCommand {
             target: homing_velocity,
             max_velocity: 0.0,
             acceleration: 0.0,
-            enable: true,
+            enable: 1,
             microsteps: 16,
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -672,7 +680,7 @@ impl StepperCommand {
             target: 0.0,
             max_velocity: 0.0,
             acceleration: 0.0,
-            enable: false,
+            enable: 0,
             microsteps: 16,
             current_limit: 0,
             timestamp_ns: std::time::SystemTime::now()
@@ -717,3 +725,39 @@ impl LogSummary for StepperCommand {
         )
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for MotorCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for MotorCommand {}
+unsafe impl horus_core::communication::PodMessage for MotorCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for DifferentialDriveCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for DifferentialDriveCommand {}
+unsafe impl horus_core::communication::PodMessage for DifferentialDriveCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for ServoCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for ServoCommand {}
+unsafe impl horus_core::communication::PodMessage for ServoCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for PidConfig {}
+unsafe impl horus_core::bytemuck::Zeroable for PidConfig {}
+unsafe impl horus_core::communication::PodMessage for PidConfig {}
+
+unsafe impl horus_core::bytemuck::Pod for TrajectoryPoint {}
+unsafe impl horus_core::bytemuck::Zeroable for TrajectoryPoint {}
+unsafe impl horus_core::communication::PodMessage for TrajectoryPoint {}
+
+unsafe impl horus_core::bytemuck::Pod for JointCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for JointCommand {}
+unsafe impl horus_core::communication::PodMessage for JointCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for PwmCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for PwmCommand {}
+unsafe impl horus_core::communication::PodMessage for PwmCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for StepperCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for StepperCommand {}
+unsafe impl horus_core::communication::PodMessage for StepperCommand {}

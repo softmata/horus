@@ -1,6 +1,10 @@
-//! Point cloud types
+//! Point cloud types for zero-copy IPC
 //!
-//! Types for 3D point cloud data from LiDAR, depth cameras, etc.
+//! Pod/Zeroable fixed-size point types for 3D point cloud data from LiDAR,
+//! depth cameras, etc. These are suitable for shared memory transport.
+//!
+//! For the Serde-based `PointCloud` with flexible PointField descriptors,
+//! see `perception.rs`.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -240,7 +244,6 @@ mod tests {
 
     #[test]
     fn test_point_xyz_size() {
-        // Packed, should be exactly 12 bytes
         assert_eq!(std::mem::size_of::<PointXYZ>(), 12);
     }
 
@@ -266,11 +269,45 @@ mod tests {
     }
 
     #[test]
+    fn test_point_distance_to() {
+        let a = PointXYZ::new(0.0, 0.0, 0.0);
+        let b = PointXYZ::new(1.0, 2.0, 2.0);
+        assert!((a.distance_to(&b) - 3.0).abs() < 0.001);
+    }
+
+    #[test]
     fn test_rgb_packed() {
         let p = PointXYZRGB::new(0.0, 0.0, 0.0, 255, 128, 64);
         let packed = p.rgb_packed();
         assert_eq!(packed >> 24, 255);
         assert_eq!((packed >> 16) & 0xFF, 128);
         assert_eq!((packed >> 8) & 0xFF, 64);
+    }
+
+    #[test]
+    fn test_header_data_size() {
+        let header = PointCloudHeader::xyz(1000);
+        assert_eq!(header.data_size(), 1000 * 12);
+
+        let header_rgb = PointCloudHeader::xyzrgb(500);
+        assert_eq!(header_rgb.data_size(), 500 * 16);
+    }
+
+    #[test]
+    fn test_header_frame_id() {
+        let header = PointCloudHeader::xyz(100).with_frame_id("lidar_front");
+        assert_eq!(header.get_frame_id(), "lidar_front");
+    }
+
+    #[test]
+    fn test_from_xyz_conversions() {
+        let xyz = PointXYZ::new(1.0, 2.0, 3.0);
+        let rgb = PointXYZRGB::from_xyz(xyz);
+        assert_eq!(rgb.x, 1.0);
+        assert_eq!(rgb.r, 255); // white default
+
+        let intensity = PointXYZI::from_xyz(xyz);
+        assert_eq!(intensity.z, 3.0);
+        assert_eq!(intensity.intensity, 0.0); // zero default
     }
 }

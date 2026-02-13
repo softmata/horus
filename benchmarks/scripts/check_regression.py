@@ -15,12 +15,17 @@ Options:
     --output-markdown <path>  Write markdown summary to file
     --absolute-thresholds     Enable absolute latency thresholds for critical paths
 
-Absolute Thresholds (nanoseconds):
-    - MpmcShm: 600ns (cross-process pub/sub, the default backend)
-    - SpscShm: 200ns (cross-process point-to-point)
-    - MpmcIntra: 100ns (same-process pub/sub)
-    - SpscIntra: 50ns (same-process point-to-point)
-    - DirectChannel: 10ns (same-thread only)
+Absolute Thresholds (nanoseconds) - CI-safe ceilings (~3x target):
+    - DirectChannel: 20ns (same-thread, target ~3ns)
+    - SpscIntra: 60ns (same-process 1P1C, target ~18ns)
+    - SpmcIntra: 80ns (same-process 1PMC, target ~24ns)
+    - MpscIntra: 80ns (same-process MP1C, target ~26ns)
+    - MpmcIntra: 120ns (same-process MPMC, target ~36ns)
+    - PodShm: 150ns (cross-process POD MPMC, target ~50ns)
+    - MpscShm: 200ns (cross-process MP1C, target ~65ns)
+    - SpmcShm: 200ns (cross-process 1PMC, target ~70ns)
+    - SpscShm: 250ns (cross-process 1P1C, target ~85ns)
+    - MpmcShm: 600ns (cross-process non-POD MPMC, target ~167ns)
 """
 
 import argparse
@@ -30,24 +35,34 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Absolute latency thresholds (nanoseconds)
+# Absolute latency thresholds (nanoseconds) — CI-safe ceilings (~3x target)
 ABSOLUTE_THRESHOLDS = {
+    "DirectChannel": 20,
+    "DirectChannel_unchecked": 20,
+    "SpscIntra": 60,
+    "SpmcIntra": 80,
+    "MpscIntra": 80,
+    "MpmcIntra": 120,
+    "PodShm": 150,
+    "MpscShm": 200,
+    "SpmcShm": 200,
+    "SpscShm": 250,
     "MpmcShm": 600,
-    "SpscShm": 200,
-    "MpmcIntra": 100,
-    "SpscIntra": 50,
-    "DirectChannel": 10,
-    "DirectChannel_unchecked": 10,
 }
 
 # Backend descriptions for reporting
 BACKEND_DESCRIPTIONS = {
-    "MpmcShm": "Cross-process pub/sub (default)",
-    "SpscShm": "Cross-process point-to-point",
-    "MpmcIntra": "Same-process pub/sub",
-    "SpscIntra": "Same-process point-to-point",
-    "DirectChannel": "Same-thread pipeline",
-    "DirectChannel_unchecked": "Same-thread unchecked",
+    "DirectChannel": "Same-thread pipeline (~3ns)",
+    "DirectChannel_unchecked": "Same-thread unchecked (~3ns)",
+    "SpscIntra": "Same-process 1P-1C (~18ns)",
+    "SpmcIntra": "Same-process 1P-MC (~24ns)",
+    "MpscIntra": "Same-process MP-1C (~26ns)",
+    "MpmcIntra": "Same-process MPMC (~36ns)",
+    "PodShm": "Cross-process POD MPMC (~50ns)",
+    "MpscShm": "Cross-process MP-1C (~65ns)",
+    "SpmcShm": "Cross-process 1P-MC (~70ns)",
+    "SpscShm": "Cross-process 1P-1C (~85ns)",
+    "MpmcShm": "Cross-process non-POD MPMC (~167ns)",
 }
 
 

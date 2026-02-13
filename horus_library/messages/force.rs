@@ -12,6 +12,7 @@ use serde_arrays;
 ///
 /// Represents 6-DOF force and torque measurements from force/torque sensors,
 /// commonly used in manipulation and contact tasks.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct WrenchStamped {
     /// Force vector [fx, fy, fz] in Newtons
@@ -95,7 +96,8 @@ impl WrenchStamped {
 ///
 /// Represents pressure/force measurements from multiple tactile sensors
 /// arranged in an array (e.g., fingertip sensors, skin patches).
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct TactileArray {
     /// Array of pressure/force readings
     #[serde(with = "serde_arrays")]
@@ -231,6 +233,7 @@ impl TactileArray {
 /// Impedance control parameters
 ///
 /// Defines the impedance behavior for force-controlled manipulation tasks.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ImpedanceParameters {
     /// Stiffness matrix diagonal [Kx, Ky, Kz, Krx, Kry, Krz]
@@ -242,7 +245,7 @@ pub struct ImpedanceParameters {
     /// Force limits [Fx_max, Fy_max, Fz_max, Tx_max, Ty_max, Tz_max]
     pub force_limits: [f64; 6],
     /// Whether impedance control is active
-    pub enabled: bool,
+    pub enabled: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -256,7 +259,7 @@ impl ImpedanceParameters {
             damping: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0],
             inertia: [1.0, 1.0, 1.0, 0.1, 0.1, 0.1],
             force_limits: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0],
-            enabled: false,
+            enabled: 0,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -284,7 +287,7 @@ impl ImpedanceParameters {
 
     /// Enable impedance control
     pub fn enable(&mut self) {
-        self.enabled = true;
+        self.enabled = 1;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -293,7 +296,7 @@ impl ImpedanceParameters {
 
     /// Disable impedance control
     pub fn disable(&mut self) {
-        self.enabled = false;
+        self.enabled = 0;
         self.timestamp_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -304,6 +307,7 @@ impl ImpedanceParameters {
 /// Force control command
 ///
 /// Commands for force-controlled manipulation tasks.
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ForceCommand {
     /// Desired force vector [fx, fy, fz]
@@ -311,8 +315,8 @@ pub struct ForceCommand {
     /// Desired torque vector [tx, ty, tz]
     pub target_torque: Vector3,
     /// Control mode selection [force_x, force_y, force_z, torque_x, torque_y, torque_z]
-    /// true = force control, false = position control
-    pub force_mode: [bool; 6],
+    /// 1 = force control, 0 = position control
+    pub force_mode: [u8; 6],
     /// Position setpoint for position-controlled axes
     pub position_setpoint: Vector3,
     /// Orientation setpoint for orientation-controlled axes
@@ -335,7 +339,7 @@ impl ForceCommand {
         Self {
             target_force,
             target_torque: Vector3::zero(),
-            force_mode: [true, true, true, false, false, false],
+            force_mode: [1, 1, 1, 0, 0, 0],
             position_setpoint: Vector3::zero(),
             orientation_setpoint: Vector3::zero(),
             max_deviation: Vector3::new(0.01, 0.01, 0.01), // 1cm max deviation
@@ -350,7 +354,7 @@ impl ForceCommand {
     }
 
     /// Create a hybrid force/position command
-    pub fn hybrid(force_axes: [bool; 6], target_force: Vector3, target_position: Vector3) -> Self {
+    pub fn hybrid(force_axes: [u8; 6], target_force: Vector3, target_position: Vector3) -> Self {
         Self {
             target_force,
             target_torque: Vector3::zero(),
@@ -381,10 +385,10 @@ impl ForceCommand {
         // Force control in normal direction, position control in tangential directions
         let force_mode = if normal.z.abs() > 0.8 {
             // Mostly vertical surface - control Z force
-            [false, false, true, false, false, false]
+            [0, 0, 1, 0, 0, 0]
         } else {
             // General case - control along surface normal (approximate)
-            [true, true, true, false, false, false]
+            [1, 1, 1, 0, 0, 0]
         };
 
         Self::hybrid(force_mode, target_force, Vector3::zero())
@@ -418,10 +422,11 @@ pub enum ContactState {
 }
 
 /// Contact detection and classification
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct ContactInfo {
     /// Current contact state
-    pub state: ContactState,
+    pub state: u8,
     /// Contact force magnitude
     pub contact_force: f64,
     /// Contact normal vector (estimated)
@@ -446,7 +451,7 @@ impl ContactInfo {
     /// Create new contact info
     pub fn new(state: ContactState, force_magnitude: f64) -> Self {
         Self {
-            state,
+            state: state as u8,
             contact_force: force_magnitude,
             contact_normal: Vector3::new(0.0, 0.0, 1.0), // Default to Z-up
             contact_point: Point3::origin(),
@@ -466,7 +471,7 @@ impl ContactInfo {
     pub fn is_in_contact(&self) -> bool {
         matches!(
             self.state,
-            ContactState::InitialContact | ContactState::StableContact | ContactState::Sliding
+            1 | 2 | 4
         )
     }
 
@@ -481,6 +486,7 @@ impl ContactInfo {
 }
 
 /// Haptic feedback command
+#[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
 pub struct HapticFeedback {
     /// Vibration intensity (0.0 to 1.0)
@@ -494,7 +500,7 @@ pub struct HapticFeedback {
     /// Feedback pattern type (0=constant, 1=pulse, 2=ramp)
     pub pattern_type: u8,
     /// Enable/disable feedback
-    pub enabled: bool,
+    pub enabled: u8,
     /// Timestamp in nanoseconds since epoch
     pub timestamp_ns: u64,
 }
@@ -512,7 +518,7 @@ impl HapticFeedback {
             duration_seconds: duration,
             force_feedback: Vector3::zero(),
             pattern_type: Self::PATTERN_CONSTANT,
-            enabled: true,
+            enabled: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -528,7 +534,7 @@ impl HapticFeedback {
             duration_seconds: duration,
             force_feedback: force,
             pattern_type: Self::PATTERN_CONSTANT,
-            enabled: true,
+            enabled: 1,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -544,4 +550,32 @@ impl HapticFeedback {
         }
     }
 }
+
+// =============================================================================
+// POD (Plain Old Data) Message Support
+// =============================================================================
+
+unsafe impl horus_core::bytemuck::Pod for WrenchStamped {}
+unsafe impl horus_core::bytemuck::Zeroable for WrenchStamped {}
+unsafe impl horus_core::communication::PodMessage for WrenchStamped {}
+
+unsafe impl horus_core::bytemuck::Pod for TactileArray {}
+unsafe impl horus_core::bytemuck::Zeroable for TactileArray {}
+unsafe impl horus_core::communication::PodMessage for TactileArray {}
+
+unsafe impl horus_core::bytemuck::Pod for ImpedanceParameters {}
+unsafe impl horus_core::bytemuck::Zeroable for ImpedanceParameters {}
+unsafe impl horus_core::communication::PodMessage for ImpedanceParameters {}
+
+unsafe impl horus_core::bytemuck::Pod for ForceCommand {}
+unsafe impl horus_core::bytemuck::Zeroable for ForceCommand {}
+unsafe impl horus_core::communication::PodMessage for ForceCommand {}
+
+unsafe impl horus_core::bytemuck::Pod for ContactInfo {}
+unsafe impl horus_core::bytemuck::Zeroable for ContactInfo {}
+unsafe impl horus_core::communication::PodMessage for ContactInfo {}
+
+unsafe impl horus_core::bytemuck::Pod for HapticFeedback {}
+unsafe impl horus_core::bytemuck::Zeroable for HapticFeedback {}
+unsafe impl horus_core::communication::PodMessage for HapticFeedback {}
 
