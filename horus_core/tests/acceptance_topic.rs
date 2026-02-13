@@ -201,7 +201,7 @@ fn test_scenario_9_custom_capacity() {
 
     let topic = format!("test_capacity_{}", std::process::id());
 
-    let hub = Topic::<i32>::with_capacity(&topic, 4096)
+    let hub = Topic::<i32>::with_capacity(&topic, 4096, None)
         .expect("Failed to create hub with custom capacity");
 
     // Send multiple messages to verify capacity

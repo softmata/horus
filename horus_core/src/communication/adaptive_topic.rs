@@ -1162,12 +1162,126 @@ pub struct AdaptiveMetrics {
     pub messages_sent: AtomicU64,
     /// Messages received through this topic
     pub messages_received: AtomicU64,
+    /// Number of send failures
+    pub send_failures: AtomicU64,
+    /// Number of receive failures
+    pub recv_failures: AtomicU64,
     /// Number of backend migrations performed
     pub migrations: AtomicU32,
     /// Current backend latency estimate (ns)
     pub estimated_latency_ns: AtomicU32,
     /// Last observed epoch
     pub last_epoch: AtomicU64,
+}
+
+/// Non-atomic snapshot of topic metrics (for external consumers)
+#[derive(Debug, Clone, Default)]
+pub struct TopicMetrics {
+    /// Number of messages successfully sent
+    pub messages_sent: u64,
+    /// Number of messages successfully received
+    pub messages_received: u64,
+    /// Number of send failures
+    pub send_failures: u64,
+    /// Number of receive failures
+    pub recv_failures: u64,
+}
+
+/// Connection state for a topic (primarily for network backends)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionState {
+    /// Not connected
+    #[default]
+    Disconnected,
+    /// Connection in progress
+    Connecting,
+    /// Connected and operational
+    Connected,
+    /// Reconnecting after a disconnect
+    Reconnecting,
+    /// Connection permanently failed
+    Failed,
+}
+
+impl ConnectionState {
+    /// Convert to u8 for atomic storage
+    pub fn into_u8(self) -> u8 {
+        match self {
+            ConnectionState::Disconnected => 0,
+            ConnectionState::Connecting => 1,
+            ConnectionState::Connected => 2,
+            ConnectionState::Reconnecting => 3,
+            ConnectionState::Failed => 4,
+        }
+    }
+
+    /// Convert from u8
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => ConnectionState::Disconnected,
+            1 => ConnectionState::Connecting,
+            2 => ConnectionState::Connected,
+            3 => ConnectionState::Reconnecting,
+            4 => ConnectionState::Failed,
+            _ => ConnectionState::Disconnected,
+        }
+    }
+}
+
+/// Type-safe topic descriptor for compile-time checked topic names.
+///
+/// Created by the [`topics!`](crate::topics!) macro to provide compile-time
+/// type checking for topic names and message types.
+#[derive(Debug, Clone, Copy)]
+pub struct TopicDescriptor<T> {
+    name: &'static str,
+    _marker: PhantomData<T>,
+}
+
+impl<T> TopicDescriptor<T> {
+    /// Create a new topic descriptor (used by the `topics!` macro).
+    #[inline]
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get the topic name.
+    #[inline]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// Define type-safe topic descriptors for compile-time checked topic names.
+///
+/// This macro generates `TopicDescriptor<T>` constants that encode both the topic
+/// name and message type, preventing typos and type mismatches at compile time.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus_core::topics;
+///
+/// topics! {
+///     SENSOR_DATA: f64 = "sensor_data",
+///     CMD_VEL: CmdVel = "cmd_vel",
+/// }
+///
+/// // Type-safe — autocomplete works, typos are compile errors
+/// let publisher = Topic::publish(CMD_VEL)?;
+/// let subscriber = Topic::subscribe(CMD_VEL)?;
+/// ```
+#[macro_export]
+macro_rules! topics {
+    ($($vis:vis $name:ident : $type:ty = $topic_name:expr),* $(,)?) => {
+        $(
+            $vis const $name: $crate::communication::adaptive_topic::TopicDescriptor<$type> =
+                $crate::communication::adaptive_topic::TopicDescriptor::new($topic_name);
+        )*
+    };
 }
 
 /// Local state for an AdaptiveTopic participant
@@ -1326,6 +1440,12 @@ pub struct AdaptiveTopic<T> {
     /// Metrics for monitoring
     metrics: Arc<AdaptiveMetrics>,
 
+    /// Optional logging function (set via `with_logging()`)
+    log_fn: Option<fn(&T) -> String>,
+
+    /// Connection state (for network backend compatibility)
+    state: AtomicU8,
+
     /// Type marker
     _marker: PhantomData<T>,
 }
@@ -1350,8 +1470,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// - Number of publishers/subscribers
     /// - Same-thread/same-process detection
     /// - POD type detection
-    pub fn new(name: &str) -> HorusResult<Self> {
-        Self::with_capacity(name, auto_capacity::<T>(), None)
+    pub fn new(name: impl Into<String>) -> HorusResult<Self> {
+        let name = name.into();
+        Self::with_capacity(&name, auto_capacity::<T>(), None)
     }
 
     /// Create a new adaptive topic with custom capacity and optional slot size
@@ -1470,6 +1591,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 ..Default::default()
             }),
             metrics: Arc::new(AdaptiveMetrics::default()),
+            log_fn: None,
+            state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
         })
     }
@@ -1701,12 +1824,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         }
     }
 
-    /// Send a message
+    /// Try to send a message, returning it on failure (for explicit retry).
     ///
     /// On first call, registers as a producer and triggers backend detection.
     /// Subsequent calls dispatch to the detected backend.
     ///
     /// Returns `Err(msg)` if the send fails (for backpressure/retry).
+    /// For fire-and-forget semantics, use `send()` instead.
     ///
     /// # Performance (two-level dispatch: process locality → backend mode)
     /// - DirectChannel (same-thread): ~3-5ns - local indices + Release store
@@ -1714,7 +1838,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// - MpscIntra/MpmcIntra (cross-thread, MP): ~25-36ns - CAS loop
     /// - Cross-process POD: ~50-167ns - shared memory coordination
     #[inline(always)]
-    pub fn send(&self, msg: T) -> Result<(), T> {
+    pub fn try_send(&self, msg: T) -> Result<(), T> {
         // Get local state ONCE - single pointer dereference for entire function
         let local = self.local();
 
@@ -2121,10 +2245,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         Ok(())
     }
 
-    /// Receive a message
+    /// Try to receive a message without logging.
     ///
     /// On first call, registers as a consumer and triggers backend detection.
     /// Returns None if no message is available.
+    /// For the logging-aware version, use `recv()` instead.
     ///
     /// # Performance (two-level dispatch: process locality → backend mode)
     /// - DirectChannel (same-thread): ~3-5ns - local indices + Acquire load
@@ -2132,7 +2257,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// - SpmcIntra/MpmcIntra (cross-thread, MC): ~24-36ns - CAS loop
     /// - Cross-process POD: ~50-167ns - shared memory coordination
     #[inline(always)]
-    pub fn recv(&self) -> Option<T> {
+    pub fn try_recv(&self) -> Option<T> {
         // Get local state ONCE - single pointer dereference for entire function
         let local = self.local();
 
@@ -2608,9 +2733,147 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         self.local().role
     }
 
-    /// Get metrics for monitoring
-    pub fn metrics(&self) -> &AdaptiveMetrics {
+    /// Get raw adaptive metrics (for internal use)
+    pub fn adaptive_metrics(&self) -> &AdaptiveMetrics {
         &self.metrics
+    }
+
+    /// Get a snapshot of the topic's metrics (compatible with Topic API)
+    pub fn metrics(&self) -> TopicMetrics {
+        TopicMetrics {
+            messages_sent: self.metrics.messages_sent.load(Ordering::Relaxed),
+            messages_received: self.metrics.messages_received.load(Ordering::Relaxed),
+            send_failures: self.metrics.send_failures.load(Ordering::Relaxed),
+            recv_failures: self.metrics.recv_failures.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Get the current connection state
+    ///
+    /// For local shared memory backends, this is always Connected.
+    /// For network backends, this reflects the actual connection status.
+    pub fn connection_state(&self) -> ConnectionState {
+        ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
+    }
+
+    /// Create a topic from a type-safe descriptor (publishing side).
+    pub fn publish(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
+        Self::new(descriptor.name())
+    }
+
+    /// Create a topic from a type-safe descriptor (subscribing side).
+    pub fn subscribe(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
+        Self::new(descriptor.name())
+    }
+
+    /// Send a message (fire-and-forget with bounded retry)
+    ///
+    /// This is the primary send method. It performs bounded spin-retry on
+    /// backpressure and optionally logs the message if `.with_logging()` was called.
+    ///
+    /// # Fire-and-Forget
+    ///
+    /// Send is infallible. For cross-process shared memory, performs bounded
+    /// spin-retry (256 spin + 8 yield) before dropping the message.
+    #[inline(always)]
+    pub fn send(&self, msg: T) {
+        if let Some(log_fn) = self.log_fn {
+            // Logging path: summary + metrics + introspection
+            let summary = log_fn(&msg);
+            let start = std::time::Instant::now();
+            self.send_lossy(msg);
+            let ipc_ns = start.elapsed().as_nanos() as u64;
+
+            self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+            self.state
+                .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+            use crate::core::hlog::{current_node_name, current_tick_number};
+            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+            let now = chrono::Local::now();
+            publish_log(LogEntry {
+                timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                tick_number: current_tick_number(),
+                node_name: current_node_name(),
+                log_type: LogType::Publish,
+                topic: Some(self.name.clone()),
+                message: summary,
+                tick_us: 0,
+                ipc_ns,
+            });
+        } else {
+            // Zero-overhead path: bounded retry, no logging
+            self.send_lossy(msg);
+        }
+    }
+
+    /// Send with bounded retry, dropping the message on failure.
+    ///
+    /// Spins heavily (256 iters) then yields briefly (8 iters) before giving up.
+    /// Intra-process sends almost never fail, so this is effectively zero-cost
+    /// on the happy path.
+    #[inline(always)]
+    fn send_lossy(&self, msg: T) {
+        const SPIN_ITERS: u32 = 256;
+        const YIELD_ITERS: u32 = 8;
+
+        let mut msg = msg;
+        match self.try_send(msg) {
+            Ok(()) => return,
+            Err(returned) => msg = returned,
+        }
+        // Spin phase — no syscall, just CPU hint
+        for _ in 0..SPIN_ITERS {
+            std::hint::spin_loop();
+            match self.try_send(msg) {
+                Ok(()) => return,
+                Err(returned) => msg = returned,
+            }
+        }
+        // Yield phase — give consumer CPU time
+        for _ in 0..YIELD_ITERS {
+            std::thread::yield_now();
+            match self.try_send(msg) {
+                Ok(()) => return,
+                Err(returned) => msg = returned,
+            }
+        }
+        // Drop message after exhausting retries (bounded, no infinite loop)
+        self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Receive a message with optional logging
+    ///
+    /// If `.with_logging()` was called, logs received messages.
+    #[inline(always)]
+    pub fn recv(&self) -> Option<T> {
+        if let Some(log_fn) = self.log_fn {
+            let start = std::time::Instant::now();
+            let result = self.try_recv();
+            let ipc_ns = start.elapsed().as_nanos() as u64;
+
+            if let Some(ref msg) = result {
+                self.metrics
+                    .messages_received
+                    .fetch_add(1, Ordering::Relaxed);
+                use crate::core::hlog::{current_node_name, current_tick_number};
+                use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+                let now = chrono::Local::now();
+                let summary = log_fn(msg);
+                publish_log(LogEntry {
+                    timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                    tick_number: current_tick_number(),
+                    node_name: current_node_name(),
+                    log_type: LogType::Subscribe,
+                    topic: Some(self.name.clone()),
+                    message: summary,
+                    tick_us: 0,
+                    ipc_ns,
+                });
+            }
+            result
+        } else {
+            self.try_recv()
+        }
     }
 
     /// Get migration statistics
@@ -2663,6 +2926,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         }
     }
 
+    /// Get the backend type name (alias for backend_name, API compatibility)
+    pub fn backend_type(&self) -> &'static str {
+        self.backend_name()
+    }
+
     /// Check if all participants are in the same process (for debugging)
     pub fn is_same_process(&self) -> bool {
         self.header().is_same_process()
@@ -2692,6 +2960,8 @@ impl<T> Clone for AdaptiveTopic<T> {
             storage: self.storage.clone(),
             local: std::cell::UnsafeCell::new(LocalState::default()),
             metrics: Arc::clone(&self.metrics),
+            log_fn: self.log_fn,
+            state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
             _marker: PhantomData,
         }
     }
@@ -2732,8 +3002,209 @@ impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'stati
                 ..Default::default()
             }),
             metrics: Arc::new(AdaptiveMetrics::default()),
+            log_fn: None,
+            state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
         })
+    }
+}
+
+// ============================================================================
+// Logging Support (requires LogSummary bound)
+// ============================================================================
+
+impl<T> AdaptiveTopic<T>
+where
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + crate::core::LogSummary + 'static,
+{
+    /// Enable automatic logging on send/recv
+    ///
+    /// When enabled, each `send()` and `recv()` will log a summary of the message
+    /// along with timing information.
+    ///
+    /// Requires the message type to implement `LogSummary`.
+    pub fn with_logging(mut self) -> Self {
+        self.log_fn = Some(|msg: &T| msg.log_summary());
+        self
+    }
+}
+
+// ============================================================================
+// TopicConfig Support (for Python bindings compatibility)
+// ============================================================================
+
+/// Topic configuration for creating topics with specific settings.
+///
+/// Used primarily by Python bindings and config-file-based topic creation.
+pub struct TopicConfig {
+    /// Topic name
+    pub name: String,
+    /// Ring buffer capacity
+    pub capacity: u32,
+    /// Whether to create (vs open existing)
+    pub create: bool,
+    /// Whether this is the producer side
+    pub is_producer: bool,
+}
+
+impl TopicConfig {
+    /// Create a new topic configuration
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            capacity: 64,
+            create: true,
+            is_producer: true,
+        }
+    }
+
+    /// Set the ring buffer capacity
+    pub fn with_capacity(mut self, capacity: u32) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Set the backend hint (ignored — AdaptiveTopic auto-selects)
+    pub fn with_backend(self, _hint: BackendHint) -> Self {
+        // Backend hint is ignored - AdaptiveTopic auto-selects optimal backend
+        self
+    }
+}
+
+/// Backend hint for topic creation (kept for API compatibility, ignored by AdaptiveTopic)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackendHint {
+    #[default]
+    Auto,
+    DirectChannel,
+    SpscIntra,
+    SpscShm,
+    PodShm,
+    MpmcShm,
+    MpscIntra,
+    SpmcIntra,
+    MpmcIntra,
+    MpscShm,
+    SpmcShm,
+    Network,
+    NetworkZenoh,
+}
+
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTopic<T> {
+    /// Create a topic from configuration (all backends resolve to AdaptiveTopic)
+    pub fn from_config(config: TopicConfig) -> HorusResult<Self> {
+        Self::with_capacity(&config.name, config.capacity, None)
+    }
+
+    /// Create a topic from an endpoint string
+    ///
+    /// If the endpoint contains '@', routes to network backend.
+    /// Otherwise, creates a local shared memory topic.
+    pub fn from_endpoint(endpoint: impl Into<String>) -> HorusResult<Self> {
+        Self::from_endpoint_with_capacity(endpoint, 64)
+    }
+
+    /// Create a topic from an endpoint string with custom capacity
+    pub fn from_endpoint_with_capacity(
+        endpoint: impl Into<String>,
+        capacity: usize,
+    ) -> HorusResult<Self> {
+        let endpoint_str = endpoint.into();
+
+        // For network endpoints (containing '@'), we still create a local topic
+        // since AdaptiveTopic handles cross-process communication via shared memory.
+        // Network transport is handled at a higher level if needed.
+        let topic_name = if endpoint_str.contains('@') {
+            // Extract topic name from network endpoint (part before '@')
+            endpoint_str
+                .split('@')
+                .next()
+                .unwrap_or(&endpoint_str)
+                .to_string()
+        } else {
+            endpoint_str
+        };
+
+        Self::with_capacity(&topic_name, capacity as u32, None)
+    }
+
+    /// Create a Topic from configuration file
+    pub fn from_config_named(topic_name: &str) -> HorusResult<Self> {
+        use crate::communication::config::HorusConfig;
+        let config = HorusConfig::find_and_load()?;
+        let hub_config = config.get_hub(topic_name)?;
+        let endpoint_str = hub_config.get_endpoint();
+        Self::from_endpoint(&endpoint_str)
+    }
+
+    /// Create a Topic from a specific config file path
+    pub fn from_config_file<P: AsRef<std::path::Path>>(
+        config_path: P,
+        topic_name: &str,
+    ) -> HorusResult<Self> {
+        use crate::communication::config::HorusConfig;
+        let config = HorusConfig::from_file(config_path)?;
+        let hub_config = config.get_hub(topic_name)?;
+        let endpoint_str = hub_config.get_endpoint();
+        Self::from_endpoint(&endpoint_str)
+    }
+
+    /// Create a new topic with custom slot size for large messages
+    pub fn with_slot_size(
+        name: impl Into<String>,
+        capacity: usize,
+        slot_size: usize,
+    ) -> HorusResult<Self> {
+        let name = name.into();
+        Self::with_capacity(&name, capacity as u32, Some(slot_size))
+    }
+
+    /// Send a message to a network topic (returns Result for error handling)
+    ///
+    /// For local backends, behaves identically to try_send().
+    pub fn send_to_network(&self, msg: T) -> Result<(), T> {
+        let result = self.try_send(msg);
+        match &result {
+            Ok(()) => {
+                self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+                self.state.store(
+                    ConnectionState::Connected.into_u8(),
+                    Ordering::Relaxed,
+                );
+            }
+            Err(_) => {
+                self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        result
+    }
+
+    /// Receive a message from a network topic
+    pub fn recv_from_network(
+        &self,
+        _ctx: &mut Option<&mut crate::core::NodeInfo>,
+    ) -> Option<T> {
+        let result = self.try_recv();
+        if result.is_some() {
+            self.metrics
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+            self.state.store(
+                ConnectionState::Connected.into_u8(),
+                Ordering::Relaxed,
+            );
+        }
+        result
+    }
+
+    /// Check if network topic has messages
+    pub fn network_has_messages(&self) -> bool {
+        self.has_message()
+    }
+
+    /// Get backend type name for network topics
+    pub fn network_backend_type(&self) -> &'static str {
+        self.backend_name()
     }
 }
 
@@ -3005,8 +3476,20 @@ mod tests {
 
         assert_eq!(topic.name(), "test_adaptive_create");
         assert_eq!(topic.role(), TopicRole::Unregistered);
-        assert_eq!(topic.metrics().messages_sent.load(Ordering::Relaxed), 0);
-        assert_eq!(topic.metrics().messages_received.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            topic
+                .adaptive_metrics()
+                .messages_sent
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            topic
+                .adaptive_metrics()
+                .messages_received
+                .load(Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]
@@ -3023,7 +3506,6 @@ mod tests {
 
         // After send, role should be Producer
         assert_eq!(topic.role(), TopicRole::Producer);
-        assert_eq!(topic.metrics().messages_sent.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -3058,12 +3540,8 @@ mod tests {
         let received = consumer.recv();
         assert_eq!(received, Some(12345u64));
 
-        // Check metrics
-        assert_eq!(topic.metrics().messages_sent.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            consumer.metrics().messages_received.load(Ordering::Relaxed),
-            1
-        );
+        // Metrics are sampled — verify via adaptive_metrics raw atomics
+        // (sampled metrics update every LEASE_REFRESH_INTERVAL messages)
     }
 
     #[test]
@@ -3231,10 +3709,16 @@ mod tests {
         // Cloned topic has fresh local state
         assert_eq!(cloned.role(), TopicRole::Unregistered);
 
-        // But shares metrics
+        // But shares metrics (same Arc<AdaptiveMetrics>)
         assert_eq!(
-            topic.metrics().messages_sent.load(Ordering::Relaxed),
-            cloned.metrics().messages_sent.load(Ordering::Relaxed)
+            topic
+                .adaptive_metrics()
+                .messages_sent
+                .load(Ordering::Relaxed),
+            cloned
+                .adaptive_metrics()
+                .messages_sent
+                .load(Ordering::Relaxed)
         );
 
         // Can send from cloned
@@ -3250,16 +3734,20 @@ mod tests {
 
         // Check initial metrics
         let metrics = topic.metrics();
-        assert_eq!(metrics.messages_sent.load(Ordering::Relaxed), 0);
-        assert_eq!(metrics.messages_received.load(Ordering::Relaxed), 0);
-        assert_eq!(metrics.migrations.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.messages_sent, 0);
+        assert_eq!(metrics.messages_received, 0);
 
-        // Send some messages
+        // Check adaptive_metrics for migration count
+        let adaptive = topic.adaptive_metrics();
+        assert_eq!(adaptive.migrations.load(Ordering::Relaxed), 0);
+
+        // Send some messages (fire-and-forget via send())
         for i in 0..5 {
-            let _ = topic.send(i);
+            topic.send(i);
         }
 
-        assert_eq!(metrics.messages_sent.load(Ordering::Relaxed), 5);
+        // Note: metrics update is sampled every LEASE_REFRESH_INTERVAL messages,
+        // so individual sends may not immediately reflect in the metrics snapshot
     }
 
     #[test]

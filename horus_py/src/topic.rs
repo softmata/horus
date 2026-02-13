@@ -15,7 +15,7 @@
 //   topic = Topic(CmdVel, backend="spsc")      # SPSC intra-process (~18ns)
 //   topic = Topic(CmdVel, backend="mpmc_shm")  # MPMC shared memory (~167ns)
 
-use horus::communication::topic::Topic;
+use horus::communication::Topic;
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::geometry::Pose2D;
 use horus_library::messages::sensor::{Imu, LaserScan, Odometry};
@@ -866,7 +866,7 @@ where
         + serde::de::DeserializeOwned
         + std::fmt::Debug,
 {
-    use horus::communication::topic::{BackendHint, TopicConfig};
+    use horus::communication::{BackendHint, TopicConfig};
 
     // Check if this is a network endpoint
     if endpoint.contains('@') {
