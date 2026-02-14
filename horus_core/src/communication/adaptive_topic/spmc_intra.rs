@@ -14,11 +14,14 @@ struct CachePadded<T>(T);
 ///
 /// Producer uses local head + Release store (no contention).
 /// Consumers CAS on tail to claim the next slot.
+/// Lazy tail caching on producer side avoids cross-core cache bounce.
 pub(crate) struct SpmcRing<T> {
     /// Producer-owned head (separate cache line)
     head: CachePadded<AtomicU64>,
     /// Shared tail — consumers CAS to claim slots
     tail: CachePadded<AtomicU64>,
+    /// Producer-side cached tail (avoids cross-core load on every send)
+    cached_send_tail: CachePadded<std::cell::Cell<u64>>,
     /// Capacity mask
     mask: u64,
     /// Capacity
@@ -40,6 +43,7 @@ impl<T> SpmcRing<T> {
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
+            cached_send_tail: CachePadded(std::cell::Cell::new(0)),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
             buffer: buffer.into_boxed_slice(),
@@ -47,12 +51,21 @@ impl<T> SpmcRing<T> {
     }
 
     /// Try to send (single producer only).
+    ///
+    /// Uses lazy tail caching: only fetches the consumers' tail atomic when
+    /// the cached check says "full". This avoids a cross-core cache line
+    /// bounce on every send (~25-50ns savings per call).
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
         let head = self.head.0.load(Ordering::Relaxed);
-        let tail = self.tail.0.load(Ordering::Acquire);
+        // Lazy capacity check: use cached tail first, refresh only when needed
+        let mut tail = self.cached_send_tail.0.get();
         if head.wrapping_sub(tail) >= self.capacity {
-            return Err(msg);
+            tail = self.tail.0.load(Ordering::Acquire);
+            self.cached_send_tail.0.set(tail);
+            if head.wrapping_sub(tail) >= self.capacity {
+                return Err(msg);
+            }
         }
         let index = (head & self.mask) as usize;
         // SAFETY: single producer guarantee; index within bounds

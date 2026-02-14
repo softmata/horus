@@ -1,8 +1,9 @@
-//! Driver command - list, search, info, probe, and manage hardware drivers
+//! Driver command - list, search, info, probe, install, remove, and manage hardware drivers
 
-use crate::registry;
+use crate::{registry, workspace, yaml_utils};
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
+use std::path::PathBuf;
 
 struct DriverInfo {
     id: &'static str,
@@ -630,4 +631,154 @@ pub fn run_plugins(reload: bool, mode: String) -> HorusResult<()> {
     }
 
     Ok(())
+}
+
+/// Resolve the package directory after installation for plugin registration
+fn resolve_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
+    if global {
+        let home = dirs::home_dir()?;
+        let versioned = home
+            .join(".horus/cache")
+            .join(format!("{}@{}", name, version));
+        if versioned.exists() {
+            return Some(versioned);
+        }
+        let plain = home.join(".horus/cache").join(name);
+        if plain.exists() {
+            return Some(plain);
+        }
+    } else {
+        let workspace_root =
+            workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+        let local = workspace_root.join(".horus/packages").join(name);
+        if local.exists() {
+            return Some(local);
+        }
+    }
+    None
+}
+
+/// Install a driver package from registry
+pub fn run_install(driver: String, ver: Option<String>, global: bool) -> HorusResult<()> {
+    println!(
+        "{} Installing driver: {}{}",
+        "[DRIVER]".cyan().bold(),
+        driver.yellow(),
+        ver.as_ref()
+            .map(|v| format!("@{}", v))
+            .unwrap_or_default()
+    );
+
+    // Fetch and display driver metadata if available
+    let client = registry::RegistryClient::new();
+    if let Ok(meta) = client.fetch_driver_metadata(&driver) {
+        if let Some(cat) = &meta.driver_category {
+            println!("  Category:  {}", cat);
+        }
+        if let Some(bus) = &meta.bus_type {
+            println!("  Bus type:  {}", bus);
+        }
+        if let Some(sys_deps) = &meta.system_dependencies {
+            if !sys_deps.is_empty() {
+                println!(
+                    "  {} System deps: {}",
+                    "[SYS]".dimmed(),
+                    sys_deps.join(", ")
+                );
+            }
+        }
+        println!();
+    }
+
+    // Determine install target
+    let install_target = if global {
+        println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+        workspace::InstallTarget::Global
+    } else {
+        let target = workspace::detect_or_select_workspace(true)
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+        match &target {
+            workspace::InstallTarget::Local(p) => {
+                println!("  Scope: {}", format!("local ({})", p.display()).dimmed());
+            }
+            workspace::InstallTarget::Global => {
+                println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+            }
+        }
+        target
+    };
+
+    // Install via the existing package install flow
+    // This internally calls apply_driver_requirements() for driver packages
+    let installed_version = client
+        .install_to_target(&driver, ver.as_deref(), install_target.clone())
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    // Try to register as CLI plugin if the driver package also provides one
+    let is_global = matches!(install_target, workspace::InstallTarget::Global);
+    let project_root = match &install_target {
+        workspace::InstallTarget::Local(p) => Some(p.as_path()),
+        workspace::InstallTarget::Global => None,
+    };
+
+    if let Some(pkg_dir) = resolve_package_dir(&driver, &installed_version, is_global) {
+        let source = crate::plugins::PluginSource::Registry;
+        if let Ok(Some(cmd)) =
+            super::pkg::register_plugin_after_install(&pkg_dir, source, is_global, project_root)
+        {
+            println!(
+                "  {} Also registered CLI plugin: horus {}",
+                "🔌".cyan(),
+                cmd.green()
+            );
+        }
+    }
+
+    // Update horus.yaml with driver-prefixed dependency
+    if let workspace::InstallTarget::Local(workspace_path) = &install_target {
+        let horus_yaml_path = workspace_path.join("horus.yaml");
+        if horus_yaml_path.exists() {
+            let dep_string = format!("driver:{}", driver);
+            let version = ver.as_deref().unwrap_or(&installed_version);
+            if let Err(e) =
+                yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version)
+            {
+                println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+            } else {
+                println!("  {} Updated horus.yaml", "✓".green());
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "{} Driver {} v{} installed successfully!",
+        "✓".green().bold(),
+        driver.green(),
+        installed_version
+    );
+    println!();
+    println!("  {} Usage hints:", "[TIP]".green());
+    println!(
+        "    • Configure in drivers.yaml: {}",
+        format!("driver: {}", driver).dimmed()
+    );
+    println!(
+        "    • Import in code:           {}",
+        format!("use horus::drivers::{};", driver.replace('-', "_")).dimmed()
+    );
+
+    Ok(())
+}
+
+/// Remove an installed driver package
+pub fn run_remove(driver: String, global: bool) -> HorusResult<()> {
+    println!(
+        "{} Removing driver: {}",
+        "[DRIVER]".cyan().bold(),
+        driver.yellow()
+    );
+
+    // Delegate to pkg::run_remove
+    super::pkg::run_remove(driver, global, None)
 }

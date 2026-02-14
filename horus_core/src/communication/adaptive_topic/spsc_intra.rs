@@ -17,11 +17,19 @@ struct CachePadded<T>(T);
 /// The head (producer-owned) and tail (consumer-owned) are on separate cache
 /// lines to eliminate false sharing — the dominant source of latency in
 /// cross-thread ring buffers.
+///
+/// Lazy tail caching: the producer caches the consumer's tail locally and only
+/// refreshes it from the atomic when the cache says "full". This avoids a
+/// cross-core cache line bounce on every send (~25-50ns savings).
 pub(crate) struct SpscRing<T> {
     /// Producer-owned sequence counter (separate cache line)
     head: CachePadded<AtomicU64>,
     /// Consumer-owned sequence counter (separate cache line)
     tail: CachePadded<AtomicU64>,
+    /// Producer-side cached tail value (avoids cross-core tail.load on every send)
+    cached_send_tail: CachePadded<std::cell::Cell<u64>>,
+    /// Consumer-side cached head value (avoids cross-core head.load on every recv)
+    cached_recv_head: CachePadded<std::cell::Cell<u64>>,
     /// Capacity mask for fast modulo
     mask: u64,
     /// Capacity for backpressure checks
@@ -44,6 +52,8 @@ impl<T> SpscRing<T> {
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
+            cached_send_tail: CachePadded(std::cell::Cell::new(0)),
+            cached_recv_head: CachePadded(std::cell::Cell::new(0)),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
             buffer: buffer.into_boxed_slice(),
@@ -53,12 +63,20 @@ impl<T> SpscRing<T> {
     /// Try to send a message. Returns Err(msg) if the buffer is full.
     ///
     /// Only one producer should call this (SPSC guarantee).
+    /// Uses lazy tail loading: only fetches the consumer's tail atomic when
+    /// the cached check says "full". This avoids a cross-core cache line
+    /// bounce on every send (~25-50ns savings per call).
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
         let head = self.head.0.load(Ordering::Relaxed);
-        let tail = self.tail.0.load(Ordering::Acquire);
+        // Lazy capacity check: use cached tail first, refresh only when needed
+        let mut tail = self.cached_send_tail.0.get();
         if head.wrapping_sub(tail) >= self.capacity {
-            return Err(msg);
+            tail = self.tail.0.load(Ordering::Acquire);
+            self.cached_send_tail.0.set(tail);
+            if head.wrapping_sub(tail) >= self.capacity {
+                return Err(msg);
+            }
         }
         let index = (head & self.mask) as usize;
         // SAFETY: index is within bounds (head & mask < capacity);
@@ -82,12 +100,19 @@ impl<T> SpscRing<T> {
     /// Try to receive a message. Returns None if the buffer is empty.
     ///
     /// Only one consumer should call this (SPSC guarantee).
+    /// Uses lazy head loading: only fetches the producer's head atomic when
+    /// the cached check says "empty".
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
         let tail = self.tail.0.load(Ordering::Relaxed);
-        let head = self.head.0.load(Ordering::Acquire);
+        // Lazy: use cached head first, refresh only when "empty"
+        let mut head = self.cached_recv_head.0.get();
         if tail >= head {
-            return None;
+            head = self.head.0.load(Ordering::Acquire);
+            self.cached_recv_head.0.set(head);
+            if tail >= head {
+                return None;
+            }
         }
         let index = (tail & self.mask) as usize;
         // SAFETY: index is within bounds; data was written by producer and

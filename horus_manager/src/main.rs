@@ -650,6 +650,27 @@ enum PluginCommands {
         /// Specific plugin to verify (optional, verifies all if not specified)
         plugin: Option<String>,
     },
+
+    /// Install a plugin package from registry
+    Install {
+        /// Plugin package name (e.g., horus-visualizer, horus-rosbag)
+        plugin: String,
+        /// Specific version (optional, defaults to latest)
+        #[arg(short = 'v', long = "ver")]
+        ver: Option<String>,
+        /// Install locally to current project (default is global for plugins)
+        #[arg(short = 'l', long = "local")]
+        local: bool,
+    },
+
+    /// Remove an installed plugin package
+    Remove {
+        /// Plugin package name to remove
+        plugin: String,
+        /// Remove from global scope (default for plugins)
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -799,6 +820,27 @@ enum DriverCommands {
         /// Driver loading mode (static, dynamic, hybrid)
         #[arg(short = 'm', long = "mode", default_value = "hybrid")]
         mode: String,
+    },
+
+    /// Install a driver package from registry
+    Install {
+        /// Driver package name (e.g., horus-rplidar, horus-realsense)
+        driver: String,
+        /// Specific version (optional, defaults to latest)
+        #[arg(short = 'v', long = "ver")]
+        ver: Option<String>,
+        /// Install globally (shared across all projects)
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+    },
+
+    /// Remove an installed driver package
+    Remove {
+        /// Driver package name to remove
+        driver: String,
+        /// Remove from global scope
+        #[arg(short = 'g', long = "global")]
+        global: bool,
     },
 }
 
@@ -1285,6 +1327,9 @@ fn main() {
                 | "sim3d"
                 | "driver"
                 | "deploy"
+                | "add"
+                | "remove"
+                | "plugin"
                 | "record"
                 | "completion"
                 | "help"
@@ -1724,6 +1769,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 mode,
             } => commands::driver::run_probe(plugin, backend, mode),
             DriverCommands::Plugins { reload, mode } => commands::driver::run_plugins(reload, mode),
+            DriverCommands::Install { driver, ver, global } => {
+                commands::driver::run_install(driver, ver, global)
+            }
+            DriverCommands::Remove { driver, global } => {
+                commands::driver::run_remove(driver, global)
+            }
         },
 
         Commands::Add {
@@ -1759,6 +1810,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
             PluginCommands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
                 .map_err(|e| HorusError::Config(e.to_string())),
+            PluginCommands::Install { plugin, ver, local } => {
+                commands::plugin::run_install(plugin, ver, local)
+            }
+            PluginCommands::Remove { plugin, global } => {
+                commands::plugin::run_remove(plugin, global)
+            }
         },
 
         Commands::Cache { command } => match command {

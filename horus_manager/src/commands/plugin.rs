@@ -1,7 +1,9 @@
-//! Plugin command - search, discover, and inspect HORUS plugins
+//! Plugin command - search, discover, inspect, install, and remove HORUS plugins
 
+use crate::{registry, workspace, yaml_utils};
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
+use std::path::PathBuf;
 
 /// Search for plugins by query
 pub fn run_search(query: String) -> HorusResult<()> {
@@ -197,4 +199,188 @@ pub fn run_info(name: String) -> HorusResult<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve the package directory after installation for plugin registration
+fn resolve_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
+    if global {
+        let home = dirs::home_dir()?;
+        let versioned = home
+            .join(".horus/cache")
+            .join(format!("{}@{}", name, version));
+        if versioned.exists() {
+            return Some(versioned);
+        }
+        let plain = home.join(".horus/cache").join(name);
+        if plain.exists() {
+            return Some(plain);
+        }
+    } else {
+        let workspace_root =
+            workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+        let local = workspace_root.join(".horus/packages").join(name);
+        if local.exists() {
+            return Some(local);
+        }
+    }
+    None
+}
+
+/// Install a plugin package from registry
+///
+/// Plugins default to global install since they extend the CLI tool itself.
+/// Use --local to install into a specific project workspace instead.
+pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusResult<()> {
+    // Plugins default to global installation (CLI-wide)
+    let global = !local;
+
+    println!(
+        "{} Installing plugin: {}{}",
+        "[PLUGIN]".magenta().bold(),
+        plugin.yellow(),
+        ver.as_ref()
+            .map(|v| format!("@{}", v))
+            .unwrap_or_default()
+    );
+
+    // Determine install target - plugins default to global
+    let install_target = if global {
+        println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+        workspace::InstallTarget::Global
+    } else {
+        let target = workspace::detect_or_select_workspace(true)
+            .map_err(|e| HorusError::Config(e.to_string()))?;
+        match &target {
+            workspace::InstallTarget::Local(p) => {
+                println!("  Scope: {}", format!("local ({})", p.display()).dimmed());
+            }
+            workspace::InstallTarget::Global => {
+                println!("  Scope: {}", "global (~/.horus/cache/)".dimmed());
+            }
+        }
+        target
+    };
+
+    // Install via the existing package install flow
+    let client = registry::RegistryClient::new();
+    let installed_version = client
+        .install_to_target(&plugin, ver.as_deref(), install_target.clone())
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    // Register as CLI plugin (symlink + lock file entry)
+    let is_global = matches!(install_target, workspace::InstallTarget::Global);
+    let project_root = match &install_target {
+        workspace::InstallTarget::Local(p) => Some(p.as_path()),
+        workspace::InstallTarget::Global => None,
+    };
+
+    if let Some(pkg_dir) = resolve_package_dir(&plugin, &installed_version, is_global) {
+        let source = crate::plugins::PluginSource::Registry;
+        match super::pkg::register_plugin_after_install(&pkg_dir, source, is_global, project_root) {
+            Ok(Some(cmd)) => {
+                println!(
+                    "\n  {} Registered CLI command: {}",
+                    "✓".green(),
+                    format!("horus {}", cmd).green()
+                );
+            }
+            Ok(None) => {
+                println!(
+                    "\n  {} Package installed but no CLI plugin detected",
+                    "ℹ".cyan()
+                );
+            }
+            Err(e) => {
+                println!(
+                    "\n  {} Failed to register plugin: {}",
+                    "⚠".yellow(),
+                    e
+                );
+            }
+        }
+    }
+
+    // Update horus.yaml with plugin-prefixed dependency
+    if let workspace::InstallTarget::Local(workspace_path) = &install_target {
+        let horus_yaml_path = workspace_path.join("horus.yaml");
+        if horus_yaml_path.exists() {
+            let dep_string = format!("plugin:{}", plugin);
+            let version = ver.as_deref().unwrap_or(&installed_version);
+            if let Err(e) =
+                yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version)
+            {
+                println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+            } else {
+                println!("  {} Updated horus.yaml", "✓".green());
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "{} Plugin {} v{} installed successfully!",
+        "✓".green().bold(),
+        plugin.green(),
+        installed_version
+    );
+
+    Ok(())
+}
+
+/// Remove an installed plugin package
+pub fn run_remove(plugin: String, global: bool) -> HorusResult<()> {
+    // Plugins default to global scope
+    let is_global = global || {
+        // If not explicitly --global, check if it's installed globally
+        let home = dirs::home_dir();
+        home.map(|h| {
+            let cache = h.join(".horus/cache");
+            cache.join(&plugin).exists()
+                || std::fs::read_dir(&cache)
+                    .ok()
+                    .map(|entries| {
+                        entries.filter_map(|e| e.ok()).any(|e| {
+                            e.file_name()
+                                .to_string_lossy()
+                                .starts_with(&format!("{}@", plugin))
+                        })
+                    })
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+    };
+
+    println!(
+        "{} Removing plugin: {}",
+        "[PLUGIN]".magenta().bold(),
+        plugin.yellow()
+    );
+
+    // Unregister the CLI plugin (symlink + lock file) before removing files
+    let project_root = if !is_global {
+        workspace::find_workspace_root()
+    } else {
+        None
+    };
+
+    // Try to unregister - the plugin command name might differ from package name
+    // Convention: package "horus-foo" provides command "foo"
+    let command_name = plugin
+        .strip_prefix("horus-")
+        .unwrap_or(&plugin)
+        .to_string();
+
+    if let Err(e) =
+        super::pkg::unregister_plugin(&command_name, is_global, project_root.as_deref())
+    {
+        // Not fatal - plugin might not have had a CLI extension
+        println!(
+            "  {} Plugin CLI cleanup: {}",
+            "ℹ".dimmed(),
+            e.to_string().dimmed()
+        );
+    }
+
+    // Delegate file removal to pkg::run_remove
+    super::pkg::run_remove(plugin, is_global, None)
 }
