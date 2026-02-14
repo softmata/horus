@@ -23,5 +23,3 @@ pub mod record;
 pub mod run;
 pub mod test;
 pub mod topic;
-#[cfg(feature = "zenoh-transport")]
-pub mod zenoh;

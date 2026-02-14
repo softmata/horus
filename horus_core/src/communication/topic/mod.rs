@@ -65,7 +65,7 @@ use crate::utils::unlikely;
 
 pub use header::{TopicHeader, ParticipantEntry};
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
-use local_state::{LocalState, LEASE_REFRESH_INTERVAL};
+use local_state::{LocalState, LEASE_REFRESH_INTERVAL, EPOCH_CHECK_INTERVAL};
 pub use metrics::{MigrationMetrics, TopicMetrics};
 
 /// Bounded spin iterations for waiting on per-slot ready flags.
@@ -506,10 +506,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             local.cached_capacity_mask = header.capacity_mask as u64;
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
             local.local_tail = header.tail.load(Ordering::Acquire);
+            // PodShm broadcast: skip stale data from previous era.
+            // Ready-flags from prior backends use different protocols, so
+            // consumers must start fresh from current head after migration.
+            if local.cached_mode == BackendMode::PodShm {
+                local.local_tail = local.local_head;
+            }
             self.metrics.estimated_latency_ns.store(
                 local.cached_mode.expected_latency_ns() as u32,
                 Ordering::Relaxed,
             );
+            // Re-initialize backend + dispatch fn ptrs to match the new mode.
+            // Another participant already performed the migration; we just need
+            // to update our local storage and fn ptrs to match.
+            self.initialize_backend();
+            registry::notify_epoch_change(&self.name, current_epoch);
         }
 
         let migrator = BackendMigrator::new(header);
@@ -526,6 +537,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                         local.cached_capacity_mask = header.capacity_mask as u64;
                         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                         local.local_tail = header.tail.load(Ordering::Acquire);
+                        // PodShm broadcast: skip stale data from previous era
+                        if local.cached_mode == BackendMode::PodShm {
+                            local.local_tail = local.local_head;
+                        }
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         self.metrics.estimated_latency_ns.store(
                             local.cached_mode.expected_latency_ns() as u32,
@@ -557,6 +572,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                             local.cached_capacity_mask = header.capacity_mask as u64;
                             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
                             local.local_tail = header.tail.load(Ordering::Acquire);
+                            // PodShm broadcast: skip stale data from previous era
+                            if local.cached_mode == BackendMode::PodShm {
+                                local.local_tail = local.local_head;
+                            }
                             self.metrics.estimated_latency_ns.store(
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
@@ -767,8 +786,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
                 BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
                 BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
-                BackendMode::MpscShm | BackendMode::MpmcShm | BackendMode::PodShm if is_pod => dispatch::send_shm_mp_pod::<T>,
-                BackendMode::MpscShm | BackendMode::MpmcShm | BackendMode::PodShm => dispatch::send_shm_mp_serde::<T>,
+                BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
+                BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
+                BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
                 BackendMode::Unknown => dispatch::send_uninitialized::<T>,
             };
 
@@ -781,11 +801,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
                 BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
                 BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
-                BackendMode::MpmcShm | BackendMode::PodShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
+                BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
+                BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
                 BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
                 BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
                 BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
-                BackendMode::MpmcShm | BackendMode::PodShm => dispatch::recv_shm_mpmc_serde::<T>,
+                BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
                 BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
             };
         }
@@ -1049,62 +1070,82 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
 
     /// Try to send a message, returning it on failure (for explicit retry).
     ///
-    /// Hot path: 2 predicted-not-taken branches + 1 indirect call.
+    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
     ///   1. Role check (cold on first call only)
     ///   2. Process-local epoch check (~1ns heap read, NOT ~20ns SHM mmap)
     ///   3. Function pointer call to the specialized backend function
+    ///   4. On success: msg_counter++ with periodic lease/epoch maintenance
     ///
-    /// Cross-process epoch changes are caught by periodic SHM checks inside
-    /// each dispatch function (every 1024 msgs).
+    /// All housekeeping is consolidated HERE — dispatch functions are pure
+    /// ring operations with zero overhead.
+    ///
+    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
+    /// The epoch check (~1ns L1 read) is needed for correctness — migration
+    /// drains messages from old backend to new, so all participants must detect
+    /// epoch changes promptly.
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
+        // Pre-dispatch: role + epoch checks
         let local = self.local();
-
         if unlikely(!local.role.can_send()) {
             if self.ensure_producer().is_err() {
                 return Err(msg);
             }
         }
-
-        // Process-local epoch check: ~1ns L1 heap read vs ~20ns SHM mmap.
-        // Updated by any same-process Topic that triggers migration.
-        // Cross-process migrations caught by periodic SHM check in dispatch fns.
+        // process_epoch: shared L1-cached heap atomic (~1ns). Detects same-process
+        // topology changes immediately. Cross-process changes detected by periodic check.
         let pe = self.process_epoch.load(Ordering::Relaxed);
         if unlikely(pe != local.cached_epoch) {
             self.handle_epoch_change(pe);
         }
 
-        unsafe { (*self.send_fn.get())(self, msg) }
+        // Dispatch — pure ring operation, zero housekeeping inside
+        let result = unsafe { (*self.send_fn.get())(self, msg) };
+
+        // Post-dispatch: amortized housekeeping (every LEASE_REFRESH_INTERVAL msgs)
+        if result.is_ok() {
+            let local = self.local();
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+                self.periodic_maintenance();
+            }
+        }
+        result
     }
 
     /// Try to receive a message without logging.
     ///
-    /// Hot path: 2 predicted-not-taken branches + 1 indirect call (see try_send docs).
-    /// On None: increments counter for periodic cross-process SHM epoch check.
+    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
+        // Pre-dispatch: role + epoch checks
         let local = self.local();
-
         if unlikely(!local.role.can_recv()) {
             if self.ensure_consumer().is_err() {
                 return None;
             }
         }
-
         let pe = self.process_epoch.load(Ordering::Relaxed);
         if unlikely(pe != local.cached_epoch) {
             self.handle_epoch_change(pe);
         }
 
+        // Dispatch — pure ring operation, zero housekeeping inside
         let result = unsafe { (*self.recv_fn.get())(self) };
 
-        // On None: count empty polls so cross-process migration detection fires.
-        // process_epoch handles same-process; this handles cross-process where
-        // the other process bumps SHM epoch but can't update our heap atomic.
-        if unlikely(result.is_none()) {
-            let local = self.local();
+        // Post-dispatch: amortized housekeeping
+        let local = self.local();
+        if result.is_some() {
             local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+                self.periodic_maintenance();
+            }
+        } else {
+            // On None: count empty polls so cross-process migration detection fires.
+            // process_epoch handles same-process; this handles cross-process where
+            // the other process bumps SHM epoch but can't update our heap atomic.
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                 self.check_migration_periodic();
             }
         }
@@ -1112,8 +1153,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         result
     }
 
-    /// Periodic migration check — called from dispatch functions every N messages.
-    /// Reads migration_epoch from SHM header and triggers re-initialization if changed.
+    /// Periodic maintenance — called every LEASE_REFRESH_INTERVAL messages from try_send/try_recv.
+    /// Handles lease refresh and cross-process epoch detection (SHM header check).
+    /// Process-epoch is already checked per-message in try_send/try_recv.
+    #[cold]
+    #[inline(never)]
+    fn periodic_maintenance(&self) {
+        self.refresh_lease();
+        self.check_migration_periodic();
+    }
+
+    /// Periodic migration check — reads migration_epoch from SHM header.
     #[cold]
     #[inline(never)]
     fn check_migration_periodic(&self) {
@@ -1144,6 +1194,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         local.cached_capacity_mask = header.capacity_mask as u64;
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
+        // PodShm broadcast: skip stale data from previous era
+        if local.cached_mode == BackendMode::PodShm {
+            local.local_tail = local.local_head;
+        }
         self.initialize_backend();
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);
@@ -1317,6 +1371,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     pub fn migration_stats(&self) -> MigrationStats {
         let migrator = BackendMigrator::new(self.header());
         migrator.stats()
+    }
+
+    /// Force a migration check NOW — reads SHM header epoch, detects optimal
+    /// backend, and re-initializes dispatch if the topology changed.
+    ///
+    /// Useful when you know a cross-process participant has joined/left and
+    /// want immediate migration without waiting for the periodic check.
+    pub fn check_migration_now(&self) {
+        self.check_migration();
     }
 
     /// Force a backend migration (for testing)

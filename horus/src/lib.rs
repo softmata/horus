@@ -246,55 +246,6 @@ pub mod prelude {
     };
 
     // ============================================
-    // State Machines (Hierarchical FSM)
-    // ============================================
-    pub use horus_core::state_machines::{
-        Event, EventPriority, SharedStateMachine, State, StateId, StateMachine,
-        StateMachineBuilder, StateMachineError, Transition, TransitionResult,
-    };
-
-    // ============================================
-    // Behavior Trees (Reactive task orchestration)
-    // ============================================
-    pub use horus_core::behavior_trees::{
-        ActionNode, BTNode, BehaviorTree, BehaviorTreeBuilder, BehaviorTreeError, Blackboard,
-        BlackboardValue, ConditionNode, DecoratorNode, DecoratorType, NodeId, NodeStatus, NodeType,
-        ParallelNode, ParallelPolicy, ReactiveSelectorNode, ReactiveSequenceNode, SelectorNode,
-        SequenceNode, SharedBehaviorTree, TickContext, TreeVisualizer,
-    };
-
-    // ============================================
-    // Mission Planner (DAG-based goal sequencing)
-    // ============================================
-    pub use horus_core::mission_planner::{
-        ExecutionContext,
-        ExecutionStatus,
-        GoalFailurePolicy,
-        // ID types (aliased to avoid collision with actions::GoalId)
-        GoalId as MissionGoalId,
-        GoalSpec,
-        GoalState,
-        MissionEvent,
-        MissionId,
-        MissionMetrics,
-        MissionMode,
-        MissionPlanner,
-        MissionPlannerBuilder,
-        MissionPlannerConfig,
-        MissionPlannerError,
-        MissionSpec,
-        MissionState,
-        Priority,
-        RetryPolicy,
-        SharedMissionPlanner,
-        TaskCondition,
-        TaskExecutor,
-        TaskId,
-        TaskSpec,
-        TaskState,
-    };
-
-    // ============================================
     // Driver & Plugin System
     // ============================================
     pub use horus_core::driver::{
@@ -322,31 +273,7 @@ pub mod prelude {
     // Network Communication
     // ============================================
     pub use horus_core::communication::network::{
-        // Discovery
-        DiscoveryService,
-        Endpoint,
-        EndpointBuilder,
-        HealthLevel,
-        // Health monitoring
-        HealthMonitor,
-        HealthMonitorConfig,
-        HealthStatus,
-        // Core network types
-        NetworkBackend,
-        // Network error handling
-        NetworkError,
-        NetworkErrorCode,
-    };
-
-    // Locality detection (useful for routing optimization)
-    pub use horus_core::communication::network::{
-        get_hostname, is_local_address, is_private_address, LocalityDetector, LocalityLevel,
-        LocalityPeerInfo, LocalityStats,
-    };
-
-    // Hybrid discovery (LAN multicast + optional WAN)
-    pub use horus_core::communication::network::{
-        DiscoverySource, HybridDiscovery, HybridDiscoveryConfig, HybridPeerInfo,
+        NetworkError, NetworkErrorCode, NetworkErrorContext,
     };
 }
 

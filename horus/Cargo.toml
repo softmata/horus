@@ -39,22 +39,6 @@ macros = ["dep:horus_macros"]
 # Zero-config peer discovery via mDNS/DNS-SD
 mdns = ["horus_core/mdns"]
 
-# Husarnet VPN for secure WAN connectivity
-husarnet = ["horus_core/husarnet"]
-
-# ============================================================================
-# SECURITY & TRANSPORT
-# ============================================================================
-
-# TLS encryption for TCP connections
-tls = ["horus_core/tls"]
-
-# QUIC transport (multiplexed UDP + TLS 1.3)
-quic = ["horus_core/quic"]
-
-# Linux io_uring for ultra-low latency (Linux 5.6+)
-io-uring-net = ["horus_core/io-uring-net"]
-
 # ============================================================================
 # GPU
 # ============================================================================

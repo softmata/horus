@@ -889,11 +889,10 @@ where
         Some("mpsc_shm") => BackendHint::MpscShm,
         Some("spmc_shm") => BackendHint::SpmcShm,
         Some("mpmc_shm") => BackendHint::MpmcShm,
-        Some("network") => BackendHint::Network,
         Some(other) => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Unknown backend hint: '{}'. Valid options: direct, spsc, mpsc, spmc, mpmc, \
-                 spsc_shm, mpsc_shm, spmc_shm, mpmc_shm, network",
+                 spsc_shm, mpsc_shm, spmc_shm, mpmc_shm",
                 other
             )));
         }

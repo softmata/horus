@@ -6,11 +6,11 @@
 //! `try_send()` / `try_recv()` becomes a single indirect call — zero enum
 //! matches, zero mode branches.
 //!
-//! Epoch checking is done periodically INSIDE these functions (every 1024-4096
-//! messages) — NOT on every call. This eliminates the ~20ns SHM mmap read
-//! from the hot path. Lease refresh is done alongside epoch checks.
+//! **All housekeeping (msg_counter, lease refresh, epoch checks) is handled
+//! by try_send/try_recv OUTSIDE these functions.** Dispatch functions are
+//! pure ring operations — nothing more.
 //!
-//! ## Send Functions (10)
+//! ## Send Functions (11)
 //!
 //! | # | Function | Backend |
 //! |---|----------|---------|
@@ -20,12 +20,13 @@
 //! | 4 | `send_mpsc_intra` | MpscRing heap |
 //! | 5 | `send_mpmc_intra` | MpmcRing heap |
 //! | 6 | `send_shm_sp_pod` | SpscShm/SpmcShm POD |
-//! | 7 | `send_shm_mp_pod` | MpscShm/MpmcShm/PodShm POD |
-//! | 8 | `send_shm_sp_serde` | SpscShm/SpmcShm non-POD |
-//! | 9 | `send_shm_mp_serde` | MpscShm/MpmcShm non-POD |
-//! | 10| `send_uninitialized` | Before registration |
+//! | 7 | `send_shm_mp_pod` | MpscShm/MpmcShm POD (CAS loop) |
+//! | 8 | `send_shm_pod_broadcast` | PodShm (no backpressure) |
+//! | 9 | `send_shm_sp_serde` | SpscShm/SpmcShm non-POD |
+//! | 10| `send_shm_mp_serde` | MpscShm/MpmcShm non-POD |
+//! | 11| `send_uninitialized` | Before registration |
 //!
-//! ## Recv Functions (14)
+//! ## Recv Functions (15)
 //!
 //! | # | Function | Backend |
 //! |---|----------|---------|
@@ -37,12 +38,13 @@
 //! | 6 | `recv_shm_spsc_pod` | SpscShm POD |
 //! | 7 | `recv_shm_mpsc_pod` | MpscShm POD |
 //! | 8 | `recv_shm_spmc_pod` | SpmcShm POD |
-//! | 9 | `recv_shm_mpmc_pod` | MpmcShm/PodShm POD |
-//! | 10| `recv_shm_spsc_serde` | SpscShm non-POD |
-//! | 11| `recv_shm_mpsc_serde` | MpscShm non-POD |
-//! | 12| `recv_shm_spmc_serde` | SpmcShm non-POD |
-//! | 13| `recv_shm_mpmc_serde` | MpmcShm non-POD |
-//! | 14| `recv_uninitialized` | Before registration |
+//! | 9 | `recv_shm_mpmc_pod` | MpmcShm POD |
+//! | 10| `recv_shm_pod_broadcast` | PodShm (local tail, no CAS) |
+//! | 11| `recv_shm_spsc_serde` | SpscShm non-POD |
+//! | 12| `recv_shm_mpsc_serde` | MpscShm non-POD |
+//! | 13| `recv_shm_spmc_serde` | SpmcShm non-POD |
+//! | 14| `recv_shm_mpmc_serde` | MpmcShm non-POD |
+//! | 15| `recv_uninitialized` | Before registration |
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::Ordering;
@@ -50,7 +52,6 @@ use std::sync::atomic::Ordering;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
 use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
 use super::Topic;
 use crate::utils::unlikely;
@@ -66,15 +67,13 @@ pub(super) type SendFn<T> = fn(&Topic<T>, T) -> Result<(), T>;
 pub(super) type RecvFn<T> = fn(&Topic<T>) -> Option<T>;
 
 // ============================================================================
-// SEND FUNCTIONS
+// SEND FUNCTIONS — pure ring operations, zero housekeeping
 // ============================================================================
 
 // ---------------------------------------------------------------------------
 // 1. DirectChannel (heap) — same-thread, Relaxed atomics only
 // ---------------------------------------------------------------------------
 
-/// DirectChannel send: pure heap write with Relaxed ordering.
-/// Periodic epoch check every 4096 msgs (~0.01ns amortized).
 #[inline(always)]
 pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
     topic: &Topic<T>,
@@ -82,7 +81,6 @@ pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + Deseriali
 ) -> Result<(), T> {
     let slot = match unsafe { &*topic.backend.get() } {
         BackendStorage::DirectChannel(s) => s,
-        // SAFETY: initialize_backend guarantees the backend matches the fn ptr
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
 
@@ -97,12 +95,6 @@ pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + Deseriali
         s.get().write(MaybeUninit::new(msg));
     }
     slot.head.store(h.wrapping_add(1), Ordering::Relaxed);
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(EPOCH_CHECK_INTERVAL)) {
-        topic.check_migration_periodic();
-    }
     Ok(())
 }
 
@@ -119,16 +111,7 @@ pub(super) fn send_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::SpscIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_send(msg);
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_send(msg)
 }
 
 #[inline(always)]
@@ -140,16 +123,7 @@ pub(super) fn send_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::SpmcIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_send(msg);
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_send(msg)
 }
 
 #[inline(always)]
@@ -161,16 +135,7 @@ pub(super) fn send_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::MpscIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_send(msg);
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_send(msg)
 }
 
 #[inline(always)]
@@ -182,16 +147,7 @@ pub(super) fn send_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::MpmcIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_send(msg);
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_send(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +174,7 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
+        // Write ready flag for multi-producer migration safety
         let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
             as *const std::sync::atomic::AtomicU64);
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
@@ -225,16 +182,11 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     let new_seq = seq.wrapping_add(1);
     local.local_head = new_seq;
     header.sequence_or_head.store(new_seq, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 7. SHM multi-producer POD (MpscShm / MpmcShm / PodShm)
+// 7. SHM multi-producer POD (MpscShm / MpmcShm) — CAS loop for correctness
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -247,14 +199,53 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     let mask = local.cached_capacity_mask;
     let capacity = local.cached_capacity;
 
-    let current_head = header.sequence_or_head.load(Ordering::Acquire);
-    if current_head.wrapping_sub(local.local_tail) >= capacity {
-        local.local_tail = header.tail.load(Ordering::Acquire);
-        if current_head.wrapping_sub(local.local_tail) >= capacity {
-            return Err(msg);
+    // CAS loop to atomically claim a slot — prevents ring overflow race condition.
+    // (Old code did load + check + fetch_add which could overflow by N-1 producers)
+    let seq = loop {
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+        if head.wrapping_sub(local.local_tail) >= capacity {
+            local.local_tail = header.tail.load(Ordering::Acquire);
+            if head.wrapping_sub(local.local_tail) >= capacity {
+                return Err(msg);
+            }
         }
-    }
+        if header.sequence_or_head.compare_exchange_weak(
+            head, head.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
+        ).is_ok() {
+            break head;
+        }
+        std::hint::spin_loop();
+    };
 
+    let index = (seq & mask) as usize;
+    unsafe {
+        let base = local.cached_data_ptr as *mut T;
+        simd_aware_write(base.add(index), msg);
+        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+            as *const std::sync::atomic::AtomicU64);
+        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
+    }
+    local.local_head = seq + 1;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 8. PodShm broadcast send — no backpressure, always succeeds
+// ---------------------------------------------------------------------------
+
+/// PodShm broadcast: producer never blocks. Overwrites oldest data if consumers
+/// are slow. This is the correct semantics for robotics sensor data where
+/// freshness matters more than reliability.
+#[inline(always)]
+pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &Topic<T>,
+    msg: T,
+) -> Result<(), T> {
+    let local = topic.local();
+    let header = unsafe { &*local.cached_header_ptr };
+    let mask = local.cached_capacity_mask;
+
+    // Unconditionally claim slot — no backpressure check.
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
     unsafe {
@@ -265,16 +256,11 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
     }
     local.local_head = seq + 1;
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 8. SHM single-producer serde (SpscShm / SpmcShm, non-POD)
+// 9. SHM single-producer serde (SpscShm / SpmcShm, non-POD)
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -313,16 +299,11 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     let new_seq = seq.wrapping_add(1);
     local.local_head = new_seq;
     header.sequence_or_head.store(new_seq, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 9. SHM multi-producer serde (MpscShm / MpmcShm, non-POD)
+// 10. SHM multi-producer serde (MpscShm / MpmcShm, non-POD)
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -363,16 +344,11 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
     }
     local.local_head = seq + 1;
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// 10. Uninitialized send — safety net (try_send handles registration)
+// 11. Uninitialized send — safety net
 // ---------------------------------------------------------------------------
 
 #[cold]
@@ -381,13 +357,11 @@ pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + Deserializ
     _topic: &Topic<T>,
     msg: T,
 ) -> Result<(), T> {
-    // try_send() handles role check and registration before calling fn ptrs.
-    // This function should only be reachable if there's a logic error.
     Err(msg)
 }
 
 // ============================================================================
-// RECV FUNCTIONS
+// RECV FUNCTIONS — pure ring operations, zero housekeeping
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -402,15 +376,7 @@ pub(super) fn recv_direct_channel<T: Clone + Send + Sync + Serialize + Deseriali
         BackendStorage::DirectChannel(s) => s,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = slot.try_recv();
-    if result.is_some() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(EPOCH_CHECK_INTERVAL)) {
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    slot.try_recv()
 }
 
 // ---------------------------------------------------------------------------
@@ -425,16 +391,7 @@ pub(super) fn recv_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::SpscIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_recv();
-    if result.is_some() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_recv()
 }
 
 #[inline(always)]
@@ -445,16 +402,7 @@ pub(super) fn recv_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::SpmcIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_recv();
-    if result.is_some() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_recv()
 }
 
 #[inline(always)]
@@ -465,16 +413,7 @@ pub(super) fn recv_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::MpscIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_recv();
-    if result.is_some() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_recv()
 }
 
 #[inline(always)]
@@ -485,16 +424,7 @@ pub(super) fn recv_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         BackendStorage::MpmcIntra(r) => r,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    let result = ring.try_recv();
-    if result.is_some() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
-    }
-    result
+    ring.try_recv()
 }
 
 // ---------------------------------------------------------------------------
@@ -524,11 +454,6 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Some(msg)
 }
 
@@ -580,11 +505,6 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Some(msg)
 }
 
@@ -616,10 +536,6 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
                 simd_aware_read(base.add((tail & mask) as usize))
             };
             local.local_tail = tail.wrapping_add(1);
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-                topic.refresh_lease();
-            }
             return Some(msg);
         }
         std::hint::spin_loop();
@@ -627,7 +543,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 }
 
 // ---------------------------------------------------------------------------
-// 9. SHM MpmcShm/PodShm POD recv — bounded spin + CAS on tail
+// 9. SHM MpmcShm POD recv — bounded spin + CAS on tail
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -675,18 +591,83 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             simd_aware_read(base.add(index))
         };
         local.local_tail = tail.wrapping_add(1);
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
         return Some(msg);
     }
     None
 }
 
 // ---------------------------------------------------------------------------
-// 10. SHM SpscShm serde recv — single-producer single-consumer, no ready flag
+// 10. PodShm broadcast recv — local tail, no CAS, no spin-wait
+// ---------------------------------------------------------------------------
+
+/// PodShm broadcast recv: each consumer tracks its own tail position independently.
+/// No CAS contention between consumers. Single ready-flag check (no spin loop)
+/// means we return instantly if data isn't ready yet.
+///
+/// Fast-forward: if the consumer falls more than `capacity` messages behind the
+/// producer (e.g. after migration or long pause), old data has been overwritten
+/// and ready flags are stale. We skip to current head and retry on next poll.
+///
+/// This eliminates the CAS contention that caused 155ms queuing delay in 2P2C
+/// cross-process scenarios.
+#[inline(always)]
+pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &Topic<T>,
+) -> Option<T> {
+    let local = topic.local();
+    let header = unsafe { &*local.cached_header_ptr };
+    let mask = local.cached_capacity_mask;
+
+    let mut tail = local.local_tail;
+    // Check if data available using local tail (no SHM tail load)
+    if tail >= local.local_head {
+        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+        if tail >= local.local_head {
+            return None;
+        }
+    }
+
+    // Fast-forward if fallen more than capacity behind the producer.
+    // In broadcast mode, producers overwrite old slots without waiting.
+    // Ready flags from overwritten slots have newer sequence numbers that
+    // don't match our stale tail. Skip ahead to current head so the next
+    // poll reads freshly-written data with matching ready flags.
+    let behind = local.local_head.wrapping_sub(tail);
+    if behind > local.cached_capacity {
+        tail = local.local_head;
+        local.local_tail = tail;
+        // Reload head in case producer advanced during skip
+        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+        if tail >= local.local_head {
+            return None;
+        }
+    }
+
+    let index = (tail & mask) as usize;
+    // Single ready-flag check — no bounded spin loop.
+    // In broadcast mode, if data isn't ready yet, just return None and try next poll.
+    let ready = unsafe {
+        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+            as *const std::sync::atomic::AtomicU64);
+        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
+    };
+    if !ready {
+        return None;
+    }
+
+    let msg = unsafe {
+        let base = local.cached_data_ptr as *const T;
+        simd_aware_read(base.add(index))
+    };
+    local.local_tail = tail.wrapping_add(1);
+    // Don't update header.tail — broadcast mode, producer doesn't wait for consumers.
+    // Each consumer advances independently. Slow consumers miss messages (acceptable
+    // for POD sensor data where freshness > reliability).
+    Some(msg)
+}
+
+// ---------------------------------------------------------------------------
+// 11. SHM SpscShm serde recv — single-producer single-consumer, no ready flag
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -724,16 +705,11 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Some(msg)
 }
 
 // ---------------------------------------------------------------------------
-// 11. SHM MpscShm serde recv — multi-producer single-consumer, ready flag spin
+// 12. SHM MpscShm serde recv — multi-producer single-consumer, ready flag spin
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -791,16 +767,11 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
-
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-        topic.refresh_lease();
-    }
     Some(msg)
 }
 
 // ---------------------------------------------------------------------------
-// 12. SHM SpmcShm serde recv — single-producer multi-consumer, CAS on tail
+// 13. SHM SpmcShm serde recv — single-producer multi-consumer, CAS on tail
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -838,18 +809,13 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         };
 
         local.local_tail = tail.wrapping_add(1);
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
         return Some(msg);
     }
     None
 }
 
 // ---------------------------------------------------------------------------
-// 13. SHM MpmcShm serde recv — bounded spin + CAS on tail
+// 14. SHM MpmcShm serde recv — bounded spin + CAS on tail
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -907,18 +873,13 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         };
 
         local.local_tail = tail.wrapping_add(1);
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
-            topic.refresh_lease();
-            topic.check_migration_periodic();
-        }
         return Some(msg);
     }
     None
 }
 
 // ---------------------------------------------------------------------------
-// 14. Uninitialized recv — safety net (try_recv handles registration)
+// 15. Uninitialized recv — safety net
 // ---------------------------------------------------------------------------
 
 #[cold]
@@ -926,7 +887,5 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 pub(super) fn recv_uninitialized<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
     _topic: &Topic<T>,
 ) -> Option<T> {
-    // try_recv() handles role check and registration before calling fn ptrs.
-    // This function should only be reachable if there's a logic error.
     None
 }

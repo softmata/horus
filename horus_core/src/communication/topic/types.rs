@@ -194,8 +194,6 @@ pub enum BackendHint {
     MpmcIntra,
     MpscShm,
     SpmcShm,
-    Network,
-    NetworkZenoh,
 }
 
 // ============================================================================

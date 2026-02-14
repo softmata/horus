@@ -39,11 +39,6 @@ path = "src/bin/dds_comparison_benchmark.rs"
 name = "all_paths_latency"
 path = "src/bin/all_paths_latency.rs"
 
-[[bin]]
-name = "zenoh_benchmark"
-path = "src/bin/zenoh_benchmark.rs"
-required-features = ["zenoh"]
-
 [dependencies]
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
@@ -70,8 +65,6 @@ flume = "0.11"
 default = []
 # Enable actual DDS middleware comparisons (requires CycloneDDS/FastDDS installed)
 dds = []
-# Enable Zenoh transport benchmarks
-zenoh = ["horus_core/zenoh-transport"]
 
 # =============================================================================
 # CRITERION BENCHMARKS

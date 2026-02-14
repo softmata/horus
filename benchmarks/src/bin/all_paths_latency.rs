@@ -62,6 +62,13 @@ const WARMUP: u64 = 5_000;
 const MIGRATION_BOOT: u64 = 200;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// PodShm publishers need far more messages than other scenarios because:
+/// 1. Setup (spawn consumer, wait for topology, trigger migration) takes ~350ms
+/// 2. At ~100ns/msg SHM speed, 105K msgs finishes in ~10ms
+/// 3. Publishers must still be running during the measurement phase
+/// 10M msgs × ~100ns = ~1s — enough headroom for setup + warmup + measurement.
+const PODSHM_MSGS_PER_PUB: u64 = 10_000_000;
+
 /// CPU core pinning assignments.
 /// Spaced by 2 to avoid hyperthreading siblings on most Intel/AMD layouts.
 const CORE_MAIN: usize = 0;
@@ -126,7 +133,8 @@ fn main() {
 
     // --- Child process entry points ---
     if args.len() >= 5 && args[1] == "--child-publisher" {
-        run_child_publisher(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap());
+        let paced = args.get(5).map(|s| s == "--paced").unwrap_or(false);
+        run_child_publisher(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap(), paced);
         return;
     }
     if args.len() >= 5 && args[1] == "--child-consumer" {
@@ -808,7 +816,10 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let _ = consumer.recv(); // Register as consumer
 
     let child_count = WARMUP + ITERATIONS;
-    let mut child = spawn_publisher(&topic_name, child_count, CORE_AUX);
+    // Paced publisher: prevents ring overflow that causes queuing delay.
+    // Without pacing, producer outruns consumer → ring fills → measured latency
+    // shows queuing delay (~3µs) instead of true wire latency (~300ns).
+    let mut child = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
     // Wait for migration (child sends MIGRATION_BOOT + sleeps)
     let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
@@ -841,10 +852,12 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     let msgs_per_pub = (WARMUP + ITERATIONS) / 2;
 
-    let mut pub1 = spawn_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    // Paced publishers: 2 publishers into 1 consumer would overflow the ring
+    // instantly, causing 26µs queuing delay instead of true wire latency.
+    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
     let migration1 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
 
-    let mut pub2 = spawn_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
     let migration2 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
 
     let backend = consumer.backend_type().to_string();
@@ -881,8 +894,10 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let mut child_cons = spawn_consumer(&topic_name, child_count, CORE_CHILD_CONS);
     thread::sleep(Duration::from_millis(200));
 
-    // Spawn child publisher (registers as 1st and only publisher)
-    let mut child_pub = spawn_publisher(&topic_name, child_count, CORE_AUX);
+    // Paced publisher: even with 2 consumers, the parent consumer (doing measurement
+    // work: RDTSC + Vec::push) is slower, so CAS contention causes bursty delivery.
+    // Pacing prevents ring overflow that inflates measured latency.
+    let mut child_pub = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
     // Wait for migration (1 pub, 2 subs, cross-process → SpmcShm)
     let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
@@ -912,28 +927,52 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 /// For POD types (like CmdVel), multi-pub/multi-sub cross-process always selects
 /// PodShm (zero-copy atomic slot). MpmcShm only activates for non-POD types
 /// (which require serialization). Both share the same dispatch paths.
+///
+/// Spawn order: consumers first, then publishers. This ensures PodShm is the
+/// final topology and publishers are still running during measurement (previous
+/// design spawned publishers first, which caused them to finish before measurement).
 fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
     let topic_name = format!("bench_pod_{}", std::process::id());
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
-    let _ = consumer.recv();
+    let _ = consumer.recv(); // Register as consumer
 
-    let msgs_per_pub = WARMUP + ITERATIONS;
+    // PodShm needs many more messages than other scenarios — publishers must
+    // still be running during measurement (setup takes ~350ms, hot loop at
+    // ~100ns/msg means 105K msgs finishes in ~10ms, way too fast).
+    let msgs_per_pub = PODSHM_MSGS_PER_PUB;
 
-    // Spawn publishers first so parent establishes data path
+    // Step 1: Spawn child consumer FIRST so both consumers are present before publishers.
+    // Child consumer receives from both publishers (broadcast), so count = msgs_per_pub * 2.
+    let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, CORE_CHILD_CONS);
+    thread::sleep(Duration::from_millis(200)); // Wait for child to register
+
+    // Step 2: Spawn pub1 → topology: 1P, 2S, cross-proc → SpmcShm
     let mut pub1 = spawn_publisher(&topic_name, msgs_per_pub, CORE_AUX);
     let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
+    // Step 3: Spawn pub2 → topology: 2P, 2S, cross-proc, POD → PodShm migration
     let mut pub2 = spawn_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
-    let migration2 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
-    // Add child consumer -> triggers multi-consumer detection
-    let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub, CORE_CHILD_CONS);
-    thread::sleep(Duration::from_millis(300));
+    // Wait for pub2 to actually register (it sleeps 100ms at startup).
+    // We need pubs=2 visible in the header before migration detection works.
+    wait_for_topology(&consumer, 2, 2, Duration::from_secs(5));
+
+    // Drain any queued messages from the SpmcShm era
+    let migration2 = wait_for_messages(&consumer, 200, Duration::from_secs(5));
+
+    // Step 4: Force migration check so parent detects PodShm before measurement
+    consumer.check_migration_now();
 
     let backend = consumer.backend_type().to_string();
 
+    // Step 5: Measure — publishers are still running their 10M-message hot loops
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+
+    // Don't wait for publishers to finish all 10M msgs — just kill them
+    let _ = pub1.kill();
+    let _ = pub2.kill();
+    let _ = child_cons.kill();
     pub1.wait().ok();
     pub2.wait().ok();
     child_cons.wait().ok();
@@ -971,6 +1010,25 @@ fn spawn_publisher(topic: &str, count: u64, core: usize) -> std::process::Child 
         .expect("Failed to spawn child publisher")
 }
 
+/// Spawn a paced publisher that inserts spin_loops between sends.
+/// Prevents ring overflow and queuing delay in 1P1C scenarios where
+/// the producer would otherwise outrun the consumer.
+fn spawn_paced_publisher(topic: &str, count: u64, core: usize) -> std::process::Child {
+    Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--child-publisher",
+            topic,
+            &count.to_string(),
+            &core.to_string(),
+            "--paced",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn paced child publisher")
+}
+
 fn spawn_consumer(topic: &str, count: u64, core: usize) -> std::process::Child {
     Command::new(std::env::current_exe().unwrap())
         .args([
@@ -984,6 +1042,23 @@ fn spawn_consumer(topic: &str, count: u64, core: usize) -> std::process::Child {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to spawn child consumer")
+}
+
+/// Wait until the topic header shows at least `min_pubs` publishers and `min_subs` subscribers.
+fn wait_for_topology(topic: &Topic<CmdVel>, min_pubs: u32, min_subs: u32, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while topic.pub_count() < min_pubs || topic.sub_count() < min_subs {
+        // Drain any messages while waiting (keeps lease alive)
+        let _ = topic.recv();
+        spin_loop();
+        if Instant::now() > deadline {
+            eprintln!(
+                "  [warn] topology timeout: wanted pubs>={} subs>={}, got pubs={} subs={}",
+                min_pubs, min_subs, topic.pub_count(), topic.sub_count()
+            );
+            break;
+        }
+    }
 }
 
 /// Spin-receive until `count` messages arrive or timeout.
@@ -1083,7 +1158,7 @@ fn collect_cross_proc(
 // Child Process Entry Points
 // ============================================================================
 
-fn run_child_publisher(topic_name: &str, count: u64, core: usize) {
+fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
     let _ = set_cpu_affinity(core);
     let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
 
@@ -1099,20 +1174,37 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize) {
     thread::sleep(Duration::from_millis(50));
 
     eprintln!(
-        "  [pub] PID={} core={} backend={} pubs={} subs={}",
+        "  [pub] PID={} core={} backend={} pubs={} subs={}{}",
         std::process::id(),
         core,
         topic.backend_type(),
         topic.pub_count(),
         topic.sub_count(),
+        if paced { " (paced)" } else { "" },
     );
 
     // === MEASUREMENT HOT LOOP ===
     // RDTSC timestamp embedded in payload. No yield, no sleep.
-    for _ in 0..count {
-        serialize();
-        let t = rdtsc();
-        topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
+    if paced {
+        // Paced mode: insert spin_loops between sends to prevent ring overflow.
+        // Without pacing, the producer outruns the consumer (producer ~30ns/msg,
+        // consumer ~50ns/msg due to RDTSC + Vec::push), causing queuing delay
+        // that inflates measured one-way latency from ~300ns to ~3µs.
+        // 4 spin_loops ≈ 16-20ns extra, matching consumer throughput.
+        for _ in 0..count {
+            serialize();
+            let t = rdtsc();
+            topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
+            for _ in 0..4 {
+                spin_loop();
+            }
+        }
+    } else {
+        for _ in 0..count {
+            serialize();
+            let t = rdtsc();
+            topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
+        }
     }
 }
 
