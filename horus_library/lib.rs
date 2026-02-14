@@ -21,7 +21,6 @@
 //! - **Navigation**: `Odometry`, `Path`, `OccupancyGrid`, `Goal`
 //! - **Vision**: `Image`, `CameraInfo`, `CompressedImage`
 //! - **Control**: `MotorCommand`, `JointState`, `ServoCommand`
-//! - **I/O**: `DigitalIO`, `AnalogIO`, `CanFrame`, `ModbusData`, `I2CData`
 //!
 //! ### HFrame Transform System
 //! High-performance coordinate transform system:

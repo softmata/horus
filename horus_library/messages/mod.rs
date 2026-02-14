@@ -21,7 +21,6 @@ pub mod coordination;
 pub mod diagnostics;
 pub mod force;
 pub mod geometry;
-pub mod io;
 pub mod navigation;
 pub mod perception;
 pub mod sensor;
@@ -71,12 +70,6 @@ pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan, PathPlanPod};
 
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
-
-// Industrial I/O
-pub use io::{
-    AnalogIO, CanFrame, DigitalIO, EtherNetIPMessage, I2cMessage, ModbusMessage, NetworkStatus,
-    SafetyRelayStatus, SerialData, SpiMessage,
-};
 
 // Perception
 pub use perception::{BoundingBox3D, DepthImage, PlaneDetection, PointCloud};
