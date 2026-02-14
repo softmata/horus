@@ -1725,6 +1725,75 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         result
     }
 
+    /// Read the most recent message without advancing the consumer position.
+    ///
+    /// Unlike `try_recv()`, this always returns the latest published message
+    /// regardless of the consumer's current position. Calling it multiple times
+    /// returns the same message until a new one is published.
+    ///
+    /// Useful for reading infrequently-updated or static data (e.g., TF static transforms).
+    pub fn read_latest(&self) -> Option<T> {
+        // Ensure we're registered as a consumer so the header is initialized
+        if self.local().role == TopicRole::Unregistered {
+            if self.ensure_consumer().is_err() {
+                return None;
+            }
+        }
+
+        let header = self.header();
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+
+        // No messages published yet
+        if head == 0 {
+            return None;
+        }
+
+        let mask = header.capacity_mask as u64;
+        let latest_index = ((head.wrapping_sub(1)) & mask) as usize;
+
+        // Try heap backends first
+        // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
+        match unsafe { &*self.backend.get() } {
+            BackendStorage::DirectChannel(slot) => {
+                let h = slot.head.load(Ordering::Relaxed);
+                if h == 0 {
+                    return None;
+                }
+                let idx = ((h.wrapping_sub(1)) & slot.mask) as usize;
+                // SAFETY: idx within bounds; data was written by producer
+                let msg = unsafe {
+                    let s = &*slot.buffer.get_unchecked(idx);
+                    (*s.get()).assume_init_read()
+                };
+                return Some(msg);
+            }
+            BackendStorage::SpscIntra(ring) => {
+                return ring.read_latest();
+            }
+            BackendStorage::SpmcIntra(ring) => {
+                return ring.read_latest();
+            }
+            BackendStorage::MpscIntra(ring) => {
+                return ring.read_latest();
+            }
+            BackendStorage::MpmcIntra(ring) => {
+                return ring.read_latest();
+            }
+            BackendStorage::ShmData(_) | BackendStorage::Uninitialized => {
+                // Fall through to SHM read below
+            }
+        }
+
+        // SHM path: read directly from the data region
+        let local = self.local();
+        // SAFETY: data_ptr set from valid storage pointer; latest_index within ring bounds
+        let msg = unsafe {
+            let base = local.cached_data_ptr as *const T;
+            simd_aware_read(base.add(latest_index))
+        };
+        Some(msg)
+    }
+
     /// Check if a message is available without consuming it
     pub fn has_message(&self) -> bool {
         self.pending_count() > 0

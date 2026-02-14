@@ -22,7 +22,6 @@ pub mod diagnostics;
 pub mod force;
 pub mod geometry;
 pub mod io;
-pub mod ml;
 pub mod navigation;
 pub mod perception;
 pub mod sensor;
@@ -87,13 +86,6 @@ pub use coordination::{FleetStatus, FormationControl, RobotState, TaskAssignment
 
 // Timing
 pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
-
-// Machine Learning
-pub use ml::{
-    ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
-    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, ModelFormat, ModelInfo, Pose,
-    PoseArray, PoseKeypoint, Predictions, SegmentationMask, Tensor, TrainingMetrics,
-};
 
 // Tensor types for zero-copy ML workloads
 pub mod tensor;

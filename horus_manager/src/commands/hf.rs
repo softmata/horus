@@ -11,7 +11,7 @@
 
 use colored::*;
 use horus_core::error::HorusResult;
-use horus_core::memory::ShmTopic;
+use horus_core::communication::Topic;
 use horus_library::hframe::{HFrame, TFMessage, Transform, TransformStamped};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,10 +66,9 @@ impl HFrameReader {
         let mut found_any = false;
 
         // Try to read from dynamic tf topic
-        // Use receive() for streaming (new messages only)
-        if let Ok(topic) = ShmTopic::<TFMessage>::open(TF_TOPIC) {
-            if let Some(sample) = topic.receive() {
-                let msg = sample.get_ref();
+        // Use try_recv() for streaming (new messages only)
+        if let Ok(topic) = Topic::<TFMessage>::new(TF_TOPIC) {
+            if let Some(msg) = topic.try_recv() {
                 for tf in msg.iter() {
                     self.add_transform(tf, false);
                     found_any = true;
@@ -80,9 +79,8 @@ impl HFrameReader {
         // Try to read from static tf topic
         // Use read_latest() since static transforms are published once and we need
         // to see them even if they were published before we opened the topic
-        if let Ok(topic) = ShmTopic::<TFMessage>::open(TF_STATIC_TOPIC) {
-            if let Some(sample) = topic.read_latest() {
-                let msg = sample.get_ref();
+        if let Ok(topic) = Topic::<TFMessage>::new(TF_STATIC_TOPIC) {
+            if let Some(msg) = topic.read_latest() {
                 for tf in msg.iter() {
                     self.add_transform(tf, true);
                     found_any = true;
@@ -96,10 +94,9 @@ impl HFrameReader {
                 if topic_info.topic_name.contains("transform")
                     || topic_info.topic_name.contains("hframe")
                 {
-                    if let Ok(topic) = ShmTopic::<TransformStamped>::open(&topic_info.topic_name) {
-                        if let Some(sample) = topic.receive() {
-                            let tf = sample.get_ref();
-                            self.add_transform(tf, false);
+                    if let Ok(topic) = Topic::<TransformStamped>::new(&topic_info.topic_name) {
+                        if let Some(tf) = topic.try_recv() {
+                            self.add_transform(&tf, false);
                             found_any = true;
                         }
                     }

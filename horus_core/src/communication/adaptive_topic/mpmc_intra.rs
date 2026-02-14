@@ -132,4 +132,27 @@ impl<T> MpmcRing<T> {
             }
         }
     }
+
+    /// Read the most recent message without advancing any consumer.
+    ///
+    /// Returns `None` if no messages have been published or the latest
+    /// slot's write isn't yet complete.
+    pub fn read_latest(&self) -> Option<T> {
+        let head = self.head.0.load(Ordering::Acquire);
+        if head == 0 {
+            return None;
+        }
+        let prev = head.wrapping_sub(1);
+        let index = (prev & self.mask) as usize;
+        let slot = unsafe { self.slots.get_unchecked(index) };
+        let seq = slot.sequence.load(Ordering::Acquire);
+        // Slot is readable when sequence == prev + 1 (write completed)
+        if seq == prev.wrapping_add(1) {
+            // SAFETY: producer finished writing (sequence confirms)
+            let msg = unsafe { (*slot.data.get()).assume_init_read() };
+            Some(msg)
+        } else {
+            None
+        }
+    }
 }

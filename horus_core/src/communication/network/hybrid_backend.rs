@@ -1,7 +1,7 @@
 //! Hybrid Backend - Zero-copy local bypass for Zenoh
 //!
 //! This module provides a `HybridBackend` that automatically switches between:
-//! - **Local**: HORUS native shared memory (ShmTopic) for <1μs latency
+//! - **Local**: HORUS native Topic (AdaptiveTopic) for <1μs latency
 //! - **Remote**: Zenoh for multi-robot mesh, cloud, and ROS2 interop
 //!
 //! # Performance
@@ -18,7 +18,7 @@
 //! ├─────────────────────────────────────────────────────┤
 //! │                                                     │
 //! │   ┌─────────────┐        ┌─────────────────────┐   │
-//! │   │  ShmTopic   │        │    ZenohBackend     │   │
+//! │   │  Topic       │        │    ZenohBackend     │   │
 //! │   │  (Local)    │        │    (Remote)         │   │
 //! │   │  <1μs       │        │    ~50-200μs        │   │
 //! │   └──────┬──────┘        └──────────┬──────────┘   │
@@ -49,7 +49,7 @@
 //! ```
 
 use crate::error::{HorusError, HorusResult};
-use crate::memory::shm_topic::ShmTopic;
+use crate::communication::adaptive_topic::AdaptiveTopic;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -248,7 +248,7 @@ where
     topic: String,
 
     /// Local SHM backend (always created for local bypass)
-    shm: Option<ShmTopic<T>>,
+    shm: Option<AdaptiveTopic<T>>,
 
     /// Zenoh backend for remote communication
     zenoh: Option<ZenohBackend<T>>,
@@ -283,7 +283,7 @@ where
         let shm = if config.enable_local_bypass {
             // Use a topic name that includes "hybrid" to avoid conflicts
             let shm_topic_name = format!("hybrid/{}", topic.replace('/', "_"));
-            match ShmTopic::new(&shm_topic_name, config.shm_capacity) {
+            match AdaptiveTopic::new(&shm_topic_name) {
                 Ok(shm) => {
                     log::info!(
                         "HybridBackend: Created SHM backend for '{}' (capacity: {})",
@@ -382,7 +382,7 @@ where
         // Try SHM first for local delivery
         if use_shm {
             if let Some(ref shm) = self.shm {
-                match shm.send(msg.clone()) {
+                match shm.try_send(msg.clone()) {
                     Ok(()) => {
                         if self.config.enable_stats {
                             self.stats.shm_sends.fetch_add(1, Ordering::Relaxed);
@@ -439,7 +439,7 @@ where
     pub fn recv(&self) -> Option<T> {
         // Check SHM first (faster)
         if let Some(ref shm) = self.shm {
-            if let Some(msg) = shm.recv() {
+            if let Some(msg) = shm.try_recv() {
                 if self.config.enable_stats {
                     self.stats.shm_recvs.fetch_add(1, Ordering::Relaxed);
                 }
@@ -608,7 +608,7 @@ impl std::fmt::Display for HybridMode {
 #[cfg(not(feature = "zenoh-transport"))]
 pub struct HybridBackend<T> {
     topic: String,
-    shm: Option<ShmTopic<T>>,
+    shm: Option<AdaptiveTopic<T>>,
     stats: Arc<HybridStats>,
     _phantom: PhantomData<T>,
 }
@@ -616,12 +616,12 @@ pub struct HybridBackend<T> {
 #[cfg(not(feature = "zenoh-transport"))]
 impl<T> HybridBackend<T>
 where
-    T: Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
 {
     /// Create a new hybrid backend (SHM-only when Zenoh is disabled)
-    pub fn new_blocking(topic: &str, config: HybridConfig) -> HorusResult<Self> {
+    pub fn new_blocking(topic: &str, _config: HybridConfig) -> HorusResult<Self> {
         let shm_topic_name = format!("hybrid/{}", topic.replace('/', "_"));
-        let shm = ShmTopic::new(&shm_topic_name, config.shm_capacity)?;
+        let shm = AdaptiveTopic::new(&shm_topic_name)?;
 
         Ok(Self {
             topic: topic.to_string(),
@@ -633,7 +633,7 @@ where
 
     pub fn send(&self, msg: &T) -> HorusResult<()> {
         if let Some(ref shm) = self.shm {
-            shm.send(msg.clone())
+            shm.try_send(msg.clone())
                 .map_err(|_| HorusError::Communication("SHM buffer full".to_string()))?;
             self.stats.shm_sends.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -646,7 +646,7 @@ where
 
     pub fn recv(&self) -> Option<T> {
         if let Some(ref shm) = self.shm {
-            if let Some(msg) = shm.recv() {
+            if let Some(msg) = shm.try_recv() {
                 self.stats.shm_recvs.fetch_add(1, Ordering::Relaxed);
                 return Some(msg);
             }

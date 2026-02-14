@@ -30,7 +30,12 @@ pub mod tensor;
 // Re-export main types at crate root
 pub use device::Device;
 pub use dlpack::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
-pub use ml::{ModelEntry, ModelLoader, ModelRegistry};
+pub use ml::{
+    ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
+    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, ModelEntry, ModelFormat, ModelInfo,
+    ModelLoader, ModelRegistry, Pose, PoseArray, PoseKeypoint, Predictions, SegmentationMask,
+    Tensor, TrainingMetrics,
+};
 pub use tensor::{TensorDescriptor, TensorDtype};
 
 // Re-export from horus_core for convenience (will be moved here later)

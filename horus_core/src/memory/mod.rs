@@ -3,23 +3,25 @@
 //! This module provides core shared memory functionality for robotics applications:
 //!
 //! - **ShmRegion**: Cross-process memory regions using HORUS absolute paths
-//! - **ShmTopic**: Lock-free ring buffers in shared memory for high-performance messaging
 //!
 //! ## Performance Features
 //!
 //! HORUS shared memory is designed for low-latency robotics systems:
 //! - **True shared memory**: Cross-process memory sharing via memory-mapped files
-//! - **Lock-free ring buffers**: Atomic operations for high-concurrency scenarios
 //! - **Zero-copy access**: Direct memory access without serialization overhead
 //!
 //! ## Memory Safety
 //!
 //! All memory operations maintain Rust's safety guarantees through careful
 //! use of lifetime management and atomic operations.
+//!
+//! ## Note
+//!
+//! The unified `Topic<T>` API (see `communication::Topic`) is the recommended
+//! interface for all IPC. It uses `ShmRegion` internally for cross-process paths.
 
 pub mod platform;
 pub mod shm_region;
-pub mod shm_topic;
 pub mod simd;
 pub mod tensor_handle;
 pub mod tensor_pool;
@@ -32,7 +34,6 @@ pub mod cuda_pool;
 
 pub use platform::*;
 pub use shm_region::ShmRegion;
-pub use shm_topic::ShmTopic;
 pub use simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{

@@ -117,4 +117,21 @@ impl<T> SpmcRing<T> {
             std::hint::spin_loop();
         }
     }
+
+    /// Read the most recent message without advancing any consumer.
+    ///
+    /// Returns `None` if no messages have been published.
+    pub fn read_latest(&self) -> Option<T> {
+        let head = self.head.0.load(Ordering::Acquire);
+        if head == 0 {
+            return None;
+        }
+        let index = ((head.wrapping_sub(1)) & self.mask) as usize;
+        // SAFETY: index within bounds; data was written by producer
+        let msg = unsafe {
+            let slot = &*self.buffer.get_unchecked(index);
+            (*slot.get()).assume_init_read()
+        };
+        Some(msg)
+    }
 }
