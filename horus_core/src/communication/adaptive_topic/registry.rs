@@ -20,14 +20,6 @@ fn registry() -> &'static Mutex<HashMap<(String, u64), Arc<dyn Any + Send + Sync
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Store a backend in the global registry.
-pub(crate) fn store_backend(name: &str, epoch: u64, backend: Arc<dyn Any + Send + Sync>) {
-    let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
-    // Clean up old epochs for this topic (keep only the latest)
-    map.retain(|(n, e), _| n != name || *e >= epoch.saturating_sub(1));
-    map.insert((name.to_string(), epoch), backend);
-}
-
 /// Store a backend if not already present, or return the existing one.
 ///
 /// This prevents races where two participants both try to create a ring

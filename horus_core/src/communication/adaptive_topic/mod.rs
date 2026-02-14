@@ -50,7 +50,7 @@ pub(crate) mod spsc_intra;
 mod tests;
 
 use std::marker::PhantomData;
-use std::mem;
+use std::mem::{self, MaybeUninit};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -476,7 +476,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
         let migrator = BackendMigrator::new(header);
         if !migrator.is_optimal() {
-            for _attempt in 0..3 {
+            for _attempt in 0..5 {
                 match migrator.migrate_to_optimal() {
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
@@ -496,9 +496,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         break;
                     }
                     MigrationResult::AlreadyInProgress | MigrationResult::LockContention => {
-                        std::thread::yield_now();
-                        if migrator.is_optimal() {
-                            local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
+                        // Another thread is migrating. Spin-wait for it to complete
+                        // (drain takes ~1ms) then re-check and retry.
+                        let wait_start = std::time::Instant::now();
+                        while migrator.is_migration_in_progress() {
+                            std::hint::spin_loop();
+                            if wait_start.elapsed() > std::time::Duration::from_millis(5) {
+                                break;
+                            }
+                        }
+                        // The other migration completed — refresh local state
+                        let new_epoch = header.migration_epoch.load(Ordering::Acquire);
+                        if new_epoch != local.cached_epoch {
+                            local.cached_epoch = new_epoch;
                             local.is_same_process = header.is_same_process();
                             local.is_pod = header.is_pod_type();
                             local.slot_size = header.slot_size as usize;
@@ -511,8 +521,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
                             );
+                        }
+                        if migrator.is_optimal() {
                             break;
                         }
+                        // Still not optimal after other migration — retry our migration
                     }
                     MigrationResult::NotNeeded => {
                         local.cached_mode = header.mode();
@@ -773,7 +786,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let local = self.local();
         let mask = local.cached_capacity_mask;
 
-        // 1. Drain pending SHM messages into DirectSlot
+        // 1. Drain pending SHM messages into DirectSlot's self-contained ring
         loop {
             let tail = header.tail.load(Ordering::Acquire);
             let head = header.sequence_or_head.load(Ordering::Acquire);
@@ -784,17 +797,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             ).is_ok() {
                 let index = (tail & mask) as usize;
                 let msg = self.read_shm_slot(index);
-                // Write to DirectSlot at the same sequence position the producer would use
-                // SAFETY: index is within ring bounds; we claimed this slot via CAS
-                unsafe { new_slot.write(tail, msg); }
-                // Don't advance header — the message stays "pending" for consumers
-                // who haven't switched yet. Re-store tail-1 so the slot is consumable.
-                header.tail.store(tail, Ordering::Release);
-                // Actually, we need to re-think: for DirectSlot, data is in the heap slot
-                // but head/tail tracking is in the header. Just leave the header as-is:
-                // the message was at SHM[index], now it's also at DirectSlot[seq].
-                // The header head/tail still point to valid data.
-                break; // DirectSlot migrated
+                let _ = new_slot.try_send(msg);
+            } else {
+                break;
             }
         }
 
@@ -802,32 +807,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         if epoch > 0 {
             if let Some(old) = registry::lookup_backend(&self.name, epoch - 1) {
                 if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
-                    let mut seq = header.sequence_or_head.load(Ordering::Acquire);
                     while let Some(msg) = ring.try_recv() {
-                        unsafe { new_slot.write(seq, msg); }
-                        seq = seq.wrapping_add(1);
-                        header.sequence_or_head.store(seq, Ordering::Release);
+                        let _ = new_slot.try_send(msg);
                     }
                 } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
-                    let mut seq = header.sequence_or_head.load(Ordering::Acquire);
                     while let Some(msg) = ring.try_recv() {
-                        unsafe { new_slot.write(seq, msg); }
-                        seq = seq.wrapping_add(1);
-                        header.sequence_or_head.store(seq, Ordering::Release);
+                        let _ = new_slot.try_send(msg);
                     }
                 } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
-                    let mut seq = header.sequence_or_head.load(Ordering::Acquire);
                     while let Some(msg) = ring.try_recv() {
-                        unsafe { new_slot.write(seq, msg); }
-                        seq = seq.wrapping_add(1);
-                        header.sequence_or_head.store(seq, Ordering::Release);
+                        let _ = new_slot.try_send(msg);
                     }
                 } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
-                    let mut seq = header.sequence_or_head.load(Ordering::Acquire);
                     while let Some(msg) = ring.try_recv() {
-                        unsafe { new_slot.write(seq, msg); }
-                        seq = seq.wrapping_add(1);
-                        header.sequence_or_head.store(seq, Ordering::Release);
+                        let _ = new_slot.try_send(msg);
                     }
                 }
             }
@@ -905,7 +898,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let mask = local.cached_capacity_mask;
 
         // Helper: write one message to SHM at the next available slot
-        let mut write_to_shm = |msg: T| {
+        let write_to_shm = |msg: T| {
             if local.is_pod {
                 let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
                 let index = (seq & mask) as usize;
@@ -991,19 +984,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
             BackendStorage::DirectChannel(slot) => {
-                // Same-thread: heap data + header atomics for signaling
-                if local.local_head.wrapping_sub(local.local_tail) >= local.cached_capacity {
-                    local.local_tail = header.tail.load(Ordering::Acquire);
-                    if local.local_head.wrapping_sub(local.local_tail)
-                        >= local.cached_capacity
-                    {
-                        return Err(msg);
-                    }
+                // Same-thread: inline for minimal overhead.
+                // Use DirectSlot's heap-based head/tail (Relaxed = plain MOV on x86).
+                let h = slot.head.load(Ordering::Relaxed);
+                let t = slot.tail.load(Ordering::Relaxed);
+                if h.wrapping_sub(t) >= slot.capacity {
+                    return Err(msg);
                 }
-                // SAFETY: slot index within ring bounds; single-thread guarantee
-                unsafe { slot.write(local.local_head, msg); }
-                local.local_head = local.local_head.wrapping_add(1);
-                header.sequence_or_head.store(local.local_head, Ordering::Release);
+                // SAFETY: index within bounds; single-thread guarantee
+                unsafe {
+                    let idx = (h & slot.mask) as usize;
+                    let s = &*slot.buffer.get_unchecked(idx);
+                    s.get().write(MaybeUninit::new(msg));
+                }
+                slot.head.store(h.wrapping_add(1), Ordering::Relaxed);
                 return Ok(());
             }
             BackendStorage::SpscIntra(ring) => {
@@ -1282,19 +1276,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
             BackendStorage::DirectChannel(slot) => {
-                // Same-thread: heap data + header atomics for signaling
-                let tail = local.local_tail;
-                if tail >= local.local_head {
-                    local.local_head =
-                        header.sequence_or_head.load(Ordering::Acquire);
-                    if tail >= local.local_head {
-                        return None;
-                    }
+                // Same-thread: inline for minimal overhead.
+                let t = slot.tail.load(Ordering::Relaxed);
+                let h = slot.head.load(Ordering::Relaxed);
+                if t >= h {
+                    return None;
                 }
-                // SAFETY: slot index within ring bounds; data written by producer
-                let msg = unsafe { slot.read(tail) };
-                local.local_tail = tail.wrapping_add(1);
-                header.tail.store(local.local_tail, Ordering::Release);
+                // SAFETY: index within bounds; data written by producer on same thread
+                let msg = unsafe {
+                    let idx = (t & slot.mask) as usize;
+                    let s = &*slot.buffer.get_unchecked(idx);
+                    (*s.get()).assume_init_read()
+                };
+                slot.tail.store(t.wrapping_add(1), Ordering::Relaxed);
                 return Some(msg);
             }
             BackendStorage::SpscIntra(ring) => {
@@ -1741,12 +1735,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // Check heap-backed ring first; fall back to SHM header
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
+            BackendStorage::DirectChannel(slot) => slot.pending_count(),
             BackendStorage::SpscIntra(ring) => ring.pending_count(),
             BackendStorage::SpmcIntra(ring) => ring.pending_count(),
             BackendStorage::MpscIntra(ring) => ring.pending_count(),
             BackendStorage::MpmcIntra(ring) => ring.pending_count(),
             _ => {
-                // DirectChannel, ShmData, Uninitialized: use SHM header
+                // ShmData, Uninitialized: use SHM header
                 let header = self.header();
                 let head = header.sequence_or_head.load(Ordering::Acquire);
                 let tail = header.tail.load(Ordering::Acquire);

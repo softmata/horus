@@ -1,27 +1,32 @@
 //! DirectChannel backend — same-thread 1P1C (~3ns target).
 //!
-//! Uses heap memory with zero atomics for data transfer. The producer writes
-//! directly to a ring buffer slot and bumps a local counter. The consumer reads
-//! with a simple array index. Synchronization is through the header's atomic
-//! sequence_or_head and tail (which on x86 are just compiler barriers via
-//! Release/Acquire).
+//! Uses heap memory with zero cross-core contention for data transfer.
+//! Self-contained head/tail counters live on the heap alongside the ring buffer,
+//! so neither send nor recv ever touches the mmap'd SHM header on the hot path.
 //!
 //! This is the fastest possible IPC path — just a ptr::write + ptr::read
 //! through heap memory (L1 cache hit guaranteed for same-thread access).
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Heap-backed ring buffer for same-thread 1P1C communication.
 ///
-/// No atomics needed for the data plane because producer and consumer are
-/// guaranteed to be on the same thread. Ordering is enforced by the header's
-/// atomic sequence_or_head / tail fields (which the dispatch code already uses).
+/// Self-contained: head, tail, and data all live on the heap.
+/// No SHM header updates on the hot path. On x86, Relaxed loads/stores
+/// are plain MOV instructions — zero overhead beyond the cache line hit.
 pub(crate) struct DirectSlot<T> {
+    /// Producer-owned head counter (heap)
+    pub(crate) head: AtomicU64,
+    /// Consumer-owned tail counter (heap)
+    pub(crate) tail: AtomicU64,
     /// Ring buffer slots
-    buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
+    pub(crate) buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
     /// Capacity mask for fast modulo (capacity - 1)
-    mask: u64,
+    pub(crate) mask: u64,
+    /// Capacity for full check
+    pub(crate) capacity: u64,
 }
 
 // SAFETY: DirectSlot is only used from a single thread (same-thread guarantee).
@@ -39,38 +44,41 @@ impl<T> DirectSlot<T> {
             buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
         }
         Self {
+            head: AtomicU64::new(0),
+            tail: AtomicU64::new(0),
             buffer: buffer.into_boxed_slice(),
             mask: (cap - 1) as u64,
+            capacity: cap as u64,
         }
     }
 
-    /// Write a value to the given sequence position.
+    /// Try to send a message. Returns Err(msg) if the buffer is full.
     ///
-    /// # Safety
-    /// - `seq` must be a valid sequence number (caller ensures no overflow)
-    /// - Only one writer at a time (same-thread guarantee)
+    /// Same-thread only — no atomics needed for correctness, but we use
+    /// Relaxed ordering (plain MOV on x86) to keep the AtomicU64 API.
     #[inline(always)]
-    pub unsafe fn write(&self, seq: u64, value: T) {
-        let index = (seq & self.mask) as usize;
-        let slot = &*self.buffer.get_unchecked(index);
-        slot.get().write(MaybeUninit::new(value));
+    pub fn try_send(&self, msg: T) -> Result<(), T> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed);
+        if head.wrapping_sub(tail) >= self.capacity {
+            return Err(msg);
+        }
+        let index = (head & self.mask) as usize;
+        // SAFETY: single-thread guarantee; index within bounds
+        unsafe {
+            let slot = &*self.buffer.get_unchecked(index);
+            slot.get().write(MaybeUninit::new(msg));
+        }
+        self.head.store(head.wrapping_add(1), Ordering::Relaxed);
+        Ok(())
     }
 
-    /// Read a value from the given sequence position.
-    ///
-    /// # Safety
-    /// - `seq` must point to a slot that was previously written
-    /// - Only one reader at a time (same-thread guarantee)
-    #[inline(always)]
-    pub unsafe fn read(&self, seq: u64) -> T {
-        let index = (seq & self.mask) as usize;
-        let slot = &*self.buffer.get_unchecked(index);
-        (*slot.get()).assume_init_read()
+    /// Check how many messages are pending.
+    #[inline]
+    pub fn pending_count(&self) -> u64 {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed);
+        head.wrapping_sub(tail)
     }
 
-    /// Get the capacity mask.
-    #[inline(always)]
-    pub fn mask(&self) -> u64 {
-        self.mask
-    }
 }
