@@ -673,7 +673,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 }
             }
         } else {
-            // Cross-process or Unknown: use ShmData
+            // Cross-process or Unknown: use ShmData.
+            // Drain old heap ring messages into SHM before switching.
+            self.drain_old_into_shm(epoch);
+
             *backend = BackendStorage::ShmData(ShmDataBackend {
                 data_region: self.storage.clone(),
                 data_offset: Self::HEADER_SIZE,
@@ -879,6 +882,83 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Fallback: create a default-ish value by re-reading as pod.
                     std::ptr::read(slot_ptr as *const T)
                 })
+            }
+        }
+    }
+
+    /// Drain old heap ring messages into SHM when switching from intra to cross-process.
+    ///
+    /// Called during intra→cross-process migration. Reads all pending messages from
+    /// the old heap ring (at epoch-1) and writes them into the SHM data region using
+    /// the header's sequence_or_head atomic.
+    fn drain_old_into_shm(&self, epoch: u64) {
+        if epoch == 0 {
+            return;
+        }
+        let old = match registry::lookup_backend(&self.name, epoch - 1) {
+            Some(b) => b,
+            None => return,
+        };
+
+        let header = self.header();
+        let local = self.local();
+        let mask = local.cached_capacity_mask;
+
+        // Helper: write one message to SHM at the next available slot
+        let mut write_to_shm = |msg: T| {
+            if local.is_pod {
+                let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                let index = (seq & mask) as usize;
+                // SAFETY: data at HEADER_SIZE + index * sizeof(T) is within storage bounds
+                unsafe {
+                    let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
+                    simd_aware_write(base.add(index), msg);
+                }
+            } else {
+                let slot_size = local.slot_size;
+                match bincode::serialize(&msg) {
+                    Ok(bytes) => {
+                        let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                        let index = (seq & mask) as usize;
+                        let slot_offset = index * slot_size;
+                        // SAFETY: slot_ptr is within storage bounds
+                        unsafe {
+                            let slot_ptr =
+                                self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                            // Format: [8 bytes padding][8 bytes length][data...]
+                            let len_ptr = slot_ptr.add(8) as *mut u64;
+                            std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+                            let data_ptr = slot_ptr.add(16) as *mut u8;
+                            std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                data_ptr,
+                                bytes.len(),
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        // Serialization failure — drop the message
+                    }
+                }
+            }
+        };
+
+        // Try each ring type from the previous epoch
+        if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
+            while let Some(msg) = ring.try_recv() {
+                write_to_shm(msg);
+            }
+        } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
+            while let Some(msg) = ring.try_recv() {
+                write_to_shm(msg);
+            }
+        } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
+            while let Some(msg) = ring.try_recv() {
+                write_to_shm(msg);
+            }
+        } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
+            while let Some(msg) = ring.try_recv() {
+                write_to_shm(msg);
             }
         }
     }
