@@ -1194,47 +1194,66 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         Self::new(descriptor.name())
     }
 
-    /// Send a message (fire-and-forget with bounded retry)
+    /// Send a message (fire-and-forget with bounded retry).
+    ///
+    /// Hot path: log_fn check (predicted-not-taken) → try_send() → return.
+    /// The logging path and retry loops are outlined into cold functions.
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        if let Some(log_fn) = self.log_fn {
-            let summary = log_fn(&msg);
-            let start = std::time::Instant::now();
-            self.send_lossy(msg);
-            let ipc_ns = start.elapsed().as_nanos() as u64;
-
-            self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
-            self.state
-                .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
-            use crate::core::hlog::{current_node_name, current_tick_number};
-            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-            let now = chrono::Local::now();
-            publish_log(LogEntry {
-                timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                tick_number: current_tick_number(),
-                node_name: current_node_name(),
-                log_type: LogType::Publish,
-                topic: Some(self.name.clone()),
-                message: summary,
-                tick_us: 0,
-                ipc_ns,
-            });
-        } else {
-            self.send_lossy(msg);
+        if unlikely(self.log_fn.is_some()) {
+            self.send_with_logging(msg);
+            return;
         }
+        self.send_lossy(msg);
+    }
+
+    /// Logging path for send() — outlined to keep send() hot path tight.
+    #[cold]
+    #[inline(never)]
+    fn send_with_logging(&self, msg: T) {
+        let log_fn = self.log_fn.unwrap();
+        let summary = log_fn(&msg);
+        let start = std::time::Instant::now();
+        self.send_lossy(msg);
+        let ipc_ns = start.elapsed().as_nanos() as u64;
+
+        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+        self.state
+            .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
+        use crate::core::hlog::{current_node_name, current_tick_number};
+        use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+        let now = chrono::Local::now();
+        publish_log(LogEntry {
+            timestamp: now.format("%H:%M:%S%.3f").to_string(),
+            tick_number: current_tick_number(),
+            node_name: current_node_name(),
+            log_type: LogType::Publish,
+            topic: Some(self.name.clone()),
+            message: summary,
+            tick_us: 0,
+            ipc_ns,
+        });
     }
 
     /// Send with bounded retry, dropping the message on failure.
+    ///
+    /// Hot path: try_send() succeeds → return immediately.
+    /// Cold path (queue full): spin retry → yield retry → drop.
     #[inline(always)]
     fn send_lossy(&self, msg: T) {
+        match self.try_send(msg) {
+            Ok(()) => return,
+            Err(returned) => self.send_lossy_retry(returned),
+        }
+    }
+
+    /// Retry loop for send_lossy — outlined to keep the fast path tight.
+    #[cold]
+    #[inline(never)]
+    fn send_lossy_retry(&self, mut msg: T) {
         const SPIN_ITERS: u32 = 256;
         const YIELD_ITERS: u32 = 8;
 
-        let mut msg = msg;
-        match self.try_send(msg) {
-            Ok(()) => return,
-            Err(returned) => msg = returned,
-        }
         for _ in 0..SPIN_ITERS {
             std::hint::spin_loop();
             match self.try_send(msg) {
@@ -1252,37 +1271,46 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Receive a message with optional logging
+    /// Receive a message with optional logging.
+    ///
+    /// Hot path: log_fn check (predicted-not-taken) → try_recv() → return.
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        if let Some(log_fn) = self.log_fn {
-            let start = std::time::Instant::now();
-            let result = self.try_recv();
-            let ipc_ns = start.elapsed().as_nanos() as u64;
-
-            if let Some(ref msg) = result {
-                self.metrics
-                    .messages_received
-                    .fetch_add(1, Ordering::Relaxed);
-                use crate::core::hlog::{current_node_name, current_tick_number};
-                use crate::core::log_buffer::{publish_log, LogEntry, LogType};
-                let now = chrono::Local::now();
-                let summary = log_fn(msg);
-                publish_log(LogEntry {
-                    timestamp: now.format("%H:%M:%S%.3f").to_string(),
-                    tick_number: current_tick_number(),
-                    node_name: current_node_name(),
-                    log_type: LogType::Subscribe,
-                    topic: Some(self.name.clone()),
-                    message: summary,
-                    tick_us: 0,
-                    ipc_ns,
-                });
-            }
-            result
-        } else {
-            self.try_recv()
+        if unlikely(self.log_fn.is_some()) {
+            return self.recv_with_logging();
         }
+        self.try_recv()
+    }
+
+    /// Logging path for recv() — outlined to keep recv() hot path tight.
+    #[cold]
+    #[inline(never)]
+    fn recv_with_logging(&self) -> Option<T> {
+        let log_fn = self.log_fn.unwrap();
+        let start = std::time::Instant::now();
+        let result = self.try_recv();
+        let ipc_ns = start.elapsed().as_nanos() as u64;
+
+        if let Some(ref msg) = result {
+            self.metrics
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+            use crate::core::hlog::{current_node_name, current_tick_number};
+            use crate::core::log_buffer::{publish_log, LogEntry, LogType};
+            let now = chrono::Local::now();
+            let summary = log_fn(msg);
+            publish_log(LogEntry {
+                timestamp: now.format("%H:%M:%S%.3f").to_string(),
+                tick_number: current_tick_number(),
+                node_name: current_node_name(),
+                log_type: LogType::Subscribe,
+                topic: Some(self.name.clone()),
+                message: summary,
+                tick_us: 0,
+                ipc_ns,
+            });
+        }
+        result
     }
 
     /// Get migration statistics
