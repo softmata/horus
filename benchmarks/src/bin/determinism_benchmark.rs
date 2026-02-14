@@ -150,8 +150,8 @@ fn main() {
     // Run benchmarks
     println!("Running benchmarks...\n");
 
-    // AdaptiveTopic (auto-selects optimal backend via Topic::new())
-    let result = run_determinism_benchmark("AdaptiveTopic", &config, &platform, deadline_ns);
+    // Topic (auto-selects optimal backend via Topic::new())
+    let result = run_determinism_benchmark("Topic", &config, &platform, deadline_ns);
     print_determinism_result(&result);
     report.add_result(result);
 

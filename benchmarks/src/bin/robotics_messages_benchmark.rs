@@ -103,8 +103,8 @@ fn main() {
     println!("╚═════════════════════════════════════════════════════════════════════════════╝");
     println!();
 
-    // Benchmark each message type with AdaptiveTopic (Topic::new() auto-selects backend)
-    println!("\n[AdaptiveTopic] Running benchmarks...");
+    // Benchmark each message type with Topic (Topic::new() auto-selects backend)
+    println!("\n[Topic] Running benchmarks...");
     println!("─────────────────────────────────────────────────");
 
     // CmdVel (16 bytes) - Control commands

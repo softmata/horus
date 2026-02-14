@@ -146,10 +146,10 @@ fn run_coordinator(args: &[String]) {
 
     let mut report = BenchmarkReport::new(platform.clone());
 
-    // Test AdaptiveTopic (auto-selects optimal backend)
-    println!("[AdaptiveTopic] Running cross-process benchmark...");
+    // Test Topic (auto-selects optimal backend)
+    println!("[Topic] Running cross-process benchmark...");
 
-    let result = run_cross_process_test("AdaptiveTopic", iterations, &platform);
+    let result = run_cross_process_test("Topic", iterations, &platform);
 
     print_result(&result);
     report.add_result(result);
@@ -306,7 +306,7 @@ fn run_producer(args: &[String]) {
     // Pin to CPU 0
     let _ = set_cpu_affinity(0);
 
-    // Create producer using AdaptiveTopic
+    // Create producer using Topic
     let producer: Topic<TimestampedMsg> =
         Topic::new(topic_name).expect("Failed to create producer");
 
@@ -361,7 +361,7 @@ fn run_consumer(args: &[String]) {
     // Pin to CPU 1
     let _ = set_cpu_affinity(1);
 
-    // Create consumer using AdaptiveTopic
+    // Create consumer using Topic
     let consumer: Topic<TimestampedMsg> =
         Topic::new(topic_name).expect("Failed to create consumer");
 

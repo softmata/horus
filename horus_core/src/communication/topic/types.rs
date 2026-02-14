@@ -1,4 +1,4 @@
-//! Type definitions for the adaptive topic system.
+//! Type definitions for the topic system.
 //!
 //! Contains enums and structs shared across all backend implementations.
 
@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 /// Selected backend mode stored in shared memory
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdaptiveBackendMode {
+pub enum BackendMode {
     /// Unknown/uninitialized - will be determined on first use
     Unknown = 0,
     /// DirectChannel - same thread (~3ns)
@@ -36,39 +36,39 @@ pub enum AdaptiveBackendMode {
     MpmcShm = 10,
 }
 
-impl From<u8> for AdaptiveBackendMode {
+impl From<u8> for BackendMode {
     fn from(v: u8) -> Self {
         match v {
-            1 => AdaptiveBackendMode::DirectChannel,
-            2 => AdaptiveBackendMode::SpscIntra,
-            3 => AdaptiveBackendMode::SpmcIntra,
-            4 => AdaptiveBackendMode::MpscIntra,
-            5 => AdaptiveBackendMode::MpmcIntra,
-            6 => AdaptiveBackendMode::PodShm,
-            7 => AdaptiveBackendMode::MpscShm,
-            8 => AdaptiveBackendMode::SpmcShm,
-            9 => AdaptiveBackendMode::SpscShm,
-            10 => AdaptiveBackendMode::MpmcShm,
-            _ => AdaptiveBackendMode::Unknown,
+            1 => BackendMode::DirectChannel,
+            2 => BackendMode::SpscIntra,
+            3 => BackendMode::SpmcIntra,
+            4 => BackendMode::MpscIntra,
+            5 => BackendMode::MpmcIntra,
+            6 => BackendMode::PodShm,
+            7 => BackendMode::MpscShm,
+            8 => BackendMode::SpmcShm,
+            9 => BackendMode::SpscShm,
+            10 => BackendMode::MpmcShm,
+            _ => BackendMode::Unknown,
         }
     }
 }
 
-impl AdaptiveBackendMode {
+impl BackendMode {
     /// Get the expected latency for this backend mode in nanoseconds
     pub fn expected_latency_ns(&self) -> u64 {
         match self {
-            AdaptiveBackendMode::Unknown => 167, // Fallback to MPMC
-            AdaptiveBackendMode::DirectChannel => 3,
-            AdaptiveBackendMode::SpscIntra => 18,
-            AdaptiveBackendMode::SpmcIntra => 24,
-            AdaptiveBackendMode::MpscIntra => 26,
-            AdaptiveBackendMode::MpmcIntra => 36,
-            AdaptiveBackendMode::PodShm => 50,
-            AdaptiveBackendMode::MpscShm => 65,
-            AdaptiveBackendMode::SpmcShm => 70,
-            AdaptiveBackendMode::SpscShm => 85,
-            AdaptiveBackendMode::MpmcShm => 167,
+            BackendMode::Unknown => 167, // Fallback to MPMC
+            BackendMode::DirectChannel => 3,
+            BackendMode::SpscIntra => 18,
+            BackendMode::SpmcIntra => 24,
+            BackendMode::MpscIntra => 26,
+            BackendMode::MpmcIntra => 36,
+            BackendMode::PodShm => 50,
+            BackendMode::MpscShm => 65,
+            BackendMode::SpmcShm => 70,
+            BackendMode::SpscShm => 85,
+            BackendMode::MpmcShm => 167,
         }
     }
 
@@ -76,11 +76,11 @@ impl AdaptiveBackendMode {
     pub fn is_cross_process(&self) -> bool {
         matches!(
             self,
-            AdaptiveBackendMode::PodShm
-                | AdaptiveBackendMode::MpscShm
-                | AdaptiveBackendMode::SpmcShm
-                | AdaptiveBackendMode::SpscShm
-                | AdaptiveBackendMode::MpmcShm
+            BackendMode::PodShm
+                | BackendMode::MpscShm
+                | BackendMode::SpmcShm
+                | BackendMode::SpscShm
+                | BackendMode::MpmcShm
         )
     }
 
@@ -88,11 +88,11 @@ impl AdaptiveBackendMode {
     pub fn is_intra_process(&self) -> bool {
         matches!(
             self,
-            AdaptiveBackendMode::DirectChannel
-                | AdaptiveBackendMode::SpscIntra
-                | AdaptiveBackendMode::SpmcIntra
-                | AdaptiveBackendMode::MpscIntra
-                | AdaptiveBackendMode::MpmcIntra
+            BackendMode::DirectChannel
+                | BackendMode::SpscIntra
+                | BackendMode::SpmcIntra
+                | BackendMode::MpscIntra
+                | BackendMode::MpmcIntra
         )
     }
 }
@@ -179,7 +179,7 @@ impl ConnectionState {
 // Backend Hint
 // ============================================================================
 
-/// Backend hint for topic creation (kept for API compatibility, ignored by AdaptiveTopic)
+/// Backend hint for topic creation (kept for API compatibility, ignored — Topic auto-selects)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendHint {
     #[default]
@@ -264,9 +264,9 @@ impl TopicConfig {
         self
     }
 
-    /// Set the backend hint (ignored — AdaptiveTopic auto-selects)
+    /// Set the backend hint (ignored — Topic auto-selects optimal backend)
     pub fn with_backend(self, _hint: BackendHint) -> Self {
-        // Backend hint is ignored - AdaptiveTopic auto-selects optimal backend
+        // Backend hint is ignored - Topic auto-selects optimal backend
         self
     }
 }

@@ -12,7 +12,7 @@
 //!
 //! ## Usage
 //!
-//! These functions are used internally by `AdaptiveTopic` for messages
+//! These functions are used internally by `Topic` for messages
 //! larger than `SIMD_COPY_THRESHOLD` (4KB). No user-facing API changes.
 //!
 //! ## Runtime Detection

@@ -5,8 +5,8 @@
 
 use std::sync::atomic::Ordering;
 
-use super::header::{current_time_ms, AdaptiveTopicHeader};
-use super::types::AdaptiveBackendMode;
+use super::header::{current_time_ms, TopicHeader};
+use super::types::BackendMode;
 
 // ============================================================================
 // Migration Result
@@ -34,8 +34,8 @@ pub enum MigrationResult {
 /// Migration statistics for debugging and monitoring
 #[derive(Debug, Clone)]
 pub struct MigrationStats {
-    pub current_mode: AdaptiveBackendMode,
-    pub optimal_mode: AdaptiveBackendMode,
+    pub current_mode: BackendMode,
+    pub optimal_mode: BackendMode,
     pub current_epoch: u64,
     pub is_locked: bool,
     pub publisher_count: u32,
@@ -56,7 +56,7 @@ pub struct MigrationStats {
 /// - Epoch versioning for reader/writer coordination
 /// - Drain logic to ensure no in-flight message loss
 pub struct BackendMigrator<'a> {
-    header: &'a AdaptiveTopicHeader,
+    header: &'a TopicHeader,
     /// Maximum wait time for draining in-flight messages (ms)
     drain_timeout_ms: u64,
     /// Spin count before yielding during drain
@@ -70,7 +70,7 @@ impl<'a> BackendMigrator<'a> {
     pub const DEFAULT_SPIN_COUNT: u32 = 100;
 
     /// Create a new migrator for the given header
-    pub fn new(header: &'a AdaptiveTopicHeader) -> Self {
+    pub fn new(header: &'a TopicHeader) -> Self {
         Self {
             header,
             drain_timeout_ms: Self::DEFAULT_DRAIN_TIMEOUT_MS,
@@ -79,7 +79,7 @@ impl<'a> BackendMigrator<'a> {
     }
 
     /// Create a migrator with custom drain timeout
-    pub fn with_drain_timeout(header: &'a AdaptiveTopicHeader, timeout_ms: u64) -> Self {
+    pub fn with_drain_timeout(header: &'a TopicHeader, timeout_ms: u64) -> Self {
         Self {
             header,
             drain_timeout_ms: timeout_ms,
@@ -100,7 +100,7 @@ impl<'a> BackendMigrator<'a> {
     }
 
     /// Attempt to migrate to a new backend mode.
-    pub fn try_migrate(&self, new_mode: AdaptiveBackendMode) -> MigrationResult {
+    pub fn try_migrate(&self, new_mode: BackendMode) -> MigrationResult {
         let current_mode = self.header.mode();
 
         if current_mode == new_mode {
@@ -123,7 +123,7 @@ impl<'a> BackendMigrator<'a> {
     }
 
     /// Perform the actual migration (must hold lock)
-    fn perform_migration(&self, new_mode: AdaptiveBackendMode) -> MigrationResult {
+    fn perform_migration(&self, new_mode: BackendMode) -> MigrationResult {
         if !self.drain_in_flight() {
             return MigrationResult::Failed;
         }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::memory::shm_region::ShmRegion;
 
-use super::types::AdaptiveBackendMode;
+use super::types::BackendMode;
 
 /// Cross-process data backend backed by a separate ShmRegion.
 ///
@@ -26,7 +26,7 @@ pub(crate) struct ShmDataBackend {
     /// Offset within data_region where ring data starts
     pub data_offset: usize,
     /// Current backend mode
-    pub mode: AdaptiveBackendMode,
+    pub mode: BackendMode,
     /// Whether the type is POD
     pub is_pod: bool,
     /// Slot size in bytes (for non-POD serialized messages)

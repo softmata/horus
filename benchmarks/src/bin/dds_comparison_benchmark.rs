@@ -117,7 +117,7 @@ fn main() {
     println!("║                     HORUS Results                                ║");
     println!("╠══════════════════════════════════════════════════════════════════╣");
 
-    // HORUS AdaptiveTopic (auto-selects optimal backend via Topic::new())
+    // HORUS Topic (auto-selects optimal backend via Topic::new())
     let result = benchmark_horus_adaptive(iterations, &platform);
     print_result("HORUS Adaptive", &result);
     report.add_result(result);
@@ -348,7 +348,7 @@ fn benchmark_horus_adaptive(
     running.store(false, Ordering::Release);
     consumer_handle.join().ok();
 
-    build_result("HORUS_AdaptiveTopic", latencies, iterations, platform)
+    build_result("HORUS_Topic", latencies, iterations, platform)
 }
 
 fn build_result(

@@ -1,4 +1,4 @@
-//! # Adaptive Topic - Universal Smart Detection IPC
+//! # Topic - Universal Smart Detection IPC
 //!
 //! This module provides fully automatic backend detection for `Topic::new()`.
 //! Users just call `send()`/`recv()` and the system auto-detects the optimal
@@ -62,13 +62,21 @@ use crate::memory::shm_region::ShmRegion;
 use crate::memory::simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 use crate::utils::unlikely;
 
-pub use header::{AdaptiveTopicHeader, ParticipantEntry};
-pub(crate) use header::{ADAPTIVE_MAGIC, ADAPTIVE_VERSION};
+pub use header::{TopicHeader, ParticipantEntry};
+pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 use local_state::LocalState;
-pub use metrics::{AdaptiveMetrics, TopicMetrics};
+pub use metrics::{MigrationMetrics, TopicMetrics};
+
+/// Bounded spin iterations for waiting on per-slot ready flags.
+///
+/// When a multi-producer path does `fetch_add` on head to claim a slot, there's a
+/// brief window before the ready flag is written. Consumers spin for up to this many
+/// iterations before returning None. On x86, each spin_loop() is a PAUSE (~10-20 cycles),
+/// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
+const READY_FLAG_SPIN_LIMIT: u32 = 256;
 pub use migration::{BackendMigrator, MigrationResult, MigrationStats};
 pub use types::{
-    AdaptiveBackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole,
+    BackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole,
 };
 
 use header::current_time_ms;
@@ -204,22 +212,22 @@ fn auto_capacity<T>() -> u32 {
 macro_rules! topics {
     ($($vis:vis $name:ident : $type:ty = $topic_name:expr),* $(,)?) => {
         $(
-            $vis const $name: $crate::communication::adaptive_topic::TopicDescriptor<$type> =
-                $crate::communication::adaptive_topic::TopicDescriptor::new($topic_name);
+            $vis const $name: $crate::communication::topic::TopicDescriptor<$type> =
+                $crate::communication::topic::TopicDescriptor::new($topic_name);
         )*
     };
 }
 
 // ============================================================================
-// AdaptiveTopic - Main Public API
+// Topic - Main Public API
 // ============================================================================
 
-/// Adaptive Topic - Universal Smart Detection IPC
+/// Topic - Universal Smart Detection IPC
 ///
-/// `AdaptiveTopic<T>` provides fully automatic backend detection. Users just call
+/// `Topic<T>` provides fully automatic backend detection. Users just call
 /// `send()`/`recv()` and the system auto-detects the optimal backend from 10 paths
 /// based on topology and access patterns.
-pub struct AdaptiveTopic<T> {
+pub struct Topic<T> {
     /// Topic name
     name: String,
 
@@ -233,7 +241,7 @@ pub struct AdaptiveTopic<T> {
     local: std::cell::UnsafeCell<LocalState>,
 
     /// Metrics for monitoring
-    metrics: Arc<AdaptiveMetrics>,
+    metrics: Arc<MigrationMetrics>,
 
     /// Optional logging function (set via `with_logging()`)
     log_fn: Option<fn(&T) -> String>,
@@ -245,26 +253,26 @@ pub struct AdaptiveTopic<T> {
     _marker: PhantomData<T>,
 }
 
-// Safety: AdaptiveTopic can be sent between threads
+// Safety: Topic can be sent between threads
 // The UnsafeCell is only accessed through &self with internal synchronization
-unsafe impl<T: Send> Send for AdaptiveTopic<T> {}
-unsafe impl<T: Send + Sync> Sync for AdaptiveTopic<T> {}
+unsafe impl<T: Send> Send for Topic<T> {}
+unsafe impl<T: Send + Sync> Sync for Topic<T> {}
 
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTopic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// Header size in shared memory
-    const HEADER_SIZE: usize = mem::size_of::<AdaptiveTopicHeader>();
+    const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
 
-    /// Create a new adaptive topic with auto-sized ring buffer capacity.
+    /// Create a new topic with auto-sized ring buffer capacity.
     pub fn new(name: impl Into<String>) -> HorusResult<Self> {
         let name = name.into();
         Self::with_capacity(&name, auto_capacity::<T>(), None)
     }
 
-    /// Create a new adaptive topic with custom capacity and optional slot size
+    /// Create a new topic with custom capacity and optional slot size
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         if capacity == 0 {
             return Err(crate::HorusError::InvalidInput(
-                "AdaptiveTopic capacity must be >= 1".to_string(),
+                "Topic capacity must be >= 1".to_string(),
             ));
         }
         let is_pod = Self::check_is_pod();
@@ -278,17 +286,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         };
 
         let actual_capacity = capacity.next_power_of_two() as usize;
+        let seq_array_size = actual_capacity * mem::size_of::<u64>();
         let data_size = actual_capacity * actual_slot_size;
-        let total_size = Self::HEADER_SIZE + data_size;
+        let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
 
-        // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for AdaptiveTopicHeader
-        let header = unsafe { &mut *(storage.as_ptr() as *mut AdaptiveTopicHeader) };
+        // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for TopicHeader
+        let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
 
         std::sync::atomic::fence(Ordering::Acquire);
 
-        let final_slot_size = if header.magic != ADAPTIVE_MAGIC {
+        let final_slot_size = if header.magic != TOPIC_MAGIC {
             if storage.is_owner() {
                 // Fresh SHM — clear any stale registry entries from a previous
                 // topic lifetime (e.g., previous owner dropped and SHM was unlinked,
@@ -307,11 +316,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 for _ in 0..100 {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     std::sync::atomic::fence(Ordering::Acquire);
-                    if header.magic == ADAPTIVE_MAGIC {
+                    if header.magic == TOPIC_MAGIC {
                         break;
                     }
                 }
-                if header.magic != ADAPTIVE_MAGIC {
+                if header.magic != TOPIC_MAGIC {
                     return Err(HorusError::Communication(
                         "Timeout waiting for topic header initialization".to_string(),
                     ));
@@ -319,10 +328,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 header.slot_size as usize
             }
         } else {
-            if header.version != ADAPTIVE_VERSION {
+            if header.version != TOPIC_VERSION {
                 return Err(HorusError::Communication(format!(
-                    "Incompatible adaptive topic version: {} (expected {})",
-                    header.version, ADAPTIVE_VERSION
+                    "Incompatible topic version: {} (expected {})",
+                    header.version, TOPIC_VERSION
                 )));
             }
             if is_pod && header.type_size != type_size {
@@ -343,7 +352,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 slot_size: final_slot_size,
                 ..Default::default()
             }),
-            metrics: Arc::new(AdaptiveMetrics::default()),
+            metrics: Arc::new(MigrationMetrics::default()),
             log_fn: None,
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
@@ -357,9 +366,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
     /// Get a reference to the header
     #[inline(always)]
-    fn header(&self) -> &AdaptiveTopicHeader {
-        // SAFETY: storage is properly sized and aligned for AdaptiveTopicHeader; initialized in constructor
-        unsafe { &*(self.storage.as_ptr() as *const AdaptiveTopicHeader) }
+    fn header(&self) -> &TopicHeader {
+        // SAFETY: storage is properly sized and aligned for TopicHeader; initialized in constructor
+        unsafe { &*(self.storage.as_ptr() as *const TopicHeader) }
+    }
+
+    /// Compute the byte offset from storage start to the data region.
+    ///
+    /// Layout: [HEADER (640)] [SEQ_ARRAY (capacity * 8)] [DATA (capacity * slot_size)]
+    #[inline]
+    fn data_region_offset(capacity: usize) -> usize {
+        Self::HEADER_SIZE + capacity * mem::size_of::<u64>()
     }
 
     /// Get the local state (interior mutability via UnsafeCell)
@@ -381,9 +398,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let slot = header.register_producer()?;
 
         local.slot_index = slot as i32;
-        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
+        let cap = header.capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.is_same_process = header.is_same_process();
         local.is_pod = header.is_pod_type();
@@ -422,9 +441,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let slot = header.register_consumer()?;
 
         local.slot_index = slot as i32;
-        local.cached_header_ptr = self.storage.as_ptr() as *const AdaptiveTopicHeader;
+        local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
+        let cap = header.capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.is_same_process = header.is_same_process();
         local.is_pod = header.is_pod_type();
@@ -582,12 +603,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
         // Check if current backend already matches the mode
         let already_matched = match (&*backend, mode) {
-            (BackendStorage::DirectChannel(_), AdaptiveBackendMode::DirectChannel) => true,
-            (BackendStorage::SpscIntra(_), AdaptiveBackendMode::SpscIntra) => true,
-            (BackendStorage::SpmcIntra(_), AdaptiveBackendMode::SpmcIntra) => true,
-            (BackendStorage::MpscIntra(_), AdaptiveBackendMode::MpscIntra) => true,
-            (BackendStorage::MpmcIntra(_), AdaptiveBackendMode::MpmcIntra) => true,
-            (BackendStorage::ShmData(_), _) if mode.is_cross_process() || mode == AdaptiveBackendMode::Unknown => true,
+            (BackendStorage::DirectChannel(_), BackendMode::DirectChannel) => true,
+            (BackendStorage::SpscIntra(_), BackendMode::SpscIntra) => true,
+            (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
+            (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
+            (BackendStorage::MpmcIntra(_), BackendMode::MpmcIntra) => true,
+            (BackendStorage::ShmData(_), _) if mode.is_cross_process() || mode == BackendMode::Unknown => true,
             _ => false,
         };
         if already_matched {
@@ -607,7 +628,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
             // Not found in registry — create new ring, drain old data, and store.
             match mode {
-                AdaptiveBackendMode::DirectChannel => {
+                BackendMode::DirectChannel => {
                     let new_ring = Arc::new(DirectSlot::new(cap));
                     self.drain_old_into_direct(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
@@ -620,7 +641,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         *backend = BackendStorage::DirectChannel(new_ring);
                     }
                 }
-                AdaptiveBackendMode::SpscIntra => {
+                BackendMode::SpscIntra => {
                     let new_ring = Arc::new(SpscRing::new(cap));
                     self.drain_old_into_ring(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
@@ -633,7 +654,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         *backend = BackendStorage::SpscIntra(new_ring);
                     }
                 }
-                AdaptiveBackendMode::SpmcIntra => {
+                BackendMode::SpmcIntra => {
                     let new_ring = Arc::new(SpmcRing::new(cap));
                     self.drain_old_into_ring(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
@@ -646,7 +667,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         *backend = BackendStorage::SpmcIntra(new_ring);
                     }
                 }
-                AdaptiveBackendMode::MpscIntra => {
+                BackendMode::MpscIntra => {
                     let new_ring = Arc::new(MpscRing::new(cap));
                     self.drain_old_into_ring(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
@@ -659,7 +680,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         *backend = BackendStorage::MpscIntra(new_ring);
                     }
                 }
-                AdaptiveBackendMode::MpmcIntra => {
+                BackendMode::MpmcIntra => {
                     let new_ring = Arc::new(MpmcRing::new(cap));
                     self.drain_old_into_ring(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
@@ -676,7 +697,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     // Unrecognized intra-process mode — keep ShmData
                     *backend = BackendStorage::ShmData(ShmDataBackend {
                         data_region: self.storage.clone(),
-                        data_offset: Self::HEADER_SIZE,
+                        data_offset: Self::data_region_offset(local.cached_capacity as usize),
                         mode,
                         is_pod: local.is_pod,
                         slot_size: local.slot_size,
@@ -692,7 +713,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
 
             *backend = BackendStorage::ShmData(ShmDataBackend {
                 data_region: self.storage.clone(),
-                data_offset: Self::HEADER_SIZE,
+                data_offset: Self::data_region_offset(local.cached_capacity as usize),
                 mode,
                 is_pod: local.is_pod,
                 slot_size: local.slot_size,
@@ -707,34 +728,34 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         &self,
         backend: &mut BackendStorage<T>,
         existing: &Arc<dyn std::any::Any + Send + Sync>,
-        mode: AdaptiveBackendMode,
+        mode: BackendMode,
     ) -> bool {
         match mode {
-            AdaptiveBackendMode::DirectChannel => {
+            BackendMode::DirectChannel => {
                 if let Ok(slot) = existing.clone().downcast::<DirectSlot<T>>() {
                     *backend = BackendStorage::DirectChannel(slot);
                     return true;
                 }
             }
-            AdaptiveBackendMode::SpscIntra => {
+            BackendMode::SpscIntra => {
                 if let Ok(ring) = existing.clone().downcast::<SpscRing<T>>() {
                     *backend = BackendStorage::SpscIntra(ring);
                     return true;
                 }
             }
-            AdaptiveBackendMode::SpmcIntra => {
+            BackendMode::SpmcIntra => {
                 if let Ok(ring) = existing.clone().downcast::<SpmcRing<T>>() {
                     *backend = BackendStorage::SpmcIntra(ring);
                     return true;
                 }
             }
-            AdaptiveBackendMode::MpscIntra => {
+            BackendMode::MpscIntra => {
                 if let Ok(ring) = existing.clone().downcast::<MpscRing<T>>() {
                     *backend = BackendStorage::MpscIntra(ring);
                     return true;
                 }
             }
-            AdaptiveBackendMode::MpmcIntra => {
+            BackendMode::MpmcIntra => {
                 if let Ok(ring) = existing.clone().downcast::<MpmcRing<T>>() {
                     *backend = BackendStorage::MpmcIntra(ring);
                     return true;
@@ -854,10 +875,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// Read a message from SHM slot at the given index.
     fn read_shm_slot(&self, index: usize) -> T {
         let local = self.local();
+        let data_off = Self::data_region_offset(local.cached_capacity as usize);
         if local.is_pod {
-            // SAFETY: HEADER_SIZE + index * size_of::<T>() is within storage bounds
+            // SAFETY: data_off + index * size_of::<T>() is within storage bounds
             unsafe {
-                let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *const T;
+                let base = self.storage.as_ptr().add(data_off) as *const T;
                 std::ptr::read(base.add(index))
             }
         } else {
@@ -865,7 +887,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             let slot_offset = index * slot_size;
             // SAFETY: slot_ptr is within storage bounds
             unsafe {
-                let slot_ptr = self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
                 let len_ptr = slot_ptr.add(8) as *const u64;
                 let len = std::ptr::read_volatile(len_ptr) as usize;
                 let data_ptr = slot_ptr.add(16);
@@ -898,13 +920,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         let mask = local.cached_capacity_mask;
 
         // Helper: write one message to SHM at the next available slot
+        let data_off = Self::data_region_offset(local.cached_capacity as usize);
         let write_to_shm = |msg: T| {
             if local.is_pod {
                 let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
                 let index = (seq & mask) as usize;
-                // SAFETY: data at HEADER_SIZE + index * sizeof(T) is within storage bounds
+                // SAFETY: data at data_off + index * sizeof(T) is within storage bounds
                 unsafe {
-                    let base = self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut T;
+                    let base = self.storage.as_ptr().add(data_off) as *mut T;
                     simd_aware_write(base.add(index), msg);
                 }
             } else {
@@ -917,7 +940,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         // SAFETY: slot_ptr is within storage bounds
                         unsafe {
                             let slot_ptr =
-                                self.storage.as_ptr().add(Self::HEADER_SIZE + slot_offset);
+                                self.storage.as_ptr().add(data_off + slot_offset);
                             // Format: [8 bytes padding][8 bytes length][data...]
                             let len_ptr = slot_ptr.add(8) as *mut u64;
                             std::ptr::write_volatile(len_ptr, bytes.len() as u64);
@@ -1052,7 +1075,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // === SHM-BASED DISPATCH (cross-process and uninitialized fallback) ===
         if local.is_same_process {
             match local.cached_mode {
-                AdaptiveBackendMode::DirectChannel => {
+                BackendMode::DirectChannel => {
                     if local.local_head.wrapping_sub(local.local_tail) >= local.cached_capacity {
                         local.local_tail = header.tail.load(Ordering::Acquire);
                         if local.local_head.wrapping_sub(local.local_tail)
@@ -1061,22 +1084,23 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             return Err(msg);
                         }
                     }
+                    let seq = local.local_head;
+                    let index = (seq & local.cached_capacity_mask) as usize;
                     // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(
-                            base.add(
-                                (local.local_head & local.cached_capacity_mask) as usize,
-                            ),
-                            msg,
-                        );
+                        simd_aware_write(base.add(index), msg);
+                        // Write per-slot ready flag (needed if consumer migrates to multi-producer mode)
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                     }
-                    local.local_head = local.local_head.wrapping_add(1);
+                    local.local_head = seq.wrapping_add(1);
                     header.sequence_or_head.store(local.local_head, Ordering::Release);
                     Ok(())
                 }
 
-                AdaptiveBackendMode::SpscIntra | AdaptiveBackendMode::SpmcIntra => {
+                BackendMode::SpscIntra | BackendMode::SpmcIntra => {
                     let seq = local.local_head;
                     if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
                         local.local_tail = header.tail.load(Ordering::Acquire);
@@ -1084,13 +1108,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             return Err(msg);
                         }
                     }
+                    let index = (seq & local.cached_capacity_mask) as usize;
                     // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(
-                            base.add((seq & local.cached_capacity_mask) as usize),
-                            msg,
-                        );
+                        simd_aware_write(base.add(index), msg);
+                        // Write per-slot ready flag (needed if consumer migrates to multi-producer mode)
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                     }
                     let new_seq = seq.wrapping_add(1);
                     local.local_head = new_seq;
@@ -1104,7 +1130,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Ok(())
                 }
 
-                AdaptiveBackendMode::MpscIntra | AdaptiveBackendMode::MpmcIntra => {
+                BackendMode::MpscIntra | BackendMode::MpmcIntra => {
                     let mask = local.cached_capacity_mask;
                     let capacity = local.cached_capacity;
                     loop {
@@ -1125,13 +1151,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             )
                             .is_ok()
                         {
-                            // SAFETY: slot index (head & mask) is within ring buffer bounds; dst is aligned for T
+                            let index = (head & mask) as usize;
+                            // SAFETY: slot index within ring buffer bounds; dst is aligned for T
                             unsafe {
                                 let base = local.cached_data_ptr as *mut T;
-                                simd_aware_write(
-                                    base.add((head & mask) as usize),
-                                    msg,
-                                );
+                                simd_aware_write(base.add(index), msg);
+                                // Publish per-slot ready flag for consumer
+                                let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                                    as *const std::sync::atomic::AtomicU64);
+                                ready_ptr.store(head.wrapping_add(1), Ordering::Release);
                             }
                             local.msg_counter = local.msg_counter.wrapping_add(1);
                             if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
@@ -1153,6 +1181,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
                         simd_aware_write(base.add(index), msg);
+                        // Write per-slot ready flag
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                     }
                     header.sequence_or_head.fetch_add(1, Ordering::Release);
                     local.local_head = seq + 1;
@@ -1166,7 +1198,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
         } else if local.is_pod {
             match local.cached_mode {
-                AdaptiveBackendMode::SpscShm => {
+                BackendMode::SpscShm => {
                     let seq = local.local_head;
                     if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
                         local.local_tail = header.tail.load(Ordering::Acquire);
@@ -1174,13 +1206,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             return Err(msg);
                         }
                     }
+                    let index = (seq & local.cached_capacity_mask) as usize;
                     // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(
-                            base.add((seq & local.cached_capacity_mask) as usize),
-                            msg,
-                        );
+                        simd_aware_write(base.add(index), msg);
+                        // Write per-slot ready flag (needed if consumer migrates to multi-producer mode)
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                     }
                     let new_seq = seq.wrapping_add(1);
                     local.local_head = new_seq;
@@ -1194,10 +1228,40 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Ok(())
                 }
 
-                AdaptiveBackendMode::MpscShm
-                | AdaptiveBackendMode::SpmcShm
-                | AdaptiveBackendMode::MpmcShm
-                | AdaptiveBackendMode::PodShm => {
+                BackendMode::SpmcShm => {
+                    // Single producer: write data, then publish head (safe ordering).
+                    let seq = local.local_head;
+                    if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                            return Err(msg);
+                        }
+                    }
+                    let index = (seq & local.cached_capacity_mask) as usize;
+                    unsafe {
+                        let base = local.cached_data_ptr as *mut T;
+                        simd_aware_write(base.add(index), msg);
+                        // Write per-slot ready flag (needed if consumer migrates to multi-producer mode)
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
+                    }
+                    let new_seq = seq.wrapping_add(1);
+                    local.local_head = new_seq;
+                    header.sequence_or_head.store(new_seq, Ordering::Release);
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Ok(())
+                }
+
+                BackendMode::MpscShm
+                | BackendMode::MpmcShm
+                | BackendMode::PodShm => {
+                    // Multi-producer: claim slot, write data, set per-slot ready flag.
                     let mask = local.cached_capacity_mask;
                     let capacity = local.cached_capacity;
 
@@ -1210,10 +1274,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     }
 
                     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
-                    // SAFETY: slot index (seq & mask) is within ring buffer bounds; dst is aligned for T
+                    let index = (seq & mask) as usize;
+                    // SAFETY: slot index within ring buffer bounds; dst is aligned for T
                     unsafe {
                         let base = local.cached_data_ptr as *mut T;
-                        simd_aware_write(base.add((seq & mask) as usize), msg);
+                        simd_aware_write(base.add(index), msg);
+                        // Publish per-slot ready flag (seq+1 distinguishes from zero-init)
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
                     }
                     local.local_head = seq + 1;
 
@@ -1228,7 +1297,93 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                 _ => self.send_slow_path(msg),
             }
         } else {
-            self.send_slow_path(msg)
+            // Cross-process, non-POD: serialize via bincode into SHM slot.
+            // Slot format: [8-byte ready_seq][8-byte length][serialized data...]
+            let bytes = match bincode::serialize(&msg) {
+                Ok(b) => b,
+                Err(_) => return Err(msg),
+            };
+
+            match local.cached_mode {
+                BackendMode::SpscShm | BackendMode::SpmcShm => {
+                    // Single producer: write data, then publish head.
+                    let seq = local.local_head;
+                    let slot_size = local.slot_size;
+                    let mask = local.cached_capacity_mask;
+
+                    if unlikely(seq.wrapping_sub(local.local_tail) >= local.cached_capacity) {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if seq.wrapping_sub(local.local_tail) >= local.cached_capacity {
+                            return Err(msg);
+                        }
+                    }
+
+                    let index = (seq & mask) as usize;
+                    let slot_offset = index * slot_size;
+                    // SAFETY: slot within storage bounds; single producer guarantees no concurrent write
+                    unsafe {
+                        let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                        let len_ptr = slot_ptr.add(8) as *mut u64;
+                        std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+                        let data_ptr = slot_ptr.add(16);
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+                    }
+
+                    let new_seq = seq.wrapping_add(1);
+                    local.local_head = new_seq;
+                    header.sequence_or_head.store(new_seq, Ordering::Release);
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Ok(())
+                }
+
+                BackendMode::MpscShm | BackendMode::MpmcShm => {
+                    // Multi-producer: claim slot via fetch_add, write data, set per-slot ready flag.
+                    let slot_size = local.slot_size;
+                    let mask = local.cached_capacity_mask;
+                    let capacity = local.cached_capacity;
+
+                    let current_head = header.sequence_or_head.load(Ordering::Acquire);
+                    if current_head.wrapping_sub(local.local_tail) >= capacity {
+                        local.local_tail = header.tail.load(Ordering::Acquire);
+                        if current_head.wrapping_sub(local.local_tail) >= capacity {
+                            return Err(msg);
+                        }
+                    }
+
+                    let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
+                    let index = (seq & mask) as usize;
+                    let slot_offset = index * slot_size;
+                    // SAFETY: slot within storage bounds; seq uniquely claimed via fetch_add
+                    unsafe {
+                        let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                        // Write length
+                        let len_ptr = slot_ptr.add(8) as *mut u64;
+                        std::ptr::write_volatile(len_ptr, bytes.len() as u64);
+                        // Write data
+                        let data_ptr = slot_ptr.add(16);
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+                        // Publish per-slot ready flag (seq+1 distinguishes from zero-init)
+                        std::sync::atomic::fence(Ordering::Release);
+                        let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
+                        ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
+                    }
+                    local.local_head = seq + 1;
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Ok(())
+                }
+
+                _ => self.send_slow_path(msg),
+            }
         }
     }
 
@@ -1276,20 +1431,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
             BackendStorage::DirectChannel(slot) => {
-                // Same-thread: inline for minimal overhead.
-                let t = slot.tail.load(Ordering::Relaxed);
-                let h = slot.head.load(Ordering::Relaxed);
-                if t >= h {
-                    return None;
-                }
-                // SAFETY: index within bounds; data written by producer on same thread
-                let msg = unsafe {
-                    let idx = (t & slot.mask) as usize;
-                    let s = &*slot.buffer.get_unchecked(idx);
-                    (*s.get()).assume_init_read()
-                };
-                slot.tail.store(t.wrapping_add(1), Ordering::Relaxed);
-                return Some(msg);
+                // Same-thread: delegates to DirectSlot::try_recv (inlined).
+                return slot.try_recv();
             }
             BackendStorage::SpscIntra(ring) => {
                 let result = ring.try_recv();
@@ -1343,7 +1486,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         // === SHM-BASED DISPATCH (cross-process and uninitialized fallback) ===
         if local.is_same_process {
             match local.cached_mode {
-                AdaptiveBackendMode::DirectChannel => {
+                BackendMode::DirectChannel => {
                     let tail = local.local_tail;
                     if tail >= local.local_head {
                         local.local_head =
@@ -1364,7 +1507,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Some(msg)
                 }
 
-                AdaptiveBackendMode::SpscIntra | AdaptiveBackendMode::MpscIntra => {
+                BackendMode::SpscIntra => {
+                    // Single producer, single consumer: safe without ready flag.
                     let tail = local.local_tail;
                     if tail >= local.local_head {
                         local.local_head =
@@ -1373,7 +1517,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             return None;
                         }
                     }
-                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
                         simd_aware_read(
@@ -1392,7 +1535,56 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Some(msg)
                 }
 
-                AdaptiveBackendMode::SpmcIntra | AdaptiveBackendMode::MpmcIntra => {
+                BackendMode::MpscIntra => {
+                    // Multi-producer, single consumer: check ready flag before reading.
+                    let tail = local.local_tail;
+                    let mask = local.cached_capacity_mask;
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    let index = (tail & mask) as usize;
+                    // Bounded spin on ready flag — producer may still be finishing write
+                    let ready_ok = unsafe {
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        let expected = tail.wrapping_add(1);
+                        let mut spins = 0u32;
+                        loop {
+                            if ready_ptr.load(Ordering::Acquire) == expected {
+                                break true;
+                            }
+                            spins += 1;
+                            if spins >= READY_FLAG_SPIN_LIMIT {
+                                break false;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    };
+                    if !ready_ok {
+                        return None;
+                    }
+                    let msg = unsafe {
+                        let base = local.cached_data_ptr as *const T;
+                        simd_aware_read(base.add(index))
+                    };
+                    let new_tail = tail.wrapping_add(1);
+                    local.local_tail = new_tail;
+                    header.tail.store(new_tail, Ordering::Release);
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Some(msg)
+                }
+
+                BackendMode::SpmcIntra => {
+                    // Single producer, multi-consumer: safe after CAS claim.
                     let mask = local.cached_capacity_mask;
                     loop {
                         let tail = header.tail.load(Ordering::Acquire);
@@ -1413,16 +1605,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             )
                             .is_ok()
                         {
-                            // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                             let msg = unsafe {
                                 let base = local.cached_data_ptr as *const T;
-                                simd_aware_read(
-                                    base.add((tail & mask) as usize),
-                                )
+                                simd_aware_read(base.add((tail & mask) as usize))
                             };
                             local.msg_counter = local.msg_counter.wrapping_add(1);
-                            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)
-                            {
+                            if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
                                 self.refresh_lease();
                                 self.check_migration();
                             }
@@ -1430,6 +1618,63 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                         }
                         std::hint::spin_loop();
                     }
+                }
+
+                BackendMode::MpmcIntra => {
+                    // Multi-producer, multi-consumer: check ready flag before CAS.
+                    let mask = local.cached_capacity_mask;
+                    let tail = header.tail.load(Ordering::Acquire);
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    let index = (tail & mask) as usize;
+                    // Bounded spin on ready flag BEFORE CAS
+                    let ready_ok = unsafe {
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        let expected = tail.wrapping_add(1);
+                        let mut spins = 0u32;
+                        loop {
+                            if ready_ptr.load(Ordering::Acquire) == expected {
+                                break true;
+                            }
+                            spins += 1;
+                            if spins >= READY_FLAG_SPIN_LIMIT {
+                                break false;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    };
+                    if !ready_ok {
+                        return None;
+                    }
+                    // Data is ready — CAS to claim the slot
+                    if header
+                        .tail
+                        .compare_exchange_weak(
+                            tail,
+                            tail.wrapping_add(1),
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        let msg = unsafe {
+                            let base = local.cached_data_ptr as *const T;
+                            simd_aware_read(base.add(index))
+                        };
+                        local.msg_counter = local.msg_counter.wrapping_add(1);
+                        if local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL) {
+                            self.refresh_lease();
+                            self.check_migration();
+                        }
+                        return Some(msg);
+                    }
+                    None
                 }
 
                 // Unknown or other intra-process mode: generic SHM read
@@ -1458,7 +1703,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
             }
         } else if local.is_pod {
             match local.cached_mode {
-                AdaptiveBackendMode::SpscShm | AdaptiveBackendMode::MpscShm => {
+                BackendMode::SpscShm => {
+                    // Single producer, single consumer: safe without ready flag.
                     let tail = local.local_tail;
                     let mask = local.cached_capacity_mask;
                     if tail >= local.local_head {
@@ -1468,7 +1714,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             return None;
                         }
                     }
-                    // SAFETY: slot index (tail & mask) is within ring buffer bounds; data was written by producer
                     let msg = unsafe {
                         let base = local.cached_data_ptr as *const T;
                         simd_aware_read(base.add((tail & mask) as usize))
@@ -1485,7 +1730,56 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Some(msg)
                 }
 
-                AdaptiveBackendMode::SpmcShm | AdaptiveBackendMode::MpmcShm => {
+                BackendMode::MpscShm => {
+                    // Multi-producer, single consumer: check ready flag before reading.
+                    let tail = local.local_tail;
+                    let mask = local.cached_capacity_mask;
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    let index = (tail & mask) as usize;
+                    // Bounded spin on ready flag — producer may still be finishing write
+                    let ready_ok = unsafe {
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        let expected = tail.wrapping_add(1);
+                        let mut spins = 0u32;
+                        loop {
+                            if ready_ptr.load(Ordering::Acquire) == expected {
+                                break true;
+                            }
+                            spins += 1;
+                            if spins >= READY_FLAG_SPIN_LIMIT {
+                                break false;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    };
+                    if !ready_ok {
+                        return None;
+                    }
+                    let msg = unsafe {
+                        let base = local.cached_data_ptr as *const T;
+                        simd_aware_read(base.add(index))
+                    };
+                    let new_tail = tail.wrapping_add(1);
+                    local.local_tail = new_tail;
+                    header.tail.store(new_tail, Ordering::Release);
+
+                    local.msg_counter = local.msg_counter.wrapping_add(1);
+                    if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                        self.refresh_lease();
+                        self.check_migration();
+                    }
+                    Some(msg)
+                }
+
+                BackendMode::SpmcShm => {
+                    // Single producer, multi-consumer: safe after CAS claim.
                     let mask = local.cached_capacity_mask;
                     loop {
                         let tail = header.tail.load(Ordering::Acquire);
@@ -1506,20 +1800,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                             )
                             .is_ok()
                         {
-                            // SAFETY: slot index (tail & mask) is within ring buffer bounds
                             let msg = unsafe {
                                 let base = local.cached_data_ptr as *const T;
-                                simd_aware_read(
-                                    base.add((tail & mask) as usize),
-                                )
+                                simd_aware_read(base.add((tail & mask) as usize))
                             };
                             local.local_tail = tail.wrapping_add(1);
                             local.msg_counter = local.msg_counter.wrapping_add(1);
-                            if unlikely(
-                                local
-                                    .msg_counter
-                                    .is_multiple_of(LEASE_REFRESH_INTERVAL),
-                            ) {
+                            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
                                 self.refresh_lease();
                                 self.check_migration();
                             }
@@ -1529,20 +1816,124 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     }
                 }
 
-                AdaptiveBackendMode::PodShm => {
+                BackendMode::MpmcShm | BackendMode::PodShm => {
+                    // Multi-producer, multi-consumer: check ready flag before CAS.
                     let mask = local.cached_capacity_mask;
-                    let head = header.sequence_or_head.load(Ordering::Acquire);
                     let tail = header.tail.load(Ordering::Acquire);
-                    if tail >= head {
+                    if tail >= local.local_head {
+                        local.local_head =
+                            header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+                    let index = (tail & mask) as usize;
+                    // Bounded spin on ready flag BEFORE CAS
+                    let ready_ok = unsafe {
+                        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
+                            as *const std::sync::atomic::AtomicU64);
+                        let expected = tail.wrapping_add(1);
+                        let mut spins = 0u32;
+                        loop {
+                            if ready_ptr.load(Ordering::Acquire) == expected {
+                                break true;
+                            }
+                            spins += 1;
+                            if spins >= READY_FLAG_SPIN_LIMIT {
+                                break false;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    };
+                    if !ready_ok {
                         return None;
                     }
-                    // SAFETY: slot index (tail & mask) is within ring buffer bounds
+                    // Data is ready — CAS to claim the slot
+                    if header
+                        .tail
+                        .compare_exchange_weak(
+                            tail,
+                            tail.wrapping_add(1),
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        let msg = unsafe {
+                            let base = local.cached_data_ptr as *const T;
+                            simd_aware_read(base.add(index))
+                        };
+                        local.local_tail = tail.wrapping_add(1);
+                        local.msg_counter = local.msg_counter.wrapping_add(1);
+                        if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                            self.refresh_lease();
+                            self.check_migration();
+                        }
+                        return Some(msg);
+                    }
+                    None
+                }
+
+                _ => self.recv_slow_path(),
+            }
+        } else {
+            // Cross-process, non-POD: deserialize from SHM slot.
+            // Slot format: [8-byte ready_seq][8-byte length][serialized data...]
+            match local.cached_mode {
+                BackendMode::SpscShm | BackendMode::MpscShm => {
+                    // Single consumer: owns the tail counter.
+                    let tail = local.local_tail;
+                    let mask = local.cached_capacity_mask;
+                    let slot_size = local.slot_size;
+
+                    if tail >= local.local_head {
+                        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+
+                    let index = (tail & mask) as usize;
+                    let slot_offset = index * slot_size;
+
+                    // For MpscShm: bounded spin on ready flag before reading
+                    if local.cached_mode == BackendMode::MpscShm {
+                        let ready_ok = unsafe {
+                            let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                            let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
+                            let expected = tail.wrapping_add(1);
+                            let mut spins = 0u32;
+                            loop {
+                                if ready_ptr.load(Ordering::Acquire) == expected {
+                                    break true;
+                                }
+                                spins += 1;
+                                if spins >= READY_FLAG_SPIN_LIMIT {
+                                    break false;
+                                }
+                                std::hint::spin_loop();
+                            }
+                        };
+                        if !ready_ok {
+                            return None;
+                        }
+                    }
+
+                    // SAFETY: slot within storage bounds; data written by producer
                     let msg = unsafe {
-                        let base = local.cached_data_ptr as *const T;
-                        simd_aware_read(base.add((tail & mask) as usize))
+                        let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                        let len_ptr = slot_ptr.add(8) as *const u64;
+                        let len = std::ptr::read_volatile(len_ptr) as usize;
+                        let data_ptr = slot_ptr.add(16);
+                        let slice = std::slice::from_raw_parts(data_ptr, len);
+                        bincode::deserialize(slice).unwrap_or_else(|_| {
+                            std::ptr::read(slot_ptr as *const T)
+                        })
                     };
-                    let new_tail = header.tail.fetch_add(1, Ordering::Release) + 1;
+
+                    let new_tail = tail.wrapping_add(1);
                     local.local_tail = new_tail;
+                    header.tail.store(new_tail, Ordering::Release);
 
                     local.msg_counter = local.msg_counter.wrapping_add(1);
                     if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
@@ -1552,10 +1943,85 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
                     Some(msg)
                 }
 
+                BackendMode::SpmcShm | BackendMode::MpmcShm => {
+                    // Multi-consumer: check ready flag (for MpmcShm) before CAS.
+                    let mask = local.cached_capacity_mask;
+                    let slot_size = local.slot_size;
+
+                    let tail = header.tail.load(Ordering::Acquire);
+                    if tail >= local.local_head {
+                        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+                        if tail >= local.local_head {
+                            return None;
+                        }
+                    }
+
+                    let index = (tail & mask) as usize;
+                    let slot_offset = index * slot_size;
+
+                    // For MpmcShm: bounded spin on ready flag BEFORE CAS
+                    if local.cached_mode == BackendMode::MpmcShm {
+                        let ready_ok = unsafe {
+                            let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                            let ready_ptr =
+                                &*(slot_ptr as *const std::sync::atomic::AtomicU64);
+                            let expected = tail.wrapping_add(1);
+                            let mut spins = 0u32;
+                            loop {
+                                if ready_ptr.load(Ordering::Acquire) == expected {
+                                    break true;
+                                }
+                                spins += 1;
+                                if spins >= READY_FLAG_SPIN_LIMIT {
+                                    break false;
+                                }
+                                std::hint::spin_loop();
+                            }
+                        };
+                        if !ready_ok {
+                            return None;
+                        }
+                    }
+
+                    if header
+                        .tail
+                        .compare_exchange_weak(
+                            tail,
+                            tail.wrapping_add(1),
+                            Ordering::AcqRel,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        // SAFETY: slot within storage bounds; CAS guarantees unique claim
+                        let msg = unsafe {
+                            let slot_ptr = local.cached_data_ptr.add(slot_offset);
+                            let len_ptr = slot_ptr.add(8) as *const u64;
+                            let len = std::ptr::read_volatile(len_ptr) as usize;
+                            let data_ptr = slot_ptr.add(16);
+                            let slice = std::slice::from_raw_parts(data_ptr, len);
+                            bincode::deserialize(slice).unwrap_or_else(|_| {
+                                std::ptr::read(slot_ptr as *const T)
+                            })
+                        };
+
+                        local.local_tail = tail.wrapping_add(1);
+                        local.msg_counter = local.msg_counter.wrapping_add(1);
+                        if unlikely(
+                            local
+                                .msg_counter
+                                .is_multiple_of(LEASE_REFRESH_INTERVAL),
+                        ) {
+                            self.refresh_lease();
+                            self.check_migration();
+                        }
+                        return Some(msg);
+                    }
+                    None
+                }
+
                 _ => self.recv_slow_path(),
             }
-        } else {
-            self.recv_slow_path()
         }
     }
 
@@ -1578,7 +2044,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     }
 
     /// Get the current backend mode
-    pub fn mode(&self) -> AdaptiveBackendMode {
+    pub fn mode(&self) -> BackendMode {
         self.header().mode()
     }
 
@@ -1587,8 +2053,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
         self.local().role
     }
 
-    /// Get raw adaptive metrics (for internal use)
-    pub fn adaptive_metrics(&self) -> &AdaptiveMetrics {
+    /// Get raw migration metrics (for internal use)
+    pub fn migration_metrics(&self) -> &MigrationMetrics {
         &self.metrics
     }
 
@@ -1715,7 +2181,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     }
 
     /// Force a backend migration (for testing)
-    pub fn force_migrate(&self, mode: AdaptiveBackendMode) -> MigrationResult {
+    pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         let migrator = BackendMigrator::new(self.header());
         let result = migrator.try_migrate(mode);
         if matches!(result, MigrationResult::Success { .. }) {
@@ -1822,17 +2288,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     /// Get the backend name (for debugging)
     pub fn backend_name(&self) -> &'static str {
         match self.mode() {
-            AdaptiveBackendMode::Unknown => "Unknown (Adaptive)",
-            AdaptiveBackendMode::DirectChannel => "DirectChannel (Adaptive)",
-            AdaptiveBackendMode::SpscIntra => "SpscIntra (Adaptive)",
-            AdaptiveBackendMode::SpmcIntra => "SpmcIntra (Adaptive)",
-            AdaptiveBackendMode::MpscIntra => "MpscIntra (Adaptive)",
-            AdaptiveBackendMode::MpmcIntra => "MpmcIntra (Adaptive)",
-            AdaptiveBackendMode::PodShm => "PodShm (Adaptive)",
-            AdaptiveBackendMode::SpscShm => "SpscShm (Adaptive)",
-            AdaptiveBackendMode::SpmcShm => "SpmcShm (Adaptive)",
-            AdaptiveBackendMode::MpscShm => "MpscShm (Adaptive)",
-            AdaptiveBackendMode::MpmcShm => "MpmcShm (Adaptive)",
+            BackendMode::Unknown => "Unknown",
+            BackendMode::DirectChannel => "DirectChannel",
+            BackendMode::SpscIntra => "SpscIntra",
+            BackendMode::SpmcIntra => "SpmcIntra",
+            BackendMode::MpscIntra => "MpscIntra",
+            BackendMode::MpmcIntra => "MpmcIntra",
+            BackendMode::PodShm => "PodShm",
+            BackendMode::SpscShm => "SpscShm",
+            BackendMode::SpmcShm => "SpmcShm",
+            BackendMode::MpscShm => "MpscShm",
+            BackendMode::MpmcShm => "MpmcShm",
         }
     }
 
@@ -1862,7 +2328,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTo
     }
 }
 
-impl<T> Clone for AdaptiveTopic<T> {
+impl<T> Clone for Topic<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -1877,7 +2343,7 @@ impl<T> Clone for AdaptiveTopic<T> {
     }
 }
 
-impl<T> Drop for AdaptiveTopic<T> {
+impl<T> Drop for Topic<T> {
     fn drop(&mut self) {
         // Registry entries are NOT removed here — other instances may still
         // reference the same backend Arc. Entries are cleaned up automatically
@@ -1888,21 +2354,22 @@ impl<T> Drop for AdaptiveTopic<T> {
 
 // Specialized implementation for POD types
 impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'static>
-    AdaptiveTopic<T>
+    Topic<T>
 {
-    /// Create an adaptive topic for POD types (uses zero-copy path)
+    /// Create a topic for POD types (uses zero-copy path)
     pub fn new_pod(name: &str) -> HorusResult<Self> {
         let type_size = mem::size_of::<T>() as u32;
         let type_align = mem::align_of::<T>() as u32;
 
-        let total_size = Self::HEADER_SIZE + type_size as usize;
+        // capacity=1 for new_pod, seq_array = 1 * 8 = 8 bytes
+        let total_size = Self::HEADER_SIZE + mem::size_of::<u64>() + type_size as usize;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
 
-        // SAFETY: storage is properly sized (>= HEADER_SIZE + type_size) and aligned for AdaptiveTopicHeader
-        let header = unsafe { &mut *(storage.as_ptr() as *mut AdaptiveTopicHeader) };
+        // SAFETY: storage is properly sized (>= HEADER_SIZE + type_size) and aligned for TopicHeader
+        let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
 
-        if header.magic != ADAPTIVE_MAGIC {
+        if header.magic != TOPIC_MAGIC {
             header.init(type_size, type_align, true, 1, type_size);
         }
 
@@ -1915,7 +2382,7 @@ impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'stati
                 slot_size: type_size as usize,
                 ..Default::default()
             }),
-            metrics: Arc::new(AdaptiveMetrics::default()),
+            metrics: Arc::new(MigrationMetrics::default()),
             log_fn: None,
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
@@ -1927,7 +2394,7 @@ impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'stati
 // Logging Support (requires LogSummary bound)
 // ============================================================================
 
-impl<T> AdaptiveTopic<T>
+impl<T> Topic<T>
 where
     T: Clone + Send + Sync + Serialize + DeserializeOwned + crate::core::LogSummary + 'static,
 {
@@ -1942,7 +2409,7 @@ where
 // TopicConfig Support
 // ============================================================================
 
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> AdaptiveTopic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// Create a topic from configuration
     pub fn from_config(config: TopicConfig) -> HorusResult<Self> {
         Self::with_capacity(&config.name, config.capacity, None)

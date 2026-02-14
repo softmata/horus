@@ -1,10 +1,10 @@
-//! Local state for an AdaptiveTopic participant.
+//! Local state for a Topic participant.
 //!
 //! Caches frequently accessed values locally to avoid reading from shared
 //! memory on the hot path.
 
-use super::header::AdaptiveTopicHeader;
-use super::types::{AdaptiveBackendMode, TopicRole};
+use super::header::TopicHeader;
+use super::types::{BackendMode, TopicRole};
 
 /// Default serialized message slot size (8KB)
 pub(crate) const DEFAULT_SLOT_SIZE: usize = 8 * 1024;
@@ -13,7 +13,7 @@ pub(crate) const DEFAULT_SLOT_SIZE: usize = 8 * 1024;
 /// This avoids calling SystemTime::now() syscall on the hot path
 pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
 
-/// Local state for an AdaptiveTopic participant
+/// Local state for an Topic participant
 ///
 /// ## Cache-Optimized Design
 ///
@@ -28,7 +28,7 @@ pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
 pub(crate) struct LocalState {
     // ========== FIRST CACHE LINE (0-63 bytes) - HOT PATH ==========
     /// Cached backend mode - FIRST field because it's checked FIRST in send()
-    pub cached_mode: AdaptiveBackendMode, // offset 0 (1 byte)
+    pub cached_mode: BackendMode, // offset 0 (1 byte)
 
     /// Our role (accessed early in some paths)
     pub role: TopicRole, // offset 1 (1 byte)
@@ -49,7 +49,7 @@ pub(crate) struct LocalState {
     pub cached_capacity_mask: u64, // offset 16
 
     /// Cached pointer to data region - for ring buffer write
-    /// SAFETY: Valid for AdaptiveTopic lifetime (points into Arc<ShmRegion>)
+    /// SAFETY: Valid for Topic lifetime (points into Arc<ShmRegion>)
     pub cached_data_ptr: *mut u8, // offset 24
 
     /// Locally cached tail index (for backpressure check in SpscIntra)
@@ -59,8 +59,12 @@ pub(crate) struct LocalState {
     pub cached_capacity: u64, // offset 40
 
     /// Cached pointer to header - for atomic updates in SpscIntra
-    /// SAFETY: Valid for AdaptiveTopic lifetime (points into Arc<ShmRegion>)
-    pub cached_header_ptr: *const AdaptiveTopicHeader, // offset 48
+    /// SAFETY: Valid for Topic lifetime (points into Arc<ShmRegion>)
+    pub cached_header_ptr: *const TopicHeader, // offset 48
+
+    /// Cached pointer to per-slot sequence array (for multi-producer ready flags)
+    /// SAFETY: Valid for Topic lifetime (points into Arc<ShmRegion>)
+    pub cached_seq_ptr: *mut u8, // offset 56
 
     // ========== SECOND CACHE LINE (64+ bytes) - COLD PATH ==========
     /// Our slot index in the participant array (-1 if not registered)
@@ -76,7 +80,7 @@ pub(crate) struct LocalState {
 impl Default for LocalState {
     fn default() -> Self {
         Self {
-            cached_mode: AdaptiveBackendMode::Unknown,
+            cached_mode: BackendMode::Unknown,
             role: TopicRole::Unregistered,
             is_pod: false,
             is_same_process: true, // Assume same process until checked
@@ -87,6 +91,7 @@ impl Default for LocalState {
             local_tail: 0,
             cached_capacity: 0,
             cached_header_ptr: std::ptr::null(),
+            cached_seq_ptr: std::ptr::null_mut(),
             slot_index: -1,
             slot_size: DEFAULT_SLOT_SIZE,
             cached_epoch: 0,

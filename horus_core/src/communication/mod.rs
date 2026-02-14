@@ -41,20 +41,17 @@
 //! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
 //! ```
 
-pub mod adaptive_topic;
+pub mod topic;
 pub mod config;
 pub mod network;
 pub mod pod;
 pub mod storage;
 pub mod traits;
 
-// Topic<T> is now a direct alias for AdaptiveTopic<T> — no wrapper, no indirection.
-pub type Topic<T> = AdaptiveTopic<T>;
-
 // Re-export commonly used types for convenience
-pub use adaptive_topic::{
-    AdaptiveBackendMode, AdaptiveMetrics, AdaptiveTopic, BackendHint, ConnectionState,
-    MigrationResult, TopicConfig, TopicDescriptor, TopicMetrics, TopicRole,
+pub use topic::{
+    BackendHint, BackendMode, ConnectionState, MigrationMetrics, MigrationResult, Topic,
+    TopicConfig, TopicDescriptor, TopicMetrics, TopicRole,
 };
 pub use config::{EndpointConfig, HorusConfig};
 pub use pod::{is_pod, PodMessage};

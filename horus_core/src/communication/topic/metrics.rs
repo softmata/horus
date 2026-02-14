@@ -1,10 +1,10 @@
-//! Metrics tracking for adaptive topics.
+//! Metrics tracking for topics.
 
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
-/// Adaptive topic metrics for monitoring
+/// Migration and operational metrics for a Topic
 #[derive(Debug, Default)]
-pub struct AdaptiveMetrics {
+pub struct MigrationMetrics {
     /// Messages sent through this topic
     pub messages_sent: AtomicU64,
     /// Messages received through this topic

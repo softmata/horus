@@ -1,6 +1,6 @@
-//! Shared memory header for adaptive topic detection.
+//! Shared memory header for topic detection.
 //!
-//! The `AdaptiveTopicHeader` is laid out in shared memory for cross-process
+//! The `TopicHeader` is laid out in shared memory for cross-process
 //! rendezvous. It contains participant tracking, topology detection, and
 //! migration coordination.
 
@@ -9,18 +9,19 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use crate::error::{HorusError, HorusResult};
 
-use super::types::AdaptiveBackendMode;
+use super::types::BackendMode;
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Magic number for adaptive topic header validation
-pub(crate) const ADAPTIVE_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE"
+/// Magic number for topic header validation
+pub(crate) const TOPIC_MAGIC: u64 = 0x4144415054495645; // "ADAPTIVE" (kept for backwards compat)
 
 /// Header version for compatibility checking
 /// v2: Added slot_size field for large message support
-pub(crate) const ADAPTIVE_VERSION: u32 = 2;
+/// v3: Added per-slot sequence array for multi-producer write-completion tracking
+pub(crate) const TOPIC_VERSION: u32 = 3;
 
 /// Default lease timeout in milliseconds (5 seconds)
 pub(crate) const DEFAULT_LEASE_TIMEOUT_MS: u64 = 5000;
@@ -96,10 +97,10 @@ impl ParticipantEntry {
 }
 
 // ============================================================================
-// Adaptive Topic Header (Cache-Optimized)
+// Topic Header (Cache-Optimized)
 // ============================================================================
 
-/// Shared memory header for adaptive topic detection.
+/// Shared memory header for topic detection.
 ///
 /// This header enables fully automatic backend selection based on:
 /// - Thread ID comparison (same-thread detection)
@@ -120,9 +121,9 @@ impl ParticipantEntry {
 /// - Cache line 4: Counters and timestamps
 /// - Cache lines 5-10: Participant tracking
 #[repr(C, align(64))]
-pub struct AdaptiveTopicHeader {
+pub struct TopicHeader {
     // === Cache line 1 (bytes 0-63): Core metadata (read-mostly) ===
-    /// Magic number for validation ("ADAPTIVE")
+    /// Magic number for validation
     pub magic: u64,
     /// Header version for compatibility
     pub version: u32,
@@ -132,7 +133,7 @@ pub struct AdaptiveTopicHeader {
     pub type_align: u32,
     /// Is POD type: 0=unknown, 1=no, 2=yes
     pub is_pod: AtomicU8,
-    /// Current backend mode (AdaptiveBackendMode as u8)
+    /// Current backend mode (BackendMode as u8)
     pub backend_mode: AtomicU8,
     /// Migration lock: 0=unlocked, 1=locked
     pub migration_lock: AtomicU8,
@@ -189,9 +190,9 @@ pub struct AdaptiveTopicHeader {
 }
 
 // Size assertion: Header must be exactly 640 bytes (10 cache lines)
-const _: () = assert!(mem::size_of::<AdaptiveTopicHeader>() == 640);
+const _: () = assert!(mem::size_of::<TopicHeader>() == 640);
 
-impl AdaptiveTopicHeader {
+impl TopicHeader {
     /// Create a zeroed header (for testing or pre-allocation)
     pub fn zeroed() -> Self {
         Self {
@@ -248,13 +249,13 @@ impl AdaptiveTopicHeader {
 
         // Initialize all fields BEFORE setting magic (race condition fix)
         // Another process might check magic to determine if header is initialized
-        self.version = ADAPTIVE_VERSION;
+        self.version = TOPIC_VERSION;
         self.type_size = type_size;
         self.type_align = type_align;
         self.is_pod
             .store(if is_pod { POD_YES } else { POD_NO }, Ordering::Release);
         self.backend_mode
-            .store(AdaptiveBackendMode::Unknown as u8, Ordering::Release);
+            .store(BackendMode::Unknown as u8, Ordering::Release);
         self.migration_lock
             .store(MIGRATION_UNLOCKED, Ordering::Release);
         self._flags = 0;
@@ -287,19 +288,19 @@ impl AdaptiveTopicHeader {
         // CRITICAL: Set magic LAST with a memory fence to ensure all prior writes
         // are visible to other processes before they see the magic value.
         std::sync::atomic::fence(Ordering::Release);
-        self.magic = ADAPTIVE_MAGIC;
+        self.magic = TOPIC_MAGIC;
     }
 
     /// Check if the header has valid magic number
     #[inline]
     pub fn is_valid(&self) -> bool {
-        self.magic == ADAPTIVE_MAGIC && self.version == ADAPTIVE_VERSION
+        self.magic == TOPIC_MAGIC && self.version == TOPIC_VERSION
     }
 
     /// Get the current backend mode
     #[inline]
-    pub fn mode(&self) -> AdaptiveBackendMode {
-        AdaptiveBackendMode::from(self.backend_mode.load(Ordering::Acquire))
+    pub fn mode(&self) -> BackendMode {
+        BackendMode::from(self.backend_mode.load(Ordering::Acquire))
     }
 
     /// Check if all active participants (and caller) are in the same process
@@ -533,7 +534,7 @@ impl AdaptiveTopicHeader {
     }
 
     /// Detect the optimal backend based on current topology
-    pub fn detect_optimal_backend(&self) -> AdaptiveBackendMode {
+    pub fn detect_optimal_backend(&self) -> BackendMode {
         let pubs = self.pub_count();
         let subs = self.sub_count();
         let same_process = self.is_same_process();
@@ -541,38 +542,38 @@ impl AdaptiveTopicHeader {
         let is_pod = self.is_pod_type();
 
         match (all_same_thread, same_process, pubs, subs, is_pod) {
-            (_, _, 0, 0, _) => AdaptiveBackendMode::Unknown,
+            (_, _, 0, 0, _) => BackendMode::Unknown,
 
-            (true, _, 1, 1, true) => AdaptiveBackendMode::DirectChannel,
+            (true, _, 1, 1, true) => BackendMode::DirectChannel,
 
             // Intra-process: 1P↔1C (or anticipating single counterpart)
-            (_, true, 1, 1, _) => AdaptiveBackendMode::SpscIntra,
-            (_, true, 1, 0, _) => AdaptiveBackendMode::SpscIntra,
-            (_, true, 0, 1, _) => AdaptiveBackendMode::SpscIntra,
+            (_, true, 1, 1, _) => BackendMode::SpscIntra,
+            (_, true, 1, 0, _) => BackendMode::SpscIntra,
+            (_, true, 0, 1, _) => BackendMode::SpscIntra,
             // Intra-process: 1P, multiple consumers
-            (_, true, 1, _, _) if subs > 1 => AdaptiveBackendMode::SpmcIntra,
+            (_, true, 1, _, _) if subs > 1 => BackendMode::SpmcIntra,
             // Intra-process: multiple producers (0 or 1 consumer)
-            (_, true, _, 0, _) if pubs > 1 => AdaptiveBackendMode::MpscIntra,
-            (_, true, _, 1, _) if pubs > 1 => AdaptiveBackendMode::MpscIntra,
+            (_, true, _, 0, _) if pubs > 1 => BackendMode::MpscIntra,
+            (_, true, _, 1, _) if pubs > 1 => BackendMode::MpscIntra,
             // Intra-process: 0 pubs, multiple consumers (anticipating single producer)
-            (_, true, 0, _, _) if subs > 1 => AdaptiveBackendMode::SpmcIntra,
+            (_, true, 0, _, _) if subs > 1 => BackendMode::SpmcIntra,
             // Intra-process: MPMC
-            (_, true, _, _, _) if pubs > 1 && subs > 1 => AdaptiveBackendMode::MpmcIntra,
+            (_, true, _, _, _) if pubs > 1 && subs > 1 => BackendMode::MpmcIntra,
 
             // Cross-process: 1P↔1C
-            (_, false, 1, 1, _) => AdaptiveBackendMode::SpscShm,
-            (_, false, 1, 0, _) => AdaptiveBackendMode::SpscShm,
-            (_, false, 0, 1, _) => AdaptiveBackendMode::SpscShm,
+            (_, false, 1, 1, _) => BackendMode::SpscShm,
+            (_, false, 1, 0, _) => BackendMode::SpscShm,
+            (_, false, 0, 1, _) => BackendMode::SpscShm,
             // Cross-process: multi-producer
-            (_, false, _, 0, _) if pubs > 1 => AdaptiveBackendMode::MpscShm,
-            (_, false, _, 1, _) if pubs > 1 => AdaptiveBackendMode::MpscShm,
+            (_, false, _, 0, _) if pubs > 1 => BackendMode::MpscShm,
+            (_, false, _, 1, _) if pubs > 1 => BackendMode::MpscShm,
             // Cross-process: multi-consumer
-            (_, false, 1, _, _) if subs > 1 => AdaptiveBackendMode::SpmcShm,
-            (_, false, 0, _, _) if subs > 1 => AdaptiveBackendMode::SpmcShm,
+            (_, false, 1, _, _) if subs > 1 => BackendMode::SpmcShm,
+            (_, false, 0, _, _) if subs > 1 => BackendMode::SpmcShm,
 
-            (_, false, _, _, true) => AdaptiveBackendMode::PodShm,
+            (_, false, _, _, true) => BackendMode::PodShm,
 
-            _ => AdaptiveBackendMode::MpmcShm,
+            _ => BackendMode::MpmcShm,
         }
     }
 

@@ -1,4 +1,4 @@
-//! Tests for the adaptive topic system.
+//! Tests for the topic system.
 
 use super::*;
 use std::mem;
@@ -24,11 +24,11 @@ fn test_local_state_size() {
 #[test]
 fn test_backend_mode_conversion() {
     assert_eq!(
-        AdaptiveBackendMode::from(1),
-        AdaptiveBackendMode::DirectChannel
+        BackendMode::from(1),
+        BackendMode::DirectChannel
     );
-    assert_eq!(AdaptiveBackendMode::from(10), AdaptiveBackendMode::MpmcShm);
-    assert_eq!(AdaptiveBackendMode::from(255), AdaptiveBackendMode::Unknown);
+    assert_eq!(BackendMode::from(10), BackendMode::MpmcShm);
+    assert_eq!(BackendMode::from(255), BackendMode::Unknown);
 }
 
 #[test]
@@ -49,9 +49,9 @@ fn test_current_time_ms() {
 
 #[test]
 fn test_backend_mode_latency() {
-    assert_eq!(AdaptiveBackendMode::DirectChannel.expected_latency_ns(), 3);
-    assert_eq!(AdaptiveBackendMode::SpscIntra.expected_latency_ns(), 18);
-    assert_eq!(AdaptiveBackendMode::MpmcShm.expected_latency_ns(), 167);
+    assert_eq!(BackendMode::DirectChannel.expected_latency_ns(), 3);
+    assert_eq!(BackendMode::SpscIntra.expected_latency_ns(), 18);
+    assert_eq!(BackendMode::MpmcShm.expected_latency_ns(), 167);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn test_topic_role() {
 
 #[test]
 fn test_migrator_creation() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
 
     let migrator = BackendMigrator::new(&header);
@@ -98,7 +98,7 @@ fn test_migrator_creation() {
 
 #[test]
 fn test_migrator_with_custom_timeout() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
 
     let _migrator = BackendMigrator::with_drain_timeout(&header, 500);
@@ -106,32 +106,32 @@ fn test_migrator_with_custom_timeout() {
 
 #[test]
 fn test_migration_not_needed() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     header
         .backend_mode
-        .store(AdaptiveBackendMode::MpmcShm as u8, Ordering::Release);
+        .store(BackendMode::MpmcShm as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
-    let result = migrator.try_migrate(AdaptiveBackendMode::MpmcShm);
+    let result = migrator.try_migrate(BackendMode::MpmcShm);
     assert_eq!(result, MigrationResult::NotNeeded);
 }
 
 #[test]
 fn test_migration_success() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     header
         .backend_mode
-        .store(AdaptiveBackendMode::Unknown as u8, Ordering::Release);
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
-    let result = migrator.try_migrate(AdaptiveBackendMode::SpscIntra);
+    let result = migrator.try_migrate(BackendMode::SpscIntra);
 
     match result {
         MigrationResult::Success { new_epoch } => {
             assert_eq!(new_epoch, 1);
-            assert_eq!(header.mode(), AdaptiveBackendMode::SpscIntra);
+            assert_eq!(header.mode(), BackendMode::SpscIntra);
         }
         other => panic!("Expected Success, got {:?}", other),
     }
@@ -139,14 +139,14 @@ fn test_migration_success() {
 
 #[test]
 fn test_migration_concurrent_lock() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
 
     assert!(header.try_lock_migration());
     assert!(header.migration_lock.load(Ordering::Acquire) != 0);
 
     let migrator = BackendMigrator::new(&header);
-    let result = migrator.try_migrate(AdaptiveBackendMode::SpscIntra);
+    let result = migrator.try_migrate(BackendMode::SpscIntra);
     assert_eq!(result, MigrationResult::AlreadyInProgress);
 
     header.unlock_migration();
@@ -155,7 +155,7 @@ fn test_migration_concurrent_lock() {
 
 #[test]
 fn test_migrator_is_optimal() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
 
     let optimal = header.detect_optimal_backend();
@@ -166,23 +166,23 @@ fn test_migrator_is_optimal() {
 
     header
         .backend_mode
-        .store(AdaptiveBackendMode::DirectChannel as u8, Ordering::Release);
+        .store(BackendMode::DirectChannel as u8, Ordering::Release);
     assert!(!migrator.is_optimal());
 }
 
 #[test]
 fn test_migrator_stats() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     header
         .backend_mode
-        .store(AdaptiveBackendMode::SpscIntra as u8, Ordering::Release);
+        .store(BackendMode::SpscIntra as u8, Ordering::Release);
     header.migration_epoch.store(42, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
     let stats = migrator.stats();
 
-    assert_eq!(stats.current_mode, AdaptiveBackendMode::SpscIntra);
+    assert_eq!(stats.current_mode, BackendMode::SpscIntra);
     assert_eq!(stats.current_epoch, 42);
     assert!(!stats.is_locked);
     assert_eq!(stats.publisher_count, 0);
@@ -191,11 +191,11 @@ fn test_migrator_stats() {
 
 #[test]
 fn test_migrate_to_optimal() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     header
         .backend_mode
-        .store(AdaptiveBackendMode::Unknown as u8, Ordering::Release);
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
     let result = migrator.migrate_to_optimal();
@@ -213,47 +213,47 @@ fn test_migrate_to_optimal() {
 
 #[test]
 fn test_epoch_increments_on_migration() {
-    let mut header = AdaptiveTopicHeader::zeroed();
+    let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     header
         .backend_mode
-        .store(AdaptiveBackendMode::Unknown as u8, Ordering::Release);
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
 
-    let result1 = migrator.try_migrate(AdaptiveBackendMode::SpscIntra);
+    let result1 = migrator.try_migrate(BackendMode::SpscIntra);
     assert!(matches!(result1, MigrationResult::Success { new_epoch: 1 }));
 
-    let result2 = migrator.try_migrate(AdaptiveBackendMode::MpmcShm);
+    let result2 = migrator.try_migrate(BackendMode::MpmcShm);
     assert!(matches!(result2, MigrationResult::Success { new_epoch: 2 }));
 
-    let result3 = migrator.try_migrate(AdaptiveBackendMode::SpscIntra);
+    let result3 = migrator.try_migrate(BackendMode::SpscIntra);
     assert!(matches!(result3, MigrationResult::Success { new_epoch: 3 }));
 
     assert_eq!(migrator.current_epoch(), 3);
 }
 
 // ========================================================================
-// AdaptiveTopic tests
+// Topic tests
 // ========================================================================
 
 #[test]
-fn test_adaptive_topic_creation() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_create").expect("Failed to create topic");
+fn test_topic_creation() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_create").expect("Failed to create topic");
 
-    assert_eq!(topic.name(), "test_adaptive_create");
+    assert_eq!(topic.name(), "test_topic_create");
     assert_eq!(topic.role(), TopicRole::Unregistered);
     assert_eq!(
         topic
-            .adaptive_metrics()
+            .migration_metrics()
             .messages_sent
             .load(Ordering::Relaxed),
         0
     );
     assert_eq!(
         topic
-            .adaptive_metrics()
+            .migration_metrics()
             .messages_received
             .load(Ordering::Relaxed),
         0
@@ -262,9 +262,9 @@ fn test_adaptive_topic_creation() {
 
 #[test]
 #[ignore] // Flaky on CI - requires shared memory setup
-fn test_adaptive_topic_send_registers_producer() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_send").expect("Failed to create topic");
+fn test_topic_send_registers_producer() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_send").expect("Failed to create topic");
 
     assert_eq!(topic.role(), TopicRole::Unregistered);
 
@@ -274,9 +274,9 @@ fn test_adaptive_topic_send_registers_producer() {
 }
 
 #[test]
-fn test_adaptive_topic_recv_registers_consumer() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_recv").expect("Failed to create topic");
+fn test_topic_recv_registers_consumer() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_recv").expect("Failed to create topic");
 
     assert_eq!(topic.role(), TopicRole::Unregistered);
 
@@ -288,9 +288,9 @@ fn test_adaptive_topic_recv_registers_consumer() {
 
 #[test]
 #[ignore] // Flaky on CI - requires shared memory setup
-fn test_adaptive_topic_send_recv_roundtrip() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_roundtrip").expect("Failed to create topic");
+fn test_topic_send_recv_roundtrip() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_roundtrip").expect("Failed to create topic");
 
     let _ = topic.send(12345u64);
 
@@ -301,11 +301,11 @@ fn test_adaptive_topic_send_recv_roundtrip() {
 }
 
 #[test]
-fn test_adaptive_topic_multiple_messages() {
+fn test_topic_multiple_messages() {
     let unique_name = format!("test_multi_{}", std::process::id());
 
-    let topic: AdaptiveTopic<u32> =
-        AdaptiveTopic::new(&unique_name).expect("Failed to create topic");
+    let topic: Topic<u32> =
+        Topic::new(&unique_name).expect("Failed to create topic");
 
     for i in 0..10u32 {
         let _ = topic.send(i);
@@ -329,11 +329,11 @@ fn test_adaptive_topic_multiple_messages() {
 fn test_separate_topic_instances() {
     let unique_name = format!("test_separate_{}", std::process::id());
 
-    let publisher: AdaptiveTopic<f32> =
-        AdaptiveTopic::new(&unique_name).expect("Failed to create publisher");
+    let publisher: Topic<f32> =
+        Topic::new(&unique_name).expect("Failed to create publisher");
 
-    let subscriber: AdaptiveTopic<f32> =
-        AdaptiveTopic::new(&unique_name).expect("Failed to create subscriber");
+    let subscriber: Topic<f32> =
+        Topic::new(&unique_name).expect("Failed to create subscriber");
 
     let pub_header = publisher.header();
     let sub_header = subscriber.header();
@@ -376,15 +376,15 @@ fn test_separate_topic_instances() {
     let sub_local = subscriber.local();
     assert_eq!(
         sub_local.cached_mode,
-        AdaptiveBackendMode::DirectChannel,
+        BackendMode::DirectChannel,
         "Should use DirectChannel for same-thread separate instances"
     );
 }
 
 #[test]
-fn test_adaptive_topic_has_message() {
-    let topic: AdaptiveTopic<String> =
-        AdaptiveTopic::new("test_adaptive_has_msg").expect("Failed to create topic");
+fn test_topic_has_message() {
+    let topic: Topic<String> =
+        Topic::new("test_topic_has_msg").expect("Failed to create topic");
 
     assert!(!topic.has_message());
     assert_eq!(topic.pending_count(), 0);
@@ -402,9 +402,9 @@ fn test_adaptive_topic_has_message() {
 }
 
 #[test]
-fn test_adaptive_topic_mode_detection() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_mode").expect("Failed to create topic");
+fn test_topic_mode_detection() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_mode").expect("Failed to create topic");
 
     let _mode = topic.mode();
 
@@ -417,9 +417,9 @@ fn test_adaptive_topic_mode_detection() {
 }
 
 #[test]
-fn test_adaptive_topic_clone() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_clone").expect("Failed to create topic");
+fn test_topic_clone() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_clone").expect("Failed to create topic");
 
     let _ = topic.send(100);
 
@@ -429,11 +429,11 @@ fn test_adaptive_topic_clone() {
 
     assert_eq!(
         topic
-            .adaptive_metrics()
+            .migration_metrics()
             .messages_sent
             .load(Ordering::Relaxed),
         cloned
-            .adaptive_metrics()
+            .migration_metrics()
             .messages_sent
             .load(Ordering::Relaxed)
     );
@@ -444,16 +444,16 @@ fn test_adaptive_topic_clone() {
 
 #[test]
 #[ignore] // Flaky on CI - requires shared memory setup
-fn test_adaptive_topic_metrics() {
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new("test_adaptive_metrics").expect("Failed to create topic");
+fn test_topic_metrics() {
+    let topic: Topic<u64> =
+        Topic::new("test_topic_metrics").expect("Failed to create topic");
 
     let metrics = topic.metrics();
     assert_eq!(metrics.messages_sent, 0);
     assert_eq!(metrics.messages_received, 0);
 
-    let adaptive = topic.adaptive_metrics();
-    assert_eq!(adaptive.migrations.load(Ordering::Relaxed), 0);
+    let mig_metrics = topic.migration_metrics();
+    assert_eq!(mig_metrics.migrations.load(Ordering::Relaxed), 0);
 
     for i in 0..5 {
         topic.send(i);
@@ -461,11 +461,11 @@ fn test_adaptive_topic_metrics() {
 }
 
 #[test]
-fn test_adaptive_topic_latency_validation() {
+fn test_topic_latency_validation() {
     let unique_name = format!("test_latency_{}", std::process::id());
 
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new(&unique_name).expect("Failed to create topic");
+    let topic: Topic<u64> =
+        Topic::new(&unique_name).expect("Failed to create topic");
 
     for _ in 0..10 {
         let _ = topic.send(1u64);
@@ -486,7 +486,7 @@ fn test_adaptive_topic_latency_validation() {
     let avg_latency_ns = elapsed.as_nanos() / iterations as u128;
 
     eprintln!(
-        "AdaptiveTopic latency: {}ns avg ({} iterations)",
+        "Topic latency: {}ns avg ({} iterations)",
         avg_latency_ns, iterations
     );
     eprintln!("Backend mode: {:?}", topic.mode());
@@ -505,11 +505,11 @@ fn test_adaptive_topic_latency_validation() {
 }
 
 #[test]
-fn test_adaptive_topic_throughput() {
+fn test_topic_throughput() {
     let unique_name = format!("test_throughput_{}", std::process::id());
 
-    let topic: AdaptiveTopic<u64> =
-        AdaptiveTopic::new(&unique_name).expect("Failed to create topic");
+    let topic: Topic<u64> =
+        Topic::new(&unique_name).expect("Failed to create topic");
 
     let iterations = 100;
     let start = std::time::Instant::now();
@@ -538,19 +538,19 @@ fn test_adaptive_topic_throughput() {
 }
 
 #[test]
-fn test_adaptive_topic_backend_names() {
+fn test_topic_backend_names() {
     let modes = [
-        AdaptiveBackendMode::Unknown,
-        AdaptiveBackendMode::DirectChannel,
-        AdaptiveBackendMode::SpscIntra,
-        AdaptiveBackendMode::SpmcIntra,
-        AdaptiveBackendMode::MpscIntra,
-        AdaptiveBackendMode::MpmcIntra,
-        AdaptiveBackendMode::PodShm,
-        AdaptiveBackendMode::SpscShm,
-        AdaptiveBackendMode::SpmcShm,
-        AdaptiveBackendMode::MpscShm,
-        AdaptiveBackendMode::MpmcShm,
+        BackendMode::Unknown,
+        BackendMode::DirectChannel,
+        BackendMode::SpscIntra,
+        BackendMode::SpmcIntra,
+        BackendMode::MpscIntra,
+        BackendMode::MpmcIntra,
+        BackendMode::PodShm,
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::MpmcShm,
     ];
 
     for mode in modes {

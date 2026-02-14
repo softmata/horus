@@ -1,6 +1,6 @@
 //! HORUS IPC Latency Benchmark — All Backend Paths
 //!
-//! Measures true per-message latency across every AdaptiveTopic backend route.
+//! Measures true per-message latency across every Topic backend route.
 //!
 //! ## Methodology
 //!
@@ -1309,7 +1309,7 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!();
 
     println!("  Known limitations:");
-    println!("    - AdaptiveTopic selects backends based on topology and type (POD vs non-POD)");
+    println!("    - Topic selects backends based on topology and type (POD vs non-POD)");
     println!("    - MpmcShm only activates for non-POD types; POD multi-pub/sub uses PodShm");
     println!("    - Cross-process POD: zero-copy (memcpy + atomics). Non-POD: +bincode ser/deser");
     println!("    - Governor 'powersave' significantly inflates latencies vs 'performance'");

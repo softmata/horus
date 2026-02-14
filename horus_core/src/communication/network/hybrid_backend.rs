@@ -1,7 +1,7 @@
 //! Hybrid Backend - Zero-copy local bypass for Zenoh
 //!
 //! This module provides a `HybridBackend` that automatically switches between:
-//! - **Local**: HORUS native Topic (AdaptiveTopic) for <1μs latency
+//! - **Local**: HORUS native Topic for <1μs latency
 //! - **Remote**: Zenoh for multi-robot mesh, cloud, and ROS2 interop
 //!
 //! # Performance
@@ -49,7 +49,7 @@
 //! ```
 
 use crate::error::{HorusError, HorusResult};
-use crate::communication::adaptive_topic::AdaptiveTopic;
+use crate::communication::Topic;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -248,7 +248,7 @@ where
     topic: String,
 
     /// Local SHM backend (always created for local bypass)
-    shm: Option<AdaptiveTopic<T>>,
+    shm: Option<Topic<T>>,
 
     /// Zenoh backend for remote communication
     zenoh: Option<ZenohBackend<T>>,
@@ -283,7 +283,7 @@ where
         let shm = if config.enable_local_bypass {
             // Use a topic name that includes "hybrid" to avoid conflicts
             let shm_topic_name = format!("hybrid/{}", topic.replace('/', "_"));
-            match AdaptiveTopic::new(&shm_topic_name) {
+            match Topic::new(&shm_topic_name) {
                 Ok(shm) => {
                     log::info!(
                         "HybridBackend: Created SHM backend for '{}' (capacity: {})",
@@ -608,7 +608,7 @@ impl std::fmt::Display for HybridMode {
 #[cfg(not(feature = "zenoh-transport"))]
 pub struct HybridBackend<T> {
     topic: String,
-    shm: Option<AdaptiveTopic<T>>,
+    shm: Option<Topic<T>>,
     stats: Arc<HybridStats>,
     _phantom: PhantomData<T>,
 }
@@ -621,7 +621,7 @@ where
     /// Create a new hybrid backend (SHM-only when Zenoh is disabled)
     pub fn new_blocking(topic: &str, _config: HybridConfig) -> HorusResult<Self> {
         let shm_topic_name = format!("hybrid/{}", topic.replace('/', "_"));
-        let shm = AdaptiveTopic::new(&shm_topic_name)?;
+        let shm = Topic::new(&shm_topic_name)?;
 
         Ok(Self {
             topic: topic.to_string(),

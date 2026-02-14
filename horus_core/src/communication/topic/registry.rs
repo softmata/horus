@@ -1,6 +1,6 @@
 //! Global backend registry for intra-process migration.
 //!
-//! When multiple AdaptiveTopic instances on different threads share the same
+//! When multiple `Topic` instances on different threads share the same
 //! topic name (intra-process), they need to share the same heap-backed backend
 //! (e.g., the same `Arc<SpscRing<T>>`). This registry provides that shared
 //! lookup, keyed by (topic_name, epoch).
