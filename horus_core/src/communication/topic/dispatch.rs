@@ -6,9 +6,9 @@
 //! `try_send()` / `try_recv()` becomes a single indirect call — zero enum
 //! matches, zero mode branches.
 //!
-//! Epoch checking is handled by `try_send()`/`try_recv()` in mod.rs before
-//! calling these functions. Lease refresh is done here periodically (every
-//! LEASE_REFRESH_INTERVAL messages) for participant table maintenance.
+//! Epoch checking is done periodically INSIDE these functions (every 1024-4096
+//! messages) — NOT on every call. This eliminates the ~20ns SHM mmap read
+//! from the hot path. Lease refresh is done alongside epoch checks.
 //!
 //! ## Send Functions (10)
 //!
@@ -50,7 +50,7 @@ use std::sync::atomic::Ordering;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::local_state::LEASE_REFRESH_INTERVAL;
+use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
 use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
 use super::Topic;
 use crate::utils::unlikely;
@@ -74,7 +74,7 @@ pub(super) type RecvFn<T> = fn(&Topic<T>) -> Option<T>;
 // ---------------------------------------------------------------------------
 
 /// DirectChannel send: pure heap write with Relaxed ordering.
-/// No lease refresh needed (same-thread, no cross-participant coordination).
+/// Periodic epoch check every 4096 msgs (~0.01ns amortized).
 #[inline(always)]
 pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
     topic: &Topic<T>,
@@ -97,6 +97,12 @@ pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + Deseriali
         s.get().write(MaybeUninit::new(msg));
     }
     slot.head.store(h.wrapping_add(1), Ordering::Relaxed);
+
+    let local = topic.local();
+    local.msg_counter = local.msg_counter.wrapping_add(1);
+    if unlikely(local.msg_counter.is_multiple_of(EPOCH_CHECK_INTERVAL)) {
+        topic.check_migration_periodic();
+    }
     Ok(())
 }
 
@@ -119,6 +125,7 @@ pub(super) fn send_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -139,6 +146,7 @@ pub(super) fn send_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -159,6 +167,7 @@ pub(super) fn send_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -179,6 +188,7 @@ pub(super) fn send_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -392,7 +402,15 @@ pub(super) fn recv_direct_channel<T: Clone + Send + Sync + Serialize + Deseriali
         BackendStorage::DirectChannel(s) => s,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    slot.try_recv()
+    let result = slot.try_recv();
+    if result.is_some() {
+        let local = topic.local();
+        local.msg_counter = local.msg_counter.wrapping_add(1);
+        if unlikely(local.msg_counter.is_multiple_of(EPOCH_CHECK_INTERVAL)) {
+            topic.check_migration_periodic();
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +431,7 @@ pub(super) fn recv_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -432,6 +451,7 @@ pub(super) fn recv_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -451,6 +471,7 @@ pub(super) fn recv_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -470,6 +491,7 @@ pub(super) fn recv_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOw
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
     }
     result
@@ -656,6 +678,7 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
         return Some(msg);
     }
@@ -818,6 +841,7 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
         return Some(msg);
     }
@@ -886,6 +910,7 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
             topic.refresh_lease();
+            topic.check_migration_periodic();
         }
         return Some(msg);
     }

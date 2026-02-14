@@ -7,6 +7,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Global registry mapping (topic_name, epoch) → Arc<dyn Any>.
@@ -46,4 +47,36 @@ pub(crate) fn lookup_backend(name: &str, epoch: u64) -> Option<Arc<dyn Any + Sen
 pub(crate) fn remove_topic(name: &str) {
     let mut map = registry().lock().unwrap_or_else(|e| e.into_inner());
     map.retain(|(n, _), _| n != name);
+}
+
+// ============================================================================
+// Process-local epoch notification
+// ============================================================================
+
+/// Per-topic-name atomic epoch, shared between all same-name Topic instances
+/// in this process. Read on every try_send/try_recv (~1ns L1 heap read)
+/// instead of ~20ns SHM mmap read.
+static EPOCH_NOTIFY: OnceLock<Mutex<HashMap<String, Arc<AtomicU64>>>> = OnceLock::new();
+
+fn epoch_registry() -> &'static Mutex<HashMap<String, Arc<AtomicU64>>> {
+    EPOCH_NOTIFY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Get or create a process-local epoch atomic for a topic name.
+pub(crate) fn get_or_create_process_epoch(name: &str) -> Arc<AtomicU64> {
+    let mut map = epoch_registry().lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(name.to_string())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .clone()
+}
+
+/// Notify all same-process Topics of an epoch change.
+/// Uses try_lock to avoid blocking the hot path — if contended,
+/// the periodic SHM check in dispatch functions will catch it.
+pub(crate) fn notify_epoch_change(name: &str, new_epoch: u64) {
+    if let Ok(map) = epoch_registry().try_lock() {
+        if let Some(epoch) = map.get(name) {
+            epoch.store(new_epoch, Ordering::Release);
+        }
+    }
 }

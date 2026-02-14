@@ -13,6 +13,10 @@ pub(crate) const DEFAULT_SLOT_SIZE: usize = 8 * 1024;
 /// This avoids calling SystemTime::now() syscall on the hot path
 pub(crate) const LEASE_REFRESH_INTERVAL: u32 = 1024;
 
+/// Epoch check interval for DirectChannel (same-thread, no lease needed).
+/// Checks migration_epoch from SHM header every N messages (~0.01ns amortized).
+pub(crate) const EPOCH_CHECK_INTERVAL: u32 = 4096;
+
 /// Local state for an Topic participant
 ///
 /// ## Cache-Optimized Design

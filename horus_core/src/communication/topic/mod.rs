@@ -65,7 +65,7 @@ use crate::utils::unlikely;
 
 pub use header::{TopicHeader, ParticipantEntry};
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
-use local_state::LocalState;
+use local_state::{LocalState, LEASE_REFRESH_INTERVAL};
 pub use metrics::{MigrationMetrics, TopicMetrics};
 
 /// Bounded spin iterations for waiting on per-slot ready flags.
@@ -249,6 +249,11 @@ pub struct Topic<T> {
     /// Local state (role, cached epoch, etc.)
     local: std::cell::UnsafeCell<LocalState>,
 
+    /// Process-local epoch notification — shared with all same-name Topics
+    /// in this process. Checked on every send/recv (~1ns L1 heap read)
+    /// instead of reading migration_epoch from SHM mmap (~20ns).
+    process_epoch: Arc<std::sync::atomic::AtomicU64>,
+
     /// Metrics for monitoring
     metrics: Arc<MigrationMetrics>,
 
@@ -354,6 +359,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
 
         Ok(Self {
             name: name.to_string(),
+            process_epoch: registry::get_or_create_process_epoch(name),
             storage,
             backend: std::cell::UnsafeCell::new(BackendStorage::Uninitialized),
             send_fn: std::cell::UnsafeCell::new(dispatch::send_uninitialized::<T>),
@@ -525,6 +531,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                             local.cached_mode.expected_latency_ns() as u32,
                             Ordering::Relaxed,
                         );
+                        // Notify all same-process Topics of the epoch change
+                        registry::notify_epoch_change(&self.name, new_epoch);
                         break;
                     }
                     MigrationResult::AlreadyInProgress | MigrationResult::LockContention => {
@@ -553,6 +561,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
                             );
+                            registry::notify_epoch_change(&self.name, new_epoch);
                         }
                         if migrator.is_optimal() {
                             break;
@@ -1042,12 +1051,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     ///
     /// Hot path: 2 predicted-not-taken branches + 1 indirect call.
     ///   1. Role check (cold on first call only)
-    ///   2. Epoch check (cold: only taken when another participant triggers migration)
+    ///   2. Process-local epoch check (~1ns heap read, NOT ~20ns SHM mmap)
     ///   3. Function pointer call to the specialized backend function
     ///
-    /// This replaces the old 7-arm enum match + mode match + is_pod branch chain
-    /// with a single Relaxed epoch load (~0ns on x86: plain MOV, no fence) and
-    /// one indirect call (predicted by branch target buffer after first call).
+    /// Cross-process epoch changes are caught by periodic SHM checks inside
+    /// each dispatch function (every 1024 msgs).
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
         let local = self.local();
@@ -1058,23 +1066,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             }
         }
 
-        // Epoch check: detect migrations triggered by other participants.
-        // Relaxed load = plain MOV on x86, ~0ns. Branch is predicted-not-taken.
-        let header = unsafe { &*local.cached_header_ptr };
-        let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
-        if unlikely(current_epoch != local.cached_epoch) {
-            self.handle_epoch_change(current_epoch);
+        // Process-local epoch check: ~1ns L1 heap read vs ~20ns SHM mmap.
+        // Updated by any same-process Topic that triggers migration.
+        // Cross-process migrations caught by periodic SHM check in dispatch fns.
+        let pe = self.process_epoch.load(Ordering::Relaxed);
+        if unlikely(pe != local.cached_epoch) {
+            self.handle_epoch_change(pe);
         }
 
-        // SAFETY: send_fn set by initialize_backend() during ensure_producer()
-        // and refreshed by handle_epoch_change() when migrations occur.
-        // UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe { (*self.send_fn.get())(self, msg) }
     }
 
     /// Try to receive a message without logging.
     ///
     /// Hot path: 2 predicted-not-taken branches + 1 indirect call (see try_send docs).
+    /// On None: increments counter for periodic cross-process SHM epoch check.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
         let local = self.local();
@@ -1085,26 +1091,51 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             }
         }
 
-        // Epoch check: detect migrations triggered by other participants.
-        let header = unsafe { &*local.cached_header_ptr };
-        let current_epoch = header.migration_epoch.load(Ordering::Relaxed);
-        if unlikely(current_epoch != local.cached_epoch) {
-            self.handle_epoch_change(current_epoch);
+        let pe = self.process_epoch.load(Ordering::Relaxed);
+        if unlikely(pe != local.cached_epoch) {
+            self.handle_epoch_change(pe);
         }
 
-        // SAFETY: recv_fn set by initialize_backend() during ensure_consumer()
-        unsafe { (*self.recv_fn.get())(self) }
+        let result = unsafe { (*self.recv_fn.get())(self) };
+
+        // On None: count empty polls so cross-process migration detection fires.
+        // process_epoch handles same-process; this handles cross-process where
+        // the other process bumps SHM epoch but can't update our heap atomic.
+        if unlikely(result.is_none()) {
+            let local = self.local();
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter.is_multiple_of(LEASE_REFRESH_INTERVAL)) {
+                self.check_migration_periodic();
+            }
+        }
+
+        result
     }
 
-    /// Handle an epoch change detected in try_send/try_recv.
+    /// Periodic migration check — called from dispatch functions every N messages.
+    /// Reads migration_epoch from SHM header and triggers re-initialization if changed.
+    #[cold]
+    #[inline(never)]
+    fn check_migration_periodic(&self) {
+        let local = self.local();
+        let header = unsafe { &*local.cached_header_ptr };
+        let shm_epoch = header.migration_epoch.load(Ordering::Relaxed);
+        if shm_epoch != local.cached_epoch {
+            self.handle_epoch_change(shm_epoch);
+        }
+    }
+
+    /// Handle an epoch change detected by check_migration_periodic.
     ///
     /// Updates cached local state and re-initializes the backend + fn ptrs.
     #[cold]
     #[inline(never)]
-    fn handle_epoch_change(&self, current_epoch: u64) {
+    fn handle_epoch_change(&self, _hint_epoch: u64) {
         let local = self.local();
         let header = unsafe { &*local.cached_header_ptr };
-        local.cached_epoch = current_epoch;
+        // Re-read actual epoch from SHM (_hint_epoch may be from process_epoch)
+        let actual_epoch = header.migration_epoch.load(Ordering::Acquire);
+        local.cached_epoch = actual_epoch;
         local.cached_mode = header.mode();
         local.is_same_process = header.is_same_process();
         local.is_pod = header.is_pod_type();
@@ -1114,6 +1145,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         local.local_tail = header.tail.load(Ordering::Acquire);
         self.initialize_backend();
+        // Propagate to other same-process Topics
+        registry::notify_epoch_change(&self.name, actual_epoch);
     }
 
     /// Get the topic name
@@ -1262,9 +1295,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         let migrator = BackendMigrator::new(self.header());
         let result = migrator.try_migrate(mode);
-        if matches!(result, MigrationResult::Success { .. }) {
-            self.local().cached_epoch = migrator.current_epoch();
+        if let MigrationResult::Success { new_epoch } = result {
+            self.local().cached_epoch = new_epoch;
             self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
+            registry::notify_epoch_change(&self.name, new_epoch);
         }
         result
     }
@@ -1421,6 +1455,7 @@ impl<T> Clone for Topic<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
+            process_epoch: self.process_epoch.clone(),
             storage: self.storage.clone(),
             backend: std::cell::UnsafeCell::new(BackendStorage::Uninitialized),
             send_fn: std::cell::UnsafeCell::new(default_send_fn::<T>),
@@ -1466,6 +1501,7 @@ impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'stati
 
         Ok(Self {
             name: name.to_string(),
+            process_epoch: registry::get_or_create_process_epoch(name),
             storage,
             backend: std::cell::UnsafeCell::new(BackendStorage::Uninitialized),
             send_fn: std::cell::UnsafeCell::new(dispatch::send_uninitialized::<T>),
