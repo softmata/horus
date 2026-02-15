@@ -1159,6 +1159,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     fn handle_epoch_change(&self, _hint_epoch: u64) {
         let local = self.local();
         let header = unsafe { &*local.cached_header_ptr };
+
+        // Flush any batched tail update before migration. SPSC recv batches
+        // header.tail stores every 32 messages; without this flush, re-reading
+        // header.tail below would get a stale value, causing the consumer to
+        // re-process up to 32 already-consumed messages after mode switch.
+        if local.role.can_recv() && !local.cached_header_ptr.is_null() {
+            header.tail.store(local.local_tail, Ordering::Release);
+        }
+
         // Re-read actual epoch from SHM (_hint_epoch may be from process_epoch)
         let actual_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.cached_epoch = actual_epoch;
