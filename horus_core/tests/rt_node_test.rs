@@ -26,14 +26,6 @@ impl MotorControlNode {
         }
     }
 
-    #[allow(dead_code)]
-    fn with_overrun(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            tick_count: Arc::new(AtomicU64::new(0)),
-            simulate_overrun: true,
-        }
-    }
 }
 
 impl Node for MotorControlNode {

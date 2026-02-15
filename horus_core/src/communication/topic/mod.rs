@@ -294,7 +294,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         let type_align = mem::align_of::<T>() as u32;
 
         let actual_slot_size = if is_pod {
-            type_size as usize
+            let ts = type_size as usize;
+            if ts + 8 <= 64 {
+                // Co-located layout: [seq(8) | data(T) | pad to 64]
+                // Seq + data on SAME cache line for non-SPSC recv paths.
+                64
+            } else {
+                ts
+            }
         } else {
             slot_size.unwrap_or(DEFAULT_SLOT_SIZE)
         };
@@ -776,6 +783,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// initialization time. After this, `try_send()`/`try_recv()` are single
     /// indirect calls with zero branches.
     fn set_dispatch_fn_ptrs(&self, mode: BackendMode, is_pod: bool) {
+        // Co-located layout: sizeof(T) + 8 <= 64, slot_size == 64
+        // Seq and data share a cache line → single inter-core transfer
+        // for non-SPSC recv paths (MpscShm, SpmcShm, MpmcShm, PodShm).
+        let colo = is_pod && mem::size_of::<T>() + 8 <= 64;
+
         // SAFETY: UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe {
             *self.send_fn.get() = match mode {
@@ -784,9 +796,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
                 BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
                 BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
+                BackendMode::SpscShm | BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
                 BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
                 BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
+                BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
                 BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
+                BackendMode::MpscShm | BackendMode::MpmcShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
                 BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
                 BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
                 BackendMode::Unknown => dispatch::send_uninitialized::<T>,
@@ -798,10 +813,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
                 BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
                 BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
+                // SpscShm: MUST poll header.sequence_or_head (separate cache line).
+                // Polling inline seq would contend with producer's data write.
+                BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
                 BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
+                // Non-SPSC: inline seq + data on same cache line → 1 fewer transfer
+                BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
                 BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
+                BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
                 BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
+                BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
                 BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
+                BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
                 BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
                 BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
                 BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,

@@ -458,8 +458,6 @@ struct SensorFusionNode {
     // Sensor inputs
     imu_sub: Topic<IMUData>,
     gps_position: (f64, f64),
-    #[allow(dead_code)]
-    encoder_speeds: Arc<Mutex<(f64, f64)>>,
 
     // Output
     odometry_pub: Topic<Odometry>,
@@ -472,7 +470,6 @@ impl SensorFusionNode {
             covariance: [[1.0; 6]; 6],
             imu_sub: Topic::new("imu.data")?,
             gps_position: (0.0, 0.0),
-            encoder_speeds: Arc::new(Mutex::new((0.0, 0.0))),
             odometry_pub: Topic::new("odometry")?,
         })
     }

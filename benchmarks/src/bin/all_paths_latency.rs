@@ -947,12 +947,14 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let mut child_cons = spawn_consumer(&topic_name, msgs_per_pub * 2, CORE_CHILD_CONS);
     thread::sleep(Duration::from_millis(200)); // Wait for child to register
 
-    // Step 2: Spawn pub1 → topology: 1P, 2S, cross-proc → SpmcShm
-    let mut pub1 = spawn_publisher(&topic_name, msgs_per_pub, CORE_AUX);
+    // Step 2: Spawn pub1 (paced) → topology: 1P, 2S, cross-proc → SpmcShm
+    // Paced publishers prevent ring overflow that causes the consumer to read
+    // stale messages with old timestamps, inflating measured latency.
+    let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
     let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
-    // Step 3: Spawn pub2 → topology: 2P, 2S, cross-proc, POD → PodShm migration
-    let mut pub2 = spawn_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
+    // Step 3: Spawn pub2 (paced) → topology: 2P, 2S, cross-proc, POD → PodShm migration
+    let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
 
     // Wait for pub2 to actually register (it sleeps 100ms at startup).
     // We need pubs=2 visible in the header before migration detection works.
@@ -1104,6 +1106,7 @@ fn collect_cross_proc(
     let mut last_recv_cycles = rdtsc(); // Use RDTSC for idle detection too
     let idle_threshold = cal.ns_to_cycles(2_000_000_000); // 2 seconds in cycles (warmup)
     let idle_threshold_meas = cal.ns_to_cycles(500_000_000); // 500ms in cycles (measurement)
+    let overhead = cal.overhead_cycles;
 
     // Phase 1: Warmup -- receive and discard
     let mut polls = 0u64;
@@ -1126,6 +1129,8 @@ fn collect_cross_proc(
 
     // Phase 2: Measurement -- ZERO overhead hot loop
     // No Instant::now(), no unnecessary branches. Pure spin on recv().
+    // RDTSC overhead (serialize+rdtsc on producer + rdtscp on consumer) is subtracted
+    // from each sample, same as intra-process measurements.
     let mut latencies = Vec::with_capacity(iterations as usize);
     last_recv_cycles = rdtsc();
     polls = 0;
@@ -1138,7 +1143,7 @@ fn collect_cross_proc(
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
             let send_cycles = msg.stamp_nanos;
-            let delta = recv_cycles.wrapping_sub(send_cycles);
+            let delta = recv_cycles.wrapping_sub(send_cycles).saturating_sub(overhead);
             latencies.push(cal.cycles_to_ns(delta));
             total += 1;
             last_recv_cycles = recv_cycles;
@@ -1397,7 +1402,7 @@ fn print_methodology(cal: &RdtscCalibration) {
         times[times.len() / 2]
     );
     println!("    Intra-process: RDTSC overhead subtracted from each sample");
-    println!("    Cross-process: raw producer-to-consumer delta (overhead NOT subtracted)");
+    println!("    Cross-process: RDTSC overhead subtracted (rdtsc on producer + rdtscp on consumer)");
     println!();
 
     println!("  Known limitations:");

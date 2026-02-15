@@ -101,34 +101,6 @@ impl Node for FailingInitNode {
     }
 }
 
-// Node that tracks execution order
-#[allow(dead_code)]
-struct OrderedNode {
-    name: &'static str,
-    execution_log: Arc<Mutex<Vec<String>>>,
-}
-
-#[allow(dead_code)]
-impl OrderedNode {
-    fn new(name: &'static str, execution_log: Arc<Mutex<Vec<String>>>) -> Self {
-        Self {
-            name,
-            execution_log,
-        }
-    }
-}
-
-impl Node for OrderedNode {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn tick(&mut self) {
-        let mut log = self.execution_log.lock().unwrap();
-        log.push(self.name.to_string());
-    }
-}
-
 #[test]
 fn test_scenario_1_complete_node_lifecycle() {
     // Scenario 1: Complete Node Lifecycle
