@@ -45,7 +45,6 @@ pub mod topic;
 pub mod config;
 pub mod network;
 pub mod pod;
-pub mod storage;
 pub mod traits;
 
 // Re-export commonly used types for convenience
@@ -55,5 +54,4 @@ pub use topic::{
 };
 pub use config::{EndpointConfig, HorusConfig};
 pub use pod::{is_pod, PodMessage};
-pub use storage::AccessMode;
 pub use traits::{Channel, Publisher, Subscriber};
