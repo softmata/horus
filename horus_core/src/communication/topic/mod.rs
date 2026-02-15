@@ -65,7 +65,7 @@ use crate::utils::unlikely;
 
 pub use header::{TopicHeader, ParticipantEntry};
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
-use local_state::{LocalState, LEASE_REFRESH_INTERVAL, EPOCH_CHECK_INTERVAL};
+use local_state::LocalState;
 pub use metrics::{MigrationMetrics, TopicMetrics};
 
 /// Bounded spin iterations for waiting on per-slot ready flags.
@@ -833,6 +833,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
             };
         }
+
     }
 
     /// Try to set the backend from a registry entry (returns true if successful).
@@ -1093,92 +1094,26 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
 
     /// Try to send a message, returning it on failure (for explicit retry).
     ///
-    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
-    ///   1. Role check (cold on first call only)
-    ///   2. Process-local epoch check (~1ns heap read, NOT ~20ns SHM mmap)
-    ///   3. Function pointer call to the specialized backend function
-    ///   4. On success: msg_counter++ with periodic lease/epoch maintenance
-    ///
-    /// All housekeeping is consolidated HERE — dispatch functions are pure
-    /// ring operations with zero overhead.
-    ///
-    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
-    /// The epoch check (~1ns L1 read) is needed for correctness — migration
-    /// drains messages from old backend to new, so all participants must detect
-    /// epoch changes promptly.
+    /// Single indirect call — ALL logic (epoch check, ring op, housekeeping)
+    /// lives inside the dispatch function. First call goes through
+    /// `send_uninitialized` which handles registration + re-dispatch.
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
-        // Pre-dispatch: role + epoch checks
-        let local = self.local();
-        if unlikely(!local.role.can_send()) {
-            if self.ensure_producer().is_err() {
-                return Err(msg);
-            }
-        }
-        // process_epoch: shared L1-cached heap atomic (~1ns). Detects same-process
-        // topology changes immediately. Cross-process changes detected by periodic check.
-        let pe = self.process_epoch.load(Ordering::Relaxed);
-        if unlikely(pe != local.cached_epoch) {
-            self.handle_epoch_change(pe);
-        }
-
-        // Dispatch — pure ring operation, zero housekeeping inside
-        let result = unsafe { (*self.send_fn.get())(self, msg) };
-
-        // Post-dispatch: amortized housekeeping (every LEASE_REFRESH_INTERVAL msgs)
-        if result.is_ok() {
-            let local = self.local();
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                self.periodic_maintenance();
-            }
-        }
-        result
+        unsafe { (*self.send_fn.get())(self, msg) }
     }
 
     /// Try to receive a message without logging.
     ///
-    /// Hot path: 2 predicted-not-taken branches + 1 indirect call + counter.
+    /// Single indirect call — ALL logic (epoch check, ring op, housekeeping)
+    /// lives inside the dispatch function. First call goes through
+    /// `recv_uninitialized` which handles registration + re-dispatch.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
-        // Pre-dispatch: role + epoch checks
-        let local = self.local();
-        if unlikely(!local.role.can_recv()) {
-            if self.ensure_consumer().is_err() {
-                return None;
-            }
-        }
-        let pe = self.process_epoch.load(Ordering::Relaxed);
-        if unlikely(pe != local.cached_epoch) {
-            self.handle_epoch_change(pe);
-        }
-
-        // Dispatch — pure ring operation, zero housekeeping inside
-        let result = unsafe { (*self.recv_fn.get())(self) };
-
-        // Post-dispatch: amortized housekeeping
-        let local = self.local();
-        if result.is_some() {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                self.periodic_maintenance();
-            }
-        } else {
-            // On None: count empty polls so cross-process migration detection fires.
-            // process_epoch handles same-process; this handles cross-process where
-            // the other process bumps SHM epoch but can't update our heap atomic.
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                self.check_migration_periodic();
-            }
-        }
-
-        result
+        unsafe { (*self.recv_fn.get())(self) }
     }
 
-    /// Periodic maintenance — called every LEASE_REFRESH_INTERVAL messages from try_send/try_recv.
+    /// Periodic maintenance — called every LEASE_REFRESH_INTERVAL messages from dispatch functions.
     /// Handles lease refresh and cross-process epoch detection (SHM header check).
-    /// Process-epoch is already checked per-message in try_send/try_recv.
     #[cold]
     #[inline(never)]
     fn periodic_maintenance(&self) {
@@ -1554,26 +1489,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     }
 }
 
-/// Default send function for uninitialized topics (no trait bounds on T).
-/// Panics if called directly — `initialize_backend()` replaces this before first use.
-fn default_send_fn<T>(_topic: &Topic<T>, msg: T) -> Result<(), T> {
-    Err(msg)
-}
-
-/// Default recv function for uninitialized topics (no trait bounds on T).
-fn default_recv_fn<T>(_topic: &Topic<T>) -> Option<T> {
-    None
-}
-
-impl<T> Clone for Topic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for Topic<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
             process_epoch: self.process_epoch.clone(),
             storage: self.storage.clone(),
             backend: std::cell::UnsafeCell::new(BackendStorage::Uninitialized),
-            send_fn: std::cell::UnsafeCell::new(default_send_fn::<T>),
-            recv_fn: std::cell::UnsafeCell::new(default_recv_fn::<T>),
+            send_fn: std::cell::UnsafeCell::new(dispatch::send_uninitialized::<T>),
+            recv_fn: std::cell::UnsafeCell::new(dispatch::recv_uninitialized::<T>),
             local: std::cell::UnsafeCell::new(LocalState::default()),
             metrics: Arc::clone(&self.metrics),
             log_fn: self.log_fn,
