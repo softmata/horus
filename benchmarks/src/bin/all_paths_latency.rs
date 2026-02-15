@@ -230,6 +230,7 @@ fn main() {
 
     // === Summary ===
     print_summary(&results);
+    print_overhead_analysis(&results);
     print_methodology(cal);
 
     // === JSON output ===
@@ -1541,6 +1542,60 @@ fn print_summary(results: &[ScenarioResult]) {
     }
 
     println!("{}", "=".repeat(w));
+    println!();
+}
+
+// ============================================================================
+// Reporting: Framework Overhead Analysis
+// ============================================================================
+
+fn print_overhead_analysis(results: &[ScenarioResult]) {
+    // Find RawAtomic hardware floor (p50)
+    let hw_floor = results
+        .iter()
+        .find(|r| r.name == "RawAtomic")
+        .and_then(|r| {
+            if r.latencies_ns.is_empty() {
+                None
+            } else {
+                Some(r.stats().median as u64)
+            }
+        });
+
+    let Some(floor_ns) = hw_floor else { return };
+
+    println!(
+        "{} Framework Overhead (vs hardware floor: {}ns) {}",
+        "───",
+        floor_ns,
+        "─".repeat(BOX_W - 55)
+    );
+    println!();
+
+    let cross_proc = [
+        ("CrossProc-1P1C", "SpscShm"),
+        ("CrossProc-2P1C", "MpscShm"),
+        ("CrossProc-1PMC", "SpmcShm"),
+        ("CrossProc-PodShm", "PodShm"),
+    ];
+
+    for (name, label) in &cross_proc {
+        if let Some(r) = results.iter().find(|r| r.name == *name) {
+            if r.latencies_ns.is_empty() {
+                continue;
+            }
+            let s = r.stats();
+            let p50 = s.median as u64;
+            let overhead = p50.saturating_sub(floor_ns);
+            println!(
+                "  {:<18} p50: {:>5}ns  overhead: {:>5}ns  (= {}ns total - {}ns hw floor)  {}",
+                name, p50, overhead, p50, floor_ns, label
+            );
+        }
+    }
+    println!();
+    println!("  Note: Hardware floor varies ±50ns between runs due to thermal/load conditions.");
+    println!("  Framework overhead = total latency - raw SHM cache line transfer cost.");
     println!();
 }
 
