@@ -499,14 +499,15 @@ pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
     }
     let new_seq = seq.wrapping_add(1);
     local.local_head = new_seq;
-    // Must keep header.sequence_or_head updated even though colo recv functions
-    // poll per-slot colo_seq instead. Reason: during SPSC→MPSC migration, the
-    // MPSC recv function reads header.sequence_or_head. If we stop updating it,
-    // messages from SP producers become invisible to MPSC consumers during the
-    // migration window. Also, MP producers use CAS on header.sequence_or_head
-    // to claim slots — if we don't advance it in SP mode, the MP producer starts
-    // from a stale value and slot conflicts occur.
-    header.sequence_or_head.store(new_seq, Ordering::Release);
+    // Batch header.sequence_or_head updates: store every 32 messages.
+    // Co-located recv functions poll per-slot colo_seq instead of this header
+    // field, so it's only needed for: (a) MPSC recv detecting messages during
+    // SPSC→MPSC migration, (b) MP producers using CAS to claim slots.
+    // handle_epoch_change uses fetch_max to flush the accurate local_head
+    // before migration, preventing stale CAS starts.
+    if new_seq & 0x1F == 0 {
+        header.sequence_or_head.store(new_seq, Ordering::Release);
+    }
 
     local.msg_counter = local.msg_counter.wrapping_add(1);
     if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
