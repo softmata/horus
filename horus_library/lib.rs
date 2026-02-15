@@ -119,9 +119,9 @@ pub mod prelude {
         HFrameError, StaticTransformStamped, TFMessage, Transform, TransformStamped,
     };
 
-    // Pod/Zeroable perception types (zero-copy IPC)
+    // Perception types (zero-copy IPC)
     pub use crate::messages::{
-        detection_pod::{BoundingBox2DPod, DetectionPod},
+        detection_pod::{BoundingBox2D, Detection},
         landmark::Landmark,
         pointcloud_pod::{PointXYZ, PointXYZRGB},
         tracking::TrackedObject,

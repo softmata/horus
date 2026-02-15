@@ -61,18 +61,16 @@ pub use diagnostics::{
 };
 
 // Vision
-pub use vision::{
-    CameraInfo, CompressedImage, Detection, DetectionArray, Image, ImageEncoding, RegionOfInterest,
-};
+pub use vision::{CameraInfo, CompressedImage, Image, ImageEncoding, RegionOfInterest};
 
 // Navigation
-pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan, PathPlanPod};
+pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
 
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 
 // Perception
-pub use perception::{BoundingBox3D, DepthImage, PlaneDetection, PointCloud};
+pub use perception::{DepthImage, PlaneDetection, PointCloud};
 
 // Coordination
 pub use coordination::{FleetStatus, FormationControl, RobotState, TaskAssignment};
@@ -84,11 +82,11 @@ pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
 pub mod tensor;
 pub use tensor::{HorusTensor, TensorDevice, TensorDtype};
 
-// Pod/Zeroable perception types (zero-copy IPC)
-pub use detection_pod::{BoundingBox2DPod, BoundingBox3DPod, Detection3DPod, DetectionPod};
+// Perception types (zero-copy IPC)
+pub use detection_pod::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
 pub use pointcloud_pod::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
-pub use segmentation_pod::SegmentationMaskPod;
+pub use segmentation_pod::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
 // Input (existing)

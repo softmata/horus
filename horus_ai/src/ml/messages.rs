@@ -161,7 +161,7 @@ pub struct ModelInfo {
 ///
 /// Represents a single detected object from ML inference with bounding box,
 /// class, and confidence score. Named `MlDetection` to distinguish from
-/// `vision::Detection` (sensor-level) and `detection_pod::DetectionPod` (zero-copy Pod).
+/// `detection_pod::Detection` (zero-copy) in horus_library.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlDetection {
     /// Bounding box [x, y, width, height] in pixels

@@ -670,74 +670,13 @@ mod tests {
     }
 }
 
-/// Simplified path plan message for basic navigation
-#[derive(Debug, Clone, Serialize, Deserialize, LogSummary)]
-pub struct PathPlan {
-    /// Array of waypoints as [x, y, theta] coordinates
-    pub waypoints: Vec<[f32; 3]>,
-    /// Goal pose [x, y, theta]
-    pub goal_pose: [f32; 3],
-    /// Number of waypoints in path
-    pub path_length: u32,
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl Default for PathPlan {
-    fn default() -> Self {
-        Self {
-            waypoints: Vec::new(),
-            goal_pose: [0.0, 0.0, 0.0],
-            path_length: 0,
-            timestamp_ns: 0,
-        }
-    }
-}
-
-impl PathPlan {
-    /// Create a new path plan
-    pub fn new() -> Self {
-        Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            ..Default::default()
-        }
-    }
-
-    /// Create path plan with waypoints
-    pub fn with_waypoints(waypoints: Vec<[f32; 3]>, goal: [f32; 3]) -> Self {
-        Self {
-            path_length: waypoints.len() as u32,
-            waypoints,
-            goal_pose: goal,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-        }
-    }
-
-    /// Add waypoint to path
-    pub fn add_waypoint(&mut self, x: f32, y: f32, theta: f32) {
-        self.waypoints.push([x, y, theta]);
-        self.path_length = self.waypoints.len() as u32;
-    }
-
-    /// Check if path is empty
-    pub fn is_empty(&self) -> bool {
-        self.waypoints.is_empty()
-    }
-}
-
-/// Fixed-size path plan for zero-copy transfer
+/// Path plan message for navigation
 ///
-/// Fixed-size alternative to PathPlan for Pod/zero-copy transfer.
+/// Fixed-size path plan for zero-copy IPC transfer.
 /// Stores up to 256 waypoints as [x, y, theta] coordinates.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
-pub struct PathPlanPod {
+pub struct PathPlan {
     /// Waypoint data: 256 waypoints × 3 floats (x, y, theta)
     #[serde(with = "serde_arrays")]
     pub waypoint_data: [f32; 768],
@@ -749,7 +688,7 @@ pub struct PathPlanPod {
     pub timestamp_ns: u64,
 }
 
-impl Default for PathPlanPod {
+impl Default for PathPlan {
     fn default() -> Self {
         Self {
             waypoint_data: [0.0; 768],
@@ -760,7 +699,7 @@ impl Default for PathPlanPod {
     }
 }
 
-impl PathPlanPod {
+impl PathPlan {
     /// Create a new empty path plan
     pub fn new() -> Self {
         Self {
@@ -799,18 +738,18 @@ impl PathPlanPod {
         self.waypoint_count == 0
     }
 
-    /// Convert from PathPlan (truncating to 256 waypoints)
-    pub fn from_path_plan(plan: &PathPlan) -> Self {
-        let mut pod = Self::new();
-        pod.goal_pose = plan.goal_pose;
-        let count = plan.waypoints.len().min(256);
-        for (i, wp) in plan.waypoints.iter().take(count).enumerate() {
-            pod.waypoint_data[i * 3] = wp[0];
-            pod.waypoint_data[i * 3 + 1] = wp[1];
-            pod.waypoint_data[i * 3 + 2] = wp[2];
+    /// Create a path plan from a slice of waypoints
+    pub fn from_waypoints(waypoints: &[[f32; 3]], goal: [f32; 3]) -> Self {
+        let mut plan = Self::new();
+        plan.goal_pose = goal;
+        let count = waypoints.len().min(256);
+        for (i, wp) in waypoints.iter().take(count).enumerate() {
+            plan.waypoint_data[i * 3] = wp[0];
+            plan.waypoint_data[i * 3 + 1] = wp[1];
+            plan.waypoint_data[i * 3 + 2] = wp[2];
         }
-        pod.waypoint_count = count as u16;
-        pod
+        plan.waypoint_count = count as u16;
+        plan
     }
 }
 
@@ -842,6 +781,6 @@ unsafe impl horus_core::bytemuck::Pod for VelocityObstacles {}
 unsafe impl horus_core::bytemuck::Zeroable for VelocityObstacles {}
 unsafe impl horus_core::communication::PodMessage for VelocityObstacles {}
 
-unsafe impl horus_core::bytemuck::Pod for PathPlanPod {}
-unsafe impl horus_core::bytemuck::Zeroable for PathPlanPod {}
-unsafe impl horus_core::communication::PodMessage for PathPlanPod {}
+unsafe impl horus_core::bytemuck::Pod for PathPlan {}
+unsafe impl horus_core::bytemuck::Zeroable for PathPlan {}
+unsafe impl horus_core::communication::PodMessage for PathPlan {}

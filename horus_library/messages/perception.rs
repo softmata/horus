@@ -3,7 +3,7 @@
 // This module provides messages for 3D sensors, point clouds,
 // object detection, and spatial understanding systems.
 
-use crate::messages::geometry::{Point3, Quaternion, Vector3};
+use crate::messages::geometry::{Point3, Vector3};
 use horus_core::core::LogSummary;
 use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
@@ -274,151 +274,6 @@ impl PointCloud {
     }
 }
 
-/// 3D bounding box
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-pub struct BoundingBox3D {
-    /// Center of the bounding box
-    pub center: Point3,
-    /// Size [width, height, depth]
-    pub size: Vector3,
-    /// Orientation of the box
-    pub orientation: Quaternion,
-    /// Object class label
-    pub label: [u8; 32],
-    /// Detection confidence (0.0 to 1.0)
-    pub confidence: f32,
-    /// Tracking ID
-    pub track_id: u32,
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl BoundingBox3D {
-    /// Create a new 3D bounding box
-    pub fn new(center: Point3, size: Vector3) -> Self {
-        Self {
-            center,
-            size,
-            orientation: Quaternion::identity(),
-            label: [0; 32],
-            confidence: 1.0,
-            track_id: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-        }
-    }
-
-    /// Set label
-    pub fn with_label(mut self, label: &str) -> Self {
-        let label_bytes = label.as_bytes();
-        let len = label_bytes.len().min(31);
-        self.label[..len].copy_from_slice(&label_bytes[..len]);
-        self.label[len] = 0;
-        self
-    }
-
-    /// Get label as string
-    pub fn label_str(&self) -> String {
-        let end = self.label.iter().position(|&b| b == 0).unwrap_or(32);
-        String::from_utf8_lossy(&self.label[..end]).into_owned()
-    }
-
-    /// Check if point is inside bounding box
-    pub fn contains_point(&self, point: &Point3) -> bool {
-        // For simplicity, assume axis-aligned box (ignore orientation)
-        let dx = (point.x - self.center.x).abs();
-        let dy = (point.y - self.center.y).abs();
-        let dz = (point.z - self.center.z).abs();
-
-        dx <= self.size.x / 2.0 && dy <= self.size.y / 2.0 && dz <= self.size.z / 2.0
-    }
-
-    /// Get volume of the bounding box
-    pub fn volume(&self) -> f64 {
-        self.size.x * self.size.y * self.size.z
-    }
-
-    /// Get 8 corner points of the bounding box (axis-aligned)
-    pub fn corners(&self) -> [Point3; 8] {
-        let hx = self.size.x / 2.0;
-        let hy = self.size.y / 2.0;
-        let hz = self.size.z / 2.0;
-
-        [
-            Point3::new(self.center.x - hx, self.center.y - hy, self.center.z - hz),
-            Point3::new(self.center.x + hx, self.center.y - hy, self.center.z - hz),
-            Point3::new(self.center.x - hx, self.center.y + hy, self.center.z - hz),
-            Point3::new(self.center.x + hx, self.center.y + hy, self.center.z - hz),
-            Point3::new(self.center.x - hx, self.center.y - hy, self.center.z + hz),
-            Point3::new(self.center.x + hx, self.center.y - hy, self.center.z + hz),
-            Point3::new(self.center.x - hx, self.center.y + hy, self.center.z + hz),
-            Point3::new(self.center.x + hx, self.center.y + hy, self.center.z + hz),
-        ]
-    }
-}
-
-/// Array of 3D bounding boxes
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BoundingBoxArray3D {
-    /// Array of bounding boxes (max 32)
-    #[serde(with = "serde_arrays")]
-    pub boxes: [BoundingBox3D; 32],
-    /// Number of valid boxes
-    pub count: u8,
-    /// Source sensor frame
-    pub frame_id: [u8; 32],
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl BoundingBoxArray3D {
-    /// Create a new bounding box array
-    pub fn new() -> Self {
-        Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            ..Default::default()
-        }
-    }
-
-    /// Add a bounding box
-    pub fn add_box(&mut self, bbox: BoundingBox3D) -> Result<(), &'static str> {
-        if self.count >= 32 {
-            return Err("Maximum 32 bounding boxes supported");
-        }
-
-        self.boxes[self.count as usize] = bbox;
-        self.count += 1;
-        Ok(())
-    }
-
-    /// Get valid bounding boxes
-    pub fn get_boxes(&self) -> &[BoundingBox3D] {
-        &self.boxes[..self.count as usize]
-    }
-
-    /// Filter boxes by confidence threshold
-    pub fn filter_by_confidence(&self, threshold: f32) -> Vec<BoundingBox3D> {
-        self.get_boxes()
-            .iter()
-            .filter(|bbox| bbox.confidence >= threshold)
-            .cloned()
-            .collect()
-    }
-
-    /// Filter boxes by label
-    pub fn filter_by_label(&self, label: &str) -> Vec<BoundingBox3D> {
-        self.get_boxes()
-            .iter()
-            .filter(|bbox| bbox.label_str() == label)
-            .cloned()
-            .collect()
-    }
-}
 
 /// Depth image message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,23 +500,6 @@ impl LogSummary for PointCloud {
 impl LogSummary for PointField {
     fn log_summary(&self) -> String {
         format!("PointField('{}', {:?})", self.name_str(), self.datatype)
-    }
-}
-
-impl LogSummary for BoundingBox3D {
-    fn log_summary(&self) -> String {
-        format!(
-            "BBox3D('{}', conf={:.2}, vol={:.2})",
-            self.label_str(),
-            self.confidence,
-            self.volume()
-        )
-    }
-}
-
-impl LogSummary for BoundingBoxArray3D {
-    fn log_summary(&self) -> String {
-        format!("BBoxArray3D({} boxes)", self.count)
     }
 }
 

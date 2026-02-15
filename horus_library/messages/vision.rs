@@ -350,118 +350,6 @@ impl RegionOfInterest {
     }
 }
 
-/// Visual detection/recognition result
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Detection {
-    /// Object class name
-    pub class_name: [u8; 32],
-    /// Detection confidence (0.0 to 1.0)
-    pub confidence: f32,
-    /// Bounding box
-    pub bbox: RegionOfInterest,
-    /// 3D pose if available
-    pub pose: Option<crate::messages::geometry::TransformStamped>,
-    /// Object ID for tracking
-    pub track_id: u32,
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl Default for Detection {
-    fn default() -> Self {
-        Self {
-            class_name: [0; 32],
-            confidence: 0.0,
-            bbox: RegionOfInterest::default(),
-            pose: None,
-            track_id: 0,
-            timestamp_ns: 0,
-        }
-    }
-}
-
-impl Detection {
-    /// Create a new detection
-    pub fn new(class_name: &str, confidence: f32, bbox: RegionOfInterest) -> Self {
-        let mut name_bytes = [0; 32];
-        let class_bytes = class_name.as_bytes();
-        let len = class_bytes.len().min(31);
-        name_bytes[..len].copy_from_slice(&class_bytes[..len]);
-
-        Self {
-            class_name: name_bytes,
-            confidence,
-            bbox,
-            pose: None,
-            track_id: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-        }
-    }
-
-    /// Get class name as string
-    pub fn class_str(&self) -> String {
-        let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
-        String::from_utf8_lossy(&self.class_name[..end]).into_owned()
-    }
-}
-
-/// Array of visual detections
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DetectionArray {
-    /// Array of detections (max 32)
-    #[serde(with = "serde_arrays")]
-    pub detections: [Detection; 32],
-    /// Number of valid detections
-    pub count: u8,
-    /// Source image info
-    pub image_width: u32,
-    pub image_height: u32,
-    /// Frame ID
-    pub frame_id: [u8; 32],
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl DetectionArray {
-    /// Create a new detection array
-    pub fn new() -> Self {
-        Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            ..Default::default()
-        }
-    }
-
-    /// Add a detection
-    pub fn add_detection(&mut self, detection: Detection) -> Result<(), &'static str> {
-        if self.count >= 32 {
-            return Err("Maximum 32 detections supported");
-        }
-
-        self.detections[self.count as usize] = detection;
-        self.count += 1;
-        Ok(())
-    }
-
-    /// Get valid detections
-    pub fn get_detections(&self) -> &[Detection] {
-        &self.detections[..self.count as usize]
-    }
-
-    /// Filter detections by confidence threshold
-    pub fn filter_by_confidence(&self, threshold: f32) -> Vec<Detection> {
-        self.get_detections()
-            .iter()
-            .filter(|d| d.confidence >= threshold)
-            .cloned()
-            .collect()
-    }
-}
 
 /// Stereo camera pair information
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -541,24 +429,6 @@ impl LogSummary for RegionOfInterest {
     }
 }
 
-impl LogSummary for Detection {
-    fn log_summary(&self) -> String {
-        format!(
-            "Detection('{}', conf={:.2}, bbox={}x{})",
-            self.class_str(),
-            self.confidence,
-            self.bbox.width,
-            self.bbox.height
-        )
-    }
-}
-
-impl LogSummary for DetectionArray {
-    fn log_summary(&self) -> String {
-        format!("DetectionArray({} detections)", self.count)
-    }
-}
-
 impl LogSummary for StereoInfo {
     fn log_summary(&self) -> String {
         format!(
@@ -597,21 +467,6 @@ mod tests {
         let info = CameraInfo::new(640, 480, 525.0, 525.0, 320.0, 240.0);
         assert_eq!(info.focal_lengths(), (525.0, 525.0));
         assert_eq!(info.principal_point(), (320.0, 240.0));
-    }
-
-    #[test]
-    fn test_detection_array() {
-        let mut array = DetectionArray::new();
-        let detection = Detection::new("person", 0.95, RegionOfInterest::new(10, 20, 100, 150));
-
-        array.add_detection(detection).unwrap();
-        assert_eq!(array.count, 1);
-
-        let filtered = array.filter_by_confidence(0.9);
-        assert_eq!(filtered.len(), 1);
-
-        let filtered_high = array.filter_by_confidence(0.99);
-        assert_eq!(filtered_high.len(), 0);
     }
 
     #[test]
