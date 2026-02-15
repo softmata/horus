@@ -28,10 +28,10 @@ pub mod timing;
 pub mod vision;
 
 // Pod/Zeroable types for zero-copy IPC
-pub mod detection_pod;
+pub mod detection;
 pub mod landmark;
-pub mod pointcloud_pod;
-pub mod segmentation_pod;
+pub mod pointcloud;
+pub mod segmentation;
 pub mod tracking;
 
 // Input messages
@@ -83,10 +83,10 @@ pub mod tensor;
 pub use tensor::{HorusTensor, TensorDevice, TensorDtype};
 
 // Perception types (zero-copy IPC)
-pub use detection_pod::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
+pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
-pub use pointcloud_pod::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
-pub use segmentation_pod::SegmentationMask;
+pub use pointcloud::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
+pub use segmentation::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
 // Input (existing)

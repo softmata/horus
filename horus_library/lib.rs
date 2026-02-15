@@ -121,9 +121,9 @@ pub mod prelude {
 
     // Perception types (zero-copy IPC)
     pub use crate::messages::{
-        detection_pod::{BoundingBox2D, Detection},
+        detection::{BoundingBox2D, Detection},
         landmark::Landmark,
-        pointcloud_pod::{PointXYZ, PointXYZRGB},
+        pointcloud::{PointXYZ, PointXYZRGB},
         tracking::TrackedObject,
     };
 
