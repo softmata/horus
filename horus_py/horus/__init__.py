@@ -30,10 +30,6 @@ try:
         PyNodeState as NodeState,
         PySchedulerConfig as SchedulerConfig,
         get_version,
-        # sim2d Python API
-        Sim2D,
-        RobotConfigPy,
-        WorldConfigPy,
         # Tensor system for zero-copy ML/AI
         TensorPool,
         TensorHandle,
@@ -1229,10 +1225,6 @@ __all__ = [
     "ImuData",
     "GpsData",
     "ImageData",
-    # sim2d API
-    "Sim2D",
-    "RobotConfigPy",
-    "WorldConfigPy",
 ]
 
 # Export typed message classes (only if Rust bindings available)

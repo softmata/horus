@@ -1,58 +1,5 @@
-use horus::NodeConfig as CoreNodeConfig;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use std::collections::HashMap;
-
-/// Python wrapper for messages
-#[pyclass]
-#[derive(Clone)]
-pub struct PyMessage {
-    #[pyo3(get, set)]
-    pub data: Vec<u8>,
-    #[pyo3(get, set)]
-    pub topic: String,
-    #[pyo3(get, set)]
-    pub timestamp: f64,
-    #[pyo3(get, set)]
-    pub metadata: HashMap<String, String>,
-}
-
-#[pymethods]
-impl PyMessage {
-    #[new]
-    fn new(data: Vec<u8>, topic: String) -> Self {
-        PyMessage {
-            data,
-            topic,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-            metadata: HashMap::new(),
-        }
-    }
-
-    fn set_metadata_item(&mut self, key: String, value: String) {
-        self.metadata.insert(key, value);
-    }
-
-    fn get_metadata_item(&self, key: String) -> Option<String> {
-        self.metadata.get(&key).cloned()
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Message(topic='{}', size={} bytes, timestamp={})",
-            self.topic,
-            self.data.len(),
-            self.timestamp
-        )
-    }
-
-    fn __len__(&self) -> usize {
-        self.data.len()
-    }
-}
 
 /// Priority constants for Python users
 ///
@@ -118,66 +65,6 @@ impl Priority {
             80 => "low".to_string(),
             100 => "background".to_string(),
             n => format!("custom({})", n),
-        }
-    }
-}
-
-/// Python wrapper for NodeConfig
-#[pyclass]
-#[derive(Clone)]
-pub struct PyNodeConfig {
-    #[pyo3(get, set)]
-    pub max_tick_duration_ms: Option<u64>,
-    #[pyo3(get, set)]
-    pub restart_on_failure: bool,
-    #[pyo3(get, set)]
-    pub max_restart_attempts: u32,
-    #[pyo3(get, set)]
-    pub restart_delay_ms: u64,
-    #[pyo3(get, set)]
-    pub log_level: String,
-    #[pyo3(get, set)]
-    pub custom_params: HashMap<String, String>,
-}
-
-#[pymethods]
-impl PyNodeConfig {
-    #[new]
-    fn new() -> Self {
-        let config = CoreNodeConfig::default();
-        PyNodeConfig {
-            max_tick_duration_ms: config.max_tick_duration_ms,
-            restart_on_failure: config.restart_on_failure,
-            max_restart_attempts: config.max_restart_attempts,
-            restart_delay_ms: config.restart_delay_ms,
-            log_level: config.log_level,
-            custom_params: config.custom_params,
-        }
-    }
-
-    fn set_param(&mut self, key: String, value: String) {
-        self.custom_params.insert(key, value);
-    }
-
-    fn get_param(&self, key: String) -> Option<String> {
-        self.custom_params.get(&key).cloned()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("NodeConfig(log_level='{}')", self.log_level)
-    }
-}
-
-impl From<PyNodeConfig> for CoreNodeConfig {
-    fn from(py_config: PyNodeConfig) -> Self {
-        CoreNodeConfig {
-            max_tick_duration_ms: py_config.max_tick_duration_ms,
-            restart_on_failure: py_config.restart_on_failure,
-            max_restart_attempts: py_config.max_restart_attempts,
-            restart_delay_ms: py_config.restart_delay_ms,
-            log_level: py_config.log_level,
-            custom_params: py_config.custom_params,
-            circuit_breaker: None, // Use scheduler-level circuit breaker settings
         }
     }
 }
