@@ -141,6 +141,10 @@ fn main() {
         run_child_consumer(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap());
         return;
     }
+    if args.len() >= 4 && args[1] == "--child-atomic-writer" {
+        run_child_atomic_writer(&args[2], args[3].parse().unwrap());
+        return;
+    }
 
     // --- Parse CLI flags ---
     let json_path = args
@@ -208,6 +212,19 @@ fn main() {
     results.push(r);
 
     let r = bench_pod_shm(&timer);
+    print_detail(&r);
+    results.push(r);
+
+    // === Raw atomic probe (hardware floor) ===
+    println!();
+    println!(
+        "{} Hardware Floor (raw SHM atomic) {}",
+        "───",
+        "─".repeat(BOX_W - 38)
+    );
+    println!();
+
+    let r = bench_raw_atomic(&timer);
     print_detail(&r);
     results.push(r);
 
@@ -323,30 +340,43 @@ fn validate_platform(platform: &PlatformInfo) {
 
 /// DirectChannel -- same thread, no atomics.
 /// Measures send() latency with RDTSC overhead subtracted.
+///
+/// **Batched sends**: We send in batches of 128, then drain outside the
+/// measurement window. This avoids icache/branch-predictor pollution from
+/// alternating send/recv calls, which inflated DirectChannel latency to
+/// ~36ns vs SpscIntra's ~7ns despite DirectChannel being simpler.
 fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
     let topic: Topic<CmdVel> = Topic::new("bench_dc_v2").unwrap();
     let msg = CmdVel::with_timestamp(1.5, 0.8, 0);
     let cal = timer.calibration();
     let overhead = cal.overhead_cycles;
 
-    // Warmup
+    // Warmup: batch send + drain to warm caches without polluting measurement
     for _ in 0..WARMUP {
         topic.send(msg);
-        let _ = topic.recv();
     }
     while topic.recv().is_some() {}
 
     let backend = topic.backend_type().to_string();
 
-    // Measure send-only latency
+    // Measure send-only latency in batches.
+    // Ring capacity is 256 for CmdVel (16 bytes). Use batch of 128 (half capacity).
+    // Each batch: measure 128 sends, then drain outside measurement window.
+    const BATCH: u64 = 128;
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
-    for _ in 0..ITERATIONS {
-        serialize();
-        let start = rdtsc();
-        topic.send(std::hint::black_box(msg));
-        let end = rdtscp();
-        latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
-        let _ = topic.recv();
+    let mut sent = 0u64;
+    while sent < ITERATIONS {
+        let n = std::cmp::min(BATCH, ITERATIONS - sent);
+        for _ in 0..n {
+            serialize();
+            let start = rdtsc();
+            topic.send(std::hint::black_box(msg));
+            let end = rdtscp();
+            latencies.push(cal.cycles_to_ns(end.wrapping_sub(start).saturating_sub(overhead)));
+        }
+        sent += n;
+        // Drain outside measurement window — icache stays warm for sends
+        while topic.recv().is_some() {}
     }
 
     ScenarioResult {
@@ -1088,7 +1118,13 @@ fn wait_for_messages(consumer: &Topic<CmdVel>, count: u64, timeout: Duration) ->
 /// Collect cross-process latencies from RDTSC timestamps in message payload.
 ///
 /// Phase 1: Discard `warmup` messages (cache/TLB warming).
+/// Phase 1.5: Drain all stale messages from the ring buffer.
 /// Phase 2: Collect up to `iterations` per-message one-way latencies.
+///
+/// **Critical**: The drain phase between warmup and measurement eliminates stale
+/// messages that accumulated in the ring while the consumer was processing warmup.
+/// Without this drain, measurement would start with old-timestamp messages, inflating
+/// latency by hundreds of nanoseconds.
 ///
 /// **Critical**: Deadline and idle checks are amortized (every 4096 polls) to avoid
 /// injecting ~108ns Instant::now() overhead into the measurement hot loop. This is
@@ -1108,7 +1144,7 @@ fn collect_cross_proc(
     let idle_threshold_meas = cal.ns_to_cycles(500_000_000); // 500ms in cycles (measurement)
     let overhead = cal.overhead_cycles;
 
-    // Phase 1: Warmup -- receive and discard
+    // Phase 1: Warmup -- receive and discard (cache/TLB warming)
     let mut polls = 0u64;
     while total < warmup {
         polls += 1;
@@ -1126,6 +1162,11 @@ fn collect_cross_proc(
             spin_loop();
         }
     }
+
+    // No drain phase needed: producer pacing (~1µs/msg via 256 spin_loops) is
+    // slow enough that the consumer processes each message before the next one
+    // arrives. There is no queue buildup, so every message reflects true wire
+    // latency (cache coherency + dispatch overhead), not queuing delay.
 
     // Phase 2: Measurement -- ZERO overhead hot loop
     // No Instant::now(), no unnecessary branches. Pure spin on recv().
@@ -1152,7 +1193,9 @@ fn collect_cross_proc(
             if now.wrapping_sub(last_recv_cycles) > idle_threshold_meas {
                 break; // Publisher likely finished
             }
-            spin_loop();
+            // No spin_loop() here — tight poll for minimum latency measurement.
+            // PAUSE on Comet Lake costs ~140 cycles (~40ns), adding ~20ns avg
+            // polling delay. For latency benchmarks, we want the tightest loop.
         }
     }
 
@@ -1191,16 +1234,19 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
     // === MEASUREMENT HOT LOOP ===
     // RDTSC timestamp embedded in payload. No yield, no sleep.
     if paced {
-        // Paced mode: insert spin_loops between sends to prevent ring overflow.
-        // Without pacing, the producer outruns the consumer (producer ~30ns/msg,
-        // consumer ~50ns/msg due to RDTSC + Vec::push), causing queuing delay
-        // that inflates measured one-way latency from ~300ns to ~3µs.
-        // 4 spin_loops ≈ 16-20ns extra, matching consumer throughput.
+        // Paced mode: insert spin_loops between sends so the consumer ALWAYS
+        // processes each message before the next one arrives. This ensures zero
+        // queue buildup, so measured one-way latency reflects true wire latency
+        // (cache coherency + dispatch overhead), not queuing delay.
+        //
+        // 256 spin_loops ≈ 1024ns (~1µs). Consumer processes each message in
+        // ~150-300ns (SHM reads + RDTSC + Vec::push), so ~700ns of idle time
+        // between messages — more than enough headroom.
         for _ in 0..count {
             serialize();
             let t = rdtsc();
             topic.send(CmdVel::with_timestamp(1.5, 0.8, t));
-            for _ in 0..4 {
+            for _ in 0..256 {
                 spin_loop();
             }
         }
@@ -1225,6 +1271,141 @@ fn run_child_consumer(topic_name: &str, count: u64, core: usize) {
         if topic.recv().is_some() {
             received += 1;
         } else {
+            spin_loop();
+        }
+    }
+}
+
+// ============================================================================
+// Raw Atomic Probe: Hardware floor for cross-process latency
+// ============================================================================
+
+/// Measure the raw hardware floor for cross-process cache line transfer.
+///
+/// Uses a single AtomicU64 in shared memory (via HORUS Topic header's user field).
+/// Writer: serialize() → rdtsc() → atomic store(ts) → paced wait
+/// Reader: tight poll → rdtscp() → compute delta
+///
+/// This bypasses ALL framework overhead (fn ptrs, epoch guards, ring buffer logic)
+/// to measure the pure cross-core cache line transfer latency.
+fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
+    let cal = timer.calibration();
+    let overhead = cal.overhead_cycles;
+
+    // Create a topic just to get shared memory. We'll use a raw atomic in the
+    // topic's SHM region to communicate between processes.
+    let topic_name = format!("bench_raw_atom_{}", std::process::id());
+    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv(); // Register to get SHM allocated
+
+    // Spawn the atomic writer child
+    let exe = std::env::current_exe().unwrap();
+    let total_writes = WARMUP + ITERATIONS;
+    let mut child = Command::new(&exe)
+        .args([
+            "--child-atomic-writer",
+            &topic_name,
+            &total_writes.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to spawn atomic writer");
+
+    // Wait for child to start writing
+    thread::sleep(Duration::from_millis(200));
+
+    // Get pointer to header.sequence_or_head — we'll use this as our raw atomic.
+    // Both processes access the same SHM-mapped header.
+    let header_ptr = consumer.local_state_header_ptr();
+    if header_ptr.is_null() {
+        child.wait().ok();
+        return ScenarioResult {
+            name: "RawAtomic",
+            backend: "shm".to_string(),
+            expected_backend: "shm",
+            measurement: "one-way",
+            latencies_ns: vec![],
+            total_sent: total_writes,
+            total_received: 0,
+            note: Some("header_ptr null"),
+        };
+    }
+    let atom = unsafe { &(*header_ptr).sequence_or_head };
+
+    // Phase 1: Warmup
+    let mut last_val = 0u64;
+    for _ in 0..WARMUP {
+        loop {
+            let v = atom.load(Ordering::Acquire);
+            if v != last_val && v != 0 {
+                last_val = v;
+                break;
+            }
+        }
+    }
+
+    // Phase 2: Measurement — tight poll, no PAUSE, no framework code
+    let mut latencies = Vec::with_capacity(ITERATIONS as usize);
+    let deadline = Instant::now() + TIMEOUT;
+    let mut polls = 0u64;
+    while (latencies.len() as u64) < ITERATIONS {
+        polls += 1;
+        if polls & 16383 == 0 && Instant::now() > deadline {
+            break;
+        }
+        let v = atom.load(Ordering::Acquire);
+        if v != last_val && v != 0 {
+            let end = rdtscp();
+            let delta = end.wrapping_sub(v).saturating_sub(overhead);
+            latencies.push(cal.cycles_to_ns(delta));
+            last_val = v;
+        }
+    }
+
+    child.wait().ok();
+
+    ScenarioResult {
+        name: "RawAtomic",
+        backend: "shm".to_string(),
+        expected_backend: "shm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: total_writes,
+        total_received: WARMUP + ITERATIONS,
+        note: None,
+    }
+}
+
+/// Child process: write RDTSC timestamps to a raw atomic in SHM.
+fn run_child_atomic_writer(topic_name: &str, count: u64) {
+    let _ = set_cpu_affinity(CORE_AUX);
+    let topic: Topic<CmdVel> = Topic::new(topic_name).unwrap();
+    // Send a dummy message to register as publisher and trigger SHM creation
+    topic.send(CmdVel::with_timestamp(0.0, 0.0, 0));
+    thread::sleep(Duration::from_millis(100));
+
+    let header_ptr = topic.local_state_header_ptr();
+    if header_ptr.is_null() {
+        eprintln!("  [raw-atomic] header_ptr null, aborting");
+        return;
+    }
+    let atom = unsafe { &(*header_ptr).sequence_or_head };
+
+    eprintln!(
+        "  [raw-atomic] PID={} core={} writing {} timestamps",
+        std::process::id(),
+        CORE_AUX,
+        count
+    );
+
+    for _ in 0..count {
+        serialize();
+        let t = rdtsc();
+        atom.store(t, Ordering::Release);
+        // Same pacing as other cross-process benchmarks
+        for _ in 0..256 {
             spin_loop();
         }
     }

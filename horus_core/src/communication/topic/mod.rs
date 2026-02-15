@@ -787,50 +787,68 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         // Seq and data share a cache line → single inter-core transfer
         // for non-SPSC recv paths (MpscShm, SpmcShm, MpmcShm, PodShm).
         let colo = is_pod && mem::size_of::<T>() + 8 <= 64;
+        let local = self.local();
+        let can_send = local.role.can_send();
+        let can_recv = local.role.can_recv();
 
         // SAFETY: UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe {
-            *self.send_fn.get() = match mode {
-                BackendMode::DirectChannel => dispatch::send_direct_channel::<T>,
-                BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
-                BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
-                BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
-                BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
-                BackendMode::SpscShm | BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
-                BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
-                BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
-                BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
-                BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-                BackendMode::MpscShm | BackendMode::MpmcShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
-                BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
-                BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
-                BackendMode::Unknown => dispatch::send_uninitialized::<T>,
+            // Only set send_fn if registered as producer.
+            // Keeping send_uninitialized ensures ensure_producer() is called on first send,
+            // which registers the participant and triggers correct topology detection.
+            *self.send_fn.get() = if !can_send {
+                dispatch::send_uninitialized::<T>
+            } else {
+                match mode {
+                    BackendMode::DirectChannel => dispatch::send_direct_channel::<T>,
+                    BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
+                    BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
+                    BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
+                    BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
+                    BackendMode::SpscShm | BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
+                    BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
+                    BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
+                    BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
+                    BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
+                    BackendMode::MpscShm | BackendMode::MpmcShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
+                    BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
+                    BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
+                    BackendMode::Unknown => dispatch::send_uninitialized::<T>,
+                }
             };
 
-            *self.recv_fn.get() = match mode {
-                BackendMode::DirectChannel => dispatch::recv_direct_channel::<T>,
-                BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
-                BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
-                BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
-                BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
-                // SpscShm: MUST poll header.sequence_or_head (separate cache line).
-                // Polling inline seq would contend with producer's data write.
-                BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
-                BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
-                // Non-SPSC: inline seq + data on same cache line → 1 fewer transfer
-                BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
-                BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
-                BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
-                BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
-                BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
-                BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
-                BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
-                BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
-                BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
-                BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
-                BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
-                BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
-                BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
+            // Only set recv_fn if registered as consumer.
+            // Keeping recv_uninitialized ensures ensure_consumer() is called on first recv,
+            // which registers the participant and triggers correct topology detection
+            // (e.g., enabling DirectChannel when both pub+sub are on the same thread).
+            *self.recv_fn.get() = if !can_recv {
+                dispatch::recv_uninitialized::<T>
+            } else {
+                match mode {
+                    BackendMode::DirectChannel => dispatch::recv_direct_channel::<T>,
+                    BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
+                    BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
+                    BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
+                    BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
+                    // SpscShm: MUST poll header.sequence_or_head (separate cache line).
+                    // Polling inline seq would contend with producer's data write.
+                    BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
+                    BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
+                    // Non-SPSC: inline seq + data on same cache line → 1 fewer transfer
+                    BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
+                    BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
+                    BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
+                    BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
+                    BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
+                    BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
+                    BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
+                    BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
+                    BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
+                    BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
+                    BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
+                    BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
+                    BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
+                }
             };
         }
 
@@ -1486,6 +1504,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// Get subscriber count (for debugging)
     pub fn sub_count(&self) -> u32 {
         self.header().sub_count()
+    }
+
+    /// Get raw pointer to the SHM header (for benchmarking raw atomic latency).
+    /// Returns null if the topic hasn't been initialized with SHM yet.
+    pub fn local_state_header_ptr(&self) -> *const header::TopicHeader {
+        self.local().cached_header_ptr
     }
 }
 
