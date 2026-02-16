@@ -5,7 +5,7 @@ Performance benchmarks for the HORUS robotics IPC framework.
 ## Quick Start
 
 ```bash
-# Main benchmark - shows all Topic backend latencies
+# Main benchmark - shows all 10 Topic backend latencies
 cargo run --release -p horus_benchmarks --bin all_paths_latency
 ```
 
@@ -13,7 +13,7 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency
 
 | Benchmark | What It Measures | Run Command |
 |-----------|------------------|-------------|
-| `all_paths_latency` | **All 10 Topic backends** - DirectChannel to MpmcShm | `cargo run --release -p horus_benchmarks --bin all_paths_latency` |
+| `all_paths_latency` | **All 10 Topic backends** — DirectChannel to MpmcShm | `cargo run --release -p horus_benchmarks --bin all_paths_latency` |
 | `cross_process_benchmark` | True IPC between separate processes | `cargo run --release -p horus_benchmarks --bin cross_process_benchmark` |
 | `robotics_messages_benchmark` | Real message types (CmdVel, Imu, LaserScan) | `cargo run --release -p horus_benchmarks --bin robotics_messages_benchmark` |
 | `determinism_benchmark` | Jitter and real-time suitability | `cargo run --release -p horus_benchmarks --bin determinism_benchmark` |
@@ -23,8 +23,7 @@ cargo run --release -p horus_benchmarks --bin all_paths_latency
 
 ### Topic Backend Latencies (`all_paths_latency`)
 
-9 of 10 backends are benchmarked directly. MpmcShm only activates for non-POD types
-and shares dispatch paths with PodShm (plus serialization overhead).
+All 10 backends benchmarked with function-pointer dispatch (zero-branch hot path):
 
 | Scenario | Backend | Topology | Expected Latency |
 |----------|---------|----------|------------------|
@@ -37,14 +36,15 @@ and shares dispatch paths with PodShm (plus serialization overhead).
 | CrossProc-2P1C | MpscShm | cross process, 2P-1C | ~65ns |
 | CrossProc-1PMC | SpmcShm | cross process, 1P-2C | ~70ns |
 | CrossProc-1P1C | SpscShm | cross process, 1P-1C | ~85ns |
+| CrossProc-MPMC | MpmcShm | cross process, MPMC | ~167ns |
 
 ### Real-Time Suitability
 
 | Control Rate | Requirement | HORUS Result |
 |--------------|-------------|--------------|
-| 1 kHz | < 1 ms | ✓ PASS |
-| 10 kHz | < 100 µs | ✓ PASS |
-| 100 kHz | < 10 µs | ✓ PASS |
+| 1 kHz | < 1 ms | PASS |
+| 10 kHz | < 100 us | PASS |
+| 100 kHz | < 10 us | PASS |
 
 ## For Accurate Results
 

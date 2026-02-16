@@ -6,7 +6,7 @@
 
 **Ultra-low latency robotics framework with Python bindings** - 100x faster than ROS2.
 
-HORUS is a production-grade robotics framework built in Rust, delivering **87ns IPC latency** and **12M+ messages/second** throughput. This package provides native Python bindings via PyO3.
+HORUS is a production-grade robotics framework built in Rust, delivering **3ns - 167ns IPC latency** across 10 auto-selected backends and **12M+ messages/second** throughput. This package provides native Python bindings via PyO3.
 
 ## Installation
 
@@ -32,53 +32,36 @@ print(data)
 
 ## Features
 
-- **Ultra-Low Latency**: 87ns IPC latency (100x faster than ROS2)
+- **Ultra-Low Latency**: 3ns - 167ns IPC (10 auto-selected backends)
 - **High Throughput**: 12M+ messages/second
 - **Zero-Copy**: Shared memory transport for maximum performance
 - **Type-Safe**: Strong typing with standard robotics messages
 - **Cross-Language**: Seamless interop with Rust nodes
-- **Real-Time Ready**: Priority-based scheduling with deadline guarantees
+- **Real-Time Ready**: Priority-based scheduling with opt-in RT features
 
 ## Core Components
 
 ### Topic (Unified Communication)
 
-The `Topic` class provides pub/sub communication with automatic backend selection:
-
 ```python
 import horus
 
-# Create a topic
 topic = horus.Topic("robot_commands")
-
-# Send messages
 topic.send({"velocity": [1.0, 0.0, 0.0]})
-
-# Receive messages
 msg = topic.recv()
 ```
 
 ### Typed Messages
 
-Use typed messages for zero-copy performance:
-
 ```python
 from horus import Topic, CmdVel, Pose2D
 
-# Create typed topic
 topic = Topic("cmd_vel", CmdVel)
-
-# Send typed message
 topic.send(CmdVel(linear=1.5, angular=0.3))
-
-# Receive typed message
 msg = topic.recv()  # Returns CmdVel instance
-print(f"Linear: {msg.linear}, Angular: {msg.angular}")
 ```
 
 ### Nodes
-
-Create custom processing nodes:
 
 ```python
 import horus
@@ -92,57 +75,42 @@ class SensorNode(horus.Node):
         reading = self.read_sensor()
         self.topic.send(reading)
 
-# Run the node
 node = SensorNode()
 horus.run(node, rate_hz=100)
 ```
 
-### Async Nodes
-
-For I/O-bound operations, use async nodes:
+### Scheduler with Presets
 
 ```python
 import horus
 
-class AsyncSensorNode(horus.AsyncNode):
-    async def setup(self):
-        self.topic = horus.AsyncTopic("sensor_data")
+# Lightweight scheduler (default)
+scheduler = horus.Scheduler()
 
-    async def tick(self):
-        data = await self.fetch_data()
-        await self.topic.send(data)
+# Or use presets
+scheduler = horus.Scheduler.deploy()            # Production: RT + BlackBox
+scheduler = horus.Scheduler.safety_critical()    # WCET + watchdog
+scheduler = horus.Scheduler.deterministic()      # Reproducible execution
 
-    async def fetch_data(self):
-        await horus.sleep(0.01)
-        return {"value": 42}
-```
-
-## Message Types
-
-HORUS provides standard robotics message types:
-
-```python
-from horus import (
-    CmdVel,      # Velocity commands (linear, angular)
-    Pose2D,      # 2D position (x, y, theta)
-    Imu,         # IMU readings
-    Odometry,    # Odometry data
-    LaserScan,   # LIDAR data
-)
+# Builder pattern
+scheduler = horus.Scheduler()
+scheduler.realtime()         # Opt-in RT features
+scheduler.tick_hz(1000.0)    # 1kHz tick rate
+scheduler.with_blackbox(16)  # 16MB flight recorder
 ```
 
 ## Performance Comparison
 
 | Framework | IPC Latency | Throughput |
 |-----------|-------------|------------|
-| **HORUS** | **87ns** | **12M+ msg/s** |
+| **HORUS** | **3ns - 167ns** | **12M+ msg/s** |
 | ROS2 (FastDDS) | 50-100us | ~100K msg/s |
 | ZeroMQ | 10-30us | ~1M msg/s |
 
 ## Documentation
 
 - **Full Documentation**: [docs.horus-registry.dev](https://docs.horus-registry.dev)
-- **Getting Started**: [Installation Guide](https://docs.horus-registry.dev/installation)
+- **Getting Started**: [Installation Guide](https://docs.horus-registry.dev/getting-started/installation)
 - **API Reference**: [Python API](https://docs.horus-registry.dev/python-api)
 
 ## Requirements
