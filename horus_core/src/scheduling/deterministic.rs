@@ -11,15 +11,11 @@
 //! - **Trace Comparison**: Compare two runs to find divergence
 
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::Node;
 
 /// Errors in deterministic execution
 #[derive(Error, Debug)]
@@ -353,201 +349,6 @@ pub struct DivergenceInfo {
     pub message: String,
 }
 
-/// Registered node in deterministic scheduler
-struct DeterministicNode {
-    node: Box<dyn Node>,
-    name: String,
-    priority: u32,
-    enabled: bool,
-}
-
-/// Deterministic scheduler that guarantees reproducible execution
-pub struct DeterministicScheduler {
-    /// Configuration
-    config: DeterministicConfig,
-    /// Deterministic clock
-    clock: Arc<DeterministicClock>,
-    /// Registered nodes
-    nodes: Vec<DeterministicNode>,
-    /// Execution trace (if recording)
-    trace: Option<Mutex<ExecutionTrace>>,
-    /// Running flag
-    running: AtomicBool,
-    /// Maximum ticks (0 = unlimited)
-    max_ticks: u64,
-}
-
-impl DeterministicScheduler {
-    /// Create a new deterministic scheduler
-    pub fn new(config: DeterministicConfig) -> Self {
-        let clock = Arc::new(DeterministicClock::new(&config));
-        let trace = if config.record_trace {
-            Some(Mutex::new(ExecutionTrace::new(config.clone())))
-        } else {
-            None
-        };
-
-        Self {
-            config,
-            clock,
-            nodes: Vec::new(),
-            trace,
-            running: AtomicBool::new(false),
-            max_ticks: 0,
-        }
-    }
-
-    /// Create with default config
-    pub fn with_seed(seed: u64) -> Self {
-        let config = DeterministicConfig {
-            seed,
-            ..Default::default()
-        };
-        Self::new(config)
-    }
-
-    /// Add a node to the scheduler
-    pub fn add(&mut self, node: Box<dyn Node>, priority: u32) {
-        let name = node.name().to_string();
-        self.nodes.push(DeterministicNode {
-            node,
-            name,
-            priority,
-            enabled: true,
-        });
-        // Sort by priority
-        self.nodes.sort_by_key(|n| n.priority);
-    }
-
-    /// Set maximum ticks to run
-    pub fn set_max_ticks(&mut self, max: u64) {
-        self.max_ticks = max;
-    }
-
-    /// Get the deterministic clock
-    pub fn clock(&self) -> Arc<DeterministicClock> {
-        self.clock.clone()
-    }
-
-    /// Run the scheduler
-    pub fn run(&mut self) -> Result<()> {
-        self.running.store(true, Ordering::Release);
-
-        // Initialize all nodes
-        for (idx, dn) in self.nodes.iter_mut().enumerate() {
-            let start = std::time::Instant::now();
-            let _ = dn.node.init();
-            let duration = start.elapsed();
-
-            if let Some(ref trace) = self.trace {
-                trace.lock().add(TraceEntry {
-                    tick: 0,
-                    node_index: idx,
-                    node_name: dn.name.clone(),
-                    entry_type: TraceEntryType::TickStart,
-                    timestamp_ns: self.clock.now_ns(),
-                    duration_ns: duration.as_nanos() as u64,
-                    input_hash: None,
-                    output_hash: None,
-                    data: None,
-                });
-            }
-        }
-
-        // Main loop
-        while self.running.load(Ordering::Acquire) {
-            let tick = self.clock.tick();
-
-            // Check max ticks
-            if self.max_ticks > 0 && tick >= self.max_ticks {
-                break;
-            }
-
-            // Execute all nodes in priority order
-            for (idx, dn) in self.nodes.iter_mut().enumerate() {
-                if !dn.enabled {
-                    continue;
-                }
-
-                let start = std::time::Instant::now();
-
-                // Record tick start
-                if let Some(ref trace) = self.trace {
-                    trace.lock().add(TraceEntry {
-                        tick,
-                        node_index: idx,
-                        node_name: dn.name.clone(),
-                        entry_type: TraceEntryType::TickStart,
-                        timestamp_ns: self.clock.now_ns(),
-                        duration_ns: 0,
-                        input_hash: None,
-                        output_hash: None,
-                        data: None,
-                    });
-                }
-
-                // Execute node
-                dn.node.tick();
-
-                let duration = start.elapsed();
-
-                // Record tick end
-                if let Some(ref trace) = self.trace {
-                    trace.lock().add(TraceEntry {
-                        tick,
-                        node_index: idx,
-                        node_name: dn.name.clone(),
-                        entry_type: TraceEntryType::TickEnd,
-                        timestamp_ns: self.clock.now_ns(),
-                        duration_ns: duration.as_nanos() as u64,
-                        input_hash: None,
-                        output_hash: None,
-                        data: None,
-                    });
-                }
-            }
-
-            // Finalize tick in trace
-            if let Some(ref trace) = self.trace {
-                trace.lock().finalize_tick(tick);
-            }
-
-            // Advance clock
-            self.clock.advance_tick();
-        }
-
-        // Shutdown nodes
-        for dn in self.nodes.iter_mut() {
-            let _ = dn.node.shutdown();
-        }
-
-        Ok(())
-    }
-
-    /// Run for a specific number of ticks
-    pub fn run_ticks(&mut self, ticks: u64) -> Result<()> {
-        self.max_ticks = self.clock.tick() + ticks;
-        self.run()
-    }
-
-    /// Stop the scheduler
-    pub fn stop(&self) {
-        self.running.store(false, Ordering::Release);
-    }
-
-    /// Get the execution trace
-    pub fn trace(&self) -> Option<ExecutionTrace> {
-        self.trace.as_ref().map(|t| t.lock().clone())
-    }
-
-    /// Reset scheduler state for re-run
-    pub fn reset(&mut self) {
-        self.clock.reset();
-        if let Some(ref trace) = self.trace {
-            *trace.lock() = ExecutionTrace::new(self.config.clone());
-        }
-    }
-}
 
 impl Serialize for DivergenceInfo {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -600,30 +401,6 @@ impl<'de> Deserialize<'de> for DivergenceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::HorusResult;
-
-    struct CounterNode {
-        count: u64,
-    }
-
-    impl Node for CounterNode {
-        fn name(&self) -> &'static str {
-            "counter"
-        }
-
-        fn init(&mut self) -> HorusResult<()> {
-            self.count = 0;
-            Ok(())
-        }
-
-        fn tick(&mut self) {
-            self.count += 1;
-        }
-
-        fn shutdown(&mut self) -> HorusResult<()> {
-            Ok(())
-        }
-    }
 
     #[test]
     fn test_deterministic_clock() {
@@ -653,19 +430,6 @@ mod tests {
         let seq2: Vec<u64> = (0..10).map(|_| clock2.random_u64()).collect();
 
         assert_eq!(seq1, seq2);
-    }
-
-    #[test]
-    fn test_deterministic_scheduler() {
-        let config = DeterministicConfig::with_trace(42);
-        let mut scheduler = DeterministicScheduler::new(config);
-
-        scheduler.add(Box::new(CounterNode { count: 0 }), 10);
-        scheduler.set_max_ticks(10);
-        scheduler.run().unwrap();
-
-        let trace = scheduler.trace().unwrap();
-        assert_eq!(trace.total_ticks, 10);
     }
 
     #[test]

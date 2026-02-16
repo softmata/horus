@@ -43,6 +43,7 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
 }
 
+use super::config::ExecutionMode;
 use super::executors::ParallelExecutor;
 use super::fault_tolerance::{FailureAction, FailurePolicy};
 use super::intelligence::RuntimeProfiler;
@@ -125,6 +126,9 @@ pub struct Scheduler {
     // Profiling (for metrics reporting)
     profiler: RuntimeProfiler,
     parallel_executor: ParallelExecutor,
+
+    // Execution mode (Sequential or Parallel)
+    execution_mode: ExecutionMode,
 
     // Configuration (stored for runtime use)
     config: Option<super::config::SchedulerConfig>,
@@ -246,6 +250,9 @@ impl Scheduler {
             // Profiling for metrics
             profiler: RuntimeProfiler::new_default(),
             parallel_executor: ParallelExecutor::new(),
+
+            // Execution mode
+            execution_mode: ExecutionMode::Sequential,
 
             // Configuration
             config: None,
@@ -1222,6 +1229,7 @@ impl Scheduler {
         use super::config::*;
 
         // Apply execution mode
+        self.execution_mode = config.execution;
         match config.execution {
             ExecutionMode::Parallel => {
                 self.parallel_executor.set_max_threads(num_cpus::get());
@@ -2222,6 +2230,8 @@ impl Scheduler {
                 priority,
                 rate
             ));
+            // Ensure tick_period is fast enough for this node's rate
+            self.adjust_tick_period_for_node_rates();
         } else {
             print_line(&format!(
                 "Added {} '{}' with priority {}",
@@ -2295,6 +2305,23 @@ impl Scheduler {
             }
         }
         self
+    }
+
+    /// Adjust tick_period to be fast enough for the fastest registered node.
+    ///
+    /// If a node declares rate_hz(500), the scheduler must tick at >= 500Hz
+    /// for that node to actually achieve its declared rate.
+    fn adjust_tick_period_for_node_rates(&mut self) {
+        let current_rate = 1_000_000.0 / self.tick_period.as_micros() as f64;
+        let max_node_rate = self
+            .nodes
+            .iter()
+            .filter_map(|n| n.rate_hz)
+            .fold(current_rate, f64::max);
+
+        if max_node_rate > current_rate {
+            self.tick_period = Duration::from_micros((1_000_000.0 / max_node_rate) as u64);
+        }
     }
 
     /// Main loop with automatic signal handling and cleanup
@@ -2425,6 +2452,11 @@ impl Scheduler {
             // Set up tier-based executors (moves annotated nodes to specialized executors)
             self.setup_tier_executors().await;
 
+            // Auto-derive tick_period from the fastest registered node rate.
+            // If any node declares a higher rate than the current tick_period implies,
+            // increase the tick rate so that node can actually run at its declared frequency.
+            self.adjust_tick_period_for_node_rates();
+
             // Main tick loop
             while self.is_running() {
                 // Check if duration limit has been reached
@@ -2525,8 +2557,12 @@ impl Scheduler {
 
                     // Log failure handler status for nodes with issues
                     let mut has_failure_issues = false;
+                    let mut suppressed_count = 0u32;
                     for registered in &self.nodes {
                         let stats = registered.failure_handler.stats();
+                        if stats.is_suppressed {
+                            suppressed_count += 1;
+                        }
                         if stats.failure_count > 0 || stats.is_suppressed {
                             if !has_failure_issues {
                                 print_line("\nFailure Handler Status:");
@@ -2544,6 +2580,16 @@ impl Scheduler {
                                     ""
                                 }
                             ));
+                        }
+                    }
+
+                    // Record degradation to blackbox when nodes are suppressed
+                    if suppressed_count > 0 {
+                        if let Some(ref mut bb) = self.blackbox {
+                            bb.record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "safety".to_string(),
+                                message: format!("{} nodes suppressed", suppressed_count),
+                            });
                         }
                     }
                 }
@@ -3049,217 +3095,381 @@ impl Scheduler {
         }
     }
 
-    /// Execute nodes in priority order with profiling and RT support
-    async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
-        // Sort by priority
-        self.nodes.sort_by_key(|r| r.priority);
+    /// Execute a single node: tick + profiling + WCET + deadline + failure handling.
+    /// Returns true if the scheduler should stop (fatal failure).
+    fn execute_single_node(
+        &mut self,
+        i: usize,
+        node_filter: Option<&[&str]>,
+    ) -> bool {
+        // Skip stopped or paused nodes
+        if self.nodes[i].is_stopped || self.nodes[i].is_paused {
+            return false;
+        }
 
-        // We need to process nodes one at a time to avoid borrow checker issues
-        let num_nodes = self.nodes.len();
-        for i in 0..num_nodes {
-            // Skip stopped or paused nodes (per-node lifecycle control)
-            if self.nodes[i].is_stopped || self.nodes[i].is_paused {
-                continue;
-            }
+        let (should_run, node_name, should_tick) = {
+            let registered = &self.nodes[i];
+            let node_name = registered.node.name();
+            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
 
-            let (should_run, node_name, should_tick) = {
-                let registered = &self.nodes[i];
-                let node_name = registered.node.name();
-                let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
-
-                // Check rate limiting
-                let should_tick = if let Some(rate_hz) = registered.rate_hz {
-                    let current_time = Instant::now();
-                    if let Some(last_tick) = registered.last_tick {
-                        let elapsed_secs = (current_time - last_tick).as_secs_f64();
-                        let period_secs = 1.0 / rate_hz;
-                        elapsed_secs >= period_secs
-                    } else {
-                        true
-                    }
+            // Check rate limiting
+            let should_tick = if let Some(rate_hz) = registered.rate_hz {
+                let current_time = Instant::now();
+                if let Some(last_tick) = registered.last_tick {
+                    let elapsed_secs = (current_time - last_tick).as_secs_f64();
+                    let period_secs = 1.0 / rate_hz;
+                    elapsed_secs >= period_secs
                 } else {
                     true
-                };
-
-                (should_run, node_name, should_tick)
+                }
+            } else {
+                true
             };
 
-            if !should_tick {
-                continue;
+            (should_run, node_name, should_tick)
+        };
+
+        if !should_tick {
+            return false;
+        }
+
+        // Check failure handler (circuit breaker / backoff / skip)
+        if !self.nodes[i].failure_handler.should_allow() {
+            return false;
+        }
+
+        // Update last tick time if rate limited
+        if self.nodes[i].rate_hz.is_some() {
+            self.nodes[i].last_tick = Some(Instant::now());
+        }
+
+        if should_run && self.nodes[i].initialized {
+            // Feed watchdog for RT nodes
+            if self.nodes[i].is_rt_node {
+                if let Some(ref monitor) = self.safety_monitor {
+                    monitor.feed_watchdog(node_name);
+                }
             }
 
-            // Check failure handler (circuit breaker / backoff / skip)
-            if !self.nodes[i].failure_handler.should_allow() {
-                continue;
-            }
+            let tick_start = Instant::now();
+            let tick_result = {
+                let registered = &mut self.nodes[i];
+                if let Some(ref mut context) = registered.context {
+                    context.start_tick();
 
-            // Update last tick time if rate limited
-            if self.nodes[i].rate_hz.is_some() {
-                self.nodes[i].last_tick = Some(Instant::now());
-            }
+                    // Set node context for hlog!() macro
+                    let tick_number = context.metrics().total_ticks;
+                    set_node_context(node_name, tick_number);
 
-            if should_run && self.nodes[i].initialized {
-                // Feed watchdog for RT nodes
-                if self.nodes[i].is_rt_node {
+                    // Execute node tick with panic handling
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        registered.node.tick();
+                    }));
+
+                    clear_node_context();
+                    result
+                } else {
+                    return false;
+                }
+            };
+
+            let tick_duration = tick_start.elapsed();
+
+            return self.process_tick_result(i, node_name, tick_start, tick_duration, tick_result);
+        }
+        false
+    }
+
+    /// Process the result of a node tick (profiling, WCET, failure handling).
+    /// Returns true if the scheduler should stop.
+    fn process_tick_result(
+        &mut self,
+        i: usize,
+        node_name: &'static str,
+        tick_start: Instant,
+        tick_duration: Duration,
+        tick_result: std::thread::Result<()>,
+    ) -> bool {
+        // Check if node execution failed
+        if tick_result.is_err() {
+            self.profiler.record_node_failure(node_name);
+            print_line(&format!("Node '{}' panicked during execution", node_name));
+        }
+
+        // Record profiling data
+        self.profiler.record(node_name, tick_duration);
+
+        // Check WCET budget for RT nodes
+        if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
+            if let Some(ref monitor) = self.safety_monitor {
+                if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
+                    print_line(&format!(
+                        " WCET violation in {}: {:?} > {:?}",
+                        violation.node_name, violation.actual, violation.budget
+                    ));
+                }
+            }
+        }
+
+        // Check deadline for RT nodes
+        if self.nodes[i].is_rt_node {
+            if let Some(deadline) = self.nodes[i].deadline {
+                let elapsed = tick_start.elapsed();
+                if elapsed > deadline {
                     if let Some(ref monitor) = self.safety_monitor {
-                        monitor.feed_watchdog(node_name);
+                        monitor.record_deadline_miss(node_name);
+                        print_line(&format!(
+                            " Deadline miss in {}: {:?} > {:?}",
+                            node_name, elapsed, deadline
+                        ));
                     }
                 }
+            }
+        }
 
-                let tick_start = Instant::now();
-                let tick_result = {
-                    let registered = &mut self.nodes[i];
-                    if let Some(ref mut context) = registered.context {
-                        context.start_tick();
+        // Handle tick result with policy-driven dispatch
+        match tick_result {
+            Ok(_) => {
+                self.nodes[i].failure_handler.record_success();
 
-                        // Set node context for hlog!() macro
-                        let tick_number = context.metrics().total_ticks;
-                        set_node_context(node_name, tick_number);
-
-                        // Execute node tick with panic handling
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            registered.node.tick();
-                        }));
-
-                        clear_node_context();
-                        result
-                    } else {
-                        continue;
-                    }
+                if let Some(ref mut context) = self.nodes[i].context {
+                    context.record_tick();
+                }
+                false
+            }
+            Err(panic_err) => {
+                let action = self.nodes[i].failure_handler.record_failure();
+                let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                    format!("Node panicked: {}", s)
+                } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                    format!("Node panicked: {}", s)
+                } else {
+                    "Node panicked with unknown error".to_string()
                 };
 
-                let tick_duration = tick_start.elapsed();
+                let registered = &mut self.nodes[i];
+                if let Some(ref mut context) = registered.context {
+                    context.record_tick_failure(error_msg.clone());
 
-                // Check if node execution failed
-                if tick_result.is_err() {
-                    // Record failure for Isolated tier classification
-                    self.profiler.record_node_failure(node_name);
-                    print_line(&format!("Node '{}' panicked during execution", node_name));
-                }
+                    // Set context for on_error handler
+                    set_node_context(node_name, context.metrics().total_ticks);
+                    registered.node.on_error(&error_msg);
+                    clear_node_context();
 
-                // Record profiling data
-                self.profiler.record(node_name, tick_duration);
-
-                // Check WCET budget for RT nodes
-                if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-                    if let Some(ref monitor) = self.safety_monitor {
-                        if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
+                    match action {
+                        FailureAction::StopScheduler => {
                             print_line(&format!(
-                                " WCET violation in {}: {:?} > {:?}",
-                                violation.node_name, violation.actual, violation.budget
+                                " FATAL: Node '{}' failed — stopping scheduler: {}",
+                                node_name, error_msg
+                            ));
+                            context.transition_to_crashed(error_msg);
+                            self.stop();
+                            return true;
+                        }
+                        FailureAction::FatalAfterRestarts => {
+                            print_line(&format!(
+                                " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
+                                node_name
+                            ));
+                            context.transition_to_crashed(format!(
+                                "Max restarts exceeded: {}",
+                                error_msg
+                            ));
+                            self.stop();
+                            return true;
+                        }
+                        FailureAction::RestartNode => {
+                            let stats = registered.failure_handler.stats();
+                            print_line(&format!(
+                                " Node '{}' failed, restarting (attempt {}): {}",
+                                node_name, stats.restart_count, error_msg
+                            ));
+                            match context.restart() {
+                                Ok(_) => {
+                                    registered.initialized = true;
+                                }
+                                Err(e) => {
+                                    print_line(&format!(
+                                        " Node '{}' restart failed: {}",
+                                        node_name, e
+                                    ));
+                                    context.transition_to_crashed(format!(
+                                        "Restart failed: {}",
+                                        e
+                                    ));
+                                    registered.initialized = false;
+                                }
+                            }
+                        }
+                        FailureAction::SkipNode => {
+                            print_line(&format!(
+                                " Node '{}' circuit opened — skipping until cooldown: {}",
+                                node_name, error_msg
+                            ));
+                            context.transition_to_error(error_msg);
+                        }
+                        FailureAction::Continue => {
+                            print_line(&format!(
+                                " Node '{}' failed (continuing): {}",
+                                node_name, error_msg
                             ));
                         }
                     }
                 }
+                false
+            }
+        }
+    }
 
-                // Check deadline for RT nodes
-                if self.nodes[i].is_rt_node {
-                    if let Some(deadline) = self.nodes[i].deadline {
-                        let elapsed = tick_start.elapsed();
-                        if elapsed > deadline {
-                            if let Some(ref monitor) = self.safety_monitor {
-                                monitor.record_deadline_miss(node_name);
-                                print_line(&format!(
-                                    " Deadline miss in {}: {:?} > {:?}",
-                                    node_name, elapsed, deadline
-                                ));
-                            }
-                        }
+    /// Execute nodes in priority order with profiling and RT support.
+    ///
+    /// In Sequential mode: all nodes execute one-by-one in priority order.
+    /// In Parallel mode: RT nodes execute sequentially first (deterministic timing),
+    /// then non-RT nodes execute in parallel via crossbeam::scope.
+    async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
+        // Sort by priority
+        self.nodes.sort_by_key(|r| r.priority);
+
+        if self.execution_mode == ExecutionMode::Sequential {
+            // Sequential mode: execute all nodes one by one (original behavior)
+            let num_nodes = self.nodes.len();
+            for i in 0..num_nodes {
+                if self.execute_single_node(i, node_filter) {
+                    return; // Fatal failure — scheduler stopping
+                }
+            }
+            return;
+        }
+
+        // === Parallel mode ===
+        // Phase 1: Determine which nodes should tick and classify RT vs non-RT
+        let now = Instant::now();
+        let mut rt_indices = Vec::new();
+        let mut parallel_indices = Vec::new();
+
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].is_stopped || self.nodes[i].is_paused {
+                continue;
+            }
+            if !self.nodes[i].initialized {
+                continue;
+            }
+
+            let node_name = self.nodes[i].node.name();
+            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
+            if !should_run {
+                continue;
+            }
+
+            // Rate limiting check
+            if let Some(rate_hz) = self.nodes[i].rate_hz {
+                if let Some(last_tick) = self.nodes[i].last_tick {
+                    let elapsed_secs = (now - last_tick).as_secs_f64();
+                    if elapsed_secs < 1.0 / rate_hz {
+                        continue;
                     }
                 }
+            }
 
-                // Handle tick result with policy-driven dispatch
-                match tick_result {
-                    Ok(_) => {
-                        self.nodes[i].failure_handler.record_success();
+            // Failure handler check
+            if !self.nodes[i].failure_handler.should_allow() {
+                continue;
+            }
 
-                        if let Some(ref mut context) = self.nodes[i].context {
-                            context.record_tick();
+            if self.nodes[i].is_rt_node {
+                rt_indices.push(i);
+            } else {
+                parallel_indices.push(i);
+            }
+        }
+
+        // Phase 2: Execute RT nodes sequentially (deterministic timing required)
+        for &i in &rt_indices {
+            if self.execute_single_node(i, node_filter) {
+                return;
+            }
+        }
+
+        // Phase 3: Execute non-RT nodes in parallel via crossbeam::scope
+        if parallel_indices.is_empty() {
+            return;
+        }
+
+        // If only one non-RT node, just run it directly
+        if parallel_indices.len() == 1 {
+            let i = parallel_indices[0];
+            if self.nodes[i].rate_hz.is_some() {
+                self.nodes[i].last_tick = Some(Instant::now());
+            }
+            if self.execute_single_node(i, node_filter) {
+                return;
+            }
+            return;
+        }
+
+        // Pre-tick setup: update last_tick, feed watchdog, start context
+        for &i in &parallel_indices {
+            if self.nodes[i].rate_hz.is_some() {
+                self.nodes[i].last_tick = Some(Instant::now());
+            }
+            if let Some(ref mut ctx) = self.nodes[i].context {
+                ctx.start_tick();
+            }
+        }
+
+        // Parallel tick: each thread ticks one node, returns (index, name, duration, result)
+        struct ParallelResult {
+            index: usize,
+            node_name: &'static str,
+            tick_start: Instant,
+            duration: Duration,
+            result: std::thread::Result<()>,
+        }
+
+        let nodes_ptr = self.nodes.as_mut_ptr();
+        let parallel_results: Vec<ParallelResult> = crossbeam::scope(|s| {
+            let handles: Vec<_> = parallel_indices
+                .iter()
+                .map(|&i| {
+                    // SAFETY: Each thread accesses a distinct index into the nodes vec.
+                    // crossbeam::scope guarantees threads don't outlive the borrow.
+                    let node_ref = unsafe { &mut *nodes_ptr.add(i) };
+                    s.spawn(move |_| {
+                        let node_name = node_ref.node.name();
+                        let tick_start = Instant::now();
+                        let result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                node_ref.node.tick();
+                            }));
+                        let duration = tick_start.elapsed();
+                        ParallelResult {
+                            index: i,
+                            node_name,
+                            tick_start,
+                            duration,
+                            result,
                         }
-                    }
-                    Err(panic_err) => {
-                        let action = self.nodes[i].failure_handler.record_failure();
-                        let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                            format!("Node panicked: {}", s)
-                        } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                            format!("Node panicked: {}", s)
-                        } else {
-                            "Node panicked with unknown error".to_string()
-                        };
+                    })
+                })
+                .collect();
 
-                        let registered = &mut self.nodes[i];
-                        if let Some(ref mut context) = registered.context {
-                            context.record_tick_failure(error_msg.clone());
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("crossbeam thread panicked"))
+                .collect()
+        })
+        .expect("crossbeam scope panicked");
 
-                            // Set context for on_error handler
-                            set_node_context(node_name, context.metrics().total_ticks);
-                            registered.node.on_error(&error_msg);
-                            clear_node_context();
-
-                            match action {
-                                FailureAction::StopScheduler => {
-                                    print_line(&format!(
-                                        " FATAL: Node '{}' failed — stopping scheduler: {}",
-                                        node_name, error_msg
-                                    ));
-                                    context.transition_to_crashed(error_msg);
-                                    self.stop();
-                                    return;
-                                }
-                                FailureAction::FatalAfterRestarts => {
-                                    print_line(&format!(
-                                        " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
-                                        node_name
-                                    ));
-                                    context.transition_to_crashed(format!(
-                                        "Max restarts exceeded: {}",
-                                        error_msg
-                                    ));
-                                    self.stop();
-                                    return;
-                                }
-                                FailureAction::RestartNode => {
-                                    let stats = registered.failure_handler.stats();
-                                    print_line(&format!(
-                                        " Node '{}' failed, restarting (attempt {}): {}",
-                                        node_name, stats.restart_count, error_msg
-                                    ));
-                                    // Re-initialize the node
-                                    match context.restart() {
-                                        Ok(_) => {
-                                            registered.initialized = true;
-                                        }
-                                        Err(e) => {
-                                            print_line(&format!(
-                                                " Node '{}' restart failed: {}",
-                                                node_name, e
-                                            ));
-                                            context.transition_to_crashed(format!(
-                                                "Restart failed: {}",
-                                                e
-                                            ));
-                                            registered.initialized = false;
-                                        }
-                                    }
-                                }
-                                FailureAction::SkipNode => {
-                                    print_line(&format!(
-                                        " Node '{}' circuit opened — skipping until cooldown: {}",
-                                        node_name, error_msg
-                                    ));
-                                    context.transition_to_error(error_msg);
-                                }
-                                FailureAction::Continue => {
-                                    // Ignore policy or still within failure threshold
-                                    print_line(&format!(
-                                        " Node '{}' failed (continuing): {}",
-                                        node_name, error_msg
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
+        // Phase 4: Process results sequentially on main thread
+        for pr in parallel_results {
+            if self.process_tick_result(
+                pr.index,
+                pr.node_name,
+                pr.tick_start,
+                pr.duration,
+                pr.result,
+            ) {
+                return; // Fatal failure
             }
         }
     }
@@ -3637,11 +3847,6 @@ mod tests {
     }
 
     // ============================================================================
-    // Determinism Tests
-    // ============================================================================
-
-    #[test]
-    // ============================================================================
     // Node Info Tests
     // ============================================================================
 
@@ -3906,5 +4111,151 @@ mod tests {
         assert_eq!(format!("{}", RtFeature::NumaPinning), "NUMA Pinning");
         assert_eq!(format!("{}", RtFeature::Watchdog), "Watchdog");
         assert_eq!(format!("{}", RtFeature::SafetyMonitor), "Safety Monitor");
+    }
+
+    // ============================================================================
+    // Parallel Execution Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parallel_execution_all_nodes_tick() {
+        // Create scheduler in parallel mode via high_performance preset
+        let mut scheduler = Scheduler::high_performance();
+
+        let c1 = Arc::new(AtomicUsize::new(0));
+        let c2 = Arc::new(AtomicUsize::new(0));
+        let c3 = Arc::new(AtomicUsize::new(0));
+
+        scheduler
+            .add(CounterNode::with_counter("par_a", c1.clone()))
+            .order(100)
+            .done();
+        scheduler
+            .add(CounterNode::with_counter("par_b", c2.clone()))
+            .order(101)
+            .done();
+        scheduler
+            .add(CounterNode::with_counter("par_c", c3.clone()))
+            .order(102)
+            .done();
+
+        // Run for 100ms — all 3 non-RT nodes should tick in parallel
+        let result = scheduler.run_for(Duration::from_millis(100));
+        assert!(result.is_ok());
+
+        // Every node must have ticked at least once
+        assert!(c1.load(Ordering::SeqCst) > 0, "par_a never ticked");
+        assert!(c2.load(Ordering::SeqCst) > 0, "par_b never ticked");
+        assert!(c3.load(Ordering::SeqCst) > 0, "par_c never ticked");
+    }
+
+    #[test]
+    fn test_parallel_rt_nodes_run_sequentially() {
+        // RT nodes must run sequentially even in parallel mode
+        let mut scheduler = Scheduler::high_performance();
+
+        let rt_counter = Arc::new(AtomicUsize::new(0));
+        let normal_counter = Arc::new(AtomicUsize::new(0));
+
+        scheduler
+            .add(CounterNode::with_counter("rt_node", rt_counter.clone()))
+            .order(0)
+            .rt()
+            .done();
+        scheduler
+            .add(CounterNode::with_counter("normal_node", normal_counter.clone()))
+            .order(100)
+            .done();
+
+        let result = scheduler.run_for(Duration::from_millis(100));
+        assert!(result.is_ok());
+
+        // Both should have ticked
+        assert!(rt_counter.load(Ordering::SeqCst) > 0, "RT node never ticked");
+        assert!(
+            normal_counter.load(Ordering::SeqCst) > 0,
+            "Normal node never ticked"
+        );
+    }
+
+    // ============================================================================
+    // Rate Limiting Tests
+    // ============================================================================
+
+    #[test]
+    fn test_rate_limiting_adjusts_tick_period() {
+        let mut scheduler = Scheduler::new();
+
+        // Default tick period is ~60Hz = 16667us
+        let default_period = scheduler.tick_period;
+
+        // Add a node at 500Hz
+        scheduler
+            .add(CounterNode::new("fast_node"))
+            .order(0)
+            .rate_hz(500.0)
+            .done();
+
+        // tick_period should now be <= 2000us (500Hz)
+        assert!(
+            scheduler.tick_period <= Duration::from_micros(2000),
+            "tick_period should have been adjusted to >= 500Hz, got {:?}",
+            scheduler.tick_period
+        );
+        assert!(
+            scheduler.tick_period < default_period,
+            "tick_period should be faster than default 60Hz"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiting_node_ticks_at_declared_rate() {
+        let mut scheduler = Scheduler::new();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Add a node at 500Hz
+        scheduler
+            .add(CounterNode::with_counter("fast", counter.clone()))
+            .order(0)
+            .rate_hz(500.0)
+            .done();
+
+        // Run for 200ms — expect ~100 ticks at 500Hz
+        let result = scheduler.run_for(Duration::from_millis(200));
+        assert!(result.is_ok());
+
+        let ticks = counter.load(Ordering::SeqCst);
+        // Allow generous tolerance: at least 50 ticks (250Hz effective)
+        // and no more than 200 ticks (1000Hz) to account for timing jitter
+        assert!(
+            ticks >= 50,
+            "Node at 500Hz should tick at least ~50 times in 200ms, got {}",
+            ticks
+        );
+        assert!(
+            ticks <= 300,
+            "Node at 500Hz should not tick more than ~300 times in 200ms, got {}",
+            ticks
+        );
+    }
+
+    #[test]
+    fn test_rate_limiting_does_not_lower_tick_period() {
+        // If a node has a rate lower than default, tick_period should stay the same
+        let mut scheduler = Scheduler::new();
+
+        let default_period = scheduler.tick_period;
+
+        scheduler
+            .add(CounterNode::new("slow_node"))
+            .order(0)
+            .rate_hz(10.0)
+            .done();
+
+        assert_eq!(
+            scheduler.tick_period, default_period,
+            "tick_period should not decrease for a 10Hz node"
+        );
     }
 }

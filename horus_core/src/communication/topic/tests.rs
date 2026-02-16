@@ -3118,7 +3118,7 @@ fn shm_serde_oversized_data_rejected() {
     // Small slot_size (64) for String: max_data_len = 64 - 16 = 48 bytes.
     // bincode String = 8-byte length prefix + raw bytes.
     // 41 chars → 8 + 41 = 49 bytes > 48 → rejected
-    let t: Topic<String> = Topic::with_slot_size(name.clone(), 64, 64).expect("create");
+    let t: Topic<String> = Topic::with_capacity(&name, 64, Some(64)).expect("create");
     t.send("ok".to_string());
     let _ = t.recv();
 
@@ -3157,7 +3157,7 @@ fn shm_serde_oversized_data_rejected() {
 fn shm_serde_oversized_mp_rejected() {
     // Same bounds check but for multi-producer serde path (send_shm_mp_serde)
     let name = unique("shm_d_bounds_mp");
-    let t: Topic<String> = Topic::with_slot_size(name.clone(), 64, 64).expect("create");
+    let t: Topic<String> = Topic::with_capacity(&name, 64, Some(64)).expect("create");
     t.send("ok".to_string());
     let _ = t.recv();
 

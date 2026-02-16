@@ -21,6 +21,11 @@ impl ParallelExecutor {
         }
     }
 
+    /// Get the configured number of threads
+    pub fn num_threads(&self) -> usize {
+        self.num_threads
+    }
+
     /// Set the maximum number of threads to use
     pub fn set_max_threads(&mut self, num_threads: usize) {
         self.num_threads = num_threads.max(1);

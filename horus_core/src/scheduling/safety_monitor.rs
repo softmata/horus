@@ -10,12 +10,8 @@ use std::time::{Duration, Instant};
 pub enum SafetyState {
     /// Normal operation
     Normal,
-    /// Degraded operation (some non-critical failures)
-    Degraded,
     /// Emergency stop triggered
     EmergencyStop,
-    /// System in safe mode
-    SafeMode,
 }
 
 /// Watchdog for monitoring node health
@@ -259,18 +255,6 @@ impl SafetyMonitor {
     /// Get current safety state
     pub fn get_state(&self) -> SafetyState {
         *self.state.lock()
-    }
-
-    /// Enter degraded mode
-    pub fn enter_degraded_mode(&self, reason: String) {
-        eprintln!(" Entering degraded mode: {}", reason);
-        *self.state.lock() = SafetyState::Degraded;
-    }
-
-    /// Enter safe mode
-    pub fn enter_safe_mode(&self) {
-        eprintln!("Entering safe mode");
-        *self.state.lock() = SafetyState::SafeMode;
     }
 
     /// Get safety statistics

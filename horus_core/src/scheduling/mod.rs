@@ -51,9 +51,6 @@ pub mod blackbox;
 // Record/Replay system
 pub mod record_replay;
 
-// Zero-copy high-performance recording
-pub mod zero_copy_recording;
-
 // Deterministic execution
 pub mod deterministic;
 
@@ -133,18 +130,10 @@ pub use fault_tolerance::{
     CircuitBreaker, CircuitState, FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy,
 };
 
-// Re-export zero-copy recording
-pub use zero_copy_recording::{
-    DataFileHeader, EntryData, EntryHeader, IndexEntry, RecordingMetadata, RecordingStats,
-    StreamingRecorder, TickData, TopicTable, ZeroCopyError, ZeroCopyRecorder, ZeroCopyRecording,
-    ZeroCopyReplayer,
-};
-
 // Re-export deterministic execution
 pub use deterministic::{
     DeterministicClock,
     DeterministicConfig,
-    DeterministicScheduler,
     DivergenceInfo,
     ExecutionTrace,
     NodeTimingStats,
