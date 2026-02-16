@@ -229,7 +229,7 @@ horus/
 ├── horus/              # Unified entry crate (use horus::prelude::*)
 ├── horus_core/         # Core framework (Node, Topic, Scheduler)
 ├── horus_macros/       # Procedural macros (node!, message!)
-├── horus_library/      # Standard messages and built-in nodes
+├── horus_library/      # Standard message types and HFrame transforms
 ├── horus_manager/      # CLI tool (horus command)
 ├── horus_ai/           # ML model registry
 ├── horus_py/           # Python bindings

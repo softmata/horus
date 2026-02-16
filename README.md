@@ -6,7 +6,7 @@
 
 **A production-grade robotics framework built in Rust.**
 
-Sub-microsecond messaging, memory safety, and 32 built-in hardware nodes. Get from zero to working robot in minutes.
+Sub-microsecond messaging, memory safety, and a simple node-based architecture. Get from zero to working robot in minutes.
 
 [![Documentation](https://img.shields.io/badge/Documentation-Read%20the%20Docs-blue?style=for-the-badge)](https://docs.horus-registry.dev) [![Installation](https://img.shields.io/badge/Installation-Get%20Started-green?style=for-the-badge)](https://docs.horus-registry.dev/getting-started/installation) [![Benchmarks](https://img.shields.io/badge/Benchmarks-Performance-red?style=for-the-badge)](https://docs.horus-registry.dev/performance/performance) [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289da?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/hEZC3ev2Nf)
 
@@ -33,107 +33,61 @@ horus run
 | **Message Latency** | Sub-microsecond (auto-optimized) | 50-500 microseconds |
 | **Memory Safety** | Rust (guaranteed) | C++ (manual) |
 | **Getting Started** | `horus new` | 10+ commands + config files |
-| **Hardware Nodes** | 32 built-in | Install packages separately |
 | **Languages** | Rust + Python | C++ + Python |
 
 **HORUS is for you if:**
 - You need hard real-time control (<1ms loops)
-- You want batteries-included hardware support
 - You're starting a new robotics project
 - You value simplicity and performance
 
-## Example: Obstacle-Avoiding Robot
-
-```mermaid
-flowchart LR
-    subgraph SENSORS["Sensors"]
-        LIDAR["LidarNode"]
-    end
-
-    subgraph PERCEPTION["Perception"]
-        COLLISION["CollisionDetector"]
-    end
-
-    subgraph PLANNING["Planning"]
-        PATH["PathPlanner"]
-    end
-
-    subgraph CONTROL["Control"]
-        DRIVE["DifferentialDrive"]
-    end
-
-    subgraph ACTUATORS["Actuators"]
-        BLDC["BldcMotorNode"]
-    end
-
-    LIDAR -->|"lidar.scan"| COLLISION
-    COLLISION -->|"obstacles"| PATH
-    PATH -->|"cmd_vel"| DRIVE
-    DRIVE -->|"motor.left<br/>motor.right"| BLDC
-```
+## Example: Motor Control with Sensor Feedback
 
 ```rust
 use horus::prelude::*;
-use horus_library::prelude::*;
+
+message!(SensorReading = (f64, f64));  // position, velocity
+message!(MotorCommand = (f64,));       // voltage
+
+node! {
+    SensorNode {
+        pub { reading: SensorReading -> "sensor/data" }
+        data { position: f64 = 0.0 }
+
+        tick {
+            self.position += 0.01;
+            self.reading.send(SensorReading(self.position, 0.5)).ok();
+        }
+    }
+}
+
+node! {
+    ControllerNode {
+        sub { sensor: SensorReading -> "sensor/data" }
+        pub { command: MotorCommand -> "motor/cmd" }
+        data { target: f64 = 1.0 }
+
+        tick {
+            if let Some(reading) = self.sensor.recv() {
+                let error = self.target - reading.0;
+                self.command.send(MotorCommand(error * 0.5)).ok();
+            }
+        }
+    }
+}
 
 fn main() -> Result<()> {
     let mut scheduler = Scheduler::new()
-        .with_name("obstacle_avoidance");
+        .with_name("motor_control")
+        .tick_hz(1000.0);
 
-    // Safety first
-    scheduler.add(EmergencyStopNode::new("cmd_vel")?)
-        .order(0).done();
-
-    // LiDAR sensor
-    let mut lidar = LidarNode::new()?;
-    lidar.configure_serial("/dev/ttyUSB0", 115200);
-    scheduler.add(lidar).order(1).done();
-
-    // Detect obstacles
-    let mut detector = CollisionDetectorNode::new()?;
-    detector.set_safety_distance(0.5);
-    scheduler.add(detector).order(2).done();
-
-    // Plan path around obstacles
-    scheduler.add(PathPlannerNode::new()?).order(3).done();
-
-    // Convert velocity to wheel speeds
-    let drive = DifferentialDriveNode::new("cmd_vel", "motor/left", "motor/right", 0.3)?;
-    scheduler.add(drive).order(4).done();
-
-    // Drive motors
-    let mut left = BldcMotorNode::new()?;
-    left.configure_gpio(12, EscProtocol::DShot600);
-    left.set_input_topic("motor/left");
-    scheduler.add(left).order(5).done();
-
-    let mut right = BldcMotorNode::new()?;
-    right.configure_gpio(13, EscProtocol::DShot600);
-    right.set_input_topic("motor/right");
-    scheduler.add(right).order(5).done();
+    scheduler.add(SensorNode::new()?).order(0).done();
+    scheduler.add(ControllerNode::new()?).order(1).done();
 
     scheduler.run()
 }
 ```
 
-Order controls execution sequence: Sensors (1) -> Perception (2) -> Planning (3) -> Control (4) -> Actuators (5).
-
-## Built-in Hardware Nodes
-
-32 production-ready nodes with drivers included. No extra packages to install.
-
-| Category | Nodes |
-|----------|-------|
-| **Sensors** | Camera, Depth Camera (RealSense), LiDAR, IMU, GPS, Encoder, Ultrasonic, Force/Torque |
-| **Actuators** | DC Motor, BLDC Motor, Stepper, Servo, Dynamixel, Roboclaw |
-| **Safety** | Battery Monitor, Safety Monitor, Emergency Stop |
-| **Communication** | CAN Bus, Modbus, Serial/UART, I2C, SPI, Digital I/O |
-| **Navigation** | Odometry, Localization, Path Planner, Collision Detector |
-| **Control** | PID Controller, Differential Drive |
-
-All nodes include hardware drivers, simulation fallback for testing without hardware, and comprehensive error handling.
-
-See [Built-in Nodes Documentation](horus_library/nodes/README.md) for the full catalog.
+Order controls execution sequence: Sensors (0) run before Controllers (1).
 
 ## Core Concepts
 
@@ -149,8 +103,8 @@ let mut scheduler = Scheduler::new()
     .tick_hz(1000.0);          // 1kHz loop rate
 
 // Add nodes with execution order
-scheduler.add(sensor_node).order(1).done();
-scheduler.add(control_node).order(2).rate_hz(100.0).done(); // Per-node rate
+scheduler.add(sensor_node).order(0).done();
+scheduler.add(control_node).order(1).rate_hz(100.0).done(); // Per-node rate
 
 scheduler.run()?;
 ```
@@ -215,6 +169,24 @@ node! {
 ```
 
 Or implement the `Node` trait directly for full control.
+
+### Standard Message Types
+
+HORUS includes standard robotics message types:
+
+- **Geometry**: `Pose2D`, `Pose3D`, `Twist`, `Vector3`, `Quaternion`, `TransformStamped`
+- **Sensors**: `Imu`, `LaserScan`, `BatteryState`, `NavSatFix`, `Odometry`
+- **Vision**: `Image`, `CameraInfo`, `CompressedImage`, `Detection`, `BoundingBox2D`
+- **Navigation**: `Path`, `OccupancyGrid`, `Goal`
+- **Control**: `CmdVel`, `MotorCommand`, `JointState`, `ServoCommand`
+- **Perception**: `PointCloud`, `TrackedObject`, `Landmark`
+
+```rust
+use horus::prelude::*;
+
+let cmd_topic: Topic<CmdVel> = Topic::new("cmd_vel", None)?;
+cmd_topic.send(CmdVel::new(1.0, 0.0));
+```
 
 ## Python Support
 
