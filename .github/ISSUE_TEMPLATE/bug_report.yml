@@ -53,7 +53,7 @@ body:
     attributes:
       label: HORUS Version
       description: "Run `horus --version` to get the version number."
-      placeholder: "0.1.8"
+      placeholder: "0.1.9"
     validations:
       required: true
 

@@ -244,7 +244,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             let mut cargo_toml = format!(
                 r#"[package]
 name = "horus-project"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 
 # Empty workspace to prevent inheriting parent workspace
@@ -1116,7 +1116,7 @@ fn build_rust_files_batch(
     let mut cargo_toml = String::from(
         r#"[package]
 name = "horus-multi-node"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 
 # Opt out of parent workspace
@@ -1295,7 +1295,7 @@ fn build_file_for_concurrent_execution(
             let mut cargo_toml = format!(
                 r#"[package]
 name = "horus-project-{}"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 
 [[bin]]
@@ -4255,7 +4255,7 @@ fn execute_with_scheduler(
             let mut cargo_toml = format!(
                 r#"[package]
 name = "horus-project"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 
 # Empty workspace to prevent inheriting parent workspace
@@ -4888,7 +4888,7 @@ fn create_horus_yaml(
     // Build YAML content
     let mut content = String::new();
     content.push_str(&format!("name: {}\n", project_name));
-    content.push_str("version: 0.1.8\n");
+    content.push_str("version: 0.1.9\n");
     content.push_str(&format!("language: {}\n", language));
     content.push_str("\ndependencies:\n");
 

@@ -92,7 +92,7 @@ except ImportError:
     class TensorHandle:
         pass
 
-__version__ = "0.1.8"
+__version__ = "0.1.9"
 
 
 def _truncate_for_logging(data: Any, max_size: int = MAX_LOG_DATA_SIZE) -> str:

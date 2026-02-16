@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "horus-robotics"
-version = "0.1.8"
+version = "0.1.9"
 description = "Simple & intuitive Python API for HORUS robotics framework - ultra-low latency IPC and real-time scheduling"
 readme = "README.md"
 requires-python = ">=3.9"

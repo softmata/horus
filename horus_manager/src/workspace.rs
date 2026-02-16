@@ -235,7 +235,7 @@ fn interactive_workspace_selector(
 
         // Create minimal horus.yaml
         let horus_yaml = current.join("horus.yaml");
-        let yaml_content = format!("name: {}\nversion: 0.1.8\n", workspace_name);
+        let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
         fs::write(&horus_yaml, yaml_content).context("Failed to create horus.yaml")?;
 
         // Register in workspace registry
@@ -284,7 +284,7 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     // Create minimal horus.yaml if it doesn't exist
     let horus_yaml = current.join("horus.yaml");
     if !horus_yaml.exists() {
-        let yaml_content = format!("name: {}\nversion: 0.1.8\n", workspace_name);
+        let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
         fs::write(&horus_yaml, yaml_content)?;
         println!("  {} Created horus.yaml", "".green());
     }

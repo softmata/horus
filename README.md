@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/v0.1.8--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/getting-started/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-87ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-12M%2B%20msg%2Fs-green.svg)](#performance)
+[![Version](https://img.shields.io/badge/v0.1.9--alpha-yellow.svg)](https://github.com/softmata/horus/releases) [![Rust](https://img.shields.io/badge/rust-%3E%3D1.92-orange.svg?logo=rust)](https://www.rust-lang.org/) [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE) [![Installations](https://img.shields.io/endpoint?url=https://telemetry.horus-registry.dev/count/badge)](https://docs.horus-registry.dev/getting-started/installation) [![IPC Latency](https://img.shields.io/badge/IPC%20latency-87ns-brightgreen.svg)](#performance) [![Throughput](https://img.shields.io/badge/throughput-12M%2B%20msg%2Fs-green.svg)](#performance)
 
 **Hybrid Optimized Robotics Unified System**
 
@@ -804,16 +804,16 @@ horus env restore a3f9c2b7
 flowchart TB
     subgraph GLOBAL["~/.horus/cache/ (Global Cache)"]
         direction TB
-        G1["horus_core-0.1.8/<br/>Compiled binaries"]
-        G2["horus_library-0.1.8/<br/>Shared libraries"]
+        G1["horus_core-0.1.9/<br/>Compiled binaries"]
+        G2["horus_library-0.1.9/<br/>Shared libraries"]
         G3["sensor_fusion-2.1.0/<br/>Third-party packages"]
     end
 
     subgraph LOCAL["my_robot/.horus/ (Local Environment)"]
         direction TB
         subgraph MATCH["Case 1: Version Match"]
-            L1["horus_core-0.1.8 →<br/>symlink to cache"]
-            L2["horus_library-0.1.8 →<br/>symlink to cache"]
+            L1["horus_core-0.1.9 →<br/>symlink to cache"]
+            L2["horus_library-0.1.9 →<br/>symlink to cache"]
         end
         subgraph MISMATCH["Case 2: Version Mismatch"]
             L3["horus_core-0.1.3/<br/>Local copy from freeze"]

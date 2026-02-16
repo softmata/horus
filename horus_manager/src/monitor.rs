@@ -597,7 +597,7 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
             "status": system_status,
             "health": system_health,
             "health_color": health_color,
-            "version": "0.1.8",
+            "version": "0.1.9",
             "nodes": nodes_count,
             "topics": topics_count,
             "workspace": workspace_info

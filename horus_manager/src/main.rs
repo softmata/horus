@@ -11,7 +11,7 @@ use horus_manager::{commands, monitor, monitor_tui, security};
 #[derive(Parser)]
 #[command(name = "horus")]
 #[command(about = "HORUS - Hybrid Optimized Robotics Unified System")]
-#[command(version = "0.1.8")]
+#[command(version = "0.1.9")]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]

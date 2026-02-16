@@ -141,9 +141,9 @@ This is more secure as it doesn't require long-lived tokens.
 ## Version Management
 
 ### Semantic Versioning
-- `0.1.8` → `0.1.8`: Bug fixes, small changes
-- `0.1.8` → `0.2.0`: New features (backward compatible)
-- `0.1.8` → `1.0.0`: Breaking changes
+- `0.1.9` → `0.1.9`: Bug fixes, small changes
+- `0.1.9` → `0.2.0`: New features (backward compatible)
+- `0.1.9` → `1.0.0`: Breaking changes
 
 ### Pre-releases
 For testing before official release:
