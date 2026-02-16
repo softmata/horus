@@ -870,7 +870,11 @@ where
 
     // Check if this is a network endpoint
     if endpoint.contains('@') {
-        return Topic::from_endpoint_with_capacity(endpoint, capacity).map_err(|e| {
+        let topic_name = endpoint
+            .split('@')
+            .next()
+            .unwrap_or(endpoint);
+        return Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Failed to create network Topic: {}",
                 e

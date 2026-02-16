@@ -3,7 +3,7 @@
 /// The API uses progressive disclosure:
 /// - `Scheduler::new()` — lightweight, no syscalls
 /// - Builder methods opt in to features: `.realtime()`, `.with_blackbox()`, `.tick_hz()`
-/// - Presets bundle common configurations: `deploy()`, `prototype()`, `safety_critical()`
+/// - Presets bundle common configurations: `deploy()`, `safety_critical()`, `deterministic()`
 use horus_core::scheduling::{config::SchedulerConfig, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,9 +19,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("[OK] Lightweight scheduler — no RT, no BlackBox");
     println!("  Best for: rapid iteration, unit tests\n");
-
-    // Same as:
-    let _scheduler = Scheduler::prototype();
 
     // ========================================================================
     // Pattern 2: Production Deployment
@@ -120,7 +117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== API Summary ===");
     println!();
     println!("  Scheduler::new()              Lightweight, no syscalls");
-    println!("  Scheduler::prototype()        Same as new() (named)");
     println!("  Scheduler::deploy()           RT + BlackBox (production)");
     println!("  Scheduler::safety_critical()  WCET + watchdog + sequential");
     println!("  Scheduler::high_performance() Parallel + 10kHz");

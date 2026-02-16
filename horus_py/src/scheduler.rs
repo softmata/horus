@@ -188,7 +188,7 @@ impl CoreNode for PyNodeAdapter {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.node(my_node).order(0).rate_hz(100.0).rt().done()
+///     scheduler.add(my_node).order(0).rate_hz(100.0).rt().done()
 #[pyclass(module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
@@ -459,7 +459,7 @@ impl PyScheduler {
         let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
 
         let core_sched = CoreScheduler::new()
-            .name("PythonScheduler")
+            .with_name("PythonScheduler")
             .with_config(core_config);
         let running_flag = core_sched.running_flag();
 
@@ -810,7 +810,7 @@ impl PyScheduler {
 
         self.tick_rate_hz = tick_rate_hz;
 
-        let core_sched = CoreScheduler::new().name("PythonScheduler");
+        let core_sched = CoreScheduler::new().with_name("PythonScheduler");
         self.scheduler_running = core_sched.running_flag();
         *self
             .inner

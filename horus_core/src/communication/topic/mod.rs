@@ -148,7 +148,7 @@ pub use metrics::{MigrationMetrics, TopicMetrics};
 /// iterations before returning None. On x86, each spin_loop() is a PAUSE (~10-20 cycles),
 /// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
 const READY_FLAG_SPIN_LIMIT: u32 = 256;
-pub use migration::{BackendMigrator, MigrationResult, MigrationStats};
+pub use migration::{BackendMigrator, MigrationResult};
 pub use types::{
     BackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole,
 };
@@ -1527,12 +1527,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         result
     }
 
-    /// Get migration statistics
-    pub fn migration_stats(&self) -> MigrationStats {
-        let migrator = BackendMigrator::new(self.header());
-        migrator.stats()
-    }
-
     /// Force a migration check NOW — reads SHM header epoch, detects optimal
     /// backend, and re-initializes dispatch if the topology changed.
     ///
@@ -1821,105 +1815,5 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         Self::with_capacity(&config.name, config.capacity, None)
     }
 
-    /// Create a topic from an endpoint string
-    pub fn from_endpoint(endpoint: impl Into<String>) -> HorusResult<Self> {
-        Self::from_endpoint_with_capacity(endpoint, 64)
-    }
 
-    /// Create a topic from an endpoint string with custom capacity
-    pub fn from_endpoint_with_capacity(
-        endpoint: impl Into<String>,
-        capacity: usize,
-    ) -> HorusResult<Self> {
-        let endpoint_str = endpoint.into();
-
-        let topic_name = if endpoint_str.contains('@') {
-            endpoint_str
-                .split('@')
-                .next()
-                .unwrap_or(&endpoint_str)
-                .to_string()
-        } else {
-            endpoint_str
-        };
-
-        Self::with_capacity(&topic_name, capacity as u32, None)
-    }
-
-    /// Create a Topic from configuration file
-    pub fn from_config_named(topic_name: &str) -> HorusResult<Self> {
-        use crate::communication::config::HorusConfig;
-        let config = HorusConfig::find_and_load()?;
-        let hub_config = config.get_hub(topic_name)?;
-        let endpoint_str = hub_config.get_endpoint();
-        Self::from_endpoint(&endpoint_str)
-    }
-
-    /// Create a Topic from a specific config file path
-    pub fn from_config_file<P: AsRef<std::path::Path>>(
-        config_path: P,
-        topic_name: &str,
-    ) -> HorusResult<Self> {
-        use crate::communication::config::HorusConfig;
-        let config = HorusConfig::from_file(config_path)?;
-        let hub_config = config.get_hub(topic_name)?;
-        let endpoint_str = hub_config.get_endpoint();
-        Self::from_endpoint(&endpoint_str)
-    }
-
-    /// Create a new topic with custom slot size for large messages
-    pub fn with_slot_size(
-        name: impl Into<String>,
-        capacity: usize,
-        slot_size: usize,
-    ) -> HorusResult<Self> {
-        let name = name.into();
-        Self::with_capacity(&name, capacity as u32, Some(slot_size))
-    }
-
-    /// Send a message to a network topic (returns Result for error handling)
-    pub fn send_to_network(&self, msg: T) -> Result<(), T> {
-        let result = self.try_send(msg);
-        match &result {
-            Ok(()) => {
-                self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
-                self.state.store(
-                    ConnectionState::Connected.into_u8(),
-                    Ordering::Relaxed,
-                );
-            }
-            Err(_) => {
-                self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        result
-    }
-
-    /// Receive a message from a network topic
-    pub fn recv_from_network(
-        &self,
-        _ctx: &mut Option<&mut crate::core::NodeInfo>,
-    ) -> Option<T> {
-        let result = self.try_recv();
-        if result.is_some() {
-            self.metrics
-                .messages_received
-                .fetch_add(1, Ordering::Relaxed);
-            self.state.store(
-                ConnectionState::Connected.into_u8(),
-                Ordering::Relaxed,
-            );
-        }
-        result
-    }
-
-    /// Check if network topic has messages
-    pub fn network_has_messages(&self) -> bool {
-        self.has_message()
-    }
-
-    /// Get backend type name for network topics
-    pub fn network_backend_type(&self) -> &'static str {
-        self.backend_name()
-    }
 }

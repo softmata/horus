@@ -14,7 +14,7 @@
 //! scheduler.add(Box::new(my_node), 0);
 //!
 //! // New fluent API:
-//! scheduler.node(Box::new(my_node))
+//! scheduler.add(my_node)
 //!     .order(0)
 //!     .rate_hz(100.0)
 //!     .rt()
@@ -234,7 +234,7 @@ impl NodeConfig {
 ///
 /// # Example
 /// ```rust,ignore
-/// scheduler.node(Box::new(my_node))
+/// scheduler.add(my_node)
 ///     .order(0)
 ///     .rate_hz(100.0)
 ///     .rt()
@@ -329,7 +329,7 @@ impl<'a> NodeBuilder<'a> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// scheduler.node(Box::new(my_node))
+    /// scheduler.add(my_node)
     ///     .order(0)
     ///     .done();
     /// ```

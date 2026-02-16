@@ -225,7 +225,6 @@ impl Scheduler {
     ///
     /// # Presets
     /// - `Scheduler::deploy()` — Production: RT features + blackbox + profiling
-    /// - `Scheduler::prototype()` — Development: no RT, verbose logging
     /// - `Scheduler::safety_critical()` — Safety: WCET + watchdog + sequential
     /// - `Scheduler::high_performance()` — Speed: parallel + 10kHz
     /// - `Scheduler::hard_realtime()` — Hard RT: strict deadlines + watchdog
@@ -465,29 +464,6 @@ impl Scheduler {
             .realtime()
             .with_blackbox(16)
             .with_name("Deploy")
-    }
-
-    /// Development/prototyping preset — no RT, no syscalls, fast startup.
-    ///
-    /// Equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new()
-    ///     .with_name("Prototype")
-    /// ```
-    ///
-    /// # What it does
-    /// - No RT priority, no memory locking, no CPU pinning
-    /// - No BlackBox (saves 16MB allocation)
-    /// - Fastest possible startup for development iteration
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let mut scheduler = Scheduler::prototype();
-    /// scheduler.add(TestNode::new()).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    pub fn prototype() -> Self {
-        Self::new().with_name("Prototype")
     }
 
     /// Create a scheduler configured for safety-critical systems.
@@ -1467,29 +1443,6 @@ impl Scheduler {
         self
     }
 
-    /// Enable deterministic execution for reproducible, bit-exact behavior
-    ///
-    /// When enabled:
-    /// - Deterministic collections (sorted iteration order)
-    /// - Logical clock support (opt-in via config)
-    /// - Predictable memory allocation (opt-in via config)
-    ///
-    /// Use cases:
-    /// - Simulation (Gazebo, Unity integration)
-    /// - Testing (reproducible tests in CI/CD)
-    /// - Debugging (replay exact behavior)
-    /// - Certification (FDA/CE requirements)
-    ///
-    /// # Example
-    /// ```no_run
-    /// use horus_core::Scheduler;
-    /// let scheduler = Scheduler::new()
-    ///     .enable_determinism();  // Reproducible execution
-    /// ```
-    pub fn enable_determinism(self) -> Self {
-        self.with_name("DeterministicScheduler")
-    }
-
     /// Enable safety monitor with maximum allowed deadline misses
     pub fn with_safety_monitor(mut self, max_deadline_misses: u64) -> Self {
         self.safety_monitor = Some(SafetyMonitor::new(max_deadline_misses));
@@ -2156,14 +2109,6 @@ impl Scheduler {
         super::node_builder::NodeBuilder::new(self, node)
     }
 
-    /// Alias for `add_dyn()` - start configuring a boxed node.
-    ///
-    /// # Deprecated
-    /// Prefer using `add()` which doesn't require `Box::new()`.
-    pub fn node(&mut self, node: Box<dyn Node>) -> super::node_builder::NodeBuilder<'_> {
-        self.add_dyn(node)
-    }
-
     /// Add a node using a pre-built NodeConfig.
     ///
     /// This is called internally by `NodeBuilder::done()`. You can also use it
@@ -2286,12 +2231,6 @@ impl Scheduler {
             ));
         }
 
-        self
-    }
-
-    /// Set the scheduler name (chainable)
-    pub fn name(mut self, name: &str) -> Self {
-        self.scheduler_name = name.to_string();
         self
     }
 
@@ -3702,11 +3641,6 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn test_scheduler_enable_determinism() {
-        let scheduler = Scheduler::new().enable_determinism();
-        assert!(scheduler.is_running());
-    }
-
     // ============================================================================
     // Node Info Tests
     // ============================================================================
@@ -3881,7 +3815,7 @@ mod tests {
 
     #[test]
     fn test_scheduler_name_builder() {
-        let scheduler = Scheduler::new().name("BuilderName");
+        let scheduler = Scheduler::new().with_name("BuilderName");
         // Verify the scheduler was created successfully
         assert!(scheduler.is_running());
     }
