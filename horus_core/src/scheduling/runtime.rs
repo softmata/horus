@@ -74,39 +74,6 @@ pub fn get_core_count() -> usize {
         .unwrap_or_else(num_cpus::get)
 }
 
-/// Pin a thread by its native handle (for spawned threads)
-#[cfg(target_os = "linux")]
-pub fn set_thread_affinity_by_id(thread_id: libc::pthread_t, core: usize) -> RuntimeResult<()> {
-    // SAFETY: thread_id is a valid pthread handle; cpuset is properly zeroed and initialized.
-    unsafe {
-        let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
-        libc::CPU_ZERO(&mut cpuset);
-        libc::CPU_SET(core, &mut cpuset);
-
-        let result = libc::pthread_setaffinity_np(
-            thread_id,
-            std::mem::size_of::<libc::cpu_set_t>(),
-            &cpuset,
-        );
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(RuntimeError::AffinityError(format!(
-                "pthread_setaffinity_np failed: {}",
-                io::Error::last_os_error()
-            )))
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn set_thread_affinity_by_id(_thread_id: u64, _core: usize) -> RuntimeResult<()> {
-    Err(RuntimeError::NotSupported(
-        "Thread affinity by ID only supported on Linux".to_string(),
-    ))
-}
-
 // ============================================================================
 // Memory Locking
 // ============================================================================
@@ -145,29 +112,6 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
     Err(RuntimeError::NotSupported(
         "Memory locking only supported on Linux".to_string(),
     ))
-}
-
-/// Unlock all memory pages
-#[cfg(target_os = "linux")]
-pub fn unlock_all_memory() -> RuntimeResult<()> {
-    // SAFETY: munlockall requires no arguments and is always safe to call.
-    unsafe {
-        let result = libc::munlockall();
-        if result == 0 {
-            println!("[RT] Memory unlocked (munlockall)");
-            Ok(())
-        } else {
-            Err(RuntimeError::MemoryLockError(format!(
-                "munlockall failed: {}",
-                io::Error::last_os_error()
-            )))
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn unlock_all_memory() -> RuntimeResult<()> {
-    Ok(()) // No-op on non-Linux
 }
 
 /// Pre-fault stack memory to avoid page faults during execution
@@ -243,73 +187,6 @@ pub fn get_max_rt_priority() -> i32 {
     99 // Default Linux max
 }
 
-/// Get the minimum real-time priority available
-#[cfg(target_os = "linux")]
-pub fn get_min_rt_priority() -> i32 {
-    // SAFETY: SCHED_FIFO is a valid scheduling policy constant.
-    unsafe { libc::sched_get_priority_min(libc::SCHED_FIFO) }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn get_min_rt_priority() -> i32 {
-    1 // Default Linux min
-}
-
-/// Set thread to round-robin scheduling (less aggressive than FIFO)
-#[cfg(target_os = "linux")]
-pub fn set_round_robin_priority(priority: i32) -> RuntimeResult<()> {
-    // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
-    unsafe {
-        let param = libc::sched_param {
-            sched_priority: priority,
-        };
-
-        let result = libc::sched_setscheduler(0, libc::SCHED_RR, &param);
-
-        if result == 0 {
-            println!("[RT] Set SCHED_RR with priority {}", priority);
-            Ok(())
-        } else {
-            Err(RuntimeError::SchedulingError(format!(
-                "sched_setscheduler (RR) failed: {}",
-                io::Error::last_os_error()
-            )))
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn set_round_robin_priority(_priority: i32) -> RuntimeResult<()> {
-    Err(RuntimeError::NotSupported(
-        "SCHED_RR only supported on Linux".to_string(),
-    ))
-}
-
-/// Reset to normal scheduling
-#[cfg(target_os = "linux")]
-pub fn reset_to_normal_scheduling() -> RuntimeResult<()> {
-    // SAFETY: pid 0 = current thread; sched_param with priority 0 is valid for SCHED_OTHER.
-    unsafe {
-        let param = libc::sched_param { sched_priority: 0 };
-        let result = libc::sched_setscheduler(0, libc::SCHED_OTHER, &param);
-
-        if result == 0 {
-            println!("[RT] Reset to SCHED_OTHER");
-            Ok(())
-        } else {
-            Err(RuntimeError::SchedulingError(format!(
-                "Reset scheduling failed: {}",
-                io::Error::last_os_error()
-            )))
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn reset_to_normal_scheduling() -> RuntimeResult<()> {
-    Ok(())
-}
-
 // ============================================================================
 // NUMA Awareness
 // ============================================================================
@@ -332,41 +209,6 @@ pub fn get_numa_node_count() -> usize {
 #[cfg(not(target_os = "linux"))]
 pub fn get_numa_node_count() -> usize {
     1
-}
-
-/// Get CPUs belonging to a NUMA node
-#[cfg(target_os = "linux")]
-pub fn get_numa_node_cpus(node: usize) -> Vec<usize> {
-    let path = format!("/sys/devices/system/node/node{}/cpulist", node);
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        parse_cpu_list(content.trim())
-    } else {
-        Vec::new()
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn get_numa_node_cpus(_node: usize) -> Vec<usize> {
-    Vec::new()
-}
-
-/// Parse CPU list format (e.g., "0-3,8-11" -> [0,1,2,3,8,9,10,11])
-fn parse_cpu_list(s: &str) -> Vec<usize> {
-    let mut cpus = Vec::new();
-    for part in s.split(',') {
-        let part = part.trim();
-        if part.contains('-') {
-            let mut range = part.split('-');
-            if let (Some(start), Some(end)) = (range.next(), range.next()) {
-                if let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) {
-                    cpus.extend(start..=end);
-                }
-            }
-        } else if let Ok(cpu) = part.parse::<usize>() {
-            cpus.push(cpu);
-        }
-    }
-    cpus
 }
 
 // ============================================================================
@@ -435,13 +277,6 @@ mod tests {
         let count = get_core_count();
         assert!(count > 0);
         println!("Core count: {}", count);
-    }
-
-    #[test]
-    fn test_parse_cpu_list() {
-        assert_eq!(parse_cpu_list("0-3"), vec![0, 1, 2, 3]);
-        assert_eq!(parse_cpu_list("0,2,4"), vec![0, 2, 4]);
-        assert_eq!(parse_cpu_list("0-2,4-5"), vec![0, 1, 2, 4, 5]);
     }
 
     #[test]

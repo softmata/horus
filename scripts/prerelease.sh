@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# HORUS Pre-Release Verification Script v2.0.0
+# HORUS Pre-Release Verification Script v3.0.0
 #
 # Comprehensive verification before pushing to production.
 # Run this BEFORE committing to ensure 100% confidence.
@@ -16,15 +16,14 @@
 #   8. Doc tests (cargo test --doc)
 #   9. CLI command verification
 #   10. Python bindings (horus_py build and import)
-#   11. Documentation site build
-#   12. Examples compilation (all crates)
-#   13. Integration tests
-#   14. Benchmark smoke test
-#   15. Feature matrix testing
-#   16. Shell script syntax validation
-#   18. Version consistency check
-#   19. Dead code detection
-#   20. Docker container tests (optional)
+#   11. Examples compilation (all crates)
+#   12. Integration tests
+#   13. Benchmark smoke test
+#   14. Feature matrix testing
+#   15. Shell script syntax validation
+#   16. Version consistency check
+#   17. Dead code detection
+#   18. Docker container tests (optional)
 #
 # Usage: ./scripts/prerelease.sh [--quick] [--fix] [--full]
 #   --quick: Skip slow tests (integration, docs, benchmarks)
@@ -35,7 +34,7 @@
 set -e
 
 # Script version
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="3.0.0"
 
 # Colors
 RED='\033[0;31m'
@@ -53,7 +52,6 @@ CROSS="${RED}✗${NC}"
 WARN="${YELLOW}!${NC}"
 INFO="${CYAN}ℹ${NC}"
 ARROW="${BLUE}→${NC}"
-LOCK="${YELLOW}🔒${NC}"
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,17 +148,6 @@ run_cmd() {
     fi
 }
 
-run_cmd_output() {
-    local desc="$1"
-    shift
-    echo -e "  [$ARROW] $desc"
-    if "$@" 2>&1; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 # Start time
 START_TIME=$(date +%s)
 
@@ -210,7 +197,6 @@ fi
 section "2. Compilation Check (cargo check)"
 
 if [ "$QUICK_MODE" = true ]; then
-    # In quick mode, only check core crates
     info "Quick mode: checking core crates only..."
     if timeout 300 cargo check -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai 2>&1 | tail -5; then
         pass "Core crates compile"
@@ -218,7 +204,6 @@ if [ "$QUICK_MODE" = true ]; then
         fail "Core crates compilation failed"
     fi
 else
-    # Full check with 10 minute timeout
     if timeout 600 cargo check --workspace --all-targets 2>&1 | tail -5; then
         pass "All workspace crates compile"
     else
@@ -232,11 +217,9 @@ fi
 section "3. Linting (cargo clippy)"
 
 if [ "$QUICK_MODE" = true ]; then
-    # In quick mode, only lint core crates with timeout
     info "Quick mode: linting core crates only..."
     CLIPPY_OUTPUT=$(timeout 300 cargo clippy -p horus -p horus_core -p horus_macros -p horus_manager -p horus_library -p horus_ai 2>&1 || true)
 else
-    # Full lint with 10 minute timeout
     CLIPPY_OUTPUT=$(timeout 600 cargo clippy --workspace --all-targets 2>&1 || true)
 fi
 
@@ -288,7 +271,6 @@ section "5. MSRV Compatibility (Rust $MSRV)"
 if [ "$QUICK_MODE" = true ]; then
     skip "MSRV check (quick mode)"
 else
-    # Check if the MSRV toolchain is installed
     if rustup run "$MSRV" cargo --version &>/dev/null; then
         info "Testing compilation with Rust $MSRV..."
         if rustup run "$MSRV" cargo check --workspace 2>&1 | tail -3; then
@@ -309,7 +291,6 @@ fi
 section "6. Release Build (cargo build --release)"
 
 if [ "$QUICK_MODE" = true ]; then
-    # In quick mode, only build the main horus binary
     info "Quick mode: building horus binary only..."
     if timeout 300 cargo build --release -p horus_manager 2>&1 | tail -5; then
         pass "horus binary builds successfully"
@@ -325,20 +306,12 @@ else
     if timeout 900 cargo build --release --workspace 2>&1 | tail -10; then
         pass "Release build successful"
 
-        # Check binaries exist
-        # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
-        for bin in horus horus_router; do
-            if [ -f "./target/release/$bin" ]; then
-                BIN_SIZE=$(du -h "./target/release/$bin" | cut -f1)
-                pass "Binary: $bin ($BIN_SIZE)"
-            else
-                if [ "$bin" = "horus_router" ]; then
-                    info "Binary: $bin (optional, not built)"
-                else
-                    fail "Binary missing: $bin"
-                fi
-            fi
-        done
+        if [ -f "./target/release/horus" ]; then
+            BIN_SIZE=$(du -h "./target/release/horus" | cut -f1)
+            pass "Binary: horus ($BIN_SIZE)"
+        else
+            fail "Binary missing: horus"
+        fi
     else
         fail "Release build failed (or timeout)"
     fi
@@ -350,7 +323,6 @@ fi
 section "7. Unit Tests (cargo test)"
 
 if [ "$QUICK_MODE" = true ]; then
-    # In quick mode, skip tests (compilation takes too long)
     skip "Unit tests (quick mode - use --full for tests)"
 else
     info "Running all workspace tests..."
@@ -360,7 +332,6 @@ else
         warn "Tests timed out"
         skip "Unit tests (timeout)"
     elif echo "$TEST_OUTPUT" | grep -q "test result: ok"; then
-        # Extract test counts
         TEST_PASSED=$(echo "$TEST_OUTPUT" | grep -o "[0-9]* passed" | tail -1 | grep -o "[0-9]*" || echo "0")
         pass "All unit tests passed ($TEST_PASSED tests)"
     elif echo "$TEST_OUTPUT" | grep -q "FAILED"; then
@@ -409,32 +380,18 @@ if [ -x "$HORUS_BIN" ]; then
         fail "horus --help failed"
     fi
 
-    # Test all subcommands help
-    # NOTE: sim2d and sim3d are now standalone packages
-    SUBCOMMANDS=(run new init check monitor pkg env auth topic node param doctor clean launch msg log)
+    # Test subcommands
+    SUBCOMMANDS=(run new init check pkg topic node param doctor clean launch msg log net hf deploy discover record test driver plugin env cache)
     for cmd in "${SUBCOMMANDS[@]}"; do
         if $HORUS_BIN $cmd --help >/dev/null 2>&1; then
             pass "horus $cmd --help"
         else
-            # Some commands might not exist yet
             info "horus $cmd --help (not available)"
         fi
     done
-
-    # Test horus check on root horus.yaml
-    if [ -f "horus.yaml" ]; then
-        if $HORUS_BIN check horus.yaml >/dev/null 2>&1; then
-            pass "horus check horus.yaml"
-        else
-            warn "horus check horus.yaml had issues"
-        fi
-    fi
 else
     fail "horus binary not found at $HORUS_BIN"
 fi
-
-# NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
-# They have their own prerelease/release processes
 
 # =============================================================================
 # 10. PYTHON BINDINGS - horus_py
@@ -445,7 +402,6 @@ if command -v python3 &>/dev/null; then
     PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
     info "Python version: $PY_VERSION"
 
-    # Check if maturin is available
     if command -v maturin &>/dev/null; then
         info "maturin found, building horus_py..."
 
@@ -453,10 +409,8 @@ if command -v python3 &>/dev/null; then
         if maturin build --release 2>&1 | tail -5; then
             pass "horus_py wheel built successfully"
 
-            # Try to install and import
             WHEEL_FILE=$(ls target/wheels/*.whl 2>/dev/null | head -1)
             if [ -n "$WHEEL_FILE" ]; then
-                # Create temp venv for testing
                 TEMP_VENV=$(mktemp -d)
                 if python3 -m venv "$TEMP_VENV" 2>/dev/null; then
                     source "$TEMP_VENV/bin/activate"
@@ -464,7 +418,6 @@ if command -v python3 &>/dev/null; then
                         if python3 -c "import horus; print(f'horus_py version: {horus.__version__}')" 2>/dev/null; then
                             pass "horus_py import successful"
 
-                            # Test basic functionality
                             if python3 -c "from horus import Node, Topic; print('Core imports OK')" 2>/dev/null; then
                                 pass "horus_py core classes importable"
                             else
@@ -492,148 +445,53 @@ else
 fi
 
 # =============================================================================
-# 11. DOCUMENTATION SITE
+# 11. EXAMPLES COMPILATION (All Crates)
 # =============================================================================
-section "11. Documentation Site"
-
-# NOTE: docs-site is now a standalone package at ../horus-docs
-# It has its own build/release process
-info "docs-site is now a standalone package at ../horus-docs"
-skip "Documentation build (standalone package)"
-
-# =============================================================================
-# 12. EXAMPLES COMPILATION (All Crates)
-# =============================================================================
-section "12. Examples Compilation"
+section "11. Examples Compilation"
 
 if [ "$QUICK_MODE" = true ]; then
     skip "Examples compilation (quick mode)"
 else
-    # Check horus_core examples
-    info "Checking horus_core examples..."
-EXAMPLE_COUNT=0
-EXAMPLE_PASS=0
+    for crate in horus_core horus_manager; do
+        info "Checking $crate examples..."
+        EXAMPLE_COUNT=0
+        EXAMPLE_PASS=0
 
-for example in horus_core/examples/*.rs; do
-    if [ -f "$example" ]; then
-        EXAMPLE_NAME=$(basename "$example" .rs)
-        EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
+        for example in "$crate/examples/"*.rs; do
+            if [ -f "$example" ]; then
+                EXAMPLE_NAME=$(basename "$example" .rs)
+                EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
 
-        if cargo build --release --example "$EXAMPLE_NAME" -p horus_core >/dev/null 2>&1; then
-            EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
-        else
-            warn "horus_core example failed: $EXAMPLE_NAME"
-        fi
-    fi
-done
-
-if [ "$EXAMPLE_COUNT" -gt 0 ]; then
-    if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
-        pass "All $EXAMPLE_COUNT horus_core examples compile"
-    else
-        fail "$EXAMPLE_PASS/$EXAMPLE_COUNT horus_core examples compile"
-    fi
-else
-    info "No horus_core examples found"
-fi
-
-# Check horus_manager examples
-info "Checking horus_manager examples..."
-EXAMPLE_COUNT=0
-EXAMPLE_PASS=0
-
-for example in horus_manager/examples/*.rs; do
-    if [ -f "$example" ]; then
-        EXAMPLE_NAME=$(basename "$example" .rs)
-        EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
-
-        if cargo build --release --example "$EXAMPLE_NAME" -p horus_manager >/dev/null 2>&1; then
-            EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
-        else
-            warn "horus_manager example failed: $EXAMPLE_NAME"
-        fi
-    fi
-done
-
-if [ "$EXAMPLE_COUNT" -gt 0 ]; then
-    if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
-        pass "All $EXAMPLE_COUNT horus_manager examples compile"
-    else
-        fail "$EXAMPLE_PASS/$EXAMPLE_COUNT horus_manager examples compile"
-    fi
-else
-    info "No horus_manager examples found"
-fi
-
-# Check sim3d examples (now in separate package)
-info "Checking sim3d examples..."
-SIM3D_EXAMPLES_DIR="$ROOT_DIR/../horus-sim3d/examples"
-EXAMPLE_COUNT=0
-EXAMPLE_PASS=0
-
-if [ -d "$SIM3D_EXAMPLES_DIR" ]; then
-    for example in "$SIM3D_EXAMPLES_DIR"/*.rs; do
-        if [ -f "$example" ]; then
-            EXAMPLE_NAME=$(basename "$example" .rs)
-            EXAMPLE_COUNT=$((EXAMPLE_COUNT + 1))
-
-            # Build from the standalone horus-sim3d package
-            if (cd "$ROOT_DIR/../horus-sim3d" && cargo build --release --example "$EXAMPLE_NAME" >/dev/null 2>&1); then
-                EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
-            else
-                warn "sim3d example failed: $EXAMPLE_NAME"
+                if cargo build --release --example "$EXAMPLE_NAME" -p "$crate" >/dev/null 2>&1; then
+                    EXAMPLE_PASS=$((EXAMPLE_PASS + 1))
+                else
+                    warn "$crate example failed: $EXAMPLE_NAME"
+                fi
             fi
+        done
+
+        if [ "$EXAMPLE_COUNT" -gt 0 ]; then
+            if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
+                pass "All $EXAMPLE_COUNT $crate examples compile"
+            else
+                fail "$EXAMPLE_PASS/$EXAMPLE_COUNT $crate examples compile"
+            fi
+        else
+            info "No $crate examples found"
         fi
     done
-
-    if [ "$EXAMPLE_COUNT" -gt 0 ]; then
-        if [ "$EXAMPLE_PASS" -eq "$EXAMPLE_COUNT" ]; then
-            pass "All $EXAMPLE_COUNT sim3d examples compile"
-        else
-            fail "$EXAMPLE_PASS/$EXAMPLE_COUNT sim3d examples compile"
-        fi
-    else
-        info "No sim3d examples found"
-    fi
-else
-    info "sim3d package not found at ../horus-sim3d (standalone package)"
 fi
-fi  # End of quick mode check for section 12
 
 # =============================================================================
-# 13. INTEGRATION TESTS
+# 12. INTEGRATION TESTS
 # =============================================================================
-section "13. Integration Tests"
+section "12. Integration Tests"
 
 if [ "$QUICK_MODE" = true ]; then
     skip "Integration tests (quick mode)"
 else
-    # Test horus run with test projects
-    TEST_PROJECTS=(
-        "tests/monitor/1pub"
-        "tests/monitor/robot_fleet_rust"
-        "tests/multi_language_example"
-        "tests/sim2d/f1tenth_race"
-    )
-
-    for project in "${TEST_PROJECTS[@]}"; do
-        if [ -d "$project" ] && [ -f "$project/horus.yaml" ]; then
-            PROJECT_NAME=$(basename "$project")
-            cd "$project"
-
-            if $ROOT_DIR/target/release/horus check horus.yaml >/dev/null 2>&1; then
-                pass "horus check: $PROJECT_NAME"
-            else
-                warn "horus check issues: $PROJECT_NAME"
-            fi
-
-            cd "$ROOT_DIR"
-        fi
-    done
-
-    # Run Rust integration tests
     info "Running integration test suite..."
-    if cargo test --test integration 2>&1 | tail -10; then
+    if cargo test --test '*' --workspace 2>&1 | tail -10; then
         pass "Integration tests passed"
     else
         warn "Some integration tests failed"
@@ -641,9 +499,9 @@ else
 fi
 
 # =============================================================================
-# 14. BENCHMARK SMOKE TEST
+# 13. BENCHMARK SMOKE TEST
 # =============================================================================
-section "14. Benchmark Smoke Test"
+section "13. Benchmark Smoke Test"
 
 if [ "$QUICK_MODE" = true ]; then
     skip "Benchmarks (quick mode)"
@@ -657,21 +515,19 @@ else
 fi
 
 # =============================================================================
-# 15. FEATURE MATRIX TESTING
+# 14. FEATURE MATRIX TESTING
 # =============================================================================
-section "15. Feature Matrix Testing"
+section "14. Feature Matrix Testing"
 
 if [ "$QUICK_MODE" = true ]; then
     skip "Feature matrix (quick mode)"
 else
-    # Test important feature combinations for horus_library
     declare -A LIBRARY_FEATURES
     LIBRARY_FEATURES["default"]=""
     LIBRARY_FEATURES["ml-inference"]="--features ml-inference"
     LIBRARY_FEATURES["onnx"]="--features onnx"
     LIBRARY_FEATURES["standard-nodes"]="--features standard-nodes"
 
-    # Test network features on horus_core (where they're defined)
     declare -A CORE_FEATURES
     CORE_FEATURES["tls"]="--features tls"
     CORE_FEATURES["quic"]="--features quic"
@@ -679,7 +535,6 @@ else
     FEATURE_PASS=0
     FEATURE_TOTAL=0
 
-    # Test horus_library features
     for feature_name in "${!LIBRARY_FEATURES[@]}"; do
         FEATURE_FLAGS="${LIBRARY_FEATURES[$feature_name]}"
         FEATURE_TOTAL=$((FEATURE_TOTAL + 1))
@@ -691,7 +546,6 @@ else
         fi
     done
 
-    # Test horus_core features (network transport)
     for feature_name in "${!CORE_FEATURES[@]}"; do
         FEATURE_FLAGS="${CORE_FEATURES[$feature_name]}"
         FEATURE_TOTAL=$((FEATURE_TOTAL + 1))
@@ -711,9 +565,9 @@ else
 fi
 
 # =============================================================================
-# 16. SHELL SCRIPT SYNTAX VALIDATION
+# 15. SHELL SCRIPT SYNTAX VALIDATION
 # =============================================================================
-section "16. Shell Script Syntax Validation"
+section "15. Shell Script Syntax Validation"
 
 SHELL_SCRIPTS=(
     "install.sh"
@@ -721,8 +575,6 @@ SHELL_SCRIPTS=(
     "scripts/prerelease.sh"
     "scripts/release.sh"
     "scripts/deps.sh"
-    "benchmarks/scripts/run_all.sh"
-    "tests/shell_scripts/run_tests.sh"
 )
 
 for script in "${SHELL_SCRIPTS[@]}"; do
@@ -739,7 +591,6 @@ done
 for script in scripts/*.sh; do
     if [ -f "$script" ]; then
         SCRIPT_NAME=$(basename "$script")
-        # Skip already checked
         if [[ ! " prerelease.sh release.sh deps.sh " =~ " $SCRIPT_NAME " ]]; then
             if bash -n "$script" 2>/dev/null; then
                 pass "$SCRIPT_NAME syntax valid"
@@ -751,11 +602,11 @@ for script in scripts/*.sh; do
 done
 
 # =============================================================================
-# 18. VERSION CONSISTENCY CHECK
+# 16. VERSION CONSISTENCY CHECK
 # =============================================================================
-section "18. Version Consistency"
+section "16. Version Consistency"
 
-# Get version from main Cargo.toml
+# Get version from main horus/Cargo.toml (the unified re-export crate)
 MAIN_VERSION=$(grep -m1 '^version = ' horus/Cargo.toml 2>/dev/null | sed 's/version = "\(.*\)"/\1/')
 
 if [ -n "$MAIN_VERSION" ]; then
@@ -763,9 +614,7 @@ if [ -n "$MAIN_VERSION" ]; then
 
     VERSION_MISMATCH=0
 
-    # Check all Cargo.toml files that should have matching versions
-    # NOTE: sim2d and sim3d are now standalone packages at ../horus-sim2d and ../horus-sim3d
-    # They have independent versioning
+    # --- Cargo.toml files ---
     CARGO_FILES=(
         "horus/Cargo.toml"
         "horus_core/Cargo.toml"
@@ -773,7 +622,6 @@ if [ -n "$MAIN_VERSION" ]; then
         "horus_library/Cargo.toml"
         "horus_manager/Cargo.toml"
         "horus_py/Cargo.toml"
-        "horus_router/Cargo.toml"
         "horus_ai/Cargo.toml"
         "benchmarks/Cargo.toml"
     )
@@ -788,8 +636,54 @@ if [ -n "$MAIN_VERSION" ]; then
         fi
     done
 
+    # --- Python: pyproject.toml ---
+    if [ -f "horus_py/pyproject.toml" ]; then
+        PY_PROJECT_VERSION=$(grep -m1 '^version = ' horus_py/pyproject.toml 2>/dev/null | sed 's/version = "\(.*\)"/\1/')
+        if [ "$PY_PROJECT_VERSION" != "$MAIN_VERSION" ]; then
+            warn "Version mismatch in horus_py/pyproject.toml: $PY_PROJECT_VERSION (expected $MAIN_VERSION)"
+            VERSION_MISMATCH=$((VERSION_MISMATCH + 1))
+        fi
+    fi
+
+    # --- Python: horus/__init__.py ---
+    if [ -f "horus_py/horus/__init__.py" ]; then
+        PY_INIT_VERSION=$(grep -m1 '^__version__' horus_py/horus/__init__.py 2>/dev/null | sed 's/__version__ = "\(.*\)"/\1/')
+        if [ "$PY_INIT_VERSION" != "$MAIN_VERSION" ]; then
+            warn "Version mismatch in horus_py/horus/__init__.py: $PY_INIT_VERSION (expected $MAIN_VERSION)"
+            VERSION_MISMATCH=$((VERSION_MISMATCH + 1))
+        fi
+    fi
+
+    # --- Python: benchmarks/__init__.py ---
+    if [ -f "horus_py/benchmarks/__init__.py" ]; then
+        PY_BENCH_VERSION=$(grep -m1 '^__version__' horus_py/benchmarks/__init__.py 2>/dev/null | sed 's/__version__ = "\(.*\)"/\1/')
+        if [ "$PY_BENCH_VERSION" != "$MAIN_VERSION" ]; then
+            warn "Version mismatch in horus_py/benchmarks/__init__.py: $PY_BENCH_VERSION (expected $MAIN_VERSION)"
+            VERSION_MISMATCH=$((VERSION_MISMATCH + 1))
+        fi
+    fi
+
+    # --- Rust: CLI version in horus_manager/src/main.rs ---
+    if [ -f "horus_manager/src/main.rs" ]; then
+        CLI_VERSION=$(grep -m1 'version = "' horus_manager/src/main.rs 2>/dev/null | sed 's/.*version = "\(.*\)".*/\1/')
+        if [ -n "$CLI_VERSION" ] && [ "$CLI_VERSION" != "$MAIN_VERSION" ]; then
+            warn "Version mismatch in horus_manager/src/main.rs (CLI): $CLI_VERSION (expected $MAIN_VERSION)"
+            VERSION_MISMATCH=$((VERSION_MISMATCH + 1))
+        fi
+    fi
+
+    # --- Rust: monitor.rs JSON version ---
+    if [ -f "horus_manager/src/monitor.rs" ]; then
+        MONITOR_VERSION=$(grep -m1 '"version":' horus_manager/src/monitor.rs 2>/dev/null | sed 's/.*"version": "\(.*\)".*/\1/')
+        if [ -n "$MONITOR_VERSION" ] && [ "$MONITOR_VERSION" != "$MAIN_VERSION" ]; then
+            warn "Version mismatch in horus_manager/src/monitor.rs: $MONITOR_VERSION (expected $MAIN_VERSION)"
+            VERSION_MISMATCH=$((VERSION_MISMATCH + 1))
+        fi
+    fi
+
+    TOTAL_VERSION_FILES=$((${#CARGO_FILES[@]} + 4))  # +4 for pyproject, __init__.py x2, CLI, monitor
     if [ "$VERSION_MISMATCH" -eq 0 ]; then
-        pass "All ${#CARGO_FILES[@]} Cargo.toml versions consistent ($MAIN_VERSION)"
+        pass "All $TOTAL_VERSION_FILES version sources consistent ($MAIN_VERSION)"
     else
         fail "$VERSION_MISMATCH files have version mismatches"
     fi
@@ -798,9 +692,9 @@ else
 fi
 
 # =============================================================================
-# 19. DEAD CODE DETECTION
+# 17. DEAD CODE DETECTION
 # =============================================================================
-section "19. Dead Code Detection"
+section "17. Dead Code Detection"
 
 if [ "$QUICK_MODE" = true ]; then
     skip "Dead code detection (quick mode)"
@@ -820,9 +714,9 @@ else
 fi
 
 # =============================================================================
-# 20. DOCKER CONTAINER TESTS (Optional)
+# 18. DOCKER CONTAINER TESTS (Optional)
 # =============================================================================
-section "20. Docker Container Tests"
+section "18. Docker Container Tests"
 
 if [ "$FULL_MODE" = true ]; then
     if command -v docker &>/dev/null; then

@@ -654,8 +654,30 @@ class Node:
         self._internal_init(info)
 
     def tick(self, info: Optional[Any] = None) -> None:
-        """Called by Rust scheduler on each tick."""
-        self._internal_tick(info)
+        """Called by Rust scheduler on each tick.
+        Bypasses _internal_tick rate control since horus_core handles rate limiting.
+        """
+        old_info = self.info
+        self.info = info
+        try:
+            if self.tick_fn:
+                self.tick_fn(self)
+        except Exception as e:
+            self.error_count += 1
+            if self.info:
+                self.info.log_error(f"Tick failed: {e}")
+                if self.error_count > 10:
+                    self.info.transition_to_error(f"Too many errors ({self.error_count})")
+            if self.on_error_fn:
+                try:
+                    self.on_error_fn(self, e)
+                except Exception as handler_error:
+                    if self.info:
+                        self.info.log_error(f"Error handler failed: {handler_error}")
+            else:
+                raise
+        finally:
+            self.info = old_info
 
     def shutdown(self, info: Optional[Any] = None) -> None:
         """Called by Rust scheduler during shutdown."""
@@ -750,7 +772,10 @@ class Scheduler:
             config: Optional SchedulerConfig to configure the scheduler
         """
         if _PyScheduler:
-            self._scheduler = _PyScheduler(config) if config else _PyScheduler()
+            if config is None:
+                # Default to 1000Hz global rate to support fine-grained per-node rate control
+                config = SchedulerConfig.builder().rate_hz(1000.0).build()
+            self._scheduler = _PyScheduler(config)
         else:
             self._scheduler = None
         self._nodes = []
@@ -825,15 +850,7 @@ class Scheduler:
             duration: Optional duration in seconds (runs forever if None)
         """
         if self._scheduler:
-            # Initialize all nodes
-            for node in self._nodes:
-                node._internal_init()
-
-            # Set scheduler tick rate to a high value to support per-node rate control
-            # The scheduler needs to tick faster than the fastest node
-            self._scheduler.set_tick_rate(1000.0)  # 1000Hz allows fine-grained control
-
-            # Run with KeyboardInterrupt handling
+            # horus_core handles init/tick/shutdown via PyNodeAdapter
             try:
                 if duration:
                     self._scheduler.run_for(duration)
@@ -842,10 +859,6 @@ class Scheduler:
             except KeyboardInterrupt:
                 print("\nCtrl+C received, shutting down gracefully...")
                 self._scheduler.stop()
-            finally:
-                # Shutdown all nodes
-                for node in self._nodes:
-                    node._internal_shutdown()
         else:
             # Mock mode - simple loop
             print(f"Running {len(self._nodes)} nodes in mock mode...")

@@ -9,19 +9,6 @@ use super::intelligence::NodeTier;
 use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo};
 
-/// Node control command for IPC-based lifecycle management
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NodeControlCommand {
-    /// Stop the node (won't tick anymore)
-    Stop,
-    /// Restart the node (re-initialize and resume)
-    Restart,
-    /// Pause execution (can resume later)
-    Pause,
-    /// Resume paused node
-    Resume,
-}
-
 /// Enhanced node registration info with lifecycle tracking and per-node rate control
 pub(crate) struct RegisteredNode {
     pub(crate) node: Box<dyn Node>,

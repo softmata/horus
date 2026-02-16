@@ -66,7 +66,7 @@ pub use config::{
 };
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
-pub use types::{NodeControlCommand, SchedulerNodeMetrics};
+pub use types::SchedulerNodeMetrics;
 
 // Re-export runtime features
 pub use runtime::{
@@ -131,20 +131,7 @@ pub use fault_tolerance::{
 };
 
 // Re-export deterministic execution
-pub use deterministic::{
-    DeterministicClock,
-    DeterministicConfig,
-    DivergenceInfo,
-    ExecutionTrace,
-    NodeTimingStats,
-    // WCET timing analysis
-    TimingBounds,
-    TimingStatistics,
-    TimingViolation,
-    TraceEntry,
-    TraceEntryType,
-    ViolationSeverity,
-};
+pub use deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace};
 
 // Re-export runtime capabilities
 pub use capabilities::RuntimeCapabilities;

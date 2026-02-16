@@ -543,19 +543,6 @@ impl SchedulerConfig {
         config
     }
 
-    /// Helper to get custom value
-    pub fn get_custom<T>(&self, key: &str) -> Option<T>
-    where
-        T: FromConfigValue,
-    {
-        self.custom.get(key).and_then(|v| T::from_config_value(v))
-    }
-
-    /// Helper to set custom value
-    pub fn set_custom(&mut self, key: String, value: ConfigValue) {
-        self.custom.insert(key, value);
-    }
-
     // Builder Methods
 
     /// Set the execution mode
@@ -822,43 +809,3 @@ impl SchedulerConfig {
     }
 }
 
-/// Trait for converting from ConfigValue
-pub trait FromConfigValue: Sized {
-    fn from_config_value(value: &ConfigValue) -> Option<Self>;
-}
-
-impl FromConfigValue for bool {
-    fn from_config_value(value: &ConfigValue) -> Option<Self> {
-        match value {
-            ConfigValue::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-}
-
-impl FromConfigValue for i64 {
-    fn from_config_value(value: &ConfigValue) -> Option<Self> {
-        match value {
-            ConfigValue::Integer(i) => Some(*i),
-            _ => None,
-        }
-    }
-}
-
-impl FromConfigValue for f64 {
-    fn from_config_value(value: &ConfigValue) -> Option<Self> {
-        match value {
-            ConfigValue::Float(f) => Some(*f),
-            _ => None,
-        }
-    }
-}
-
-impl FromConfigValue for String {
-    fn from_config_value(value: &ConfigValue) -> Option<Self> {
-        match value {
-            ConfigValue::String(s) => Some(s.clone()),
-            _ => None,
-        }
-    }
-}
