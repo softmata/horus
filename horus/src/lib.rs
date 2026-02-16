@@ -96,10 +96,7 @@ pub mod prelude {
     // ============================================
     // Executors
     // ============================================
-    pub use horus_core::scheduling::{
-        AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
-        IsolatedNodeStats, IsolatedResult, ParallelExecutor,
-    };
+    pub use horus_core::scheduling::ParallelExecutor;
 
     // ============================================
     // Telemetry
@@ -107,13 +104,9 @@ pub mod prelude {
     pub use horus_core::scheduling::{TelemetryEndpoint, TelemetryManager};
 
     // ============================================
-    // Profiling & Intelligence
+    // Node Tier
     // ============================================
-    // NOTE: RuntimeProfiler is internal (used by scheduler.rs for metrics)
-    // are not exported - use horus_core::scheduling directly if needed for advanced use.
-    pub use horus_core::scheduling::{
-        NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError,
-    };
+    pub use horus_core::scheduling::NodeTier;
 
     // ============================================
     // Record/Replay

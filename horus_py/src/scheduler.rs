@@ -4,8 +4,8 @@ use horus::{NodeInfo as CoreNodeInfo, TopicMetadata};
 use horus_core::core::Node as CoreNode;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
-    CircuitState, FailurePolicy, NodeConfig, NodeTier, Scheduler as CoreScheduler, SchedulerConfig,
-    SchedulerNodeMetrics,
+    CircuitState, FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
+    SchedulerConfig, SchedulerNodeMetrics,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -354,7 +354,7 @@ impl PyScheduler {
             rate: node_rate,
         };
 
-        let mut config = NodeConfig::new(Box::new(adapter)).order(order);
+        let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
         if let Some(rate) = node_rate {
             config = config.rate_hz(rate);
         }
@@ -514,6 +514,87 @@ impl PyScheduler {
     #[staticmethod]
     pub fn from_config(config: PySchedulerConfig) -> PyResult<Self> {
         Self::new(Some(config))
+    }
+
+    /// Create a production deployment scheduler (RT features + blackbox + profiling).
+    ///
+    /// Applies best-effort RT priority, memory locking, CPU affinity, and
+    /// enables a 16MB BlackBox flight recorder.
+    #[staticmethod]
+    pub fn deploy() -> PyResult<Self> {
+        let core_sched = CoreScheduler::deploy();
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: 60.0, // deploy() uses default ~60Hz
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// Create a safety-critical scheduler.
+    ///
+    /// Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
+    #[staticmethod]
+    pub fn preset_safety_critical() -> PyResult<Self> {
+        let core_sched = CoreScheduler::safety_critical();
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: 1000.0,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// Create a high-performance scheduler.
+    ///
+    /// Parallel execution, 10kHz, WCET enforcement, memory locking.
+    #[staticmethod]
+    pub fn preset_high_performance() -> PyResult<Self> {
+        let core_sched = CoreScheduler::high_performance();
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: 10000.0,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// Create a deterministic scheduler for reproducible execution.
+    ///
+    /// Sequential execution, strict topology validation, deterministic seed.
+    #[staticmethod]
+    pub fn preset_deterministic() -> PyResult<Self> {
+        let core_sched = CoreScheduler::deterministic();
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: 100.0,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
+    }
+
+    /// Create a hard real-time scheduler.
+    ///
+    /// Parallel execution, 1kHz, <5us jitter target, 10ms watchdog, panic on deadline miss.
+    #[staticmethod]
+    pub fn preset_hard_realtime() -> PyResult<Self> {
+        let core_sched = CoreScheduler::hard_realtime();
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: 1000.0,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
     }
 
     /// Start building a node configuration (fluent API).
@@ -1072,6 +1153,65 @@ impl PyScheduler {
             .add_critical_node(&node_name, Duration::from_millis(timeout_ms))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(())
+    }
+
+    // ========================================================================
+    // Deterministic / Simulation Mode
+    // ========================================================================
+
+    /// Check if scheduler is in simulation mode (deterministic execution).
+    fn is_simulation_mode(&self) -> PyResult<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.is_simulation_mode()),
+            None => Ok(false),
+        }
+    }
+
+    /// Get the deterministic seed (simulation mode only).
+    fn seed(&self) -> PyResult<Option<u64>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.seed()),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the current virtual time in seconds (simulation mode only).
+    fn virtual_time(&self) -> PyResult<Option<f64>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.virtual_time().map(|d| d.as_secs_f64())),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the current virtual tick number (simulation mode only).
+    fn virtual_tick(&self) -> PyResult<Option<u64>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.virtual_tick()),
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a recording by session name.
+    #[staticmethod]
+    fn delete_recording(session_name: String) -> PyResult<()> {
+        CoreScheduler::delete_recording(&session_name)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     fn __repr__(&self) -> PyResult<String> {

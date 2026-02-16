@@ -5,7 +5,6 @@
 use std::time::{Duration, Instant};
 
 use super::fault_tolerance::FailureHandler;
-use super::intelligence::NodeTier;
 use super::record_replay::NodeRecorder;
 use crate::core::{Node, NodeInfo};
 
@@ -24,7 +23,6 @@ pub(crate) struct RegisteredNode {
     pub(crate) recorder: Option<NodeRecorder>,
     pub(crate) is_stopped: bool,
     pub(crate) is_paused: bool,
-    pub(crate) tier: NodeTier,
 }
 
 /// Performance metrics for a scheduler node

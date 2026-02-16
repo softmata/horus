@@ -3,7 +3,6 @@
 //! Provides a straightforward key-value store for runtime configuration
 
 use crate::error::{HorusError, HorusResult};
-use log::warn;
 use regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +57,36 @@ pub struct RuntimeParams {
 }
 
 impl RuntimeParams {
+    /// Canonical set of default parameters (single source of truth).
+    fn default_params() -> BTreeMap<String, Value> {
+        let mut params = BTreeMap::new();
+
+        // System defaults
+        params.insert("tick_rate".to_string(), Value::from(30));
+        params.insert("max_memory_mb".to_string(), Value::from(512));
+
+        // Motion defaults
+        params.insert("max_speed".to_string(), Value::from(1.0));
+        params.insert("max_angular_speed".to_string(), Value::from(1.0));
+        params.insert("acceleration_limit".to_string(), Value::from(0.5));
+
+        // Sensor defaults
+        params.insert("lidar_rate".to_string(), Value::from(10));
+        params.insert("camera_fps".to_string(), Value::from(30));
+        params.insert("sensor_timeout_ms".to_string(), Value::from(1000));
+
+        // Safety defaults
+        params.insert("emergency_stop_distance".to_string(), Value::from(0.3));
+        params.insert("collision_threshold".to_string(), Value::from(0.5));
+
+        // PID defaults
+        params.insert("pid_kp".to_string(), Value::from(1.0));
+        params.insert("pid_ki".to_string(), Value::from(0.1));
+        params.insert("pid_kd".to_string(), Value::from(0.05));
+
+        params
+    }
+
     /// Create new parameter store with defaults
     pub fn init() -> HorusResult<Self> {
         let mut initial_params = BTreeMap::new();
@@ -74,28 +103,7 @@ impl RuntimeParams {
 
         // If empty, set defaults
         if initial_params.is_empty() {
-            // System defaults
-            initial_params.insert("tick_rate".to_string(), Value::from(30));
-            initial_params.insert("max_memory_mb".to_string(), Value::from(512));
-
-            // Motion defaults
-            initial_params.insert("max_speed".to_string(), Value::from(1.0));
-            initial_params.insert("max_angular_speed".to_string(), Value::from(1.0));
-            initial_params.insert("acceleration_limit".to_string(), Value::from(0.5));
-
-            // Sensor defaults
-            initial_params.insert("lidar_rate".to_string(), Value::from(10));
-            initial_params.insert("camera_fps".to_string(), Value::from(30));
-            initial_params.insert("sensor_timeout_ms".to_string(), Value::from(1000));
-
-            // Safety defaults
-            initial_params.insert("emergency_stop_distance".to_string(), Value::from(0.3));
-            initial_params.insert("collision_threshold".to_string(), Value::from(0.5));
-
-            // PID defaults
-            initial_params.insert("pid_kp".to_string(), Value::from(1.0));
-            initial_params.insert("pid_ki".to_string(), Value::from(0.1));
-            initial_params.insert("pid_kd".to_string(), Value::from(0.05));
+            initial_params = Self::default_params();
         }
 
         Ok(Self {
@@ -108,29 +116,9 @@ impl RuntimeParams {
 
     /// Set default parameters
     fn set_defaults(&self) -> Result<(), HorusError> {
-        // System defaults
-        self.set("tick_rate", 30)?;
-        self.set("max_memory_mb", 512)?;
-
-        // Motion defaults
-        self.set("max_speed", 1.0)?;
-        self.set("max_angular_speed", 1.0)?;
-        self.set("acceleration_limit", 0.5)?;
-
-        // Sensor defaults
-        self.set("lidar_rate", 10)?;
-        self.set("camera_fps", 30)?;
-        self.set("sensor_timeout_ms", 1000)?;
-
-        // Safety defaults
-        self.set("emergency_stop_distance", 0.3)?;
-        self.set("collision_threshold", 0.5)?;
-
-        // PID defaults
-        self.set("pid_kp", 1.0)?;
-        self.set("pid_ki", 0.1)?;
-        self.set("pid_kd", 0.05)?;
-
+        for (key, value) in Self::default_params() {
+            self.set(&key, value)?;
+        }
         Ok(())
     }
 
@@ -470,7 +458,7 @@ impl Clone for RuntimeParams {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self::init().unwrap_or_else(|e| {
-            warn!(
+            eprintln!(
                 "Failed to initialize RuntimeParams: {}. Using empty params.",
                 e
             );

@@ -62,7 +62,7 @@ pub mod node_builder;
 
 pub use config::{
     ConfigValue, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
-    ResourceConfig, SchedulerConfig, TimingConfig,
+    ResourceConfig, SchedulerConfig, TimingConfig, TopologyConfig,
 };
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
@@ -111,16 +111,12 @@ pub use record_replay::{
     WatchValue,
 };
 
-// Re-export intelligence (profiling, classification)
+// Re-export intelligence (tier annotation)
 // NOTE: RuntimeProfiler is internal (used by scheduler.rs for metrics).
-// Use NodeTier for developer-facing tier annotation.
-pub use intelligence::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
+pub use intelligence::NodeTier;
 
 // Re-export executors
-pub use executors::{
-    AsyncIOExecutor, AsyncResult, BackgroundExecutor, IsolatedExecutor, IsolatedNodeConfig,
-    IsolatedNodeStats, IsolatedResult, ParallelExecutor,
-};
+pub use executors::ParallelExecutor;
 
 // Re-export telemetry
 pub use telemetry::{TelemetryEndpoint, TelemetryManager};
@@ -137,4 +133,4 @@ pub use deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace}
 pub use capabilities::RuntimeCapabilities;
 
 // Re-export node builder
-pub use node_builder::{NodeBuilder, NodeConfig};
+pub use node_builder::{NodeBuilder, NodeRegistration};

@@ -1,6 +1,5 @@
 use crate::params::RuntimeParams;
 use crate::scheduling::fault_tolerance::CircuitBreaker;
-use crate::terminal::is_raw_mode;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -133,34 +132,6 @@ impl NetworkStatus {
             packets_received: 0,
             timestamp_secs: now,
         }
-    }
-
-    /// Write network status to shared memory file
-    pub fn write_to_file(&self) -> crate::error::HorusResult<()> {
-        use crate::memory::platform::shm_network_dir;
-
-        let dir = shm_network_dir();
-        std::fs::create_dir_all(&dir)?;
-
-        let path = dir.join(&self.node_name);
-        let json = serde_json::to_string_pretty(self).map_err(|e| {
-            crate::error::HorusError::Serialization(format!(
-                "Failed to serialize network status: {}",
-                e
-            ))
-        })?;
-
-        std::fs::write(&path, json)?;
-        Ok(())
-    }
-
-    /// Read network status from file
-    pub fn read_from_file(node_name: &str) -> Option<Self> {
-        use crate::memory::platform::shm_network_dir;
-
-        let path = shm_network_dir().join(node_name);
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
     }
 
     /// Read all network statuses from the network directory
@@ -429,16 +400,6 @@ impl NodeInfo {
         }
     }
 
-    /// Increment tick counter without recording duration metrics
-    /// Useful for tools like sim2d that manage their own timing
-    pub fn increment_tick(&mut self) {
-        let _guard = self
-            .metrics_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.metrics.total_ticks += 1;
-    }
-
     pub fn record_tick(&mut self) {
         let _guard = self
             .metrics_lock
@@ -531,32 +492,6 @@ impl NodeInfo {
         self.metrics.errors_count += 1;
     }
 
-    /// Production-ready metric logging - logs only significant events
-    pub fn log_metrics_summary(&mut self) {
-        if self.config.log_level != "QUIET" {
-            let now = chrono::Local::now();
-            let uptime = self.creation_time.elapsed().as_secs();
-
-            // Only log if there are concerning metrics
-            if self.metrics.failed_ticks > 0 || self.metrics.avg_tick_duration_ms > 100.0 {
-                let line_ending = if is_raw_mode() { "\r\n" } else { "\n" };
-                let msg = format!(
-                    "[{}] METRICS {} - uptime:{}s, ticks:{}/{}, avg:{}ms{}",
-                    now.format("%H:%M:%S"),
-                    self.name,
-                    uptime,
-                    self.metrics.successful_ticks,
-                    self.metrics.total_ticks,
-                    self.metrics.avg_tick_duration_ms as u64,
-                    line_ending
-                );
-                use std::io::{self, Write};
-                let _ = io::stdout().write_all(msg.as_bytes());
-                let _ = io::stdout().flush();
-            }
-        }
-    }
-
     // Getters
     pub fn name(&self) -> &str {
         &self.name
@@ -579,18 +514,10 @@ impl NodeInfo {
     pub fn uptime(&self) -> Duration {
         self.creation_time.elapsed()
     }
-    pub fn time_in_current_state(&self) -> Duration {
-        self.state_change_time.elapsed()
-    }
-
     // Setters
     pub fn set_priority(&mut self, priority: u32) {
         self.priority = priority;
     }
-    pub fn set_config(&mut self, config: NodeConfig) {
-        self.config = config;
-    }
-
     // Custom data management
     pub fn set_custom_data(&mut self, key: String, value: String) {
         self.custom_data.insert(key, value);
@@ -600,9 +527,6 @@ impl NodeInfo {
         self.custom_data.get(key)
     }
 
-    pub fn remove_custom_data(&mut self, key: &str) -> Option<String> {
-        self.custom_data.remove(key)
-    }
 }
 
 /// Topic metadata for monitoring and introspection

@@ -26,9 +26,9 @@ use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
 ///
-/// Use `NodeConfig::new()` to create, then configure with chainable methods.
+/// Use `NodeRegistration::new()` to create, then configure with chainable methods.
 /// Pass to `Scheduler::add_configured()` to register the node.
-pub struct NodeConfig {
+pub struct NodeRegistration {
     /// The node to add
     pub(crate) node: Box<dyn Node>,
     /// Execution order (lower = earlier, default: 100)
@@ -47,12 +47,12 @@ pub struct NodeConfig {
     pub(crate) failure_policy: Option<super::fault_tolerance::FailurePolicy>,
 }
 
-impl NodeConfig {
+impl NodeRegistration {
     /// Create a new node configuration with defaults.
     ///
     /// # Example
     /// ```rust,ignore
-    /// let config = NodeConfig::new(Box::new(MyNode::new()))
+    /// let config = NodeRegistration::new(Box::new(MyNode::new()))
     ///     .order(0)
     ///     .rate_hz(100.0);
     /// ```
@@ -80,7 +80,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(node).order(0)  // Highest priority
+    /// NodeRegistration::new(node).order(0)  // Highest priority
     /// ```
     pub fn order(mut self, order: u32) -> Self {
         self.order = order;
@@ -100,7 +100,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(sensor_node)
+    /// NodeRegistration::new(sensor_node)
     ///     .rate_hz(1000.0)  // 1kHz for sensor polling
     /// ```
     pub fn rate_hz(mut self, rate: f64) -> Self {
@@ -117,7 +117,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(motor_controller)
+    /// NodeRegistration::new(motor_controller)
     ///     .rt()
     ///     .wcet_us(500)  // 500μs max execution time
     /// ```
@@ -132,7 +132,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(pid_controller)
+    /// NodeRegistration::new(pid_controller)
     ///     .wcet_us(200)  // Must complete within 200μs
     /// ```
     pub fn wcet_us(mut self, us: u64) -> Self {
@@ -148,7 +148,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(safety_monitor)
+    /// NodeRegistration::new(safety_monitor)
     ///     .deadline_us(1000)  // Must finish within 1ms
     /// ```
     pub fn deadline_us(mut self, us: u64) -> Self {
@@ -164,7 +164,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(control_loop)
+    /// NodeRegistration::new(control_loop)
     ///     .deadline_ms(10)  // Must finish within 10ms
     /// ```
     pub fn deadline_ms(mut self, ms: u64) -> Self {
@@ -179,7 +179,7 @@ impl NodeConfig {
     ///
     /// # Example
     /// ```rust,ignore
-    /// NodeConfig::new(slow_node)
+    /// NodeRegistration::new(slow_node)
     ///     .wcet_ms(5)  // Must complete within 5ms
     /// ```
     pub fn wcet_ms(mut self, ms: u64) -> Self {
@@ -196,7 +196,7 @@ impl NodeConfig {
     /// ```rust,ignore
     /// use horus_core::scheduling::intelligence::NodeTier;
     ///
-    /// NodeConfig::new(fast_node)
+    /// NodeRegistration::new(fast_node)
     ///     .tier(NodeTier::UltraFast)
     /// ```
     pub fn tier(mut self, tier: super::intelligence::NodeTier) -> Self {
@@ -208,8 +208,7 @@ impl NodeConfig {
     ///
     /// By default, the policy is derived from the node's tier:
     /// - `UltraFast`/`Fast` → `Fatal` (stop scheduler on failure)
-    /// - `Normal`/`Isolated`/`Auto` → `Restart` (exponential backoff)
-    /// - `Background`/`AsyncIO` → `Skip` (circuit breaker)
+    /// - `Normal` → `Restart` (exponential backoff)
     ///
     /// Use this to override when the default doesn't fit:
     ///
@@ -218,7 +217,7 @@ impl NodeConfig {
     /// use horus_core::scheduling::FailurePolicy;
     ///
     /// // A fast node that should restart instead of killing the scheduler
-    /// NodeConfig::new(sensor_node)
+    /// NodeRegistration::new(sensor_node)
     ///     .tier(NodeTier::Fast)
     ///     .failure_policy(FailurePolicy::restart(3, 50))
     /// ```
@@ -242,7 +241,7 @@ impl NodeConfig {
 /// ```
 pub struct NodeBuilder<'a> {
     scheduler: &'a mut super::scheduler::Scheduler,
-    config: NodeConfig,
+    config: NodeRegistration,
 }
 
 impl<'a> NodeBuilder<'a> {
@@ -250,7 +249,7 @@ impl<'a> NodeBuilder<'a> {
     pub(crate) fn new(scheduler: &'a mut super::scheduler::Scheduler, node: Box<dyn Node>) -> Self {
         Self {
             scheduler,
-            config: NodeConfig::new(node),
+            config: NodeRegistration::new(node),
         }
     }
 

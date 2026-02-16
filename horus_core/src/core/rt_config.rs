@@ -352,11 +352,6 @@ impl RtConfig {
         Self::default()
     }
 
-    /// Check kernel RT support without applying configuration.
-    pub fn check_kernel_support() -> RtKernelInfo {
-        RtKernelInfo::detect()
-    }
-
     /// Apply this configuration to the current thread.
     ///
     /// Returns the result of applying the configuration, including
@@ -999,11 +994,6 @@ impl RtCpuInfo {
             nohz_full_cpus,
             recommended_rt_cpus,
         }
-    }
-
-    /// Check if the system has good RT CPU configuration.
-    pub fn has_rt_configuration(&self) -> bool {
-        !self.isolated_cpus.is_empty()
     }
 
     /// Get a human-readable summary of RT CPU configuration.

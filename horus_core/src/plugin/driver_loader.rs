@@ -99,12 +99,8 @@ pub struct DriverLoaderConfig {
     pub dynamic_drivers: Vec<String>,
 
     /// Whether to auto-discover drivers in search paths
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub auto_discover: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// High-level driver loader that respects DriverMode configuration

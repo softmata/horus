@@ -77,15 +77,6 @@ impl DeterministicConfig {
         }
     }
 
-    /// Create config for replay (no tracing overhead)
-    pub fn for_replay(seed: u64, tick_duration_ns: u64) -> Self {
-        Self {
-            seed,
-            virtual_time: true,
-            tick_duration_ns,
-            record_trace: false,
-        }
-    }
 }
 
 /// Deterministic clock that provides reproducible time
@@ -150,15 +141,6 @@ impl DeterministicClock {
         new_tick
     }
 
-    /// Set specific tick (for replay)
-    pub fn set_tick(&self, tick: u64) {
-        self.tick.store(tick, Ordering::Release);
-        if self.use_virtual_time {
-            self.virtual_time_ns
-                .store(tick * self.tick_duration_ns, Ordering::Release);
-        }
-    }
-
     /// Get deterministic random number
     pub fn random_u64(&self) -> u64 {
         // Simple xorshift64 for deterministic randomness
@@ -168,11 +150,6 @@ impl DeterministicClock {
         state ^= state << 17;
         self.rng_state.store(state, Ordering::Release);
         state
-    }
-
-    /// Get deterministic random f64 in [0, 1)
-    pub fn random_f64(&self) -> f64 {
-        (self.random_u64() as f64) / (u64::MAX as f64)
     }
 
     /// Reset clock to initial state
@@ -691,37 +668,4 @@ impl TimingBounds {
         }
     }
 
-    /// Compute statistical metrics
-    pub fn compute_statistics(&self) -> TimingStatistics {
-        TimingStatistics {
-            wcet_us: self.wcet_us,
-            observed_max_ns: self.observed_max_ns,
-            observed_min_ns: if self.observed_min_ns == u64::MAX {
-                0
-            } else {
-                self.observed_min_ns
-            },
-            average_ns: self.average_ns(),
-            sample_count: self.count,
-            violation_count: self.violations.len(),
-            wcet_margin_percent: if self.observed_max_ns > 0 {
-                ((self.wcet_us as f64 * 1000.0) / self.observed_max_ns as f64 - 1.0) * 100.0
-            } else {
-                100.0
-            },
-        }
-    }
-}
-
-/// Statistical summary of timing data
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TimingStatistics {
-    pub wcet_us: u64,
-    pub observed_max_ns: u64,
-    pub observed_min_ns: u64,
-    pub average_ns: u64,
-    pub sample_count: u64,
-    pub violation_count: usize,
-    /// How much margin remains before hitting WCET (negative = over WCET)
-    pub wcet_margin_percent: f64,
 }

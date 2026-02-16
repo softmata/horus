@@ -1,8 +1,8 @@
 /// Runtime profiler for tracking node execution statistics
 pub mod profiler;
 
-/// Offline profiling system and node tier annotations
+/// Node tier annotations for scheduling priority hints
 pub mod profile;
 
-pub use profile::{NodeProfile, NodeTier, OfflineProfiler, ProfileData, ProfileError};
+pub use profile::NodeTier;
 pub use profiler::RuntimeProfiler;

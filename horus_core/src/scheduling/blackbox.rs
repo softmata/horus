@@ -6,7 +6,7 @@
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -105,26 +105,6 @@ impl BlackBox {
         }
     }
 
-    /// Enable persistence to disk
-    pub fn with_persistence(mut self, path: PathBuf) -> Self {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
-        self.persist_path = Some(path.clone());
-
-        // Open WAL file for append
-        if let Ok(file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path.with_extension("wal"))
-        {
-            self.wal_file = Some(BufWriter::new(file));
-        }
-
-        self
-    }
-
     /// Record an event
     pub fn record(&mut self, event: BlackBoxEvent) {
         if !self.enabled {
@@ -163,40 +143,6 @@ impl BlackBox {
     /// Get all recorded events
     pub fn get_events(&self) -> Vec<BlackBoxRecord> {
         self.buffer.iter().cloned().collect()
-    }
-
-    /// Get events from the last N ticks
-    pub fn get_recent(&self, last_n_ticks: u64) -> Vec<BlackBoxRecord> {
-        let min_tick = self.tick_counter.saturating_sub(last_n_ticks);
-        self.buffer
-            .iter()
-            .filter(|r| r.tick >= min_tick)
-            .cloned()
-            .collect()
-    }
-
-    /// Get events of a specific type
-    pub fn get_by_type(&self, event_type: &str) -> Vec<BlackBoxRecord> {
-        self.buffer
-            .iter()
-            .filter(|r| {
-                let type_name = match &r.event {
-                    BlackBoxEvent::SchedulerStart { .. } => "SchedulerStart",
-                    BlackBoxEvent::SchedulerStop { .. } => "SchedulerStop",
-                    BlackBoxEvent::NodeAdded { .. } => "NodeAdded",
-                    BlackBoxEvent::NodeTick { .. } => "NodeTick",
-                    BlackBoxEvent::NodeError { .. } => "NodeError",
-                    BlackBoxEvent::DeadlineMiss { .. } => "DeadlineMiss",
-                    BlackBoxEvent::WCETViolation { .. } => "WCETViolation",
-                    BlackBoxEvent::CircuitBreakerChange { .. } => "CircuitBreakerChange",
-                    BlackBoxEvent::LearningComplete { .. } => "LearningComplete",
-                    BlackBoxEvent::EmergencyStop { .. } => "EmergencyStop",
-                    BlackBoxEvent::Custom { .. } => "Custom",
-                };
-                type_name == event_type
-            })
-            .cloned()
-            .collect()
     }
 
     /// Get all errors and warnings
@@ -249,40 +195,10 @@ impl BlackBox {
         Ok(())
     }
 
-    /// Generate a crash report from current buffer
-    pub fn generate_crash_report(&self) -> String {
-        let mut report = String::new();
-        report.push_str("=== HORUS BLACK BOX CRASH REPORT ===\n\n");
-
-        // Summary
-        report.push_str(&format!("Total events: {}\n", self.buffer.len()));
-        report.push_str(&format!("Last tick: {}\n\n", self.tick_counter));
-
-        // Anomalies
-        let anomalies = self.get_anomalies();
-        report.push_str(&format!("=== ANOMALIES ({}) ===\n", anomalies.len()));
-        for record in anomalies.iter().take(50) {
-            report.push_str(&format!("[tick {}] {:?}\n", record.tick, record.event));
-        }
-
-        // Last 100 events
-        report.push_str("\n=== LAST 100 EVENTS ===\n");
-        for record in self.buffer.iter().rev().take(100) {
-            report.push_str(&format!("[tick {}] {:?}\n", record.tick, record.event));
-        }
-
-        report
-    }
-
     /// Clear the buffer
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.tick_counter = 0;
-    }
-
-    /// Enable or disable recording
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 
     /// Get buffer size

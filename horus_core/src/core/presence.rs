@@ -120,29 +120,6 @@ impl NodePresence {
         nodes
     }
 
-    /// Check if any nodes are currently running
-    pub fn any_active() -> bool {
-        let dir = shm_nodes_dir();
-        if !dir.exists() {
-            return false;
-        }
-
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(presence) = serde_json::from_str::<NodePresence>(&content) {
-                            if process_exists(presence.pid) {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        false
-    }
 }
 
 /// Check if a process exists

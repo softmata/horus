@@ -793,6 +793,82 @@ class Scheduler:
         """
         return Scheduler(config=config)
 
+    @staticmethod
+    def deploy() -> 'Scheduler':
+        """
+        Create a production deployment scheduler.
+
+        Applies best-effort RT priority, memory locking, CPU affinity,
+        and enables a 16MB BlackBox flight recorder.
+        """
+        s = Scheduler.__new__(Scheduler)
+        s._nodes = []
+        if _PyScheduler:
+            s._scheduler = _PyScheduler.deploy()
+        else:
+            s._scheduler = None
+        return s
+
+    @staticmethod
+    def preset_safety_critical() -> 'Scheduler':
+        """
+        Create a safety-critical scheduler.
+
+        Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
+        """
+        s = Scheduler.__new__(Scheduler)
+        s._nodes = []
+        if _PyScheduler:
+            s._scheduler = _PyScheduler.preset_safety_critical()
+        else:
+            s._scheduler = None
+        return s
+
+    @staticmethod
+    def preset_high_performance() -> 'Scheduler':
+        """
+        Create a high-performance scheduler.
+
+        Parallel execution, 10kHz, WCET enforcement, memory locking.
+        """
+        s = Scheduler.__new__(Scheduler)
+        s._nodes = []
+        if _PyScheduler:
+            s._scheduler = _PyScheduler.preset_high_performance()
+        else:
+            s._scheduler = None
+        return s
+
+    @staticmethod
+    def preset_deterministic() -> 'Scheduler':
+        """
+        Create a deterministic scheduler for reproducible execution.
+
+        Sequential execution, strict topology validation, deterministic seed.
+        """
+        s = Scheduler.__new__(Scheduler)
+        s._nodes = []
+        if _PyScheduler:
+            s._scheduler = _PyScheduler.preset_deterministic()
+        else:
+            s._scheduler = None
+        return s
+
+    @staticmethod
+    def preset_hard_realtime() -> 'Scheduler':
+        """
+        Create a hard real-time scheduler.
+
+        Parallel execution, 1kHz, <5us jitter target, 10ms watchdog.
+        """
+        s = Scheduler.__new__(Scheduler)
+        s._nodes = []
+        if _PyScheduler:
+            s._scheduler = _PyScheduler.preset_hard_realtime()
+        else:
+            s._scheduler = None
+        return s
+
     def node(self, node: 'Node'):
         """
         Start building a node configuration (fluent API).
@@ -825,8 +901,7 @@ class Scheduler:
             rt: Mark as real-time node (default: False)
             deadline_ms: Soft deadline in milliseconds (default: None)
             logging: Enable logging for this node (default: True)
-            tier: Execution tier - "ultra_fast", "fast", "normal", "async_io",
-                  "background", "isolated" (default: None, auto-detect)
+            tier: Execution tier - "ultra_fast", "fast", "normal" (default: None)
             failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
                   (default: None, uses tier default)
 
@@ -836,7 +911,7 @@ class Scheduler:
         Example:
             scheduler.add(sensor_node, order=0, rate_hz=1000.0)
             scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
-            scheduler.add(logger_node, order=100, tier="background", failure_policy="skip")
+            scheduler.add(logger_node, order=100, tier="normal", failure_policy="skip")
         """
         self._nodes.append(node)
 
@@ -1267,6 +1342,65 @@ class Scheduler:
         if not self._scheduler:
             raise RuntimeError("Cannot add critical node before scheduler is created")
         self._scheduler.add_critical_node(node_name, timeout_ms)
+
+    # ========================================================================
+    # Deterministic / Simulation Mode
+    # ========================================================================
+
+    def is_simulation_mode(self) -> bool:
+        """
+        Check if scheduler is in simulation mode (deterministic execution).
+
+        Returns:
+            True if deterministic clock is active
+        """
+        if self._scheduler:
+            return self._scheduler.is_simulation_mode()
+        return False
+
+    def seed(self) -> Optional[int]:
+        """
+        Get the deterministic seed (simulation mode only).
+
+        Returns:
+            Seed value, or None if not in simulation mode
+        """
+        if self._scheduler:
+            return self._scheduler.seed()
+        return None
+
+    def virtual_time(self) -> Optional[float]:
+        """
+        Get the current virtual time in seconds (simulation mode only).
+
+        Returns:
+            Virtual time in seconds, or None if not in simulation mode
+        """
+        if self._scheduler:
+            return self._scheduler.virtual_time()
+        return None
+
+    def virtual_tick(self) -> Optional[int]:
+        """
+        Get the current virtual tick number (simulation mode only).
+
+        Returns:
+            Virtual tick count, or None if not in simulation mode
+        """
+        if self._scheduler:
+            return self._scheduler.virtual_tick()
+        return None
+
+    @staticmethod
+    def delete_recording(session_name: str) -> None:
+        """
+        Delete a recording by session name.
+
+        Args:
+            session_name: Name of the recording session to delete
+        """
+        if _PyScheduler:
+            _PyScheduler.delete_recording(session_name)
 
 
 # Convenience functions

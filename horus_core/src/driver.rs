@@ -199,30 +199,6 @@ impl SingleDriverConfig {
         self.backend == "simulation" || self.backend.starts_with("sim")
     }
 
-    /// Get an option value as a string
-    pub fn get_option(&self, key: &str) -> Option<String> {
-        self.options.get(key).and_then(|v| match v {
-            serde_yaml::Value::String(s) => Some(s.clone()),
-            serde_yaml::Value::Number(n) => Some(n.to_string()),
-            serde_yaml::Value::Bool(b) => Some(b.to_string()),
-            _ => None,
-        })
-    }
-
-    /// Get an option value as i64
-    pub fn get_option_i64(&self, key: &str) -> Option<i64> {
-        self.options.get(key).and_then(|v| v.as_i64())
-    }
-
-    /// Get an option value as f64
-    pub fn get_option_f64(&self, key: &str) -> Option<f64> {
-        self.options.get(key).and_then(|v| v.as_f64())
-    }
-
-    /// Get an option value as bool
-    pub fn get_option_bool(&self, key: &str) -> Option<bool> {
-        self.options.get(key).and_then(|v| v.as_bool())
-    }
 }
 
 /// Full driver configuration file with multiple driver definitions
@@ -300,11 +276,6 @@ impl DriversConfig {
             .unwrap_or_else(SingleDriverConfig::simulation)
     }
 
-    /// Add a driver config
-    pub fn add_driver(&mut self, name: &str, config: SingleDriverConfig) {
-        self.drivers.insert(name.to_string(), config);
-    }
-
     /// List all configured driver names
     pub fn list_drivers(&self) -> Vec<&str> {
         self.drivers.keys().map(|s| s.as_str()).collect()
@@ -322,40 +293,6 @@ impl DriversConfig {
             .filter(|(_, c)| c.enabled)
             .map(|(n, c)| (n.as_str(), c))
             .collect()
-    }
-
-    /// Find and load config from standard search paths
-    ///
-    /// Search order:
-    /// 1. ./drivers.yaml or ./drivers.toml
-    /// 2. ./horus_drivers.yaml or ./horus_drivers.toml
-    /// 3. ~/.horus/drivers.yaml or ~/.horus/drivers.toml
-    pub fn find_and_load() -> HorusResult<Self> {
-        let search_paths = vec![
-            std::path::PathBuf::from("drivers.yaml"),
-            std::path::PathBuf::from("drivers.yml"),
-            std::path::PathBuf::from("drivers.toml"),
-            std::path::PathBuf::from("horus_drivers.yaml"),
-            std::path::PathBuf::from("horus_drivers.toml"),
-        ];
-
-        // Add home directory paths
-        let mut all_paths = search_paths;
-        if let Some(home) = dirs::home_dir() {
-            let horus_dir = home.join(".horus");
-            all_paths.push(horus_dir.join("drivers.yaml"));
-            all_paths.push(horus_dir.join("drivers.toml"));
-        }
-
-        for path in all_paths {
-            if path.exists() {
-                return Self::from_file(&path);
-            }
-        }
-
-        Err(HorusError::config(
-            "No driver config file found in standard locations",
-        ))
     }
 
     /// Save config to a file

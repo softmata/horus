@@ -319,10 +319,6 @@ impl TelemetryManager {
         self.metrics.clear();
     }
 
-    /// Enable or disable telemetry
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
 }
 
 impl Default for TelemetryManager {
@@ -333,11 +329,6 @@ impl Default for TelemetryManager {
 
 /// Thread-safe telemetry wrapper
 pub type SharedTelemetry = Arc<Mutex<TelemetryManager>>;
-
-/// Create thread-safe telemetry manager
-pub fn create_shared_telemetry(endpoint: TelemetryEndpoint, interval_ms: u64) -> SharedTelemetry {
-    Arc::new(Mutex::new(TelemetryManager::new(endpoint, interval_ms)))
-}
 
 #[cfg(test)]
 mod tests {

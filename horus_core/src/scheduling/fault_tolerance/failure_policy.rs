@@ -4,8 +4,8 @@
 //! that are appropriate for each execution tier:
 //!
 //! - **Fatal**: Stops the scheduler. Default for `UltraFast` and `Fast` tiers.
-//! - **Restart**: Re-initializes the node with exponential backoff. Default for `Normal`, `Isolated`, and `Auto`.
-//! - **Skip**: Circuit breaker pattern — skip the node after repeated failures. Default for `Background` and `AsyncIO`.
+//! - **Restart**: Re-initializes the node with exponential backoff. Default for `Normal`.
+//! - **Skip**: Circuit breaker pattern — skip the node after repeated failures.
 //! - **Ignore**: Failures are swallowed; the node keeps ticking.
 
 use super::circuit_breaker::CircuitBreaker;
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 ///     .done();
 ///
 /// scheduler.add(logger_node)
-///     .tier(NodeTier::Background)
+///     .tier(NodeTier::Normal)
 ///     .failure_policy(FailurePolicy::skip(10, 60_000))
 ///     .done();
 /// ```

@@ -21,3 +21,13 @@ pub(crate) fn unlikely(b: bool) -> bool {
     b
 }
 
+// ============================================================================
+// Serde Helpers
+// ============================================================================
+
+/// Serde default function that returns `true`.
+/// Use with `#[serde(default = "crate::utils::default_true")]`.
+pub(crate) fn default_true() -> bool {
+    true
+}
+

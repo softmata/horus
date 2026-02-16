@@ -119,11 +119,6 @@ impl RtStats {
         self.deadline_misses += 1;
     }
 
-    /// Record a WCET violation
-    pub fn record_wcet_violation(&mut self) {
-        self.wcet_violations += 1;
-    }
-
     /// Get human-readable statistics
     pub fn summary(&self) -> String {
         format!(
@@ -256,10 +251,6 @@ impl RtNodeWrapper {
 
     pub fn stats(&self) -> &RtStats {
         &self.stats
-    }
-
-    pub fn is_degraded(&self) -> bool {
-        self.degraded
     }
 
     pub fn degrade(&mut self) {

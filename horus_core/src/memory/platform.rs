@@ -106,41 +106,6 @@ pub fn shm_logs_path() -> PathBuf {
     }
 }
 
-/// Check if a process with given PID is running
-pub fn is_process_running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) sends no signal; only checks if process exists. No memory is accessed.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-
-    #[cfg(windows)]
-    {
-        // On Windows, try to open the process using windows-sys
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        // SAFETY: OpenProcess with limited query rights is safe for existence check.
-        // Handle is closed immediately after.
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle == 0 {
-                false
-            } else {
-                CloseHandle(handle);
-                true
-            }
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        // Fallback: check /proc on Linux-like systems
-        std::path::Path::new(&format!("/proc/{}", pid)).exists()
-    }
-}
-
 /// Check if we're running on a platform with true RAM-backed shared memory
 ///
 /// All major platforms now use optimal shared memory:
@@ -156,29 +121,6 @@ pub fn has_native_shm() -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         false // BSD and others still use file-based fallback
-    }
-}
-
-/// Get platform name for logging/diagnostics
-pub fn platform_name() -> &'static str {
-    #[cfg(target_os = "linux")]
-    {
-        "Linux"
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        "macOS"
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        "Windows"
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        "Unix"
     }
 }
 

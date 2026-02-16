@@ -2401,7 +2401,7 @@ dependencies = [
 
 [[package]]
 name = "horus"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "horus_ai",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "horus_ai"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "approx",
  "bytemuck",
@@ -2431,7 +2431,7 @@ dependencies = [
 
 [[package]]
 name = "horus_benchmarks"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "horus_core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2497,7 +2497,7 @@ dependencies = [
 
 [[package]]
 name = "horus_library"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bincode",
  "bytemuck",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "horus_macros"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "horus_core",
  "proc-macro2",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "horus_manager"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "horus_py"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "chrono",
  "colored",

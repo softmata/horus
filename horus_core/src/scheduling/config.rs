@@ -176,9 +176,9 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Deterministic execution configuration
+/// Topology enforcement configuration
 #[derive(Debug, Clone)]
-pub struct DeterministicConfig {
+pub struct TopologyConfig {
     /// Enforce strict topology - reject undeclared topics at runtime
     pub strict_topology: bool,
     /// Wait for all declared connections before first tick
@@ -195,7 +195,7 @@ pub struct DeterministicConfig {
     pub static_execution_order: bool,
 }
 
-impl Default for DeterministicConfig {
+impl Default for TopologyConfig {
     fn default() -> Self {
         Self {
             strict_topology: false,
@@ -209,7 +209,7 @@ impl Default for DeterministicConfig {
     }
 }
 
-impl DeterministicConfig {
+impl TopologyConfig {
     /// Full determinism - all guarantees enabled
     pub fn strict() -> Self {
         Self {
@@ -254,8 +254,8 @@ pub struct SchedulerConfig {
     pub monitoring: MonitoringConfig,
     /// Custom configuration for edge cases
     pub custom: HashMap<String, ConfigValue>,
-    /// Deterministic execution configuration
-    pub deterministic: Option<DeterministicConfig>,
+    /// Topology enforcement configuration
+    pub topology: Option<TopologyConfig>,
     /// Recording configuration for record/replay system
     pub recording: Option<RecordingConfigYaml>,
 }
@@ -289,8 +289,6 @@ impl SchedulerConfig {
     /// ```rust,ignore
     /// let config = SchedulerConfig::builder()
     ///     .rate_hz(1000.0)
-    ///     .watchdog_ms(100)
-    ///     .memory_lock()
     ///     .build();
     /// ```
     pub fn builder() -> Self {
@@ -336,7 +334,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             custom: HashMap::new(),
-            deterministic: None,
+            topology: None,
             recording: None,
         }
     }
@@ -392,7 +390,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             custom: HashMap::new(),
-            deterministic: None,
+            topology: None,
             recording: None,
         }
     }
@@ -433,7 +431,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             custom: HashMap::new(),
-            deterministic: Some(DeterministicConfig::strict()),
+            topology: Some(TopologyConfig::strict()),
             recording: Some(RecordingConfigYaml::full()),
         }
     }
@@ -474,7 +472,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             custom: HashMap::new(),
-            deterministic: Some(DeterministicConfig::strict()),
+            topology: Some(TopologyConfig::strict()),
             recording: Some(RecordingConfigYaml::full()),
         }
     }
@@ -515,7 +513,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             custom: HashMap::new(),
-            deterministic: None,
+            topology: None,
             recording: None,
         }
     }
@@ -538,18 +536,12 @@ impl SchedulerConfig {
         config.monitoring.profiling_enabled = false;
         config.monitoring.black_box_enabled = true;
         config.monitoring.black_box_size_mb = 100;
-        config.deterministic = Some(DeterministicConfig::execution_only());
+        config.topology = Some(TopologyConfig::execution_only());
         config.recording = Some(RecordingConfigYaml::minimal());
         config
     }
 
     // Builder Methods
-
-    /// Set the execution mode
-    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
-        self.execution = mode;
-        self
-    }
 
     /// Set the global tick rate in Hz
     ///
@@ -577,41 +569,10 @@ impl SchedulerConfig {
         self
     }
 
-    /// Enable or disable the watchdog
-    pub fn with_watchdog(mut self, enabled: bool, timeout_ms: u64) -> Self {
-        self.realtime.watchdog_enabled = enabled;
-        self.realtime.watchdog_timeout_ms = timeout_ms;
-        self
-    }
-
-    /// Set the CPU cores to use
-    pub fn with_cpu_cores(mut self, cores: Vec<usize>) -> Self {
-        self.resources.cpu_cores = Some(cores);
-        self
-    }
-
-    /// Enable or disable profiling
-    pub fn with_profiling(mut self, enabled: bool) -> Self {
-        self.monitoring.profiling_enabled = enabled;
-        self
-    }
-
     /// Enable or disable black box recording
     pub fn with_black_box(mut self, enabled: bool, size_mb: usize) -> Self {
         self.monitoring.black_box_enabled = enabled;
         self.monitoring.black_box_size_mb = size_mb;
-        self
-    }
-
-    /// Set the deterministic configuration
-    pub fn with_deterministic(mut self, config: Option<DeterministicConfig>) -> Self {
-        self.deterministic = config;
-        self
-    }
-
-    /// Set the recording configuration
-    pub fn with_recording(mut self, config: Option<RecordingConfigYaml>) -> Self {
-        self.recording = config;
         self
     }
 
@@ -630,34 +591,6 @@ impl SchedulerConfig {
         self.with_tick_rate(hz)
     }
 
-    /// Set watchdog timeout in milliseconds.
-    ///
-    /// Enables the watchdog timer with the specified timeout. If the scheduler
-    /// doesn't tick within this period, the watchdog triggers.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .watchdog_ms(50);  // 50ms watchdog
-    /// ```
-    pub fn watchdog_ms(mut self, ms: u64) -> Self {
-        self.realtime.watchdog_enabled = true;
-        self.realtime.watchdog_timeout_ms = ms;
-        self
-    }
-
-    /// Disable the watchdog timer.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::safety_critical()
-    ///     .no_watchdog();  // Disable watchdog
-    /// ```
-    pub fn no_watchdog(mut self) -> Self {
-        self.realtime.watchdog_enabled = false;
-        self
-    }
-
     /// Enable circuit breaker with default settings (alias for `with_circuit_breaker(true)`).
     ///
     /// # Example
@@ -669,41 +602,6 @@ impl SchedulerConfig {
         self.with_circuit_breaker(true)
     }
 
-    /// Disable circuit breaker (alias for `with_circuit_breaker(false)`).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .no_circuit_breaker();  // Disable circuit breaker
-    /// ```
-    pub fn no_circuit_breaker(self) -> Self {
-        self.with_circuit_breaker(false)
-    }
-
-    /// Set black box recording buffer size in MB.
-    ///
-    /// Enables black box recording with the specified buffer size.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .blackbox_mb(256);  // 256MB black box
-    /// ```
-    pub fn blackbox_mb(self, size_mb: usize) -> Self {
-        self.with_black_box(true, size_mb)
-    }
-
-    /// Disable black box recording.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::safety_critical()
-    ///     .no_blackbox();  // Disable black box
-    /// ```
-    pub fn no_blackbox(self) -> Self {
-        self.with_black_box(false, 0)
-    }
-
     /// Set maximum deadline misses before action.
     ///
     /// # Example
@@ -713,33 +611,6 @@ impl SchedulerConfig {
     /// ```
     pub fn max_deadline_misses(mut self, count: u64) -> Self {
         self.realtime.max_deadline_misses = count;
-        self
-    }
-
-    /// Enable memory locking (mlockall).
-    ///
-    /// Locks all memory pages to prevent page faults during real-time execution.
-    /// Requires appropriate permissions (CAP_IPC_LOCK or sufficient RLIMIT_MEMLOCK).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .memory_lock();  // Enable mlockall
-    /// ```
-    pub fn memory_lock(mut self) -> Self {
-        self.realtime.memory_locking = true;
-        self
-    }
-
-    /// Enable real-time scheduling class (SCHED_FIFO).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .rt_scheduling();  // Enable SCHED_FIFO
-    /// ```
-    pub fn rt_scheduling(mut self) -> Self {
-        self.realtime.rt_scheduling_class = true;
         self
     }
 

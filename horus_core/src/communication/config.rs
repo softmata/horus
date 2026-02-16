@@ -33,7 +33,7 @@ pub struct ZenohEndpointConfig {
     pub namespace: Option<String>,
 
     /// Enable shared memory transport for local communication
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub shared_memory: bool,
 
     /// Serialization format: "bincode" (default), "json", "cdr" (ROS2)
@@ -51,10 +51,6 @@ pub struct ZenohEndpointConfig {
     /// Express mode (skip batching for low latency)
     #[serde(default)]
     pub express: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// HORUS Topic configuration

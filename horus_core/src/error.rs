@@ -279,11 +279,6 @@ impl HorusError {
         HorusError::Memory(msg.into())
     }
 
-    /// Create a not found error
-    pub fn not_found<S: Into<String>>(resource: S) -> Self {
-        HorusError::NotFound(resource.into())
-    }
-
     /// Create an invalid input error
     pub fn invalid_input<S: Into<String>>(msg: S) -> Self {
         HorusError::InvalidInput(msg.into())
@@ -298,28 +293,4 @@ impl HorusError {
         }
     }
 
-    /// Check if this is a not found error
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, HorusError::NotFound(_))
-    }
-
-    /// Check if this is a timeout error
-    pub fn is_timeout(&self) -> bool {
-        matches!(self, HorusError::Timeout(_))
-    }
-
-    /// Check if this is a permission error
-    pub fn is_permission_denied(&self) -> bool {
-        matches!(self, HorusError::PermissionDenied(_))
-    }
-
-    /// Create an unsupported operation error
-    pub fn unsupported<S: Into<String>>(msg: S) -> Self {
-        HorusError::Unsupported(msg.into())
-    }
-
-    /// Check if this is an unsupported operation error
-    pub fn is_unsupported(&self) -> bool {
-        matches!(self, HorusError::Unsupported(_))
-    }
 }

@@ -147,7 +147,3 @@ pub fn read_announcements() -> Vec<NodeAnnouncement> {
     announcements
 }
 
-/// Get path to discovery topic shared memory file
-pub fn discovery_shm_path() -> std::path::PathBuf {
-    crate::memory::platform::shm_topics_dir().join(format!("horus_{}", DISCOVERY_TOPIC))
-}

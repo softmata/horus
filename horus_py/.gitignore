@@ -1,0 +1,13 @@
+# Generated artifacts
+coverage.xml
+htmlcov/
+.pytest_cache/
+__pycache__/
+
+# Virtual environment
+.venv/
+
+# Build artifacts
+target/
+*.so
+*.pyd
