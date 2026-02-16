@@ -4,11 +4,12 @@ use horus::{NodeInfo as CoreNodeInfo, TopicMetadata};
 use horus_core::core::Node as CoreNode;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
-    NodeConfig, Scheduler as CoreScheduler, SchedulerConfig, SchedulerNodeMetrics,
+    CircuitState, FailurePolicy, NodeConfig, NodeTier, Scheduler as CoreScheduler, SchedulerConfig,
+    SchedulerNodeMetrics,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -198,6 +199,8 @@ pub struct PyNodeBuilder {
     rt: bool,
     deadline_ms: Option<f64>,
     wcet_us: Option<u64>,
+    tier: Option<String>,
+    failure_policy: Option<String>,
 }
 
 #[pymethods]
@@ -239,6 +242,18 @@ impl PyNodeBuilder {
         slf
     }
 
+    /// Set execution tier: "ultra_fast", "fast", "normal".
+    fn tier(mut slf: PyRefMut<'_, Self>, name: String) -> PyRefMut<'_, Self> {
+        slf.tier = Some(name);
+        slf
+    }
+
+    /// Set failure policy: "fatal", "restart", "skip", "ignore".
+    fn failure_policy(mut slf: PyRefMut<'_, Self>, name: String) -> PyRefMut<'_, Self> {
+        slf.failure_policy = Some(name);
+        slf
+    }
+
     /// Finalize and add the node to the scheduler.
     fn done(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
         let scheduler = slf.scheduler.clone_ref(py);
@@ -247,11 +262,13 @@ impl PyNodeBuilder {
         let rate_hz = slf.rate_hz;
         let rt = slf.rt;
         let deadline_ms = slf.deadline_ms;
+        let tier = slf.tier.clone();
+        let failure_policy = slf.failure_policy.clone();
         drop(slf);
 
         {
             let sched = scheduler.borrow(py);
-            sched.add_node_internal(py, node, order, rate_hz, rt, deadline_ms)?;
+            sched.add_node_internal(py, node, order, rate_hz, rt, deadline_ms, tier, failure_policy)?;
         }
 
         Ok(scheduler)
@@ -288,6 +305,8 @@ impl PyScheduler {
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
+        tier: Option<String>,
+        failure_policy: Option<String>,
     ) -> PyResult<()> {
         let name: String = node.getattr(py, "name")?.extract(py)?;
 
@@ -344,6 +363,25 @@ impl PyScheduler {
         }
         if let Some(ms) = deadline_ms {
             config = config.deadline_ms(ms as u64);
+        }
+        if let Some(ref tier_name) = tier {
+            let node_tier = match tier_name.as_str() {
+                "ultra_fast" => NodeTier::UltraFast,
+                "fast" => NodeTier::Fast,
+                "normal" => NodeTier::Normal,
+                _ => NodeTier::Fast,
+            };
+            config = config.tier(node_tier);
+        }
+        if let Some(ref policy_name) = failure_policy {
+            let policy = match policy_name.as_str() {
+                "fatal" => FailurePolicy::Fatal,
+                "restart" => FailurePolicy::restart(5, 100),
+                "skip" => FailurePolicy::skip(5, 30_000),
+                "ignore" => FailurePolicy::Ignore,
+                _ => FailurePolicy::Fatal,
+            };
+            config = config.failure_policy(policy);
         }
 
         let mut guard = self
@@ -488,11 +526,13 @@ impl PyScheduler {
             rt: false,
             deadline_ms: None,
             wcet_us: None,
+            tier: None,
+            failure_policy: None,
         })
     }
 
     /// Add a node to the scheduler.
-    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, logging=true))]
+    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, logging=true, tier=None, failure_policy=None))]
     fn add(
         &self,
         py: Python,
@@ -503,8 +543,10 @@ impl PyScheduler {
         deadline_ms: Option<f64>,
         #[allow(unused_variables)]
         logging: bool,
+        tier: Option<String>,
+        failure_policy: Option<String>,
     ) -> PyResult<()> {
-        self.add_node_internal(py, node, order, rate_hz, rt, deadline_ms)
+        self.add_node_internal(py, node, order, rate_hz, rt, deadline_ms, tier, failure_policy)
     }
 
     /// Set per-node rate control
@@ -777,6 +819,259 @@ impl PyScheduler {
             }
             None => Ok(None),
         }
+    }
+
+    // ========================================================================
+    // Status & Diagnostics
+    // ========================================================================
+
+    /// Get scheduler status string.
+    fn status(&self) -> PyResult<String> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.status()),
+            None => Ok("running".to_string()),
+        }
+    }
+
+    /// Get runtime capabilities as a dict.
+    fn capabilities(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = match guard.as_ref() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        match inner.capabilities() {
+            Some(caps) => {
+                let dict = PyDict::new(py);
+                dict.set_item("preempt_rt", caps.preempt_rt)?;
+                dict.set_item("rt_priority_available", caps.rt_priority_available)?;
+                dict.set_item("max_rt_priority", caps.max_rt_priority)?;
+                dict.set_item("min_rt_priority", caps.min_rt_priority)?;
+                Ok(Some(dict.into()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Check if full real-time capabilities are available.
+    fn has_full_rt(&self) -> PyResult<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.has_full_rt()),
+            None => Ok(false),
+        }
+    }
+
+    /// Get RT degradations as a list of dicts.
+    fn degradations(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = match guard.as_ref() {
+            Some(s) => s,
+            None => return Ok(PyList::empty(py).into()),
+        };
+        let result = PyList::empty(py);
+        for deg in inner.degradations() {
+            let dict = PyDict::new(py);
+            dict.set_item("feature", format!("{:?}", deg.feature))?;
+            dict.set_item("reason", &deg.reason)?;
+            dict.set_item("severity", format!("{:?}", deg.severity))?;
+            result.append(dict)?;
+        }
+        Ok(result.into())
+    }
+
+    /// Get the current tick count.
+    fn current_tick(&self) -> PyResult<u64> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.current_tick()),
+            None => Ok(0),
+        }
+    }
+
+    /// Get the scheduler name.
+    fn scheduler_name(&self) -> PyResult<String> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.scheduler_name().to_string()),
+            None => Ok("PythonScheduler".to_string()),
+        }
+    }
+
+    // ========================================================================
+    // Safety Stats
+    // ========================================================================
+
+    /// Get safety statistics as a dict.
+    fn safety_stats(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = match guard.as_ref() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        match inner.safety_stats() {
+            Some(stats) => {
+                let dict = PyDict::new(py);
+                dict.set_item("state", format!("{:?}", stats.state))?;
+                dict.set_item("wcet_overruns", stats.wcet_overruns)?;
+                dict.set_item("deadline_misses", stats.deadline_misses)?;
+                dict.set_item("watchdog_expirations", stats.watchdog_expirations)?;
+                Ok(Some(dict.into()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get circuit breaker state for a node.
+    fn circuit_state(&self, node_name: String) -> PyResult<Option<String>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => match sched.circuit_state(&node_name) {
+                Some(state) => {
+                    let s = match state {
+                        CircuitState::Closed => "closed",
+                        CircuitState::Open => "open",
+                        CircuitState::HalfOpen => "half_open",
+                    };
+                    Ok(Some(s.to_string()))
+                }
+                None => Ok(None),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// Get circuit breaker summary: (closed_count, open_count, half_open_count).
+    fn circuit_summary(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => {
+                let (closed, open, half_open) = sched.circuit_summary();
+                let dict = PyDict::new(py);
+                dict.set_item("closed", closed)?;
+                dict.set_item("open", open)?;
+                dict.set_item("half_open", half_open)?;
+                Ok(dict.into())
+            }
+            None => {
+                let dict = PyDict::new(py);
+                dict.set_item("closed", 0)?;
+                dict.set_item("open", 0)?;
+                dict.set_item("half_open", 0)?;
+                Ok(dict.into())
+            }
+        }
+    }
+
+    // ========================================================================
+    // Recording
+    // ========================================================================
+
+    /// Check if scheduler is currently recording.
+    fn is_recording(&self) -> PyResult<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.is_recording()),
+            None => Ok(false),
+        }
+    }
+
+    /// Check if scheduler is currently replaying.
+    fn is_replaying(&self) -> PyResult<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => Ok(sched.is_replaying()),
+            None => Ok(false),
+        }
+    }
+
+    /// Stop recording and return saved file paths.
+    fn stop_recording(&self) -> PyResult<Vec<String>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("Cannot stop recording while scheduler is running")
+        })?;
+        let paths = inner
+            .stop_recording()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(paths.into_iter().map(|p| p.display().to_string()).collect())
+    }
+
+    /// List available recordings.
+    #[staticmethod]
+    fn list_recordings() -> PyResult<Vec<String>> {
+        CoreScheduler::list_recordings().map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    // ========================================================================
+    // Node Control
+    // ========================================================================
+
+    /// Set WCET budget for a node in microseconds.
+    fn set_wcet_budget(&self, node_name: String, us: u64) -> PyResult<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("Cannot set WCET budget while scheduler is running")
+        })?;
+        inner
+            .set_wcet_budget(&node_name, Duration::from_micros(us))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Add a critical node with watchdog timeout in milliseconds.
+    fn add_critical_node(&self, node_name: String, timeout_ms: u64) -> PyResult<()> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("Cannot add critical node while scheduler is running")
+        })?;
+        inner
+            .add_critical_node(&node_name, Duration::from_millis(timeout_ms))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(())
     }
 
     fn __repr__(&self) -> PyResult<String> {

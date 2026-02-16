@@ -813,7 +813,8 @@ class Scheduler:
 
     def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
             rt: bool = False, deadline_ms: Optional[float] = None,
-            logging: bool = True) -> 'Scheduler':
+            logging: bool = True, tier: Optional[str] = None,
+            failure_policy: Optional[str] = None) -> 'Scheduler':
         """
         Add a node to the scheduler (simplified API with kwargs).
 
@@ -824,6 +825,10 @@ class Scheduler:
             rt: Mark as real-time node (default: False)
             deadline_ms: Soft deadline in milliseconds (default: None)
             logging: Enable logging for this node (default: True)
+            tier: Execution tier - "ultra_fast", "fast", "normal", "async_io",
+                  "background", "isolated" (default: None, auto-detect)
+            failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
+                  (default: None, uses tier default)
 
         Returns:
             self (for method chaining)
@@ -831,14 +836,14 @@ class Scheduler:
         Example:
             scheduler.add(sensor_node, order=0, rate_hz=1000.0)
             scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
-            scheduler.add(logger_node, order=100, logging=False)
+            scheduler.add(logger_node, order=100, tier="background", failure_policy="skip")
         """
         self._nodes.append(node)
 
         if self._scheduler:
             # Use node.rate if rate_hz not specified
             actual_rate = rate_hz if rate_hz is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, logging)
+            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, logging, tier, failure_policy)
 
         return self
 
@@ -1073,6 +1078,195 @@ class Scheduler:
         if not self._scheduler:
             raise RuntimeError("Cannot set watchdog before scheduler is started")
         self._scheduler.set_node_watchdog(node_name, enabled, timeout_ms)
+
+    # ========================================================================
+    # Status & Diagnostics
+    # ========================================================================
+
+    def status(self) -> str:
+        """
+        Get scheduler status string.
+
+        Returns:
+            Status string (e.g. "idle", "running", "stopped")
+        """
+        if self._scheduler:
+            return self._scheduler.status()
+        return "mock"
+
+    def capabilities(self) -> Optional[Dict[str, Any]]:
+        """
+        Get runtime RT capabilities as a dict.
+
+        Returns:
+            Dict with keys: preempt_rt, rt_priority_available,
+            max_rt_priority, min_rt_priority. None if not available.
+        """
+        if self._scheduler:
+            return self._scheduler.capabilities()
+        return None
+
+    def has_full_rt(self) -> bool:
+        """
+        Check if full real-time capabilities are available.
+
+        Returns:
+            True if RT scheduling, memory locking, etc. are all available
+        """
+        if self._scheduler:
+            return self._scheduler.has_full_rt()
+        return False
+
+    def degradations(self) -> List[Dict[str, Any]]:
+        """
+        Get list of RT degradations (features that couldn't be enabled).
+
+        Returns:
+            List of dicts with keys: feature, reason, severity
+        """
+        if self._scheduler:
+            return self._scheduler.degradations()
+        return []
+
+    def current_tick(self) -> int:
+        """
+        Get the current tick count.
+
+        Returns:
+            Number of ticks executed so far
+        """
+        if self._scheduler:
+            return self._scheduler.current_tick()
+        return 0
+
+    def scheduler_name(self) -> str:
+        """
+        Get the scheduler name.
+
+        Returns:
+            Scheduler name string
+        """
+        if self._scheduler:
+            return self._scheduler.scheduler_name()
+        return "MockScheduler"
+
+    # ========================================================================
+    # Safety Stats
+    # ========================================================================
+
+    def safety_stats(self) -> Optional[Dict[str, Any]]:
+        """
+        Get safety monitor statistics.
+
+        Returns:
+            Dict with keys: state, wcet_overruns, deadline_misses,
+            watchdog_expirations. None if safety monitor is not enabled.
+        """
+        if self._scheduler:
+            return self._scheduler.safety_stats()
+        return None
+
+    def circuit_state(self, node_name: str) -> Optional[str]:
+        """
+        Get circuit breaker state for a specific node.
+
+        Args:
+            node_name: Name of the node
+
+        Returns:
+            "closed", "open", or "half_open". None if node not found.
+        """
+        if self._scheduler:
+            return self._scheduler.circuit_state(node_name)
+        return None
+
+    def circuit_summary(self) -> Dict[str, int]:
+        """
+        Get circuit breaker summary across all nodes.
+
+        Returns:
+            Dict with keys: closed, open, half_open (counts)
+        """
+        if self._scheduler:
+            return self._scheduler.circuit_summary()
+        return {"closed": 0, "open": 0, "half_open": 0}
+
+    # ========================================================================
+    # Recording
+    # ========================================================================
+
+    def is_recording(self) -> bool:
+        """
+        Check if the scheduler is currently recording.
+
+        Returns:
+            True if recording is active
+        """
+        if self._scheduler:
+            return self._scheduler.is_recording()
+        return False
+
+    def is_replaying(self) -> bool:
+        """
+        Check if the scheduler is currently replaying a recording.
+
+        Returns:
+            True if replay mode is active
+        """
+        if self._scheduler:
+            return self._scheduler.is_replaying()
+        return False
+
+    def stop_recording(self) -> List[str]:
+        """
+        Stop recording and return paths to saved recording files.
+
+        Returns:
+            List of file paths where recordings were saved
+        """
+        if self._scheduler:
+            return self._scheduler.stop_recording()
+        return []
+
+    @staticmethod
+    def list_recordings() -> List[str]:
+        """
+        List available recording files.
+
+        Returns:
+            List of recording file paths
+        """
+        if _PyScheduler:
+            return _PyScheduler.list_recordings()
+        return []
+
+    # ========================================================================
+    # Node Control
+    # ========================================================================
+
+    def set_wcet_budget(self, node_name: str, us: int) -> None:
+        """
+        Set WCET (Worst-Case Execution Time) budget for a node.
+
+        Args:
+            node_name: Name of the node
+            us: Budget in microseconds
+        """
+        if not self._scheduler:
+            raise RuntimeError("Cannot set WCET budget before scheduler is created")
+        self._scheduler.set_wcet_budget(node_name, us)
+
+    def add_critical_node(self, node_name: str, timeout_ms: int) -> None:
+        """
+        Mark a node as critical with a watchdog timeout.
+
+        Args:
+            node_name: Name of the node
+            timeout_ms: Watchdog timeout in milliseconds
+        """
+        if not self._scheduler:
+            raise RuntimeError("Cannot add critical node before scheduler is created")
+        self._scheduler.add_critical_node(node_name, timeout_ms)
 
 
 # Convenience functions
