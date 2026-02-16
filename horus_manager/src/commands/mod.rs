@@ -8,7 +8,6 @@ pub mod driver;
 pub mod env;
 pub mod github_auth;
 pub mod hf;
-pub mod husarnet;
 pub mod init;
 pub mod launch;
 pub mod log;

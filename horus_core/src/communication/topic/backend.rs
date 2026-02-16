@@ -9,7 +9,6 @@ use std::sync::Arc;
 use super::direct_channel::DirectSlot;
 use super::mpmc_intra::MpmcRing;
 use super::mpsc_intra::MpscRing;
-use super::shm_data::ShmDataBackend;
 use super::spmc_intra::SpmcRing;
 use super::spsc_intra::SpscRing;
 
@@ -38,6 +37,6 @@ pub(crate) enum BackendStorage<T> {
     MpscIntra(Arc<MpscRing<T>>),
     /// Same-process MPMC — heap, CAS head+tail
     MpmcIntra(Arc<MpmcRing<T>>),
-    /// Cross-process — shared memory data region
-    ShmData(ShmDataBackend),
+    /// Cross-process — data lives in the SHM region (accessed via LocalState cached pointers)
+    ShmData,
 }

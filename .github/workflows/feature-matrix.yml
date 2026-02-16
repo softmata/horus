@@ -184,10 +184,10 @@ jobs:
 
       - name: Check Python bindings compilation
         run: |
-          if [ -d "horus_python" ]; then
-            cd horus_python && maturin build
+          if [ -d "horus_py" ]; then
+            cd horus_py && maturin build
           else
-            echo "horus_python not found, skipping"
+            echo "horus_py not found, skipping"
           fi
         continue-on-error: true
 

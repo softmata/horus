@@ -1028,21 +1028,6 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
 // Cross-Process Helpers
 // ============================================================================
 
-fn spawn_publisher(topic: &str, count: u64, core: usize) -> std::process::Child {
-    Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--child-publisher",
-            topic,
-            &count.to_string(),
-            &core.to_string(),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to spawn child publisher")
-}
-
 /// Spawn a paced publisher that inserts spin_loops between sends.
 /// Prevents ring overflow and queuing delay in 1P1C scenarios where
 /// the producer would otherwise outrun the consumer.

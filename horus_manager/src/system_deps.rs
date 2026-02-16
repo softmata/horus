@@ -397,37 +397,6 @@ pub fn format_dependency_report(result: &DependencyCheckResult, features: &[Stri
     report
 }
 
-/// Check if running on Raspberry Pi
-pub fn is_raspberry_pi() -> bool {
-    // Check /proc/device-tree/model
-    std::fs::read_to_string("/proc/device-tree/model")
-        .map(|s| s.to_lowercase().contains("raspberry pi"))
-        .unwrap_or(false)
-}
-
-/// Check if running on x86_64 Linux desktop
-pub fn is_x86_desktop() -> bool {
-    cfg!(target_arch = "x86_64") && cfg!(target_os = "linux")
-}
-
-/// Get platform-appropriate default features
-pub fn get_platform_defaults() -> Vec<String> {
-    let mut features = vec![
-        "gilrs".to_string(),           // Joystick - works everywhere with libudev
-        "crossterm".to_string(),       // Keyboard - pure Rust
-        "serial-hardware".to_string(), // Serial - works everywhere
-    ];
-
-    if is_raspberry_pi() {
-        // On Raspberry Pi, enable GPIO-based features
-        features.push("gpio-hardware".to_string());
-        features.push("i2c-hardware".to_string());
-        features.push("spi-hardware".to_string());
-    }
-
-    features
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

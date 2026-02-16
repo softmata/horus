@@ -518,7 +518,6 @@ fi
 # INSTALLATION PROFILE
 # ============================================================================
 # Single profile: builds all core packages.
-# sim2d/sim3d are standalone packages - install via: horus pkg install sim2d
 INSTALL_PROFILE="full"
 export INSTALL_PROFILE
 
@@ -1539,7 +1538,7 @@ if [ -d "$HOME/.horus/cache" ]; then
 fi
 
 # Clean installed binaries
-BINARIES_TO_CLEAN=("horus" "sim2d" "sim3d" "horus_router")
+BINARIES_TO_CLEAN=("horus")
 for binary in "${BINARIES_TO_CLEAN[@]}"; do
     if [ -f "$HOME/.cargo/bin/$binary" ]; then
         echo -e "${CYAN}  ${NC} Removing ~/.cargo/bin/$binary..."
@@ -1942,13 +1941,11 @@ build_with_recovery() {
         "horus_core"
         "horus"
         "horus_ai"
-        "horus_ros2_bridge"
         "horus_manager"
         "horus_library"
         "horus_py"
     )
     echo -e "${GREEN}   Building all packages${NC}"
-    echo -e "${CYAN}   sim2d/sim3d available via registry: horus pkg install sim2d${NC}"
 
     # Estimated crate counts for each package (for progress calculation)
     # Based on actual dependency counts from cargo tree (fresh build)
@@ -1957,7 +1954,6 @@ build_with_recovery() {
         ["horus_core"]=350
         ["horus"]=50
         ["horus_ai"]=20
-        ["horus_ros2_bridge"]=80
         ["horus_manager"]=150
         ["horus_library"]=50
         ["horus_py"]=20
@@ -1977,14 +1973,12 @@ build_with_recovery() {
     local PKG_MAX_RETRIES=2  # Max retries per individual package
 
     # Note: horus_py is installed from PyPI, not built from source
-    # Note: horus_router is part of horus_library (not a separate binary)
 
     local total_packages=${#BUILD_PACKAGES[@]}
 
     while [ $retry -lt $max_retries ]; do
         echo ""
         echo -e "${CYAN}   Building HORUS packages (attempt $((retry + 1))/$max_retries)...${NC}"
-        echo -e "${CYAN}   Skipping: benchmarks, tanksim, horus_router${NC}"
         echo ""
 
         # Clean build on retry
@@ -2307,7 +2301,6 @@ HORUS_CORE_VERSION=$(grep -m1 '^version' horus_core/Cargo.toml | sed 's/.*"\(.*\
 HORUS_MACROS_VERSION=$(grep -m1 '^version' horus_macros/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_LIBRARY_VERSION=$(grep -m1 '^version' horus_library/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_AI_VERSION=$(grep -m1 '^version' horus_ai/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-HORUS_ROS2_BRIDGE_VERSION=$(grep -m1 '^version' horus_ros2_bridge/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 HORUS_PY_VERSION=$(grep -m1 '^version' horus_py/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 
 echo -e "${CYAN}  ${NC} Detected versions:"
@@ -2316,7 +2309,6 @@ echo "    horus_core: $HORUS_CORE_VERSION"
 echo "    horus_macros: $HORUS_MACROS_VERSION"
 echo "    horus_library: $HORUS_LIBRARY_VERSION"
 echo "    horus_ai: $HORUS_AI_VERSION"
-echo "    horus_ros2_bridge: $HORUS_ROS2_BRIDGE_VERSION"
 echo "    horus_py: $HORUS_PY_VERSION"
 echo ""
 
@@ -2334,7 +2326,6 @@ if [ -f "$VERSION_FILE" ]; then
         rm -rf "$CACHE_DIR/horus_macros@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_library@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_ai@$OLD_VERSION" 2>/dev/null || true
-        rm -rf "$CACHE_DIR/horus_ros2_bridge@$OLD_VERSION" 2>/dev/null || true
         rm -rf "$CACHE_DIR/horus_py@$OLD_VERSION" 2>/dev/null || true
 
         echo -e "${GREEN}${NC} Old versions removed"
@@ -2431,11 +2422,6 @@ cp -r horus_library/algorithms "$HORUS_DIR/horus_library/" 2>/dev/null || true
 mkdir -p "$HORUS_DIR/horus_ai"
 cp horus_ai/Cargo.toml "$HORUS_DIR/horus_ai/" 2>/dev/null || true
 cp -r horus_ai/src "$HORUS_DIR/horus_ai/" 2>/dev/null || true
-
-# Copy horus_ros2_bridge crate
-mkdir -p "$HORUS_DIR/horus_ros2_bridge"
-cp horus_ros2_bridge/Cargo.toml "$HORUS_DIR/horus_ros2_bridge/" 2>/dev/null || true
-cp -r horus_ros2_bridge/src "$HORUS_DIR/horus_ros2_bridge/" 2>/dev/null || true
 
 # Copy horus_manager crate (CLI binary source)
 mkdir -p "$HORUS_DIR/horus_manager"
@@ -2539,25 +2525,6 @@ cat > "$HORUS_AI_DIR/metadata.json" << EOF
 EOF
 
 echo -e "${GREEN}${NC} Installed horus_ai"
-
-# Step 7c: Install horus_ros2_bridge
-echo -e "${CYAN}${NC} Installing horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION..."
-HORUS_ROS2_BRIDGE_DIR="$CACHE_DIR/horus_ros2_bridge@$HORUS_ROS2_BRIDGE_VERSION"
-mkdir -p "$HORUS_ROS2_BRIDGE_DIR/lib"
-
-cp -r target/release/libhorus_ros2_bridge.* "$HORUS_ROS2_BRIDGE_DIR/lib/" 2>/dev/null || true
-cp -r target/release/deps/libhorus_ros2_bridge*.rlib "$HORUS_ROS2_BRIDGE_DIR/lib/" 2>/dev/null || true
-
-cat > "$HORUS_ROS2_BRIDGE_DIR/metadata.json" << EOF
-{
-  "name": "horus_ros2_bridge",
-  "version": "$HORUS_ROS2_BRIDGE_VERSION",
-  "description": "HORUS ROS2 Bridge - ROS2 protocol bridge via Zenoh transport",
-  "install_type": "source"
-}
-EOF
-
-echo -e "${GREEN}${NC} Installed horus_ros2_bridge"
 
 # ============================================================================
 # PYTHON VERSION SOLVER - Smart dependency resolution for horus_py
@@ -2912,12 +2879,6 @@ if [ -d "$HORUS_AI_DIR" ]; then
     echo -e "${GREEN}${NC} horus_ai: OK"
 else
     echo -e "${RED}${NC} horus_ai: Missing"
-fi
-
-if [ -d "$HORUS_ROS2_BRIDGE_DIR" ]; then
-    echo -e "${GREEN}${NC} horus_ros2_bridge: OK"
-else
-    echo -e "${RED}${NC} horus_ros2_bridge: Missing"
 fi
 
 if [ "$PYTHON_AVAILABLE" = true ]; then

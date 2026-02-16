@@ -431,12 +431,6 @@ enum Commands {
         command: NetCommands,
     },
 
-    /// Husarnet VPN integration (status, peers, connectivity)
-    Husarnet {
-        #[command(subcommand)]
-        command: HusarnetCommands,
-    },
-
     /// Generate shell completion scripts
     #[command(hide = true)]
     Completion {
@@ -477,37 +471,6 @@ enum NetCommands {
         /// Maximum number of hops
         #[arg(short = 'm', long = "max-hops", default_value = "30")]
         max_hops: u32,
-    },
-}
-
-#[derive(Subcommand)]
-enum HusarnetCommands {
-    /// Check Husarnet daemon status and configuration
-    Status {
-        /// Show detailed diagnostic output
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
-
-    /// List Husarnet network peers
-    Peers {
-        /// Output as JSON
-        #[arg(long = "json")]
-        json: bool,
-    },
-
-    /// Test connectivity to Husarnet peers
-    Test {
-        /// Target hostname (optional, tests all peers if not specified)
-        target: Option<String>,
-
-        /// Number of test packets to send
-        #[arg(short = 'c', long = "count", default_value = "5")]
-        count: u32,
-
-        /// Timeout per packet in milliseconds
-        #[arg(short = 't', long = "timeout", default_value = "1000")]
-        timeout: u64,
     },
 }
 
@@ -1790,16 +1753,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             NetCommands::Trace { endpoint, max_hops } => {
                 commands::net::run_trace(&endpoint, max_hops)
             }
-        },
-
-        Commands::Husarnet { command } => match command {
-            HusarnetCommands::Status { verbose } => commands::husarnet::run_status(verbose),
-            HusarnetCommands::Peers { json } => commands::husarnet::run_peers(json),
-            HusarnetCommands::Test {
-                target,
-                count,
-                timeout,
-            } => commands::husarnet::run_test(target, count, timeout),
         },
 
         Commands::Completion { shell } => {

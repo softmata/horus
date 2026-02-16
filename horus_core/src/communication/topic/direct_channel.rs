@@ -73,26 +73,6 @@ impl<T> DirectSlot<T> {
         Ok(())
     }
 
-    /// Try to receive a message. Returns None if the buffer is empty.
-    ///
-    /// Same-thread only — Relaxed ordering (plain MOV on x86).
-    #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Relaxed);
-        if tail >= head {
-            return None;
-        }
-        // SAFETY: single-thread guarantee; index within bounds; data was written by producer
-        let msg = unsafe {
-            let idx = (tail & self.mask) as usize;
-            let s = &*self.buffer.get_unchecked(idx);
-            (*s.get()).assume_init_read()
-        };
-        self.tail.store(tail.wrapping_add(1), Ordering::Relaxed);
-        Some(msg)
-    }
-
     /// Check how many messages are pending.
     #[inline]
     pub fn pending_count(&self) -> u64 {
@@ -100,5 +80,20 @@ impl<T> DirectSlot<T> {
         let tail = self.tail.load(Ordering::Relaxed);
         head.wrapping_sub(tail)
     }
+}
 
+impl<T> Drop for DirectSlot<T> {
+    fn drop(&mut self) {
+        let head = *self.head.get_mut();
+        let tail = *self.tail.get_mut();
+        // Drop all initialized but unconsumed messages in [tail, head)
+        for i in tail..head {
+            let index = (i & self.mask) as usize;
+            // SAFETY: we have &mut self (exclusive access). All slots in
+            // [tail, head) were written by the producer and not yet consumed.
+            unsafe {
+                self.buffer[index].get_mut().assume_init_drop();
+            }
+        }
+    }
 }

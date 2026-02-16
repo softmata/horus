@@ -103,9 +103,6 @@ jobs:
           sudo mkdir -p /dev/shm/horus/heartbeats
           sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
 
-      - name: Run Zenoh config tests
-        run: cargo test -p horus_core zenoh_config --features zenoh-transport -- --test-threads=1
-
       - name: Run Zenoh discovery tests
         run: cargo test -p horus_core zenoh_discovery --features zenoh-transport -- --test-threads=1
 

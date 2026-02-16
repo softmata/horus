@@ -4,8 +4,34 @@
 
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// YAML deploy config structure (~/.horus/deploy.yaml or .horus/deploy.yaml)
+#[derive(Debug, serde::Deserialize)]
+struct DeployYaml {
+    targets: HashMap<String, YamlTarget>,
+}
+
+/// A named target entry in the deploy YAML
+#[derive(Debug, serde::Deserialize)]
+struct YamlTarget {
+    host: String,
+    arch: Option<String>,
+    dir: Option<String>,
+    port: Option<u16>,
+    identity: Option<String>,
+}
+
+/// Result of resolving a target string against the YAML config
+struct ResolvedTarget {
+    host: String,
+    arch: Option<String>,
+    dir: Option<String>,
+    port: Option<u16>,
+    identity: Option<PathBuf>,
+}
 
 /// Supported target architectures for robotics platforms
 #[derive(Debug, Clone)]
@@ -86,6 +112,49 @@ impl Default for DeployConfig {
     }
 }
 
+/// Resolve a target string: either a direct `user@host` or a named target from `.horus/deploy.yaml`.
+fn resolve_target(target: &str) -> ResolvedTarget {
+    // If target contains '@', treat as direct user@host — no YAML lookup
+    if target.contains('@') {
+        return ResolvedTarget {
+            host: target.to_string(),
+            arch: None,
+            dir: None,
+            port: None,
+            identity: None,
+        };
+    }
+
+    // Try to load .horus/deploy.yaml and look up the named target
+    if let Some(yaml) = load_deploy_yaml() {
+        if let Some(entry) = yaml.targets.get(target) {
+            return ResolvedTarget {
+                host: entry.host.clone(),
+                arch: entry.arch.clone(),
+                dir: entry.dir.clone(),
+                port: entry.port,
+                identity: entry.identity.as_ref().map(PathBuf::from),
+            };
+        }
+    }
+
+    // Not found in YAML — return as-is (could be a bare hostname)
+    ResolvedTarget {
+        host: target.to_string(),
+        arch: None,
+        dir: None,
+        port: None,
+        identity: None,
+    }
+}
+
+/// Load and parse `.horus/deploy.yaml` from the current directory.
+fn load_deploy_yaml() -> Option<DeployYaml> {
+    let config_path = Path::new(".horus/deploy.yaml");
+    let content = std::fs::read_to_string(config_path).ok()?;
+    serde_yaml::from_str(&content).ok()
+}
+
 /// Run the deploy command
 #[allow(clippy::too_many_arguments)]
 pub fn run_deploy(
@@ -98,20 +167,33 @@ pub fn run_deploy(
     identity: Option<PathBuf>,
     dry_run: bool,
 ) -> HorusResult<()> {
+    // Resolve named target from .horus/deploy.yaml (if applicable)
+    let resolved = resolve_target(target);
+
+    // CLI args win over YAML values. For Option fields, None means "not set by user".
+    // For port, 22 is the clap default — treat it as "not explicitly set" so YAML can override.
+    let effective_arch_str = arch.or(resolved.arch);
+    let effective_host = &resolved.host;
+    let effective_dir = remote_dir
+        .or(resolved.dir)
+        .unwrap_or_else(|| "~/horus_deploy".to_string());
+    let effective_port = if port != 22 { port } else { resolved.port.unwrap_or(22) };
+    let effective_identity = identity.or(resolved.identity);
+
     // Parse target architecture
-    let target_arch = arch
+    let target_arch = effective_arch_str
         .as_ref()
         .and_then(|a| TargetArch::from_str(a))
-        .unwrap_or_else(|| detect_target_arch(target));
+        .unwrap_or_else(|| detect_target_arch(effective_host));
 
     let config = DeployConfig {
-        target: target.to_string(),
-        remote_dir: remote_dir.unwrap_or_else(|| "~/horus_deploy".to_string()),
+        target: effective_host.to_string(),
+        remote_dir: effective_dir,
         arch: target_arch,
         run_after,
         release,
-        port,
-        identity,
+        port: effective_port,
+        identity: effective_identity,
         excludes: vec![
             "target".to_string(),
             ".git".to_string(),
@@ -457,13 +539,48 @@ pub fn list_targets() -> HorusResult<()> {
     println!("{}", "Deployment Targets".green().bold());
     println!();
 
-    // Check for .horus/deploy.yaml
-    let config_path = Path::new(".horus/deploy.yaml");
-    if config_path.exists() {
-        println!("  {} Found .horus/deploy.yaml", "".cyan());
-        if let Ok(content) = std::fs::read_to_string(config_path) {
+    // Try to parse .horus/deploy.yaml
+    if let Some(yaml) = load_deploy_yaml() {
+        if yaml.targets.is_empty() {
+            println!(
+                "  {} .horus/deploy.yaml exists but has no targets.",
+                "".yellow()
+            );
+        } else {
+            // Collect and sort target names for stable output
+            let mut names: Vec<&String> = yaml.targets.keys().collect();
+            names.sort();
+
+            // Print formatted table
+            println!(
+                "  {:<14} {:<28} {:<10} {:<20} {:<6} {}",
+                "NAME".bold(),
+                "HOST".bold(),
+                "ARCH".bold(),
+                "DIR".bold(),
+                "PORT".bold(),
+                "IDENTITY".bold(),
+            );
+            println!("  {}", "-".repeat(86));
+
+            for name in names {
+                let t = &yaml.targets[name];
+                println!(
+                    "  {:<14} {:<28} {:<10} {:<20} {:<6} {}",
+                    name.cyan(),
+                    t.host,
+                    t.arch.as_deref().unwrap_or("-"),
+                    t.dir.as_deref().unwrap_or("~/horus_deploy"),
+                    t.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into()),
+                    t.identity.as_deref().unwrap_or("-"),
+                );
+            }
+
             println!();
-            println!("{}", content);
+            println!(
+                "  {} horus deploy <NAME> to deploy to a named target",
+                "Usage:".cyan()
+            );
         }
     } else {
         println!("  {}", "No deployment targets configured.".dimmed());

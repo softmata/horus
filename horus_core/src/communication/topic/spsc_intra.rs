@@ -8,9 +8,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Cache line padding to prevent false sharing between head and tail.
-#[repr(C, align(64))]
-struct CachePadded<T>(T);
+use super::primitives::CachePadded;
 
 /// Heap-backed SPSC ring buffer for cross-thread 1P1C communication.
 ///
@@ -61,32 +59,10 @@ impl<T> SpscRing<T> {
     }
 
     /// Try to send a message. Returns Err(msg) if the buffer is full.
-    ///
-    /// Only one producer should call this (SPSC guarantee).
-    /// Uses lazy tail loading: only fetches the consumer's tail atomic when
-    /// the cached check says "full". This avoids a cross-core cache line
-    /// bounce on every send (~25-50ns savings per call).
+    /// Delegates to shared `sp_try_send!` macro (single-producer with lazy tail caching).
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
-        let head = self.head.0.load(Ordering::Relaxed);
-        // Lazy capacity check: use cached tail first, refresh only when needed
-        let mut tail = self.cached_send_tail.0.get();
-        if head.wrapping_sub(tail) >= self.capacity {
-            tail = self.tail.0.load(Ordering::Acquire);
-            self.cached_send_tail.0.set(tail);
-            if head.wrapping_sub(tail) >= self.capacity {
-                return Err(msg);
-            }
-        }
-        let index = (head & self.mask) as usize;
-        // SAFETY: index is within bounds (head & mask < capacity);
-        // single producer guarantee means no concurrent writes to this slot
-        unsafe {
-            let slot = &*self.buffer.get_unchecked(index);
-            slot.get().write(MaybeUninit::new(msg));
-        }
-        self.head.0.store(head.wrapping_add(1), Ordering::Release);
-        Ok(())
+        sp_try_send!(self, msg)
     }
 
     /// Check how many messages are pending in the ring.
@@ -127,18 +103,43 @@ impl<T> SpscRing<T> {
 
     /// Read the most recent message without advancing the consumer.
     ///
-    /// Returns `None` if no messages have been published.
-    pub fn read_latest(&self) -> Option<T> {
+    /// Returns a clone of the latest value. Returns `None` if the ring is empty
+    /// (all messages consumed) or nothing was ever published.
+    ///
+    /// Uses `Clone` instead of moving to avoid double-free: the slot remains
+    /// valid for `try_recv` to consume later.
+    pub fn read_latest(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         let head = self.head.0.load(Ordering::Acquire);
-        if head == 0 {
+        let tail = self.tail.0.load(Ordering::Acquire);
+        if tail >= head {
             return None;
         }
         let index = ((head.wrapping_sub(1)) & self.mask) as usize;
-        // SAFETY: index within bounds; data was written by producer
+        // SAFETY: slot is in [tail, head) — initialized and not yet consumed.
+        // We clone instead of moving to preserve the slot for try_recv.
         let msg = unsafe {
             let slot = &*self.buffer.get_unchecked(index);
-            (*slot.get()).assume_init_read()
+            (*slot.get()).assume_init_ref().clone()
         };
         Some(msg)
+    }
+}
+
+impl<T> Drop for SpscRing<T> {
+    fn drop(&mut self) {
+        let head = *self.head.0.get_mut();
+        let tail = *self.tail.0.get_mut();
+        // Drop all initialized but unconsumed messages in [tail, head)
+        for i in tail..head {
+            let index = (i & self.mask) as usize;
+            // SAFETY: we have &mut self (exclusive access). All slots in
+            // [tail, head) were written by the producer and not yet consumed.
+            unsafe {
+                self.buffer[index].get_mut().assume_init_drop();
+            }
+        }
     }
 }

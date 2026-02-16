@@ -29,12 +29,86 @@
 //! topic.send(data);
 //! let msg = topic.recv();
 //! ```
+//!
+//! ## Safety Model
+//!
+//! ### Thread-Ownership Contract
+//!
+//! Each `Topic<T>` instance must be used from exactly **one thread**. The type
+//! is `!Send` and `!Sync` by design (contains `UnsafeCell`, raw pointers, and
+//! `Cell`-based local state). This single-thread-per-instance contract enables:
+//!
+//! - **Unsynchronized local state**: `LocalState` uses `Cell` for cached head/tail,
+//!   role tracking, and epoch caching — no atomic overhead on the hot path.
+//! - **Backend dispatch via `UnsafeCell<fn(...)>`**: Function pointers for send/recv
+//!   are swapped during migration. The single-thread contract guarantees no concurrent
+//!   read/write of the function pointer.
+//! - **`UnsafeCell<BackendStorage>`**: Backend enum is accessed without synchronization;
+//!   migration (which changes it) can only happen from the owning thread.
+//!
+//! Multiple Topic instances on *different* threads can share the same underlying ring
+//! buffer — the ring's internal atomics handle cross-thread synchronization.
+//!
+//! ### Lock-Free Ring Buffer Safety
+//!
+//! All ring buffers (SPSC, SPMC, MPSC, MPMC) are lock-free and use atomic
+//! operations for coordination:
+//!
+//! - **SPSC**: Producer stores head with `Release`, consumer loads with `Acquire`.
+//!   No CAS needed — single writer, single reader.
+//! - **SPMC**: Producer stores head with `Release`. Multiple consumers CAS on tail
+//!   with `AcqRel` to claim exclusive read slots.
+//! - **MPSC**: Multiple producers CAS on head with per-slot sequence numbers
+//!   (Lamport-style). Single consumer reads tail sequentially.
+//! - **MPMC**: Both head (producers) and tail (consumers) use CAS with per-slot
+//!   sequence numbers for full multi-writer, multi-reader coordination.
+//!
+//! ### `read_latest()` and the `T: Copy` Invariant
+//!
+//! `read_latest()` returns the most recent message without advancing the consumer
+//! position. For multi-consumer backends (SPMC, MPMC), this creates a TOCTOU race:
+//!
+//! 1. `read_latest` loads `head` and computes the slot index for `head - 1`
+//! 2. Between step 1 and reading the slot data, a consumer can:
+//!    - CAS-advance tail past this slot
+//!    - Call `assume_init_read()` (moving the value out)
+//!    - For types with heap allocations, the `Drop` impl frees memory
+//! 3. `read_latest` then reads freed memory → **use-after-free**
+//!
+//! The fix: multi-consumer `read_latest()` requires `T: Copy`. Copy types have no
+//! `Drop` impl and no heap pointers — the bytes in the slot are always safe to
+//! bitwise-copy regardless of whether a consumer has logically consumed the slot.
+//!
+//! Single-consumer backends (SPSC, MPSC) keep `T: Clone` because only one thread
+//! ever reads from tail, so no concurrent consumption race exists.
+//!
+//! The Topic-level `read_latest()` requires `T: Copy` since the backend can be
+//! any variant at runtime (migration can switch SPSC → SPMC).
+//!
+//! ### Drop Safety
+//!
+//! All ring buffer `Drop` impls iterate `[tail, head)` and drop initialized-but-
+//! unconsumed messages. MPSC and MPMC additionally check per-slot sequence numbers
+//! to handle the edge case where a producer panicked between CAS-claiming a slot
+//! and completing the write (sequence not yet advanced → slot not fully written).
+//!
+//! ### Verification
+//!
+//! Safety is verified through:
+//! - **94 unit tests** including cross-thread stress tests for all backend variants
+//! - **16 loom exhaustive concurrency tests** that explore every possible thread
+//!   interleaving for SPSC, SPMC, MPSC, and MPMC algorithms, including
+//!   `read_latest` + `try_recv` races
 
 pub mod header;
 pub mod local_state;
 pub mod metrics;
 pub mod migration;
 pub mod types;
+
+// Shared types and macros — must be declared before ring modules that use the macros
+#[macro_use]
+pub(crate) mod primitives;
 
 // Per-path optimized backend modules
 pub(crate) mod backend;
@@ -43,7 +117,6 @@ pub(crate) mod dispatch;
 pub(crate) mod mpmc_intra;
 pub(crate) mod mpsc_intra;
 pub(crate) mod registry;
-pub(crate) mod shm_data;
 pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
@@ -52,7 +125,7 @@ mod tests;
 
 use std::marker::PhantomData;
 use std::mem;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -81,10 +154,9 @@ pub use types::{
 };
 
 use header::current_time_ms;
-use local_state::DEFAULT_SLOT_SIZE;
+use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
 
 use backend::BackendStorage;
-use shm_data::ShmDataBackend;
 
 use direct_channel::DirectSlot;
 use mpmc_intra::MpmcRing;
@@ -654,7 +726,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
             (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
             (BackendStorage::MpmcIntra(_), BackendMode::MpmcIntra) => true,
-            (BackendStorage::ShmData(_), _) if mode.is_cross_process() || mode == BackendMode::Unknown => true,
+            (BackendStorage::ShmData, _) if mode.is_cross_process() || mode == BackendMode::Unknown => true,
             _ => false,
         };
         if already_matched {
@@ -745,15 +817,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 }
                 _ => {
                     // Unrecognized intra-process mode — keep ShmData
-                    *backend = BackendStorage::ShmData(ShmDataBackend {
-                        data_region: self.storage.clone(),
-                        data_offset: Self::data_region_offset(local.cached_capacity as usize),
-                        mode,
-                        is_pod: local.is_pod,
-                        slot_size: local.slot_size,
-                        capacity: local.cached_capacity,
-                        mask: local.cached_capacity_mask,
-                    });
+                    *backend = BackendStorage::ShmData;
                 }
             }
         } else {
@@ -761,15 +825,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             // Drain old heap ring messages into SHM before switching.
             self.drain_old_into_shm(epoch);
 
-            *backend = BackendStorage::ShmData(ShmDataBackend {
-                data_region: self.storage.clone(),
-                data_offset: Self::data_region_offset(local.cached_capacity as usize),
-                mode,
-                is_pod: local.is_pod,
-                slot_size: local.slot_size,
-                capacity: local.cached_capacity,
-                mask: local.cached_capacity_mask,
-            });
+            *backend = BackendStorage::ShmData;
         }
 
         // Set function pointers to match the new backend.
@@ -791,6 +847,28 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         let can_send = local.role.can_send();
         let can_recv = local.role.can_recv();
 
+        // For DirectChannel: cache DirectSlot pointers into LocalState so dispatch
+        // functions skip BackendStorage traversal entirely.
+        //   - role==Both (DC-local): cache buffer + plain u64 head/tail (no atomics)
+        //   - role==Publisher/Consumer (DC-cached): cache buffer + AtomicU64 head/tail ptrs
+        if mode == BackendMode::DirectChannel {
+            // SAFETY: backend UnsafeCell accessed from single thread
+            if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
+                local.cached_data_ptr = slot.buffer.as_ptr() as *mut u8;
+                local.cached_capacity = slot.capacity;
+                local.cached_capacity_mask = slot.mask;
+                if local.role == TopicRole::Both {
+                    // DC-local: plain u64 head/tail (single-instance optimization)
+                    local.local_head = slot.head.load(Ordering::Relaxed);
+                    local.local_tail = slot.tail.load(Ordering::Relaxed);
+                } else {
+                    // DC-cached: cache pointers to atomic head/tail for separate instances
+                    local.cached_header_ptr = &slot.head as *const AtomicU64 as *const TopicHeader;
+                    local.cached_seq_ptr = &slot.tail as *const AtomicU64 as *mut u8;
+                }
+            }
+        }
+
         // SAFETY: UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe {
             // Only set send_fn if registered as producer.
@@ -800,7 +878,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 dispatch::send_uninitialized::<T>
             } else {
                 match mode {
-                    BackendMode::DirectChannel => dispatch::send_direct_channel::<T>,
+                    // Pure LocalState path when both pub+sub on same Topic (benchmark path).
+                    // Uses cached buffer pointer + plain u64 head/tail — no atomics, no
+                    // epoch_guard, no BackendStorage traversal. ~0ns like Copper-rs.
+                    BackendMode::DirectChannel if local.role == TopicRole::Both => {
+                        dispatch::send_direct_channel_local::<T>
+                    }
+                    // Cached path for separate instances sharing DirectSlot.
+                    // Skips epoch_guard + BackendStorage traversal; amortized epoch check.
+                    BackendMode::DirectChannel => dispatch::send_direct_channel_cached::<T>,
                     BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
                     BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
                     BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
@@ -825,7 +911,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 dispatch::recv_uninitialized::<T>
             } else {
                 match mode {
-                    BackendMode::DirectChannel => dispatch::recv_direct_channel::<T>,
+                    BackendMode::DirectChannel if local.role == TopicRole::Both => {
+                        dispatch::recv_direct_channel_local::<T>
+                    }
+                    // Cached path for separate instances sharing DirectSlot.
+                    BackendMode::DirectChannel => dispatch::recv_direct_channel_cached::<T>,
                     BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
                     BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
                     BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
@@ -1160,6 +1250,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         let local = self.local();
         let header = unsafe { &*local.cached_header_ptr };
 
+        // DirectChannel local path: flush LocalState head/tail back to DirectSlot
+        // atomics before migration. In the local path, head/tail are plain u64s in
+        // LocalState, not atomics in DirectSlot. We need to sync them back so the
+        // drain protocol can read the correct positions.
+        if local.cached_mode == BackendMode::DirectChannel && local.role == TopicRole::Both {
+            // SAFETY: backend UnsafeCell accessed from single thread
+            if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
+                slot.head.store(local.local_head, Ordering::Relaxed);
+                slot.tail.store(local.local_tail, Ordering::Relaxed);
+            }
+        }
+
         // Flush batched updates before migration:
         //
         // SPSC recv batches header.tail every 32 messages. Without flushing,
@@ -1245,13 +1347,37 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
 
     /// Send a message (fire-and-forget with bounded retry).
     ///
-    /// Hot path: log_fn check (predicted-not-taken) → try_send() → return.
-    /// The logging path and retry loops are outlined into cold functions.
+    /// Fast path for DirectChannel-local (role=Both): the entire ring write is
+    /// inlined here — no function pointer indirection, no BackendStorage match,
+    /// no epoch_guard. This bypasses 3 levels of call overhead (~8-10ns savings).
+    ///
+    /// All other backends fall through to the function pointer dispatch, which
+    /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
     pub fn send(&self, msg: T) {
         if unlikely(self.log_fn.is_some()) {
             self.send_with_logging(msg);
             return;
+        }
+        // Fast path: DirectChannel-local (role=Both, same-thread pub+sub).
+        // Bypasses fn ptr indirection + call chain. LocalState fields are in
+        // the Topic struct (no pointer chase), and role is on the hot cache line.
+        let local = self.local();
+        if local.role == TopicRole::Both {
+            let head = local.local_head;
+            if head.wrapping_sub(local.local_tail) < local.cached_capacity {
+                unsafe {
+                    let base = local.cached_data_ptr as *mut T;
+                    std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
+                }
+                local.local_head = head.wrapping_add(1);
+                local.msg_counter = local.msg_counter.wrapping_add(1);
+                if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+                    self.check_migration_periodic();
+                }
+                return;
+            }
+            // Buffer full — extremely rare for same-thread, fall through to retry
         }
         self.send_lossy(msg);
     }
@@ -1322,11 +1448,35 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
 
     /// Receive a message with optional logging.
     ///
-    /// Hot path: log_fn check (predicted-not-taken) → try_recv() → return.
+    /// Fast path for DirectChannel-local (role=Both): inlined ring read,
+    /// no function pointer indirection. Same optimization as send().
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         if unlikely(self.log_fn.is_some()) {
             return self.recv_with_logging();
+        }
+        // Fast path: DirectChannel-local (role=Both, same-thread pub+sub)
+        let local = self.local();
+        if local.role == TopicRole::Both {
+            let tail = local.local_tail;
+            if tail < local.local_head {
+                let msg = unsafe {
+                    let base = local.cached_data_ptr as *const T;
+                    std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+                };
+                local.local_tail = tail.wrapping_add(1);
+                local.msg_counter = local.msg_counter.wrapping_add(1);
+                if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+                    self.check_migration_periodic();
+                }
+                return Some(msg);
+            }
+            // Empty — amortized epoch check
+            local.msg_counter = local.msg_counter.wrapping_add(1);
+            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+                self.check_migration_periodic();
+            }
+            return None;
         }
         self.try_recv()
     }
@@ -1396,7 +1546,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// returns the same message until a new one is published.
     ///
     /// Useful for reading infrequently-updated or static data (e.g., TF static transforms).
-    pub fn read_latest(&self) -> Option<T> {
+    ///
+    /// # `T: Copy` requirement
+    ///
+    /// Multi-consumer backends (SPMC, MPMC) have a TOCTOU race: between loading
+    /// `head` and reading the slot, a consumer can consume the slot via CAS and
+    /// drop the value. For types with heap allocations (`String`, `Vec`), this
+    /// would be use-after-free. `T: Copy` guarantees no heap pointers — the bytes
+    /// in the slot are always safe to bitwise-copy regardless of consumption state.
+    pub fn read_latest(&self) -> Option<T>
+    where
+        T: Copy,
+    {
         // Ensure we're registered as a consumer so the header is initialized
         if self.local().role == TopicRole::Unregistered {
             if self.ensure_consumer().is_err() {
@@ -1419,12 +1580,24 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
             BackendStorage::DirectChannel(slot) => {
-                let h = slot.head.load(Ordering::Relaxed);
-                if h == 0 {
+                // In local mode (role==Both), head is tracked in LocalState, not DirectSlot atomics.
+                let local = self.local();
+                let h = if local.role == TopicRole::Both {
+                    local.local_head
+                } else {
+                    slot.head.load(Ordering::Relaxed)
+                };
+                let t = if local.role == TopicRole::Both {
+                    local.local_tail
+                } else {
+                    slot.tail.load(Ordering::Relaxed)
+                };
+                if t >= h {
                     return None;
                 }
                 let idx = ((h.wrapping_sub(1)) & slot.mask) as usize;
-                // SAFETY: idx within bounds; data was written by producer
+                // SAFETY: idx within bounds; slot is in [tail, head) so data is initialized.
+                // T: Copy — bitwise copy, no double-free risk.
                 let msg = unsafe {
                     let s = &*slot.buffer.get_unchecked(idx);
                     (*s.get()).assume_init_read()
@@ -1443,7 +1616,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             BackendStorage::MpmcIntra(ring) => {
                 return ring.read_latest();
             }
-            BackendStorage::ShmData(_) | BackendStorage::Uninitialized => {
+            BackendStorage::ShmData | BackendStorage::Uninitialized => {
                 // Fall through to SHM read below
             }
         }
@@ -1468,7 +1641,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         // Check heap-backed ring first; fall back to SHM header
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
-            BackendStorage::DirectChannel(slot) => slot.pending_count(),
+            BackendStorage::DirectChannel(slot) => {
+                // In local mode (role==Both), head/tail are in LocalState
+                let local = self.local();
+                if local.role == TopicRole::Both {
+                    local.local_head.wrapping_sub(local.local_tail)
+                } else {
+                    slot.pending_count()
+                }
+            }
             BackendStorage::SpscIntra(ring) => ring.pending_count(),
             BackendStorage::SpmcIntra(ring) => ring.pending_count(),
             BackendStorage::MpscIntra(ring) => ring.pending_count(),

@@ -66,78 +66,11 @@ jobs:
           RUST_BACKTRACE: 1
           RUST_LOG: debug
 
-      # Run specific cross-process tests if they exist
-      - name: Run Cross-Process Tests
-        run: |
-          if [ -d "horus_integration" ]; then
-            cargo test -p horus_integration --release -- --test-threads=1
-          elif [ -d "tests/integration" ]; then
-            cargo test --test integration --release -- --test-threads=1
-          else
-            echo "No dedicated integration test directory found"
-          fi
-        continue-on-error: true
-        env:
-          RUST_BACKTRACE: 1
-
       # Verify shared memory cleanup
       - name: Verify SHM Cleanup
         run: |
           echo "Checking shared memory state after tests..."
           ls -la /dev/shm/horus/ || echo "SHM directory clean"
-
-  # ROS2 Bridge integration tests (if applicable)
-  ros2-bridge:
-    name: ROS2 Bridge Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-ros2-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-ros2-
-
-      # Check if ROS2 bridge exists
-      - name: Check ROS2 Bridge
-        id: check-ros2
-        run: |
-          if [ -d "horus_ros2" ] || [ -d "horus_bridge" ]; then
-            echo "has_ros2=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_ros2=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build ROS2 Bridge
-        if: steps.check-ros2.outputs.has_ros2 == 'true'
-        run: |
-          cargo build -p horus_ros2 --release 2>/dev/null || \
-          cargo build -p horus_bridge --release 2>/dev/null || \
-          echo "ROS2 bridge package not found"
-        continue-on-error: true
-
-      - name: Test ROS2 Bridge
-        if: steps.check-ros2.outputs.has_ros2 == 'true'
-        run: |
-          cargo test -p horus_ros2 --release 2>/dev/null || \
-          cargo test -p horus_bridge --release 2>/dev/null || \
-          echo "ROS2 bridge tests not found"
-        continue-on-error: true
 
   # CLI integration tests
   cli-integration:
@@ -266,14 +199,13 @@ jobs:
   # Summary job
   integration-success:
     name: Integration Tests Success
-    needs: [ipc-integration, ros2-bridge, cli-integration, examples]
+    needs: [ipc-integration, cli-integration, examples]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check Results
         run: |
           echo "IPC Integration: ${{ needs.ipc-integration.result }}"
-          echo "ROS2 Bridge: ${{ needs.ros2-bridge.result }}"
           echo "CLI Integration: ${{ needs.cli-integration.result }}"
           echo "Examples: ${{ needs.examples.result }}"
 

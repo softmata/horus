@@ -13,9 +13,6 @@ path = "src/lib.rs"
 name = "horus"
 path = "src/main.rs"
 
-[[bin]]
-name = "horus-isolated-runner"
-path = "src/bin/isolated_runner.rs"
 
 [dependencies]
 horus_core = { path = "../horus_core", features = ["dynamic-plugins"] }

@@ -21,12 +21,3 @@ pub(crate) fn unlikely(b: bool) -> bool {
     b
 }
 
-/// Mark a condition as likely (branch prediction hint for hot paths).
-/// Use for: success paths, common conditions.
-#[inline(always)]
-pub(crate) fn likely(b: bool) -> bool {
-    if !b {
-        cold()
-    }
-    b
-}

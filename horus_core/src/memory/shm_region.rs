@@ -586,6 +586,183 @@ unsafe impl Send for ShmRegion {}
 unsafe impl Sync for ShmRegion {}
 
 // ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_name(prefix: &str) -> String {
+        format!("{}_{}_{}", prefix, std::process::id(), std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
+    }
+
+    #[test]
+    fn shm_create_and_basic_rw() {
+        let name = unique_name("test_basic");
+        let size = 4096;
+        let mut region = ShmRegion::new(&name, size).expect("Failed to create SHM region");
+        assert!(region.is_owner());
+        assert_eq!(region.size(), size);
+
+        // Write pattern
+        let ptr = region.as_mut_ptr();
+        unsafe {
+            for i in 0..size {
+                *ptr.add(i) = (i % 256) as u8;
+            }
+        }
+
+        // Read back and verify
+        let rptr = region.as_ptr();
+        for i in 0..size {
+            let val = unsafe { *rptr.add(i) };
+            assert_eq!(val, (i % 256) as u8, "Mismatch at byte {}", i);
+        }
+    }
+
+    #[test]
+    fn shm_open_existing() {
+        let name = unique_name("test_open");
+        let size = 8192;
+
+        // Create region and write a marker
+        let mut owner = ShmRegion::new(&name, size).expect("Failed to create SHM");
+        unsafe {
+            let ptr = owner.as_mut_ptr();
+            // Write magic at offset 0
+            std::ptr::write(ptr as *mut u64, 0xDEAD_BEEF_CAFE_BABE);
+        }
+
+        // Open from another handle
+        let reader = ShmRegion::open(&name).expect("Failed to open existing SHM");
+        assert!(!reader.is_owner());
+
+        // Verify the marker is visible
+        let val = unsafe { std::ptr::read(reader.as_ptr() as *const u64) };
+        assert_eq!(val, 0xDEAD_BEEF_CAFE_BABE, "Marker not visible through second mapping");
+
+        drop(reader);
+        drop(owner);
+    }
+
+    #[test]
+    fn shm_open_nonexistent_fails() {
+        let name = unique_name("nonexistent_shm");
+        let result = ShmRegion::open(&name);
+        assert!(result.is_err(), "Opening nonexistent SHM should fail");
+    }
+
+    #[test]
+    fn shm_owner_cleanup_on_drop() {
+        let name = unique_name("test_cleanup");
+        let size = 4096;
+
+        {
+            let _region = ShmRegion::new(&name, size).expect("Failed to create SHM");
+            // Region dropped here — owner should clean up the backing file
+        }
+
+        // After owner drops, the SHM should be gone
+        let result = ShmRegion::open(&name);
+        assert!(result.is_err(), "SHM should be cleaned up after owner drops");
+    }
+
+    #[test]
+    fn shm_non_owner_does_not_cleanup() {
+        let name = unique_name("test_no_cleanup");
+        let size = 4096;
+
+        let owner = ShmRegion::new(&name, size).expect("Failed to create SHM");
+
+        {
+            let _reader = ShmRegion::open(&name).expect("Failed to open SHM");
+            // Reader dropped here — should NOT clean up
+        }
+
+        // Owner should still be able to read (SHM still exists)
+        assert_eq!(owner.size(), size);
+
+        // Still openable
+        let _reader2 = ShmRegion::open(&name).expect("SHM should still exist after non-owner drops");
+
+        drop(_reader2);
+        drop(owner); // Now owner cleans up
+    }
+
+    #[test]
+    fn shm_zero_initialized() {
+        let name = unique_name("test_zeroed");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("Failed to create SHM");
+        let ptr = region.as_ptr();
+
+        // Owner should zero-initialize
+        for i in 0..size {
+            let val = unsafe { *ptr.add(i) };
+            assert_eq!(val, 0, "Byte {} not zeroed", i);
+        }
+    }
+
+    #[test]
+    fn shm_concurrent_rw_from_threads() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let name = unique_name("test_threaded");
+        let size = 4096;
+
+        let region = Arc::new(ShmRegion::new(&name, size).expect("Failed to create SHM"));
+
+        // Use the first 8 bytes as an atomic counter
+        let counter_ptr = region.as_ptr() as *const AtomicU64;
+
+        let n_threads = 4;
+        let n_increments = 1000;
+
+        let handles: Vec<_> = (0..n_threads).map(|_| {
+            let r = region.clone();
+            std::thread::spawn(move || {
+                let counter = unsafe { &*(r.as_ptr() as *const AtomicU64) };
+                for _ in 0..n_increments {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        }).collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_val = unsafe { (*counter_ptr).load(Ordering::Relaxed) };
+        assert_eq!(final_val, (n_threads * n_increments) as u64,
+            "Concurrent atomic increments should sum correctly");
+    }
+
+    #[test]
+    fn shm_force_cleanup() {
+        let name = unique_name("test_force_cleanup");
+        let size = 4096;
+
+        let region = ShmRegion::new(&name, size).expect("Failed to create SHM");
+        // Open a second handle
+        let _reader = ShmRegion::open(&name).expect("Failed to open SHM");
+
+        // Force cleanup from non-owner
+        _reader.force_cleanup();
+
+        // After force cleanup, the backing file/segment should be removed
+        // (though existing mappings remain valid until unmapped)
+        let result = ShmRegion::open(&name);
+        assert!(result.is_err(), "SHM should be gone after force_cleanup");
+
+        drop(region);
+    }
+}
+
+// ============================================================================
 // Fallback for other platforms (BSD, etc.) - Use file-based approach
 // ============================================================================
 

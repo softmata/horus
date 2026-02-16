@@ -47,8 +47,7 @@
 //! | 16-19 | SHM serde variants | |
 //! | 20| `recv_uninitialized` | First call → register + re-dispatch |
 
-use std::mem::MaybeUninit;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -72,6 +71,11 @@ pub(super) type RecvFn<T> = fn(&Topic<T>) -> Option<T>;
 /// Check process_epoch (Relaxed load, ~1ns). If changed, handle migration and
 /// re-dispatch through the updated function pointer. This macro RETURNS from
 /// the calling function on epoch change, so it must be at the top.
+///
+/// NOTE: This guard runs on every message intentionally. It CANNOT be amortized
+/// (e.g. cached per-batch) because migration can swap the `BackendStorage` enum
+/// variant between calls. If the guard were skipped, a stale `unreachable_unchecked`
+/// match on the wrong variant would be instant UB.
 macro_rules! epoch_guard_send {
     ($topic:expr, $msg:ident) => {
         let __pe = $topic.process_epoch.load(Ordering::Relaxed);
@@ -97,42 +101,140 @@ macro_rules! epoch_guard_recv {
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// 1. DirectChannel (heap) — same-thread, Relaxed atomics (plain MOV on x86)
+// 1b. DirectChannel LOCAL (heap) — same-thread, pure LocalState, ~0ns target
 // ---------------------------------------------------------------------------
 //
-// Uses DirectSlot's AtomicU64 head/tail so separate Topic instances sharing
-// the same DirectSlot see each other's updates. Relaxed ordering = plain MOV
-// on x86, so there's zero overhead beyond L1 cache hits.
+// For role==Both (single Topic does both send+recv, e.g., the benchmark path),
+// ALL hot fields are resolved at init time into LocalState's first cache line.
+// No epoch_guard (amortized every 4096 msgs), no BackendStorage traversal
+// (cached_data_ptr points directly to buffer), no atomic head/tail (plain u64
+// local_head/local_tail). This achieves Copper-rs-level zero-dispatch.
 
 #[inline(always)]
-pub(super) fn send_direct_channel<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
     topic: &Topic<T>,
     msg: T,
 ) -> Result<(), T> {
-    epoch_guard_send!(topic, msg);
-
-    let slot = match unsafe { &*topic.backend.get() } {
-        BackendStorage::DirectChannel(s) => s,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let head = slot.head.load(Ordering::Relaxed);
-    let tail = slot.tail.load(Ordering::Relaxed);
-    if head.wrapping_sub(tail) >= slot.capacity {
+    let local = topic.local();
+    let head = local.local_head;
+    if head.wrapping_sub(local.local_tail) >= local.cached_capacity {
         return Err(msg);
     }
-    let index = (head & slot.mask) as usize;
     unsafe {
-        let s = &*slot.buffer.get_unchecked(index);
-        s.get().write(MaybeUninit::new(msg));
+        let base = local.cached_data_ptr as *mut T;
+        std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
     }
-    slot.head.store(head.wrapping_add(1), Ordering::Relaxed);
+    local.local_head = head.wrapping_add(1);
 
-    let local = topic.local();
+    // Amortized epoch check — every 4096 messages (~0.0005ns/msg)
     local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
+    if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+        topic.check_migration_periodic();
     }
     Ok(())
+}
+
+#[inline(always)]
+pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &Topic<T>,
+) -> Option<T> {
+    let local = topic.local();
+    let tail = local.local_tail;
+    if tail >= local.local_head {
+        local.msg_counter = local.msg_counter.wrapping_add(1);
+        if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+            topic.check_migration_periodic();
+        }
+        return None;
+    }
+    let msg = unsafe {
+        let base = local.cached_data_ptr as *const T;
+        std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+    };
+    local.local_tail = tail.wrapping_add(1);
+
+    local.msg_counter = local.msg_counter.wrapping_add(1);
+    if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+        topic.check_migration_periodic();
+    }
+    Some(msg)
+}
+
+// ---------------------------------------------------------------------------
+// 1c. DirectChannel CACHED (heap) — separate instances, cached pointers
+// ---------------------------------------------------------------------------
+//
+// For role==Publisher or role==Consumer on a shared DirectSlot (two separate
+// Topic instances on the same thread). Caches DirectSlot's head/tail AtomicU64
+// pointers in LocalState to skip BackendStorage traversal. Amortizes epoch
+// check to every 4096 messages (same as DC-local). Reads/writes AtomicU64
+// with Relaxed ordering (plain MOV on x86 — same-thread guarantee).
+//
+// Pointer reuse in LocalState (these fields are unused for DirectChannel):
+//   cached_header_ptr → reinterpreted as *const AtomicU64 → DirectSlot.head
+//   cached_seq_ptr    → reinterpreted as *const AtomicU64 → DirectSlot.tail
+//   cached_data_ptr   → DirectSlot.buffer base pointer
+//   cached_capacity / cached_capacity_mask → from DirectSlot
+
+#[inline(always)]
+pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &Topic<T>,
+    msg: T,
+) -> Result<(), T> {
+    let local = topic.local();
+    // cached_header_ptr repurposed as *const AtomicU64 → DirectSlot.head
+    let head_ptr = local.cached_header_ptr as *const AtomicU64;
+    // cached_seq_ptr repurposed as *const AtomicU64 → DirectSlot.tail
+    let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
+
+    let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
+    let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
+    if head.wrapping_sub(tail) >= local.cached_capacity {
+        return Err(msg);
+    }
+    unsafe {
+        let base = local.cached_data_ptr as *mut T;
+        std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
+        (*head_ptr).store(head.wrapping_add(1), Ordering::Relaxed);
+    }
+
+    local.msg_counter = local.msg_counter.wrapping_add(1);
+    if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+        topic.check_migration_periodic();
+    }
+    Ok(())
+}
+
+#[inline(always)]
+pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+    topic: &Topic<T>,
+) -> Option<T> {
+    let local = topic.local();
+    // cached_header_ptr repurposed as *const AtomicU64 → DirectSlot.head
+    let head_ptr = local.cached_header_ptr as *const AtomicU64;
+    // cached_seq_ptr repurposed as *const AtomicU64 → DirectSlot.tail
+    let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
+
+    let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
+    let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
+    if tail >= head {
+        local.msg_counter = local.msg_counter.wrapping_add(1);
+        if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+            topic.check_migration_periodic();
+        }
+        return None;
+    }
+    let msg = unsafe {
+        let base = local.cached_data_ptr as *const T;
+        std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
+    };
+    unsafe { (*(tail_ptr as *const AtomicU64)).store(tail.wrapping_add(1), Ordering::Relaxed) };
+
+    local.msg_counter = local.msg_counter.wrapping_add(1);
+    if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+        topic.check_migration_periodic();
+    }
+    Some(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +485,10 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 
     let index = (seq & mask) as usize;
     let slot_offset = index * slot_size;
+    let max_data_len = slot_size.saturating_sub(16);
+    if bytes.len() > max_data_len {
+        return Err(msg); // Serialized data too large for slot
+    }
     unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *mut u64;
@@ -430,6 +536,11 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         if current_head.wrapping_sub(local.local_tail) >= capacity {
             return Err(msg);
         }
+    }
+
+    let max_data_len = slot_size.saturating_sub(16);
+    if bytes.len() > max_data_len {
+        return Err(msg); // Serialized data too large for slot
     }
 
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
@@ -615,45 +726,6 @@ pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + Deserializ
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// 1. DirectChannel recv (heap) — same-thread, Relaxed atomics
-// ---------------------------------------------------------------------------
-
-#[inline(always)]
-pub(super) fn recv_direct_channel<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let slot = match unsafe { &*topic.backend.get() } {
-        BackendStorage::DirectChannel(s) => s,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let tail = slot.tail.load(Ordering::Relaxed);
-    let head = slot.head.load(Ordering::Relaxed);
-    if tail >= head {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-            topic.check_migration_periodic();
-        }
-        return None;
-    }
-    let msg = unsafe {
-        let idx = (tail & slot.mask) as usize;
-        let s = &*slot.buffer.get_unchecked(idx);
-        (*s.get()).assume_init_read()
-    };
-    slot.tail.store(tail.wrapping_add(1), Ordering::Relaxed);
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
-    Some(msg)
-}
-
-// ---------------------------------------------------------------------------
 // 2-5. Intra-process heap ring recv functions
 // ---------------------------------------------------------------------------
 
@@ -785,7 +857,15 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.store(new_tail, Ordering::Release);
+    // Batch header.tail updates: only store every 32 messages.
+    // The producer reads header.tail for backpressure only when its local head
+    // is >= capacity ahead of its cached tail. With capacity 256 and batch 32,
+    // there's 224 slots of headroom. This eliminates the Release store to a
+    // separate cache line on 31 of every 32 recvs.
+    // handle_epoch_change flushes local.local_tail before migration.
+    if new_tail & 0x1F == 0 {
+        header.tail.store(new_tail, Ordering::Release);
+    }
 
     local.msg_counter = local.msg_counter.wrapping_add(1);
     if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
@@ -847,7 +927,11 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     };
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
-    header.tail.store(new_tail, Ordering::Release);
+    // Batch header.tail updates: only store every 32 messages.
+    // handle_epoch_change flushes local.local_tail before migration.
+    if new_tail & 0x1F == 0 {
+        header.tail.store(new_tail, Ordering::Release);
+    }
 
     local.msg_counter = local.msg_counter.wrapping_add(1);
     if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
@@ -1057,10 +1141,14 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let index = (tail & mask) as usize;
     let slot_offset = index * slot_size;
 
+    let max_data_len = slot_size.saturating_sub(16);
     let msg = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *const u64;
         let len = std::ptr::read_volatile(len_ptr) as usize;
+        if len > max_data_len {
+            return None; // Corrupted length — skip this slot
+        }
         let data_ptr = slot_ptr.add(16);
         let slice = std::slice::from_raw_parts(data_ptr, len);
         bincode::deserialize(slice).unwrap_or_else(|_| {
@@ -1130,10 +1218,14 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         return None;
     }
 
+    let max_data_len = slot_size.saturating_sub(16);
     let msg = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let len_ptr = slot_ptr.add(8) as *const u64;
         let len = std::ptr::read_volatile(len_ptr) as usize;
+        if len > max_data_len {
+            return None; // Corrupted length — skip this slot
+        }
         let data_ptr = slot_ptr.add(16);
         let slice = std::slice::from_raw_parts(data_ptr, len);
         bincode::deserialize(slice).unwrap_or_else(|_| {
@@ -1184,11 +1276,16 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     ).is_ok() {
         let index = (tail & mask) as usize;
         let slot_offset = index * slot_size;
+        let max_data_len = slot_size.saturating_sub(16);
 
         let msg = unsafe {
             let slot_ptr = local.cached_data_ptr.add(slot_offset);
             let len_ptr = slot_ptr.add(8) as *const u64;
             let len = std::ptr::read_volatile(len_ptr) as usize;
+            if len > max_data_len {
+                local.local_tail = tail.wrapping_add(1);
+                return None; // Corrupted length — skip this slot
+            }
             let data_ptr = slot_ptr.add(16);
             let slice = std::slice::from_raw_parts(data_ptr, len);
             bincode::deserialize(slice).unwrap_or_else(|_| {
@@ -1260,10 +1357,15 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if header.tail.compare_exchange_weak(
         tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
     ).is_ok() {
+        let max_data_len = slot_size.saturating_sub(16);
         let msg = unsafe {
             let slot_ptr = local.cached_data_ptr.add(slot_offset);
             let len_ptr = slot_ptr.add(8) as *const u64;
             let len = std::ptr::read_volatile(len_ptr) as usize;
+            if len > max_data_len {
+                local.local_tail = tail.wrapping_add(1);
+                return None; // Corrupted length — skip this slot
+            }
             let data_ptr = slot_ptr.add(16);
             let slice = std::slice::from_raw_parts(data_ptr, len);
             bincode::deserialize(slice).unwrap_or_else(|_| {

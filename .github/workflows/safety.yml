@@ -56,26 +56,26 @@ jobs:
       # Run MIRI on core modules with unsafe code
       - name: MIRI - horus_core memory module
         run: |
-          cargo miri test -p horus_core --lib -- memory:: || true
+          cargo miri test -p horus_core --lib -- memory::
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 
       - name: MIRI - horus_core communication module
         run: |
-          cargo miri test -p horus_core --lib -- communication:: || true
+          cargo miri test -p horus_core --lib -- communication::
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 
       - name: MIRI - horus_core ipc module
         run: |
-          cargo miri test -p horus_core --lib -- ipc:: || true
+          cargo miri test -p horus_core --lib -- ipc::
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 
       # Run MIRI on horus_library Pod types (landmark, tracking, detection_pod, etc.)
       - name: MIRI - horus_library Pod types
         run: |
-          cargo miri test -p horus_library -- landmark:: tracking:: detection_pod:: pointcloud_pod:: segmentation_pod:: || true
+          cargo miri test -p horus_library -- landmark:: tracking:: detection_pod:: pointcloud_pod:: segmentation_pod::
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 

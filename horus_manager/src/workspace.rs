@@ -79,10 +79,6 @@ impl WorkspaceRegistry {
     pub fn find_by_name(&self, name: &str) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.name == name)
     }
-
-    pub fn find_by_path(&self, path: &Path) -> Option<&Workspace> {
-        self.workspaces.iter().find(|w| w.path == path)
-    }
 }
 
 /// Find workspace root by searching upward for markers

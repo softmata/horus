@@ -52,11 +52,7 @@ use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-#[cfg(feature = "cuda")]
 use super::cuda_ffi::{self, CUDA_IPC_HANDLE_SIZE};
-
-#[cfg(not(feature = "cuda"))]
-pub const CUDA_IPC_HANDLE_SIZE: usize = 64;
 
 /// Magic number for CUDA pool validation
 const CUDA_POOL_MAGIC: u64 = 0x484F52555343554; // "HORUS_CU" in hex
@@ -374,7 +370,6 @@ impl CudaTensorPool {
     /// * `pool_id` - Unique identifier for this pool
     /// * `device_id` - CUDA device index (0, 1, 2, ...)
     /// * `config` - Pool configuration
-    #[cfg(feature = "cuda")]
     pub fn new(pool_id: u32, device_id: i32, config: CudaTensorPoolConfig) -> HorusResult<Self> {
         // Verify CUDA is available
         if !cuda_ffi::cuda_available() {
@@ -420,13 +415,7 @@ impl CudaTensorPool {
         Ok(pool)
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn new(_pool_id: u32, _device_id: i32, _config: CudaTensorPoolConfig) -> HorusResult<Self> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Open an existing CUDA tensor pool
-    #[cfg(feature = "cuda")]
     pub fn open(pool_id: u32, device_id: i32) -> HorusResult<Self> {
         // Verify CUDA is available
         if !cuda_ffi::cuda_available() {
@@ -465,11 +454,6 @@ impl CudaTensorPool {
         pool.validate()?;
 
         Ok(pool)
-    }
-
-    #[cfg(not(feature = "cuda"))]
-    pub fn open(_pool_id: u32, _device_id: i32) -> HorusResult<Self> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
     }
 
     /// Initialize pool header and slots
@@ -523,7 +507,6 @@ impl CudaTensorPool {
     }
 
     /// Allocate a GPU tensor
-    #[cfg(feature = "cuda")]
     pub fn alloc(&self, shape: &[u64], dtype: TensorDtype) -> HorusResult<CudaTensor> {
         let numel: u64 = shape.iter().product();
         let size = numel * dtype.element_size() as u64;
@@ -594,13 +577,7 @@ impl CudaTensorPool {
         Ok(tensor)
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn alloc(&self, _shape: &[u64], _dtype: TensorDtype) -> HorusResult<CudaTensor> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Import a tensor from an IPC handle (for cross-process sharing)
-    #[cfg(feature = "cuda")]
     pub fn import_ipc(
         &self,
         ipc_handle_bytes: &[u8],
@@ -661,30 +638,13 @@ impl CudaTensorPool {
         Ok((dev_ptr, tensor))
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn import_ipc(
-        &self,
-        _ipc_handle_bytes: &[u8],
-        _shape: &[u64],
-        _dtype: TensorDtype,
-    ) -> HorusResult<(*mut c_void, CudaTensor)> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Close an imported IPC handle
-    #[cfg(feature = "cuda")]
     pub fn close_ipc(&self, dev_ptr: *mut c_void) -> HorusResult<()> {
         cuda_ffi::ipc_close_mem_handle(dev_ptr)
             .map_err(|e| HorusError::Memory(format!("Failed to close IPC handle: {}", e)))
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn close_ipc(&self, _dev_ptr: *mut c_void) -> HorusResult<()> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Release a tensor (decrement refcount, free if zero)
-    #[cfg(feature = "cuda")]
     pub fn release(&self, tensor: &CudaTensor) -> HorusResult<()> {
         if tensor.pool_id != self.pool_id {
             return Ok(()); // Not our tensor
@@ -715,11 +675,6 @@ impl CudaTensorPool {
             self.header().allocated_count.fetch_sub(1, Ordering::AcqRel);
         }
 
-        Ok(())
-    }
-
-    #[cfg(not(feature = "cuda"))]
-    pub fn release(&self, _tensor: &CudaTensor) -> HorusResult<()> {
         Ok(())
     }
 
@@ -901,7 +856,6 @@ impl CudaTensorPool {
 impl Drop for CudaTensorPool {
     fn drop(&mut self) {
         // If we're the owner, free all allocated GPU memory
-        #[cfg(feature = "cuda")]
         if self.is_owner {
             let header = self.header();
             let max_slots = header.max_slots as usize;
@@ -926,30 +880,6 @@ pub struct CudaPoolStats {
     pub device_id: i32,
     pub max_slots: usize,
     pub allocated_slots: usize,
-}
-
-/// Check if CUDA is available
-pub fn cuda_available() -> bool {
-    #[cfg(feature = "cuda")]
-    {
-        cuda_ffi::cuda_available()
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        false
-    }
-}
-
-/// Get number of CUDA devices
-pub fn cuda_device_count() -> usize {
-    #[cfg(feature = "cuda")]
-    {
-        cuda_ffi::get_device_count().unwrap_or(0) as usize
-    }
-    #[cfg(not(feature = "cuda"))]
-    {
-        0
-    }
 }
 
 // =============================================================================
@@ -984,7 +914,6 @@ impl P2PManager {
     }
 
     /// Check if P2P access is possible between two devices
-    #[cfg(feature = "cuda")]
     pub fn can_access_peer(device: i32, peer_device: i32) -> HorusResult<bool> {
         if device == peer_device {
             return Ok(true);
@@ -994,13 +923,7 @@ impl P2PManager {
             .map_err(|e| HorusError::Memory(format!("Failed to check P2P access: {}", e)))
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn can_access_peer(_device: i32, _peer_device: i32) -> HorusResult<bool> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Enable P2P access between two devices (allows direct GPU-to-GPU transfers)
-    #[cfg(feature = "cuda")]
     pub fn enable_peer_access(&self, device: i32, peer_device: i32) -> HorusResult<()> {
         if device == peer_device {
             return Ok(());
@@ -1038,13 +961,7 @@ impl P2PManager {
         Ok(())
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn enable_peer_access(&self, _device: i32, _peer_device: i32) -> HorusResult<()> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Disable P2P access between two devices
-    #[cfg(feature = "cuda")]
     pub fn disable_peer_access(&self, device: i32, peer_device: i32) -> HorusResult<()> {
         if device == peer_device {
             return Ok(());
@@ -1074,11 +991,6 @@ impl P2PManager {
         Ok(())
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn disable_peer_access(&self, _device: i32, _peer_device: i32) -> HorusResult<()> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Enable bidirectional P2P access between two devices
     pub fn enable_bidirectional(&self, device1: i32, device2: i32) -> HorusResult<()> {
         self.enable_peer_access(device1, device2)?;
@@ -1088,7 +1000,7 @@ impl P2PManager {
 
     /// Get all P2P access information for all GPU pairs
     pub fn get_p2p_topology() -> HorusResult<Vec<P2PAccessInfo>> {
-        let device_count = cuda_device_count();
+        let device_count = cuda_ffi::get_device_count().unwrap_or(0) as usize;
         let mut topology = Vec::new();
 
         let connections: Vec<(i32, i32)> = Vec::new(); // No manager context, assume none enabled
@@ -1117,7 +1029,6 @@ impl P2PManager {
 
     /// Copy tensor between GPUs using P2P (requires P2P enabled)
     /// Returns the destination tensor
-    #[cfg(feature = "cuda")]
     pub fn copy_p2p(
         &self,
         src_pool: &CudaTensorPool,
@@ -1165,18 +1076,7 @@ impl P2PManager {
         Ok(dst_tensor)
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn copy_p2p(
-        &self,
-        _src_pool: &CudaTensorPool,
-        _src_tensor: &CudaTensor,
-        _dst_pool: &CudaTensorPool,
-    ) -> HorusResult<CudaTensor> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
-
     /// Async P2P copy using CUDA streams
-    #[cfg(feature = "cuda")]
     pub fn copy_p2p_async(
         &self,
         src_pool: &CudaTensorPool,
@@ -1220,17 +1120,6 @@ impl P2PManager {
         Ok(())
     }
 
-    #[cfg(not(feature = "cuda"))]
-    pub fn copy_p2p_async(
-        &self,
-        _src_pool: &CudaTensorPool,
-        _src_tensor: &CudaTensor,
-        _dst_pool: &CudaTensorPool,
-        _dst_tensor: &CudaTensor,
-        _stream: cuda_ffi::CudaStream,
-    ) -> HorusResult<()> {
-        Err(HorusError::Config("CUDA feature not enabled".into()))
-    }
 }
 
 impl Default for P2PManager {
@@ -1242,13 +1131,10 @@ impl Default for P2PManager {
 impl Drop for P2PManager {
     fn drop(&mut self) {
         // Disable all P2P connections on cleanup
-        #[cfg(feature = "cuda")]
-        {
-            let connections = self.enabled_connections.lock().unwrap().clone();
-            for (device, peer_device) in connections {
-                if cuda_ffi::set_device(device).is_ok() {
-                    let _ = cuda_ffi::device_disable_peer_access(peer_device);
-                }
+        let connections = self.enabled_connections.lock().unwrap().clone();
+        for (device, peer_device) in connections {
+            if cuda_ffi::set_device(device).is_ok() {
+                let _ = cuda_ffi::device_disable_peer_access(peer_device);
             }
         }
     }
@@ -1615,23 +1501,6 @@ mod tests {
     fn test_p2p_manager_default() {
         let manager = P2PManager::default();
         assert!(manager.enabled_connections().is_empty());
-    }
-
-    #[test]
-    fn test_cuda_device_count_no_cuda() {
-        // Without CUDA feature, should return 0
-        #[cfg(not(feature = "cuda"))]
-        {
-            assert_eq!(cuda_device_count(), 0);
-        }
-    }
-
-    #[test]
-    fn test_cuda_available_no_cuda() {
-        #[cfg(not(feature = "cuda"))]
-        {
-            assert!(!cuda_available());
-        }
     }
 
     // ==========================================================================

@@ -9,17 +9,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[repr(C, align(64))]
-struct CachePadded<T>(T);
-
-/// Per-slot metadata for producer write completion tracking.
-pub(crate) struct MpscSlot<T> {
-    /// Sequence number — set to `claimed_seq + 1` after the producer finishes writing.
-    /// Consumer waits until this equals `expected_seq` before reading.
-    sequence: AtomicU64,
-    /// Data slot
-    data: UnsafeCell<MaybeUninit<T>>,
-}
+use super::primitives::{CachePadded, MpSlot};
 
 /// Heap-backed MPSC ring buffer for N producers, 1 consumer.
 pub(crate) struct MpscRing<T> {
@@ -32,7 +22,7 @@ pub(crate) struct MpscRing<T> {
     /// Capacity
     capacity: u64,
     /// Slots with per-slot sequence tracking
-    slots: Box<[MpscSlot<T>]>,
+    slots: Box<[MpSlot<T>]>,
 }
 
 unsafe impl<T: Send> Send for MpscRing<T> {}
@@ -43,7 +33,7 @@ impl<T> MpscRing<T> {
         let cap = capacity.next_power_of_two() as usize;
         let mut slots = Vec::with_capacity(cap);
         for i in 0..cap {
-            slots.push(MpscSlot {
+            slots.push(MpSlot {
                 // Initialize sequence to slot index so the first round of writes works:
                 // slot[i].sequence = i means "slot i is available for sequence i"
                 sequence: AtomicU64::new(i as u64),
@@ -67,49 +57,10 @@ impl<T> MpscRing<T> {
         head.wrapping_sub(tail)
     }
 
-    /// Try to send (multiple producers — CAS on head to claim slot).
+    /// Try to send (multiple producers — CAS on head to claim slot). Delegates to shared `mp_try_send!` macro.
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
-        loop {
-            let head = self.head.0.load(Ordering::Relaxed);
-            let index = (head & self.mask) as usize;
-            // SAFETY: index is within bounds (head & mask < capacity)
-            let slot = unsafe { self.slots.get_unchecked(index) };
-            let seq = slot.sequence.load(Ordering::Acquire);
-
-            // Slot is available when its sequence equals head (wraps correctly)
-            if seq == head {
-                // Try to claim this slot
-                if self
-                    .head
-                    .0
-                    .compare_exchange_weak(
-                        head,
-                        head.wrapping_add(1),
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    // Write data then publish by setting sequence to head + 1
-                    // SAFETY: we claimed this slot via CAS; no other producer writes here
-                    unsafe {
-                        slot.data.get().write(MaybeUninit::new(msg));
-                    }
-                    slot.sequence
-                        .store(head.wrapping_add(1), Ordering::Release);
-                    return Ok(());
-                }
-                // CAS failed — another producer claimed it, retry
-                std::hint::spin_loop();
-            } else if seq.wrapping_sub(head) > self.capacity {
-                // seq < head means buffer is full (wrapped around)
-                return Err(msg);
-            } else {
-                // Slot not ready yet (another producer is writing), spin
-                std::hint::spin_loop();
-            }
-        }
+        mp_try_send!(self, msg)
     }
 
     /// Try to receive (single consumer only).
@@ -137,11 +88,18 @@ impl<T> MpscRing<T> {
 
     /// Read the most recent message without advancing the consumer.
     ///
-    /// Returns `None` if no messages have been published or the latest
-    /// slot's write isn't yet complete.
-    pub fn read_latest(&self) -> Option<T> {
+    /// Returns a clone of the latest value. Returns `None` if the ring is empty,
+    /// nothing was ever published, or the latest slot's write isn't yet complete.
+    ///
+    /// Uses `Clone` instead of moving to avoid double-free: the slot remains
+    /// valid for `try_recv` to consume later.
+    pub fn read_latest(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         let head = self.head.0.load(Ordering::Acquire);
-        if head == 0 {
+        let tail = self.tail.0.load(Ordering::Acquire);
+        if tail >= head {
             return None;
         }
         let prev = head.wrapping_sub(1);
@@ -151,11 +109,35 @@ impl<T> MpscRing<T> {
         let seq = slot.sequence.load(Ordering::Acquire);
         // Slot is readable when sequence == prev + 1 (write completed)
         if seq == prev.wrapping_add(1) {
-            // SAFETY: producer finished writing (sequence confirms)
-            let msg = unsafe { (*slot.data.get()).assume_init_read() };
+            // SAFETY: producer finished writing (sequence confirms).
+            // We clone instead of moving to preserve the slot for try_recv.
+            let msg = unsafe { (*slot.data.get()).assume_init_ref().clone() };
             Some(msg)
         } else {
             None
+        }
+    }
+}
+
+impl<T> Drop for MpscRing<T> {
+    fn drop(&mut self) {
+        let head = *self.head.0.get_mut();
+        let tail = *self.tail.0.get_mut();
+        // Drop all initialized but unconsumed messages in [tail, head).
+        // Check sequence numbers to handle the edge case where a producer
+        // panicked between CAS-claiming a slot and completing the write.
+        for i in tail..head {
+            let index = (i & self.mask) as usize;
+            let slot = &mut self.slots[index];
+            let seq = *slot.sequence.get_mut();
+            // Slot is fully written when seq == i + 1
+            if seq == i.wrapping_add(1) {
+                // SAFETY: we have &mut self (exclusive access) and the
+                // sequence number confirms the write completed.
+                unsafe {
+                    slot.data.get_mut().assume_init_drop();
+                }
+            }
         }
     }
 }

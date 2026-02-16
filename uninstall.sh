@@ -1,7 +1,7 @@
 #!/bin/bash
-# HORUS Uninstallation Script v2.0.0
+# HORUS Uninstallation Script v2.6.0
 # Complete removal of HORUS CLI, libraries, binaries, cache, and artifacts
-# Matches install.sh v2.2.0
+# Matches install.sh v2.6.0
 
 set -e  # Exit on error
 
@@ -166,10 +166,10 @@ case "$INSTALL_PROFILE" in
         BINARIES=("horus")
         ;;
     embedded)
-        BINARIES=("horus" "horus_router")
+        BINARIES=("horus")
         ;;
     full|*)
-        BINARIES=("horus" "sim2d" "sim3d" "horus_router")
+        BINARIES=("horus")
         ;;
 esac
 
@@ -193,7 +193,7 @@ FISH_COMPLETION_PATHS=(
 
 echo ""
 echo -e "${BLUE}============================================${NC}"
-echo -e "${WHITE}   HORUS Uninstallation Script v2.0.0${NC}"
+echo -e "${WHITE}   HORUS Uninstallation Script v2.6.0${NC}"
 echo -e "${BLUE}============================================${NC}"
 echo ""
 echo -e "  ${CYAN}Install Profile:${NC} ${INSTALL_PROFILE}"
@@ -478,9 +478,9 @@ echo -e "  ${YELLOW}Skipped:${NC} $SKIPPED component(s)"
 echo ""
 
 # Check if any horus processes are still running
-if pgrep -x "horus" > /dev/null 2>&1 || pgrep -x "sim2d" > /dev/null 2>&1 || pgrep -x "sim3d" > /dev/null 2>&1; then
+if pgrep -x "horus" > /dev/null 2>&1; then
     echo -e "${YELLOW}[!] Warning:${NC} Some HORUS processes may still be running."
-    echo -e "    Run: ${CYAN}pkill -f 'horus|sim2d|sim3d'${NC} to terminate them."
+    echo -e "    Run: ${CYAN}pkill -f 'horus'${NC} to terminate them."
     echo ""
 fi
 

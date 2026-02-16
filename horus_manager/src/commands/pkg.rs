@@ -74,6 +74,71 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
         }
     }
 
+    // Auto-detect from Cargo.toml: any horus-* package with a [[bin]] entry
+    // is automatically a plugin. The command name is the binary name (or the
+    // package name with "horus-" stripped). This means `horus-sim3d` with
+    // `[[bin]] name = "sim3d"` becomes a plugin providing the `sim3d` command
+    // with zero extra configuration from the package author.
+    if cargo_toml.exists() {
+        if let Ok(content) = fs::read_to_string(&cargo_toml) {
+            if let Ok(toml) = content.parse::<toml::Table>() {
+                let package_name = toml
+                    .get("package")
+                    .and_then(|p| p.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+
+                if package_name.starts_with("horus-") {
+                    // Find the first [[bin]] entry
+                    let bin_name = toml
+                        .get("bin")
+                        .and_then(|b| b.as_array())
+                        .and_then(|bins| {
+                            bins.first()
+                                .and_then(|b| b.get("name"))
+                                .and_then(|n| n.as_str())
+                        });
+
+                    let command = bin_name
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            package_name.strip_prefix("horus-").unwrap_or(package_name).to_string()
+                        });
+
+                    // Look for the built binary
+                    if let Some(binary) = find_binary(package_dir, &command) {
+                        let version = toml
+                            .get("package")
+                            .and_then(|p| p.get("version"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("0.0.0")
+                            .to_string();
+
+                        let description = toml
+                            .get("package")
+                            .and_then(|p| p.get("description"))
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        return Some(PluginMetadata {
+                            command: command.clone(),
+                            binary,
+                            package_name: package_name.to_string(),
+                            version,
+                            commands: vec![CommandInfo {
+                                name: command,
+                                description,
+                            }],
+                            compatibility: Compatibility::default(),
+                            permissions: vec![],
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -585,88 +650,6 @@ pub fn verify_plugins(plugin_name: Option<&str>) -> Result<()> {
             "Some plugins failed verification. Run 'horus pkg install <package>' to reinstall."
         ))
     }
-}
-
-/// Restore plugins from lock file
-pub fn restore_plugins(include_global: bool) -> Result<()> {
-    let resolver = PluginResolver::new()?;
-
-    println!("{} Restoring plugins from lock files...\n", "📦".cyan());
-
-    let mut restored = 0;
-    let mut failed = 0;
-
-    // Restore project plugins
-    if let Some(project) = resolver.project() {
-        println!("{}Project plugins:", "".cyan());
-        for (cmd, entry) in &project.plugins {
-            if entry.binary.exists() {
-                println!(
-                    "  {} {} v{} - already present",
-                    "✓".green(),
-                    cmd,
-                    entry.version
-                );
-            } else {
-                println!(
-                    "  {} {} v{} - binary missing, reinstall required",
-                    "✗".yellow(),
-                    cmd,
-                    entry.version
-                );
-                failed += 1;
-            }
-            restored += 1;
-        }
-        if project.plugins.is_empty() {
-            println!("  No project plugins");
-        }
-    }
-
-    // Restore global plugins
-    if include_global {
-        println!("\n{}Global plugins:", "".cyan());
-        for (cmd, entry) in &resolver.global().plugins {
-            if entry.binary.exists() {
-                println!(
-                    "  {} {} v{} - already present",
-                    "✓".green(),
-                    cmd,
-                    entry.version
-                );
-            } else {
-                println!(
-                    "  {} {} v{} - binary missing, reinstall required",
-                    "✗".yellow(),
-                    cmd,
-                    entry.version
-                );
-                failed += 1;
-            }
-            restored += 1;
-        }
-        if resolver.global().plugins.is_empty() {
-            println!("  No global plugins");
-        }
-    }
-
-    println!();
-
-    if failed > 0 {
-        println!(
-            "{} {} plugins need reinstallation. Run 'horus pkg install <package>' for each.",
-            "⚠".yellow(),
-            failed
-        );
-    } else if restored > 0 {
-        println!(
-            "{} All {} plugins are present",
-            "✓".green().bold(),
-            restored
-        );
-    }
-
-    Ok(())
 }
 
 /// List installed plugins
