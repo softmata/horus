@@ -21,7 +21,7 @@ try:
     from horus._horus import (
         PyNode as _PyNode,
         PyNodeInfo as _NodeInfo,
-        PyTopic as Topic,  # Unified communication API
+        Topic,  # Unified communication API
         RouterClient,  # Explicit router connection management
         RouterServer,  # Router server management
         default_router_endpoint,  # Helper: "topic@router"

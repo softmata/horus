@@ -223,13 +223,24 @@ fn test_status_shows_capabilities() {
 // =============================================================================
 
 #[test]
-fn test_new_auto_creates_blackbox() {
+fn test_new_no_blackbox_by_default() {
     cleanup_stale_shm();
     let scheduler = Scheduler::new();
 
     assert!(
+        scheduler.blackbox().is_none(),
+        "new() should NOT auto-create BlackBox (opt-in via .with_blackbox())"
+    );
+}
+
+#[test]
+fn test_with_blackbox_creates_blackbox() {
+    cleanup_stale_shm();
+    let scheduler = Scheduler::new().with_blackbox(16);
+
+    assert!(
         scheduler.blackbox().is_some(),
-        "new() should auto-create BlackBox for crash analysis"
+        "with_blackbox() should create BlackBox"
     );
 }
 
@@ -238,7 +249,7 @@ fn test_blackbox_mut_accessor() {
     cleanup_stale_shm();
     use horus_core::scheduling::BlackBoxEvent;
 
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = Scheduler::new().with_blackbox(16);
 
     let bb = scheduler.blackbox_mut().expect("BlackBox should exist");
     bb.record(BlackBoxEvent::Custom {
@@ -250,7 +261,7 @@ fn test_blackbox_mut_accessor() {
 #[test]
 fn test_status_shows_blackbox() {
     cleanup_stale_shm();
-    let scheduler = Scheduler::new();
+    let scheduler = Scheduler::new().with_blackbox(16);
     let status = scheduler.status();
 
     assert!(
@@ -260,6 +271,19 @@ fn test_status_shows_blackbox() {
     assert!(
         status.contains("[x] BlackBox"),
         "status() should show BlackBox as enabled: {}",
+        status
+    );
+}
+
+#[test]
+fn test_status_no_blackbox_by_default() {
+    cleanup_stale_shm();
+    let scheduler = Scheduler::new();
+    let status = scheduler.status();
+
+    assert!(
+        status.contains("[ ] BlackBox"),
+        "status() should show BlackBox as disabled by default: {}",
         status
     );
 }

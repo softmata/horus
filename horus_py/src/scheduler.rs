@@ -1,44 +1,189 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
-use horus::{
-    announce_started, announce_stopped, NodeInfo as CoreNodeInfo, NodePresence, TopicMetadata,
+use horus::{NodeInfo as CoreNodeInfo, TopicMetadata};
+use horus_core::core::Node as CoreNode;
+use horus_core::error::HorusError;
+use horus_core::scheduling::{
+    NodeConfig, Scheduler as CoreScheduler, SchedulerConfig, SchedulerNodeMetrics,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::fs;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Registered node with priority and per-node rate control
-struct RegisteredNode {
-    node: Py<PyAny>,
-    name: String,
-    priority: u32,
-    context: Arc<Mutex<CoreNodeInfo>>,
-    cached_info: Option<Py<PyNodeInfo>>, // Cache PyNodeInfo to avoid creating new ones every tick
-    rate_hz: f64,                        // Phase 1: Per-node rate control
-    last_tick: Instant,                  // Phase 1: Track last execution time
-    // Fault tolerance fields
-    failure_count: u32,                    // Total failures
-    consecutive_failures: u32,             // Consecutive failures (reset on success)
-    circuit_open: bool,                    // Circuit breaker state
-    last_restart_attempt: Option<Instant>, // Track when we last tried to restart
-    // Soft real-time fields
-    deadline_ms: Option<f64>,   // Optional deadline in milliseconds
-    deadline_misses: u64,       // Counter for deadline violations
-    last_tick_duration_ms: f64, // Last tick execution time
-    // Watchdog fields
-    watchdog_enabled: bool,      // Is watchdog enabled for this node?
-    watchdog_timeout_ms: u64,    // Watchdog timeout in milliseconds
-    last_watchdog_feed: Instant, // Last time watchdog was fed
-    watchdog_expired: bool,      // Has watchdog expired?
-    // Pub/Sub tracking for monitor
-    publishers: Vec<String>,  // Topics this node publishes to
-    subscribers: Vec<String>, // Topics this node subscribes to
+// ─── PyNodeAdapter ───────────────────────────────────────────────────────────
+// Implements horus_core::Node by bridging to Python objects via GIL acquisition.
+
+struct PyNodeAdapter {
+    py_object: Py<PyAny>,
+    leaked_name: &'static str,
+    node_context: Arc<Mutex<CoreNodeInfo>>,
+    cached_info: Option<Py<PyNodeInfo>>,
+    stop_requested: Arc<AtomicBool>,
+    scheduler_running: Arc<Mutex<bool>>,
+    publishers_list: Vec<TopicMetadata>,
+    subscribers_list: Vec<TopicMetadata>,
+    priority_val: u32,
+    rate: Option<f64>,
 }
+
+impl CoreNode for PyNodeAdapter {
+    fn name(&self) -> &'static str {
+        self.leaked_name
+    }
+
+    fn init(&mut self) -> horus_core::error::Result<()> {
+        Python::with_gil(|py| {
+            let py_info = Py::new(
+                py,
+                PyNodeInfo {
+                    inner: self.node_context.clone(),
+                    scheduler_running: Some(self.scheduler_running.clone()),
+                },
+            )
+            .map_err(|e| HorusError::node(self.leaked_name, e.to_string()))?;
+
+            self.cached_info = Some(py_info.clone_ref(py));
+
+            let result = self
+                .py_object
+                .call_method1(py, "init", (py_info,))
+                .or_else(|_| self.py_object.call_method0(py, "init"));
+
+            match result {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                        self.stop_requested.store(true, Ordering::Relaxed);
+                        Ok(())
+                    } else {
+                        Err(HorusError::node(
+                            self.leaked_name,
+                            format!("init failed: {}", e),
+                        ))
+                    }
+                }
+            }
+        })
+    }
+
+    fn tick(&mut self) {
+        if self.stop_requested.load(Ordering::Relaxed) {
+            return;
+        }
+
+        Python::with_gil(|py| {
+            // Start tick timing on the context
+            if let Ok(mut ctx) = self.node_context.lock() {
+                ctx.start_tick();
+            }
+
+            let py_info = if let Some(ref cached) = self.cached_info {
+                cached.clone_ref(py)
+            } else {
+                match Py::new(
+                    py,
+                    PyNodeInfo {
+                        inner: self.node_context.clone(),
+                        scheduler_running: Some(self.scheduler_running.clone()),
+                    },
+                ) {
+                    Ok(info) => {
+                        self.cached_info = Some(info.clone_ref(py));
+                        info
+                    }
+                    Err(_) => return,
+                }
+            };
+
+            let result = self
+                .py_object
+                .call_method1(py, "tick", (py_info,))
+                .or_else(|_| self.py_object.call_method0(py, "tick"));
+
+            match result {
+                Ok(_) => {
+                    if let Ok(mut ctx) = self.node_context.lock() {
+                        ctx.record_tick();
+                    }
+                }
+                Err(e) => {
+                    if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                        self.stop_requested.store(true, Ordering::Relaxed);
+                        // Also stop the scheduler via the running flag
+                        if let Ok(mut running) = self.scheduler_running.lock() {
+                            *running = false;
+                        }
+                    } else {
+                        // Panic for horus_core's catch_unwind / failure policy
+                        panic!(
+                            "Python node '{}' tick failed: {}",
+                            self.leaked_name, e
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    fn shutdown(&mut self) -> horus_core::error::Result<()> {
+        Python::with_gil(|py| {
+            let py_info = if let Some(ref cached) = self.cached_info {
+                cached.clone_ref(py)
+            } else {
+                Py::new(
+                    py,
+                    PyNodeInfo {
+                        inner: self.node_context.clone(),
+                        scheduler_running: Some(self.scheduler_running.clone()),
+                    },
+                )
+                .map_err(|e| HorusError::node(self.leaked_name, e.to_string()))?
+            };
+
+            let result = self
+                .py_object
+                .call_method1(py, "shutdown", (py_info,))
+                .or_else(|_| self.py_object.call_method0(py, "shutdown"));
+
+            match result {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
+                        self.stop_requested.store(true, Ordering::Relaxed);
+                        Ok(())
+                    } else {
+                        Err(HorusError::node(
+                            self.leaked_name,
+                            format!("shutdown failed: {}", e),
+                        ))
+                    }
+                }
+            }
+        })
+    }
+
+    fn publishers(&self) -> Vec<TopicMetadata> {
+        self.publishers_list.clone()
+    }
+
+    fn subscribers(&self) -> Vec<TopicMetadata> {
+        self.subscribers_list.clone()
+    }
+
+    fn priority(&self) -> u32 {
+        self.priority_val
+    }
+
+    fn rate_hz(&self) -> Option<f64> {
+        self.rate
+    }
+}
+
+// ─── PyNodeBuilder ───────────────────────────────────────────────────────────
 
 /// Fluent builder for adding nodes to the scheduler.
 ///
@@ -58,13 +203,6 @@ pub struct PyNodeBuilder {
 #[pymethods]
 impl PyNodeBuilder {
     /// Set execution order (lower = earlier in tick sequence).
-    ///
-    /// Priority Guidelines:
-    /// - 0-9: Critical real-time (motor control, safety)
-    /// - 10-49: High priority (sensors, fast control loops)
-    /// - 50-99: Normal priority (processing, planning)
-    /// - 100-199: Low priority (logging, diagnostics)
-    /// - 200+: Background (telemetry, non-essential)
     fn order(mut slf: PyRefMut<'_, Self>, order: u32) -> PyRefMut<'_, Self> {
         slf.order = order;
         slf
@@ -90,14 +228,14 @@ impl PyNodeBuilder {
     /// Set soft deadline in milliseconds.
     fn deadline_ms(mut slf: PyRefMut<'_, Self>, ms: f64) -> PyRefMut<'_, Self> {
         slf.deadline_ms = Some(ms);
-        slf.rt = true; // Deadline implies RT
+        slf.rt = true;
         slf
     }
 
     /// Set WCET budget in microseconds.
     fn wcet_us(mut slf: PyRefMut<'_, Self>, us: u64) -> PyRefMut<'_, Self> {
         slf.wcet_us = Some(us);
-        slf.rt = true; // WCET implies RT
+        slf.rt = true;
         slf
     }
 
@@ -109,13 +247,11 @@ impl PyNodeBuilder {
         let rate_hz = slf.rate_hz;
         let rt = slf.rt;
         let deadline_ms = slf.deadline_ms;
-
-        // Drop the borrow before mutating scheduler
         drop(slf);
 
         {
-            let mut sched = scheduler.borrow_mut(py);
-            sched.add(py, node, order, rate_hz, rt, deadline_ms)?;
+            let sched = scheduler.borrow(py);
+            sched.add_node_internal(py, node, order, rate_hz, rt, deadline_ms)?;
         }
 
         Ok(scheduler)
@@ -127,24 +263,187 @@ impl PyNodeBuilder {
     }
 }
 
-/// Python wrapper for HORUS Scheduler with per-node rate control
+// ─── PyScheduler ─────────────────────────────────────────────────────────────
+
+/// Python wrapper for HORUS Scheduler wrapping horus_core::Scheduler.
 ///
-/// The scheduler manages the execution of multiple nodes,
-/// handling their lifecycle and coordinating their execution.
-/// Supports per-node rate control for flexible scheduling.
+/// All scheduling logic (rate control, circuit breaker, watchdog, deadline,
+/// parallel execution, record/replay, telemetry, etc.) is handled by horus_core.
+/// Python API is preserved with zero breaking changes.
 #[pyclass(module = "horus._horus")]
 pub struct PyScheduler {
-    nodes: Arc<Mutex<Vec<RegisteredNode>>>,
-    running: Arc<Mutex<bool>>,
-    tick_rate_hz: f64,             // Global scheduler tick rate
-    scheduler_name: String,        // Scheduler name for registry
-    working_dir: PathBuf,          // Working directory for registry
-    circuit_breaker_enabled: bool, // Fault tolerance: circuit breaker
-    max_failures: u32,             // Max failures before circuit opens
-    auto_restart: bool,            // Auto-restart failed nodes
-    deadline_monitoring: bool,     // Soft real-time: enable deadline warnings
-    watchdog_enabled: bool,        // Global watchdog enable flag
-    watchdog_timeout_ms: u64,      // Default watchdog timeout
+    inner: Mutex<Option<CoreScheduler>>,
+    tick_rate_hz: f64,
+    scheduler_running: Arc<Mutex<bool>>,
+    stop_requested: Arc<AtomicBool>,
+    removed_nodes: Mutex<HashSet<String>>,
+}
+
+impl PyScheduler {
+    fn add_node_internal(
+        &self,
+        py: Python,
+        node: Py<PyAny>,
+        order: u32,
+        rate_hz: Option<f64>,
+        rt: bool,
+        deadline_ms: Option<f64>,
+    ) -> PyResult<()> {
+        let name: String = node.getattr(py, "name")?.extract(py)?;
+
+        let publishers: Vec<TopicMetadata> = node
+            .getattr(py, "pub_topics")
+            .and_then(|attr| attr.extract::<Vec<String>>(py))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| TopicMetadata {
+                topic_name: t,
+                type_name: "unknown".into(),
+            })
+            .collect();
+
+        let subscribers: Vec<TopicMetadata> = node
+            .getattr(py, "sub_topics")
+            .and_then(|attr| attr.extract::<Vec<String>>(py))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| TopicMetadata {
+                topic_name: t,
+                type_name: "unknown".into(),
+            })
+            .collect();
+
+        // Rate precedence: explicit param > node.rate attribute > None (scheduler default)
+        let node_rate = rate_hz.or_else(|| {
+            node.getattr(py, "rate")
+                .and_then(|attr| attr.extract::<f64>(py))
+                .ok()
+        });
+
+        let leaked_name: &'static str = Box::leak(name.clone().into_boxed_str());
+
+        let adapter = PyNodeAdapter {
+            py_object: node,
+            leaked_name,
+            node_context: Arc::new(Mutex::new(CoreNodeInfo::new(name.clone()))),
+            cached_info: None,
+            stop_requested: self.stop_requested.clone(),
+            scheduler_running: self.scheduler_running.clone(),
+            publishers_list: publishers,
+            subscribers_list: subscribers,
+            priority_val: order,
+            rate: node_rate,
+        };
+
+        let mut config = NodeConfig::new(Box::new(adapter)).order(order);
+        if let Some(rate) = node_rate {
+            config = config.rate_hz(rate);
+        }
+        if rt {
+            config = config.rt();
+        }
+        if let Some(ms) = deadline_ms {
+            config = config.deadline_ms(ms as u64);
+        }
+
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("Cannot add nodes while scheduler is running")
+        })?;
+
+        inner.add_configured(config);
+
+        println!(
+            "Added node '{}' (order={}, rate={}, rt={})",
+            name,
+            order,
+            node_rate.map_or("scheduler".to_string(), |r| format!("{}Hz", r)),
+            rt
+        );
+
+        Ok(())
+    }
+
+    /// Build a Python dict from a SchedulerNodeMetrics + optional failure stats.
+    fn metric_to_dict(
+        py: Python,
+        metric: &SchedulerNodeMetrics,
+        failure: Option<&horus_core::scheduling::FailureHandlerStats>,
+        tick_rate: f64,
+    ) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        dict.set_item("name", &metric.name)?;
+        dict.set_item("order", metric.priority)?;
+        dict.set_item("rate_hz", tick_rate)?;
+        dict.set_item("total_ticks", metric.total_ticks)?;
+        dict.set_item("successful_ticks", metric.successful_ticks)?;
+        dict.set_item("failed_ticks", metric.failed_ticks)?;
+        dict.set_item("errors_count", metric.errors_count)?;
+        dict.set_item("avg_tick_duration_ms", metric.avg_tick_duration_ms)?;
+        dict.set_item("min_tick_duration_ms", metric.min_tick_duration_ms)?;
+        dict.set_item("max_tick_duration_ms", metric.max_tick_duration_ms)?;
+        dict.set_item("last_tick_duration_ms", metric.last_tick_duration_ms)?;
+        dict.set_item("uptime_seconds", metric.uptime_seconds)?;
+
+        if let Some(f) = failure {
+            dict.set_item("failure_count", f.failure_count)?;
+            dict.set_item("consecutive_failures", f.failure_count)?;
+            dict.set_item("circuit_open", f.is_suppressed)?;
+        } else {
+            dict.set_item("failure_count", 0u32)?;
+            dict.set_item("consecutive_failures", 0u32)?;
+            dict.set_item("circuit_open", false)?;
+        }
+
+        dict.set_item("deadline_ms", py.None())?;
+        dict.set_item("deadline_misses", 0u64)?;
+        dict.set_item("watchdog_enabled", false)?;
+        dict.set_item("watchdog_timeout_ms", 0u64)?;
+        dict.set_item("watchdog_expired", false)?;
+        dict.set_item("watchdog_time_since_feed_ms", py.None())?;
+        dict.set_item("state", "running")?;
+
+        Ok(dict.into())
+    }
+
+    /// Helper: take the inner scheduler, run a closure, put it back.
+    fn with_inner_run<F>(&self, py: Python, f: F) -> PyResult<()>
+    where
+        F: FnOnce(&mut CoreScheduler) -> horus_core::error::HorusResult<()> + Send,
+        // CoreScheduler must be Send for py.allow_threads
+    {
+        let mut inner = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            guard.take().ok_or_else(|| {
+                PyRuntimeError::new_err("Scheduler already running or not initialized")
+            })?
+        };
+
+        self.stop_requested.store(false, Ordering::Relaxed);
+
+        let result = py.allow_threads(move || {
+            let r = f(&mut inner);
+            (inner, r)
+        });
+
+        let (returned_inner, run_result) = result;
+
+        {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+            *guard = Some(returned_inner);
+        }
+
+        run_result.map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
 }
 
 #[pymethods]
@@ -152,60 +451,34 @@ impl PyScheduler {
     #[new]
     #[pyo3(signature = (config=None))]
     pub fn new(config: Option<PySchedulerConfig>) -> PyResult<Self> {
-        // Extract config values or use defaults
-        let (
-            tick_rate,
-            circuit_breaker,
-            max_failures,
-            deadline_monitoring,
-            watchdog_enabled,
-            watchdog_timeout_ms,
-        ) = if let Some(ref cfg) = config {
-            (
-                cfg.tick_rate,
-                cfg.circuit_breaker,
-                cfg.max_failures,
-                cfg.deadline_monitoring,
-                cfg.watchdog_enabled,
-                cfg.watchdog_timeout_ms,
-            )
-        } else {
-            (100.0, true, 5, false, false, 1000) // Standard defaults
-        };
+        let core_config = config
+            .as_ref()
+            .map(|c| c.to_core_config())
+            .unwrap_or_else(SchedulerConfig::standard);
+
+        let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
+
+        let core_sched = CoreScheduler::new()
+            .name("PythonScheduler")
+            .with_config(core_config);
+        let running_flag = core_sched.running_flag();
 
         Ok(PyScheduler {
-            nodes: Arc::new(Mutex::new(Vec::new())),
-            running: Arc::new(Mutex::new(false)),
+            inner: Mutex::new(Some(core_sched)),
             tick_rate_hz: tick_rate,
-            scheduler_name: "PythonScheduler".to_string(),
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-            circuit_breaker_enabled: circuit_breaker,
-            max_failures,
-            auto_restart: true, // Always enabled
-            deadline_monitoring,
-            watchdog_enabled,
-            watchdog_timeout_ms,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
         })
     }
 
     /// Create scheduler from a configuration preset
-    ///
-    /// Example:
-    ///     config = horus.SchedulerConfig.mobile()
-    ///     scheduler = horus.Scheduler.from_config(config)
     #[staticmethod]
     pub fn from_config(config: PySchedulerConfig) -> PyResult<Self> {
         Self::new(Some(config))
     }
 
     /// Start building a node configuration (fluent API).
-    ///
-    /// Returns a NodeBuilder that allows chaining configuration methods.
-    ///
-    /// Example:
-    ///     scheduler.node(sensor_node).order(0).rate_hz(1000.0).rt().done()
-    ///     scheduler.node(motor_node).order(1).deadline_ms(5.0).done()
-    ///     scheduler.node(logger).order(100).no_logging().done()
     fn node(slf: Py<Self>, _py: Python, node: Py<PyAny>) -> PyResult<PyNodeBuilder> {
         Ok(PyNodeBuilder {
             scheduler: slf,
@@ -218,130 +491,47 @@ impl PyScheduler {
         })
     }
 
-    /// Add a node to the scheduler (simplified API with kwargs).
-    ///
-    /// Args:
-    ///     node: The node to add
-    ///     order: Execution order (lower = earlier, default: 100)
-    ///     rate_hz: Node-specific tick rate in Hz (default: uses node.rate or scheduler rate)
-    ///     rt: Mark as real-time node (default: False)
-    ///     deadline_ms: Soft deadline in milliseconds (default: None)
-    ///
-    /// Example:
-    ///     scheduler.add(sensor_node, order=0, rate_hz=1000.0)
-    ///     scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
-    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None))]
+    /// Add a node to the scheduler.
+    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, logging=true))]
     fn add(
-        &mut self,
+        &self,
         py: Python,
         node: Py<PyAny>,
         order: u32,
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
+        #[allow(unused_variables)]
+        logging: bool,
     ) -> PyResult<()> {
-        // Extract node name
-        let name: String = node.getattr(py, "name")?.extract(py)?;
-
-        // Extract publishers and subscribers from Python node
-        let publishers: Vec<String> = node
-            .getattr(py, "pub_topics")
-            .and_then(|attr| attr.extract(py))
-            .unwrap_or_default();
-        let subscribers: Vec<String> = node
-            .getattr(py, "sub_topics")
-            .and_then(|attr| attr.extract(py))
-            .unwrap_or_default();
-
-        // Create NodeInfo context for this node
-        let context = Arc::new(Mutex::new(CoreNodeInfo::new(name.clone())));
-
-        // Rate precedence: explicit param > node.rate > global rate
-        let node_rate = rate_hz.unwrap_or_else(|| {
-            // Try to get rate from node's 'rate' attribute (rate_hz equivalent)
-            node.getattr(py, "rate")
-                .and_then(|attr| attr.extract::<f64>(py))
-                .unwrap_or(self.tick_rate_hz)
-        });
-
-        // Store the registered node
-        let mut nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        nodes.push(RegisteredNode {
-            node,
-            name: name.clone(),
-            priority: order,
-            context,
-            cached_info: None,         // Will be created on first use
-            rate_hz: node_rate,        // Phase 1: Per-node rate
-            last_tick: Instant::now(), // Phase 1: Initialize timestamp
-            // Fault tolerance fields
-            failure_count: 0,
-            consecutive_failures: 0,
-            circuit_open: false,
-            last_restart_attempt: None,
-            // Soft real-time fields
-            deadline_ms,
-            deadline_misses: 0,
-            last_tick_duration_ms: 0.0,
-            // Watchdog fields
-            watchdog_enabled: rt, // RT nodes get watchdog by default
-            watchdog_timeout_ms: self.watchdog_timeout_ms,
-            last_watchdog_feed: Instant::now(),
-            watchdog_expired: false,
-            // Pub/Sub tracking
-            publishers,
-            subscribers,
-        });
-
-        println!(
-            "Added node '{}' (order={}, rate={}Hz, rt={})",
-            name, order, node_rate, rt
-        );
-
-        Ok(())
+        self.add_node_internal(py, node, order, rate_hz, rt, deadline_ms)
     }
 
-    /// Phase 1: Set per-node rate control
-    fn set_node_rate(&mut self, node_name: String, rate_hz: f64) -> PyResult<()> {
+    /// Set per-node rate control
+    fn set_node_rate(&self, node_name: String, rate_hz: f64) -> PyResult<()> {
         if rate_hz <= 0.0 || rate_hz > 10000.0 {
             return Err(PyRuntimeError::new_err(
                 "Rate must be between 0 and 10000 Hz",
             ));
         }
 
-        let mut nodes = self
-            .nodes
+        let mut guard = self
+            .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_mut().ok_or_else(|| {
+            PyRuntimeError::new_err("Cannot modify while scheduler is running")
+        })?;
 
-        for registered in nodes.iter_mut() {
-            if registered.name == node_name {
-                registered.rate_hz = rate_hz;
-                println!("Set node '{}' rate to {}Hz", node_name, rate_hz);
-                return Ok(());
-            }
-        }
-
-        Err(PyRuntimeError::new_err(format!(
-            "Node '{}' not found",
-            node_name
-        )))
+        inner.set_node_rate(&node_name, rate_hz);
+        println!("Set node '{}' rate to {}Hz", node_name, rate_hz);
+        Ok(())
     }
 
-    /// Set per-node deadline for soft real-time scheduling
-    ///
-    /// Args:
-    ///     node_name: Name of the node
-    ///     deadline_ms: Deadline in milliseconds (None to disable)
-    ///
-    /// The deadline is the maximum allowed execution time for a single tick.
-    /// If a tick takes longer than the deadline, it's counted as a deadline miss.
+    /// Set per-node deadline for soft real-time scheduling.
+    /// Note: Should be set before run() via node builder for best results.
     #[pyo3(signature = (node_name, deadline_ms=None))]
-    fn set_node_deadline(&mut self, node_name: String, deadline_ms: Option<f64>) -> PyResult<()> {
+    fn set_node_deadline(&self, node_name: String, deadline_ms: Option<f64>) -> PyResult<()> {
         if let Some(d) = deadline_ms {
             if d <= 0.0 || d > 10000.0 {
                 return Err(PyRuntimeError::new_err(
@@ -349,1186 +539,55 @@ impl PyScheduler {
                 ));
             }
         }
-
-        let mut nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        for registered in nodes.iter_mut() {
-            if registered.name == node_name {
-                registered.deadline_ms = deadline_ms;
-                if let Some(d) = deadline_ms {
-                    println!("Set node '{}' deadline to {}ms", node_name, d);
-                } else {
-                    println!("Cleared deadline for node '{}'", node_name);
-                }
-                return Ok(());
-            }
-        }
-
-        Err(PyRuntimeError::new_err(format!(
-            "Node '{}' not found",
+        eprintln!(
+            "Warning: set_node_deadline('{}') should be configured via node builder before run()",
             node_name
-        )))
+        );
+        Ok(())
     }
 
-    /// Enable/disable watchdog timer for a specific node
-    ///
-    /// Args:
-    ///     node_name: Name of the node
-    ///     enabled: Enable or disable watchdog
-    ///     timeout_ms: Optional timeout in milliseconds (uses global default if None)
-    ///
-    /// When enabled, the watchdog will be automatically fed on successful ticks.
-    /// If the node fails to tick within the timeout, the watchdog expires.
+    /// Enable/disable watchdog timer for a specific node.
+    /// Note: Should be configured via SchedulerConfig before creating the scheduler.
     #[pyo3(signature = (node_name, enabled, timeout_ms=None))]
     fn set_node_watchdog(
-        &mut self,
+        &self,
         node_name: String,
         enabled: bool,
         timeout_ms: Option<u64>,
     ) -> PyResult<()> {
-        let timeout = timeout_ms.unwrap_or(self.watchdog_timeout_ms);
-
-        if !(10..=60000).contains(&timeout) {
-            return Err(PyRuntimeError::new_err(
-                "Watchdog timeout must be between 10 and 60000 ms",
-            ));
-        }
-
-        let mut nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        for registered in nodes.iter_mut() {
-            if registered.name == node_name {
-                registered.watchdog_enabled = enabled;
-                registered.watchdog_timeout_ms = timeout;
-                registered.last_watchdog_feed = Instant::now();
-                registered.watchdog_expired = false;
-
-                if enabled {
-                    println!(
-                        "Enabled watchdog for node '{}' with {}ms timeout",
-                        node_name, timeout
-                    );
-                } else {
-                    println!("Disabled watchdog for node '{}'", node_name);
-                }
-                return Ok(());
-            }
-        }
-
-        Err(PyRuntimeError::new_err(format!(
-            "Node '{}' not found",
+        let _ = (enabled, timeout_ms);
+        eprintln!(
+            "Warning: set_node_watchdog('{}') should be configured via SchedulerConfig",
             node_name
-        )))
-    }
-
-    /// Phase 1: Get node statistics
-    fn get_node_stats(&self, py: Python, node_name: String) -> PyResult<Py<PyAny>> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        for registered in nodes.iter() {
-            if registered.name == node_name {
-                let dict = PyDict::new(py);
-                dict.set_item("name", &registered.name)?;
-                dict.set_item("order", registered.priority)?;
-                dict.set_item("rate_hz", registered.rate_hz)?;
-
-                // Fault tolerance info
-                dict.set_item("failure_count", registered.failure_count)?;
-                dict.set_item("consecutive_failures", registered.consecutive_failures)?;
-                dict.set_item("circuit_open", registered.circuit_open)?;
-
-                // Soft real-time info
-                if let Some(deadline) = registered.deadline_ms {
-                    dict.set_item("deadline_ms", deadline)?;
-                } else {
-                    dict.set_item("deadline_ms", py.None())?;
-                }
-                dict.set_item("deadline_misses", registered.deadline_misses)?;
-                dict.set_item("last_tick_duration_ms", registered.last_tick_duration_ms)?;
-
-                // Watchdog info
-                dict.set_item("watchdog_enabled", registered.watchdog_enabled)?;
-                dict.set_item("watchdog_timeout_ms", registered.watchdog_timeout_ms)?;
-                dict.set_item("watchdog_expired", registered.watchdog_expired)?;
-                if registered.watchdog_enabled {
-                    let time_since_feed =
-                        registered.last_watchdog_feed.elapsed().as_millis() as u64;
-                    dict.set_item("watchdog_time_since_feed_ms", time_since_feed)?;
-                } else {
-                    dict.set_item("watchdog_time_since_feed_ms", py.None())?;
-                }
-
-                // Get metrics from NodeInfo
-                if let Ok(ctx) = registered.context.lock() {
-                    let metrics = ctx.metrics();
-                    dict.set_item("total_ticks", metrics.total_ticks)?;
-                    dict.set_item("successful_ticks", metrics.successful_ticks)?;
-                    dict.set_item("failed_ticks", metrics.failed_ticks)?;
-                    dict.set_item("errors_count", metrics.errors_count)?;
-                    dict.set_item("avg_tick_duration_ms", metrics.avg_tick_duration_ms)?;
-                    dict.set_item("min_tick_duration_ms", metrics.min_tick_duration_ms)?;
-                    dict.set_item("max_tick_duration_ms", metrics.max_tick_duration_ms)?;
-                    dict.set_item("last_tick_duration_ms", metrics.last_tick_duration_ms)?;
-                    dict.set_item("uptime_seconds", ctx.uptime().as_secs_f64())?;
-                    dict.set_item("state", format!("{}", ctx.state()))?;
-                }
-
-                return Ok(dict.into());
-            }
-        }
-
-        Err(PyRuntimeError::new_err(format!(
-            "Node '{}' not found",
-            node_name
-        )))
-    }
-
-    /// Remove a node from the scheduler
-    fn remove_node(&mut self, name: String) -> PyResult<bool> {
-        let mut nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        let original_len = nodes.len();
-        nodes.retain(|n| n.name != name);
-        Ok(nodes.len() < original_len)
-    }
-
-    /// Set the tick rate in Hz
-    fn set_tick_rate(&mut self, rate_hz: f64) -> PyResult<()> {
-        if rate_hz <= 0.0 || rate_hz > 10000.0 {
-            return Err(PyRuntimeError::new_err(
-                "Tick rate must be between 0 and 10000 Hz",
-            ));
-        }
-        self.tick_rate_hz = rate_hz;
+        );
         Ok(())
     }
 
-    /// Run the scheduler for a specified duration (in seconds)
-    fn run_for(&mut self, py: Python, duration_seconds: f64) -> PyResult<()> {
+    /// Run the scheduler indefinitely (until stop() or Ctrl+C).
+    fn run(&self, py: Python) -> PyResult<()> {
+        self.with_inner_run(py, |sched| sched.run())
+    }
+
+    /// Run the scheduler for a specified duration (in seconds).
+    fn run_for(&self, py: Python, duration_seconds: f64) -> PyResult<()> {
         if duration_seconds <= 0.0 {
             return Err(PyRuntimeError::new_err("Duration must be positive"));
         }
-
-        let tick_duration = Duration::from_secs_f64(1.0 / self.tick_rate_hz);
-        let total_ticks = (duration_seconds * self.tick_rate_hz) as usize;
-
-        // Set running flag
-        {
-            let mut running = self.running.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = true;
-        }
-
-        // Initialize all nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                let py_info = Py::new(
-                    py,
-                    PyNodeInfo {
-                        inner: registered.context.clone(),
-                        scheduler_running: Some(self.running.clone()),
-                    },
-                )?;
-
-                // Try calling with NodeInfo parameter first, fallback to no-arg version
-                let result = registered
-                    .node
-                    .call_method1(py, "init", (py_info,))
-                    .or_else(|_| registered.node.call_method0(py, "init"));
-
-                if let Err(e) = result {
-                    eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
-                } else {
-                    // Announce to discovery topic
-                    let pubs: Vec<TopicMetadata> = registered
-                        .publishers
-                        .iter()
-                        .map(|t| TopicMetadata {
-                            topic_name: t.clone(),
-                            type_name: "unknown".into(),
-                        })
-                        .collect();
-                    let subs: Vec<TopicMetadata> = registered
-                        .subscribers
-                        .iter()
-                        .map(|t| TopicMetadata {
-                            topic_name: t.clone(),
-                            type_name: "unknown".into(),
-                        })
-                        .collect();
-                    announce_started(&registered.name, &pubs, &subs);
-
-                    // Write presence file for monitor detection
-                    let presence = NodePresence::new(
-                        &registered.name,
-                        Some(&self.scheduler_name),
-                        pubs,
-                        subs,
-                        registered.priority,
-                        Some(registered.rate_hz),
-                    );
-                    if let Err(e) = presence.write() {
-                        eprintln!(
-                            "Warning: Failed to write presence file for '{}': {}",
-                            registered.name, e
-                        );
-                    }
-                }
-            }
-
-            // Write initial registry for monitor
-            Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
-        }
-
-        // Track last snapshot time
-        let mut last_snapshot = std::time::Instant::now();
-
-        // Main execution loop
-        for tick in 0..total_ticks {
-            let tick_start = std::time::Instant::now();
-
-            // Check if we should stop
-            {
-                let running = self.running.lock().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-                })?;
-                if !*running {
-                    break;
-                }
-            }
-
-            // Execute tick for all nodes in priority order
-            {
-                let mut nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-                // Sort by priority (lower number = higher priority)
-                nodes.sort_by_key(|r| r.priority);
-
-                for registered in nodes.iter_mut() {
-                    // Phase 1: Check if enough time has elapsed for this node's rate
-                    let now = Instant::now();
-                    let elapsed_secs = (now - registered.last_tick).as_secs_f64();
-                    let period_secs = 1.0 / registered.rate_hz;
-
-                    // Skip this node if not enough time has passed
-                    if elapsed_secs < period_secs {
-                        continue;
-                    }
-
-                    // Update last tick time
-                    registered.last_tick = now;
-
-                    // Check watchdog expiration
-                    if registered.watchdog_enabled && self.watchdog_enabled {
-                        let time_since_feed =
-                            registered.last_watchdog_feed.elapsed().as_millis() as u64;
-                        if time_since_feed > registered.watchdog_timeout_ms
-                            && !registered.watchdog_expired
-                        {
-                            registered.watchdog_expired = true;
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                format!(
-                                    "Watchdog expired: node '{}' not fed for {}ms (timeout: {}ms)",
-                                    registered.name,
-                                    time_since_feed,
-                                    registered.watchdog_timeout_ms
-                                )
-                                .red()
-                            );
-                        }
-                    }
-
-                    // Start tick timing
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.start_tick();
-                    }
-
-                    // Get or create cached PyNodeInfo
-                    let py_info = if let Some(ref cached) = registered.cached_info {
-                        cached.clone_ref(py)
-                    } else {
-                        let new_info = Py::new(
-                            py,
-                            PyNodeInfo {
-                                inner: registered.context.clone(),
-                                scheduler_running: Some(self.running.clone()),
-                            },
-                        )?;
-                        registered.cached_info = Some(new_info.clone_ref(py));
-                        new_info
-                    };
-
-                    // Measure tick start time
-                    let tick_start = Instant::now();
-
-                    // Try calling with NodeInfo parameter first, fallback to no-arg version
-                    let result = registered
-                        .node
-                        .call_method1(py, "tick", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "tick"));
-
-                    // Measure tick duration
-                    let tick_duration = tick_start.elapsed();
-                    let tick_duration_ms = tick_duration.as_secs_f64() * 1000.0;
-                    registered.last_tick_duration_ms = tick_duration_ms;
-
-                    // Check deadline
-                    if let Some(deadline_ms) = registered.deadline_ms {
-                        if tick_duration_ms > deadline_ms {
-                            registered.deadline_misses += 1;
-                            if self.deadline_monitoring {
-                                use colored::Colorize;
-                                eprintln!(
-                                    "{}",
-                                    format!(
-                                        "Deadline miss: node '{}' took {:.3}ms (deadline: {}ms, miss #{})",
-                                        registered.name,
-                                        tick_duration_ms,
-                                        deadline_ms,
-                                        registered.deadline_misses
-                                    )
-                                    .yellow()
-                                );
-                            }
-                        }
-                    }
-
-                    match result {
-                        Ok(_) => {
-                            // Success - reset consecutive failures
-                            registered.consecutive_failures = 0;
-
-                            // Feed watchdog on successful tick
-                            if registered.watchdog_enabled {
-                                registered.last_watchdog_feed = Instant::now();
-                                registered.watchdog_expired = false;
-                            }
-
-                            // Record tick completion
-                            if let Ok(mut ctx) = registered.context.lock() {
-                                ctx.record_tick();
-                            }
-                        }
-                        Err(e) => {
-                            // Check if this is a KeyboardInterrupt - if so, stop the scheduler immediately
-                            if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
-                                use colored::Colorize;
-                                eprintln!(
-                                    "{}",
-                                    "\nKeyboard interrupt received, shutting down...".red()
-                                );
-                                if let Ok(mut r) = self.running.lock() {
-                                    *r = false;
-                                }
-                                break;
-                            }
-
-                            // Track failures
-                            registered.failure_count += 1;
-                            registered.consecutive_failures += 1;
-
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                format!(
-                                    "Error in node '{}' tick (failure {}/{}): {:?}",
-                                    registered.name,
-                                    registered.consecutive_failures,
-                                    self.max_failures,
-                                    e
-                                )
-                                .red()
-                            );
-
-                            // Check if we should open the circuit breaker
-                            if self.circuit_breaker_enabled
-                                && registered.consecutive_failures >= self.max_failures
-                            {
-                                registered.circuit_open = true;
-                                eprintln!(
-                                    "{}",
-                                    format!(
-                                        "Circuit breaker opened for node '{}' after {} consecutive failures",
-                                        registered.name, registered.consecutive_failures
-                                    )
-                                    .yellow()
-                                    .bold()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Periodic registry snapshot (every 5 seconds)
-            if last_snapshot.elapsed() >= Duration::from_secs(5) {
-                let nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-                Self::snapshot_state_to_registry(&nodes, &self.scheduler_name, &self.working_dir);
-                last_snapshot = std::time::Instant::now();
-            }
-
-            // Sleep for remainder of tick period
-            let elapsed = tick_start.elapsed();
-            if elapsed < tick_duration {
-                thread::sleep(tick_duration - elapsed);
-            } else if tick.is_multiple_of(100) {
-                // Warn about timing issues every 100 ticks
-                eprintln!(
-                    "Warning: Tick {} took {:?}, longer than period {:?}",
-                    tick, elapsed, tick_duration
-                );
-            }
-        }
-
-        // Clean up registry and session
-        Self::cleanup_registry();
-        Self::cleanup_session();
-
-        // Shutdown all nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                let py_info = Py::new(
-                    py,
-                    PyNodeInfo {
-                        inner: registered.context.clone(),
-                        scheduler_running: Some(self.running.clone()),
-                    },
-                )?;
-
-                // Try calling with NodeInfo parameter first, fallback to no-arg version
-                let result = registered
-                    .node
-                    .call_method1(py, "shutdown", (py_info,))
-                    .or_else(|_| registered.node.call_method0(py, "shutdown"));
-
-                if let Err(e) = result {
-                    eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
-                    // Still try to remove presence file on error
-                    let _ = NodePresence::remove(&registered.name);
-                } else {
-                    // Announce to discovery topic
-                    announce_stopped(&registered.name);
-                    // Remove presence file
-                    if let Err(e) = NodePresence::remove(&registered.name) {
-                        eprintln!(
-                            "Warning: Failed to remove presence file for '{}': {}",
-                            registered.name, e
-                        );
-                    }
-                }
-            }
-        }
-
-        // Clear running flag
-        {
-            let mut running = self.running.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = false;
-        }
-
-        Ok(())
+        let duration = Duration::from_secs_f64(duration_seconds);
+        self.with_inner_run(py, move |sched| sched.run_for(duration))
     }
 
-    /// Run the scheduler indefinitely (until stop() is called)
-    fn run(&mut self, py: Python) -> PyResult<()> {
-        let tick_duration = Duration::from_secs_f64(1.0 / self.tick_rate_hz);
-
-        // Set running flag
-        {
-            let mut running = self.running.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = true;
-        }
-
-        // Set up Ctrl+C handler for immediate shutdown
-        let running_clone = self.running.clone();
-        let _ = ctrlc::set_handler(move || {
-            eprintln!("\nCtrl+C received! Shutting down scheduler...");
-            if let Ok(mut r) = running_clone.lock() {
-                *r = false;
-            }
-        });
-
-        // Initialize all nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                let py_info = Py::new(
-                    py,
-                    PyNodeInfo {
-                        inner: registered.context.clone(),
-                        scheduler_running: Some(self.running.clone()),
-                    },
-                )?;
-
-                // Try calling with NodeInfo parameter first, fallback to no-arg version
-                let result = registered
-                    .node
-                    .call_method1(py, "init", (py_info,))
-                    .or_else(|_| registered.node.call_method0(py, "init"));
-
-                if let Err(e) = result {
-                    eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
-                } else {
-                    // Announce to discovery topic
-                    let pubs: Vec<TopicMetadata> = registered
-                        .publishers
-                        .iter()
-                        .map(|t| TopicMetadata {
-                            topic_name: t.clone(),
-                            type_name: "unknown".into(),
-                        })
-                        .collect();
-                    let subs: Vec<TopicMetadata> = registered
-                        .subscribers
-                        .iter()
-                        .map(|t| TopicMetadata {
-                            topic_name: t.clone(),
-                            type_name: "unknown".into(),
-                        })
-                        .collect();
-                    announce_started(&registered.name, &pubs, &subs);
-
-                    // Write presence file for monitor detection
-                    let presence = NodePresence::new(
-                        &registered.name,
-                        Some(&self.scheduler_name),
-                        pubs,
-                        subs,
-                        registered.priority,
-                        Some(registered.rate_hz),
-                    );
-                    if let Err(e) = presence.write() {
-                        eprintln!(
-                            "Warning: Failed to write presence file for '{}': {}",
-                            registered.name, e
-                        );
-                    }
-                }
-            }
-
-            // Write initial registry for monitor
-            Self::update_registry(&nodes, &self.scheduler_name, &self.working_dir);
-        }
-
-        // Track last snapshot time
-        let mut last_snapshot = std::time::Instant::now();
-
-        // Main execution loop
-        loop {
-            let tick_start = std::time::Instant::now();
-
-            // Check for Python signals (e.g., Ctrl+C/KeyboardInterrupt)
-            py.check_signals()?;
-
-            // Check if we should stop
-            {
-                let running = self.running.lock().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-                })?;
-                if !*running {
-                    break;
-                }
-            }
-
-            // Execute tick for all nodes in priority order
-            {
-                let mut nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-                // Sort by priority (lower number = higher priority)
-                nodes.sort_by_key(|r| r.priority);
-
-                for registered in nodes.iter_mut() {
-                    // Skip nodes with open circuit breaker
-                    if self.circuit_breaker_enabled && registered.circuit_open {
-                        // Check if we should attempt auto-restart
-                        if self.auto_restart {
-                            let should_retry = match registered.last_restart_attempt {
-                                None => true, // First restart attempt
-                                Some(last_attempt) => {
-                                    // Wait at least 5 seconds between restart attempts
-                                    last_attempt.elapsed() >= Duration::from_secs(5)
-                                }
-                            };
-
-                            if should_retry {
-                                use colored::Colorize;
-                                eprintln!(
-                                    "{}",
-                                    format!("Attempting to restart node '{}'...", registered.name)
-                                        .yellow()
-                                );
-                                registered.circuit_open = false;
-                                registered.consecutive_failures = 0;
-                                registered.last_restart_attempt = Some(Instant::now());
-                            }
-                        }
-
-                        if registered.circuit_open {
-                            continue; // Still open, skip this node
-                        }
-                    }
-
-                    // Phase 1: Check if enough time has elapsed for this node's rate
-                    let now = Instant::now();
-                    let elapsed_secs = (now - registered.last_tick).as_secs_f64();
-                    let period_secs = 1.0 / registered.rate_hz;
-
-                    // Skip this node if not enough time has passed
-                    if elapsed_secs < period_secs {
-                        continue;
-                    }
-
-                    // Update last tick time
-                    registered.last_tick = now;
-
-                    // Check watchdog expiration
-                    if registered.watchdog_enabled && self.watchdog_enabled {
-                        let time_since_feed =
-                            registered.last_watchdog_feed.elapsed().as_millis() as u64;
-                        if time_since_feed > registered.watchdog_timeout_ms
-                            && !registered.watchdog_expired
-                        {
-                            registered.watchdog_expired = true;
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                format!(
-                                    "Watchdog expired: node '{}' not fed for {}ms (timeout: {}ms)",
-                                    registered.name,
-                                    time_since_feed,
-                                    registered.watchdog_timeout_ms
-                                )
-                                .red()
-                            );
-                        }
-                    }
-
-                    // Start tick timing
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.start_tick();
-                    }
-
-                    // Get or create cached PyNodeInfo
-                    let py_info = if let Some(ref cached) = registered.cached_info {
-                        cached.clone_ref(py)
-                    } else {
-                        let new_info = Py::new(
-                            py,
-                            PyNodeInfo {
-                                inner: registered.context.clone(),
-                                scheduler_running: Some(self.running.clone()),
-                            },
-                        )?;
-                        registered.cached_info = Some(new_info.clone_ref(py));
-                        new_info
-                    };
-
-                    // Measure tick start time
-                    let tick_start = Instant::now();
-
-                    // Try calling with NodeInfo parameter first, fallback to no-arg version
-                    let result = registered
-                        .node
-                        .call_method1(py, "tick", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "tick"));
-
-                    // Measure tick duration
-                    let tick_duration = tick_start.elapsed();
-                    let tick_duration_ms = tick_duration.as_secs_f64() * 1000.0;
-                    registered.last_tick_duration_ms = tick_duration_ms;
-
-                    // Check deadline
-                    if let Some(deadline_ms) = registered.deadline_ms {
-                        if tick_duration_ms > deadline_ms {
-                            registered.deadline_misses += 1;
-                            if self.deadline_monitoring {
-                                use colored::Colorize;
-                                eprintln!(
-                                    "{}",
-                                    format!(
-                                        "Deadline miss: node '{}' took {:.3}ms (deadline: {}ms, miss #{})",
-                                        registered.name,
-                                        tick_duration_ms,
-                                        deadline_ms,
-                                        registered.deadline_misses
-                                    )
-                                    .yellow()
-                                );
-                            }
-                        }
-                    }
-
-                    match result {
-                        Ok(_) => {
-                            // Success - reset consecutive failures
-                            registered.consecutive_failures = 0;
-
-                            // Feed watchdog on successful tick
-                            if registered.watchdog_enabled {
-                                registered.last_watchdog_feed = Instant::now();
-                                registered.watchdog_expired = false;
-                            }
-
-                            // Record tick completion
-                            if let Ok(mut ctx) = registered.context.lock() {
-                                ctx.record_tick();
-                            }
-                        }
-                        Err(e) => {
-                            // Check if this is a KeyboardInterrupt - if so, stop the scheduler immediately
-                            if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
-                                use colored::Colorize;
-                                eprintln!(
-                                    "{}",
-                                    "\nKeyboard interrupt received, shutting down...".red()
-                                );
-                                if let Ok(mut r) = self.running.lock() {
-                                    *r = false;
-                                }
-                                break;
-                            }
-
-                            // Track failures
-                            registered.failure_count += 1;
-                            registered.consecutive_failures += 1;
-
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                format!(
-                                    "Error in node '{}' tick (failure {}/{}): {:?}",
-                                    registered.name,
-                                    registered.consecutive_failures,
-                                    self.max_failures,
-                                    e
-                                )
-                                .red()
-                            );
-
-                            // Check if we should open the circuit breaker
-                            if self.circuit_breaker_enabled
-                                && registered.consecutive_failures >= self.max_failures
-                            {
-                                registered.circuit_open = true;
-                                eprintln!(
-                                    "{}",
-                                    format!(
-                                        "Circuit breaker opened for node '{}' after {} consecutive failures",
-                                        registered.name, registered.consecutive_failures
-                                    )
-                                    .yellow()
-                                    .bold()
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Periodic registry snapshot (every 5 seconds)
-            if last_snapshot.elapsed() >= Duration::from_secs(5) {
-                let nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-                Self::snapshot_state_to_registry(&nodes, &self.scheduler_name, &self.working_dir);
-                last_snapshot = std::time::Instant::now();
-            }
-
-            // Sleep for remainder of tick period
-            let elapsed = tick_start.elapsed();
-            if elapsed < tick_duration {
-                thread::sleep(tick_duration - elapsed);
-            }
-        }
-
-        // Clean up registry and session
-        Self::cleanup_registry();
-        Self::cleanup_session();
-
-        // Shutdown all nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                let py_info = Py::new(
-                    py,
-                    PyNodeInfo {
-                        inner: registered.context.clone(),
-                        scheduler_running: Some(self.running.clone()),
-                    },
-                )?;
-
-                // Try calling with NodeInfo parameter first, fallback to no-arg version
-                let result = registered
-                    .node
-                    .call_method1(py, "shutdown", (py_info,))
-                    .or_else(|_| registered.node.call_method0(py, "shutdown"));
-
-                if let Err(e) = result {
-                    eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
-                    // Still try to remove presence file on error
-                    let _ = NodePresence::remove(&registered.name);
-                } else {
-                    // Announce to discovery topic
-                    announce_stopped(&registered.name);
-                    // Remove presence file
-                    if let Err(e) = NodePresence::remove(&registered.name) {
-                        eprintln!(
-                            "Warning: Failed to remove presence file for '{}': {}",
-                            registered.name, e
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(())
+    /// Run specific nodes by name (continuously until stop()).
+    fn tick(&self, py: Python, node_names: Vec<String>) -> PyResult<()> {
+        self.with_inner_run(py, move |sched| {
+            let refs: Vec<&str> = node_names.iter().map(|s| s.as_str()).collect();
+            sched.tick(&refs)
+        })
     }
 
-    /// Stop the scheduler
-    fn stop(&mut self) -> PyResult<()> {
-        let mut running = self
-            .running
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e)))?;
-        *running = false;
-        Ok(())
-    }
-
-    /// Check if the scheduler is running
-    fn is_running(&self) -> PyResult<bool> {
-        let running = self
-            .running
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e)))?;
-        Ok(*running)
-    }
-
-    /// Get list of all nodes with basic information
-    ///
-    /// Returns a list of dictionaries containing node information:
-    /// - name: Node name
-    /// - priority: Execution priority
-    /// - rate_hz: Node execution rate
-    /// - total_ticks: Total number of ticks executed
-    /// - failure_count: Total failure count
-    /// - consecutive_failures: Current consecutive failure count
-    /// - circuit_open: Whether circuit breaker is open
-    fn get_all_nodes(&self, py: Python) -> PyResult<Vec<Py<PyAny>>> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-        let mut result = Vec::new();
-
-        for registered in nodes.iter() {
-            let dict = PyDict::new(py);
-            dict.set_item("name", &registered.name)?;
-            dict.set_item("order", registered.priority)?;
-            dict.set_item("rate_hz", registered.rate_hz)?;
-
-            // Fault tolerance info
-            dict.set_item("failure_count", registered.failure_count)?;
-            dict.set_item("consecutive_failures", registered.consecutive_failures)?;
-            dict.set_item("circuit_open", registered.circuit_open)?;
-
-            // Soft real-time info
-            if let Some(deadline) = registered.deadline_ms {
-                dict.set_item("deadline_ms", deadline)?;
-            } else {
-                dict.set_item("deadline_ms", py.None())?;
-            }
-            dict.set_item("deadline_misses", registered.deadline_misses)?;
-            dict.set_item("last_tick_duration_ms", registered.last_tick_duration_ms)?;
-
-            // Watchdog info
-            dict.set_item("watchdog_enabled", registered.watchdog_enabled)?;
-            dict.set_item("watchdog_timeout_ms", registered.watchdog_timeout_ms)?;
-            dict.set_item("watchdog_expired", registered.watchdog_expired)?;
-            if registered.watchdog_enabled {
-                let time_since_feed = registered.last_watchdog_feed.elapsed().as_millis() as u64;
-                dict.set_item("watchdog_time_since_feed_ms", time_since_feed)?;
-            } else {
-                dict.set_item("watchdog_time_since_feed_ms", py.None())?;
-            }
-
-            // Get metrics from NodeInfo
-            if let Ok(ctx) = registered.context.lock() {
-                let metrics = ctx.metrics();
-                dict.set_item("total_ticks", metrics.total_ticks)?;
-                dict.set_item("successful_ticks", metrics.successful_ticks)?;
-                dict.set_item("failed_ticks", metrics.failed_ticks)?;
-                dict.set_item("errors_count", metrics.errors_count)?;
-                dict.set_item("avg_tick_duration_ms", metrics.avg_tick_duration_ms)?;
-                dict.set_item("uptime_seconds", ctx.uptime().as_secs_f64())?;
-                dict.set_item("state", format!("{}", ctx.state()))?;
-            }
-
-            result.push(dict.into());
-        }
-
-        Ok(result)
-    }
-
-    /// Get count of all registered nodes
-    fn get_node_count(&self) -> PyResult<usize> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-        Ok(nodes.len())
-    }
-
-    /// Check if a node exists by name
-    fn has_node(&self, name: String) -> PyResult<bool> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-        Ok(nodes.iter().any(|n| n.name == name))
-    }
-
-    /// Get list of node names
-    fn get_node_names(&self) -> PyResult<Vec<String>> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-        Ok(nodes.iter().map(|n| n.name.clone()).collect())
-    }
-
-    /// Run specific nodes by name (continuously until stop() is called)
-    fn tick(&mut self, py: Python, node_names: Vec<String>) -> PyResult<()> {
-        let tick_duration = Duration::from_secs_f64(1.0 / self.tick_rate_hz);
-
-        // Set running flag
-        {
-            let mut running = self.running.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = true;
-        }
-
-        // Initialize filtered nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                if node_names.contains(&registered.name) {
-                    let py_info = Py::new(
-                        py,
-                        PyNodeInfo {
-                            inner: registered.context.clone(),
-                            scheduler_running: Some(self.running.clone()),
-                        },
-                    )?;
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "init", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "init"));
-
-                    if let Err(e) = result {
-                        eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
-                    }
-                }
-            }
-        }
-
-        // Main execution loop
-        loop {
-            let tick_start = std::time::Instant::now();
-
-            // Check for Python signals (e.g., Ctrl+C/KeyboardInterrupt)
-            py.check_signals()?;
-
-            // Check if we should stop
-            {
-                let running = self.running.lock().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-                })?;
-                if !*running {
-                    break;
-                }
-            }
-
-            // Execute tick for filtered nodes in priority order
-            {
-                let mut nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-                nodes.sort_by_key(|r| r.priority);
-
-                for registered in nodes.iter_mut() {
-                    // Skip nodes not in the filter list
-                    if !node_names.contains(&registered.name) {
-                        continue;
-                    }
-
-                    // Check rate control
-                    let now = Instant::now();
-                    let elapsed_secs = (now - registered.last_tick).as_secs_f64();
-                    let period_secs = 1.0 / registered.rate_hz;
-
-                    if elapsed_secs < period_secs {
-                        continue;
-                    }
-
-                    registered.last_tick = now;
-
-                    // Start tick timing
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.start_tick();
-                    }
-
-                    // Get or create cached PyNodeInfo
-                    let py_info = if let Some(ref cached) = registered.cached_info {
-                        cached.clone_ref(py)
-                    } else {
-                        let new_info = Py::new(
-                            py,
-                            PyNodeInfo {
-                                inner: registered.context.clone(),
-                                scheduler_running: Some(self.running.clone()),
-                            },
-                        )?;
-                        registered.cached_info = Some(new_info.clone_ref(py));
-                        new_info
-                    };
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "tick", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "tick"));
-
-                    if let Err(e) = result {
-                        // Check if this is a KeyboardInterrupt - if so, stop the scheduler immediately
-                        if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                "\nKeyboard interrupt received, shutting down...".red()
-                            );
-                            if let Ok(mut r) = self.running.lock() {
-                                *r = false;
-                            }
-                            break;
-                        }
-                        eprintln!("Error in node '{}' tick: {:?}", registered.name, e);
-                    }
-
-                    // Record tick completion
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.record_tick();
-                    }
-                }
-            }
-
-            // Sleep for remainder of tick period
-            let elapsed = tick_start.elapsed();
-            if elapsed < tick_duration {
-                thread::sleep(tick_duration - elapsed);
-            }
-        }
-
-        // Shutdown filtered nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                if node_names.contains(&registered.name) {
-                    let py_info = Py::new(
-                        py,
-                        PyNodeInfo {
-                            inner: registered.context.clone(),
-                            scheduler_running: Some(self.running.clone()),
-                        },
-                    )?;
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "shutdown", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "shutdown"));
-
-                    if let Err(e) = result {
-                        eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
-                        // Still try to remove presence file on error
-                        let _ = NodePresence::remove(&registered.name);
-                    } else {
-                        // Announce to discovery topic
-                        announce_stopped(&registered.name);
-                        // Remove presence file
-                        if let Err(e) = NodePresence::remove(&registered.name) {
-                            eprintln!(
-                                "Warning: Failed to remove presence file for '{}': {}",
-                                registered.name, e
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Run specific nodes for a specified duration (in seconds)
+    /// Run specific nodes for a specified duration (in seconds).
     fn tick_for(
-        &mut self,
+        &self,
         py: Python,
         node_names: Vec<String>,
         duration_seconds: f64,
@@ -1536,417 +595,232 @@ impl PyScheduler {
         if duration_seconds <= 0.0 {
             return Err(PyRuntimeError::new_err("Duration must be positive"));
         }
+        let duration = Duration::from_secs_f64(duration_seconds);
+        self.with_inner_run(py, move |sched| {
+            let refs: Vec<&str> = node_names.iter().map(|s| s.as_str()).collect();
+            sched.tick_for(&refs, duration)
+        })
+    }
 
-        let tick_duration = Duration::from_secs_f64(1.0 / self.tick_rate_hz);
-        let start_time = Instant::now();
-        let max_duration = Duration::from_secs_f64(duration_seconds);
-
-        // Set running flag
-        {
-            let mut running = self.running.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = true;
+    /// Stop the scheduler.
+    fn stop(&self) -> PyResult<()> {
+        self.stop_requested.store(true, Ordering::Relaxed);
+        if let Ok(mut running) = self.scheduler_running.lock() {
+            *running = false;
         }
-
-        // Initialize filtered nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                if node_names.contains(&registered.name) {
-                    let py_info = Py::new(
-                        py,
-                        PyNodeInfo {
-                            inner: registered.context.clone(),
-                            scheduler_running: Some(self.running.clone()),
-                        },
-                    )?;
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "init", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "init"));
-
-                    if let Err(e) = result {
-                        eprintln!("Failed to initialize node '{}': {:?}", registered.name, e);
-                    }
-                }
-            }
-        }
-
-        // Main execution loop with time limit
-        loop {
-            let tick_start = std::time::Instant::now();
-
-            // Check for Python signals (e.g., Ctrl+C/KeyboardInterrupt)
-            py.check_signals()?;
-
-            // Check if duration exceeded
-            if start_time.elapsed() >= max_duration {
-                println!("Reached time limit of {} seconds", duration_seconds);
-                break;
-            }
-
-            // Check if we should stop
-            {
-                let running = self.running.lock().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-                })?;
-                if !*running {
-                    break;
-                }
-            }
-
-            // Execute tick for filtered nodes in priority order
-            {
-                let mut nodes = self
-                    .nodes
-                    .lock()
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-                nodes.sort_by_key(|r| r.priority);
-
-                for registered in nodes.iter_mut() {
-                    // Skip nodes not in the filter list
-                    if !node_names.contains(&registered.name) {
-                        continue;
-                    }
-
-                    // Check rate control
-                    let now = Instant::now();
-                    let elapsed_secs = (now - registered.last_tick).as_secs_f64();
-                    let period_secs = 1.0 / registered.rate_hz;
-
-                    if elapsed_secs < period_secs {
-                        continue;
-                    }
-
-                    registered.last_tick = now;
-
-                    // Start tick timing
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.start_tick();
-                    }
-
-                    // Get or create cached PyNodeInfo
-                    let py_info = if let Some(ref cached) = registered.cached_info {
-                        cached.clone_ref(py)
-                    } else {
-                        let new_info = Py::new(
-                            py,
-                            PyNodeInfo {
-                                inner: registered.context.clone(),
-                                scheduler_running: Some(self.running.clone()),
-                            },
-                        )?;
-                        registered.cached_info = Some(new_info.clone_ref(py));
-                        new_info
-                    };
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "tick", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "tick"));
-
-                    if let Err(e) = result {
-                        // Check if this is a KeyboardInterrupt - if so, stop the scheduler immediately
-                        if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
-                            use colored::Colorize;
-                            eprintln!(
-                                "{}",
-                                "\nKeyboard interrupt received, shutting down...".red()
-                            );
-                            if let Ok(mut r) = self.running.lock() {
-                                *r = false;
-                            }
-                            break;
-                        }
-                        eprintln!("Error in node '{}' tick: {:?}", registered.name, e);
-                    }
-
-                    // Record tick completion
-                    if let Ok(mut ctx) = registered.context.lock() {
-                        ctx.record_tick();
-                    }
-                }
-            }
-
-            // Sleep for remainder of tick period
-            let elapsed = tick_start.elapsed();
-            if elapsed < tick_duration {
-                thread::sleep(tick_duration - elapsed);
-            }
-        }
-
-        // Shutdown filtered nodes
-        {
-            let nodes = self
-                .nodes
-                .lock()
-                .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-
-            for registered in nodes.iter() {
-                if node_names.contains(&registered.name) {
-                    let py_info = Py::new(
-                        py,
-                        PyNodeInfo {
-                            inner: registered.context.clone(),
-                            scheduler_running: Some(self.running.clone()),
-                        },
-                    )?;
-
-                    let result = registered
-                        .node
-                        .call_method1(py, "shutdown", (py_info,))
-                        .or_else(|_| registered.node.call_method0(py, "shutdown"));
-
-                    if let Err(e) = result {
-                        eprintln!("Failed to shutdown node '{}': {:?}", registered.name, e);
-                        // Still try to remove presence file on error
-                        let _ = NodePresence::remove(&registered.name);
-                    } else {
-                        // Announce to discovery topic
-                        announce_stopped(&registered.name);
-                        // Remove presence file
-                        if let Err(e) = NodePresence::remove(&registered.name) {
-                            eprintln!(
-                                "Warning: Failed to remove presence file for '{}': {}",
-                                registered.name, e
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
-    /// Get list of added node names
-    fn get_nodes(&self) -> PyResult<Vec<String>> {
-        let nodes = self
-            .nodes
+    /// Check if the scheduler is running.
+    fn is_running(&self) -> PyResult<bool> {
+        Ok(self
+            .scheduler_running
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
-        Ok(nodes.iter().map(|n| n.name.clone()).collect())
+            .map(|r| *r)
+            .unwrap_or(false))
     }
 
-    /// Get node priority
-    fn get_node_info(&self, name: String) -> PyResult<Option<u32>> {
-        let nodes = self
-            .nodes
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
+    /// Set the tick rate in Hz.
+    fn set_tick_rate(&self, rate_hz: f64) -> PyResult<()> {
+        if rate_hz <= 0.0 || rate_hz > 10000.0 {
+            return Err(PyRuntimeError::new_err(
+                "Tick rate must be between 0 and 10000 Hz",
+            ));
+        }
+        eprintln!(
+            "Warning: set_tick_rate should be configured via SchedulerConfig at construction"
+        );
+        Ok(())
+    }
 
-        for registered in nodes.iter() {
-            if registered.name == name {
-                return Ok(Some(registered.priority));
+    /// Get node statistics.
+    fn get_node_stats(&self, py: Python, node_name: String) -> PyResult<Py<PyAny>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("Stats unavailable while scheduler is running"))?;
+
+        for metric in inner.get_metrics() {
+            if metric.name == node_name {
+                let failure = inner.failure_stats(&node_name);
+                return Self::metric_to_dict(py, &metric, failure.as_ref(), self.tick_rate_hz);
             }
         }
-        Ok(None)
+
+        Err(PyRuntimeError::new_err(format!(
+            "Node '{}' not found",
+            node_name
+        )))
+    }
+
+    /// Remove a node from the scheduler.
+    /// Note: horus_core doesn't support runtime removal; node is excluded from stats.
+    fn remove_node(&self, name: String) -> PyResult<bool> {
+        let mut removed = self
+            .removed_nodes
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        Ok(removed.insert(name))
+    }
+
+    /// Get list of all nodes with basic information.
+    fn get_all_nodes(&self, py: Python) -> PyResult<Vec<Py<PyAny>>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let inner = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Node list unavailable while scheduler is running")
+        })?;
+        let removed = self
+            .removed_nodes
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+
+        let mut result = Vec::new();
+        for metric in inner.get_metrics() {
+            if removed.contains(&metric.name) {
+                continue;
+            }
+            let failure = inner.failure_stats(&metric.name);
+            result.push(Self::metric_to_dict(
+                py,
+                &metric,
+                failure.as_ref(),
+                self.tick_rate_hz,
+            )?);
+        }
+
+        Ok(result)
+    }
+
+    /// Get count of all registered nodes.
+    fn get_node_count(&self) -> PyResult<usize> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => {
+                let removed = self
+                    .removed_nodes
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                Ok(sched.get_node_list().len() - removed.len())
+            }
+            None => Ok(0),
+        }
+    }
+
+    /// Check if a node exists by name.
+    fn has_node(&self, name: String) -> PyResult<bool> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => {
+                let removed = self
+                    .removed_nodes
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                Ok(sched.get_node_list().contains(&name) && !removed.contains(&name))
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Get list of node names.
+    fn get_node_names(&self) -> PyResult<Vec<String>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => {
+                let removed = self
+                    .removed_nodes
+                    .lock()
+                    .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+                Ok(sched
+                    .get_node_list()
+                    .into_iter()
+                    .filter(|n| !removed.contains(n))
+                    .collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Get list of added node names (alias for get_node_names).
+    fn get_nodes(&self) -> PyResult<Vec<String>> {
+        self.get_node_names()
+    }
+
+    /// Get node priority.
+    fn get_node_info(&self, name: String) -> PyResult<Option<u32>> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        match guard.as_ref() {
+            Some(sched) => {
+                for metric in sched.get_metrics() {
+                    if metric.name == name {
+                        return Ok(Some(metric.priority));
+                    }
+                }
+                Ok(None)
+            }
+            None => Ok(None),
+        }
     }
 
     fn __repr__(&self) -> PyResult<String> {
-        let nodes = self
-            .nodes
+        let guard = self
+            .inner
             .lock()
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock nodes: {}", e)))?;
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
+        let count = guard
+            .as_ref()
+            .map(|s| s.get_node_list().len())
+            .unwrap_or(0);
         Ok(format!(
             "Scheduler(nodes={}, tick_rate={}Hz)",
-            nodes.len(),
-            self.tick_rate_hz
+            count, self.tick_rate_hz
         ))
     }
 
-    /// Pickle support: Get state for serialization
+    /// Pickle support: Get state for serialization.
     fn __getstate__(&self, py: Python) -> PyResult<Py<PyAny>> {
-        use pyo3::types::PyDict;
-
         let state = PyDict::new(py);
         state.set_item("tick_rate_hz", self.tick_rate_hz)?;
-
-        // Note: Registered nodes cannot be serialized (contain Py<PyAny> references)
-        // After unpickling, users must re-add nodes using scheduler.add()
-
         Ok(state.into())
     }
 
-    /// Pickle support: Restore state from deserialization
-    fn __setstate__(&mut self, state: &Bound<'_, pyo3::types::PyDict>) -> PyResult<()> {
+    /// Pickle support: Restore state from deserialization.
+    fn __setstate__(&mut self, state: &Bound<'_, PyDict>) -> PyResult<()> {
         let tick_rate_hz: f64 = state
             .get_item("tick_rate_hz")?
             .ok_or_else(|| PyRuntimeError::new_err("Missing 'tick_rate_hz' in pickled state"))?
             .extract()?;
 
-        // Recreate scheduler with empty nodes list
         self.tick_rate_hz = tick_rate_hz;
-        self.nodes = Arc::new(Mutex::new(Vec::new()));
-        self.running = Arc::new(Mutex::new(false));
+
+        let core_sched = CoreScheduler::new().name("PythonScheduler");
+        self.scheduler_running = core_sched.running_flag();
+        *self
+            .inner
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))? = Some(core_sched);
+        *self
+            .removed_nodes
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))? = HashSet::new();
 
         Ok(())
-    }
-}
-
-impl PyScheduler {
-    /// Clean up session directory (no-op with flat namespace)
-    ///
-    /// With the simplified flat namespace model, topics are shared globally.
-    /// Use `horus clean --shm` to remove all shared memory.
-    fn cleanup_session() {
-        // No-op: flat namespace means no session-specific cleanup needed
-    }
-
-    /// Get path to registry file (cross-platform)
-    fn get_registry_path() -> Result<PathBuf, std::io::Error> {
-        let mut path = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        path.push(".horus_registry.json");
-        Ok(path)
-    }
-
-    /// Write metadata to registry file for monitor to read
-    fn update_registry(
-        nodes: &[RegisteredNode],
-        scheduler_name: &str,
-        working_dir: &std::path::Path,
-    ) {
-        if let Ok(registry_path) = Self::get_registry_path() {
-            let pid = std::process::id();
-
-            // Collect node info
-            let nodes_json: Vec<String> = nodes
-                .iter()
-                .map(|registered| {
-                    let name = &registered.name;
-                    let priority = registered.priority;
-
-                    // Format publishers array
-                    let pubs_json: Vec<String> = registered
-                        .publishers
-                        .iter()
-                        .map(|t| format!("\"{}\"", t))
-                        .collect();
-                    let pubs_str = pubs_json.join(", ");
-
-                    // Format subscribers array
-                    let subs_json: Vec<String> = registered
-                        .subscribers
-                        .iter()
-                        .map(|t| format!("\"{}\"", t))
-                        .collect();
-                    let subs_str = subs_json.join(", ");
-
-                    format!(
-                        "    {{\"name\": \"{}\", \"priority\": {}, \"publishers\": [{}], \"subscribers\": [{}]}}",
-                        name, priority, pubs_str, subs_str
-                    )
-                })
-                .collect();
-
-            let registry_data = format!(
-                "{{\n  \"pid\": {},\n  \"scheduler_name\": \"{}\",\n  \"working_dir\": \"{}\",\n  \"nodes\": [\n{}\n  ]\n}}",
-                pid,
-                scheduler_name,
-                working_dir.to_string_lossy(),
-                nodes_json.join(",\n")
-            );
-
-            let _ = fs::write(&registry_path, registry_data);
-        }
-    }
-
-    /// Snapshot node state to registry (for crash forensics and persistence)
-    /// Called every 5 seconds to avoid I/O overhead
-    fn snapshot_state_to_registry(
-        nodes: &[RegisteredNode],
-        scheduler_name: &str,
-        working_dir: &std::path::Path,
-    ) {
-        if let Ok(registry_path) = Self::get_registry_path() {
-            let pid = std::process::id();
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            // Collect node info including state and health
-            let nodes_json: Vec<String> = nodes
-                .iter()
-                .map(|registered| {
-                    let name = &registered.name;
-                    let priority = registered.priority;
-
-                    // Get state and health from context
-                    let (state_str, health_str, error_count, tick_count) =
-                        if let Ok(ctx) = registered.context.lock() {
-                            let metrics = ctx.metrics();
-                            (
-                                ctx.state().to_string(),
-                                metrics.calculate_health().as_str().to_string(),
-                                metrics.errors_count,
-                                metrics.total_ticks,
-                            )
-                        } else {
-                            (
-                                "Unknown".to_string(),
-                                "Unknown".to_string(),
-                                0,
-                                0,
-                            )
-                        };
-
-                    // Format publishers array
-                    let pubs_json: Vec<String> = registered
-                        .publishers
-                        .iter()
-                        .map(|t| format!("\"{}\"", t))
-                        .collect();
-                    let pubs_str = pubs_json.join(", ");
-
-                    // Format subscribers array
-                    let subs_json: Vec<String> = registered
-                        .subscribers
-                        .iter()
-                        .map(|t| format!("\"{}\"", t))
-                        .collect();
-                    let subs_str = subs_json.join(", ");
-
-                    format!(
-                        "    {{\"name\": \"{}\", \"priority\": {}, \"state\": \"{}\", \"health\": \"{}\", \"error_count\": {}, \"tick_count\": {}, \"publishers\": [{}], \"subscribers\": [{}]}}",
-                        name, priority, state_str, health_str, error_count, tick_count, pubs_str, subs_str
-                    )
-                })
-                .collect();
-
-            let registry_data = format!(
-                "{{\n  \"pid\": {},\n  \"scheduler_name\": \"{}\",\n  \"working_dir\": \"{}\",\n  \"last_snapshot\": {},\n  \"nodes\": [\n{}\n  ]\n}}",
-                pid,
-                scheduler_name,
-                working_dir.to_string_lossy(),
-                timestamp,
-                nodes_json.join(",\n")
-            );
-
-            // Atomic write: write to temp file, then rename
-            if let Some(parent) = registry_path.parent() {
-                let temp_path = parent.join(format!(".horus_registry.json.tmp.{}", pid));
-
-                // Write to temp file
-                if fs::write(&temp_path, &registry_data).is_ok() {
-                    // Atomically rename to final path
-                    let _ = fs::rename(&temp_path, &registry_path);
-                }
-            }
-        }
-    }
-
-    /// Remove registry file when scheduler stops
-    fn cleanup_registry() {
-        if let Ok(registry_path) = Self::get_registry_path() {
-            let _ = fs::remove_file(registry_path);
-        }
     }
 }

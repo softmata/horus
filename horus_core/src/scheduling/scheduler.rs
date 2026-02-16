@@ -201,54 +201,47 @@ impl Default for Scheduler {
 }
 
 impl Scheduler {
-    /// Create a new scheduler with **automatic RT optimization**.
+    /// Create a new scheduler — **lightweight, no syscalls**.
     ///
-    /// The scheduler automatically detects and applies available RT features:
-    /// - **RT Priority**: If SCHED_FIFO is available, applies recommended priority
-    /// - **Memory Locking**: If mlockall() is permitted, locks all memory pages
-    /// - **CPU Affinity**: If isolated CPUs exist, pins to the best RT core
-    /// - **Safety Monitor**: Enabled with sensible defaults
+    /// Detects runtime capabilities (~30-100μs) but does NOT auto-apply
+    /// any OS-level features. Use builder methods to opt in:
     ///
-    /// Any feature that fails to apply is recorded as a "degradation" rather
-    /// than an error. Check `scheduler.degradations()` to see what didn't work.
-    ///
-    /// # Example
     /// ```rust,ignore
     /// use horus_core::Scheduler;
     ///
-    /// let scheduler = Scheduler::new();  // Auto-detects and optimizes!
+    /// // Minimal — just capability detection, no syscalls
+    /// let scheduler = Scheduler::new();
     ///
-    /// // Check what was applied
+    /// // With RT features opted in
+    /// let scheduler = Scheduler::new()
+    ///     .realtime()          // RT priority + memory lock + CPU pin (best-effort)
+    ///     .with_blackbox(16);  // 16MB flight recorder
+    ///
+    /// // Check detected capabilities
     /// if let Some(caps) = scheduler.capabilities() {
     ///     println!("RT support: {}", caps.has_rt_support());
-    ///     println!("Can lock memory: {}", caps.can_lock_memory());
-    /// }
-    ///
-    /// // Check what degraded
-    /// for deg in scheduler.degradations() {
-    ///     println!("Warning: {} - {}", deg.feature, deg.reason);
     /// }
     /// ```
     ///
-    /// # Alternative Constructors
-    /// - `Scheduler::simulation()` - Fast, no RT features, no detection
-    /// - `Scheduler::prototype()` - Development mode with verbose logging
-    /// - `Scheduler::builder()` - Full control over every option
+    /// # Presets
+    /// - `Scheduler::deploy()` — Production: RT features + blackbox + profiling
+    /// - `Scheduler::prototype()` — Development: no RT, verbose logging
+    /// - `Scheduler::safety_critical()` — Safety: WCET + watchdog + sequential
+    /// - `Scheduler::high_performance()` — Speed: parallel + 10kHz
+    /// - `Scheduler::hard_realtime()` — Hard RT: strict deadlines + watchdog
     pub fn new() -> Self {
         let running = Arc::new(Mutex::new(true));
         let now = Instant::now();
 
         // Detect runtime capabilities (~30-100μs one-time cost)
         let caps = RuntimeCapabilities::detect();
-        let mut degradations = Vec::new();
 
-        // Create base scheduler
-        let mut scheduler = Self {
+        Self {
             nodes: Vec::new(),
             running,
             last_instant: now,
             last_snapshot: now,
-            scheduler_name: "AutoScheduler".to_string(),
+            scheduler_name: "Scheduler".to_string(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
 
             // Profiling for metrics
@@ -258,13 +251,12 @@ impl Scheduler {
             // Configuration
             config: None,
 
-            // Safety monitor (disabled by default for prototyping)
-            // Enable explicitly via builder.safety_monitor(N) or use safety_critical()/hard_realtime() presets
+            // Safety monitor (disabled by default)
             safety_monitor: None,
 
-            // Runtime features
+            // Runtime features — lightweight defaults, no allocations
             tick_period: Duration::from_micros(16667), // ~60Hz default
-            blackbox: Some(super::blackbox::BlackBox::new(16)), // 16MB default for crash analysis
+            blackbox: None, // Opt-in via .with_blackbox(size_mb)
 
             // Record/Replay system (disabled by default)
             recording_config: None,
@@ -276,11 +268,11 @@ impl Scheduler {
             replay_stop_tick: None,
             replay_speed: 1.0,
 
-            // Auto-optimization: store capabilities, degradations added below
-            runtime_capabilities: Some(caps.clone()),
+            // Capability detection stored for builder methods and status()
+            runtime_capabilities: Some(caps),
             rt_degradations: Vec::new(),
 
-            // Deterministic execution (disabled in production mode)
+            // Deterministic execution (disabled)
             deterministic_clock: None,
             execution_trace: None,
             deterministic_config: None,
@@ -294,23 +286,53 @@ impl Scheduler {
 
             // Telemetry (configured via with_config())
             telemetry: None,
+        }
+    }
+
+    // ========================================================================
+    // BUILDER METHODS — opt in to features one at a time
+    // ========================================================================
+
+    /// Apply all available RT features (best-effort, non-fatal).
+    ///
+    /// Attempts to apply in order:
+    /// 1. **RT priority** (SCHED_FIFO) — if available
+    /// 2. **Memory locking** (mlockall) — if permitted
+    /// 3. **CPU affinity** — only to isolated CPUs if they exist
+    ///
+    /// Features that fail are recorded as degradations (not errors).
+    /// Check `scheduler.degradations()` after calling.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .realtime()    // Best-effort RT
+    ///     .with_blackbox(16); // 16MB flight recorder
+    ///
+    /// // Check what was actually applied
+    /// for deg in scheduler.degradations() {
+    ///     println!("{}: {}", deg.feature, deg.reason);
+    /// }
+    /// ```
+    pub fn realtime(mut self) -> Self {
+        let caps = match &self.runtime_capabilities {
+            Some(c) => c.clone(),
+            None => return self,
         };
 
-        // === Auto-apply RT features based on detected capabilities ===
-
-        // 1. Apply RT priority if available
+        // 1. RT priority
         if caps.has_rt_support() {
             let priority = caps.recommended_rt_priority();
-            match scheduler.apply_rt_priority_internal(priority) {
+            match self.apply_rt_priority_internal(priority) {
                 Ok(()) => {
                     print_line(
-                        &format!("[AUTO] RT priority {} applied (SCHED_FIFO)", priority)
+                        &format!("[RT] Priority {} applied (SCHED_FIFO)", priority)
                             .green()
                             .to_string(),
                     );
                 }
                 Err(e) => {
-                    degradations.push(RtDegradation {
+                    self.rt_degradations.push(RtDegradation {
                         feature: RtFeature::RtPriority,
                         reason: e.to_string(),
                         severity: DegradationSeverity::High,
@@ -318,7 +340,7 @@ impl Scheduler {
                 }
             }
         } else {
-            degradations.push(RtDegradation {
+            self.rt_degradations.push(RtDegradation {
                 feature: RtFeature::RtPriority,
                 reason: format!(
                     "RT scheduling not available (max_priority={}, preempt_rt={})",
@@ -328,22 +350,17 @@ impl Scheduler {
             });
         }
 
-        // 2. Apply memory locking if permitted (silent on success)
+        // 2. Memory locking
         if caps.can_lock_memory() {
-            match scheduler.apply_memory_lock_internal() {
-                Ok(()) => {
-                    // Success - no need to announce for normal development
-                }
-                Err(e) => {
-                    degradations.push(RtDegradation {
-                        feature: RtFeature::MemoryLocking,
-                        reason: e.to_string(),
-                        severity: DegradationSeverity::Medium,
-                    });
-                }
+            if let Err(e) = self.apply_memory_lock_internal() {
+                self.rt_degradations.push(RtDegradation {
+                    feature: RtFeature::MemoryLocking,
+                    reason: e.to_string(),
+                    severity: DegradationSeverity::Medium,
+                });
             }
         } else {
-            degradations.push(RtDegradation {
+            self.rt_degradations.push(RtDegradation {
                 feature: RtFeature::MemoryLocking,
                 reason: format!(
                     "Memory locking not permitted (mlockall_permitted={}, limit={} bytes)",
@@ -353,11 +370,8 @@ impl Scheduler {
             });
         }
 
-        // 3. Apply CPU affinity ONLY to isolated CPUs (not general CPUs)
-        // Auto-pinning to general CPUs can cause issues - only pin when there
-        // are actual isolated CPUs dedicated for RT use
+        // 3. CPU affinity — only isolated CPUs
         if !caps.isolated_cpus.is_empty() {
-            // Prefer isolated + nohz_full, then isolated only
             let best_cpu = caps
                 .isolated_cpus
                 .iter()
@@ -366,55 +380,115 @@ impl Scheduler {
                 .copied();
 
             if let Some(cpu) = best_cpu {
-                match scheduler.apply_cpu_affinity_internal(cpu) {
-                    Ok(()) => {
-                        // Success - no need to announce for normal development
-                    }
-                    Err(e) => {
-                        degradations.push(RtDegradation {
-                            feature: RtFeature::CpuAffinity,
-                            reason: e.to_string(),
-                            severity: DegradationSeverity::Low, // Low severity since isolated CPUs exist
-                        });
-                    }
+                if let Err(e) = self.apply_cpu_affinity_internal(cpu) {
+                    self.rt_degradations.push(RtDegradation {
+                        feature: RtFeature::CpuAffinity,
+                        reason: e.to_string(),
+                        severity: DegradationSeverity::Low,
+                    });
                 }
             }
         }
-        // If no isolated CPUs, don't auto-pin - let the OS scheduler handle it
-
-        // 4-7. RT features detected and applied silently
-        // - NUMA topology noted for future thread pool optimization
-        // - RuntimeCapabilities available via scheduler.runtime_capabilities
-        // - BlackBox enabled by default for crash analysis
-        // - SafetyMonitor disabled by default (enable with safety_critical() or hard_realtime())
-        // Use Scheduler::builder().verbose(true) for full diagnostics
-
-        // Store degradations
-        scheduler.rt_degradations = degradations;
 
         // Print degradation warnings
-        if !scheduler.rt_degradations.is_empty() {
-            for deg in &scheduler.rt_degradations {
-                let severity_color = match deg.severity {
-                    DegradationSeverity::High => "red",
-                    DegradationSeverity::Medium => "yellow",
-                    DegradationSeverity::Low => "white",
-                };
-                let msg = format!("[WARN] {}: {}", deg.feature, deg.reason);
-                match severity_color {
-                    "red" => print_line(&msg.red().to_string()),
-                    "yellow" => print_line(&msg.yellow().to_string()),
-                    _ => print_line(&msg.white().to_string()),
-                }
+        for deg in &self.rt_degradations {
+            let msg = format!("[WARN] {}: {}", deg.feature, deg.reason);
+            match deg.severity {
+                DegradationSeverity::High => print_line(&msg.red().to_string()),
+                DegradationSeverity::Medium => print_line(&msg.yellow().to_string()),
+                DegradationSeverity::Low => print_line(&msg.white().to_string()),
             }
         }
 
-        scheduler
+        self
+    }
+
+    /// Enable the BlackBox flight recorder for post-mortem crash analysis.
+    ///
+    /// The BlackBox records scheduler events (start, stop, deadline misses,
+    /// WCET violations, emergency stops) in a fixed-size ring buffer.
+    ///
+    /// # Arguments
+    /// * `size_mb` - Buffer size in megabytes (e.g., 16 for 16MB)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .with_blackbox(16); // 16MB flight recorder
+    /// ```
+    pub fn with_blackbox(mut self, size_mb: usize) -> Self {
+        self.blackbox = Some(super::blackbox::BlackBox::new(size_mb));
+        self
+    }
+
+    /// Set the global tick rate in Hz.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .tick_hz(1000.0); // 1kHz control loop
+    /// ```
+    pub fn tick_hz(mut self, hz: f64) -> Self {
+        if hz.is_finite() && hz > 0.0 {
+            self.tick_period = Duration::from_micros((1_000_000.0 / hz) as u64);
+        }
+        self
     }
 
     // ========================================================================
     // PRESET CONSTRUCTORS
     // ========================================================================
+
+    /// Production deployment preset — RT features + blackbox + profiling.
+    ///
+    /// Equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new()
+    ///     .realtime()
+    ///     .with_blackbox(16)
+    ///     .with_name("Deploy")
+    /// ```
+    ///
+    /// # What it does
+    /// - Applies RT priority, memory locking, CPU affinity (best-effort)
+    /// - Enables 16MB BlackBox flight recorder for crash analysis
+    /// - Ready for production with sensible defaults
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::deploy();
+    /// scheduler.add(MotorController::new()).order(0).done();
+    /// scheduler.run()?;
+    /// ```
+    pub fn deploy() -> Self {
+        Self::new()
+            .realtime()
+            .with_blackbox(16)
+            .with_name("Deploy")
+    }
+
+    /// Development/prototyping preset — no RT, no syscalls, fast startup.
+    ///
+    /// Equivalent to:
+    /// ```rust,ignore
+    /// Scheduler::new()
+    ///     .with_name("Prototype")
+    /// ```
+    ///
+    /// # What it does
+    /// - No RT priority, no memory locking, no CPU pinning
+    /// - No BlackBox (saves 16MB allocation)
+    /// - Fastest possible startup for development iteration
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::prototype();
+    /// scheduler.add(TestNode::new()).order(0).done();
+    /// scheduler.run()?;
+    /// ```
+    pub fn prototype() -> Self {
+        Self::new().with_name("Prototype")
+    }
 
     /// Create a scheduler configured for safety-critical systems.
     ///
@@ -2241,6 +2315,14 @@ impl Scheduler {
         if let Ok(mut running) = self.running.lock() {
             *running = false;
         }
+    }
+
+    /// Get a clone of the running flag for external stop control.
+    ///
+    /// This allows external code (e.g., Python bindings) to stop the scheduler
+    /// by setting the flag to `false` from outside the run loop.
+    pub fn running_flag(&self) -> Arc<Mutex<bool>> {
+        self.running.clone()
     }
 
     /// Set per-node rate control (chainable)

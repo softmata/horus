@@ -163,6 +163,19 @@ impl PySchedulerConfig {
 }
 
 impl PySchedulerConfig {
+    /// Convert to horus_core's SchedulerConfig for wrapping the core scheduler.
+    pub fn to_core_config(&self) -> SchedulerConfig {
+        let mut config = SchedulerConfig::standard();
+        config.timing.global_rate_hz = self.tick_rate;
+        config.fault.circuit_breaker_enabled = self.circuit_breaker;
+        config.fault.max_failures = self.max_failures;
+        config.realtime.deadline_monitoring = self.deadline_monitoring;
+        config.realtime.watchdog_enabled = self.watchdog_enabled;
+        config.realtime.watchdog_timeout_ms = self.watchdog_timeout_ms;
+        config.monitoring.profiling_enabled = self.profiling;
+        config
+    }
+
     fn from_rust_config(rust_config: SchedulerConfig, name: &str) -> Self {
         PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,

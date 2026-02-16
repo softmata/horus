@@ -4,18 +4,23 @@
 //!
 //! - **Scheduler**: Unified scheduler with built-in monitoring integration
 //! - **Simple Priorities**: Numeric priorities (0 = highest)
-//! - **Optional Logging**: Per-node logging configuration
+//! - **Progressive Disclosure**: `new()` is lightweight; opt in to features via builders
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
 //! use horus_core::Scheduler;
 //!
+//! // Development — lightweight, no syscalls
 //! let mut scheduler = Scheduler::new();
-//! scheduler.add(Box::new(sensor_node), 10);      // High priority
-//! scheduler.add(Box::new(control_node), 20);     // Medium priority
-//! scheduler.add(Box::new(background_node), 200); // Low priority
-//! scheduler.run(); // Handles initialization automatically
+//! scheduler.add(sensor_node).order(0).done();
+//! scheduler.add(control_node).order(1).done();
+//! scheduler.run()?;
+//!
+//! // Production — RT features + flight recorder
+//! let mut scheduler = Scheduler::deploy();
+//! scheduler.add(motor_ctrl).order(0).rt().done();
+//! scheduler.run()?;
 //! ```
 //!
 //! ## Priority Levels

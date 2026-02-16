@@ -1,115 +1,136 @@
-/// Example showing unified API vs convenience constructors
+/// Example showing the HORUS Scheduler API patterns
 ///
-/// Both approaches work identically - pick based on preference:
-/// - Builder pattern: Maximum flexibility
-/// - Convenience constructors: Quick common patterns
+/// The API uses progressive disclosure:
+/// - `Scheduler::new()` — lightweight, no syscalls
+/// - Builder methods opt in to features: `.realtime()`, `.with_blackbox()`, `.tick_hz()`
+/// - Presets bundle common configurations: `deploy()`, `prototype()`, `safety_critical()`
 use horus_core::scheduling::{config::SchedulerConfig, Scheduler};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== HORUS Scheduler API Patterns ===\n");
 
     // ========================================================================
-    // Pattern 1: Builder Pattern (Unified API) - Maximum Flexibility
+    // Pattern 1: Lightweight (development/prototyping)
     // ========================================================================
-    println!("Pattern 1: Builder Pattern (Recommended)");
-    println!("-----------------------------------------");
+    println!("Pattern 1: Lightweight (development)");
+    println!("------------------------------------");
 
-    let scheduler = Scheduler::new()
+    let _scheduler = Scheduler::new(); // No syscalls, no allocations beyond struct
+
+    println!("[OK] Lightweight scheduler — no RT, no BlackBox");
+    println!("  Best for: rapid iteration, unit tests\n");
+
+    // Same as:
+    let _scheduler = Scheduler::prototype();
+
+    // ========================================================================
+    // Pattern 2: Production Deployment
+    // ========================================================================
+    println!("Pattern 2: Production Deployment");
+    println!("--------------------------------");
+
+    let scheduler = Scheduler::deploy(); // RT + BlackBox + profiling
+
+    println!("[OK] Deploy preset — RT features + 16MB BlackBox");
+    if let Some(caps) = scheduler.capabilities() {
+        println!("  RT support: {}", caps.has_rt_support());
+        println!("  Can lock memory: {}", caps.can_lock_memory());
+    }
+    for deg in scheduler.degradations() {
+        println!("  [WARN] {}: {}", deg.feature, deg.reason);
+    }
+    println!();
+
+    // ========================================================================
+    // Pattern 3: Builder — compose exactly what you need
+    // ========================================================================
+    println!("Pattern 3: Builder Composition");
+    println!("------------------------------");
+
+    let _scheduler = Scheduler::new()
+        .realtime()        // RT priority + memory lock + CPU pin
+        .with_blackbox(8)  // 8MB flight recorder
+        .tick_hz(1000.0)   // 1kHz control loop
+        .with_name("CustomRobot");
+
+    println!("[OK] Custom builder composition");
+    println!("  RT: enabled, BlackBox: 8MB, Rate: 1kHz\n");
+
+    // ========================================================================
+    // Pattern 4: Config Preset (advanced)
+    // ========================================================================
+    println!("Pattern 4: Config Preset");
+    println!("------------------------");
+
+    let _scheduler = Scheduler::new()
         .with_config(SchedulerConfig::hard_realtime())
         .with_capacity(128)
         .with_safety_monitor(3)
-        .with_name("CustomRTScheduler");
+        .with_name("HardRT");
 
-    println!("[OK] Created with builder pattern");
-    println!("  Config: hard_realtime preset");
-    println!("  Capacity: 128 nodes pre-allocated");
-    println!("  Safety: ENABLED (max 3 misses)\n");
+    println!("[OK] hard_realtime config preset");
+    println!("  WCET enforcement, 10ms watchdog, panic on deadline miss\n");
 
-    // OS integration (requires root/capabilities)
+    // ========================================================================
+    // Pattern 5: Named Presets
+    // ========================================================================
+    println!("Pattern 5: Named Presets");
+    println!("------------------------");
+
+    let _s1 = Scheduler::safety_critical();
+    println!("[OK] safety_critical — sequential, WCET, watchdog");
+
+    let _s2 = Scheduler::high_performance();
+    println!("[OK] high_performance — parallel, 10kHz");
+
+    let _s3 = Scheduler::hard_realtime();
+    println!("[OK] hard_realtime — strict deadlines");
+
+    let _s4 = Scheduler::deterministic();
+    println!("[OK] deterministic — reproducible execution\n");
+
+    // ========================================================================
+    // Pattern 6: Manual OS Integration (still available)
+    // ========================================================================
+    println!("Pattern 6: Manual OS Integration");
+    println!("--------------------------------");
+
+    let scheduler = Scheduler::new();
+
     match scheduler.set_os_priority(50) {
-        Ok(_) => println!("[OK] Real-time priority: 50 (SCHED_FIFO)"),
-        Err(e) => println!("[WARNING] RT priority failed (need root): {}", e),
+        Ok(_) => println!("[OK] RT priority 50 (SCHED_FIFO)"),
+        Err(e) => println!("[SKIP] RT priority: {}", e),
     }
 
     match scheduler.pin_to_cpu(0) {
-        Ok(_) => println!("[OK] Pinned to CPU core 0"),
-        Err(e) => println!("[WARNING] CPU pinning failed: {}", e),
+        Ok(_) => println!("[OK] Pinned to CPU 0"),
+        Err(e) => println!("[SKIP] CPU pin: {}", e),
     }
 
     match scheduler.lock_memory() {
-        Ok(_) => println!("[OK] Memory locked (no page faults)"),
-        Err(e) => println!("[WARNING] Memory locking failed (need CAP_IPC_LOCK): {}", e),
+        Ok(_) => println!("[OK] Memory locked"),
+        Err(e) => println!("[SKIP] Memory lock: {}", e),
     }
 
     println!();
 
     // ========================================================================
-    // Pattern 2: Convenience Constructor - Quick Start
+    // Summary
     // ========================================================================
-    println!("Pattern 2: Hard Realtime Configuration");
-    println!("--------------------------------------");
-
-    let scheduler2 = Scheduler::new().with_config(SchedulerConfig::hard_realtime());
-
-    println!("[OK] Created with hard_realtime() config");
-    println!("  (Uses builder pattern with preset config)\n");
-
-    // Same OS integration
-    let _ = scheduler2.set_os_priority(50);
-    let _ = scheduler2.pin_to_cpu(0);
-    let _ = scheduler2.lock_memory();
-
-    // ========================================================================
-    // Pattern 3: Custom Composition - Mix Features
-    // ========================================================================
-    println!("Pattern 3: Custom Composition");
-    println!("-----------------------------");
-
-    let mut config = SchedulerConfig::hard_realtime();
-    config.timing.global_rate_hz = 2000.0; // Override to 2kHz
-
-    let _scheduler3 = Scheduler::new()
-        .with_config(config)
-        .with_capacity(64)
-        .with_safety_monitor(5) // More tolerant (5 misses)
-        .with_name("MixedWorkload");
-
-    println!("[OK] Custom composition:");
-    println!("  Base: hard_realtime preset");
-    println!("  Override: 2kHz rate (was 1kHz)");
-    println!("  Safety: 5 misses allowed\n");
-
-    // ========================================================================
-    // Pattern 4: Deterministic (No OS Features)
-    // ========================================================================
-    println!("Pattern 4: Deterministic (Simulation)");
-    println!("--------------------------------------");
-
-    let _scheduler4 = Scheduler::new().enable_determinism();
-
-    println!("[OK] Deterministic scheduler:");
-    println!("  No OS integration needed");
-    println!("  Suitable for testing/simulation\n");
-
-    // ========================================================================
-    // Pattern 5: Standard (Default Behavior)
-    // ========================================================================
-    println!("Pattern 5: Standard (Default)");
-    println!("------------------------------");
-
-    let _scheduler5 = Scheduler::new();
-
-    println!("[OK] Standard scheduler:");
-    println!("  All defaults\n");
-
-    println!("=== Comparison Summary ===");
+    println!("=== API Summary ===");
     println!();
-    println!("Builder Pattern:         Flexible, compose any features");
-    println!("Convenience Constructor: Quick start, common patterns");
-    println!("OS Integration:          Always explicit, requires permissions");
-    println!("Configuration Presets:   Robot-specific optimizations");
+    println!("  Scheduler::new()              Lightweight, no syscalls");
+    println!("  Scheduler::prototype()        Same as new() (named)");
+    println!("  Scheduler::deploy()           RT + BlackBox (production)");
+    println!("  Scheduler::safety_critical()  WCET + watchdog + sequential");
+    println!("  Scheduler::high_performance() Parallel + 10kHz");
+    println!("  Scheduler::hard_realtime()    Strict deadlines");
+    println!("  Scheduler::deterministic()    Reproducible execution");
     println!();
-    println!("All patterns use the same backend - choose based on preference!");
+    println!("  .realtime()       Opt-in RT priority + memory lock + CPU pin");
+    println!("  .with_blackbox(N) Opt-in N MB flight recorder");
+    println!("  .tick_hz(Hz)      Set global tick rate");
+    println!("  .with_config(C)   Apply a SchedulerConfig preset");
 
     Ok(())
 }

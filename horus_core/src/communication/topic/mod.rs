@@ -826,6 +826,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
             self.drain_old_into_shm(epoch);
 
             *backend = BackendStorage::ShmData;
+
+            // Restore SHM cached pointers. DirectChannel setup overwrites
+            // cached_data_ptr/cached_seq_ptr to point at the DirectSlot heap
+            // buffer. SHM dispatch functions rely on these pointing into the
+            // mmap'd storage region. Without this restore, a DC→SHM migration
+            // (e.g., when a cross-process participant joins) would cause SHM
+            // dispatch to read/write the DirectSlot buffer instead of SHM — UB.
+            let cap = local.cached_capacity as usize;
+            // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
+            local.cached_seq_ptr = unsafe {
+                self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8
+            };
+            local.cached_data_ptr = unsafe {
+                self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8
+            };
         }
 
         // Set function pointers to match the new backend.

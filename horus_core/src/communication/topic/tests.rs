@@ -2724,3 +2724,497 @@ fn dispatch_migration_during_burst() {
         300
     );
 }
+
+// ============================================================================
+// 34. SHM DISPATCH PATH TESTS — Per-mode, per-type coverage
+// ============================================================================
+//
+// Each test exercises a specific (SHM backend mode × type) combination via
+// force_migrate + process_epoch bump, verifying the full dispatch chain:
+//   force_migrate → bump process_epoch → try_send → epoch_guard triggers
+//   → handle_epoch_change → initialize_backend(ShmData) → set_dispatch_fn_ptrs
+//   → SHM fn ptr executes on real SHM storage
+//
+// IMPORTANT: send()/recv() bypass fn ptrs via the Role::Both DirectChannel fast
+// path. We must use try_send()/try_recv() which go through the fn ptr dispatch.
+// Also, force_migrate syncs cached_epoch == process_epoch, so we must manually
+// bump process_epoch to trigger the epoch_guard in the dispatch function.
+//
+// Types tested:
+//   - u64:      small POD  (sizeof+8=16 ≤ 64 → co-located layout)
+//   - [u64; 8]: large POD  (sizeof+8=72 > 64 → separate seq layout)
+//   - String:   non-POD    (→ bincode serde dispatch)
+//
+// Dispatch functions exercised per test:
+//   SpscShm + u64     → send_shm_sp_pod_colo    / recv_shm_spsc_pod_colo
+//   SpscShm + [u64;8] → send_shm_sp_pod         / recv_shm_spsc_pod
+//   SpscShm + String  → send_shm_sp_serde        / recv_shm_spsc_serde
+//   SpmcShm + u64     → send_shm_sp_pod_colo    / recv_shm_spmc_pod_colo
+//   SpmcShm + String  → send_shm_sp_serde        / recv_shm_spmc_serde
+//   MpscShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpsc_pod_colo
+//   MpscShm + String  → send_shm_mp_serde        / recv_shm_mpsc_serde
+//   MpmcShm + u64     → send_shm_mp_pod_colo    / recv_shm_mpmc_pod_colo
+//   MpmcShm + String  → send_shm_mp_serde        / recv_shm_mpmc_serde
+//   PodShm  + u64     → send_shm_pod_bcast_colo / recv_shm_pod_bcast_colo
+//   PodShm  + [u64;8] → send_shm_pod_broadcast  / recv_shm_pod_broadcast
+
+/// Force dispatch fn ptr re-installation by desyncing process_epoch from
+/// the Topic's cached_epoch. The next try_send/try_recv will trigger the
+/// epoch_guard → handle_epoch_change → initialize_backend → set_dispatch_fn_ptrs,
+/// which installs the SHM dispatch functions matching the header's current mode.
+fn trigger_shm_dispatch(name: &str) {
+    let pe = registry::get_or_create_process_epoch(name);
+    pe.fetch_add(1, Ordering::Release);
+}
+
+// ---- SpscShm ----
+
+#[test]
+fn shm_dispatch_spsc_pod_colo() {
+    let name = unique("shm_d_spsc_colo");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            assert_eq!(t.mode(), BackendMode::SpscShm);
+            trigger_shm_dispatch(&name);
+            // First try_send triggers epoch_guard → SHM dispatch installed
+            for i in 1..=64u64 {
+                assert!(t.try_send(i).is_ok(), "SpscShm POD colo: send {} failed", i);
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "SpscShm POD colo: no messages");
+            // SPSC preserves ordering
+            for w in received.windows(2) {
+                assert!(w[1] > w[0], "SpscShm POD colo: order broken {} → {}", w[0], w[1]);
+            }
+            assert_eq!(*received.last().unwrap(), 64);
+            eprintln!("SpscShm POD colo: {}/64", received.len());
+        }
+        other => eprintln!("SpscShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_dispatch_spsc_pod_separate() {
+    let name = unique("shm_d_spsc_sep");
+    let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
+    t.send([0u64; 8]);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            for i in 1..=32u64 {
+                let mut arr = [0u64; 8];
+                arr[0] = i;
+                arr[7] = i * 100;
+                assert!(t.try_send(arr).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "SpscShm POD separate: no messages");
+            for v in &received {
+                assert_eq!(v[7], v[0] * 100, "SpscShm POD separate: corruption {:?}", v);
+            }
+            eprintln!("SpscShm POD separate: {}/32", received.len());
+        }
+        other => eprintln!("SpscShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_dispatch_spsc_serde() {
+    let name = unique("shm_d_spsc_ser");
+    let t: Topic<String> = Topic::new(&name).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            for i in 0..32 {
+                assert!(t.try_send(format!("spsc_{}", i)).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "SpscShm serde: no messages");
+            for v in &received {
+                assert!(v.starts_with("spsc_"), "SpscShm serde: corrupt '{}'", v);
+            }
+            // Verify ordering (SPSC)
+            for w in received.windows(2) {
+                let a: u32 = w[0].strip_prefix("spsc_").unwrap().parse().unwrap();
+                let b: u32 = w[1].strip_prefix("spsc_").unwrap().parse().unwrap();
+                assert!(b > a, "SpscShm serde: order broken {} → {}", a, b);
+            }
+            eprintln!("SpscShm serde: {}/32", received.len());
+        }
+        other => eprintln!("SpscShm unavailable: {:?}", other),
+    }
+}
+
+// ---- SpmcShm ----
+
+#[test]
+fn shm_dispatch_spmc_pod_colo() {
+    let name = unique("shm_d_spmc_colo");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpmcShm) {
+        MigrationResult::Success { .. } => {
+            assert_eq!(t.mode(), BackendMode::SpmcShm);
+            trigger_shm_dispatch(&name);
+            for i in 1..=64u64 {
+                assert!(t.try_send(i).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "SpmcShm POD colo: no messages");
+            for &v in &received {
+                assert!(v >= 1 && v <= 64, "SpmcShm POD colo: corrupt {}", v);
+            }
+            eprintln!("SpmcShm POD colo: {}/64", received.len());
+        }
+        other => eprintln!("SpmcShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_dispatch_spmc_serde() {
+    let name = unique("shm_d_spmc_ser");
+    let t: Topic<String> = Topic::new(&name).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpmcShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            for i in 0..32 {
+                assert!(t.try_send(format!("spmc_{}", i)).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "SpmcShm serde: no messages");
+            for v in &received {
+                assert!(v.starts_with("spmc_"), "SpmcShm serde: corrupt '{}'", v);
+            }
+            eprintln!("SpmcShm serde: {}/32", received.len());
+        }
+        other => eprintln!("SpmcShm unavailable: {:?}", other),
+    }
+}
+
+// ---- MpscShm ----
+
+#[test]
+fn shm_dispatch_mpsc_pod_colo() {
+    let name = unique("shm_d_mpsc_colo");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpscShm) {
+        MigrationResult::Success { .. } => {
+            assert_eq!(t.mode(), BackendMode::MpscShm);
+            trigger_shm_dispatch(&name);
+            for i in 1..=64u64 {
+                assert!(t.try_send(i).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "MpscShm POD colo: no messages");
+            for &v in &received {
+                assert!(v >= 1 && v <= 64, "MpscShm POD colo: corrupt {}", v);
+            }
+            eprintln!("MpscShm POD colo: {}/64", received.len());
+        }
+        other => eprintln!("MpscShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_dispatch_mpsc_serde() {
+    let name = unique("shm_d_mpsc_ser");
+    let t: Topic<String> = Topic::new(&name).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            for i in 0..32 {
+                assert!(t.try_send(format!("mpsc_{}", i)).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "MpscShm serde: no messages");
+            for v in &received {
+                assert!(v.starts_with("mpsc_"), "MpscShm serde: corrupt '{}'", v);
+            }
+            eprintln!("MpscShm serde: {}/32", received.len());
+        }
+        other => eprintln!("MpscShm unavailable: {:?}", other),
+    }
+}
+
+// ---- MpmcShm ----
+
+#[test]
+fn shm_dispatch_mpmc_pod_colo() {
+    let name = unique("shm_d_mpmc_colo");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpmcShm) {
+        MigrationResult::Success { .. } => {
+            assert_eq!(t.mode(), BackendMode::MpmcShm);
+            trigger_shm_dispatch(&name);
+            for i in 1..=64u64 {
+                assert!(t.try_send(i).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "MpmcShm POD colo: no messages");
+            for &v in &received {
+                assert!(v >= 1 && v <= 64, "MpmcShm POD colo: corrupt {}", v);
+            }
+            eprintln!("MpmcShm POD colo: {}/64", received.len());
+        }
+        other => eprintln!("MpmcShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_dispatch_mpmc_serde() {
+    let name = unique("shm_d_mpmc_ser");
+    let t: Topic<String> = Topic::new(&name).expect("create");
+    t.send("init".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpmcShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            for i in 0..32 {
+                assert!(t.try_send(format!("mpmc_{}", i)).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "MpmcShm serde: no messages");
+            for v in &received {
+                assert!(v.starts_with("mpmc_"), "MpmcShm serde: corrupt '{}'", v);
+            }
+            eprintln!("MpmcShm serde: {}/32", received.len());
+        }
+        other => eprintln!("MpmcShm unavailable: {:?}", other),
+    }
+}
+
+// ---- PodShm broadcast ----
+
+#[test]
+fn shm_dispatch_pod_broadcast_separate() {
+    // Large POD → separate seq layout (non-colo) through PodShm broadcast
+    let name = unique("shm_d_bcast_sep");
+    let t: Topic<[u64; 8]> = Topic::new(&name).expect("create");
+    t.send([0u64; 8]);
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::PodShm) {
+        MigrationResult::Success { .. } => {
+            assert_eq!(t.mode(), BackendMode::PodShm);
+            trigger_shm_dispatch(&name);
+            for i in 1..=32u64 {
+                let mut arr = [0u64; 8];
+                arr[0] = i;
+                arr[7] = i * 100;
+                assert!(t.try_send(arr).is_ok());
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "PodShm separate: no messages");
+            for v in &received {
+                assert_eq!(v[7], v[0] * 100, "PodShm separate: corruption {:?}", v);
+            }
+            eprintln!("PodShm separate: {}/32", received.len());
+        }
+        other => eprintln!("PodShm unavailable: {:?}", other),
+    }
+}
+
+// ---- SHM dispatch: all modes in rapid cycle ----
+
+#[test]
+fn shm_dispatch_all_modes_rapid_cycle() {
+    // Cycle through ALL SHM backend modes with data integrity checks.
+    // Each cycle: force_migrate → trigger dispatch → try_send → try_recv.
+    let name = unique("shm_d_all");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    t.send(0);
+    let _ = t.recv();
+
+    let shm_modes = [
+        BackendMode::SpscShm,
+        BackendMode::SpmcShm,
+        BackendMode::MpscShm,
+        BackendMode::MpmcShm,
+        BackendMode::PodShm,
+    ];
+
+    for (round, &mode) in shm_modes.iter().cycle().take(25).enumerate() {
+        match t.force_migrate(mode) {
+            MigrationResult::Success { .. } => {
+                trigger_shm_dispatch(&name);
+                let val = (round as u64 + 1) * 100;
+                assert!(t.try_send(val).is_ok());
+                let got = t.try_recv();
+                assert_eq!(
+                    got,
+                    Some(val),
+                    "SHM cycle round {}: {:?} → expected Some({}), got {:?}",
+                    round, mode, val, got
+                );
+            }
+            _ => {
+                // SHM unavailable for this mode — skip
+            }
+        }
+    }
+}
+
+// ---- Serde bounds validation (security fix) ----
+
+#[test]
+fn shm_serde_oversized_data_rejected() {
+    // Verify the bounds check from Task #13: serialized data exceeding
+    // slot_size - 16 must return Err, not cause OOB write.
+    let name = unique("shm_d_bounds");
+    // Small slot_size (64) for String: max_data_len = 64 - 16 = 48 bytes.
+    // bincode String = 8-byte length prefix + raw bytes.
+    // 41 chars → 8 + 41 = 49 bytes > 48 → rejected
+    let t: Topic<String> = Topic::with_slot_size(name.clone(), 64, 64).expect("create");
+    t.send("ok".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            // Small string should succeed
+            let small = "hello".to_string(); // bincode: 8 + 5 = 13 bytes < 48
+            assert!(t.try_send(small).is_ok(), "Small string should fit in slot");
+            let got = t.try_recv();
+            assert_eq!(got, Some("hello".to_string()));
+
+            // Oversized string should be rejected
+            let oversized = "X".repeat(41); // bincode: 8 + 41 = 49 bytes > 48
+            let result = t.try_send(oversized.clone());
+            assert!(
+                result.is_err(),
+                "Oversized string ({} chars) should be rejected by serde bounds check",
+                oversized.len()
+            );
+
+            // Exact boundary: 40 chars → 8 + 40 = 48 bytes = max_data_len
+            let boundary = "Y".repeat(40);
+            assert!(
+                t.try_send(boundary).is_ok(),
+                "Boundary-size string (40 chars) should fit exactly"
+            );
+            let got = t.try_recv();
+            assert_eq!(got, Some("Y".repeat(40)));
+        }
+        other => eprintln!("SpscShm unavailable: {:?}", other),
+    }
+}
+
+#[test]
+fn shm_serde_oversized_mp_rejected() {
+    // Same bounds check but for multi-producer serde path (send_shm_mp_serde)
+    let name = unique("shm_d_bounds_mp");
+    let t: Topic<String> = Topic::with_slot_size(name.clone(), 64, 64).expect("create");
+    t.send("ok".to_string());
+    let _ = t.recv();
+
+    match t.force_migrate(BackendMode::MpmcShm) {
+        MigrationResult::Success { .. } => {
+            trigger_shm_dispatch(&name);
+            let small = "hi".to_string();
+            assert!(t.try_send(small).is_ok(), "Small string should fit");
+            let _ = t.try_recv();
+
+            let oversized = "Z".repeat(41);
+            let result = t.try_send(oversized);
+            assert!(result.is_err(), "MP serde: oversized should be rejected");
+        }
+        other => eprintln!("MpmcShm unavailable: {:?}", other),
+    }
+}
+
+// ---- DC→SHM pointer restoration (regression test for cached_data_ptr bug) ----
+
+#[test]
+fn shm_dispatch_dc_to_shm_pointer_restore() {
+    // Verify that migrating from DirectChannel to SHM correctly restores
+    // cached_data_ptr to point at SHM storage instead of DirectSlot buffer.
+    // Without the fix in initialize_backend, this would write to the wrong
+    // memory and either corrupt data or segfault.
+    let name = unique("shm_d_dc_restore");
+    let t: Topic<u64> = Topic::new(&name).expect("create");
+    // Initialize in DirectChannel mode (sets cached_data_ptr to DirectSlot)
+    t.send(42);
+    assert_eq!(t.recv(), Some(42));
+
+    // Migrate to SHM mode
+    match t.force_migrate(BackendMode::SpscShm) {
+        MigrationResult::Success { .. } => {
+            // Trigger epoch_guard → handle_epoch_change → initialize_backend
+            // This should restore cached_data_ptr to SHM storage
+            trigger_shm_dispatch(&name);
+
+            // Send/recv through SHM dispatch (not DC fast path)
+            for i in 100..110u64 {
+                assert!(t.try_send(i).is_ok(), "DC→SHM: send {} failed", i);
+            }
+            let mut received = Vec::new();
+            while let Some(v) = t.try_recv() {
+                received.push(v);
+            }
+            assert!(!received.is_empty(), "DC→SHM: no messages through SHM path");
+            for &v in &received {
+                assert!(
+                    v >= 100 && v < 110,
+                    "DC→SHM: corrupted value {} (pointer restore failed?)",
+                    v
+                );
+            }
+            eprintln!("DC→SHM pointer restore: {}/10", received.len());
+        }
+        other => eprintln!("SpscShm unavailable: {:?}", other),
+    }
+}

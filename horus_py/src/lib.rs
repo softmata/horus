@@ -11,6 +11,7 @@ mod messages;
 mod node;
 mod perception;
 mod router;
+#[allow(deprecated)] // with_gil/allow_threads deprecated in PyO3 0.27, still functional
 mod scheduler;
 mod tensor;
 mod topic;
