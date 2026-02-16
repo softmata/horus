@@ -23,7 +23,7 @@ Thank you for your interest in contributing to HORUS! This document provides gui
 
 ### Prerequisites
 
-- Rust 1.70+ (`rustup update`)
+- Rust 1.92+ (`rustup update`)
 - Python 3.9+ with `pip` (optional)
 - Build tools (GCC/Clang)
 - Node.js 18+ for documentation site
@@ -226,12 +226,13 @@ Fixes #123
 
 ```
 horus/
-├── horus_core/         # Core IPC implementation
-├── horus_macros/       # Procedural macros
+├── horus/              # Unified entry crate (use horus::prelude::*)
+├── horus_core/         # Core framework (Node, Topic, Scheduler)
+├── horus_macros/       # Procedural macros (node!, message!)
+├── horus_library/      # Standard messages and built-in nodes
+├── horus_manager/      # CLI tool (horus command)
+├── horus_ai/           # ML model registry
 ├── horus_py/           # Python bindings
-├── horus_library/      # Standard messages/nodes
-├── horus/              # CLI tool (horus command)
-├── docs-site/          # Documentation website
 ├── benchmarks/         # Performance benchmarks
 └── tests/              # Integration tests
 ```

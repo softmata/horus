@@ -1,8 +1,14 @@
 # HORUS - The Unified Crate
 
-The main entry point for the HORUS robotics framework, providing a clean and unified API.
+The main entry point for the HORUS robotics framework.
 
 ## Usage
+
+```bash
+horus new my_robot
+cd my_robot
+horus run
+```
 
 ```rust
 use horus::prelude::*;
@@ -12,28 +18,11 @@ use horus::prelude::*;
 
 The `horus` crate re-exports everything you need:
 
-- **Core Framework** (`horus_core`)
-  - Node trait and types
-  - Scheduler with presets (`deploy()`, `safety_critical()`, `deterministic()`, etc.)
-  - Communication (Topic API with 10 auto-selected backends)
-  - Memory management and tensor pools
-
-- **Standard Library** (`horus_library`)
-  - Message types (CmdVel, Imu, LaserScan, Pose2D, etc.)
-  - Built-in hardware nodes (32 production-ready nodes)
-  - HFrame coordinate transforms
-
-- **AI** (`horus_ai`)
-  - ML model registry and loader
-
-- **Macros** (`horus_macros`)
-  - `node!` macro for zero-boilerplate nodes
-  - `message!` macro for zero-copy message types
-
-- **Common Types**
-  - Result and error types (Error, HorusError)
-  - Duration, Instant, Arc, Mutex
-  - Serde traits
+- **Core Framework** - Node trait, Scheduler, Topic communication
+- **Standard Library** - Message types (CmdVel, Imu, LaserScan, etc.), 32 built-in hardware nodes, coordinate transforms
+- **AI** - ML model registry and loader
+- **Macros** - `node!` and `message!` macros for zero-boilerplate development
+- **Common Types** - Result/Error types, Duration, Arc, Mutex, Serde traits
 
 ## Example
 
@@ -73,17 +62,13 @@ fn main() -> Result<()> {
 ## Scheduler Presets
 
 ```rust
-Scheduler::new()                // Lightweight, no syscalls
-Scheduler::deploy()             // Production: RT + BlackBox + profiling
-Scheduler::safety_critical()    // WCET + watchdog + sequential
-Scheduler::high_performance()   // Parallel + 10kHz
-Scheduler::hard_realtime()      // Strict deadlines
-Scheduler::deterministic()      // Reproducible execution
+Scheduler::new()                // Lightweight default
+Scheduler::deploy()             // Production with flight recorder
+Scheduler::safety_critical()    // Watchdogs + sequential execution
+Scheduler::high_performance()   // Parallel execution + 10kHz
+Scheduler::deterministic()      // Reproducible execution for debugging
 ```
 
-## Benefits
+## License
 
-1. **Cleaner imports** - Single `use horus::prelude::*` statement
-2. **Consistent API** - Everything through one crate
-3. **Better discoverability** - All types in one place
-4. **Simplified dependency** - Add only `horus` to your Cargo.toml
+Apache License 2.0 - see [LICENSE](../LICENSE) for details.

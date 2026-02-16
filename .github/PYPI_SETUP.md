@@ -60,15 +60,15 @@ Once set up, releasing is automatic:
 
 ```bash
 # 1. Update version numbers
-vim horus_py/Cargo.toml      # version = "0.1.7"
-vim horus_py/pyproject.toml  # version = "0.1.7"
+vim horus_py/Cargo.toml      # version = "0.1.9"
+vim horus_py/pyproject.toml  # version = "0.1.9"
 
 # 2. Commit changes
 git add horus_py/Cargo.toml horus_py/pyproject.toml
-git commit -m "Bump version to 0.1.7"
+git commit -m "Bump version to 0.1.9"
 
 # 3. Create and push tag
-git tag v0.1.7
+git tag v0.1.9
 git push origin main --tags
 
 # 4. Wait ~10-15 minutes
@@ -92,7 +92,7 @@ git push origin main --tags
 
 ### Test Installation
 ```bash
-pip install horus-robotics==0.1.7
+pip install horus-robotics==0.1.9
 python -c "import horus; print(horus.__version__)"
 ```
 
@@ -141,9 +141,9 @@ This is more secure as it doesn't require long-lived tokens.
 ## Version Management
 
 ### Semantic Versioning
-- `0.1.9` → `0.1.9`: Bug fixes, small changes
-- `0.1.9` → `0.2.0`: New features (backward compatible)
-- `0.1.9` → `1.0.0`: Breaking changes
+- `0.1.x` → `0.1.y`: Bug fixes, small changes
+- `0.1.x` → `0.2.0`: New features (backward compatible)
+- `0.x.y` → `1.0.0`: Breaking changes
 
 ### Pre-releases
 For testing before official release:
