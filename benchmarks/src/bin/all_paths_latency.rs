@@ -26,8 +26,11 @@
 //! ## Usage
 //!
 //! ```sh
-//! # Standard run (human-readable)
+//! # Standard run (human-readable, includes stress tests)
 //! cargo run --release --bin all_paths_latency
+//!
+//! # Skip stress tests (faster, standard latency suite only)
+//! cargo run --release --bin all_paths_latency -- --skip-stress
 //!
 //! # Machine-readable JSON output for CI/regression tracking
 //! cargo run --release --bin all_paths_latency -- --json results.json
@@ -93,6 +96,12 @@ struct ScenarioResult {
     total_sent: u64,
     total_received: u64,
     note: Option<&'static str>,
+    /// For broadcast backends: freshness (how many messages producer advanced between reads)
+    freshness_samples: Option<Vec<u64>>,
+    /// For broadcast backends: fraction of produced messages that were actually read
+    delivery_ratio: Option<f64>,
+    /// For broadcast backends: number of consumer skip-aheads
+    skip_count: Option<u64>,
 }
 
 impl ScenarioResult {
@@ -151,6 +160,7 @@ fn main() {
         .windows(2)
         .find(|w| w[0] == "--json")
         .map(|w| w[1].clone());
+    let skip_stress = args.iter().any(|a| a == "--skip-stress");
 
     // --- Initialization ---
     let platform = detect_platform();
@@ -213,6 +223,7 @@ fn main() {
 
     let r = bench_pod_shm(&timer);
     print_detail(&r);
+    print_pod_shm_detail(&r);
     results.push(r);
 
     // === Raw atomic probe (hardware floor) ===
@@ -227,6 +238,35 @@ fn main() {
     let r = bench_raw_atomic(&timer);
     print_detail(&r);
     results.push(r);
+
+    // === Scalability Stress Tests ===
+    if !skip_stress {
+        println!();
+        println!(
+            "{} Scalability Stress (PodShm N-pub x M-sub) {}",
+            "───",
+            "─".repeat(BOX_W - 47)
+        );
+        println!();
+
+        let stress_scenarios: Vec<(&str, usize, usize)> = vec![
+            ("Stress-4P1C", 4, 1),
+            ("Stress-8P1C", 8, 1),
+            ("Stress-1P4C", 1, 4),
+            ("Stress-1P8C", 1, 8),
+            ("Stress-4P4C", 4, 4),
+        ];
+
+        for (name, pubs, cons) in stress_scenarios {
+            let r = bench_stress(name, pubs, cons, &timer);
+            print_detail(&r);
+            results.push(r);
+        }
+    } else {
+        println!();
+        println!("  (Stress tests skipped via --skip-stress)");
+        println!();
+    }
 
     // === Summary ===
     print_summary(&results);
@@ -389,6 +429,9 @@ fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: ITERATIONS,
         total_received: ITERATIONS,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -474,6 +517,9 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: ITERATIONS,
         total_received: ITERATIONS,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -581,6 +627,9 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: ITERATIONS,
         total_received: ITERATIONS,
         note: Some("contended: 2 producers active"),
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -694,6 +743,9 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: ITERATIONS,
         total_received: ITERATIONS,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -830,6 +882,9 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: ITERATIONS,
         total_received: ITERATIONS,
         note: Some("contended: 2 producers, 2 consumers"),
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -870,6 +925,9 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: MIGRATION_BOOT + child_count,
         total_received,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -908,6 +966,9 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
         total_received,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -949,6 +1010,9 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: MIGRATION_BOOT + child_count,
         total_received,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -999,8 +1063,10 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     let backend = consumer.backend_type().to_string();
 
-    // Step 5: Measure — publishers are still running their 10M-message hot loops
-    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+    // Step 5: Measure — publishers are still running their 10M-message hot loops.
+    // Use broadcast-aware collector that tracks freshness and skip-aheads.
+    let (latencies, freshness, measure_recv, skips) =
+        collect_pod_shm(&consumer, WARMUP, ITERATIONS, cal);
 
     // Don't wait for publishers to finish all 10M msgs — just kill them
     let _ = pub1.kill();
@@ -1012,15 +1078,26 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     let total_received = migration1 + migration2 + measure_recv;
 
+    // Delivery ratio: messages consumed vs messages produced between reads
+    let total_produced_during_meas: u64 = freshness.iter().sum();
+    let delivery_ratio = if total_produced_during_meas > 0 {
+        Some(freshness.len() as f64 / total_produced_during_meas as f64)
+    } else {
+        None
+    };
+
     ScenarioResult {
         name: "CrossProc-PodShm",
         backend,
         expected_backend: "PodShm",
-        measurement: "one-way",
+        measurement: "broadcast",
         latencies_ns: latencies,
         total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
         total_received,
-        note: None,
+        note: Some("broadcast/latest-value — skipped messages are by design"),
+        freshness_samples: Some(freshness),
+        delivery_ratio,
+        skip_count: Some(skips),
     }
 }
 
@@ -1188,6 +1265,99 @@ fn collect_cross_proc(
     (latencies, total)
 }
 
+/// Collect cross-process latencies with PodShm broadcast-aware freshness tracking.
+///
+/// Like `collect_cross_proc`, but additionally reads `header.sequence_or_head` after
+/// each recv() to measure how far the producer advanced between consumer reads.
+/// This captures PodShm's broadcast/overwrite semantics where "loss" is by design.
+///
+/// Returns (latencies_ns, freshness_samples, total_messages_received, skip_count).
+/// - freshness_samples[i] = how many messages the producer wrote between read i-1 and read i
+/// - skip_count = number of times freshness > 1 (consumer fell behind, skipped messages)
+fn collect_pod_shm(
+    consumer: &Topic<CmdVel>,
+    warmup: u64,
+    iterations: u64,
+    cal: &RdtscCalibration,
+) -> (Vec<u64>, Vec<u64>, u64, u64) {
+    let header_ptr = consumer.local_state_header_ptr();
+    let overhead = cal.overhead_cycles;
+    let deadline = Instant::now() + TIMEOUT;
+    let idle_threshold = cal.ns_to_cycles(2_000_000_000); // 2s for warmup
+    let idle_threshold_meas = cal.ns_to_cycles(500_000_000); // 500ms for measurement
+
+    let mut total = 0u64;
+    let mut last_recv_cycles = rdtsc();
+
+    // Phase 1: Warmup -- receive and discard (cache/TLB warming)
+    let mut polls = 0u64;
+    while total < warmup {
+        polls += 1;
+        if polls & 4095 == 0 && Instant::now() > deadline {
+            break;
+        }
+        if consumer.recv().is_some() {
+            total += 1;
+            last_recv_cycles = rdtsc();
+        } else {
+            let now = rdtsc();
+            if now.wrapping_sub(last_recv_cycles) > idle_threshold {
+                break;
+            }
+            spin_loop();
+        }
+    }
+
+    // Snapshot producer head after warmup for freshness baseline
+    let mut prev_head = if !header_ptr.is_null() {
+        unsafe { (*header_ptr).sequence_or_head.load(Ordering::Acquire) }
+    } else {
+        0
+    };
+
+    // Phase 2: Measurement with freshness tracking
+    let mut latencies = Vec::with_capacity(iterations as usize);
+    let mut freshness = Vec::with_capacity(iterations as usize);
+    let mut skip_count = 0u64;
+    last_recv_cycles = rdtsc();
+    polls = 0;
+
+    while (latencies.len() as u64) < iterations {
+        polls += 1;
+        if polls & 4095 == 0 && Instant::now() > deadline {
+            break;
+        }
+        if let Some(msg) = consumer.recv() {
+            let recv_cycles = rdtscp();
+            let send_cycles = msg.stamp_nanos;
+            let delta = recv_cycles.wrapping_sub(send_cycles).saturating_sub(overhead);
+            latencies.push(cal.cycles_to_ns(delta));
+            total += 1;
+            last_recv_cycles = recv_cycles;
+
+            // Read current producer head for freshness calculation
+            if !header_ptr.is_null() {
+                let head = unsafe { (*header_ptr).sequence_or_head.load(Ordering::Acquire) };
+                let advance = head.saturating_sub(prev_head);
+                if advance > 0 {
+                    freshness.push(advance);
+                    if advance > 1 {
+                        skip_count += 1;
+                    }
+                }
+                prev_head = head;
+            }
+        } else {
+            let now = rdtsc();
+            if now.wrapping_sub(last_recv_cycles) > idle_threshold_meas {
+                break;
+            }
+        }
+    }
+
+    (latencies, freshness, total, skip_count)
+}
+
 // ============================================================================
 // Child Process Entry Points
 // ============================================================================
@@ -1316,6 +1486,9 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
             total_sent: total_writes,
             total_received: 0,
             note: Some("header_ptr null"),
+            freshness_samples: None,
+            delivery_ratio: None,
+            skip_count: None,
         };
     }
     let atom = unsafe { &(*header_ptr).sequence_or_head };
@@ -1361,6 +1534,9 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
         total_sent: total_writes,
         total_received: WARMUP + ITERATIONS,
         note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
     }
 }
 
@@ -1398,6 +1574,129 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
 }
 
 // ============================================================================
+// Scalability Stress Tests
+// ============================================================================
+
+/// Assign CPU cores for stress test child processes.
+/// Core 0 is reserved for the parent/main thread (measurement consumer).
+fn assign_stress_cores(total_children: usize) -> Vec<usize> {
+    if total_children <= 6 {
+        // HT-spaced: avoid hyperthreading siblings on most Intel/AMD layouts
+        (0..total_children).map(|i| (i + 1) * 2).collect()
+    } else if total_children <= 11 {
+        // Use cores 1-11 (all physical on typical 6C/12T)
+        (0..total_children).map(|i| i + 1).collect()
+    } else {
+        eprintln!(
+            "  [warn] {} child threads exceeds typical physical core count",
+            total_children
+        );
+        (0..total_children).map(|i| i + 1).collect()
+    }
+}
+
+/// Generic stress benchmark: N publishers x M consumers, cross-process.
+///
+/// Parent process is the measurement consumer. Child consumers are spawned
+/// to create the desired topology, then publishers are spawned with enough
+/// messages to outlast setup + measurement.
+fn bench_stress(
+    name: &'static str,
+    num_pubs: usize,
+    num_cons: usize,
+    timer: &PrecisionTimer,
+) -> ScenarioResult {
+    let cal = timer.calibration();
+    let topic_name = format!(
+        "bench_stress_{}_{}",
+        name.to_lowercase().replace('-', "_"),
+        std::process::id()
+    );
+    let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
+    let _ = consumer.recv(); // Register parent as consumer
+
+    let cores = assign_stress_cores(num_pubs + num_cons.saturating_sub(1));
+    let msgs_per_pub = PODSHM_MSGS_PER_PUB;
+
+    // Spawn child consumers (num_cons - 1 since parent is one)
+    let mut child_consumers: Vec<std::process::Child> = Vec::new();
+    for i in 0..num_cons.saturating_sub(1) {
+        let core_idx = num_pubs + i;
+        let core = cores.get(core_idx).copied().unwrap_or(0);
+        let child = spawn_consumer(&topic_name, msgs_per_pub * num_pubs as u64, core);
+        child_consumers.push(child);
+    }
+    if !child_consumers.is_empty() {
+        thread::sleep(Duration::from_millis(200)); // Wait for child consumers to register
+    }
+
+    // Spawn paced publishers
+    let mut publishers: Vec<std::process::Child> = Vec::new();
+    for i in 0..num_pubs {
+        let core = cores.get(i).copied().unwrap_or(0);
+        let child = spawn_paced_publisher(&topic_name, msgs_per_pub, core);
+        publishers.push(child);
+        // Stagger spawns slightly so each publisher registers before the next
+        if i < num_pubs - 1 {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // Wait for full topology
+    wait_for_topology(
+        &consumer,
+        num_pubs as u32,
+        num_cons as u32,
+        Duration::from_secs(10),
+    );
+
+    // Drain migration-era messages
+    let migration_recv = wait_for_messages(&consumer, 500, Duration::from_secs(5));
+
+    // Force migration check so parent detects the final backend
+    consumer.check_migration_now();
+
+    let backend = consumer.backend_type().to_string();
+
+    eprintln!(
+        "  [stress] {} pubs={} subs={} backend={}",
+        name,
+        consumer.pub_count(),
+        consumer.sub_count(),
+        backend
+    );
+
+    // Collect measurements
+    let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+
+    // Kill all children
+    for mut p in publishers {
+        let _ = p.kill();
+        p.wait().ok();
+    }
+    for mut c in child_consumers {
+        let _ = c.kill();
+        c.wait().ok();
+    }
+
+    let total_received = migration_recv + measure_recv;
+
+    ScenarioResult {
+        name,
+        backend,
+        expected_backend: "Shm",
+        measurement: "one-way",
+        latencies_ns: latencies,
+        total_sent: msgs_per_pub * num_pubs as u64,
+        total_received,
+        note: None,
+        freshness_samples: None,
+        delivery_ratio: None,
+        skip_count: None,
+    }
+}
+
+// ============================================================================
 // Reporting: Detail
 // ============================================================================
 
@@ -1428,7 +1727,7 @@ fn print_detail(r: &ScenarioResult) {
         s.count, s.outliers_removed
     );
 
-    if r.total_sent != r.total_received {
+    if r.total_sent != r.total_received && r.measurement != "broadcast" {
         println!(
             "  Messages: {}/{} received ({:.1}% loss)",
             r.total_received,
@@ -1476,6 +1775,44 @@ fn print_detail(r: &ScenarioResult) {
         fmt_ns(s.p25),
         fmt_ns(s.p75),
     );
+    println!();
+}
+
+/// Print broadcast-specific metrics for PodShm scenarios.
+/// Shows freshness distribution, delivery ratio, and skip-ahead count.
+fn print_pod_shm_detail(r: &ScenarioResult) {
+    println!("  Broadcast Metrics:");
+
+    if let Some(ref freshness) = r.freshness_samples {
+        if !freshness.is_empty() {
+            let fresh_stats = Statistics::from_samples(freshness, 95.0, false);
+            println!(
+                "    Freshness (msgs between reads):  p50: {}  p95: {}  p99: {}  max: {}",
+                fresh_stats.median as u64,
+                fresh_stats.p95,
+                fresh_stats.p99,
+                fresh_stats.max,
+            );
+        }
+    }
+
+    if let Some(ratio) = r.delivery_ratio {
+        println!("    Delivery ratio: {:.1}%", ratio * 100.0);
+    }
+
+    if let Some(skips) = r.skip_count {
+        let total = r.freshness_samples.as_ref().map(|f| f.len()).unwrap_or(0);
+        let skip_pct = if total > 0 {
+            skips as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!("    Skip-aheads: {} ({:.1}% of reads)", skips, skip_pct);
+    }
+
+    println!("    Note: PodShm is broadcast/latest-value — skipped messages are by design.");
+    println!("    Latency above measures read freshness (time since last producer write),");
+    println!("    not queuing delay. A \"fast\" consumer sees freshness=1 on every read.");
     println!();
 }
 
@@ -1596,8 +1933,9 @@ fn print_methodology(cal: &RdtscCalibration) {
     );
     println!();
     println!("  Measurement types:");
-    println!("    send    = producer-side send() latency (RDTSC, overhead subtracted)");
-    println!("    one-way = producer-to-consumer via RDTSC timestamp in CmdVel.stamp_nanos");
+    println!("    send      = producer-side send() latency (RDTSC, overhead subtracted)");
+    println!("    one-way   = producer-to-consumer via RDTSC timestamp in CmdVel.stamp_nanos");
+    println!("    broadcast = like one-way, but tracks freshness/skip-aheads (PodShm)");
     println!();
     println!("  Statistical processing:");
     println!("    - Tukey IQR outlier removal (1.5x fence)");
