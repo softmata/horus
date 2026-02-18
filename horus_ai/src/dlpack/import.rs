@@ -4,8 +4,8 @@
 //! from other frameworks (PyTorch, JAX, TensorFlow, etc.) into HORUS.
 
 use super::ffi::{DLDevice, DLManagedTensor};
-use crate::device::Device;
-use crate::tensor::{TensorDescriptor, TensorDtype};
+use crate::tensor::TensorDescriptor;
+use horus_types::{Device, TensorDtype};
 use thiserror::Error;
 
 /// Errors that can occur when importing DLPack tensors
@@ -190,7 +190,7 @@ mod tests {
             &shape,
             &strides,
             TensorDtype::F32,
-            Device::Cpu,
+            Device::cpu(),
         );
 
         // Import back
@@ -199,7 +199,7 @@ mod tests {
 
         assert_eq!(descriptor.shape, vec![2, 3]);
         assert_eq!(descriptor.dtype, TensorDtype::F32);
-        assert_eq!(descriptor.device, Device::Cpu);
+        assert_eq!(descriptor.device, Device::cpu());
         assert_eq!(descriptor.size_bytes, 24); // 6 * 4 bytes
 
         // Strides should be in bytes: [12, 4] (3*4, 1*4)

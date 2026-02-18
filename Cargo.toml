@@ -7,6 +7,7 @@ members = [
     "horus_manager",
     "horus_library",
     "horus_ai",         # AI/ML tensor system with DLPack
+    "horus_types",      # Core tensor types (leaf crate, zero horus deps)
     "benchmarks",
     "horus_py",
 ]
@@ -29,6 +30,7 @@ horus_core = { path = "horus_core" }
 horus_library = { path = "horus_library" }
 horus_macros = { path = "horus_macros" }
 horus_ai = { path = "horus_ai" }
+horus_types = { path = "horus_types" }
 
 # Physics and math
 rapier2d = "0.22"

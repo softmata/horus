@@ -57,15 +57,11 @@ pub struct MigrationStats {
 /// - Drain logic to ensure no in-flight message loss
 pub struct BackendMigrator<'a> {
     header: &'a TopicHeader,
-    /// Maximum wait time for draining in-flight messages (ms)
-    drain_timeout_ms: u64,
     /// Spin count before yielding during drain
     spin_count: u32,
 }
 
 impl<'a> BackendMigrator<'a> {
-    /// Default drain timeout: 100ms
-    pub const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 100;
     /// Default spin count before yield
     pub const DEFAULT_SPIN_COUNT: u32 = 100;
 
@@ -73,16 +69,6 @@ impl<'a> BackendMigrator<'a> {
     pub fn new(header: &'a TopicHeader) -> Self {
         Self {
             header,
-            drain_timeout_ms: Self::DEFAULT_DRAIN_TIMEOUT_MS,
-            spin_count: Self::DEFAULT_SPIN_COUNT,
-        }
-    }
-
-    /// Create a migrator with custom drain timeout
-    pub fn with_drain_timeout(header: &'a TopicHeader, timeout_ms: u64) -> Self {
-        Self {
-            header,
-            drain_timeout_ms: timeout_ms,
             spin_count: Self::DEFAULT_SPIN_COUNT,
         }
     }
@@ -142,25 +128,20 @@ impl<'a> BackendMigrator<'a> {
         MigrationResult::Success { new_epoch }
     }
 
-    /// Wait for in-flight operations to drain.
+    /// Grace period for in-flight operations to complete before migration.
+    ///
+    /// Since send/recv are lock-free and complete in <200ns, a short spin
+    /// followed by a yield is sufficient to let any in-progress operation
+    /// finish. There is no ref-count to check — this is a best-effort
+    /// quiescence barrier.
     fn drain_in_flight(&self) -> bool {
-        let start = current_time_ms();
-        let mut spins = 0u32;
-
-        while current_time_ms() - start < self.drain_timeout_ms {
+        // Spin briefly to let sub-microsecond operations complete
+        for _ in 0..self.spin_count {
             std::sync::atomic::fence(Ordering::SeqCst);
-
-            spins += 1;
-            if spins >= self.spin_count {
-                std::thread::yield_now();
-                spins = 0;
-            }
-
-            if current_time_ms() - start >= 1 {
-                return true;
-            }
+            std::hint::spin_loop();
         }
-
+        // Yield once to allow any preempted threads to finish
+        std::thread::yield_now();
         true
     }
 

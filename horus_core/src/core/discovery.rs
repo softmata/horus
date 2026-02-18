@@ -127,23 +127,4 @@ pub fn announce_stopped(name: &str) {
     }
 }
 
-/// Announce node crashed
-pub fn announce_crashed(name: &str) {
-    if let Some(topic) = get_discovery_topic() {
-        let announcement = NodeAnnouncement::crashed(name);
-        topic.send(announcement);
-    }
-}
-
-/// Read all announcements from discovery topic (for monitor)
-pub fn read_announcements() -> Vec<NodeAnnouncement> {
-    let mut announcements = Vec::new();
-    if let Some(topic) = get_discovery_topic() {
-        // Read all available messages
-        while let Some(msg) = topic.recv() {
-            announcements.push(msg);
-        }
-    }
-    announcements
-}
 

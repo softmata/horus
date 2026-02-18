@@ -3,8 +3,8 @@
 //! Provides zero-copy tensor access from Python via numpy's `__array_interface__`
 //! and the buffer protocol.
 
-use horus::memory::tensor_pool::{HorusTensor, TensorDevice, TensorDtype};
 use horus::memory::{TensorHandle, TensorPool, TensorPoolConfig};
+use horus_types::{Device, HorusTensor, TensorDtype};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -290,7 +290,7 @@ impl PyTensorHandle {
         let (dl_code, dl_bits, dl_lanes) = dtype_to_dlpack(tensor.dtype);
 
         // Get device type and id
-        let (device_type, device_id) = device_to_dlpack(tensor.device);
+        let (device_type, device_id) = device_to_dlpack(tensor.device());
 
         // Get data pointer
         let data_ptr = if handle.is_cuda() {
@@ -364,7 +364,7 @@ impl PyTensorHandle {
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
 
         let tensor = handle.tensor();
-        Ok(device_to_dlpack(tensor.device))
+        Ok(device_to_dlpack(tensor.device()))
     }
 
     /// Import a DLPack tensor
@@ -405,7 +405,7 @@ impl PyTensorHandle {
             let pool = get_or_create_pool(1, None)?;
             let dtype = parse_dtype(&dtype_str)?;
             let handle =
-                TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, TensorDevice::Cpu)
+                TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, Device::cpu())
                     .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 
             // Copy data
@@ -438,17 +438,13 @@ impl PyTensorHandle {
 
             // Map torch dtype to our dtype
             let dtype = parse_dtype(&dtype_str)?;
-            let device = match device_id {
-                0 => TensorDevice::Cuda0,
-                1 => TensorDevice::Cuda1,
-                2 => TensorDevice::Cuda2,
-                3 => TensorDevice::Cuda3,
-                _ => {
-                    return Err(PyValueError::new_err(format!(
-                        "Unsupported CUDA device: {}",
-                        device_id
-                    )))
-                }
+            let device = if device_id >= 0 {
+                Device::cuda(device_id as u32)
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "Unsupported CUDA device: {}",
+                    device_id
+                )));
             };
 
             // Create pool and allocate
@@ -498,7 +494,7 @@ impl PyTensorHandle {
 
     /// Get tensor device as string
     #[getter]
-    fn device(&self) -> PyResult<&'static str> {
+    fn device(&self) -> PyResult<String> {
         let handle = self
             .handle
             .as_ref()
@@ -668,7 +664,7 @@ impl PyTensorHandle {
         let pool = handle.pool();
 
         // Allocate CPU tensor
-        let cpu_handle = TensorHandle::alloc(pool.clone(), &shape, tensor.dtype, TensorDevice::Cpu)
+        let cpu_handle = TensorHandle::alloc(pool.clone(), &shape, tensor.dtype, Device::cpu())
             .map_err(|e| PyRuntimeError::new_err(format!("CPU allocation failed: {}", e)))?;
 
         // Get GPU pointer from IPC handle (first 8 bytes store the pointer)
@@ -739,13 +735,9 @@ impl PyTensorHandle {
         }
 
         // Get device ID from target
-        let device_id = match target_device {
-            TensorDevice::Cuda0 => 0,
-            TensorDevice::Cuda1 => 1,
-            TensorDevice::Cuda2 => 2,
-            TensorDevice::Cuda3 => 3,
-            _ => return Err(PyValueError::new_err("Invalid CUDA device")),
-        };
+        let device_id = target_device
+            .cuda_index()
+            .ok_or_else(|| PyValueError::new_err("Invalid CUDA device"))? as i32;
 
         // Set CUDA device
         set_device(device_id)
@@ -900,43 +892,16 @@ fn dtype_to_str(dtype: TensorDtype) -> &'static str {
     }
 }
 
-fn parse_device(s: &str) -> PyResult<TensorDevice> {
-    match s.to_lowercase().as_str() {
-        "cpu" => Ok(TensorDevice::Cpu),
-        "cuda" | "cuda:0" | "gpu" | "gpu:0" => Ok(TensorDevice::Cuda0),
-        "cuda:1" | "gpu:1" => Ok(TensorDevice::Cuda1),
-        "cuda:2" | "gpu:2" => Ok(TensorDevice::Cuda2),
-        "cuda:3" | "gpu:3" => Ok(TensorDevice::Cuda3),
-        _ => Err(PyValueError::new_err(format!("Unknown device: {}", s))),
-    }
+fn parse_device(s: &str) -> PyResult<Device> {
+    Device::parse(s).ok_or_else(|| PyValueError::new_err(format!("Unknown device: {}", s)))
 }
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
-    match dtype {
-        TensorDtype::F32 => "<f4",
-        TensorDtype::F64 => "<f8",
-        TensorDtype::F16 => "<f2",
-        TensorDtype::BF16 => "<V2", // bfloat16 not directly supported in numpy
-        TensorDtype::I8 => "|i1",
-        TensorDtype::I16 => "<i2",
-        TensorDtype::I32 => "<i4",
-        TensorDtype::I64 => "<i8",
-        TensorDtype::U8 => "|u1",
-        TensorDtype::U16 => "<u2",
-        TensorDtype::U32 => "<u4",
-        TensorDtype::U64 => "<u8",
-        TensorDtype::Bool => "|b1",
-    }
+    dtype.numpy_typestr()
 }
 
-fn device_to_string(device: TensorDevice) -> &'static str {
-    match device {
-        TensorDevice::Cpu => "cpu",
-        TensorDevice::Cuda0 => "cuda:0",
-        TensorDevice::Cuda1 => "cuda:1",
-        TensorDevice::Cuda2 => "cuda:2",
-        TensorDevice::Cuda3 => "cuda:3",
-    }
+fn device_to_string(device: Device) -> String {
+    device.to_string()
 }
 
 /// Convert TensorDtype to DLPack format (code, bits, lanes)
@@ -947,26 +912,7 @@ fn device_to_string(device: TensorDevice) -> &'static str {
 /// - 2 = kDLFloat (IEEE floating point)
 /// - 4 = kDLBfloat (bfloat16)
 fn dtype_to_dlpack(dtype: TensorDtype) -> (u8, u8, u16) {
-    match dtype {
-        // Float types (code=2)
-        TensorDtype::F16 => (2, 16, 1),
-        TensorDtype::F32 => (2, 32, 1),
-        TensorDtype::F64 => (2, 64, 1),
-        // BFloat16 (code=4)
-        TensorDtype::BF16 => (4, 16, 1),
-        // Signed integers (code=0)
-        TensorDtype::I8 => (0, 8, 1),
-        TensorDtype::I16 => (0, 16, 1),
-        TensorDtype::I32 => (0, 32, 1),
-        TensorDtype::I64 => (0, 64, 1),
-        // Unsigned integers (code=1)
-        TensorDtype::U8 => (1, 8, 1),
-        TensorDtype::U16 => (1, 16, 1),
-        TensorDtype::U32 => (1, 32, 1),
-        TensorDtype::U64 => (1, 64, 1),
-        // Bool (unsigned 8-bit)
-        TensorDtype::Bool => (1, 8, 1),
-    }
+    dtype.to_dlpack()
 }
 
 /// Convert TensorDevice to DLPack format (device_type, device_id)
@@ -974,14 +920,8 @@ fn dtype_to_dlpack(dtype: TensorDtype) -> (u8, u8, u16) {
 /// DLPack device types:
 /// - 1 = kDLCPU
 /// - 2 = kDLCUDA
-fn device_to_dlpack(device: TensorDevice) -> (i32, i32) {
-    match device {
-        TensorDevice::Cpu => (1, 0),   // kDLCPU = 1
-        TensorDevice::Cuda0 => (2, 0), // kDLCUDA = 2, device 0
-        TensorDevice::Cuda1 => (2, 1), // kDLCUDA = 2, device 1
-        TensorDevice::Cuda2 => (2, 2), // kDLCUDA = 2, device 2
-        TensorDevice::Cuda3 => (2, 3), // kDLCUDA = 2, device 3
-    }
+fn device_to_dlpack(device: Device) -> (i32, i32) {
+    (device.to_dlpack_device_type(), device.to_dlpack_device_id())
 }
 
 /// Check if CUDA is available

@@ -46,7 +46,7 @@
 
 use crate::error::{HorusError, HorusResult};
 use crate::memory::platform::shm_base_dir;
-use crate::memory::tensor_pool::{TensorDevice, TensorDtype, MAX_TENSOR_DIMS};
+use crate::memory::tensor_pool::{Device, TensorDtype, MAX_TENSOR_DIMS};
 use memmap2::{MmapMut, MmapOptions};
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
@@ -177,15 +177,9 @@ impl CudaTensor {
         &self.ipc_handle
     }
 
-    /// Get device enum
-    pub fn device(&self) -> TensorDevice {
-        match self.device_id {
-            0 => TensorDevice::Cuda0,
-            1 => TensorDevice::Cuda1,
-            2 => TensorDevice::Cuda2,
-            3 => TensorDevice::Cuda3,
-            _ => TensorDevice::Cuda0,
-        }
+    /// Get device
+    pub fn device(&self) -> Device {
+        Device::cuda(self.device_id)
     }
 
     /// Check if tensor is contiguous in memory
@@ -1428,19 +1422,19 @@ mod tests {
         let mut tensor = create_test_tensor(&[2, 3], TensorDtype::F32);
 
         tensor.device_id = 0;
-        assert!(matches!(tensor.device(), TensorDevice::Cuda0));
+        assert_eq!(tensor.device(), Device::cuda(0));
 
         tensor.device_id = 1;
-        assert!(matches!(tensor.device(), TensorDevice::Cuda1));
+        assert_eq!(tensor.device(), Device::cuda(1));
 
         tensor.device_id = 2;
-        assert!(matches!(tensor.device(), TensorDevice::Cuda2));
+        assert_eq!(tensor.device(), Device::cuda(2));
 
         tensor.device_id = 3;
-        assert!(matches!(tensor.device(), TensorDevice::Cuda3));
+        assert_eq!(tensor.device(), Device::cuda(3));
 
         tensor.device_id = 99;
-        assert!(matches!(tensor.device(), TensorDevice::Cuda0)); // Fallback
+        assert_eq!(tensor.device(), Device::cuda(99)); // No longer limited to 4 GPUs
     }
 
     #[test]

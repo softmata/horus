@@ -12,7 +12,6 @@ pub mod init;
 pub mod launch;
 pub mod log;
 pub mod msg;
-pub mod net;
 pub mod new;
 pub mod node;
 pub mod param;

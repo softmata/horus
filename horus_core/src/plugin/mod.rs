@@ -116,7 +116,7 @@ pub mod types;
 // Re-export all public types for convenience
 pub use driver_loader::{DriverLoader, DriverLoaderConfig, DriverMode};
 pub use loader::{DiscoveredPlugin, PluginLoader};
-pub use traits::{AutoDetectable, DriverPlugin, HotReloadable, PluginEntryFn, PLUGIN_ENTRY_SYMBOL};
+pub use traits::{AutoDetectable, DriverPlugin, PluginEntryFn, PLUGIN_ENTRY_SYMBOL};
 pub use types::{
     BackendHealth, BackendId, BackendInfo, PluginError, PluginFeature, PluginHealth, PluginId,
     PluginManifest, PluginResult, ProbeResult, SystemDependency,

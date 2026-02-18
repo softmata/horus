@@ -57,6 +57,7 @@
 //! This provides additional methods like `as_bytes()`, `from_bytes()`, etc.
 
 use bytemuck::{Pod, Zeroable};
+use horus_types::HorusTensor;
 use std::mem;
 
 // ============================================================================
@@ -160,6 +161,9 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
         result
     }
 }
+
+// HorusTensor is repr(C), Pod, Zeroable - safe for zero-copy IPC
+unsafe impl PodMessage for HorusTensor {}
 
 #[cfg(test)]
 mod tests {

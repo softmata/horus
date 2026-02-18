@@ -120,6 +120,9 @@ pub(crate) mod registry;
 pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
+// Auto-managed tensor pool extension for Topic<HorusTensor>
+pub mod tensor_ext;
+
 #[cfg(test)]
 mod tests;
 
@@ -483,6 +486,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         unsafe { &mut *self.local.get() }
     }
 
+    /// Sync local cached fields from the SHM header. Called after epoch changes
+    /// and during initial registration to cache header values for zero-overhead
+    /// dispatch. When `skip_stale_broadcast` is true, PodShm consumers reset
+    /// tail = head to skip stale data from the previous era.
+    #[inline(always)]
+    fn sync_local(local: &mut LocalState, header: &TopicHeader, skip_stale_broadcast: bool) {
+        local.is_same_process = header.is_same_process();
+        local.is_pod = header.is_pod_type();
+        local.slot_size = header.slot_size as usize;
+        local.cached_mode = header.mode();
+        local.cached_capacity = header.capacity as u64;
+        local.cached_capacity_mask = header.capacity_mask as u64;
+        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
+        local.local_tail = header.tail.load(Ordering::Acquire);
+        if skip_stale_broadcast && local.cached_mode == BackendMode::PodShm {
+            local.local_tail = local.local_head;
+        }
+    }
+
     /// Register as producer if not already registered
     fn ensure_producer(&self) -> HorusResult<()> {
         let local = self.local();
@@ -500,14 +522,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
-        local.is_same_process = header.is_same_process();
-        local.is_pod = header.is_pod_type();
-        local.slot_size = header.slot_size as usize;
-        local.cached_mode = header.mode();
-        local.cached_capacity = header.capacity as u64;
-        local.cached_capacity_mask = header.capacity_mask as u64;
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header.tail.load(Ordering::Acquire);
+        Self::sync_local(local, header, false);
         // Set role LAST - this gates the fast path via can_send()
         local.role = if local.role == TopicRole::Consumer {
             TopicRole::Both
@@ -543,14 +558,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
-        local.is_same_process = header.is_same_process();
-        local.is_pod = header.is_pod_type();
-        local.slot_size = header.slot_size as usize;
-        local.cached_mode = header.mode();
-        local.cached_capacity = header.capacity as u64;
-        local.cached_capacity_mask = header.capacity_mask as u64;
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header.tail.load(Ordering::Acquire);
+        Self::sync_local(local, header, false);
         // Set role LAST - this gates the fast path via can_recv()
         local.role = if local.role == TopicRole::Producer {
             TopicRole::Both
@@ -577,20 +585,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         let current_epoch = header.migration_epoch.load(Ordering::Acquire);
         if current_epoch != local.cached_epoch {
             local.cached_epoch = current_epoch;
-            local.is_same_process = header.is_same_process();
-            local.is_pod = header.is_pod_type();
-            local.slot_size = header.slot_size as usize;
-            local.cached_mode = header.mode();
-            local.cached_capacity = header.capacity as u64;
-            local.cached_capacity_mask = header.capacity_mask as u64;
-            local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-            local.local_tail = header.tail.load(Ordering::Acquire);
-            // PodShm broadcast: skip stale data from previous era.
-            // Ready-flags from prior backends use different protocols, so
-            // consumers must start fresh from current head after migration.
-            if local.cached_mode == BackendMode::PodShm {
-                local.local_tail = local.local_head;
-            }
+            Self::sync_local(local, header, true);
             self.metrics.estimated_latency_ns.store(
                 local.cached_mode.expected_latency_ns() as u32,
                 Ordering::Relaxed,
@@ -608,18 +603,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 match migrator.migrate_to_optimal() {
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
-                        local.is_same_process = header.is_same_process();
-                        local.is_pod = header.is_pod_type();
-                        local.slot_size = header.slot_size as usize;
-                        local.cached_mode = header.mode();
-                        local.cached_capacity = header.capacity as u64;
-                        local.cached_capacity_mask = header.capacity_mask as u64;
-                        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                        local.local_tail = header.tail.load(Ordering::Acquire);
-                        // PodShm broadcast: skip stale data from previous era
-                        if local.cached_mode == BackendMode::PodShm {
-                            local.local_tail = local.local_head;
-                        }
+                        Self::sync_local(local, header, true);
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
                         self.metrics.estimated_latency_ns.store(
                             local.cached_mode.expected_latency_ns() as u32,
@@ -643,18 +627,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                         let new_epoch = header.migration_epoch.load(Ordering::Acquire);
                         if new_epoch != local.cached_epoch {
                             local.cached_epoch = new_epoch;
-                            local.is_same_process = header.is_same_process();
-                            local.is_pod = header.is_pod_type();
-                            local.slot_size = header.slot_size as usize;
-                            local.cached_mode = header.mode();
-                            local.cached_capacity = header.capacity as u64;
-                            local.cached_capacity_mask = header.capacity_mask as u64;
-                            local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-                            local.local_tail = header.tail.load(Ordering::Acquire);
-                            // PodShm broadcast: skip stale data from previous era
-                            if local.cached_mode == BackendMode::PodShm {
-                                local.local_tail = local.local_head;
-                            }
+                            Self::sync_local(local, header, true);
                             self.metrics.estimated_latency_ns.store(
                                 local.cached_mode.expected_latency_ns() as u32,
                                 Ordering::Relaxed,
@@ -748,6 +721,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                 }
             }
 
+            // Create a new intra-process ring, drain old data, and register it.
+            // All 4 ring types (SPSC/SPMC/MPSC/MPMC) follow identical logic:
+            // create → drain old → store_or_get from registry → downcast.
+            macro_rules! create_intra_ring {
+                ($Ring:ty, $Variant:ident, $cap:expr) => {{
+                    let new_ring = Arc::new(<$Ring>::new($cap));
+                    self.drain_old_into_ring(&new_ring, epoch);
+                    let shared = registry::store_or_get_backend(
+                        &self.name, epoch,
+                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
+                    );
+                    *backend = if let Ok(ring) = shared.downcast::<$Ring>() {
+                        BackendStorage::$Variant(ring)
+                    } else {
+                        BackendStorage::$Variant(new_ring)
+                    };
+                }};
+            }
+
             // Not found in registry — create new ring, drain old data, and store.
             match mode {
                 BackendMode::DirectChannel => {
@@ -757,64 +749,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
                         &self.name, epoch,
                         new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
                     );
-                    if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
-                        *backend = BackendStorage::DirectChannel(slot);
+                    *backend = if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
+                        BackendStorage::DirectChannel(slot)
                     } else {
-                        *backend = BackendStorage::DirectChannel(new_ring);
-                    }
+                        BackendStorage::DirectChannel(new_ring)
+                    };
                 }
-                BackendMode::SpscIntra => {
-                    let new_ring = Arc::new(SpscRing::new(cap));
-                    self.drain_old_into_ring(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    if let Ok(ring) = shared.downcast::<SpscRing<T>>() {
-                        *backend = BackendStorage::SpscIntra(ring);
-                    } else {
-                        *backend = BackendStorage::SpscIntra(new_ring);
-                    }
-                }
-                BackendMode::SpmcIntra => {
-                    let new_ring = Arc::new(SpmcRing::new(cap));
-                    self.drain_old_into_ring(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    if let Ok(ring) = shared.downcast::<SpmcRing<T>>() {
-                        *backend = BackendStorage::SpmcIntra(ring);
-                    } else {
-                        *backend = BackendStorage::SpmcIntra(new_ring);
-                    }
-                }
-                BackendMode::MpscIntra => {
-                    let new_ring = Arc::new(MpscRing::new(cap));
-                    self.drain_old_into_ring(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    if let Ok(ring) = shared.downcast::<MpscRing<T>>() {
-                        *backend = BackendStorage::MpscIntra(ring);
-                    } else {
-                        *backend = BackendStorage::MpscIntra(new_ring);
-                    }
-                }
-                BackendMode::MpmcIntra => {
-                    let new_ring = Arc::new(MpmcRing::new(cap));
-                    self.drain_old_into_ring(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    if let Ok(ring) = shared.downcast::<MpmcRing<T>>() {
-                        *backend = BackendStorage::MpmcIntra(ring);
-                    } else {
-                        *backend = BackendStorage::MpmcIntra(new_ring);
-                    }
-                }
+                BackendMode::SpscIntra => create_intra_ring!(SpscRing<T>, SpscIntra, cap),
+                BackendMode::SpmcIntra => create_intra_ring!(SpmcRing<T>, SpmcIntra, cap),
+                BackendMode::MpscIntra => create_intra_ring!(MpscRing<T>, MpscIntra, cap),
+                BackendMode::MpmcIntra => create_intra_ring!(MpmcRing<T>, MpmcIntra, cap),
                 _ => {
                     // Unrecognized intra-process mode — keep ShmData
                     *backend = BackendStorage::ShmData;
@@ -1298,18 +1242,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         // Re-read actual epoch from SHM (_hint_epoch may be from process_epoch)
         let actual_epoch = header.migration_epoch.load(Ordering::Acquire);
         local.cached_epoch = actual_epoch;
-        local.cached_mode = header.mode();
-        local.is_same_process = header.is_same_process();
-        local.is_pod = header.is_pod_type();
-        local.slot_size = header.slot_size as usize;
-        local.cached_capacity = header.capacity as u64;
-        local.cached_capacity_mask = header.capacity_mask as u64;
-        local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        local.local_tail = header.tail.load(Ordering::Acquire);
-        // PodShm broadcast: skip stale data from previous era
-        if local.cached_mode == BackendMode::PodShm {
-            local.local_tail = local.local_head;
-        }
+        Self::sync_local(local, header, true);
         self.initialize_backend();
         // Propagate to other same-process Topics
         registry::notify_epoch_change(&self.name, actual_epoch);

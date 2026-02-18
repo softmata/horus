@@ -6,8 +6,7 @@
 use std::ffi::c_void;
 
 use super::ffi::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
-use crate::device::Device;
-use crate::tensor::TensorDtype;
+use horus_types::{Device, TensorDtype};
 
 /// Context stored in DLManagedTensor::manager_ctx
 ///
@@ -133,7 +132,7 @@ mod tests {
             &shape,
             &strides,
             TensorDtype::F32,
-            Device::Cpu,
+            Device::cpu(),
         );
 
         // Verify tensor properties
@@ -167,7 +166,7 @@ mod tests {
             &shape,
             &strides,
             TensorDtype::F32,
-            Device::Cuda(1),
+            Device::cuda(1),
         );
 
         assert!(managed.dl_tensor.device.is_cuda());

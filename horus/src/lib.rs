@@ -40,6 +40,9 @@ pub use horus_macros::*;
 // Re-export standard library with alias
 pub use horus_library as library;
 
+// Re-export core types crate
+pub use horus_types;
+
 // Re-export serde at crate root for macro-generated code
 pub use serde;
 
@@ -190,7 +193,9 @@ pub mod prelude {
     // ============================================
     // Message Types (ALL from horus_library)
     // ============================================
-    pub use horus_library::messages::tensor::{HorusTensor, TensorDevice, TensorDtype};
+    pub use horus_types::{Device, HorusTensor, TensorDtype};
+    // Backward-compatible alias
+    pub use horus_library::messages::tensor::TensorDevice;
     // Re-export all message types from horus_library
     pub use horus_library::messages::*;
 
@@ -245,7 +250,7 @@ pub mod prelude {
         Actuator, Driver, DriverCategory, DriverStatus, DriversConfig, Sensor, SingleDriverConfig,
     };
     pub use horus_core::plugin::{
-        AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin, HotReloadable,
+        AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin,
         PluginEntryFn, PluginError, PluginFeature, PluginHealth, PluginId, PluginManifest,
         PluginResult, ProbeResult, SystemDependency, PLUGIN_ENTRY_SYMBOL,
     };

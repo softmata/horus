@@ -425,52 +425,12 @@ enum Commands {
         command: RecordCommands,
     },
 
-    /// Network diagnostics (connectivity, latency, troubleshooting)
-    Net {
-        #[command(subcommand)]
-        command: NetCommands,
-    },
-
     /// Generate shell completion scripts
     #[command(hide = true)]
     Completion {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
-    },
-}
-
-#[derive(Subcommand)]
-enum NetCommands {
-    /// Full connectivity check (local, external, NAT)
-    Check {
-        /// Show detailed diagnostic output
-        #[arg(short = 'v', long = "verbose")]
-        verbose: bool,
-    },
-
-    /// Measure latency to an endpoint
-    Ping {
-        /// Target endpoint (hostname, IP, or hostname:port)
-        endpoint: String,
-
-        /// Number of pings to send
-        #[arg(short = 'c', long = "count", default_value = "5")]
-        count: u32,
-
-        /// Interval between pings in milliseconds
-        #[arg(short = 'i', long = "interval", default_value = "1000")]
-        interval: u64,
-    },
-
-    /// Trace network path to endpoint
-    Trace {
-        /// Target endpoint
-        endpoint: String,
-
-        /// Maximum number of hops
-        #[arg(short = 'm', long = "max-hops", default_value = "30")]
-        max_hops: u32,
     },
 }
 
@@ -1741,18 +1701,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 speed,
                 loop_playback,
             ),
-        },
-
-        Commands::Net { command } => match command {
-            NetCommands::Check { verbose } => commands::net::run_check(verbose),
-            NetCommands::Ping {
-                endpoint,
-                count,
-                interval,
-            } => commands::net::run_ping(&endpoint, count, interval),
-            NetCommands::Trace { endpoint, max_hops } => {
-                commands::net::run_trace(&endpoint, max_hops)
-            }
         },
 
         Commands::Completion { shell } => {

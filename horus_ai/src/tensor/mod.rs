@@ -2,11 +2,10 @@
 //!
 //! This module provides tensor data types and descriptors.
 
-mod dtype;
+// Re-export TensorDtype from horus_types (replaces old dtype submodule)
+pub use horus_types::TensorDtype;
 
-pub use dtype::TensorDtype;
-
-use crate::Device;
+use horus_types::Device;
 
 /// Tensor descriptor containing metadata about a tensor
 ///
@@ -90,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_tensor_descriptor() {
-        let desc = TensorDescriptor::new(&[2, 3, 4], TensorDtype::F32, Device::Cpu);
+        let desc = TensorDescriptor::new(&[2, 3, 4], TensorDtype::F32, Device::cpu());
 
         assert_eq!(desc.ndim(), 3);
         assert_eq!(desc.numel(), 24);

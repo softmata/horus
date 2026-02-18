@@ -725,213 +725,11 @@ pub struct TensorPoolStats {
     pub free_bytes: usize,
 }
 
-// Re-export tensor types for public API
-pub use messages_compat::{HorusTensor, TensorDevice, TensorDtype, MAX_TENSOR_DIMS};
+// Re-export tensor types from horus_types (canonical source)
+pub use horus_types::{Device, HorusTensor, TensorDtype, MAX_TENSOR_DIMS};
 
-/// Compatibility module for tensor types
-/// These are duplicated here to avoid circular dependencies
-/// The authoritative types are in horus_library::messages::tensor
-mod messages_compat {
-    use bytemuck::{Pod, Zeroable};
-
-    pub const MAX_TENSOR_DIMS: usize = 8;
-
-    #[repr(u8)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-    pub enum TensorDtype {
-        #[default]
-        F32 = 0,
-        F64 = 1,
-        F16 = 2,
-        BF16 = 3,
-        I8 = 4,
-        I16 = 5,
-        I32 = 6,
-        I64 = 7,
-        U8 = 8,
-        U16 = 9,
-        U32 = 10,
-        U64 = 11,
-        Bool = 12,
-    }
-
-    impl TensorDtype {
-        #[inline]
-        pub const fn element_size(&self) -> usize {
-            match self {
-                TensorDtype::F32 | TensorDtype::I32 | TensorDtype::U32 => 4,
-                TensorDtype::F64 | TensorDtype::I64 | TensorDtype::U64 => 8,
-                TensorDtype::F16 | TensorDtype::BF16 | TensorDtype::I16 | TensorDtype::U16 => 2,
-                TensorDtype::I8 | TensorDtype::U8 | TensorDtype::Bool => 1,
-            }
-        }
-    }
-
-    unsafe impl Pod for TensorDtype {}
-    unsafe impl Zeroable for TensorDtype {}
-
-    #[repr(u8)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-    pub enum TensorDevice {
-        #[default]
-        Cpu = 0,
-        Cuda0 = 1,
-        Cuda1 = 2,
-        Cuda2 = 3,
-        Cuda3 = 4,
-    }
-
-    impl TensorDevice {
-        #[inline]
-        pub const fn is_cuda(&self) -> bool {
-            !matches!(self, TensorDevice::Cpu)
-        }
-    }
-
-    unsafe impl Pod for TensorDevice {}
-    unsafe impl Zeroable for TensorDevice {}
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug)]
-    pub struct HorusTensor {
-        pub pool_id: u32,
-        pub slot_id: u32,
-        pub generation: u32,
-        pub _pad0: u32,
-        pub offset: u64,
-        pub size: u64,
-        pub dtype: TensorDtype,
-        pub ndim: u8,
-        pub device: TensorDevice,
-        pub _pad1: [u8; 5],
-        pub shape: [u64; MAX_TENSOR_DIMS],
-        pub strides: [u64; MAX_TENSOR_DIMS],
-        /// CUDA IPC handle for cross-process GPU memory sharing.
-        /// When device is CUDA*, this contains the 64-byte cudaIpcMemHandle_t
-        /// that other processes can use to access the same GPU memory.
-        pub cuda_ipc_handle: [u8; 64],
-    }
-
-    impl HorusTensor {
-        pub fn new(
-            pool_id: u32,
-            slot_id: u32,
-            generation: u32,
-            offset: u64,
-            shape: &[u64],
-            dtype: TensorDtype,
-            device: TensorDevice,
-        ) -> Self {
-            let ndim = shape.len().min(MAX_TENSOR_DIMS) as u8;
-            let num_elements: u64 = shape.iter().product();
-            let size = num_elements * dtype.element_size() as u64;
-
-            let mut strides = [0u64; MAX_TENSOR_DIMS];
-            if ndim > 0 {
-                strides[(ndim - 1) as usize] = dtype.element_size() as u64;
-                for i in (0..(ndim - 1) as usize).rev() {
-                    strides[i] = strides[i + 1] * shape[i + 1];
-                }
-            }
-
-            let mut shape_arr = [0u64; MAX_TENSOR_DIMS];
-            for (i, &dim) in shape.iter().take(MAX_TENSOR_DIMS).enumerate() {
-                shape_arr[i] = dim;
-            }
-
-            Self {
-                pool_id,
-                slot_id,
-                generation,
-                _pad0: 0,
-                offset,
-                size,
-                dtype,
-                ndim,
-                device,
-                _pad1: [0; 5],
-                shape: shape_arr,
-                strides,
-                cuda_ipc_handle: [0; 64],
-            }
-        }
-
-        /// Check if tensor is contiguous (row-major)
-        pub fn is_contiguous(&self) -> bool {
-            if self.ndim == 0 {
-                return true;
-            }
-
-            let mut expected_stride = self.dtype.element_size() as u64;
-            for i in (0..self.ndim as usize).rev() {
-                if self.strides[i] != expected_stride {
-                    return false;
-                }
-                expected_stride *= self.shape[i];
-            }
-            true
-        }
-
-        /// Create a view of this tensor with different shape
-        pub fn view(&self, new_shape: &[u64]) -> Option<Self> {
-            let old_numel: u64 = self.shape[..self.ndim as usize].iter().product();
-            let new_numel: u64 = new_shape.iter().product();
-            if old_numel != new_numel || !self.is_contiguous() {
-                return None;
-            }
-
-            Some(Self::new(
-                self.pool_id,
-                self.slot_id,
-                self.generation,
-                self.offset,
-                new_shape,
-                self.dtype,
-                self.device,
-            ))
-        }
-
-        /// Create a slice/view of this tensor (first dimension only)
-        pub fn slice_first_dim(&self, start: u64, end: u64) -> Option<Self> {
-            if self.ndim == 0 || start >= end || end > self.shape[0] {
-                return None;
-            }
-
-            let mut new_tensor = *self;
-            new_tensor.shape[0] = end - start;
-            new_tensor.offset += start * self.strides[0];
-            let new_numel: u64 = new_tensor.shape[..new_tensor.ndim as usize]
-                .iter()
-                .product();
-            new_tensor.size = new_numel * self.dtype.element_size() as u64;
-
-            Some(new_tensor)
-        }
-    }
-
-    impl Default for HorusTensor {
-        fn default() -> Self {
-            Self {
-                pool_id: 0,
-                slot_id: 0,
-                generation: 0,
-                _pad0: 0,
-                offset: 0,
-                size: 0,
-                dtype: TensorDtype::F32,
-                ndim: 0,
-                device: TensorDevice::Cpu,
-                _pad1: [0; 5],
-                shape: [0; MAX_TENSOR_DIMS],
-                strides: [0; MAX_TENSOR_DIMS],
-                cuda_ipc_handle: [0; 64],
-            }
-        }
-    }
-
-    unsafe impl Pod for HorusTensor {}
-    unsafe impl Zeroable for HorusTensor {}
-}
+/// Backward-compatible alias for the old TensorDevice enum
+pub type TensorDevice = Device;
 
 #[cfg(test)]
 mod tests {
@@ -968,7 +766,7 @@ mod tests {
 
         // Allocate a tensor
         let tensor = pool
-            .alloc(&[100, 100], TensorDtype::F32, TensorDevice::Cpu)
+            .alloc(&[100, 100], TensorDtype::F32, Device::cpu())
             .expect("Failed to allocate tensor");
 
         assert_eq!(tensor.pool_id, 9998);
@@ -1000,7 +798,7 @@ mod tests {
         let pool = TensorPool::new(9997, config).expect("Failed to create pool");
 
         let tensor = pool
-            .alloc(&[10], TensorDtype::U8, TensorDevice::Cpu)
+            .alloc(&[10], TensorDtype::U8, Device::cpu())
             .expect("Failed to allocate tensor");
 
         // Write data

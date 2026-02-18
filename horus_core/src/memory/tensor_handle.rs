@@ -12,7 +12,7 @@
 //! let pool = Arc::new(TensorPool::new(1, TensorPoolConfig::default())?);
 //!
 //! // Allocate a tensor wrapped in a handle
-//! let handle = TensorHandle::alloc(pool.clone(), &[100, 100], TensorDtype::F32, TensorDevice::Cpu)?;
+//! let handle = TensorHandle::alloc(pool.clone(), &[100, 100], TensorDtype::F32, Device::cpu())?;
 //!
 //! // Access data
 //! let data = handle.data_slice_mut();
@@ -25,7 +25,7 @@
 //! drop(handle2); // Tensor memory is freed when last handle is dropped
 //! ```
 
-use super::tensor_pool::{HorusTensor, TensorDevice, TensorDtype, TensorPool, MAX_TENSOR_DIMS};
+use super::tensor_pool::{Device, HorusTensor, TensorDtype, TensorPool, MAX_TENSOR_DIMS};
 use crate::error::HorusResult;
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ impl TensorHandle {
         pool: Arc<TensorPool>,
         shape: &[u64],
         dtype: TensorDtype,
-        device: TensorDevice,
+        device: Device,
     ) -> HorusResult<Self> {
         let tensor = pool.alloc(shape, dtype, device)?;
         Ok(Self::from_owned(tensor, pool))
@@ -180,8 +180,8 @@ impl TensorHandle {
 
     /// Get tensor device
     #[inline]
-    pub fn device(&self) -> TensorDevice {
-        self.tensor.device
+    pub fn device(&self) -> Device {
+        self.tensor.device()
     }
 
     /// Get total number of elements
@@ -223,13 +223,13 @@ impl TensorHandle {
     /// Check if tensor is on CPU
     #[inline]
     pub fn is_cpu(&self) -> bool {
-        self.tensor.device == TensorDevice::Cpu
+        self.tensor.is_cpu()
     }
 
     /// Check if tensor is on CUDA
     #[inline]
     pub fn is_cuda(&self) -> bool {
-        self.tensor.device.is_cuda()
+        self.tensor.is_cuda()
     }
 }
 
@@ -289,7 +289,7 @@ mod tests {
     fn test_handle_alloc() {
         let pool = create_test_pool();
         let handle =
-            TensorHandle::alloc(pool.clone(), &[10, 20], TensorDtype::F32, TensorDevice::Cpu)
+            TensorHandle::alloc(pool.clone(), &[10, 20], TensorDtype::F32, Device::cpu())
                 .expect("Failed to allocate");
 
         assert_eq!(handle.shape(), &[10, 20]);
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn test_handle_clone_drop() {
         let pool = create_test_pool();
-        let handle1 = TensorHandle::alloc(pool.clone(), &[10], TensorDtype::U8, TensorDevice::Cpu)
+        let handle1 = TensorHandle::alloc(pool.clone(), &[10], TensorDtype::U8, Device::cpu())
             .expect("Failed to allocate");
 
         assert_eq!(handle1.refcount(), 1);
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn test_data_access() {
         let pool = create_test_pool();
-        let handle = TensorHandle::alloc(pool.clone(), &[4], TensorDtype::F32, TensorDevice::Cpu)
+        let handle = TensorHandle::alloc(pool.clone(), &[4], TensorDtype::F32, Device::cpu())
             .expect("Failed to allocate");
 
         // SAFETY: Handle was allocated with shape [4] and dtype F32, so data_as_mut::<f32>()
@@ -347,7 +347,7 @@ mod tests {
     fn test_slice() {
         let pool = create_test_pool();
         let handle =
-            TensorHandle::alloc(pool.clone(), &[10, 5], TensorDtype::F32, TensorDevice::Cpu)
+            TensorHandle::alloc(pool.clone(), &[10, 5], TensorDtype::F32, Device::cpu())
                 .expect("Failed to allocate");
 
         assert_eq!(handle.refcount(), 1);

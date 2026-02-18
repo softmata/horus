@@ -80,7 +80,15 @@ pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
 
 // Tensor types for zero-copy ML workloads
 pub mod tensor;
-pub use tensor::{HorusTensor, TensorDevice, TensorDtype};
+pub use tensor::{Device, HorusTensor, TensorDevice, TensorDtype};
+
+// Tensor-backed domain types (zero-copy Pod wrappers around HorusTensor)
+pub mod tensor_image;
+pub mod tensor_pointcloud;
+pub mod tensor_depth;
+pub use tensor_image::TensorImage;
+pub use tensor_pointcloud::TensorPointCloud;
+pub use tensor_depth::TensorDepthImage;
 
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};

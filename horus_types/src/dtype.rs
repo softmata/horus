@@ -1,14 +1,36 @@
 //! Tensor data types with DLPack mapping
 //!
-//! Provides enumeration of supported data types and conversion to/from DLPack codes.
+//! Provides the canonical enumeration of supported tensor element types
+//! with conversions to/from DLPack codes, numpy type strings, and string parsing.
 
+use bytemuck::{Pod, Zeroable};
+use serde::{Deserialize, Serialize};
 use std::fmt;
+
+/// DLPack type codes (standard specification constants)
+pub mod dlpack_codes {
+    /// Integer type
+    pub const DLPACK_INT: u8 = 0;
+    /// Unsigned integer type
+    pub const DLPACK_UINT: u8 = 1;
+    /// Float type
+    pub const DLPACK_FLOAT: u8 = 2;
+    /// Opaque handle type
+    pub const DLPACK_OPAQUE_HANDLE: u8 = 3;
+    /// BFloat type
+    pub const DLPACK_BFLOAT: u8 = 4;
+    /// Complex type
+    pub const DLPACK_COMPLEX: u8 = 5;
+    /// Boolean type
+    pub const DLPACK_BOOL: u8 = 6;
+}
 
 /// Data type for tensor elements
 ///
 /// Matches common ML framework dtypes for seamless interop.
+/// repr(u8) with values 0-12 for Pod safety.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TensorDtype {
     /// 32-bit floating point (default for most ML)
     #[default]
@@ -39,44 +61,26 @@ pub enum TensorDtype {
     Bool = 12,
 }
 
-/// DLPack type codes (standard specification constants)
-#[allow(dead_code)]
-pub mod dlpack_codes {
-    /// Integer type
-    pub const DLPACK_INT: u8 = 0;
-    /// Unsigned integer type
-    pub const DLPACK_UINT: u8 = 1;
-    /// Float type
-    pub const DLPACK_FLOAT: u8 = 2;
-    /// Opaque handle type
-    pub const DLPACK_OPAQUE_HANDLE: u8 = 3;
-    /// BFloat type
-    pub const DLPACK_BFLOAT: u8 = 4;
-    /// Complex type
-    pub const DLPACK_COMPLEX: u8 = 5;
-    /// Boolean type
-    pub const DLPACK_BOOL: u8 = 6;
-}
+// Safety: TensorDtype is repr(u8) with valid values 0-12, all bit patterns in that range are valid
+unsafe impl Pod for TensorDtype {}
+unsafe impl Zeroable for TensorDtype {}
 
 impl TensorDtype {
-    /// Get the size in bytes of a single element
+    /// Get the size in bytes of a single element (canonical name)
+    #[inline]
+    pub const fn element_size(&self) -> usize {
+        match self {
+            TensorDtype::F32 | TensorDtype::I32 | TensorDtype::U32 => 4,
+            TensorDtype::F64 | TensorDtype::I64 | TensorDtype::U64 => 8,
+            TensorDtype::F16 | TensorDtype::BF16 | TensorDtype::I16 | TensorDtype::U16 => 2,
+            TensorDtype::I8 | TensorDtype::U8 | TensorDtype::Bool => 1,
+        }
+    }
+
+    /// Alias for `element_size()` (used by horus_ai)
     #[inline]
     pub const fn size_bytes(&self) -> usize {
-        match self {
-            TensorDtype::F32 => 4,
-            TensorDtype::F64 => 8,
-            TensorDtype::F16 => 2,
-            TensorDtype::BF16 => 2,
-            TensorDtype::I8 => 1,
-            TensorDtype::I16 => 2,
-            TensorDtype::I32 => 4,
-            TensorDtype::I64 => 8,
-            TensorDtype::U8 => 1,
-            TensorDtype::U16 => 2,
-            TensorDtype::U32 => 4,
-            TensorDtype::U64 => 8,
-            TensorDtype::Bool => 1,
-        }
+        self.element_size()
     }
 
     /// Get numpy dtype string (for __array_interface__)
@@ -85,7 +89,7 @@ impl TensorDtype {
             TensorDtype::F32 => "<f4",
             TensorDtype::F64 => "<f8",
             TensorDtype::F16 => "<f2",
-            TensorDtype::BF16 => "<V2", // bfloat16 not directly supported
+            TensorDtype::BF16 => "<V2", // bfloat16 not directly supported in numpy
             TensorDtype::I8 => "|i1",
             TensorDtype::I16 => "<i2",
             TensorDtype::I32 => "<i4",
@@ -99,8 +103,6 @@ impl TensorDtype {
     }
 
     /// Convert to DLPack DLDataType (code, bits, lanes)
-    ///
-    /// Returns (type_code, bits, lanes)
     pub const fn to_dlpack(&self) -> (u8, u8, u16) {
         use dlpack_codes::*;
         match self {
@@ -120,9 +122,7 @@ impl TensorDtype {
         }
     }
 
-    /// Create from DLPack DLDataType
-    ///
-    /// Takes (type_code, bits, lanes) and returns the corresponding dtype.
+    /// Create from DLPack DLDataType (code, bits, lanes)
     pub const fn from_dlpack(code: u8, bits: u8, lanes: u16) -> Option<Self> {
         use dlpack_codes::*;
 
@@ -223,12 +223,19 @@ mod tests {
 
     #[test]
     fn test_dtype_sizes() {
-        assert_eq!(TensorDtype::F32.size_bytes(), 4);
-        assert_eq!(TensorDtype::F64.size_bytes(), 8);
-        assert_eq!(TensorDtype::F16.size_bytes(), 2);
-        assert_eq!(TensorDtype::BF16.size_bytes(), 2);
-        assert_eq!(TensorDtype::U8.size_bytes(), 1);
-        assert_eq!(TensorDtype::I64.size_bytes(), 8);
+        assert_eq!(TensorDtype::F32.element_size(), 4);
+        assert_eq!(TensorDtype::F64.element_size(), 8);
+        assert_eq!(TensorDtype::F16.element_size(), 2);
+        assert_eq!(TensorDtype::BF16.element_size(), 2);
+        assert_eq!(TensorDtype::U8.element_size(), 1);
+        assert_eq!(TensorDtype::I64.element_size(), 8);
+        assert_eq!(TensorDtype::Bool.element_size(), 1);
+    }
+
+    #[test]
+    fn test_size_bytes_alias() {
+        assert_eq!(TensorDtype::F32.size_bytes(), TensorDtype::F32.element_size());
+        assert_eq!(TensorDtype::U8.size_bytes(), TensorDtype::U8.element_size());
     }
 
     #[test]
@@ -258,8 +265,72 @@ mod tests {
     fn test_dtype_parse() {
         assert_eq!(TensorDtype::parse("float32"), Some(TensorDtype::F32));
         assert_eq!(TensorDtype::parse("f32"), Some(TensorDtype::F32));
+        assert_eq!(TensorDtype::parse("float"), Some(TensorDtype::F32));
         assert_eq!(TensorDtype::parse("uint8"), Some(TensorDtype::U8));
+        assert_eq!(TensorDtype::parse("byte"), Some(TensorDtype::U8));
         assert_eq!(TensorDtype::parse("bf16"), Some(TensorDtype::BF16));
+        assert_eq!(TensorDtype::parse("bool"), Some(TensorDtype::Bool));
         assert_eq!(TensorDtype::parse("invalid"), None);
+    }
+
+    #[test]
+    fn test_dtype_categories() {
+        assert!(TensorDtype::F32.is_float());
+        assert!(TensorDtype::F16.is_float());
+        assert!(TensorDtype::BF16.is_float());
+        assert!(!TensorDtype::I32.is_float());
+
+        assert!(TensorDtype::I8.is_signed_int());
+        assert!(TensorDtype::I64.is_signed_int());
+        assert!(!TensorDtype::U8.is_signed_int());
+
+        assert!(TensorDtype::U8.is_unsigned_int());
+        assert!(TensorDtype::U64.is_unsigned_int());
+        assert!(!TensorDtype::I8.is_unsigned_int());
+
+        assert!(!TensorDtype::Bool.is_float());
+        assert!(!TensorDtype::Bool.is_signed_int());
+        assert!(!TensorDtype::Bool.is_unsigned_int());
+    }
+
+    #[test]
+    fn test_dtype_display() {
+        assert_eq!(format!("{}", TensorDtype::F32), "float32");
+        assert_eq!(format!("{}", TensorDtype::U8), "uint8");
+        assert_eq!(format!("{}", TensorDtype::BF16), "bfloat16");
+        assert_eq!(format!("{}", TensorDtype::Bool), "bool");
+    }
+
+    #[test]
+    fn test_dtype_numpy() {
+        assert_eq!(TensorDtype::F32.numpy_typestr(), "<f4");
+        assert_eq!(TensorDtype::U8.numpy_typestr(), "|u1");
+        assert_eq!(TensorDtype::I64.numpy_typestr(), "<i8");
+    }
+
+    #[test]
+    fn test_dtype_pod_soundness() {
+        let dtype = TensorDtype::F32;
+        let bytes = bytemuck::bytes_of(&dtype);
+        assert_eq!(bytes.len(), 1);
+        assert_eq!(bytes[0], 0); // F32 = 0
+
+        let dtype2 = TensorDtype::U8;
+        let bytes2 = bytemuck::bytes_of(&dtype2);
+        assert_eq!(bytes2[0], 8); // U8 = 8
+    }
+
+    #[test]
+    fn test_dtype_serde_roundtrip() {
+        for dtype in [
+            TensorDtype::F32,
+            TensorDtype::F64,
+            TensorDtype::U8,
+            TensorDtype::Bool,
+        ] {
+            let json = serde_json::to_string(&dtype).unwrap();
+            let recovered: TensorDtype = serde_json::from_str(&json).unwrap();
+            assert_eq!(recovered, dtype);
+        }
     }
 }

@@ -2408,6 +2408,7 @@ dependencies = [
  "horus_core",
  "horus_library",
  "horus_macros",
+ "horus_types",
  "serde",
  "thiserror 1.0.69",
  "tokio",
@@ -2421,6 +2422,7 @@ dependencies = [
  "bytemuck",
  "dirs",
  "horus_core",
+ "horus_types",
  "parking_lot",
  "reqwest",
  "serde",
@@ -2470,6 +2472,7 @@ dependencies = [
  "dirs",
  "flate2",
  "horus_macros",
+ "horus_types",
  "lazy_static",
  "libc",
  "libloading 0.8.9",
@@ -2503,6 +2506,7 @@ dependencies = [
  "bytemuck",
  "horus_core",
  "horus_macros",
+ "horus_types",
  "rand",
  "rmp-serde",
  "serde",
@@ -2601,12 +2605,22 @@ dependencies = [
  "horus",
  "horus_core",
  "horus_library",
+ "horus_types",
  "lazy_static",
  "parking_lot",
  "pyo3",
  "pyo3-build-config",
  "pythonize",
  "rmp-serde",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "horus_types"
+version = "0.1.9"
+dependencies = [
+ "bytemuck",
  "serde",
  "serde_json",
 ]

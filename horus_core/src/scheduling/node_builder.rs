@@ -239,6 +239,7 @@ impl NodeRegistration {
 ///     .rt()
 ///     .done();
 /// ```
+#[must_use = "call .done() to register the node — dropping this builder discards the registration"]
 pub struct NodeBuilder<'a> {
     scheduler: &'a mut super::scheduler::Scheduler,
     config: NodeRegistration,

@@ -16,19 +16,20 @@
 //! let pool = TensorPool::new(1, Default::default())?;
 //!
 //! // Allocate a tensor
-//! let tensor = TensorHandle::alloc(&pool, &[1080, 1920, 3], TensorDtype::U8, Device::Cpu)?;
+//! let tensor = TensorHandle::alloc(&pool, &[1080, 1920, 3], TensorDtype::U8, Device::cpu())?;
 //!
 //! // Get raw data pointer for zero-copy access
 //! let ptr = tensor.data_ptr();
 //! ```
 
-pub mod device;
 pub mod dlpack;
 pub mod ml;
 pub mod tensor;
 
+// Re-export Device from horus_types (replaces old crate::device module)
+pub use horus_types::Device;
+
 // Re-export main types at crate root
-pub use device::Device;
 pub use dlpack::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
 pub use ml::{
     ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,

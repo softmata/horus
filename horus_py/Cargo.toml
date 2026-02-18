@@ -12,6 +12,7 @@ pyo3 = { version = "0.27", features = ["extension-module", "abi3-py39", "num-big
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }  # Direct access for cuda features
 horus_library = { path = "../horus_library" }
+horus_types = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rmp-serde = "1.1"  # MessagePack serialization (2-5x faster than JSON)

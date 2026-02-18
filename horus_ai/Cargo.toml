@@ -9,6 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 # Core HORUS
 horus_core = { workspace = true }
+horus_types = { workspace = true }
 
 # Memory safety
 bytemuck = { workspace = true }

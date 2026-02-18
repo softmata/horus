@@ -23,10 +23,7 @@ pub mod presence;
 pub mod rt_config;
 pub mod rt_node;
 
-pub use discovery::{
-    announce_crashed, announce_started, announce_stopped, read_announcements, NodeAnnouncement,
-    NodeEvent, DISCOVERY_TOPIC,
-};
+pub use discovery::{announce_started, announce_stopped, NodeAnnouncement, NodeEvent, DISCOVERY_TOPIC};
 pub use log_buffer::{LogEntry, LogType, SharedLogBuffer, GLOBAL_LOG_BUFFER};
 pub use node::{
     HealthStatus, LogSummary, NetworkStatus, Node, NodeConfig, NodeInfo, NodeMetrics, NodeState,

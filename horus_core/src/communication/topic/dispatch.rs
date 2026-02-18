@@ -46,6 +46,42 @@
 //! | 11-15 | SHM POD co-located variants | |
 //! | 16-19 | SHM serde variants | |
 //! | 20| `recv_uninitialized` | First call → register + re-dispatch |
+//!
+//! ## Safety Invariants (applies to ALL functions below)
+//!
+//! Every function in this module runs in an `unsafe` context. The following
+//! invariants are guaranteed by the Topic<T> type and its initialization paths:
+//!
+//! 1. **Single-thread ownership**: `Topic<T>` is `!Send + !Sync`. Each instance
+//!    is accessed from exactly one thread. All `UnsafeCell` accesses (backend,
+//!    send_fn, recv_fn, local) are safe because there is no concurrent mutation.
+//!
+//! 2. **Pointer validity**: `cached_header_ptr`, `cached_data_ptr`, and
+//!    `cached_seq_ptr` in LocalState are set by `ensure_producer()`/
+//!    `ensure_consumer()`/`initialize_backend()` to point into the SHM mmap
+//!    region (`ShmRegion`). The mmap stays alive for the lifetime of `Topic<T>`
+//!    (owned via `storage: ShmRegion`). For DirectChannel, these point into the
+//!    `DirectSlot<T>` heap buffer (owned via `Arc` in `BackendStorage`).
+//!
+//! 3. **Index bounds**: All slot indices use `(seq & capacity_mask)`, where
+//!    `capacity_mask = capacity - 1` and capacity is always a power of two.
+//!    This guarantees `index < capacity` without bounds checks.
+//!
+//! 4. **Backend variant correctness**: `set_dispatch_fn_ptrs()` assigns each
+//!    dispatch function only when `BackendStorage` matches the expected variant.
+//!    `epoch_guard_send!`/`epoch_guard_recv!` re-dispatch through updated fn
+//!    ptrs on epoch change, preventing stale variant access. The
+//!    `unreachable_unchecked()` in match arms is sound because migration always
+//!    updates fn ptrs atomically (from the owning thread) before any dispatch.
+//!
+//! 5. **Atomic ordering**: Producers use `Release` stores on sequence/head;
+//!    consumers use `Acquire` loads. This establishes happens-before between
+//!    write and read of each slot. CAS operations use `AcqRel` for read-modify-
+//!    write consistency.
+//!
+//! 6. **SIMD operations**: `simd_aware_read`/`simd_aware_write` require aligned,
+//!    non-overlapping source/dest within the data region. The SHM layout ensures
+//!    slot alignment to `mem::align_of::<T>()` via `slot_size` rounding.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -81,6 +117,7 @@ macro_rules! epoch_guard_send {
         let __pe = $topic.process_epoch.load(Ordering::Relaxed);
         if unlikely(__pe != $topic.local().cached_epoch) {
             $topic.handle_epoch_change(__pe);
+            // SAFETY: send_fn set by handle_epoch_change → initialize_backend → set_dispatch_fn_ptrs
             return unsafe { (*$topic.send_fn.get())($topic, $msg) };
         }
     };
@@ -91,9 +128,167 @@ macro_rules! epoch_guard_recv {
         let __pe = $topic.process_epoch.load(Ordering::Relaxed);
         if unlikely(__pe != $topic.local().cached_epoch) {
             $topic.handle_epoch_change(__pe);
+            // SAFETY: recv_fn set by handle_epoch_change → initialize_backend → set_dispatch_fn_ptrs
             return unsafe { (*$topic.recv_fn.get())($topic) };
         }
     };
+}
+
+// ============================================================================
+// Housekeeping macros — amortized maintenance after each message
+// ============================================================================
+
+/// Housekeeping after a successful send or recv: lease refresh + periodic maintenance.
+/// Used by all non-DirectChannel paths on the success path.
+macro_rules! housekeep_lease {
+    ($local:ident, $topic:expr) => {
+        $local.msg_counter = $local.msg_counter.wrapping_add(1);
+        if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+            $topic.periodic_maintenance();
+        }
+    };
+}
+
+/// Housekeeping on empty recv: amortized epoch check.
+/// Used by all paths when no message is available.
+macro_rules! housekeep_epoch {
+    ($local:ident, $topic:expr) => {
+        $local.msg_counter = $local.msg_counter.wrapping_add(1);
+        if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+            $topic.check_migration_periodic();
+        }
+    };
+}
+
+/// Combined housekeeping for intra-process recv: branch on result.
+/// On success: lease refresh. On empty: epoch check.
+macro_rules! housekeep_recv {
+    ($local:ident, $topic:expr, $result:ident) => {
+        $local.msg_counter = $local.msg_counter.wrapping_add(1);
+        if $result.is_some() {
+            if unlikely($local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
+                $topic.periodic_maintenance();
+            }
+        } else if unlikely($local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
+            $topic.check_migration_periodic();
+        }
+    };
+}
+
+// ============================================================================
+// Intra-process ring macros — one macro generates all 4 backend variants
+// ============================================================================
+
+/// Generate an intra-process send function for a specific BackendStorage variant.
+/// All four intra send paths (SPSC/SPMC/MPSC/MPMC) share identical logic:
+/// epoch guard → backend match → try_send → housekeeping.
+macro_rules! intra_send_fn {
+    ($name:ident, $variant:ident) => {
+        #[inline(always)]
+        pub(super) fn $name<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+            topic: &Topic<T>,
+            msg: T,
+        ) -> Result<(), T> {
+            epoch_guard_send!(topic, msg);
+
+            // SAFETY: backend UnsafeCell accessed from single thread (Topic is !Sync per-instance).
+            // The $variant arm is guaranteed by set_dispatch_fn_ptrs() which only assigns this
+            // function when the backend matches. unreachable_unchecked is sound because migration
+            // (which changes the variant) always updates fn ptrs atomically via epoch_guard above.
+            let ring = match unsafe { &*topic.backend.get() } {
+                BackendStorage::$variant(r) => r,
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let result = ring.try_send(msg);
+
+            if result.is_ok() {
+                let local = topic.local();
+                housekeep_lease!(local, topic);
+            }
+            result
+        }
+    };
+}
+
+/// Generate an intra-process recv function for a specific BackendStorage variant.
+/// All four intra recv paths share identical logic:
+/// epoch guard → backend match → try_recv → combined housekeeping.
+macro_rules! intra_recv_fn {
+    ($name:ident, $variant:ident) => {
+        #[inline(always)]
+        pub(super) fn $name<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+            topic: &Topic<T>,
+        ) -> Option<T> {
+            epoch_guard_recv!(topic);
+
+            // SAFETY: same single-thread + variant guarantee as intra_send_fn.
+            let ring = match unsafe { &*topic.backend.get() } {
+                BackendStorage::$variant(r) => r,
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            };
+            let result = ring.try_recv();
+
+            let local = topic.local();
+            housekeep_recv!(local, topic, result);
+            result
+        }
+    };
+}
+
+// ============================================================================
+// Shared helpers — #[inline(always)] for zero-overhead extraction
+// ============================================================================
+
+/// Bounded spin waiting for a per-slot ready flag to reach the expected value.
+///
+/// Returns true if the ready flag matched within READY_FLAG_SPIN_LIMIT iterations.
+/// On x86, each spin_loop() is a PAUSE (~10-20 cycles), so 256 spins ≈ ~1.7µs
+/// worst case at 3GHz — well within try_recv latency bounds.
+///
+/// # Safety
+/// `ready_ptr` must point to a valid AtomicU64 within the topic's data region
+/// (either SHM mmap or co-located slot). The pointer must remain valid for the
+/// duration of the spin (guaranteed by ShmRegion lifetime).
+#[inline(always)]
+unsafe fn spin_for_ready(ready_ptr: &AtomicU64, expected: u64) -> bool {
+    let mut spins = 0u32;
+    loop {
+        if ready_ptr.load(Ordering::Acquire) == expected {
+            return true;
+        }
+        spins += 1;
+        if spins >= READY_FLAG_SPIN_LIMIT {
+            return false;
+        }
+        std::hint::spin_loop();
+    }
+}
+
+/// Read and deserialize a message from a serde-format SHM slot.
+///
+/// Slot layout: `[8B ready_flag | 8B length | data...]`
+///
+/// Returns None if the length field is corrupted (exceeds slot capacity).
+///
+/// # Safety
+/// `slot_ptr` must point to a valid slot within the SHM data region,
+/// with at least `slot_size` bytes accessible. The slot must have been
+/// fully written by a producer (ready flag verified by caller).
+#[inline(always)]
+unsafe fn read_serde_slot<T: DeserializeOwned>(slot_ptr: *const u8, slot_size: usize) -> Option<T> {
+    let max_data_len = slot_size.saturating_sub(16);
+    let len_ptr = slot_ptr.add(8) as *const u64;
+    let len = std::ptr::read_volatile(len_ptr) as usize;
+    if len > max_data_len {
+        return None; // Corrupted length — skip this slot
+    }
+    let data_ptr = slot_ptr.add(16);
+    let slice = std::slice::from_raw_parts(data_ptr, len);
+    Some(bincode::deserialize(slice).unwrap_or_else(|_| {
+        // Deserialization failed — fallback to raw read. This should not happen
+        // as the producer serialized successfully, but provides a safe fallback.
+        std::ptr::read(slot_ptr as *const T)
+    }))
 }
 
 // ============================================================================
@@ -120,6 +315,8 @@ pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
     if head.wrapping_sub(local.local_tail) >= local.cached_capacity {
         return Err(msg);
     }
+    // SAFETY: cached_data_ptr points to DirectSlot's heap buffer (set by
+    // set_dispatch_fn_ptrs). index < capacity via mask. Single-thread access.
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
@@ -147,6 +344,7 @@ pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
         }
         return None;
     }
+    // SAFETY: cached_data_ptr points to DirectSlot's heap buffer. index < capacity via mask.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
@@ -182,9 +380,14 @@ pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
     msg: T,
 ) -> Result<(), T> {
     let local = topic.local();
-    // cached_header_ptr repurposed as *const AtomicU64 → DirectSlot.head
+    // SAFETY: For DC-cached, set_dispatch_fn_ptrs repurposes these pointers:
+    //   cached_header_ptr → &DirectSlot.head (AtomicU64)
+    //   cached_seq_ptr    → &DirectSlot.tail (AtomicU64)
+    // Both are valid for the lifetime of the Arc<DirectSlot> in BackendStorage.
+    // Relaxed ordering is sufficient: same-thread guarantee means no
+    // cross-thread race on these atomics (they serve as shared counters
+    // between two same-thread Topic instances via Arc).
     let head_ptr = local.cached_header_ptr as *const AtomicU64;
-    // cached_seq_ptr repurposed as *const AtomicU64 → DirectSlot.tail
     let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
 
     let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
@@ -192,6 +395,7 @@ pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
     if head.wrapping_sub(tail) >= local.cached_capacity {
         return Err(msg);
     }
+    // SAFETY: cached_data_ptr points to DirectSlot's buffer. index < capacity via mask.
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         std::ptr::write(base.add((head & local.cached_capacity_mask) as usize), msg);
@@ -210,9 +414,9 @@ pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
     topic: &Topic<T>,
 ) -> Option<T> {
     let local = topic.local();
-    // cached_header_ptr repurposed as *const AtomicU64 → DirectSlot.head
+    // SAFETY: Same pointer reinterpretation as send_direct_channel_cached
+    // (see that function's SAFETY comment for the full invariant).
     let head_ptr = local.cached_header_ptr as *const AtomicU64;
-    // cached_seq_ptr repurposed as *const AtomicU64 → DirectSlot.tail
     let tail_ptr = local.cached_seq_ptr as *const AtomicU64;
 
     let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
@@ -224,10 +428,12 @@ pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
         }
         return None;
     }
+    // SAFETY: cached_data_ptr points to DirectSlot's buffer. index < capacity via mask.
     let msg = unsafe {
         let base = local.cached_data_ptr as *const T;
         std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
     };
+    // SAFETY: tail_ptr is &DirectSlot.tail (valid AtomicU64).
     unsafe { (*(tail_ptr as *const AtomicU64)).store(tail.wrapping_add(1), Ordering::Relaxed) };
 
     local.msg_counter = local.msg_counter.wrapping_add(1);
@@ -238,100 +444,13 @@ pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
 }
 
 // ---------------------------------------------------------------------------
-// 2-5. Intra-process heap ring send functions
+// 2-5. Intra-process heap ring send functions (macro-generated)
 // ---------------------------------------------------------------------------
 
-#[inline(always)]
-pub(super) fn send_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-    msg: T,
-) -> Result<(), T> {
-    epoch_guard_send!(topic, msg);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::SpscIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_send(msg);
-
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn send_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-    msg: T,
-) -> Result<(), T> {
-    epoch_guard_send!(topic, msg);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::SpmcIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_send(msg);
-
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn send_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-    msg: T,
-) -> Result<(), T> {
-    epoch_guard_send!(topic, msg);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::MpscIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_send(msg);
-
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn send_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-    msg: T,
-) -> Result<(), T> {
-    epoch_guard_send!(topic, msg);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::MpmcIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_send(msg);
-
-    if result.is_ok() {
-        let local = topic.local();
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    }
-    result
-}
+intra_send_fn!(send_spsc_intra, SpscIntra);
+intra_send_fn!(send_spmc_intra, SpmcIntra);
+intra_send_fn!(send_mpsc_intra, MpscIntra);
+intra_send_fn!(send_mpmc_intra, MpmcIntra);
 
 // ---------------------------------------------------------------------------
 // 6. SHM single-producer POD (SpscShm / SpmcShm)
@@ -345,6 +464,8 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     epoch_guard_send!(topic, msg);
 
     let local = topic.local();
+    // SAFETY: cached_header_ptr points to TopicHeader at the start of ShmRegion
+    // (set by ensure_producer/ensure_consumer). Valid for Topic's lifetime.
     let header = unsafe { &*local.cached_header_ptr };
 
     let seq = local.local_head;
@@ -356,6 +477,8 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     }
 
     let index = (seq & local.cached_capacity_mask) as usize;
+    // SAFETY: cached_data_ptr points to SHM data region. index < capacity (mask).
+    // simd_aware_write handles alignment (slot_size is rounded to align_of::<T>()).
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
@@ -364,10 +487,7 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     local.local_head = new_seq;
     header.sequence_or_head.store(new_seq, Ordering::Release);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -413,10 +533,7 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     }
     local.local_head = seq + 1;
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -447,10 +564,7 @@ pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
     }
     local.local_head = seq + 1;
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -501,10 +615,7 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     local.local_head = new_seq;
     header.sequence_or_head.store(new_seq, Ordering::Release);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -558,10 +669,7 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
     }
     local.local_head = seq + 1;
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -571,11 +679,22 @@ pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 
 const COLO_STRIDE: usize = 64;
 
+/// Get the inline sequence number (AtomicU64) at the start of a co-located slot.
+///
+/// # Safety
+/// `data_ptr` must point to the SHM data region. `index` must be < capacity
+/// (guaranteed by `seq & capacity_mask`). The slot at `index * 64` must be
+/// within the mmap'd region.
 #[inline(always)]
 unsafe fn colo_seq(data_ptr: *mut u8, index: usize) -> &'static std::sync::atomic::AtomicU64 {
     &*(data_ptr.add(index * COLO_STRIDE) as *const std::sync::atomic::AtomicU64)
 }
 
+/// Get a pointer to the data portion of a co-located slot (offset +8 from slot start).
+///
+/// # Safety
+/// Same requirements as `colo_seq`. Additionally, `T` must fit in 56 bytes
+/// (sizeof(T) + 8 <= 64, verified at dispatch time by `set_dispatch_fn_ptrs`).
 #[inline(always)]
 unsafe fn colo_data<T>(data_ptr: *mut u8, index: usize) -> *mut T {
     data_ptr.add(index * COLO_STRIDE + 8) as *mut T
@@ -620,10 +739,7 @@ pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
         header.sequence_or_head.store(new_seq, Ordering::Release);
     }
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -666,10 +782,7 @@ pub(super) fn send_shm_mp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
     }
     local.local_head = seq + 1;
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -697,10 +810,7 @@ pub(super) fn send_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
     }
     local.local_head = seq + 1;
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Ok(())
 }
 
@@ -717,7 +827,8 @@ pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + Deserializ
     if topic.ensure_producer().is_err() {
         return Err(msg);
     }
-    // fn ptrs are now set; re-dispatch through the real send function
+    // SAFETY: ensure_producer() → initialize_backend() → set_dispatch_fn_ptrs()
+    // has set send_fn to a valid function pointer. UnsafeCell is single-thread.
     unsafe { (*topic.send_fn.get())(topic, msg) }
 }
 
@@ -726,104 +837,13 @@ pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + Deserializ
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// 2-5. Intra-process heap ring recv functions
+// 2-5. Intra-process heap ring recv functions (macro-generated)
 // ---------------------------------------------------------------------------
 
-#[inline(always)]
-pub(super) fn recv_spsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::SpscIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_recv();
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if result.is_some() {
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    } else if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-        topic.check_migration_periodic();
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn recv_spmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::SpmcIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_recv();
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if result.is_some() {
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    } else if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-        topic.check_migration_periodic();
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn recv_mpsc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::MpscIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_recv();
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if result.is_some() {
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    } else if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-        topic.check_migration_periodic();
-    }
-    result
-}
-
-#[inline(always)]
-pub(super) fn recv_mpmc_intra<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
-) -> Option<T> {
-    epoch_guard_recv!(topic);
-
-    let ring = match unsafe { &*topic.backend.get() } {
-        BackendStorage::MpmcIntra(r) => r,
-        _ => unsafe { std::hint::unreachable_unchecked() },
-    };
-    let result = ring.try_recv();
-
-    let local = topic.local();
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if result.is_some() {
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
-    } else if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-        topic.check_migration_periodic();
-    }
-    result
-}
+intra_recv_fn!(recv_spsc_intra, SpscIntra);
+intra_recv_fn!(recv_spmc_intra, SpmcIntra);
+intra_recv_fn!(recv_mpsc_intra, MpscIntra);
+intra_recv_fn!(recv_mpmc_intra, MpmcIntra);
 
 // ---------------------------------------------------------------------------
 // 6. SHM SpscShm POD recv
@@ -843,10 +863,7 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -867,10 +884,7 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         header.tail.store(new_tail, Ordering::Release);
     }
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -892,30 +906,18 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
+    // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready_ok = unsafe {
         let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
             as *const std::sync::atomic::AtomicU64);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if ready_ptr.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
@@ -933,10 +935,7 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         header.tail.store(new_tail, Ordering::Release);
     }
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -975,10 +974,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
             };
             local.local_tail = tail.wrapping_add(1);
 
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                topic.periodic_maintenance();
-            }
+            housekeep_lease!(local, topic);
             return Some(msg);
         }
         std::hint::spin_loop();
@@ -1003,30 +999,18 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
+    // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready_ok = unsafe {
         let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
             as *const std::sync::atomic::AtomicU64);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if ready_ptr.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
@@ -1041,10 +1025,7 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         };
         local.local_tail = tail.wrapping_add(1);
 
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
+        housekeep_lease!(local, topic);
         return Some(msg);
     }
     None
@@ -1068,10 +1049,7 @@ pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1103,10 +1081,7 @@ pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
     };
     local.local_tail = tail.wrapping_add(1);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1130,10 +1105,7 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1141,29 +1113,18 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let index = (tail & mask) as usize;
     let slot_offset = index * slot_size;
 
-    let max_data_len = slot_size.saturating_sub(16);
-    let msg = unsafe {
-        let slot_ptr = local.cached_data_ptr.add(slot_offset);
-        let len_ptr = slot_ptr.add(8) as *const u64;
-        let len = std::ptr::read_volatile(len_ptr) as usize;
-        if len > max_data_len {
-            return None; // Corrupted length — skip this slot
-        }
-        let data_ptr = slot_ptr.add(16);
-        let slice = std::slice::from_raw_parts(data_ptr, len);
-        bincode::deserialize(slice).unwrap_or_else(|_| {
-            std::ptr::read(slot_ptr as *const T)
-        })
+    // SAFETY: slot_ptr is valid for slot_size bytes within SHM. The producer's
+    // sequence store (Release) was observed via our Acquire load on sequence_or_head.
+    let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+        Some(m) => m,
+        None => return None,
     };
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1187,10 +1148,7 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1198,49 +1156,29 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let index = (tail & mask) as usize;
     let slot_offset = index * slot_size;
 
+    // SAFETY: slot_ptr points to a valid serde slot within SHM data region.
+    // The first 8 bytes are the ready flag (AtomicU64).
     let ready_ok = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if ready_ptr.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
     }
 
-    let max_data_len = slot_size.saturating_sub(16);
-    let msg = unsafe {
-        let slot_ptr = local.cached_data_ptr.add(slot_offset);
-        let len_ptr = slot_ptr.add(8) as *const u64;
-        let len = std::ptr::read_volatile(len_ptr) as usize;
-        if len > max_data_len {
-            return None; // Corrupted length — skip this slot
-        }
-        let data_ptr = slot_ptr.add(16);
-        let slice = std::slice::from_raw_parts(data_ptr, len);
-        bincode::deserialize(slice).unwrap_or_else(|_| {
-            std::ptr::read(slot_ptr as *const T)
-        })
+    // SAFETY: slot_ptr is valid for slot_size bytes within SHM. Ready flag
+    // was verified above, so the producer has finished writing this slot.
+    let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+        Some(m) => m,
+        None => return None,
     };
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1263,10 +1201,7 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1276,29 +1211,20 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     ).is_ok() {
         let index = (tail & mask) as usize;
         let slot_offset = index * slot_size;
-        let max_data_len = slot_size.saturating_sub(16);
 
-        let msg = unsafe {
-            let slot_ptr = local.cached_data_ptr.add(slot_offset);
-            let len_ptr = slot_ptr.add(8) as *const u64;
-            let len = std::ptr::read_volatile(len_ptr) as usize;
-            if len > max_data_len {
+        // SAFETY: CAS succeeded so we own this slot. slot_ptr is valid for
+        // slot_size bytes within the SHM data region.
+        let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+            Some(m) => m,
+            None => {
                 local.local_tail = tail.wrapping_add(1);
                 return None; // Corrupted length — skip this slot
             }
-            let data_ptr = slot_ptr.add(16);
-            let slice = std::slice::from_raw_parts(data_ptr, len);
-            bincode::deserialize(slice).unwrap_or_else(|_| {
-                std::ptr::read(slot_ptr as *const T)
-            })
         };
 
         local.local_tail = tail.wrapping_add(1);
 
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
+        housekeep_lease!(local, topic);
         return Some(msg);
     }
     None
@@ -1323,10 +1249,7 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1334,21 +1257,12 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     let index = (tail & mask) as usize;
     let slot_offset = index * slot_size;
 
+    // SAFETY: slot_ptr points to a valid serde slot within SHM data region.
+    // The first 8 bytes are the ready flag (AtomicU64).
     let ready_ok = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if ready_ptr.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
@@ -1357,28 +1271,19 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
     if header.tail.compare_exchange_weak(
         tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
     ).is_ok() {
-        let max_data_len = slot_size.saturating_sub(16);
-        let msg = unsafe {
-            let slot_ptr = local.cached_data_ptr.add(slot_offset);
-            let len_ptr = slot_ptr.add(8) as *const u64;
-            let len = std::ptr::read_volatile(len_ptr) as usize;
-            if len > max_data_len {
+        // SAFETY: CAS succeeded so we own this slot. Ready flag was verified
+        // above, so the producer has finished writing.
+        let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+            Some(m) => m,
+            None => {
                 local.local_tail = tail.wrapping_add(1);
                 return None; // Corrupted length — skip this slot
             }
-            let data_ptr = slot_ptr.add(16);
-            let slice = std::slice::from_raw_parts(data_ptr, len);
-            bincode::deserialize(slice).unwrap_or_else(|_| {
-                std::ptr::read(slot_ptr as *const T)
-            })
         };
 
         local.local_tail = tail.wrapping_add(1);
 
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
+        housekeep_lease!(local, topic);
         return Some(msg);
     }
     None
@@ -1418,10 +1323,7 @@ pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
         let seq_val = unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) };
         let expected = tail.wrapping_add(1);
         if seq_val < expected {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
         // Data is ready. Update cached head so next recv uses the fast path
@@ -1445,10 +1347,7 @@ pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
         header.tail.store(new_tail, Ordering::Release);
     }
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1470,29 +1369,16 @@ pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
+    // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
     let ready_ok = unsafe {
-        let seq_atom = colo_seq(local.cached_data_ptr, index);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if seq_atom.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
@@ -1503,10 +1389,7 @@ pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     local.local_tail = new_tail;
     header.tail.store(new_tail, Ordering::Release);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1530,10 +1413,7 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 
         let seq_val = unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) };
         if seq_val < tail.wrapping_add(1) {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
 
@@ -1543,10 +1423,7 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
             let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
             local.local_tail = tail.wrapping_add(1);
 
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-                topic.periodic_maintenance();
-            }
+            housekeep_lease!(local, topic);
             return Some(msg);
         }
         std::hint::spin_loop();
@@ -1571,29 +1448,16 @@ pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
 
     let index = (tail & mask) as usize;
+    // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
+    // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
     let ready_ok = unsafe {
-        let seq_atom = colo_seq(local.cached_data_ptr, index);
-        let expected = tail.wrapping_add(1);
-        let mut spins = 0u32;
-        loop {
-            if seq_atom.load(Ordering::Acquire) == expected {
-                break true;
-            }
-            spins += 1;
-            if spins >= READY_FLAG_SPIN_LIMIT {
-                break false;
-            }
-            std::hint::spin_loop();
-        }
+        spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
@@ -1605,10 +1469,7 @@ pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
         let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
         local.local_tail = tail.wrapping_add(1);
 
-        local.msg_counter = local.msg_counter.wrapping_add(1);
-        if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-            topic.periodic_maintenance();
-        }
+        housekeep_lease!(local, topic);
         return Some(msg);
     }
     None
@@ -1632,10 +1493,7 @@ pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
     if tail >= local.local_head {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
         if tail >= local.local_head {
-            local.msg_counter = local.msg_counter.wrapping_add(1);
-            if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
-                topic.check_migration_periodic();
-            }
+            housekeep_epoch!(local, topic);
             return None;
         }
     }
@@ -1662,10 +1520,7 @@ pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
     let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
     local.local_tail = tail.wrapping_add(1);
 
-    local.msg_counter = local.msg_counter.wrapping_add(1);
-    if unlikely(local.msg_counter & (LEASE_REFRESH_INTERVAL - 1) == 0) {
-        topic.periodic_maintenance();
-    }
+    housekeep_lease!(local, topic);
     Some(msg)
 }
 
@@ -1681,6 +1536,7 @@ pub(super) fn recv_uninitialized<T: Clone + Send + Sync + Serialize + Deserializ
     if topic.ensure_consumer().is_err() {
         return None;
     }
-    // fn ptrs are now set; re-dispatch through the real recv function
+    // SAFETY: ensure_consumer() → initialize_backend() → set_dispatch_fn_ptrs()
+    // has set recv_fn to a valid function pointer. UnsafeCell is single-thread.
     unsafe { (*topic.recv_fn.get())(topic) }
 }

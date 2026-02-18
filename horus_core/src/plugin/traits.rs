@@ -181,27 +181,6 @@ pub type PluginEntryFn = unsafe extern "C" fn() -> Box<dyn DriverPlugin>;
 /// Name of the entry point symbol for dynamic loading
 pub const PLUGIN_ENTRY_SYMBOL: &str = "horus_driver_entry";
 
-/// Trait for plugins that support hot-reloading
-///
-/// Optional trait for plugins that can be safely unloaded and reloaded
-/// while the system is running.
-pub trait HotReloadable: DriverPlugin {
-    /// Check if hot-reload is currently safe
-    ///
-    /// Returns false if there are active instances that would be invalidated.
-    fn can_hot_reload(&self) -> bool;
-
-    /// Prepare for hot-reload
-    ///
-    /// Called before unloading. Should save any necessary state.
-    fn prepare_hot_reload(&self) -> HorusResult<()>;
-
-    /// Complete hot-reload
-    ///
-    /// Called after reloading. Should restore state and reconnect instances.
-    fn complete_hot_reload(&self) -> HorusResult<()>;
-}
-
 /// Extension trait for plugins that support hardware auto-detection
 pub trait AutoDetectable: DriverPlugin {
     /// Auto-detect and create the best available driver

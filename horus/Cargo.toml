@@ -15,6 +15,7 @@ horus_core = { path = "../horus_core" }
 horus_ai = { path = "../horus_ai" }
 horus_macros = { path = "../horus_macros", optional = true }
 horus_library = { path = "../horus_library" }
+horus_types = { workspace = true }
 
 # Re-export commonly used dependencies
 serde = { workspace = true }

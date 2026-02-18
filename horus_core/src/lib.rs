@@ -64,11 +64,11 @@ pub(crate) mod utils;
 // Unified Topic API - the single way to create IPC channels
 pub use communication::{PodMessage, Topic, TopicDescriptor, TopicMetrics};
 pub use core::{
-    announce_crashed, announce_started, announce_stopped, detect_isolated_cpus,
-    detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core, read_announcements,
-    HealthStatus, LogSummary, Node, NodeAnnouncement, NodeConfig, NodeEvent, NodeInfo, NodeMetrics,
-    NodePresence, NodeState, RtApplyResult, RtConfig, RtConfigBuilder, RtCpuInfo, RtDegradation,
-    RtKernelInfo, RtScheduler, TopicMetadata, DISCOVERY_TOPIC,
+    announce_started, announce_stopped, detect_isolated_cpus, detect_nohz_full_cpus,
+    get_rt_recommended_cpus, pin_thread_to_core, HealthStatus, LogSummary, Node, NodeAnnouncement,
+    NodeConfig, NodeEvent, NodeInfo, NodeMetrics, NodePresence, NodeState, RtApplyResult, RtConfig,
+    RtConfigBuilder, RtCpuInfo, RtDegradation, RtKernelInfo, RtScheduler, TopicMetadata,
+    DISCOVERY_TOPIC,
 };
 pub use error::{HorusError, HorusResult};
 // Clean aliases for user-facing API
@@ -93,7 +93,7 @@ pub use actions::{
 
 // Re-export plugin types for driver plugin system
 pub use plugin::{
-    AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin, HotReloadable,
+    AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin,
     PluginEntryFn, PluginError, PluginFeature, PluginHealth, PluginId, PluginManifest,
     PluginResult, ProbeResult, SystemDependency, PLUGIN_ENTRY_SYMBOL,
 };
