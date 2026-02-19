@@ -74,7 +74,7 @@ pub enum HorusError {
 
     /// Parse errors
     #[error("Parse error: {0}")]
-    ParseError(String),
+    Parse(String),
 
     /// External command execution errors
     #[error("Command execution failed: {0}")]
@@ -128,15 +128,6 @@ macro_rules! horus_internal {
 /// Convenience type alias for Results using HorusError
 pub type HorusResult<T> = std::result::Result<T, HorusError>;
 
-// ============================================
-// Clean aliases for public API
-// ============================================
-
-/// Error type alias for clean public API
-pub type Error = HorusError;
-
-/// Result type alias for clean public API
-pub type Result<T> = std::result::Result<T, HorusError>;
 
 // ============================================
 // From implementations for common error types
@@ -168,19 +159,19 @@ impl From<serde_yaml::Error> for HorusError {
 
 impl From<std::num::ParseIntError> for HorusError {
     fn from(err: std::num::ParseIntError) -> Self {
-        HorusError::ParseError(format!("Integer parse error: {}", err))
+        HorusError::Parse(format!("Integer parse error: {}", err))
     }
 }
 
 impl From<std::num::ParseFloatError> for HorusError {
     fn from(err: std::num::ParseFloatError) -> Self {
-        HorusError::ParseError(format!("Float parse error: {}", err))
+        HorusError::Parse(format!("Float parse error: {}", err))
     }
 }
 
 impl From<std::str::ParseBoolError> for HorusError {
     fn from(err: std::str::ParseBoolError) -> Self {
-        HorusError::ParseError(format!("Boolean parse error: {}", err))
+        HorusError::Parse(format!("Boolean parse error: {}", err))
     }
 }
 

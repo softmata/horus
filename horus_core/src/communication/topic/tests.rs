@@ -1764,7 +1764,7 @@ fn backend_name_matches_mode() {
     let _ = t.recv();
     // Same-thread should be DirectChannel
     assert_eq!(t.backend_name(), "DirectChannel");
-    assert_eq!(t.backend_type(), t.backend_name());
+    // backend_type() was removed — backend_name() is the canonical method
 }
 
 // ============================================================================

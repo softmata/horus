@@ -1,10 +1,10 @@
-//! Unified Pod image descriptor for zero-copy camera pipelines
+//! Internal Pod image descriptor for zero-copy ring buffer transport
 //!
-//! `Image` is a fixed-size (288 byte) `repr(C)` descriptor that flows through
-//! `Topic<Image>` via the ~50ns Pod path. Actual pixel data lives in a
+//! `ImageDescriptor` is a fixed-size (288 byte) `repr(C)` descriptor that flows
+//! through the ring buffer via the ~50ns Pod path. Actual pixel data lives in a
 //! `TensorPool` — only the descriptor is copied.
 //!
-//! For data access (pixels, get_pixel, ROI), use `ImageHandle` in `horus_core`.
+//! Users should use `Image` from `horus_core` which wraps this with data access.
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ use crate::TensorDtype;
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Image {
+pub struct ImageDescriptor {
     /// Inner tensor: shape [H, W, C], data in pool
     inner: HorusTensor,
     /// Timestamp in nanoseconds since epoch
@@ -52,10 +52,10 @@ pub struct Image {
 
 // Safety: Image is repr(C), all fields are Pod, no implicit padding.
 // 232 + 8 + 4 + 1 + 3 + 32 + 8 = 288 bytes, 288 % 8 = 0.
-unsafe impl Zeroable for Image {}
-unsafe impl Pod for Image {}
+unsafe impl Zeroable for ImageDescriptor {}
+unsafe impl Pod for ImageDescriptor {}
 
-impl Default for Image {
+impl Default for ImageDescriptor {
     fn default() -> Self {
         Self {
             inner: HorusTensor::default(),
@@ -69,7 +69,7 @@ impl Default for Image {
     }
 }
 
-impl Image {
+impl ImageDescriptor {
     /// Create a new image descriptor from pre-built tensor + metadata.
     pub fn new(tensor: HorusTensor, encoding: ImageEncoding) -> Self {
         let width = if tensor.ndim >= 2 {
@@ -224,25 +224,25 @@ mod tests {
     #[test]
     fn test_image_size() {
         assert_eq!(
-            std::mem::size_of::<Image>(),
+            std::mem::size_of::<ImageDescriptor>(),
             288,
-            "Image must be exactly 288 bytes"
+            "ImageDescriptor must be exactly 288 bytes"
         );
     }
 
     #[test]
     fn test_image_pod() {
         // Verify Pod by roundtripping through bytes
-        let img = Image::default();
+        let img = ImageDescriptor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&img);
         assert_eq!(bytes.len(), 288);
-        let _recovered: &Image = bytemuck::from_bytes(bytes);
+        let _recovered: &ImageDescriptor = bytemuck::from_bytes(bytes);
     }
 
     #[test]
     fn test_image_from_tensor() {
         let tensor = HorusTensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
-        let img = Image::from_tensor(tensor);
+        let img = ImageDescriptor::from_tensor(tensor);
         assert_eq!(img.height(), 480);
         assert_eq!(img.width(), 640);
         assert_eq!(img.channels(), 3);
@@ -253,14 +253,14 @@ mod tests {
     #[test]
     fn test_image_mono() {
         let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 200], TensorDtype::U8, Device::cpu());
-        let img = Image::from_tensor(tensor);
+        let img = ImageDescriptor::from_tensor(tensor);
         assert_eq!(img.channels(), 1);
         assert_eq!(img.encoding(), ImageEncoding::Mono8);
     }
 
     #[test]
     fn test_image_frame_id() {
-        let mut img = Image::default();
+        let mut img = ImageDescriptor::default();
         img.set_frame_id("camera_left");
         assert_eq!(img.frame_id(), "camera_left");
     }
@@ -269,12 +269,12 @@ mod tests {
     fn test_image_serde_roundtrip() {
         let tensor =
             HorusTensor::new(1, 42, 1, 0, &[1080, 1920, 3], TensorDtype::U8, Device::cpu());
-        let mut img = Image::new(tensor, ImageEncoding::Rgb8);
+        let mut img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
         img.set_frame_id("cam0");
         img.set_timestamp_ns(123456789);
 
         let json = serde_json::to_string(&img).unwrap();
-        let recovered: Image = serde_json::from_str(&json).unwrap();
+        let recovered: ImageDescriptor = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.height(), 1080);
         assert_eq!(recovered.width(), 1920);
         assert_eq!(recovered.encoding(), ImageEncoding::Rgb8);

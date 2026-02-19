@@ -1,23 +1,46 @@
-//! RAII handle for DepthImage tensor data access
+//! User-facing DepthImage type with zero-copy shared memory backing
 //!
-//! `DepthImageHandle` wraps a `DepthImage` descriptor + `Arc<TensorPool>` and
-//! provides ergonomic depth value access methods.
+//! `DepthImage` is the primary type for depth sensor data in HORUS.
+//! Supports both F32 (meters) and U16 (millimeters) formats.
 
 use std::sync::Arc;
 
-use horus_types::{DepthImage, TensorDtype};
+use horus_types::{DepthImageDescriptor, Device, TensorDtype};
 
 use super::tensor_pool::TensorPool;
+use crate::communication::topic::pool_registry::global_pool;
+use crate::error::HorusResult;
 
-/// RAII handle providing data access for a `DepthImage` descriptor.
-pub struct DepthImageHandle {
-    descriptor: DepthImage,
+/// Depth image with zero-copy shared memory backing.
+///
+/// Create with `DepthImage::new()`, access depth values with `get_depth()`,
+/// and send through topics with `topic.send(&depth)`.
+pub struct DepthImage {
+    descriptor: DepthImageDescriptor,
     pool: Arc<TensorPool>,
 }
 
-impl DepthImageHandle {
-    /// Create a handle from a descriptor that already has a refcount of 1.
-    pub(crate) fn from_owned(descriptor: DepthImage, pool: Arc<TensorPool>) -> Self {
+impl DepthImage {
+    /// Create a new depth image with the given dimensions.
+    ///
+    /// Use `TensorDtype::F32` for meters or `TensorDtype::U16` for millimeters.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let depth = DepthImage::new(480, 640, TensorDtype::F32)?;
+    /// assert!(depth.is_meters());
+    /// ```
+    pub fn new(height: u32, width: u32, dtype: TensorDtype) -> HorusResult<Self> {
+        let pool = global_pool();
+        let shape = [height as u64, width as u64];
+        let tensor = pool.alloc(&shape, dtype, Device::cpu())?;
+        let descriptor = DepthImageDescriptor::new(tensor);
+        Ok(Self { descriptor, pool })
+    }
+
+    /// Create a DepthImage from a descriptor and pool (internal).
+    pub(crate) fn from_owned(descriptor: DepthImageDescriptor, pool: Arc<TensorPool>) -> Self {
         Self { descriptor, pool }
     }
 
@@ -69,6 +92,34 @@ impl DepthImageHandle {
         }
     }
 
+    /// Set depth at pixel (x, y).
+    ///
+    /// For F32: value is in meters. For U16: converts from meters to raw units.
+    /// Returns `&mut Self` for method chaining.
+    pub fn set_depth(&mut self, x: u32, y: u32, value: f32) -> &mut Self {
+        if x >= self.width() || y >= self.height() {
+            return self;
+        }
+        let idx = (y * self.width() + x) as usize;
+
+        if self.descriptor.is_meters() {
+            let data = self.data_mut();
+            let offset = idx * 4;
+            if offset + 4 <= data.len() {
+                let bytes = value.to_le_bytes();
+                data[offset..offset + 4].copy_from_slice(&bytes);
+            }
+        } else if self.descriptor.is_millimeters() {
+            let mm = (value * 1000.0 / self.descriptor.depth_scale()) as u16;
+            let data = self.data_mut();
+            let offset = idx * 2;
+            if offset + 2 <= data.len() {
+                data[offset..offset + 2].copy_from_slice(&mm.to_le_bytes());
+            }
+        }
+        self
+    }
+
     /// Get raw depth at pixel (x, y) as u16 (millimeters).
     ///
     /// Only valid for U16 dtype. Returns `None` for F32 data or out of bounds.
@@ -86,35 +137,6 @@ impl DepthImageHandle {
         }
     }
 
-    /// Set depth at pixel (x, y) in the raw format.
-    ///
-    /// For F32: value is in meters. For U16: value is in raw units.
-    pub fn set_depth_f32(&self, x: u32, y: u32, value: f32) -> bool {
-        if x >= self.width() || y >= self.height() {
-            return false;
-        }
-        let idx = (y * self.width() + x) as usize;
-
-        if self.descriptor.is_meters() {
-            let data = self.data_mut();
-            let offset = idx * 4;
-            if offset + 4 <= data.len() {
-                let bytes = value.to_le_bytes();
-                data[offset..offset + 4].copy_from_slice(&bytes);
-                return true;
-            }
-        } else if self.descriptor.is_millimeters() {
-            let mm = (value * 1000.0 / self.descriptor.depth_scale()) as u16;
-            let data = self.data_mut();
-            let offset = idx * 2;
-            if offset + 2 <= data.len() {
-                data[offset..offset + 2].copy_from_slice(&mm.to_le_bytes());
-                return true;
-            }
-        }
-        false
-    }
-
     /// Calculate depth statistics: (min, max, mean) in meters.
     ///
     /// Skips invalid depths (0 for U16, NaN/Inf for F32).
@@ -130,8 +152,12 @@ impl DepthImageHandle {
             for x in 0..w {
                 if let Some(d) = self.get_depth(x, y) {
                     if d.is_finite() && d > 0.0 {
-                        if d < min { min = d; }
-                        if d > max { max = d; }
+                        if d < min {
+                            min = d;
+                        }
+                        if d > max {
+                            max = d;
+                        }
                         sum += d as f64;
                         count += 1;
                     }
@@ -143,6 +169,18 @@ impl DepthImageHandle {
             return (0.0, 0.0, 0.0);
         }
         (min, max, (sum / count as f64) as f32)
+    }
+
+    /// Set the frame ID.
+    pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
+        self.descriptor.set_frame_id(id);
+        self
+    }
+
+    /// Set the timestamp in nanoseconds.
+    pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
+        self.descriptor.set_timestamp_ns(ts);
+        self
     }
 
     // === Metadata accessors ===
@@ -213,32 +251,32 @@ impl DepthImageHandle {
         self.descriptor.frame_id()
     }
 
-    /// Get the underlying descriptor.
+    // === Internal accessors ===
+
     #[inline]
-    pub fn descriptor(&self) -> &DepthImage {
+    pub(crate) fn descriptor(&self) -> &DepthImageDescriptor {
         &self.descriptor
     }
 
-    /// Get a mutable reference to the descriptor.
     #[inline]
-    pub fn descriptor_mut(&mut self) -> &mut DepthImage {
+    #[allow(dead_code)]
+    pub(crate) fn descriptor_mut(&mut self) -> &mut DepthImageDescriptor {
         &mut self.descriptor
     }
 
-    /// Get the pool.
     #[inline]
-    pub fn pool(&self) -> &Arc<TensorPool> {
+    pub(crate) fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 
-    /// Current reference count.
     #[inline]
-    pub fn refcount(&self) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn refcount(&self) -> u32 {
         self.pool.refcount(self.descriptor.tensor())
     }
 }
 
-impl Clone for DepthImageHandle {
+impl Clone for DepthImage {
     fn clone(&self) -> Self {
         self.pool.retain(self.descriptor.tensor());
         Self {
@@ -248,23 +286,28 @@ impl Clone for DepthImageHandle {
     }
 }
 
-impl Drop for DepthImageHandle {
+impl Drop for DepthImage {
     fn drop(&mut self) {
         self.pool.release(self.descriptor.tensor());
     }
 }
 
-impl std::fmt::Debug for DepthImageHandle {
+impl std::fmt::Debug for DepthImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let unit = if self.is_meters() { "m" } else if self.is_millimeters() { "mm" } else { "?" };
-        f.debug_struct("DepthImageHandle")
+        let unit = if self.is_meters() {
+            "m"
+        } else if self.is_millimeters() {
+            "mm"
+        } else {
+            "?"
+        };
+        f.debug_struct("DepthImage")
             .field("width", &self.width())
             .field("height", &self.height())
             .field("unit", &unit)
-            .field("refcount", &self.refcount())
             .finish()
     }
 }
 
-unsafe impl Send for DepthImageHandle {}
-unsafe impl Sync for DepthImageHandle {}
+unsafe impl Send for DepthImage {}
+unsafe impl Sync for DepthImage {}

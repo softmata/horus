@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use horus_core::core::{Node, NodeInfo, NodeState};
-    use horus_core::error::Result;
+    use horus_core::error::HorusResult as Result;
     use horus_core::hlog;
     use std::sync::{Arc, Mutex};
 

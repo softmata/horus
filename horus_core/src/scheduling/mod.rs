@@ -35,15 +35,16 @@ pub mod scheduler;
 pub mod types;
 
 // Advanced execution modules
-pub mod executors;
 pub mod fault_tolerance;
-mod intelligence;
+
+// Runtime profiler (moved from intelligence/)
+pub(crate) mod profiler;
 
 // Telemetry export for live monitoring
 pub mod telemetry;
 
-// Runtime OS-level features
-pub mod runtime;
+// Runtime OS-level features + capability detection (merged)
+pub(crate) mod rt;
 
 // Flight recorder
 pub mod blackbox;
@@ -51,25 +52,22 @@ pub mod blackbox;
 // Record/Replay system
 pub mod record_replay;
 
-// Deterministic execution
-pub mod deterministic;
-
-// Runtime capability detection for auto-optimization
-pub mod capabilities;
+// Deterministic execution (internal)
+pub(crate) mod deterministic;
 
 // Node builder for fluent node configuration
 pub mod node_builder;
 
 pub use config::{
-    ConfigValue, ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
-    ResourceConfig, SchedulerConfig, TimingConfig, TopologyConfig,
+    ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
+    ResourceConfig, SchedulerConfig, TimingConfig,
 };
 pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
 pub use types::SchedulerNodeMetrics;
 
 // Re-export runtime features
-pub use runtime::{
+pub use rt::{
     apply_rt_optimizations, get_core_count, get_max_rt_priority, get_numa_node_count,
     lock_all_memory, set_thread_affinity,
 };
@@ -77,7 +75,7 @@ pub use runtime::{
 // Re-export blackbox flight recorder
 pub use blackbox::{create_shared_blackbox, BlackBox, BlackBoxEvent, SharedBlackBox};
 
-// Re-export record/replay
+// Re-export record/replay (public API)
 pub use record_replay::{
     compress_data,
     decompress_data,
@@ -86,7 +84,6 @@ pub use record_replay::{
     save_recording_compressed,
     AutoRecordConfig,
     AutoRecordTrigger,
-    // Auto-recording
     AutoRecorder,
     Breakpoint,
     BreakpointCondition,
@@ -100,10 +97,7 @@ pub use record_replay::{
     RecordingConfig,
     RecordingDiff,
     RecordingManager,
-    // Advanced debugging
     ReplayDebugger,
-    ReplayMode,
-    ReplayNode,
     SchedulerRecording,
     TriggerCondition,
     WatchExpression,
@@ -111,26 +105,16 @@ pub use record_replay::{
     WatchValue,
 };
 
-// Re-export intelligence (tier annotation)
-// NOTE: RuntimeProfiler is internal (used by scheduler.rs for metrics).
-pub use intelligence::NodeTier;
-
-// Re-export executors
-pub use executors::ParallelExecutor;
+// Re-export node tier from types
+pub use types::NodeTier;
 
 // Re-export telemetry
 pub use telemetry::{TelemetryEndpoint, TelemetryManager};
 
-// Re-export fault tolerance
+// Re-export fault tolerance (public API)
 pub use fault_tolerance::{
-    CircuitBreaker, CircuitState, FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy,
+    CircuitBreaker, CircuitState, FailureHandler, FailureHandlerStats, FailurePolicy,
 };
-
-// Re-export deterministic execution
-pub use deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace};
-
-// Re-export runtime capabilities
-pub use capabilities::RuntimeCapabilities;
 
 // Re-export node builder
 pub use node_builder::{NodeBuilder, NodeRegistration};

@@ -1,6 +1,4 @@
-// Scheduler configuration - only fields that are actually used
-use std::collections::HashMap;
-use std::time::Duration;
+// Scheduler configuration - preset factories and data structs
 
 /// Execution mode for the scheduler
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +76,7 @@ pub struct MonitoringConfig {
     pub telemetry_endpoint: Option<String>,
 }
 
-/// Recording configuration for record/replay system
+/// Recording configuration for record/replay system (YAML-compatible)
 #[derive(Debug, Clone)]
 pub struct RecordingConfigYaml {
     /// Enable recording when scheduler starts
@@ -128,16 +126,7 @@ impl RecordingConfigYaml {
     pub fn full() -> Self {
         Self {
             enabled: true,
-            session_name: None,
-            compress: true,
-            interval: 1,
-            output_dir: None,
-            max_size_mb: 0,
-            include_nodes: vec![],
-            exclude_nodes: vec![],
-            record_inputs: true,
-            record_outputs: true,
-            record_timing: true,
+            ..Default::default()
         }
     }
 
@@ -147,14 +136,8 @@ impl RecordingConfigYaml {
             enabled: true,
             session_name: Some("debug".to_string()),
             compress: false,
-            interval: 1,
-            output_dir: None,
             max_size_mb: 100,
-            include_nodes: vec![],
-            exclude_nodes: vec![],
-            record_inputs: true,
-            record_outputs: true,
-            record_timing: true,
+            ..Default::default()
         }
     }
 
@@ -162,82 +145,26 @@ impl RecordingConfigYaml {
     pub fn minimal() -> Self {
         Self {
             enabled: true,
-            session_name: None,
             compress: true,
             interval: 10,
-            output_dir: None,
             max_size_mb: 50,
-            include_nodes: vec![],
-            exclude_nodes: vec![],
             record_inputs: false,
-            record_outputs: true,
             record_timing: false,
-        }
-    }
-}
-
-/// Topology enforcement configuration
-#[derive(Debug, Clone)]
-pub struct TopologyConfig {
-    /// Enforce strict topology - reject undeclared topics at runtime
-    pub strict_topology: bool,
-    /// Wait for all declared connections before first tick
-    pub startup_barrier: bool,
-    /// Startup barrier timeout in milliseconds
-    pub barrier_timeout_ms: u64,
-    /// Deterministic RNG seed for reproducible randomness
-    pub rng_seed: Option<u64>,
-    /// Reject dynamic node addition after startup
-    pub freeze_topology_after_start: bool,
-    /// Validate all topic producers have consumers (and vice versa)
-    pub require_complete_connections: bool,
-    /// Static execution order (computed once at startup, never changes)
-    pub static_execution_order: bool,
-}
-
-impl Default for TopologyConfig {
-    fn default() -> Self {
-        Self {
-            strict_topology: false,
-            startup_barrier: false,
-            barrier_timeout_ms: 5000,
-            rng_seed: None,
-            freeze_topology_after_start: false,
-            require_complete_connections: false,
-            static_execution_order: false,
-        }
-    }
-}
-
-impl TopologyConfig {
-    /// Full determinism - all guarantees enabled
-    pub fn strict() -> Self {
-        Self {
-            strict_topology: true,
-            startup_barrier: true,
-            barrier_timeout_ms: 5000,
-            rng_seed: Some(42),
-            freeze_topology_after_start: true,
-            require_complete_connections: true,
-            static_execution_order: true,
-        }
-    }
-
-    /// Partial determinism - execution order only, no topology validation
-    pub fn execution_only() -> Self {
-        Self {
-            strict_topology: false,
-            startup_barrier: false,
-            barrier_timeout_ms: 5000,
-            rng_seed: Some(42),
-            freeze_topology_after_start: false,
-            require_complete_connections: false,
-            static_execution_order: true,
+            ..Default::default()
         }
     }
 }
 
 /// Scheduler configuration
+///
+/// Use preset factories (`standard()`, `safety_critical()`, etc.) then
+/// mutate fields directly for customization:
+///
+/// ```rust,ignore
+/// let mut config = SchedulerConfig::standard();
+/// config.timing.global_rate_hz = 500.0;
+/// config.realtime.wcet_enforcement = true;
+/// ```
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// Execution mode
@@ -252,25 +179,8 @@ pub struct SchedulerConfig {
     pub resources: ResourceConfig,
     /// Monitoring and telemetry
     pub monitoring: MonitoringConfig,
-    /// Custom configuration for edge cases
-    pub custom: HashMap<String, ConfigValue>,
-    /// Topology enforcement configuration
-    pub topology: Option<TopologyConfig>,
     /// Recording configuration for record/replay system
     pub recording: Option<RecordingConfigYaml>,
-}
-
-/// Flexible value type for custom configurations
-#[derive(Debug, Clone)]
-pub enum ConfigValue {
-    Bool(bool),
-    Integer(i64),
-    Float(f64),
-    String(String),
-    Duration(Duration),
-    List(Vec<ConfigValue>),
-    Map(HashMap<String, ConfigValue>),
-    Binary(Vec<u8>),
 }
 
 impl Default for SchedulerConfig {
@@ -280,21 +190,6 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    /// Create a new config builder with minimal defaults.
-    ///
-    /// This is the recommended entry point for building a custom configuration
-    /// from scratch. All settings start with minimal/safe defaults.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::builder()
-    ///     .rate_hz(1000.0)
-    ///     .build();
-    /// ```
-    pub fn builder() -> Self {
-        Self::minimal()
-    }
-
     /// Minimal configuration - starts with the most basic settings.
     ///
     /// Use this when you want to configure everything explicitly.
@@ -333,25 +228,8 @@ impl SchedulerConfig {
                 black_box_size_mb: 0,
                 telemetry_endpoint: None,
             },
-            custom: HashMap::new(),
-            topology: None,
             recording: None,
         }
-    }
-
-    /// Finalize the configuration (no-op, for builder pattern consistency).
-    ///
-    /// Since SchedulerConfig uses owned self for chaining, this just returns self.
-    /// It exists for users who prefer explicit `.build()` at the end.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::builder()
-    ///     .rate_hz(1000.0)
-    ///     .build();  // Optional, for clarity
-    /// ```
-    pub fn build(self) -> Self {
-        self
     }
 
     /// Standard configuration for most robots
@@ -389,8 +267,6 @@ impl SchedulerConfig {
                 black_box_size_mb: 0,
                 telemetry_endpoint: None,
             },
-            custom: HashMap::new(),
-            topology: None,
             recording: None,
         }
     }
@@ -430,8 +306,6 @@ impl SchedulerConfig {
                 black_box_size_mb: 100,
                 telemetry_endpoint: None,
             },
-            custom: HashMap::new(),
-            topology: Some(TopologyConfig::strict()),
             recording: Some(RecordingConfigYaml::full()),
         }
     }
@@ -471,8 +345,6 @@ impl SchedulerConfig {
                 black_box_size_mb: 1024,
                 telemetry_endpoint: None,
             },
-            custom: HashMap::new(),
-            topology: Some(TopologyConfig::strict()),
             recording: Some(RecordingConfigYaml::full()),
         }
     }
@@ -512,8 +384,6 @@ impl SchedulerConfig {
                 black_box_size_mb: 0,
                 telemetry_endpoint: None,
             },
-            custom: HashMap::new(),
-            topology: None,
             recording: None,
         }
     }
@@ -536,147 +406,7 @@ impl SchedulerConfig {
         config.monitoring.profiling_enabled = false;
         config.monitoring.black_box_enabled = true;
         config.monitoring.black_box_size_mb = 100;
-        config.topology = Some(TopologyConfig::execution_only());
         config.recording = Some(RecordingConfigYaml::minimal());
         config
     }
-
-    // Builder Methods
-
-    /// Set the global tick rate in Hz
-    ///
-    /// # Panics
-    /// Panics if `rate_hz` is not a positive finite number.
-    pub fn with_tick_rate(mut self, rate_hz: f64) -> Self {
-        assert!(
-            rate_hz.is_finite() && rate_hz > 0.0,
-            "global_rate_hz must be a positive finite number, got {}",
-            rate_hz
-        );
-        self.timing.global_rate_hz = rate_hz;
-        self
-    }
-
-    /// Enable or disable the circuit breaker
-    pub fn with_circuit_breaker(mut self, enabled: bool) -> Self {
-        self.fault.circuit_breaker_enabled = enabled;
-        self
-    }
-
-    /// Enable or disable WCET enforcement
-    pub fn with_wcet_enforcement(mut self, enabled: bool) -> Self {
-        self.realtime.wcet_enforcement = enabled;
-        self
-    }
-
-    /// Enable or disable black box recording
-    pub fn with_black_box(mut self, enabled: bool, size_mb: usize) -> Self {
-        self.monitoring.black_box_enabled = enabled;
-        self.monitoring.black_box_size_mb = size_mb;
-        self
-    }
-
-    // ========================================================================
-    // FLAT SETTERS (shorter aliases for common settings)
-    // ========================================================================
-
-    /// Set the global tick rate in Hz (alias for `with_tick_rate`).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::safety_critical()
-    ///     .rate_hz(500.0);  // Override to 500 Hz
-    /// ```
-    pub fn rate_hz(self, hz: f64) -> Self {
-        self.with_tick_rate(hz)
-    }
-
-    /// Enable circuit breaker with default settings (alias for `with_circuit_breaker(true)`).
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::deterministic()
-    ///     .circuit_breaker();  // Enable circuit breaker
-    /// ```
-    pub fn circuit_breaker(self) -> Self {
-        self.with_circuit_breaker(true)
-    }
-
-    /// Set maximum deadline misses before action.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .max_deadline_misses(10);  // Allow 10 misses
-    /// ```
-    pub fn max_deadline_misses(mut self, count: u64) -> Self {
-        self.realtime.max_deadline_misses = count;
-        self
-    }
-
-    /// Enable safety monitor.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .safety_monitor();  // Enable safety monitor
-    /// ```
-    pub fn safety_monitor(mut self) -> Self {
-        self.realtime.safety_monitor = true;
-        self
-    }
-
-    /// Enable deadline monitoring.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .deadline_monitoring();  // Enable deadline monitoring
-    /// ```
-    pub fn deadline_monitoring(mut self) -> Self {
-        self.realtime.deadline_monitoring = true;
-        self
-    }
-
-    /// Enable WCET (Worst-Case Execution Time) enforcement.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .wcet();  // Enable WCET enforcement
-    /// ```
-    pub fn wcet(self) -> Self {
-        self.with_wcet_enforcement(true)
-    }
-
-    /// Pin to specific CPU cores.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .cpu_cores(&[2, 3]);  // Pin to cores 2 and 3
-    /// ```
-    pub fn cpu_cores(mut self, cores: &[usize]) -> Self {
-        self.resources.cpu_cores = Some(cores.to_vec());
-        self
-    }
-
-    /// Set telemetry export endpoint.
-    ///
-    /// Supported endpoints:
-    /// - `"udp://host:port"` - UDP broadcast
-    /// - `"file:///path/to/metrics.json"` - Local JSON file
-    /// - `"http://host:port/metrics"` - HTTP POST
-    /// - `"stdout"` - Print to stdout (debugging)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let config = SchedulerConfig::standard()
-    ///     .telemetry("udp://localhost:9999");
-    /// ```
-    pub fn telemetry(mut self, endpoint: &str) -> Self {
-        self.monitoring.telemetry_endpoint = Some(endpoint.to_string());
-        self
-    }
 }
-

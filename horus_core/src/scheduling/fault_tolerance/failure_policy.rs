@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// How the scheduler should respond when a node fails.
 ///
-/// Each [`NodeTier`](super::super::intelligence::NodeTier) has a sensible default policy,
+/// Each [`NodeTier`](super::super::types::NodeTier) has a sensible default policy,
 /// but it can be overridden per-node via the builder API:
 ///
 /// ```rust,ignore

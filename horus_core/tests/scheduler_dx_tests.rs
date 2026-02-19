@@ -8,7 +8,7 @@
 //! - `Scheduler::hard_realtime()` - Hard real-time preset
 
 use horus_core::core::Node;
-use horus_core::error::Result;
+use horus_core::error::HorusResult as Result;
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;

@@ -1,23 +1,57 @@
-//! RAII handle for PointCloud tensor data access
+//! User-facing PointCloud type with zero-copy shared memory backing
 //!
-//! `PointCloudHandle` wraps a `PointCloud` descriptor + `Arc<TensorPool>` and
-//! provides ergonomic point access methods.
+//! `PointCloud` is the primary type for 3D point data in HORUS. It wraps a Pod
+//! descriptor + `Arc<TensorPool>` and provides a rich API for point access.
 
 use std::sync::Arc;
 
-use horus_types::{PointCloud, TensorDtype};
+use horus_types::{Device, PointCloudDescriptor, TensorDtype};
 
 use super::tensor_pool::TensorPool;
+use crate::communication::topic::pool_registry::global_pool;
+use crate::error::HorusResult;
 
-/// RAII handle providing data access for a `PointCloud` descriptor.
-pub struct PointCloudHandle {
-    descriptor: PointCloud,
+/// Point cloud with zero-copy shared memory backing.
+///
+/// Create with `PointCloud::new()`, access points with `data()` / `data_mut()`,
+/// and send through topics with `topic.send(&pc)`.
+pub struct PointCloud {
+    descriptor: PointCloudDescriptor,
     pool: Arc<TensorPool>,
 }
 
-impl PointCloudHandle {
-    /// Create a handle from a descriptor that already has a refcount of 1.
-    pub(crate) fn from_owned(descriptor: PointCloud, pool: Arc<TensorPool>) -> Self {
+impl PointCloud {
+    /// Create a new point cloud with the given number of points and fields.
+    ///
+    /// - `num_points`: number of 3D points
+    /// - `fields_per_point`: floats per point (3=XYZ, 4=XYZI, 6=XYZRGB)
+    /// - `dtype`: data type (typically `TensorDtype::F32`)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let pc = PointCloud::new(10000, 3, TensorDtype::F32)?;
+    /// assert_eq!(pc.point_count(), 10000);
+    /// assert!(pc.is_xyz());
+    /// ```
+    pub fn new(num_points: u32, fields_per_point: u32, dtype: TensorDtype) -> HorusResult<Self> {
+        let pool = global_pool();
+        let shape = [num_points as u64, fields_per_point as u64];
+        let tensor = pool.alloc(&shape, dtype, Device::cpu())?;
+
+        let descriptor = if fields_per_point == 3 {
+            PointCloudDescriptor::xyz(tensor)
+        } else if fields_per_point == 4 {
+            PointCloudDescriptor::xyzi(tensor)
+        } else {
+            PointCloudDescriptor::from_tensor(tensor)
+        };
+
+        Ok(Self { descriptor, pool })
+    }
+
+    /// Create a PointCloud from a descriptor and pool (internal).
+    pub(crate) fn from_owned(descriptor: PointCloudDescriptor, pool: Arc<TensorPool>) -> Self {
         Self { descriptor, pool }
     }
 
@@ -34,6 +68,24 @@ impl PointCloudHandle {
     #[allow(clippy::mut_from_ref)]
     pub fn data_mut(&self) -> &mut [u8] {
         self.pool.data_slice_mut(self.descriptor.tensor())
+    }
+
+    /// Copy point data from a buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `src` length doesn't match `nbytes()`.
+    pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
+        let data = self.data_mut();
+        assert_eq!(
+            src.len(),
+            data.len(),
+            "source buffer size ({}) doesn't match point cloud size ({})",
+            src.len(),
+            data.len()
+        );
+        data.copy_from_slice(src);
+        self
     }
 
     /// Get point data as typed slice (e.g., `&[f32]` for F32 clouds).
@@ -62,8 +114,6 @@ impl PointCloudHandle {
     }
 
     /// Get the i-th point as a byte slice.
-    ///
-    /// For an F32 XYZ cloud, each point is `fields_per_point * 4` bytes.
     pub fn point_at(&self, idx: u64) -> Option<&[u8]> {
         if idx >= self.point_count() {
             return None;
@@ -90,7 +140,6 @@ impl PointCloudHandle {
 
         let fpp = self.fields_per_point() as usize;
         let count = self.point_count() as usize;
-        // SAFETY: We've verified dtype is F32 above
         let floats = unsafe { self.data_as::<f32>() };
 
         let mut points = Vec::with_capacity(count);
@@ -101,6 +150,18 @@ impl PointCloudHandle {
             }
         }
         Some(points)
+    }
+
+    /// Set the frame ID.
+    pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
+        self.descriptor.set_frame_id(id);
+        self
+    }
+
+    /// Set the timestamp in nanoseconds.
+    pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
+        self.descriptor.set_timestamp_ns(ts);
+        self
     }
 
     // === Metadata accessors ===
@@ -171,32 +232,32 @@ impl PointCloudHandle {
         self.descriptor.frame_id()
     }
 
-    /// Get the underlying descriptor.
+    // === Internal accessors ===
+
     #[inline]
-    pub fn descriptor(&self) -> &PointCloud {
+    pub(crate) fn descriptor(&self) -> &PointCloudDescriptor {
         &self.descriptor
     }
 
-    /// Get a mutable reference to the descriptor.
     #[inline]
-    pub fn descriptor_mut(&mut self) -> &mut PointCloud {
+    #[allow(dead_code)]
+    pub(crate) fn descriptor_mut(&mut self) -> &mut PointCloudDescriptor {
         &mut self.descriptor
     }
 
-    /// Get the pool.
     #[inline]
-    pub fn pool(&self) -> &Arc<TensorPool> {
+    pub(crate) fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 
-    /// Current reference count.
     #[inline]
-    pub fn refcount(&self) -> u32 {
+    #[allow(dead_code)]
+    pub(crate) fn refcount(&self) -> u32 {
         self.pool.refcount(self.descriptor.tensor())
     }
 }
 
-impl Clone for PointCloudHandle {
+impl Clone for PointCloud {
     fn clone(&self) -> Self {
         self.pool.retain(self.descriptor.tensor());
         Self {
@@ -206,22 +267,21 @@ impl Clone for PointCloudHandle {
     }
 }
 
-impl Drop for PointCloudHandle {
+impl Drop for PointCloud {
     fn drop(&mut self) {
         self.pool.release(self.descriptor.tensor());
     }
 }
 
-impl std::fmt::Debug for PointCloudHandle {
+impl std::fmt::Debug for PointCloud {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PointCloudHandle")
+        f.debug_struct("PointCloud")
             .field("point_count", &self.point_count())
             .field("fields_per_point", &self.fields_per_point())
             .field("dtype", &self.dtype())
-            .field("refcount", &self.refcount())
             .finish()
     }
 }
 
-unsafe impl Send for PointCloudHandle {}
-unsafe impl Sync for PointCloudHandle {}
+unsafe impl Send for PointCloud {}
+unsafe impl Sync for PointCloud {}

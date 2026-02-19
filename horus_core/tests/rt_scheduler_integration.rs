@@ -1,6 +1,6 @@
 // Integration test for real-time scheduler features
 use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtNode, RtPriority};
-use horus_core::error::Result;
+use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU64, Ordering};

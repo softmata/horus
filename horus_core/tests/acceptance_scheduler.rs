@@ -4,7 +4,8 @@
 //! so we test Node behavior directly
 
 use horus_core::core::Node;
-use horus_core::error::{HorusError, Result};
+use horus_core::error::HorusError;
+use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};

@@ -58,6 +58,17 @@ pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
     pool
 }
 
+/// Default pool name for standalone type creation (Image::new, PointCloud::new, etc.).
+const GLOBAL_POOL_NAME: &str = "__horus_global__";
+
+/// Get the global pool for standalone type creation.
+///
+/// Used by `Image::new()`, `PointCloud::new()`, `DepthImage::new()` when
+/// creating types outside of a Topic context.
+pub(crate) fn global_pool() -> Arc<TensorPool> {
+    get_or_create_pool(GLOBAL_POOL_NAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

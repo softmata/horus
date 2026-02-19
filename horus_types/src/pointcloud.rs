@@ -4,7 +4,7 @@
 //! through `Topic<PointCloud>` via the ~50ns Pod path. Actual point data
 //! lives in a `TensorPool`.
 //!
-//! For data access (point_at, extract_xyz), use `PointCloudHandle` in `horus_core`.
+//! For data access (point_at, extract_xyz), use `PointCloud` from `horus_core`.
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ use crate::TensorDtype;
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct PointCloud {
+pub struct PointCloudDescriptor {
     /// Inner tensor: shape [N, K], data in pool
     inner: HorusTensor,
     /// Timestamp in nanoseconds since epoch
@@ -59,10 +59,10 @@ pub struct PointCloud {
 
 // Safety: PointCloud is repr(C), all fields are Pod, no implicit padding.
 // 232 + 8 + 32 + 16 + 8 + 1 + 1 + 2 + 32 + 4 = 336, 336 % 8 = 0.
-unsafe impl Zeroable for PointCloud {}
-unsafe impl Pod for PointCloud {}
+unsafe impl Zeroable for PointCloudDescriptor {}
+unsafe impl Pod for PointCloudDescriptor {}
 
-impl Default for PointCloud {
+impl Default for PointCloudDescriptor {
     fn default() -> Self {
         Self {
             inner: HorusTensor::default(),
@@ -79,7 +79,7 @@ impl Default for PointCloud {
     }
 }
 
-impl PointCloud {
+impl PointCloudDescriptor {
     /// Create an XYZ point cloud descriptor.
     ///
     /// Tensor shape should be `[N, 3]` with dtype F32.
@@ -243,25 +243,25 @@ mod tests {
     #[test]
     fn test_pointcloud_size() {
         assert_eq!(
-            std::mem::size_of::<PointCloud>(),
+            std::mem::size_of::<PointCloudDescriptor>(),
             336,
-            "PointCloud must be exactly 336 bytes"
+            "PointCloudDescriptor must be exactly 336 bytes"
         );
     }
 
     #[test]
     fn test_pointcloud_pod() {
-        let pc = PointCloud::default();
+        let pc = PointCloudDescriptor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&pc);
         assert_eq!(bytes.len(), 336);
-        let _recovered: &PointCloud = bytemuck::from_bytes(bytes);
+        let _recovered: &PointCloudDescriptor = bytemuck::from_bytes(bytes);
     }
 
     #[test]
     fn test_pointcloud_xyz() {
         let tensor =
             HorusTensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
-        let pc = PointCloud::xyz(tensor);
+        let pc = PointCloudDescriptor::xyz(tensor);
         assert_eq!(pc.point_count(), 10000);
         assert_eq!(pc.fields_per_point(), 3);
         assert!(pc.is_xyz());
@@ -273,7 +273,7 @@ mod tests {
     fn test_pointcloud_xyzi() {
         let tensor =
             HorusTensor::new(1, 0, 0, 0, &[5000, 4], TensorDtype::F32, Device::cpu());
-        let pc = PointCloud::xyzi(tensor);
+        let pc = PointCloudDescriptor::xyzi(tensor);
         assert_eq!(pc.point_count(), 5000);
         assert!(pc.has_intensity());
         assert_eq!(pc.field_count(), 4);
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_frame_id() {
-        let mut pc = PointCloud::default();
+        let mut pc = PointCloudDescriptor::default();
         pc.set_frame_id("lidar_front");
         assert_eq!(pc.frame_id(), "lidar_front");
     }

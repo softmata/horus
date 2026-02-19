@@ -24,7 +24,7 @@ struct PyNodeAdapter {
     node_context: Arc<Mutex<CoreNodeInfo>>,
     cached_info: Option<Py<PyNodeInfo>>,
     stop_requested: Arc<AtomicBool>,
-    scheduler_running: Arc<Mutex<bool>>,
+    scheduler_running: Arc<AtomicBool>,
     publishers_list: Vec<TopicMetadata>,
     subscribers_list: Vec<TopicMetadata>,
     priority_val: u32,
@@ -36,7 +36,7 @@ impl CoreNode for PyNodeAdapter {
         self.leaked_name
     }
 
-    fn init(&mut self) -> horus_core::error::Result<()> {
+    fn init(&mut self) -> horus_core::error::HorusResult<()> {
         Python::with_gil(|py| {
             let py_info = Py::new(
                 py,
@@ -115,9 +115,7 @@ impl CoreNode for PyNodeAdapter {
                     if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
                         self.stop_requested.store(true, Ordering::Relaxed);
                         // Also stop the scheduler via the running flag
-                        if let Ok(mut running) = self.scheduler_running.lock() {
-                            *running = false;
-                        }
+                        self.scheduler_running.store(false, Ordering::SeqCst);
                     } else {
                         // Panic for horus_core's catch_unwind / failure policy
                         panic!(
@@ -130,7 +128,7 @@ impl CoreNode for PyNodeAdapter {
         });
     }
 
-    fn shutdown(&mut self) -> horus_core::error::Result<()> {
+    fn shutdown(&mut self) -> horus_core::error::HorusResult<()> {
         Python::with_gil(|py| {
             let py_info = if let Some(ref cached) = self.cached_info {
                 cached.clone_ref(py)
@@ -291,7 +289,7 @@ impl PyNodeBuilder {
 pub struct PyScheduler {
     inner: Mutex<Option<CoreScheduler>>,
     tick_rate_hz: f64,
-    scheduler_running: Arc<Mutex<bool>>,
+    scheduler_running: Arc<AtomicBool>,
     stop_requested: Arc<AtomicBool>,
     removed_nodes: Mutex<HashSet<String>>,
 }
@@ -728,19 +726,13 @@ impl PyScheduler {
     /// Stop the scheduler.
     fn stop(&self) -> PyResult<()> {
         self.stop_requested.store(true, Ordering::Relaxed);
-        if let Ok(mut running) = self.scheduler_running.lock() {
-            *running = false;
-        }
+        self.scheduler_running.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     /// Check if the scheduler is running.
     fn is_running(&self) -> PyResult<bool> {
-        Ok(self
-            .scheduler_running
-            .lock()
-            .map(|r| *r)
-            .unwrap_or(false))
+        Ok(self.scheduler_running.load(Ordering::SeqCst))
     }
 
     /// Set the tick rate in Hz.

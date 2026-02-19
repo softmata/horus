@@ -1,6 +1,7 @@
 use horus::{NodeInfo as CoreNodeInfo, NodeState as CoreNodeState};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Python wrapper for NodeState
@@ -84,7 +85,7 @@ impl From<&CoreNodeState> for PyNodeState {
 #[derive(Clone)]
 pub struct PyNodeInfo {
     pub inner: Arc<Mutex<CoreNodeInfo>>,
-    pub scheduler_running: Option<Arc<Mutex<bool>>>,
+    pub scheduler_running: Option<Arc<AtomicBool>>,
 }
 
 #[pymethods]
@@ -344,15 +345,9 @@ impl PyNodeInfo {
     /// Request the scheduler to stop
     fn request_stop(&self) -> PyResult<()> {
         if let Some(ref running_flag) = self.scheduler_running {
-            let mut running = running_flag.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to lock running flag: {}", e))
-            })?;
-            *running = false;
-            Ok(())
-        } else {
-            // If no scheduler reference, just silently succeed (allows nodes to work without scheduler)
-            Ok(())
+            running_flag.store(false, Ordering::SeqCst);
         }
+        Ok(())
     }
 
     fn __repr__(&self) -> PyResult<String> {

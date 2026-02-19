@@ -125,9 +125,14 @@ pub(crate) mod pool_registry;
 
 // Auto-managed tensor pool extensions
 pub mod tensor_ext;
-pub mod image_ext;
-pub mod pointcloud_ext;
-pub mod depth_ext;
+
+// Domain-specific topic wrappers (new(), send(), recv() only)
+mod image_ext;
+mod pointcloud_ext;
+mod depth_ext;
+pub use image_ext::ImageTopic;
+pub use pointcloud_ext::PointCloudTopic;
+pub use depth_ext::DepthTopic;
 
 #[cfg(test)]
 mod tests;
@@ -139,7 +144,7 @@ use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::communication::pod::{is_pod, PodMessage};
+use crate::communication::pod::is_pod;
 use crate::error::{HorusError, HorusResult};
 use crate::memory::shm_region::ShmRegion;
 use crate::memory::simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
@@ -1299,8 +1304,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// All other backends fall through to the function pointer dispatch, which
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
-    pub fn send(&self, msg: impl Into<T>) {
-        let msg: T = msg.into();
+    pub fn send(&self, msg: T) {
         if unlikely(self.log_fn.is_some()) {
             self.send_with_logging(msg);
             return;
@@ -1621,11 +1625,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         }
     }
 
-    /// Get the backend type name (alias for backend_name, API compatibility)
-    pub fn backend_type(&self) -> &'static str {
-        self.backend_name()
-    }
-
     /// Check if all participants are in the same process (for debugging)
     pub fn is_same_process(&self) -> bool {
         self.header().is_same_process()
@@ -1677,47 +1676,6 @@ impl<T> Drop for Topic<T> {
         // reference the same backend Arc. Entries are cleaned up automatically
         // by store_or_get_backend() when new epochs are created (old epochs
         // are retained for at most 1 generation).
-    }
-}
-
-// Specialized implementation for POD types
-impl<T: PodMessage + Clone + Send + Sync + Serialize + DeserializeOwned + 'static>
-    Topic<T>
-{
-    /// Create a topic for POD types (uses zero-copy path)
-    pub fn new_pod(name: &str) -> HorusResult<Self> {
-        let type_size = mem::size_of::<T>() as u32;
-        let type_align = mem::align_of::<T>() as u32;
-
-        // capacity=1 for new_pod, seq_array = 1 * 8 = 8 bytes
-        let total_size = Self::HEADER_SIZE + mem::size_of::<u64>() + type_size as usize;
-
-        let storage = Arc::new(ShmRegion::new(name, total_size)?);
-
-        // SAFETY: storage is properly sized (>= HEADER_SIZE + type_size) and aligned for TopicHeader
-        let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
-
-        if header.magic != TOPIC_MAGIC {
-            header.init(type_size, type_align, true, 1, type_size);
-        }
-
-        Ok(Self {
-            name: name.to_string(),
-            process_epoch: registry::get_or_create_process_epoch(name),
-            storage,
-            backend: std::cell::UnsafeCell::new(BackendStorage::Uninitialized),
-            send_fn: std::cell::UnsafeCell::new(dispatch::send_uninitialized::<T>),
-            recv_fn: std::cell::UnsafeCell::new(dispatch::recv_uninitialized::<T>),
-            local: std::cell::UnsafeCell::new(LocalState {
-                is_pod: true,
-                slot_size: type_size as usize,
-                ..Default::default()
-            }),
-            metrics: Arc::new(MigrationMetrics::default()),
-            log_fn: None,
-            state: AtomicU8::new(ConnectionState::Connected.into_u8()),
-            _marker: PhantomData,
-        })
     }
 }
 

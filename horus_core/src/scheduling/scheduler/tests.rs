@@ -395,7 +395,7 @@ fn test_scheduler_auto_optimization() {
 
     // Should have safety monitor enabled by default
     // Safety monitor is now disabled by default (prototyping-friendly)
-    assert!(scheduler.safety_monitor.is_none());
+    assert!(scheduler.monitor.safety.is_none());
 }
 
 #[test]

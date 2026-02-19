@@ -3,18 +3,19 @@
 //! Provides methods to record node execution for crash investigation and
 //! replay recordings for debugging, time travel, and what-if testing.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::HorusResult;
 use crate::horus_internal;
 use crate::terminal::print_line;
 
-use super::super::intelligence::NodeTier;
+use super::super::types::NodeTier;
 use super::super::record_replay::{
     NodeReplayer, RecordingConfig, RecordingManager, ReplayMode, ReplayNode, SchedulerRecording,
 };
 use super::super::types::RegisteredNode;
-use super::Scheduler;
+use super::{RecordingState, ReplayState, Scheduler};
 
 impl Scheduler {
     /// Enable recording for this scheduler session (builder pattern).
@@ -32,8 +33,10 @@ impl Scheduler {
         let config = RecordingConfig::with_name(session_name);
         let scheduler_id = generate_scheduler_id();
 
-        self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, session_name));
-        self.recording_config = Some(config);
+        self.recording = Some(RecordingState {
+            scheduler_recording: SchedulerRecording::new(&scheduler_id, session_name),
+            config,
+        });
 
         print_line(&format!(
             "[RECORDING] Enabled for session '{}' (scheduler@{})",
@@ -62,8 +65,10 @@ impl Scheduler {
         let scheduler_id = generate_scheduler_id();
         let session_name = config.session_name.clone();
 
-        self.scheduler_recording = Some(SchedulerRecording::new(&scheduler_id, &session_name));
-        self.recording_config = Some(config);
+        self.recording = Some(RecordingState {
+            scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
+            config,
+        });
 
         print_line(&format!(
             "[RECORDING] Enabled with custom config for session '{}'",
@@ -104,7 +109,20 @@ impl Scheduler {
         ));
 
         let replay_node = ReplayNode::new(node_name.clone(), node_id.clone());
-        self.replay_nodes.insert(node_name.clone(), replayer);
+
+        // Initialize replay state if not already present
+        if self.replay.is_none() {
+            self.replay = Some(ReplayState {
+                mode: ReplayMode::Mixed {
+                    replay_nodes: HashMap::new(),
+                },
+                nodes: HashMap::new(),
+                overrides: HashMap::new(),
+                stop_tick: None,
+                speed: 1.0,
+            });
+        }
+        self.replay.as_mut().unwrap().nodes.insert(node_name.clone(), replayer);
 
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
@@ -151,8 +169,14 @@ impl Scheduler {
         let mut scheduler =
             Self::new().with_name(&format!("Replay({})", scheduler_recording.session_name));
 
-        scheduler.replay_mode = Some(ReplayMode::Full {
-            scheduler_path: scheduler_path.clone(),
+        scheduler.replay = Some(ReplayState {
+            mode: ReplayMode::Full {
+                scheduler_path: scheduler_path.clone(),
+            },
+            nodes: HashMap::new(),
+            overrides: HashMap::new(),
+            stop_tick: None,
+            speed: 1.0,
         });
 
         print_line(&format!(
@@ -179,8 +203,10 @@ impl Scheduler {
     /// Set replay to start at a specific tick (time travel).
     pub fn start_at_tick(mut self, tick: u64) -> Self {
         self.current_tick = tick;
-        for replayer in self.replay_nodes.values_mut() {
-            replayer.seek(tick);
+        if let Some(ref mut replay) = self.replay {
+            for replayer in replay.nodes.values_mut() {
+                replayer.seek(tick);
+            }
         }
         print_line(&format!("[REPLAY] Starting at tick {}", tick));
         self
@@ -188,10 +214,13 @@ impl Scheduler {
 
     /// Set an override value for what-if testing during replay.
     pub fn with_override(mut self, node_name: &str, output_name: &str, value: Vec<u8>) -> Self {
-        self.replay_overrides
-            .entry(node_name.to_string())
-            .or_default()
-            .insert(output_name.to_string(), value);
+        if let Some(ref mut replay) = self.replay {
+            replay
+                .overrides
+                .entry(node_name.to_string())
+                .or_default()
+                .insert(output_name.to_string(), value);
+        }
         print_line(&format!(
             "[REPLAY] Override set: {}.{}",
             node_name, output_name
@@ -201,25 +230,29 @@ impl Scheduler {
 
     /// Set replay to stop at a specific tick.
     pub fn stop_at_tick(mut self, tick: u64) -> Self {
-        self.replay_stop_tick = Some(tick);
+        if let Some(ref mut replay) = self.replay {
+            replay.stop_tick = Some(tick);
+        }
         print_line(&format!("[REPLAY] Will stop at tick {}", tick));
         self
     }
 
     /// Set replay speed multiplier.
     pub fn with_replay_speed(mut self, speed: f64) -> Self {
-        self.replay_speed = speed.clamp(0.01, 100.0);
+        if let Some(ref mut replay) = self.replay {
+            replay.speed = speed.clamp(0.01, 100.0);
+        }
         self
     }
 
     /// Check if recording is enabled.
     pub fn is_recording(&self) -> bool {
-        self.recording_config.is_some()
+        self.recording.is_some()
     }
 
     /// Check if in replay mode.
     pub fn is_replaying(&self) -> bool {
-        self.replay_mode.is_some()
+        self.replay.is_some()
     }
 
     /// Get the current tick number.
@@ -233,7 +266,7 @@ impl Scheduler {
     pub fn stop_recording(&mut self) -> HorusResult<Vec<PathBuf>> {
         let mut saved_paths = Vec::new();
 
-        if let Some(ref config) = self.recording_config {
+        if let Some(ref mut rec_state) = self.recording {
             for registered in self.nodes.iter_mut() {
                 if let Some(ref mut recorder) = registered.recorder {
                     match recorder.finish() {
@@ -252,19 +285,22 @@ impl Scheduler {
                 }
             }
 
-            if let Some(ref mut scheduler_rec) = self.scheduler_recording {
-                scheduler_rec.finish();
-                let path = config.scheduler_path(&scheduler_rec.scheduler_id);
-                if let Err(e) = scheduler_rec.save(&path) {
-                    print_line(&format!("Failed to save scheduler recording: {}", e));
-                } else {
-                    print_line(&format!("[RECORDING] Saved scheduler: {}", path.display()));
-                    saved_paths.push(path);
-                }
+            rec_state.scheduler_recording.finish();
+            let path = rec_state
+                .config
+                .scheduler_path(&rec_state.scheduler_recording.scheduler_id);
+            if let Err(e) = rec_state.scheduler_recording.save(&path) {
+                print_line(&format!("Failed to save scheduler recording: {}", e));
+            } else {
+                print_line(&format!(
+                    "[RECORDING] Saved scheduler: {}",
+                    path.display()
+                ));
+                saved_paths.push(path);
             }
         }
 
-        self.recording_config = None;
+        self.recording = None;
         Ok(saved_paths)
     }
 

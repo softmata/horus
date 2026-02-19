@@ -48,7 +48,6 @@
 
 pub mod actions;
 pub mod communication;
-pub mod config;
 pub mod core;
 pub mod driver;
 pub mod error;
@@ -71,15 +70,11 @@ pub use core::{
     DISCOVERY_TOPIC,
 };
 pub use error::{HorusError, HorusResult};
-// Clean aliases for user-facing API
-pub use error::{Error, Result};
 pub use params::RuntimeParams;
 pub use scheduling::Scheduler;
 
-// Re-export driver utilities and traits
-pub use driver::{
-    Actuator, Driver, DriverCategory, DriverStatus, DriversConfig, Sensor, SingleDriverConfig,
-};
+// Re-export driver utilities
+pub use driver::{DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig};
 
 // Re-export action types for easy access
 pub use actions::{

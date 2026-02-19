@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod recording;
@@ -19,7 +19,7 @@ use super::record_replay::{
     NodeRecorder, NodeReplayer, RecordingConfig, ReplayMode, SchedulerRecording,
 };
 
-use super::intelligence::NodeTier;
+use super::types::NodeTier;
 
 // Import types from types module
 use super::types::{RegisteredNode, SchedulerNodeMetrics};
@@ -38,13 +38,12 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
 }
 
 use super::config::ExecutionMode;
-use super::executors::ParallelExecutor;
 use super::fault_tolerance::{FailureAction, FailurePolicy};
-use super::intelligence::RuntimeProfiler;
+use super::profiler::RuntimeProfiler;
 use super::safety_monitor::SafetyMonitor;
 
 // Auto-optimization capabilities
-use super::capabilities::RuntimeCapabilities;
+use super::rt::RuntimeCapabilities;
 
 // Deterministic execution (for simulation mode)
 use super::deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace};
@@ -108,35 +107,65 @@ pub enum DegradationSeverity {
     Low,
 }
 
+// =========================================================================
+// Sub-structs for Scheduler decomposition
+// =========================================================================
+
+/// Runtime capability detection and degradation tracking.
+pub(crate) struct RtState {
+    pub capabilities: Option<RuntimeCapabilities>,
+    pub degradations: Vec<RtDegradation>,
+}
+
+/// Monitoring features: safety, blackbox flight recorder, telemetry.
+pub(crate) struct MonitorState {
+    pub safety: Option<SafetyMonitor>,
+    pub blackbox: Option<super::blackbox::BlackBox>,
+    pub telemetry: Option<super::telemetry::TelemetryManager>,
+    pub last_snapshot: Instant,
+    pub working_dir: PathBuf,
+}
+
+/// Replay state — only present when replaying a recording.
+pub(crate) struct ReplayState {
+    pub mode: ReplayMode,
+    pub nodes: HashMap<String, NodeReplayer>,
+    pub overrides: HashMap<String, HashMap<String, Vec<u8>>>,
+    pub stop_tick: Option<u64>,
+    pub speed: f64,
+}
+
+/// Recording state — only present when recording a session.
+pub(crate) struct RecordingState {
+    pub config: RecordingConfig,
+    pub scheduler_recording: SchedulerRecording,
+}
+
+/// Deterministic execution state — only present in simulation mode.
+pub(crate) struct DeterministicState {
+    pub clock: Arc<DeterministicClock>,
+    pub trace: Option<Arc<ParkingMutex<ExecutionTrace>>>,
+    pub config: DeterministicConfig,
+}
+
 /// Central orchestrator: holds nodes, drives the tick loop.
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
-    pub(super) running: Arc<Mutex<bool>>,
-    pub(super) last_instant: Instant,
-    pub(super) last_snapshot: Instant,
-    pub(super) scheduler_name: String,
-    pub(super) working_dir: PathBuf,
-    pub(super) profiler: RuntimeProfiler,
-    pub(super) parallel_executor: ParallelExecutor,
-    pub(super) execution_mode: ExecutionMode,
-    pub(super) config: Option<super::config::SchedulerConfig>,
-    pub(super) safety_monitor: Option<SafetyMonitor>,
+    pub(super) running: Arc<AtomicBool>,
     pub(super) tick_period: Duration,
-    pub(super) blackbox: Option<super::blackbox::BlackBox>,
-    pub(super) recording_config: Option<RecordingConfig>,
-    pub(super) scheduler_recording: Option<SchedulerRecording>,
-    pub(super) replay_mode: Option<ReplayMode>,
-    pub(super) replay_nodes: HashMap<String, NodeReplayer>,
-    pub(super) replay_overrides: HashMap<String, HashMap<String, Vec<u8>>>,
     pub(super) current_tick: u64,
-    pub(super) replay_stop_tick: Option<u64>,
-    pub(super) replay_speed: f64,
-    pub(super) runtime_capabilities: Option<RuntimeCapabilities>,
-    pub(super) rt_degradations: Vec<RtDegradation>,
-    pub(super) deterministic_clock: Option<Arc<DeterministicClock>>,
-    pub(super) execution_trace: Option<Arc<ParkingMutex<ExecutionTrace>>>,
-    pub(super) deterministic_config: Option<DeterministicConfig>,
-    pub(super) telemetry: Option<super::telemetry::TelemetryManager>,
+    pub(super) execution_mode: ExecutionMode,
+    pub(super) scheduler_name: String,
+    pub(super) last_instant: Instant,
+    pub(super) config: Option<super::config::SchedulerConfig>,
+
+    // Grouped sub-structs
+    pub(super) rt: RtState,
+    pub(super) profiler: RuntimeProfiler,
+    pub(super) monitor: MonitorState,
+    pub(super) replay: Option<ReplayState>,
+    pub(super) recording: Option<RecordingState>,
+    pub(super) deterministic: Option<DeterministicState>,
 }
 
 impl Default for Scheduler {
@@ -174,7 +203,7 @@ impl Scheduler {
     /// - `Scheduler::high_performance()` — Speed: parallel + 10kHz
     /// - `Scheduler::hard_realtime()` — Hard RT: strict deadlines + watchdog
     pub fn new() -> Self {
-        let running = Arc::new(Mutex::new(true));
+        let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
 
         // Detect runtime capabilities (~30-100μs one-time cost)
@@ -183,49 +212,28 @@ impl Scheduler {
         Self {
             nodes: Vec::new(),
             running,
-            last_instant: now,
-            last_snapshot: now,
-            scheduler_name: "Scheduler".to_string(),
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-
-            // Profiling for metrics
-            profiler: RuntimeProfiler::new_default(),
-            parallel_executor: ParallelExecutor::new(),
-
-            // Execution mode
+            tick_period: Duration::from_micros(16667), // ~60Hz default
+            current_tick: 0,
             execution_mode: ExecutionMode::Sequential,
-
-            // Configuration
+            scheduler_name: "Scheduler".to_string(),
+            last_instant: now,
             config: None,
 
-            // Safety monitor (disabled by default)
-            safety_monitor: None,
-
-            // Runtime features — lightweight defaults, no allocations
-            tick_period: Duration::from_micros(16667), // ~60Hz default
-            blackbox: None, // Opt-in via .with_blackbox(size_mb)
-
-            // Record/Replay system (disabled by default)
-            recording_config: None,
-            scheduler_recording: None,
-            replay_mode: None,
-            replay_nodes: HashMap::new(),
-            replay_overrides: HashMap::new(),
-            current_tick: 0,
-            replay_stop_tick: None,
-            replay_speed: 1.0,
-
-            // Capability detection stored for builder methods and status()
-            runtime_capabilities: Some(caps),
-            rt_degradations: Vec::new(),
-
-            // Deterministic execution (disabled)
-            deterministic_clock: None,
-            execution_trace: None,
-            deterministic_config: None,
-
-            // Telemetry (configured via with_config())
-            telemetry: None,
+            rt: RtState {
+                capabilities: Some(caps),
+                degradations: Vec::new(),
+            },
+            profiler: RuntimeProfiler::new_default(),
+            monitor: MonitorState {
+                safety: None,
+                blackbox: None,
+                telemetry: None,
+                last_snapshot: now,
+                working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            },
+            replay: None,
+            recording: None,
+            deterministic: None,
         }
     }
 
@@ -255,7 +263,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn realtime(mut self) -> Self {
-        let caps = match &self.runtime_capabilities {
+        let caps = match &self.rt.capabilities {
             Some(c) => c.clone(),
             None => return self,
         };
@@ -272,7 +280,7 @@ impl Scheduler {
                     );
                 }
                 Err(e) => {
-                    self.rt_degradations.push(RtDegradation {
+                    self.rt.degradations.push(RtDegradation {
                         feature: RtFeature::RtPriority,
                         reason: e.to_string(),
                         severity: DegradationSeverity::High,
@@ -280,7 +288,7 @@ impl Scheduler {
                 }
             }
         } else {
-            self.rt_degradations.push(RtDegradation {
+            self.rt.degradations.push(RtDegradation {
                 feature: RtFeature::RtPriority,
                 reason: format!(
                     "RT scheduling not available (max_priority={}, preempt_rt={})",
@@ -293,14 +301,14 @@ impl Scheduler {
         // 2. Memory locking
         if caps.can_lock_memory() {
             if let Err(e) = self.apply_memory_lock_internal() {
-                self.rt_degradations.push(RtDegradation {
+                self.rt.degradations.push(RtDegradation {
                     feature: RtFeature::MemoryLocking,
                     reason: e.to_string(),
                     severity: DegradationSeverity::Medium,
                 });
             }
         } else {
-            self.rt_degradations.push(RtDegradation {
+            self.rt.degradations.push(RtDegradation {
                 feature: RtFeature::MemoryLocking,
                 reason: format!(
                     "Memory locking not permitted (mlockall_permitted={}, limit={} bytes)",
@@ -321,7 +329,7 @@ impl Scheduler {
 
             if let Some(cpu) = best_cpu {
                 if let Err(e) = self.apply_cpu_affinity_internal(cpu) {
-                    self.rt_degradations.push(RtDegradation {
+                    self.rt.degradations.push(RtDegradation {
                         feature: RtFeature::CpuAffinity,
                         reason: e.to_string(),
                         severity: DegradationSeverity::Low,
@@ -331,7 +339,7 @@ impl Scheduler {
         }
 
         // Print degradation warnings
-        for deg in &self.rt_degradations {
+        for deg in &self.rt.degradations {
             let msg = format!("[WARN] {}: {}", deg.feature, deg.reason);
             match deg.severity {
                 DegradationSeverity::High => print_line(&msg.red().to_string()),
@@ -357,7 +365,7 @@ impl Scheduler {
     ///     .with_blackbox(16); // 16MB flight recorder
     /// ```
     pub fn with_blackbox(mut self, size_mb: usize) -> Self {
-        self.blackbox = Some(super::blackbox::BlackBox::new(size_mb));
+        self.monitor.blackbox = Some(super::blackbox::BlackBox::new(size_mb));
         self
     }
 
@@ -616,7 +624,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn capabilities(&self) -> Option<&RuntimeCapabilities> {
-        self.runtime_capabilities.as_ref()
+        self.rt.capabilities.as_ref()
     }
 
     /// Get the list of RT features that degraded during auto-optimization.
@@ -637,13 +645,13 @@ impl Scheduler {
     /// }
     /// ```
     pub fn degradations(&self) -> &[RtDegradation] {
-        &self.rt_degradations
+        &self.rt.degradations
     }
 
     /// Check if the scheduler has full RT capabilities (no high-severity degradations).
     pub fn has_full_rt(&self) -> bool {
         !self
-            .rt_degradations
+            .rt.degradations
             .iter()
             .any(|d| d.severity == DegradationSeverity::High)
     }
@@ -672,7 +680,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn blackbox(&self) -> Option<&super::blackbox::BlackBox> {
-        self.blackbox.as_ref()
+        self.monitor.blackbox.as_ref()
     }
 
     /// Get a mutable reference to the BlackBox flight recorder.
@@ -695,7 +703,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn blackbox_mut(&mut self) -> Option<&mut super::blackbox::BlackBox> {
-        self.blackbox.as_mut()
+        self.monitor.blackbox.as_mut()
     }
 
     /// Get the circuit breaker state for a specific node.
@@ -817,7 +825,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn safety_stats(&self) -> Option<super::safety_monitor::SafetyStats> {
-        self.safety_monitor.as_ref().map(|m| m.get_stats())
+        self.monitor.safety.as_ref().map(|m| m.get_stats())
     }
 
     /// Get the scheduler name.
@@ -882,7 +890,7 @@ impl Scheduler {
         lines.push(sep.to_string());
 
         // Platform info
-        if let Some(caps) = &self.runtime_capabilities {
+        if let Some(caps) = &self.rt.capabilities {
             lines.push(format!(
                 "Platform: {} ({} CPUs, {} NUMA nodes)",
                 caps.kernel_version, caps.cpu_count, caps.numa_node_count
@@ -944,7 +952,7 @@ impl Scheduler {
         lines.push("Safety Features:".to_string());
         lines.push(format!(
             "  [{}] Safety Monitor",
-            if self.safety_monitor.is_some() {
+            if self.monitor.safety.is_some() {
                 "x"
             } else {
                 " "
@@ -952,20 +960,20 @@ impl Scheduler {
         ));
         lines.push(format!(
             "  [{}] BlackBox Recorder",
-            if self.blackbox.is_some() { "x" } else { " " }
+            if self.monitor.blackbox.is_some() { "x" } else { " " }
         ));
         // Tier-aware failure policies
         lines.push("  [x] Failure Policies (tier-aware)".to_string());
         // WCET enforcement is enabled when SafetyMonitor is present
         let has_wcet =
-            self.safety_monitor.is_some() && self.nodes.iter().any(|n| n.wcet_budget.is_some());
+            self.monitor.safety.is_some() && self.nodes.iter().any(|n| n.wcet_budget.is_some());
         lines.push(format!(
             "  [{}] WCET Enforcement (RT nodes)",
             if has_wcet { "x" } else { " " }
         ));
 
         // WCET Stats (if safety monitor enabled and has data)
-        if let Some(ref monitor) = self.safety_monitor {
+        if let Some(ref monitor) = self.monitor.safety {
             let stats = monitor.get_stats();
             if stats.wcet_overruns > 0 || stats.deadline_misses > 0 {
                 lines.push(thin_sep.to_string());
@@ -1036,10 +1044,10 @@ impl Scheduler {
         }
 
         // Degradations (if any)
-        if !self.rt_degradations.is_empty() {
+        if !self.rt.degradations.is_empty() {
             lines.push(thin_sep.to_string());
             lines.push("Degradations:".to_string());
-            for deg in &self.rt_degradations {
+            for deg in &self.rt.degradations {
                 let severity_tag = match deg.severity {
                     DegradationSeverity::High => "[HIGH]",
                     DegradationSeverity::Medium => "[MED] ",
@@ -1068,7 +1076,7 @@ impl Scheduler {
     /// `Scheduler::simulation_with_seed()`, which enables virtual time, seeded RNG,
     /// and execution tracing.
     pub fn is_simulation_mode(&self) -> bool {
-        self.deterministic_clock.is_some()
+        self.deterministic.is_some()
     }
 
     /// Get the deterministic clock (simulation mode only).
@@ -1090,7 +1098,7 @@ impl Scheduler {
     /// }
     /// ```
     pub fn deterministic_clock(&self) -> Option<Arc<DeterministicClock>> {
-        self.deterministic_clock.clone()
+        self.deterministic.as_ref().map(|d| d.clock.clone())
     }
 
     /// Get the execution trace (simulation mode only).
@@ -1113,35 +1121,35 @@ impl Scheduler {
     /// }
     /// ```
     pub fn execution_trace(&self) -> Option<Arc<ParkingMutex<ExecutionTrace>>> {
-        self.execution_trace.clone()
+        self.deterministic.as_ref().and_then(|d| d.trace.clone())
     }
 
     /// Get the deterministic configuration (simulation mode only).
     ///
     /// Contains the seed, tick duration, and tracing settings.
     pub fn deterministic_config(&self) -> Option<&DeterministicConfig> {
-        self.deterministic_config.as_ref()
+        self.deterministic.as_ref().map(|d| &d.config)
     }
 
     /// Get the seed used for deterministic RNG (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
     pub fn seed(&self) -> Option<u64> {
-        self.deterministic_config.as_ref().map(|c| c.seed)
+        self.deterministic.as_ref().map(|d| d.config.seed)
     }
 
     /// Get the current virtual time (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
     pub fn virtual_time(&self) -> Option<Duration> {
-        self.deterministic_clock.as_ref().map(|c| c.now())
+        self.deterministic.as_ref().map(|d| d.clock.now())
     }
 
     /// Get the current virtual tick number (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
     pub fn virtual_tick(&self) -> Option<u64> {
-        self.deterministic_clock.as_ref().map(|c| c.tick())
+        self.deterministic.as_ref().map(|d| d.clock.tick())
     }
 
     /// Apply a configuration preset to this scheduler (builder pattern)
@@ -1166,11 +1174,9 @@ impl Scheduler {
         self.execution_mode = config.execution;
         match config.execution {
             ExecutionMode::Parallel => {
-                self.parallel_executor.set_max_threads(num_cpus::get());
                 print_line("Parallel execution mode selected");
             }
             ExecutionMode::Sequential => {
-                self.parallel_executor.set_max_threads(1);
                 print_line("Sequential execution mode selected");
             }
         }
@@ -1202,7 +1208,7 @@ impl Scheduler {
                 }
             }
 
-            self.safety_monitor = Some(monitor);
+            self.monitor.safety = Some(monitor);
             print_line("Safety monitor configured for RT nodes");
         }
 
@@ -1229,8 +1235,6 @@ impl Scheduler {
 
         // Apply resource configuration
         if let Some(ref cores) = config.resources.cpu_cores {
-            // Set CPU affinity
-            self.parallel_executor.set_cpu_cores(cores.clone());
             print_line(&format!("CPU cores configuration: {:?}", cores));
         }
 
@@ -1262,7 +1266,7 @@ impl Scheduler {
                 node_count: self.nodes.len(),
                 config: format!("rate={}Hz", config.timing.global_rate_hz),
             });
-            self.blackbox = Some(bb);
+            self.monitor.blackbox = Some(bb);
             print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
                 config.monitoring.black_box_size_mb
@@ -1273,14 +1277,14 @@ impl Scheduler {
         #[cfg(target_os = "linux")]
         {
             // Memory locking
-            if config.realtime.memory_locking && super::runtime::lock_all_memory().is_ok() {
+            if config.realtime.memory_locking && super::rt::lock_all_memory().is_ok() {
                 print_line("[SCHEDULER] Memory locked (mlockall)");
             }
 
             // RT scheduling class
             if config.realtime.rt_scheduling_class {
                 let priority = 50; // Default RT priority
-                if super::runtime::set_realtime_priority(priority).is_ok() {
+                if super::rt::set_realtime_priority(priority).is_ok() {
                     print_line(&format!(
                         "[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority {})",
                         priority
@@ -1290,7 +1294,7 @@ impl Scheduler {
 
             // CPU core affinity
             if let Some(ref cores) = config.resources.cpu_cores {
-                if super::runtime::set_thread_affinity(cores).is_ok() {
+                if super::rt::set_thread_affinity(cores).is_ok() {
                     print_line(&format!(
                         "[SCHEDULER] CPU affinity set to cores {:?}",
                         cores
@@ -1300,7 +1304,7 @@ impl Scheduler {
 
             // NUMA awareness
             if config.resources.numa_aware {
-                let numa_nodes = super::runtime::get_numa_node_count();
+                let numa_nodes = super::rt::get_numa_node_count();
                 if numa_nodes > 1 {
                     print_line(&format!(
                         "[SCHEDULER] NUMA-aware scheduling ({} nodes detected)",
@@ -1336,9 +1340,6 @@ impl Scheduler {
                 recording_config.include_nodes = recording_yaml.include_nodes.clone();
                 recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
 
-                // Enable recording
-                self.recording_config = Some(recording_config.clone());
-
                 // Generate unique scheduler ID
                 let scheduler_id = format!(
                     "{:x}{:x}",
@@ -1349,9 +1350,11 @@ impl Scheduler {
                     std::process::id() as u64
                 );
 
-                // Create scheduler-level recording
-                self.scheduler_recording =
-                    Some(SchedulerRecording::new(&scheduler_id, &session_name));
+                // Enable recording
+                self.recording = Some(RecordingState {
+                    config: recording_config,
+                    scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
+                });
 
                 print_line(&format!(
                     "[SCHEDULER] Recording enabled (session: {}, compress: {})",
@@ -1366,7 +1369,7 @@ impl Scheduler {
             let interval_ms = config.monitoring.metrics_interval_ms;
             let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
             tm.set_scheduler_name(&self.scheduler_name);
-            self.telemetry = Some(tm);
+            self.monitor.telemetry = Some(tm);
             print_line(&format!(
                 "[SCHEDULER] Telemetry enabled (endpoint: {})",
                 endpoint_str
@@ -1387,7 +1390,7 @@ impl Scheduler {
 
     /// Enable safety monitor with maximum allowed deadline misses
     pub fn with_safety_monitor(mut self, max_deadline_misses: u64) -> Self {
-        self.safety_monitor = Some(SafetyMonitor::new(max_deadline_misses));
+        self.monitor.safety = Some(SafetyMonitor::new(max_deadline_misses));
         self
     }
 
@@ -1416,7 +1419,7 @@ impl Scheduler {
         node_name: &str,
         watchdog_timeout: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.safety_monitor {
+        if let Some(ref mut monitor) = self.monitor.safety {
             monitor.add_critical_node(node_name.to_string(), watchdog_timeout);
             Ok(self)
         } else {
@@ -1450,7 +1453,7 @@ impl Scheduler {
         node_name: &str,
         budget: std::time::Duration,
     ) -> crate::error::HorusResult<&mut Self> {
-        if let Some(ref mut monitor) = self.safety_monitor {
+        if let Some(ref mut monitor) = self.monitor.safety {
             monitor.set_wcet_budget(node_name.to_string(), budget);
             Ok(self)
         } else {
@@ -1758,7 +1761,7 @@ impl Scheduler {
         let context = NodeInfo::new(node_name.clone());
 
         // Create node recorder if recording is enabled
-        let recorder = if let Some(ref config) = self.recording_config {
+        let recorder = if let Some(ref mut rec_state) = self.recording {
             let node_id = format!(
                 "{:x}{:x}",
                 std::time::SystemTime::now()
@@ -1767,12 +1770,10 @@ impl Scheduler {
                     .unwrap_or(0),
                 self.nodes.len() as u64
             );
-            let recorder = NodeRecorder::new(&node_name, &node_id, config.clone());
+            let recorder = NodeRecorder::new(&node_name, &node_id, rec_state.config.clone());
 
-            if let Some(ref mut scheduler_rec) = self.scheduler_recording {
-                let relative_path = format!("{}@{}.horus", node_name, node_id);
-                scheduler_rec.add_node_recording(&node_id, &relative_path);
-            }
+            let relative_path = format!("{}@{}.horus", node_name, node_id);
+            rec_state.scheduler_recording.add_node_recording(&node_id, &relative_path);
 
             Some(recorder)
         } else {
@@ -1834,25 +1835,19 @@ impl Scheduler {
 
     /// Check if the scheduler is running
     pub fn is_running(&self) -> bool {
-        if let Ok(running) = self.running.lock() {
-            *running
-        } else {
-            false
-        }
+        self.running.load(Ordering::SeqCst)
     }
 
     /// Stop the scheduler
     pub fn stop(&self) {
-        if let Ok(mut running) = self.running.lock() {
-            *running = false;
-        }
+        self.running.store(false, Ordering::SeqCst);
     }
 
     /// Get a clone of the running flag for external stop control.
     ///
     /// This allows external code (e.g., Python bindings) to stop the scheduler
     /// by setting the flag to `false` from outside the run loop.
-    pub fn running_flag(&self) -> Arc<Mutex<bool>> {
+    pub fn running_flag(&self) -> Arc<AtomicBool> {
         self.running.clone()
     }
 
@@ -1939,9 +1934,7 @@ impl Scheduler {
             let running = self.running.clone();
             if let Err(e) = ctrlc::set_handler(move || {
                 print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
-                if let Ok(mut r) = running.lock() {
-                    *r = false;
-                }
+                running.store(false, Ordering::SeqCst);
                 std::thread::spawn(|| {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     print_line("Force terminating - cleaning up session...");
@@ -2050,7 +2043,7 @@ impl Scheduler {
                 }
 
                 // Check if replay stop tick has been reached
-                if let Some(stop_tick) = self.replay_stop_tick {
+                if let Some(stop_tick) = self.replay.as_ref().and_then(|r| r.stop_tick) {
                     if self.current_tick >= stop_tick {
                         print_line(&format!("[REPLAY] Reached stop tick {}", stop_tick));
                         break;
@@ -2106,7 +2099,7 @@ impl Scheduler {
                 self.execute_nodes(node_filter).await;
 
                 // Check watchdogs and handle emergency stop for RT systems
-                if let Some(ref monitor) = self.safety_monitor {
+                if let Some(ref monitor) = self.monitor.safety {
                     // Check all watchdogs
                     let expired_watchdogs = monitor.check_watchdogs();
                     if !expired_watchdogs.is_empty() {
@@ -2120,7 +2113,7 @@ impl Scheduler {
                     if monitor.is_emergency_stop() {
                         print_line(" Emergency stop activated - shutting down scheduler");
                         // Record to blackbox
-                        if let Some(ref mut bb) = self.blackbox {
+                        if let Some(ref mut bb) = self.monitor.blackbox {
                             bb.record(super::blackbox::BlackBoxEvent::EmergencyStop {
                                 reason: "Safety monitor triggered emergency stop".to_string(),
                             });
@@ -2130,9 +2123,9 @@ impl Scheduler {
                 }
 
                 // Periodic registry snapshot (every 5 seconds)
-                if self.last_snapshot.elapsed() >= Duration::from_secs(5) {
+                if self.monitor.last_snapshot.elapsed() >= Duration::from_secs(5) {
                     self.snapshot_state_to_registry();
-                    self.last_snapshot = Instant::now();
+                    self.monitor.last_snapshot = Instant::now();
 
                     // Log failure handler status for nodes with issues
                     let mut has_failure_issues = false;
@@ -2164,7 +2157,7 @@ impl Scheduler {
 
                     // Record degradation to blackbox when nodes are suppressed
                     if suppressed_count > 0 {
-                        if let Some(ref mut bb) = self.blackbox {
+                        if let Some(ref mut bb) = self.monitor.blackbox {
                             bb.record(super::blackbox::BlackBoxEvent::Custom {
                                 category: "safety".to_string(),
                                 message: format!("{} nodes suppressed", suppressed_count),
@@ -2176,12 +2169,12 @@ impl Scheduler {
                 // === Runtime feature integrations ===
 
                 // Black box tick increment
-                if let Some(ref mut bb) = self.blackbox {
+                if let Some(ref mut bb) = self.monitor.blackbox {
                     bb.tick();
                 }
 
                 // Telemetry export (if interval elapsed)
-                if let Some(ref mut tm) = self.telemetry {
+                if let Some(ref mut tm) = self.monitor.telemetry {
                     if tm.should_export() {
                         let total_ticks = self
                             .profiler
@@ -2218,10 +2211,14 @@ impl Scheduler {
 
                 // Use pre-computed tick period (from config or default ~60Hz)
                 // Apply replay speed adjustment if in replay mode
-                let sleep_duration = if self.replay_mode.is_some() && self.replay_speed != 1.0 {
-                    Duration::from_nanos(
-                        (self.tick_period.as_nanos() as f64 / self.replay_speed) as u64,
-                    )
+                let sleep_duration = if let Some(ref replay) = self.replay {
+                    if replay.speed != 1.0 {
+                        Duration::from_nanos(
+                            (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
+                        )
+                    } else {
+                        self.tick_period
+                    }
                 } else {
                     self.tick_period
                 };
@@ -2292,7 +2289,7 @@ impl Scheduler {
                 .unwrap_or(0) as u64;
 
             // Record scheduler stop to blackbox and save
-            if let Some(ref mut bb) = self.blackbox {
+            if let Some(ref mut bb) = self.monitor.blackbox {
                 bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
                     reason: "Normal shutdown".to_string(),
                     total_ticks,
@@ -2303,7 +2300,7 @@ impl Scheduler {
             }
 
             // Final telemetry export
-            if let Some(ref mut tm) = self.telemetry {
+            if let Some(ref mut tm) = self.monitor.telemetry {
                 tm.counter("scheduler_ticks", total_ticks);
                 tm.gauge("scheduler_shutdown", 1.0);
                 let _ = tm.export();
@@ -2440,7 +2437,7 @@ impl Scheduler {
                 "{{\n  \"pid\": {},\n  \"scheduler_name\": \"{}\",\n  \"working_dir\": \"{}\",\n  \"nodes\": [\n{}\n  ]\n}}",
                 pid,
                 self.scheduler_name,
-                self.working_dir.to_string_lossy(),
+                self.monitor.working_dir.to_string_lossy(),
                 nodes_json.join(",\n")
             );
 
@@ -2633,7 +2630,7 @@ impl Scheduler {
                 "{{\n  \"pid\": {},\n  \"scheduler_name\": \"{}\",\n  \"working_dir\": \"{}\",\n  \"last_snapshot\": {},\n  \"nodes\": [\n{}\n  ]\n}}",
                 pid,
                 self.scheduler_name,
-                self.working_dir.to_string_lossy(),
+                self.monitor.working_dir.to_string_lossy(),
                 timestamp,
                 nodes_json.join(",\n")
             );
@@ -2702,7 +2699,7 @@ impl Scheduler {
         if should_run && self.nodes[i].initialized {
             // Feed watchdog for RT nodes
             if self.nodes[i].is_rt_node {
-                if let Some(ref monitor) = self.safety_monitor {
+                if let Some(ref monitor) = self.monitor.safety {
                     monitor.feed_watchdog(node_name);
                 }
             }
@@ -2757,7 +2754,7 @@ impl Scheduler {
 
         // Check WCET budget for RT nodes
         if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-            if let Some(ref monitor) = self.safety_monitor {
+            if let Some(ref monitor) = self.monitor.safety {
                 if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
                     print_line(&format!(
                         " WCET violation in {}: {:?} > {:?}",
@@ -2772,7 +2769,7 @@ impl Scheduler {
             if let Some(deadline) = self.nodes[i].deadline {
                 let elapsed = tick_start.elapsed();
                 if elapsed > deadline {
-                    if let Some(ref monitor) = self.safety_monitor {
+                    if let Some(ref monitor) = self.monitor.safety {
                         monitor.record_deadline_miss(node_name);
                         print_line(&format!(
                             " Deadline miss in {}: {:?} > {:?}",

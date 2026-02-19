@@ -575,7 +575,7 @@ pub trait Node: Send {
     /// Initialize the node (called once at startup).
     ///
     /// Use `hlog!()` for logging instead of the old ctx parameter.
-    fn init(&mut self) -> crate::error::Result<()> {
+    fn init(&mut self) -> crate::error::HorusResult<()> {
         Ok(())
     }
 
@@ -585,7 +585,7 @@ pub trait Node: Send {
     /// Shutdown the node (called once at cleanup).
     ///
     /// Use `hlog!()` for logging instead of the old ctx parameter.
-    fn shutdown(&mut self) -> crate::error::Result<()> {
+    fn shutdown(&mut self) -> crate::error::HorusResult<()> {
         Ok(())
     }
 

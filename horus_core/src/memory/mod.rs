@@ -26,10 +26,10 @@ pub mod simd;
 pub mod tensor_handle;
 pub mod tensor_pool;
 
-// Domain-specific handles (RAII wrappers with rich API)
-pub mod image_handle;
-pub mod pointcloud_handle;
-pub mod depth_handle;
+// Domain-specific types (RAII wrappers with rich API for data access)
+pub mod image;
+pub mod pointcloud;
+pub mod depth_image;
 
 // CUDA IPC support (optional feature)
 #[cfg(feature = "cuda")]
@@ -46,9 +46,9 @@ pub use tensor_pool::{
     MAX_TENSOR_DIMS,
 };
 
-pub use image_handle::ImageHandle;
-pub use pointcloud_handle::PointCloudHandle;
-pub use depth_handle::DepthImageHandle;
+pub use image::Image;
+pub use pointcloud::PointCloud;
+pub use depth_image::DepthImage;
 
 // CUDA exports
 #[cfg(feature = "cuda")]

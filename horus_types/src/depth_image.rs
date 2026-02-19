@@ -4,7 +4,7 @@
 //! through `Topic<DepthImage>` via the ~50ns Pod path. Actual depth data
 //! lives in a `TensorPool`.
 //!
-//! For data access (get_depth, depth_statistics), use `DepthImageHandle`
+//! For data access (get_depth, depth_statistics), use `DepthImage` from `horus_core`.
 //! in `horus_core`.
 
 use bytemuck::{Pod, Zeroable};
@@ -32,7 +32,7 @@ use crate::TensorDtype;
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct DepthImage {
+pub struct DepthImageDescriptor {
     /// Inner tensor: shape [H, W], data in pool
     inner: HorusTensor,
     /// Timestamp in nanoseconds since epoch
@@ -51,10 +51,10 @@ pub struct DepthImage {
 
 // Safety: DepthImage is repr(C), all fields are Pod, no implicit padding.
 // 232 + 8 + 4 + 2 + 2 + 32 + 8 = 288 bytes, 288 % 8 = 0.
-unsafe impl Zeroable for DepthImage {}
-unsafe impl Pod for DepthImage {}
+unsafe impl Zeroable for DepthImageDescriptor {}
+unsafe impl Pod for DepthImageDescriptor {}
 
-impl Default for DepthImage {
+impl Default for DepthImageDescriptor {
     fn default() -> Self {
         Self {
             inner: HorusTensor::default(),
@@ -68,7 +68,7 @@ impl Default for DepthImage {
     }
 }
 
-impl DepthImage {
+impl DepthImageDescriptor {
     /// Create a depth image descriptor from a tensor.
     ///
     /// Tensor shape should be `[H, W]` with dtype F32 (meters) or U16 (mm).
@@ -221,24 +221,24 @@ mod tests {
     #[test]
     fn test_depth_image_size() {
         assert_eq!(
-            std::mem::size_of::<DepthImage>(),
+            std::mem::size_of::<DepthImageDescriptor>(),
             288,
-            "DepthImage must be exactly 288 bytes"
+            "DepthImageDescriptor must be exactly 288 bytes"
         );
     }
 
     #[test]
     fn test_depth_image_pod() {
-        let di = DepthImage::default();
+        let di = DepthImageDescriptor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&di);
         assert_eq!(bytes.len(), 288);
-        let _recovered: &DepthImage = bytemuck::from_bytes(bytes);
+        let _recovered: &DepthImageDescriptor = bytemuck::from_bytes(bytes);
     }
 
     #[test]
     fn test_depth_image_f32() {
         let tensor = HorusTensor::new(1, 0, 0, 0, &[480, 640], TensorDtype::F32, Device::cpu());
-        let di = DepthImage::new(tensor);
+        let di = DepthImageDescriptor::new(tensor);
         assert_eq!(di.height(), 480);
         assert_eq!(di.width(), 640);
         assert!(di.is_meters());
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn test_depth_image_u16() {
         let tensor = HorusTensor::new(1, 0, 0, 0, &[720, 1280], TensorDtype::U16, Device::cpu());
-        let di = DepthImage::new(tensor);
+        let di = DepthImageDescriptor::new(tensor);
         assert_eq!(di.height(), 720);
         assert_eq!(di.width(), 1280);
         assert!(di.is_millimeters());
@@ -258,14 +258,14 @@ mod tests {
     #[test]
     fn test_depth_image_with_range() {
         let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::U16, Device::cpu());
-        let di = DepthImage::new(tensor).with_range(100, 5000);
+        let di = DepthImageDescriptor::new(tensor).with_range(100, 5000);
         assert_eq!(di.min_depth(), 100);
         assert_eq!(di.max_depth(), 5000);
     }
 
     #[test]
     fn test_depth_image_frame_id() {
-        let mut di = DepthImage::default();
+        let mut di = DepthImageDescriptor::default();
         di.set_frame_id("depth_camera");
         assert_eq!(di.frame_id(), "depth_camera");
     }

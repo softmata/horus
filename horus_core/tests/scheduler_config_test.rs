@@ -1,8 +1,8 @@
 // Test comprehensive scheduler configuration
 use horus_core::core::Node;
-use horus_core::error::Result;
+use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
-use horus_core::scheduling::{ConfigValue, ExecutionMode, Scheduler, SchedulerConfig};
+use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
 
 mod common;
 use common::cleanup_stale_shm;
@@ -109,22 +109,11 @@ fn test_space_robot_config() {
 #[test]
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
-    // Create fully custom configuration for an exotic robot type
+    // Create custom configuration by mutating a preset's fields directly
     let mut config = SchedulerConfig::standard();
-    config
-        .custom
-        .insert("bio_neural_network".to_string(), ConfigValue::Bool(true));
-    config.custom.insert(
-        "quantum_processor".to_string(),
-        ConfigValue::String("entangled".to_string()),
-    );
-    config
-        .custom
-        .insert("organic_actuators".to_string(), ConfigValue::Integer(8));
-    config.custom.insert(
-        "photosynthesis_efficiency".to_string(),
-        ConfigValue::Float(0.85),
-    );
+    config.timing.global_rate_hz = 500.0;
+    config.realtime.wcet_enforcement = true;
+    config.realtime.safety_monitor = true;
 
     let mut scheduler = Scheduler::new().with_config(config);
 

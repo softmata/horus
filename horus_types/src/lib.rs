@@ -5,9 +5,9 @@
 //! - [`Device`] - Device location (CPU or CUDA with unlimited GPU index)
 //! - [`HorusTensor`] - Zero-copy tensor descriptor (232 bytes, Pod-safe)
 //! - [`ImageEncoding`] - Pixel format (mono8, rgb8, rgba8, etc.)
-//! - [`Image`] - Pod image descriptor (288 bytes)
-//! - [`PointCloud`] - Pod point cloud descriptor (336 bytes)
-//! - [`DepthImage`] - Pod depth image descriptor (288 bytes)
+//! - [`ImageDescriptor`] - Pod image descriptor (288 bytes)
+//! - [`PointCloudDescriptor`] - Pod point cloud descriptor (336 bytes)
+//! - [`DepthImageDescriptor`] - Pod depth image descriptor (288 bytes)
 //!
 //! All other HORUS crates depend on this crate for these types,
 //! eliminating duplication across horus_core, horus_library, and horus_ai.
@@ -27,6 +27,6 @@ pub use dtype::{dlpack_codes, TensorDtype};
 pub use tensor::{HorusTensor, CUDA_IPC_HANDLE_SIZE, MAX_TENSOR_DIMS};
 
 pub use image_encoding::ImageEncoding;
-pub use image::Image;
-pub use pointcloud::PointCloud;
-pub use depth_image::DepthImage;
+pub use image::ImageDescriptor;
+pub use pointcloud::PointCloudDescriptor;
+pub use depth_image::DepthImageDescriptor;

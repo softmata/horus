@@ -1,5 +1,5 @@
 use horus::scheduling::config::{
-    ExecutionMode, RecordingConfigYaml, SchedulerConfig, TopologyConfig,
+    ExecutionMode, RecordingConfigYaml, SchedulerConfig,
 };
 use pyo3::prelude::*;
 
@@ -366,12 +366,6 @@ impl PySchedulerConfig {
         config.monitoring.black_box_size_mb = self.black_box_size_mb;
         config.monitoring.telemetry_endpoint = self.telemetry_endpoint.clone();
 
-        config.topology = if self.deterministic_enabled {
-            Some(TopologyConfig::strict())
-        } else {
-            None
-        };
-
         config.recording = if self.recording_enabled {
             Some(RecordingConfigYaml::full())
         } else {
@@ -408,7 +402,7 @@ impl PySchedulerConfig {
             black_box_enabled: rust_config.monitoring.black_box_enabled,
             black_box_size_mb: rust_config.monitoring.black_box_size_mb,
             telemetry_endpoint: rust_config.monitoring.telemetry_endpoint,
-            deterministic_enabled: rust_config.topology.is_some(),
+            deterministic_enabled: false,
             recording_enabled: rust_config.recording.is_some(),
             config_name: name.to_string(),
         }

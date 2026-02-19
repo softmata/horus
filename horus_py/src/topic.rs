@@ -794,12 +794,12 @@ impl PyTopic {
     #[getter]
     fn backend_type(&self) -> String {
         match &self.topic_type {
-            TopicType::CmdVel(t) => t.read().unwrap().backend_type().to_string(),
-            TopicType::Pose2D(t) => t.read().unwrap().backend_type().to_string(),
-            TopicType::Imu(t) => t.read().unwrap().backend_type().to_string(),
-            TopicType::Odometry(t) => t.read().unwrap().backend_type().to_string(),
-            TopicType::LaserScan(t) => t.read().unwrap().backend_type().to_string(),
-            TopicType::Generic(t) => t.read().unwrap().backend_type().to_string(),
+            TopicType::CmdVel(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::Pose2D(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::Imu(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::Odometry(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::LaserScan(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::Generic(t) => t.read().unwrap().backend_name().to_string(),
         }
     }
 

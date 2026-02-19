@@ -398,7 +398,7 @@ fn bench_direct_channel(timer: &PrecisionTimer) -> ScenarioResult {
     }
     while topic.recv().is_some() {}
 
-    let backend = topic.backend_type().to_string();
+    let backend = topic.backend_name().to_string();
 
     // Measure send-only latency in batches.
     // Ring capacity is 256 for CmdVel (16 bytes). Use batch of 128 (half capacity).
@@ -469,7 +469,7 @@ fn bench_spsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
                 spin_loop();
             }
         }
-        *backend_c.lock().unwrap() = consumer.backend_type().to_string();
+        *backend_c.lock().unwrap() = consumer.backend_name().to_string();
         ready_c.store(true, Ordering::Release);
 
         while !done_c.load(Ordering::Relaxed) {
@@ -601,7 +601,7 @@ fn bench_mpsc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
     thread::sleep(Duration::from_millis(5));
 
-    let backend = producer1.backend_type().to_string();
+    let backend = producer1.backend_name().to_string();
 
     // Measure send() latency on main thread (contended with producer2)
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
@@ -717,7 +717,7 @@ fn bench_spmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
     thread::sleep(Duration::from_millis(5));
 
-    let backend = producer.backend_type().to_string();
+    let backend = producer.backend_name().to_string();
 
     // Measure send() latency (single producer, 2 consumers draining)
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
@@ -855,7 +855,7 @@ fn bench_mpmc_intra(timer: &PrecisionTimer) -> ScenarioResult {
     }
     thread::sleep(Duration::from_millis(5));
 
-    let backend = producer1.backend_type().to_string();
+    let backend = producer1.backend_name().to_string();
 
     // Measure send() latency (contended: 2 producers, 2 consumers)
     let mut latencies = Vec::with_capacity(ITERATIONS as usize);
@@ -913,7 +913,7 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Force migration detection
     consumer.check_migration_now();
-    let backend = consumer.backend_type().to_string();
+    let backend = consumer.backend_name().to_string();
 
     // Collect: first WARMUP discarded, then ITERATIONS measured
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
@@ -968,7 +968,7 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Force migration detection so parent sees MpscShm before measurement
     consumer.check_migration_now();
 
-    let backend = consumer.backend_type().to_string();
+    let backend = consumer.backend_name().to_string();
 
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
 
@@ -1020,7 +1020,7 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
     // Force migration detection
     consumer.check_migration_now();
-    let backend = consumer.backend_type().to_string();
+    let backend = consumer.backend_name().to_string();
 
     // Collect one-way latencies
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
@@ -1088,7 +1088,7 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Step 4: Force migration check so parent detects PodShm before measurement
     consumer.check_migration_now();
 
-    let backend = consumer.backend_type().to_string();
+    let backend = consumer.backend_name().to_string();
 
     // Step 5: Measure — publishers are still running their 10M-message hot loops.
     // Use broadcast-aware collector that tracks freshness and skip-aheads.
@@ -1408,7 +1408,7 @@ fn run_child_publisher(topic_name: &str, count: u64, core: usize, paced: bool) {
         "  [pub] PID={} core={} backend={} pubs={} subs={}{}",
         std::process::id(),
         core,
-        topic.backend_type(),
+        topic.backend_name(),
         topic.pub_count(),
         topic.sub_count(),
         if paced { " (paced)" } else { "" },
@@ -1683,7 +1683,7 @@ fn bench_stress(
     // Force migration check so parent detects the final backend
     consumer.check_migration_now();
 
-    let backend = consumer.backend_type().to_string();
+    let backend = consumer.backend_name().to_string();
 
     eprintln!(
         "  [stress] {} pubs={} subs={} backend={}",

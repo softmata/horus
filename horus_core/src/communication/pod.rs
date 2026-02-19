@@ -168,9 +168,9 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
 unsafe impl PodMessage for HorusTensor {}
 
 // Unified vision/perception types — repr(C), Pod, zero-copy IPC
-unsafe impl PodMessage for horus_types::Image {}
-unsafe impl PodMessage for horus_types::PointCloud {}
-unsafe impl PodMessage for horus_types::DepthImage {}
+unsafe impl PodMessage for horus_types::ImageDescriptor {}
+unsafe impl PodMessage for horus_types::PointCloudDescriptor {}
+unsafe impl PodMessage for horus_types::DepthImageDescriptor {}
 
 // ============================================================================
 // LogSummary for unified types (orphan rule: LogSummary defined here in horus_core)
@@ -182,7 +182,7 @@ impl LogSummary for horus_types::ImageEncoding {
     }
 }
 
-impl LogSummary for horus_types::Image {
+impl LogSummary for horus_types::ImageDescriptor {
     fn log_summary(&self) -> String {
         format!(
             "Image({}x{}, {:?}, {}, {})",
@@ -195,7 +195,7 @@ impl LogSummary for horus_types::Image {
     }
 }
 
-impl LogSummary for horus_types::PointCloud {
+impl LogSummary for horus_types::PointCloudDescriptor {
     fn log_summary(&self) -> String {
         let kind = match self.fields_per_point() {
             3 => "XYZ",
@@ -212,7 +212,7 @@ impl LogSummary for horus_types::PointCloud {
     }
 }
 
-impl LogSummary for horus_types::DepthImage {
+impl LogSummary for horus_types::DepthImageDescriptor {
     fn log_summary(&self) -> String {
         let unit = if self.is_meters() {
             "m"

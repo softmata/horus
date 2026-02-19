@@ -42,7 +42,7 @@ pub struct NodeRegistration {
     /// Deadline for RT nodes
     pub(crate) deadline: Option<Duration>,
     /// Execution tier override
-    pub(crate) tier: Option<super::intelligence::NodeTier>,
+    pub(crate) tier: Option<super::types::NodeTier>,
     /// Failure policy override (None = use tier default)
     pub(crate) failure_policy: Option<super::fault_tolerance::FailurePolicy>,
 }
@@ -194,12 +194,12 @@ impl NodeRegistration {
     ///
     /// # Example
     /// ```rust,ignore
-    /// use horus_core::scheduling::intelligence::NodeTier;
+    /// use horus_core::scheduling::NodeTier;
     ///
     /// NodeRegistration::new(fast_node)
     ///     .tier(NodeTier::UltraFast)
     /// ```
-    pub fn tier(mut self, tier: super::intelligence::NodeTier) -> Self {
+    pub fn tier(mut self, tier: super::types::NodeTier) -> Self {
         self.tier = Some(tier);
         self
     }
@@ -309,7 +309,7 @@ impl<'a> NodeBuilder<'a> {
     }
 
     /// Set an explicit execution tier.
-    pub fn tier(mut self, tier: super::intelligence::NodeTier) -> Self {
+    pub fn tier(mut self, tier: super::types::NodeTier) -> Self {
         self.config = self.config.tier(tier);
         self
     }
