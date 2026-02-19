@@ -48,8 +48,6 @@ horus_macros = { path = "../horus_macros", optional = true }
 # mDNS service discovery (optional)
 mdns-sd = { version = "0.11", optional = true }
 
-# Dynamic plugin loading (optional)
-libloading = { workspace = true, optional = true }
 
 # Platform-specific: Windows shared memory
 [target.'cfg(windows)'.dependencies]
@@ -71,5 +69,3 @@ cuda = []
 # mDNS/DNS-SD for automatic peer discovery on local networks
 mdns = ["mdns-sd"]
 
-# Dynamic driver plugin loading via .so/.dll/.dylib
-dynamic-plugins = ["libloading"]

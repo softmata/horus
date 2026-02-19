@@ -1419,29 +1419,23 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
         ));
     }
 
-    // Determine package type - either from flags or auto-detect from registry
+    // Determine package type for display (registry already tracks type via package_type metadata)
     let pkg_type = if driver {
-        "driver".to_string()
+        "driver"
     } else if plugin {
-        "plugin".to_string()
+        "plugin"
     } else {
-        // Auto-detect from registry
-        registry::fetch_package_type(&name).unwrap_or_else(|_| "node".to_string())
+        "node"
     };
 
     let version = ver.as_deref().unwrap_or("latest");
 
-    // Format dependency string based on type
-    let dep_string = match pkg_type.as_str() {
-        "driver" => format!("driver:{}@{}", name, version),
-        "plugin" => format!("plugin:{}@{}", name, version),
-        _ => {
-            if version == "latest" {
-                name.clone()
-            } else {
-                format!("{}@{}", name, version)
-            }
-        }
+    // All dependencies use the same format: name@version (no type prefix)
+    // The registry already has package_type metadata — the CLI doesn't need to track it in horus.yaml
+    let dep_string = if version == "latest" {
+        name.clone()
+    } else {
+        format!("{}@{}", name, version)
     };
 
     // Add to horus.yaml

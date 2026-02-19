@@ -68,7 +68,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 memmap2 = "0.9"
 parking_lot = "0.12"
 bytemuck = { version = "1.0", features = ["derive"] }
-libloading = "0.8"
 
 # Testing
 approx = "0.5"

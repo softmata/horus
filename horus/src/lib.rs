@@ -243,11 +243,6 @@ pub mod prelude {
     pub use horus_core::driver::{
         DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig,
     };
-    pub use horus_core::plugin::{
-        AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin,
-        PluginEntryFn, PluginError, PluginFeature, PluginHealth, PluginId, PluginManifest,
-        PluginResult, ProbeResult, SystemDependency, PLUGIN_ENTRY_SYMBOL,
-    };
 
     // ============================================
     // Node Infrastructure

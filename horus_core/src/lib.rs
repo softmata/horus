@@ -53,7 +53,6 @@ pub mod driver;
 pub mod error;
 pub mod memory;
 pub mod params;
-pub mod plugin;
 pub mod scheduling;
 pub mod terminal;
 pub mod types;
@@ -81,13 +80,6 @@ pub use actions::{
     Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
     ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
-};
-
-// Re-export plugin types for driver plugin system
-pub use plugin::{
-    AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin,
-    PluginEntryFn, PluginError, PluginFeature, PluginHealth, PluginId, PluginManifest,
-    PluginResult, ProbeResult, SystemDependency, PLUGIN_ENTRY_SYMBOL,
 };
 
 // Re-export the paste crate for macro usage
