@@ -12,7 +12,7 @@
 use colored::*;
 use horus_core::error::HorusResult;
 use horus_core::communication::Topic;
-use horus_library::hframe::{HFrame, TFMessage, Transform, TransformStamped};
+use horus_library::hframe::{HFMessage, HFrame, Transform, TransformStamped};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 use crate::discovery::discover_shared_memory;
 
 /// Standard HFrame topic names
-const TF_TOPIC: &str = "tf";
-const TF_STATIC_TOPIC: &str = "tf_static";
+const HF_TOPIC: &str = "hf";
+const HF_STATIC_TOPIC: &str = "hf_static";
 
 /// Frame data collected from shared memory
 #[derive(Debug, Clone)]
@@ -67,7 +67,7 @@ impl HFrameReader {
 
         // Try to read from dynamic tf topic
         // Use try_recv() for streaming (new messages only)
-        if let Ok(topic) = Topic::<TFMessage>::new(TF_TOPIC) {
+        if let Ok(topic) = Topic::<HFMessage>::new(HF_TOPIC) {
             if let Some(msg) = topic.try_recv() {
                 for tf in msg.iter() {
                     self.add_transform(tf, false);
@@ -79,7 +79,7 @@ impl HFrameReader {
         // Try to read from static tf topic
         // Use read_latest() since static transforms are published once and we need
         // to see them even if they were published before we opened the topic
-        if let Ok(topic) = Topic::<TFMessage>::new(TF_STATIC_TOPIC) {
+        if let Ok(topic) = Topic::<HFMessage>::new(HF_STATIC_TOPIC) {
             if let Some(msg) = topic.read_latest() {
                 for tf in msg.iter() {
                     self.add_transform(tf, true);
@@ -295,7 +295,7 @@ pub fn list_frames(verbose: bool, json: bool) -> HorusResult<()> {
     let tf_topics: Vec<_> = topics
         .iter()
         .filter(|t| {
-            t.topic_name.contains("tf")
+            t.topic_name.contains("hf")
                 || t.topic_name.contains("hframe")
                 || t.topic_name.contains("transform")
         })

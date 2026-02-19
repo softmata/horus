@@ -166,6 +166,9 @@ pub mod prelude {
     // ============================================
     pub use horus_core::memory::{shm_base_dir, TensorHandle, TensorPool, TensorPoolConfig};
 
+    // Domain-specific handles (RAII wrappers with rich API for data access)
+    pub use horus_core::memory::{DepthImageHandle, ImageHandle, PointCloudHandle};
+
     // CUDA support (requires "cuda" feature)
     #[cfg(feature = "cuda")]
     pub use horus_core::memory::{cuda_available, cuda_device_count};

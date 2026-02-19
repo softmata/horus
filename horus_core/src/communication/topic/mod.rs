@@ -120,8 +120,14 @@ pub(crate) mod registry;
 pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
-// Auto-managed tensor pool extension for Topic<HorusTensor>
+// Shared pool registry for all tensor topic extensions
+pub(crate) mod pool_registry;
+
+// Auto-managed tensor pool extensions
 pub mod tensor_ext;
+pub mod image_ext;
+pub mod pointcloud_ext;
+pub mod depth_ext;
 
 #[cfg(test)]
 mod tests;

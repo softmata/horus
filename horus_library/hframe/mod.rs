@@ -93,7 +93,8 @@ pub use types::{FrameId, HFrameError, HFrameResult, INVALID_FRAME, NO_PARENT};
 
 // Re-export Transform and message types
 pub use messages::{
-    frame_id_to_string, string_to_frame_id, StaticTransformStamped, TFMessage, TransformStamped,
+    frame_id_to_string, string_to_frame_id, HFMessage, StaticTransformStamped, TFMessage,
+    TransformStamped,
     FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
 };
 pub use transform::Transform;

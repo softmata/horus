@@ -12,7 +12,6 @@
 //! | Imu | ~296 bytes | IMU sensor data (500Hz+) |
 //! | LaserScan | ~1.5KB | 2D lidar scans (10-40Hz) |
 //! | JointCommand | ~1KB | Multi-DOF control (500Hz+) |
-//! | PointCloud | ~48KB | 3D perception (10-30Hz) |
 //!
 //! ## Running
 //!
@@ -30,7 +29,6 @@ use horus_benchmarks::{
 use horus_library::messages::CmdVel;
 use horus_library::messages::{
     control::JointCommand,
-    perception::PointCloud,
     sensor::{Imu, LaserScan},
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -99,7 +97,6 @@ fn main() {
     println!("║ Imu             │          296 │ 500+ Hz      │ IMU sensor fusion           ║");
     println!("║ LaserScan       │         1480 │ 10-40 Hz     │ 2D lidar navigation         ║");
     println!("║ JointCommand    │         1032 │ 500+ Hz      │ Manipulator control         ║");
-    println!("║ PointCloud      │       ~48000 │ 10-30 Hz     │ 3D perception               ║");
     println!("╚═════════════════════════════════════════════════════════════════════════════╝");
     println!();
 
@@ -124,11 +121,6 @@ fn main() {
 
     // JointCommand (~1KB) - Multi-DOF control
     let result = benchmark_jointcmd(iterations, &platform);
-    print_result(&result);
-    report.add_result(result);
-
-    // PointCloud (~48KB) - 3D perception (fewer iterations due to size)
-    let result = benchmark_pointcloud(iterations / 10, &platform);
     print_result(&result);
     report.add_result(result);
 
@@ -219,25 +211,6 @@ fn main() {
         println!(
             "║ LaserScan (40Hz lidar): {} (p99={:.0}ns < 25ms)",
             if meets_40hz { "✓ PASS" } else { "✗ FAIL" },
-            best.statistics.p99
-        );
-    }
-
-    let pc_results: Vec<_> = report
-        .results
-        .iter()
-        .filter(|r| r.name.contains("PointCloud"))
-        .collect();
-    if let Some(best) = pc_results.iter().min_by(|a, b| {
-        a.statistics
-            .median
-            .partial_cmp(&b.statistics.median)
-            .unwrap()
-    }) {
-        let meets_30hz = best.statistics.p99 < 33_000_000; // 33ms = 30Hz rate
-        println!(
-            "║ PointCloud (30Hz 3D):   {} (p99={:.0}ns < 33ms)",
-            if meets_30hz { "✓ PASS" } else { "✗ FAIL" },
             best.statistics.p99
         );
     }
@@ -635,113 +608,6 @@ fn benchmark_jointcmd(
     build_result(
         "Adaptive_JointCommand",
         std::mem::size_of::<JointCommand>(),
-        latencies,
-        iterations,
-        platform,
-    )
-}
-
-fn benchmark_pointcloud(
-    iterations: usize,
-    platform: &horus_benchmarks::PlatformInfo,
-) -> BenchmarkResult {
-    let topic_name = format!("bench_pc_{}", std::process::id());
-    let topic_name_clone = topic_name.clone();
-    let timer = PrecisionTimer::new();
-
-    let warmup_count = iterations.min(100);
-    let running = Arc::new(AtomicBool::new(true));
-    let consumer_ready = Arc::new(AtomicBool::new(false));
-    let messages_received = Arc::new(AtomicU64::new(0));
-
-    let running_clone = running.clone();
-    let consumer_ready_clone = consumer_ready.clone();
-    let messages_received_clone = messages_received.clone();
-
-    let total_messages = warmup_count + iterations;
-
-    let consumer_handle = thread::spawn(move || {
-        let _ = set_cpu_affinity(1);
-        let rx: Topic<PointCloud> = Topic::new(&topic_name_clone).unwrap();
-        consumer_ready_clone.store(true, Ordering::Release);
-
-        let mut received = 0u64;
-        while running_clone.load(Ordering::Acquire) || received < total_messages as u64 {
-            if rx.recv().is_some() {
-                received += 1;
-                messages_received_clone.fetch_add(1, Ordering::Release);
-                if received >= total_messages as u64 {
-                    break;
-                }
-            }
-        }
-    });
-
-    while !consumer_ready.load(Ordering::Acquire) {
-        thread::yield_now();
-    }
-    thread::sleep(Duration::from_millis(10));
-
-    let _ = set_cpu_affinity(0);
-    let tx: Topic<PointCloud> = Topic::new(&topic_name).unwrap();
-
-    // Create a representative point cloud (4000 points = ~48KB)
-    use horus_library::messages::geometry::Point3;
-    let num_points = 4000;
-    let points: Vec<Point3> = (0..num_points)
-        .map(|i| {
-            let angle = (i as f64) * std::f64::consts::PI * 2.0 / 360.0;
-            let r = 5.0 + (i as f64 * 0.001);
-            Point3::new(r * angle.cos(), r * angle.sin(), (i as f64) * 0.01)
-        })
-        .collect();
-
-    // Warmup - batch to avoid buffer overflow (capacity = 64)
-    const BATCH_SIZE: usize = 32;
-    for i in 0..warmup_count {
-        let msg = PointCloud::xyz(&points);
-        tx.send(msg);
-        thread::yield_now();
-        if (i + 1) % BATCH_SIZE == 0 {
-            while messages_received.load(Ordering::Acquire) < (i + 1) as u64 {
-                thread::yield_now();
-            }
-        }
-    }
-
-    while messages_received.load(Ordering::Acquire) < warmup_count as u64 {
-        thread::yield_now();
-    }
-
-    // Measurement
-    let warmup_base = warmup_count as u64;
-    let mut latencies = Vec::with_capacity(iterations);
-    for i in 0..iterations {
-        let msg = PointCloud::xyz(&points);
-        let start = timer.start();
-        tx.send(msg);
-        latencies.push(timer.elapsed_ns(start));
-        if (i + 1) % BATCH_SIZE == 0 {
-            let target = warmup_base + (i + 1) as u64;
-            while messages_received.load(Ordering::Acquire) < target {
-                thread::yield_now();
-            }
-        }
-    }
-
-    while messages_received.load(Ordering::Acquire) < total_messages as u64 {
-        thread::yield_now();
-    }
-
-    running.store(false, Ordering::Release);
-    consumer_handle.join().ok();
-
-    // PointCloud has variable size, estimate based on data
-    let estimated_size = 108 + (num_points * 12); // header + xyz data
-
-    build_result(
-        "Adaptive_PointCloud",
-        estimated_size,
         latencies,
         iterations,
         platform,

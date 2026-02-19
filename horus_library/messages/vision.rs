@@ -2,184 +2,19 @@
 //
 // This module provides comprehensive vision processing messages for
 // cameras, images, and visual perception systems.
+//
+// ## Unified Image Type
+//
+// The primary `Image` type is a zero-copy Pod descriptor from `horus_types`.
+// Use `Topic<Image>` with `alloc_image()` / `send_image()` / `recv_image()`
+// for high-performance image pipelines.
 
 use horus_core::core::LogSummary;
-use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-/// Image encoding formats
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-#[derive(Default, LogSummary)]
-pub enum ImageEncoding {
-    /// 8-bit monochrome
-    Mono8 = 0,
-    /// 16-bit monochrome
-    Mono16 = 1,
-    /// 8-bit RGB (3 channels)
-    #[default]
-    Rgb8 = 2,
-    /// 8-bit BGR (3 channels, OpenCV format)
-    Bgr8 = 3,
-    /// 8-bit RGBA (4 channels)
-    Rgba8 = 4,
-    /// 8-bit BGRA (4 channels)
-    Bgra8 = 5,
-    /// YUV 4:2:2 format
-    Yuv422 = 6,
-    /// 32-bit float monochrome
-    Mono32F = 7,
-    /// 32-bit float RGB
-    Rgb32F = 8,
-    /// Bayer pattern (raw sensor data)
-    BayerRggb8 = 9,
-    /// 16-bit depth image (millimeters)
-    Depth16 = 10,
-}
-
-/// Raw image data message
-///
-/// For performance-critical applications, consider using shared memory
-/// for large image data instead of copying through message channels.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Image {
-    /// Image width in pixels
-    pub width: u32,
-    /// Image height in pixels
-    pub height: u32,
-    /// Pixel encoding format
-    pub encoding: ImageEncoding,
-    /// Bytes per row (may include padding)
-    pub step: u32,
-    /// Image data (row-major order)
-    pub data: Vec<u8>,
-    /// Frame ID (camera identifier)
-    pub frame_id: [u8; 32],
-    /// Timestamp in nanoseconds since epoch
-    pub timestamp_ns: u64,
-}
-
-impl Default for Image {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            encoding: ImageEncoding::Rgb8,
-            step: 0,
-            data: Vec::new(),
-            frame_id: [0; 32],
-            timestamp_ns: 0,
-        }
-    }
-}
-
-impl Image {
-    /// Create a new image message
-    pub fn new(width: u32, height: u32, encoding: ImageEncoding, data: Vec<u8>) -> Self {
-        let bytes_per_pixel = encoding.bytes_per_pixel();
-        Self {
-            width,
-            height,
-            encoding,
-            step: width.saturating_mul(bytes_per_pixel),
-            data,
-            frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-        }
-    }
-
-    /// Set the frame ID from string
-    pub fn with_frame_id(mut self, frame_id: &str) -> Self {
-        let frame_bytes = frame_id.as_bytes();
-        let len = frame_bytes.len().min(31);
-        self.frame_id[..len].copy_from_slice(&frame_bytes[..len]);
-        self.frame_id[len] = 0;
-        self
-    }
-
-    /// Get expected data size in bytes
-    pub fn expected_size(&self) -> usize {
-        (self.step * self.height) as usize
-    }
-
-    /// Validate image data consistency
-    pub fn is_valid(&self) -> bool {
-        self.width > 0
-            && self.height > 0
-            && self.step >= self.width * self.encoding.bytes_per_pixel()
-            && self.data.len() >= self.expected_size()
-    }
-
-    /// Get pixel at coordinates (x, y)
-    pub fn get_pixel(&self, x: u32, y: u32) -> Option<&[u8]> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-
-        let bytes_per_pixel = self.encoding.bytes_per_pixel() as usize;
-        let offset = (y * self.step + x * self.encoding.bytes_per_pixel()) as usize;
-
-        if offset + bytes_per_pixel <= self.data.len() {
-            Some(&self.data[offset..offset + bytes_per_pixel])
-        } else {
-            None
-        }
-    }
-
-    /// Create a region of interest (crop)
-    pub fn roi(&self, x: u32, y: u32, width: u32, height: u32) -> Option<Image> {
-        if x + width > self.width || y + height > self.height {
-            return None;
-        }
-
-        let bytes_per_pixel = self.encoding.bytes_per_pixel() as usize;
-        let mut roi_data =
-            Vec::with_capacity((width as usize) * (height as usize) * bytes_per_pixel);
-
-        for row in y..y + height {
-            let start = (row * self.step + x * self.encoding.bytes_per_pixel()) as usize;
-            let end = start + (width * self.encoding.bytes_per_pixel()) as usize;
-            roi_data.extend_from_slice(&self.data[start..end]);
-        }
-
-        Some(Image::new(width, height, self.encoding, roi_data))
-    }
-}
-
-impl ImageEncoding {
-    /// Get bytes per pixel for this encoding
-    pub fn bytes_per_pixel(&self) -> u32 {
-        match self {
-            ImageEncoding::Mono8 => 1,
-            ImageEncoding::Mono16 => 2,
-            ImageEncoding::Rgb8 | ImageEncoding::Bgr8 => 3,
-            ImageEncoding::Rgba8 | ImageEncoding::Bgra8 => 4,
-            ImageEncoding::Yuv422 => 2,
-            ImageEncoding::Mono32F => 4,
-            ImageEncoding::Rgb32F => 12,
-            ImageEncoding::BayerRggb8 => 1,
-            ImageEncoding::Depth16 => 2,
-        }
-    }
-
-    /// Check if encoding has color information
-    pub fn is_color(&self) -> bool {
-        matches!(
-            self,
-            ImageEncoding::Rgb8
-                | ImageEncoding::Bgr8
-                | ImageEncoding::Rgba8
-                | ImageEncoding::Bgra8
-                | ImageEncoding::Yuv422
-                | ImageEncoding::Rgb32F
-                | ImageEncoding::BayerRggb8
-        )
-    }
-}
+// Re-export ImageEncoding from horus_types (canonical location)
+pub use horus_types::ImageEncoding;
 
 /// Compressed image data (JPEG, PNG, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -386,18 +221,6 @@ impl StereoInfo {
 // LogSummary Implementations - Zero-copy logging support
 // ============================================================================
 
-impl LogSummary for Image {
-    fn log_summary(&self) -> String {
-        format!(
-            "Image({}x{}, {:?}, {} bytes)",
-            self.width,
-            self.height,
-            self.encoding,
-            self.data.len()
-        )
-    }
-}
-
 impl LogSummary for CompressedImage {
     fn log_summary(&self) -> String {
         format!(
@@ -441,18 +264,6 @@ impl LogSummary for StereoInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_image_creation() {
-        let data = vec![255, 0, 0, 0, 255, 0, 0, 0, 255]; // 3 RGB pixels
-        let image = Image::new(3, 1, ImageEncoding::Rgb8, data);
-
-        assert_eq!(image.width, 3);
-        assert_eq!(image.height, 1);
-        assert_eq!(image.encoding, ImageEncoding::Rgb8);
-        assert_eq!(image.step, 9); // 3 pixels * 3 bytes
-        assert!(image.is_valid());
-    }
 
     #[test]
     fn test_encoding_properties() {

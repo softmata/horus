@@ -60,6 +60,8 @@ use bytemuck::{Pod, Zeroable};
 use horus_types::HorusTensor;
 use std::mem;
 
+use crate::core::LogSummary;
+
 // ============================================================================
 // Automatic POD Detection
 // ============================================================================
@@ -164,6 +166,69 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
 
 // HorusTensor is repr(C), Pod, Zeroable - safe for zero-copy IPC
 unsafe impl PodMessage for HorusTensor {}
+
+// Unified vision/perception types — repr(C), Pod, zero-copy IPC
+unsafe impl PodMessage for horus_types::Image {}
+unsafe impl PodMessage for horus_types::PointCloud {}
+unsafe impl PodMessage for horus_types::DepthImage {}
+
+// ============================================================================
+// LogSummary for unified types (orphan rule: LogSummary defined here in horus_core)
+// ============================================================================
+
+impl LogSummary for horus_types::ImageEncoding {
+    fn log_summary(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+impl LogSummary for horus_types::Image {
+    fn log_summary(&self) -> String {
+        format!(
+            "Image({}x{}, {:?}, {}, {})",
+            self.width(),
+            self.height(),
+            self.encoding(),
+            self.dtype(),
+            if self.is_cuda() { "cuda" } else { "cpu" },
+        )
+    }
+}
+
+impl LogSummary for horus_types::PointCloud {
+    fn log_summary(&self) -> String {
+        let kind = match self.fields_per_point() {
+            3 => "XYZ",
+            4 => "XYZI",
+            6 => "XYZRGB",
+            k => return format!("PointCloud({} pts, {} fields)", self.point_count(), k),
+        };
+        format!(
+            "PointCloud({} pts, {}, {:?})",
+            self.point_count(),
+            kind,
+            self.dtype(),
+        )
+    }
+}
+
+impl LogSummary for horus_types::DepthImage {
+    fn log_summary(&self) -> String {
+        let unit = if self.is_meters() {
+            "m"
+        } else if self.is_millimeters() {
+            "mm"
+        } else {
+            "?"
+        };
+        format!(
+            "DepthImage({}x{}, {})",
+            self.width(),
+            self.height(),
+            unit,
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {

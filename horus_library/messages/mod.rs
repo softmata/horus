@@ -60,8 +60,9 @@ pub use diagnostics::{
     NodeState, ResourceUsage, SafetyStatus, Status, StatusLevel,
 };
 
-// Vision
-pub use vision::{CameraInfo, CompressedImage, Image, ImageEncoding, RegionOfInterest};
+// Vision — unified Image + ImageEncoding from horus_types, others from vision module
+pub use horus_types::{Image, ImageEncoding};
+pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
 
 // Navigation
 pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
@@ -69,8 +70,9 @@ pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 
-// Perception
-pub use perception::{DepthImage, PlaneDetection, PointCloud};
+// Perception — unified PointCloud + DepthImage from horus_types, others from perception module
+pub use horus_types::{DepthImage, PointCloud};
+pub use perception::{PlaneDetection};
 
 // Coordination
 pub use coordination::{FleetStatus, FormationControl, RobotState, TaskAssignment};
@@ -82,13 +84,9 @@ pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
 pub mod tensor;
 pub use tensor::{Device, HorusTensor, TensorDevice, TensorDtype};
 
-// Tensor-backed domain types (zero-copy Pod wrappers around HorusTensor)
-pub mod tensor_image;
-pub mod tensor_pointcloud;
-pub mod tensor_depth;
-pub use tensor_image::TensorImage;
-pub use tensor_pointcloud::TensorPointCloud;
-pub use tensor_depth::TensorDepthImage;
+
+// Domain-specific handles (RAII wrappers with rich API for data access)
+pub use horus_core::memory::{DepthImageHandle, ImageHandle, PointCloudHandle};
 
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
