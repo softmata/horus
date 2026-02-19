@@ -1,4 +1,3 @@
-use crate::commands::driver::resolve_driver_alias;
 use crate::dependency_resolver::DependencySpec;
 use crate::progress::{self, finish_error, finish_success};
 use crate::version;
@@ -16,6 +15,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Resolve driver alias names to their constituent driver IDs.
+/// Used when parsing `drivers:` section in horus.yaml.
+fn resolve_driver_alias(alias: &str) -> Option<Vec<&'static str>> {
+    match alias {
+        "vision" => Some(vec!["camera", "depth-camera"]),
+        "navigation" => Some(vec!["lidar", "gps", "imu"]),
+        "manipulation" => Some(vec!["servo", "motor", "force-torque"]),
+        "locomotion" => Some(vec!["motor", "encoder", "imu"]),
+        "sensing" => Some(vec!["camera", "lidar", "ultrasonic", "imu"]),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 enum ExecutionTarget {

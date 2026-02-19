@@ -326,12 +326,6 @@ enum Commands {
         command: AuthCommands,
     },
 
-    /// Driver management (list, info, search)
-    Driver {
-        #[command(subcommand)]
-        command: DriverCommands,
-    },
-
     /// Deploy project to a remote robot
     Deploy {
         /// Target host (user@host or configured target name)
@@ -679,84 +673,6 @@ enum AuthKeysCommands {
     Revoke {
         /// Key ID to revoke (e.g., horus_key_abc123...)
         key_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum DriverCommands {
-    /// List all available drivers (local + registry + plugins)
-    List {
-        /// Filter by category (sensor, actuator, bus, input, simulation)
-        #[arg(short = 'c', long = "category")]
-        category: Option<String>,
-        /// Show only registry drivers (not local built-ins)
-        #[arg(short = 'r', long = "registry")]
-        registry_only: bool,
-        /// Show only loaded plugins
-        #[arg(short = 'p', long = "plugins")]
-        plugins_only: bool,
-        /// Driver loading mode when using --plugins (static, dynamic, hybrid)
-        #[arg(short = 'm', long = "mode", default_value = "hybrid")]
-        mode: String,
-    },
-
-    /// Show detailed information about a driver
-    Info {
-        /// Driver ID (e.g., rplidar, mpu6050, bno055)
-        driver: String,
-    },
-
-    /// Search for drivers (searches registry)
-    Search {
-        /// Search query
-        query: String,
-        /// Filter by bus type (usb, i2c, spi, serial)
-        #[arg(short = 'b', long = "bus")]
-        bus_type: Option<String>,
-    },
-
-    /// Probe for available hardware using plugins
-    Probe {
-        /// Specific plugin to probe (e.g., horus-imu)
-        #[arg(short = 'p', long = "plugin")]
-        plugin: Option<String>,
-        /// Specific backend to probe (e.g., mpu6050)
-        #[arg(short = 'b', long = "backend")]
-        backend: Option<String>,
-        /// Driver loading mode (static, dynamic, hybrid)
-        #[arg(short = 'm', long = "mode", default_value = "hybrid")]
-        mode: String,
-    },
-
-    /// List and manage loaded driver plugins
-    Plugins {
-        /// Reload all plugins
-        #[arg(short = 'r', long = "reload")]
-        reload: bool,
-        /// Driver loading mode (static, dynamic, hybrid)
-        #[arg(short = 'm', long = "mode", default_value = "hybrid")]
-        mode: String,
-    },
-
-    /// Install a driver package from registry
-    Install {
-        /// Driver package name (e.g., horus-rplidar, horus-realsense)
-        driver: String,
-        /// Specific version (optional, defaults to latest)
-        #[arg(short = 'v', long = "ver")]
-        ver: Option<String>,
-        /// Install globally (shared across all projects)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-    },
-
-    /// Remove an installed driver package
-    Remove {
-        /// Driver package name to remove
-        driver: String,
-        /// Remove from global scope
-        #[arg(short = 'g', long = "global")]
-        global: bool,
     },
 }
 
@@ -1585,31 +1501,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 ))
             }
         }
-
-        Commands::Driver { command } => match command {
-            DriverCommands::List {
-                category,
-                registry_only,
-                plugins_only,
-                mode,
-            } => commands::driver::run_list(category, registry_only, plugins_only, mode),
-            DriverCommands::Info { driver } => commands::driver::run_info(driver),
-            DriverCommands::Search { query, bus_type } => {
-                commands::driver::run_search(query, bus_type)
-            }
-            DriverCommands::Probe {
-                plugin,
-                backend,
-                mode,
-            } => commands::driver::run_probe(plugin, backend, mode),
-            DriverCommands::Plugins { reload, mode } => commands::driver::run_plugins(reload, mode),
-            DriverCommands::Install { driver, ver, global } => {
-                commands::driver::run_install(driver, ver, global)
-            }
-            DriverCommands::Remove { driver, global } => {
-                commands::driver::run_remove(driver, global)
-            }
-        },
 
         Commands::Add {
             name,

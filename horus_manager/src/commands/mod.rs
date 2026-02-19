@@ -4,7 +4,6 @@ pub mod clean;
 pub mod deploy;
 #[cfg(feature = "mdns")]
 pub mod discover;
-pub mod driver;
 pub mod env;
 pub mod github_auth;
 pub mod hf;
