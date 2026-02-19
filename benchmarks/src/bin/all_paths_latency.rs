@@ -907,8 +907,12 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // shows queuing delay (~3µs) instead of true wire latency (~300ns).
     let mut child = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
-    // Wait for migration (child sends MIGRATION_BOOT + sleeps)
+    // Wait for publisher to register and migration to occur
+    wait_for_topology(&consumer, 1, 1, Duration::from_secs(5));
     let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+
+    // Force migration detection
+    consumer.check_migration_now();
     let backend = consumer.backend_type().to_string();
 
     // Collect: first WARMUP discarded, then ITERATIONS measured
@@ -919,7 +923,7 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossProc-1P1C",
         backend,
-        expected_backend: "Shm",
+        expected_backend: "SpscShm",
         measurement: "one-way",
         latencies_ns: latencies,
         total_sent: MIGRATION_BOOT + child_count,
@@ -933,25 +937,44 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
 
 /// MpscShm -- cross-process 2 publishers, 1 consumer.
 /// Parent = consumer, 2 children = publishers.
+///
+/// Previous bugs fixed:
+/// - Used only 52.5K msgs/pub (publishers ran dry during measurement)
+/// - No wait_for_topology() → parent never detected MpscShm migration
+/// - No check_migration_now() → measured SpscShm latency, not MpscShm
 fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let cal = timer.calibration();
     let topic_name = format!("bench_mpsc_{}", std::process::id());
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let _ = consumer.recv();
 
-    let msgs_per_pub = (WARMUP + ITERATIONS) / 2;
+    // Use same large message count as PodShm — publishers must outlast setup + measurement.
+    // Previous count (52.5K) caused publishers to finish before measurement started.
+    let msgs_per_pub = PODSHM_MSGS_PER_PUB;
 
-    // Paced publishers: 2 publishers into 1 consumer would overflow the ring
-    // instantly, causing 26µs queuing delay instead of true wire latency.
+    // Spawn pub1 → SpscShm migration (1P, 1C, cross-process)
     let mut pub1 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_AUX);
-    let migration1 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
+    let migration1 = wait_for_messages(&consumer, 100, Duration::from_secs(10));
 
+    // Spawn pub2 → MpscShm migration (2P, 1C, cross-process)
     let mut pub2 = spawn_paced_publisher(&topic_name, msgs_per_pub, CORE_PUB2);
-    let migration2 = wait_for_messages(&consumer, 50, Duration::from_secs(10));
+
+    // Wait for pub2 to actually register in the topology
+    wait_for_topology(&consumer, 2, 1, Duration::from_secs(5));
+
+    // Drain migration-era messages
+    let migration2 = wait_for_messages(&consumer, 200, Duration::from_secs(5));
+
+    // Force migration detection so parent sees MpscShm before measurement
+    consumer.check_migration_now();
 
     let backend = consumer.backend_type().to_string();
 
     let (latencies, measure_recv) = collect_cross_proc(&consumer, WARMUP, ITERATIONS, cal);
+
+    // Kill publishers (don't wait for 10M msgs to finish)
+    let _ = pub1.kill();
+    let _ = pub2.kill();
     pub1.wait().ok();
     pub2.wait().ok();
 
@@ -960,10 +983,10 @@ fn bench_mpsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     ScenarioResult {
         name: "CrossProc-2P1C",
         backend,
-        expected_backend: "Shm",
+        expected_backend: "MpscShm",
         measurement: "one-way",
         latencies_ns: latencies,
-        total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
+        total_sent: total_received, // publishers killed mid-stream; actual sent is unknown
         total_received,
         note: None,
         freshness_samples: None,
@@ -991,8 +1014,12 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     // Pacing prevents ring overflow that inflates measured latency.
     let mut child_pub = spawn_paced_publisher(&topic_name, child_count, CORE_AUX);
 
-    // Wait for migration (1 pub, 2 subs, cross-process → SpmcShm)
+    // Wait for publisher to register and topology to settle (1P, 2S → SpmcShm)
+    wait_for_topology(&consumer, 1, 2, Duration::from_secs(5));
     let migration_recv = wait_for_messages(&consumer, 100, Duration::from_secs(10));
+
+    // Force migration detection
+    consumer.check_migration_now();
     let backend = consumer.backend_type().to_string();
 
     // Collect one-way latencies
@@ -1092,7 +1119,7 @@ fn bench_pod_shm(timer: &PrecisionTimer) -> ScenarioResult {
         expected_backend: "PodShm",
         measurement: "broadcast",
         latencies_ns: latencies,
-        total_sent: MIGRATION_BOOT * 2 + msgs_per_pub * 2,
+        total_sent: total_received, // publishers killed mid-stream; actual sent is unknown
         total_received,
         note: Some("broadcast/latest-value — skipped messages are by design"),
         freshness_samples: Some(freshness),
@@ -1681,13 +1708,15 @@ fn bench_stress(
 
     let total_received = migration_recv + measure_recv;
 
+    // total_sent is unknown (publishers are killed mid-stream), so use
+    // total_received to avoid misleading "99.9% loss" from inflated counts.
     ScenarioResult {
         name,
         backend,
         expected_backend: "Shm",
         measurement: "one-way",
         latencies_ns: latencies,
-        total_sent: msgs_per_pub * num_pubs as u64,
+        total_sent: total_received,
         total_received,
         note: None,
         freshness_samples: None,
