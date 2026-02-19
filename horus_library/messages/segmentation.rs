@@ -119,6 +119,21 @@ impl SegmentationMask {
     }
 }
 
+impl horus_core::core::LogSummary for SegmentationMask {
+    fn log_summary(&self) -> String {
+        let kind = match self.mask_type {
+            0 => "semantic",
+            1 => "instance",
+            2 => "panoptic",
+            _ => "unknown",
+        };
+        format!(
+            "SegmentationMask {{ {}x{}, {}, {} classes }}",
+            self.width, self.height, kind, self.num_classes
+        )
+    }
+}
+
 /// Common segmentation class IDs (COCO-style)
 pub mod classes {
     pub const BACKGROUND: u8 = 0;

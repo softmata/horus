@@ -42,7 +42,7 @@ pub use shm_region::ShmRegion;
 pub use simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{
-    Device, HorusTensor, TensorDevice, TensorDtype, TensorPool, TensorPoolConfig, TensorPoolStats,
+    Device, HorusTensor, TensorDtype, TensorPool, TensorPoolConfig, TensorPoolStats,
     MAX_TENSOR_DIMS,
 };
 

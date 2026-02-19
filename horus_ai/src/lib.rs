@@ -33,10 +33,12 @@ pub use horus_types::Device;
 pub use dlpack::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
 pub use ml::{
     ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
-    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, ModelEntry, ModelFormat, ModelInfo,
-    ModelLoader, ModelRegistry, Pose, PoseArray, PoseKeypoint, Predictions, SegmentationMask,
-    Tensor, TrainingMetrics,
+    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, MlTrajectoryPoint, ModelEntry,
+    ModelFormat, ModelInfo, ModelLoader, ModelRegistry, Pose, PoseArray, PoseKeypoint, Predictions,
+    SegmentationMask, Tensor, TrainingMetrics,
 };
+// Note: All ML message types are canonical in horus_library::messages::ml
+// Note: SegmentationMask comes from horus_library::messages::segmentation (canonical POD version)
 pub use tensor::{TensorDescriptor, TensorDtype};
 
 // Re-export from horus_core for convenience (will be moved here later)

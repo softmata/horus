@@ -356,7 +356,7 @@ impl TensorPool {
         &self,
         shape: &[u64],
         dtype: TensorDtype,
-        device: TensorDevice,
+        device: Device,
     ) -> HorusResult<HorusTensor> {
         // Calculate required size
         let num_elements: u64 = shape.iter().product();
@@ -727,9 +727,6 @@ pub struct TensorPoolStats {
 
 // Re-export tensor types from horus_types (canonical source)
 pub use horus_types::{Device, HorusTensor, TensorDtype, MAX_TENSOR_DIMS};
-
-/// Backward-compatible alias for the old TensorDevice enum
-pub type TensorDevice = Device;
 
 #[cfg(test)]
 mod tests {

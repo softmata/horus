@@ -2422,6 +2422,7 @@ dependencies = [
  "bytemuck",
  "dirs",
  "horus_core",
+ "horus_library",
  "horus_types",
  "parking_lot",
  "reqwest",

@@ -1,6 +1,6 @@
 //! Topic extension for `Topic<PointCloud>` — zero-copy point cloud pipeline
 //!
-//! Provides `alloc_pointcloud()`, `send_pointcloud()`, `recv_pointcloud()` methods.
+//! Provides `create()`, `publish()`, `next()` methods.
 
 use std::sync::Arc;
 
@@ -17,18 +17,19 @@ impl Topic<PointCloud> {
         get_or_create_pool(self.name())
     }
 
-    /// Allocate a point cloud from the topic's pool.
+    /// Create a new point cloud in shared memory.
     ///
-    /// Creates a tensor with shape `[num_points, fields_per_point]`.
-    /// For XYZ clouds, use `fields=3`. For XYZI, `fields=4`, etc.
-    pub fn alloc_pointcloud(
+    /// - `num_points`: number of points
+    /// - `fields_per_point`: floats per point (3=XYZ, 4=XYZI, 6=XYZRGB)
+    /// - `dtype`: data type (typically `TensorDtype::F32`)
+    pub fn create(
         &self,
-        num_points: u64,
+        num_points: u32,
         fields_per_point: u32,
         dtype: TensorDtype,
     ) -> HorusResult<PointCloudHandle> {
         let pool = self.pool();
-        let shape = [num_points, fields_per_point as u64];
+        let shape = [num_points as u64, fields_per_point as u64];
         let tensor = pool.alloc(&shape, dtype, Device::cpu())?;
 
         let descriptor = if fields_per_point == 3 {
@@ -42,14 +43,14 @@ impl Topic<PointCloud> {
         Ok(PointCloudHandle::from_owned(descriptor, pool))
     }
 
-    /// Send a point cloud handle through this topic (zero-copy).
-    pub fn send_pointcloud(&self, handle: &PointCloudHandle) {
+    /// Publish a point cloud (zero-copy).
+    pub fn publish(&self, handle: &PointCloudHandle) {
         handle.pool().retain(handle.descriptor().tensor());
         self.send(*handle.descriptor());
     }
 
-    /// Receive a point cloud and wrap in a `PointCloudHandle`.
-    pub fn recv_pointcloud(&self) -> Option<PointCloudHandle> {
+    /// Receive the next point cloud.
+    pub fn next(&self) -> Option<PointCloudHandle> {
         let descriptor = self.recv()?;
         let pool = self.pool();
         Some(PointCloudHandle::from_owned(descriptor, pool))
@@ -59,7 +60,7 @@ impl Topic<PointCloud> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::communication::is_pod;
+    use crate::communication::pod::is_pod;
 
     #[test]
     fn test_pointcloud_is_pod() {
@@ -75,10 +76,7 @@ mod tests {
     fn test_topic_pointcloud_roundtrip() {
         let topic: Topic<PointCloud> = Topic::new("test/pc_ext_roundtrip").unwrap();
 
-        // Allocate a 4-point XYZ cloud (4 * 3 * 4 = 48 bytes of data)
-        let handle = topic
-            .alloc_pointcloud(4, 3, TensorDtype::F32)
-            .unwrap();
+        let handle = topic.create(4, 3, TensorDtype::F32).unwrap();
 
         assert_eq!(handle.point_count(), 4);
         assert_eq!(handle.fields_per_point(), 3);
@@ -91,11 +89,9 @@ mod tests {
             floats[i] = (i as f32) * 0.1;
         }
 
-        // Send
-        topic.send_pointcloud(&handle);
+        topic.publish(&handle);
 
-        // Receive
-        let recv_handle = topic.recv_pointcloud().expect("should receive pointcloud");
+        let recv_handle = topic.next().expect("should receive pointcloud");
         assert_eq!(recv_handle.point_count(), 4);
         assert_eq!(recv_handle.fields_per_point(), 3);
 

@@ -6,7 +6,7 @@
 // ## Unified Image Type
 //
 // The primary `Image` type is a zero-copy Pod descriptor from `horus_types`.
-// Use `Topic<Image>` with `alloc_image()` / `send_image()` / `recv_image()`
+// Use `Topic<Image>` with `create()` / `publish()` / `next()`
 // for high-performance image pipelines.
 
 use horus_core::core::LogSummary;

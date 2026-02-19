@@ -17,14 +17,12 @@
 
 // Core message modules
 pub mod control;
-pub mod coordination;
 pub mod diagnostics;
 pub mod force;
 pub mod geometry;
 pub mod navigation;
 pub mod perception;
 pub mod sensor;
-pub mod timing;
 pub mod vision;
 
 // Pod/Zeroable types for zero-copy IPC
@@ -33,6 +31,9 @@ pub mod landmark;
 pub mod pointcloud;
 pub mod segmentation;
 pub mod tracking;
+
+// ML message types (serde-based, for flexible ML workflows)
+pub mod ml;
 
 // Input messages
 pub mod joystick_msg;
@@ -74,12 +75,6 @@ pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 pub use horus_types::{DepthImage, PointCloud};
 pub use perception::{PlaneDetection};
 
-// Coordination
-pub use coordination::{FleetStatus, FormationControl, RobotState, TaskAssignment};
-
-// Timing
-pub use timing::{ClockStats, ScheduledEvent, TimeSync, Timeline};
-
 // Tensor types for zero-copy ML workloads
 pub mod tensor;
 pub use tensor::{Device, HorusTensor, TensorDevice, TensorDtype};
@@ -95,13 +90,19 @@ pub use pointcloud::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
 pub use segmentation::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
+// ML types (serde-based)
+pub use ml::{
+    ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
+    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, MlTrajectoryPoint, ModelFormat,
+    ModelInfo, Pose, PoseArray, PoseKeypoint, Predictions, Tensor, TrainingMetrics,
+};
+
 // Input (existing)
 pub use joystick_msg::JoystickInput;
 pub use keyboard_input_msg::KeyboardInput;
 
 // Application (existing)
 pub use cmd_vel::CmdVel;
-
 
 // Imports for GenericMessage definition
 use horus_core::core::LogSummary;

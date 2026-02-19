@@ -105,18 +105,6 @@ impl AuthService {
         self.sessions.write().unwrap().remove(token);
     }
 
-    /// Clean up expired sessions (run periodically)
-    pub fn cleanup_expired_sessions(&self) {
-        let mut sessions = self.sessions.write().unwrap();
-        let expired_timeout = Duration::from_secs(3600);
-
-        sessions.retain(|_, session| session.last_used.elapsed() < expired_timeout);
-    }
-
-    /// Get active session count
-    pub fn active_session_count(&self) -> usize {
-        self.sessions.read().unwrap().len()
-    }
 }
 
 impl RateLimiter {

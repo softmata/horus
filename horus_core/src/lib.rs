@@ -62,7 +62,7 @@ pub(crate) mod utils;
 
 // Re-export commonly used types for easy access
 // Unified Topic API - the single way to create IPC channels
-pub use communication::{PodMessage, Topic, TopicDescriptor, TopicMetrics};
+pub use communication::{PodMessage, Topic};
 pub use core::{
     announce_started, announce_stopped, detect_isolated_cpus, detect_nohz_full_cpus,
     get_rt_recommended_cpus, pin_thread_to_core, HealthStatus, LogSummary, Node, NodeAnnouncement,
@@ -75,9 +75,6 @@ pub use error::{HorusError, HorusResult};
 pub use error::{Error, Result};
 pub use params::RuntimeParams;
 pub use scheduling::Scheduler;
-
-// Re-export communication traits for backend-agnostic usage
-pub use communication::traits::{Channel, Publisher, Subscriber};
 
 // Re-export driver utilities and traits
 pub use driver::{

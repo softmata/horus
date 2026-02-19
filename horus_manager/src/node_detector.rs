@@ -150,20 +150,6 @@ pub fn detect_features_from_file(file_path: &Path) -> std::io::Result<Vec<String
     Ok(nodes_to_features(&nodes))
 }
 
-/// Scan multiple files and detect all required features
-pub fn detect_features_from_files(file_paths: &[&Path]) -> std::io::Result<Vec<String>> {
-    let mut all_features = HashSet::new();
-
-    for file_path in file_paths {
-        let features = detect_features_from_file(file_path)?;
-        all_features.extend(features);
-    }
-
-    let mut feature_list: Vec<String> = all_features.into_iter().collect();
-    feature_list.sort();
-    Ok(feature_list)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

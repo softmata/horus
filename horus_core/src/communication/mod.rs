@@ -42,16 +42,9 @@
 //! ```
 
 pub mod topic;
-pub mod config;
 pub mod network;
 pub mod pod;
-pub mod traits;
 
 // Re-export commonly used types for convenience
-pub use topic::{
-    BackendHint, BackendMode, ConnectionState, MigrationMetrics, MigrationResult, Topic,
-    TopicConfig, TopicDescriptor, TopicMetrics, TopicRole,
-};
-pub use config::{EndpointConfig, HorusConfig};
-pub use pod::{is_pod, PodMessage};
-pub use traits::{Channel, Publisher, Subscriber};
+pub use topic::{BackendHint, Topic, TopicConfig};
+pub use pod::PodMessage;

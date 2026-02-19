@@ -1695,7 +1695,7 @@ mod topics_macro_test {
 
     #[test]
     fn topics_macro_publish_subscribe() {
-        let pub_t = Topic::publish(TEST_CMD_VEL).expect("publish");
+        let pub_t: Topic<Twist> = Topic::new(TEST_CMD_VEL.name()).expect("new");
         let sub_t = pub_t.clone();
         let cmd = Twist {
             linear: 1.5,

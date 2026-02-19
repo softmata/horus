@@ -474,14 +474,14 @@ fn test_topics_macro_with_nodes_pub_sub() {
     // 3. Run tick loop manually
     // 4. Verify data flows between nodes via typed topics
     //
-    // Note: Topic::publish/subscribe both call Topic::new() internally.
+    // Topic::from_descriptor() calls Topic::new() internally.
     // To share the same underlying backend (like clone()), we create one
     // Topic per name and clone it for the second node — this matches real
     // usage where nodes in the same process share Topic handles.
 
     // Create shared topic handles (one per topic name, cloned to each node)
-    let motor_topic = horus_core::Topic::publish(MOTOR_CMD).expect("create MOTOR_CMD");
-    let encoder_topic = horus_core::Topic::publish(ENCODER_FB).expect("create ENCODER_FB");
+    let motor_topic: horus_core::Topic<MotorCommand> = horus_core::Topic::new(MOTOR_CMD.name()).expect("create MOTOR_CMD");
+    let encoder_topic: horus_core::Topic<EncoderFeedback> = horus_core::Topic::new(ENCODER_FB.name()).expect("create ENCODER_FB");
 
     let mut controller = ControllerNode {
         cmd_pub: motor_topic.clone(),
@@ -535,17 +535,13 @@ fn test_topics_macro_type_safety_compile_time() {
     // This test verifies that the topics! macro produces correctly-typed descriptors.
     // If the types were wrong, this test wouldn't compile at all.
 
-    // MOTOR_CMD is TopicDescriptor<MotorCommand>
+    // MOTOR_CMD is TopicDescriptor<MotorCommand> — name() gives the topic string
     let _pub: horus_core::Topic<MotorCommand> =
-        horus_core::Topic::publish(MOTOR_CMD).expect("typed publish");
+        horus_core::Topic::new(MOTOR_CMD.name()).expect("typed topic");
 
     // ENCODER_FB is TopicDescriptor<EncoderFeedback>
     let _sub: horus_core::Topic<EncoderFeedback> =
-        horus_core::Topic::subscribe(ENCODER_FB).expect("typed subscribe");
-
-    // The following would NOT compile (type mismatch):
-    // let _bad: horus_core::Topic<String> = horus_core::Topic::publish(MOTOR_CMD);
-    //                                                                   ^^^^^^^^^ expected MotorCommand
+        horus_core::Topic::new(ENCODER_FB.name()).expect("typed topic");
 }
 
 #[test]
@@ -556,15 +552,15 @@ fn test_topics_macro_descriptor_names() {
 }
 
 #[test]
-fn test_topics_macro_roundtrip_with_publish_subscribe() {
-    // Direct roundtrip: publish a message via Topic::publish, receive via Topic::subscribe
+fn test_topics_macro_roundtrip_with_descriptor() {
+    // Direct roundtrip: create a topic from descriptor, send and receive
     // Uses a unique topic name to avoid shared-memory interference from parallel tests
 
     horus_core::topics! {
         ROUNDTRIP_TOPIC: MotorCommand = "test_roundtrip_motor_cmd",
     }
 
-    let publisher = horus_core::Topic::publish(ROUNDTRIP_TOPIC).expect("publish");
+    let publisher: horus_core::Topic<MotorCommand> = horus_core::Topic::new(ROUNDTRIP_TOPIC.name()).expect("new");
     let subscriber = publisher.clone();
 
     let cmd = MotorCommand {

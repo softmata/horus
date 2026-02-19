@@ -4351,33 +4351,8 @@ pub fn generate_signing_keypair() -> Result<()> {
     Ok(())
 }
 
-// ============================================================================
-// Public wrapper functions for use from main.rs
-// ============================================================================
-
-/// Public wrapper to add features to Cargo.toml (for horus driver add)
-pub fn add_features_to_cargo_toml_pub(workspace_path: &Path, features: &[String]) -> Result<()> {
-    add_features_to_cargo_toml(workspace_path, features)
-}
-
-/// Public wrapper to add cargo dependencies to Cargo.toml (for horus driver add)
-pub fn add_cargo_deps_pub(workspace_path: &Path, deps: &[String]) -> Result<()> {
-    add_cargo_deps_to_cargo_toml(workspace_path, deps)
-}
-
-/// Public wrapper to handle system dependencies (for horus driver add)
-pub fn handle_system_deps_pub(deps: &[String]) -> Result<()> {
-    handle_system_dependencies(deps)
-}
-
-/// Public wrapper to fetch package type from registry
+/// Fetch package type from registry
 pub fn fetch_package_type(package_name: &str) -> Result<String> {
     let client = RegistryClient::new();
     client.fetch_package_type(package_name)
-}
-
-/// Public wrapper to fetch driver metadata from registry
-pub fn fetch_driver_metadata(package_name: &str) -> Result<DriverMetadata> {
-    let client = RegistryClient::new();
-    client.fetch_driver_metadata(package_name)
 }

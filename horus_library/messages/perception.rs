@@ -7,7 +7,7 @@
 //
 // The primary `PointCloud` and `DepthImage` types are zero-copy Pod
 // descriptors from `horus_types`. Use `Topic<PointCloud>` with
-// `alloc_pointcloud()` / `send_pointcloud()` / `recv_pointcloud()`.
+// `create()` / `publish()` / `next()`.
 
 use crate::messages::geometry::{Point3, Vector3};
 use horus_core::core::LogSummary;

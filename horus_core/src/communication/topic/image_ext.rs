@@ -1,7 +1,7 @@
 //! Topic extension for `Topic<Image>` — zero-copy image pipeline
 //!
-//! Provides `alloc_image()`, `send_image()`, `recv_image()` methods on
-//! `Topic<Image>` that manage the tensor pool automatically.
+//! Provides `create()`, `publish()`, `next()` methods on `Topic<Image>`
+//! that manage the tensor pool automatically.
 
 use std::sync::Arc;
 
@@ -18,21 +18,20 @@ impl Topic<Image> {
         get_or_create_pool(self.name())
     }
 
-    /// Allocate an image from the topic's auto-managed pool.
+    /// Create a new image in shared memory.
     ///
-    /// Creates a tensor with shape `[height, width, channels]` and the dtype
-    /// inferred from the encoding. Returns an `ImageHandle` with RAII refcounting.
+    /// Allocates a tensor with shape `[height, width, channels]` from the
+    /// topic's auto-managed pool. The dtype is inferred from the encoding.
     ///
     /// # Example
     ///
     /// ```rust,ignore
     /// let topic: Topic<Image> = Topic::new("camera/rgb")?;
-    /// let mut img = topic.alloc_image(1080, 1920, ImageEncoding::Rgb8)?;
-    /// // Fill pixel data...
-    /// camera.capture_into(img.pixels_mut());
-    /// topic.send_image(&img);
+    /// let img = topic.create(480, 640, ImageEncoding::Rgb8)?;
+    /// img.pixels_mut()[0..3].copy_from_slice(&[255, 0, 0]);
+    /// topic.publish(&img);
     /// ```
-    pub fn alloc_image(
+    pub fn create(
         &self,
         height: u32,
         width: u32,
@@ -53,20 +52,21 @@ impl Topic<Image> {
         Ok(ImageHandle::from_owned(descriptor, pool))
     }
 
-    /// Send an image handle through this topic (zero-copy).
+    /// Publish an image (zero-copy).
     ///
-    /// Increments the tensor's refcount so it stays alive for the receiver,
-    /// then sends the 288-byte Image descriptor through the ring buffer.
-    /// Actual pixel data remains in shared memory.
-    pub fn send_image(&self, handle: &ImageHandle) {
+    /// Retains the tensor so it stays alive for receivers, then sends the
+    /// 288-byte descriptor through the ring buffer. Pixel data stays in
+    /// shared memory — no copy.
+    pub fn publish(&self, handle: &ImageHandle) {
         handle.pool().retain(handle.descriptor().tensor());
         self.send(*handle.descriptor());
     }
 
-    /// Receive an image and wrap it in an `ImageHandle` for safe data access.
+    /// Receive the next image.
     ///
-    /// Returns `None` if no message is available.
-    pub fn recv_image(&self) -> Option<ImageHandle> {
+    /// Returns `None` if no message is available. The returned handle
+    /// provides zero-copy access to the pixel data.
+    pub fn next(&self) -> Option<ImageHandle> {
         let descriptor = self.recv()?;
         let pool = self.pool();
         Some(ImageHandle::from_owned(descriptor, pool))
@@ -76,7 +76,7 @@ impl Topic<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::communication::is_pod;
+    use crate::communication::pod::is_pod;
 
     #[test]
     fn test_image_is_pod() {
@@ -92,10 +92,7 @@ mod tests {
     fn test_topic_image_roundtrip() {
         let topic: Topic<Image> = Topic::new("test/image_ext_roundtrip").unwrap();
 
-        // Allocate a small 2x3 RGB image
-        let handle = topic
-            .alloc_image(2, 3, ImageEncoding::Rgb8)
-            .unwrap();
+        let handle = topic.create(2, 3, ImageEncoding::Rgb8).unwrap();
 
         assert_eq!(handle.height(), 2);
         assert_eq!(handle.width(), 3);
@@ -109,11 +106,11 @@ mod tests {
             pixels[i] = i as u8;
         }
 
-        // Send (zero-copy — only descriptor through ring)
-        topic.send_image(&handle);
+        // Publish (zero-copy — only descriptor through ring)
+        topic.publish(&handle);
 
         // Receive
-        let recv_handle = topic.recv_image().expect("should receive image");
+        let recv_handle = topic.next().expect("should receive image");
         assert_eq!(recv_handle.height(), 2);
         assert_eq!(recv_handle.width(), 3);
         assert_eq!(recv_handle.channels(), 3);

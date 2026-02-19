@@ -263,8 +263,8 @@ impl TopicConfig {
     }
 
     /// Set the backend hint (ignored — Topic auto-selects optimal backend)
+    #[deprecated(note = "Backend hints are ignored. Topic auto-selects the optimal backend.")]
     pub fn with_backend(self, _hint: BackendHint) -> Self {
-        // Backend hint is ignored - Topic auto-selects optimal backend
         self
     }
 }

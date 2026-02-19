@@ -1289,15 +1289,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
 
-    /// Create a topic from a type-safe descriptor (publishing side).
-    pub fn publish(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
-        Self::new(descriptor.name())
-    }
-
-    /// Create a topic from a type-safe descriptor (subscribing side).
-    pub fn subscribe(descriptor: TopicDescriptor<T>) -> HorusResult<Self> {
-        Self::new(descriptor.name())
-    }
 
     /// Send a message (fire-and-forget with bounded retry).
     ///
@@ -1308,7 +1299,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     /// All other backends fall through to the function pointer dispatch, which
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
-    pub fn send(&self, msg: T) {
+    pub fn send(&self, msg: impl Into<T>) {
+        let msg: T = msg.into();
         if unlikely(self.log_fn.is_some()) {
             self.send_with_logging(msg);
             return;

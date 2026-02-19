@@ -218,7 +218,7 @@ pub mod prelude {
     // ============================================
     // Runtime Parameters
     // ============================================
-    pub use horus_core::params::{ParamMetadata, RuntimeParams, ValidationRule};
+    pub use horus_core::params::{ParamMetadata, RuntimeParams};
 
     // ============================================
     // Macros
@@ -259,23 +259,12 @@ pub mod prelude {
     };
 
     // ============================================
-    // Communication Traits (Backend-agnostic)
-    // ============================================
-    pub use horus_core::communication::traits::{Channel, Publisher, Subscriber};
-
-    // ============================================
     // Node Infrastructure
     // ============================================
     // Core node types (Node, Topic) are re-exported from horus_core above.
     // Users implement their own nodes using these building blocks.
     // See horus_library::nodes module documentation for usage patterns.
 
-    // ============================================
-    // Network Communication
-    // ============================================
-    pub use horus_core::communication::network::{
-        NetworkError, NetworkErrorCode, NetworkErrorContext,
-    };
 }
 
 /// Version information
