@@ -610,6 +610,10 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
         let data_ptr = slot_ptr.add(16);
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
     }
+    // Ensure volatile data writes are visible before publishing the new sequence.
+    // The Release store below provides this on most architectures, but the explicit
+    // fence matches the pattern in send_shm_mp_serde for formal correctness.
+    std::sync::atomic::fence(Ordering::Release);
 
     let new_seq = seq.wrapping_add(1);
     local.local_head = new_seq;
@@ -949,7 +953,10 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    loop {
+    // Bounded retry: with N consumers, CAS fails at most N-1 times per message.
+    // 8 retries covers up to 8 competing consumers; if all fail, return None
+    // and let the caller retry on next poll (avoids unbounded spinning).
+    for _attempt in 0..8 {
         let tail = header.tail.load(Ordering::Acquire);
         if tail >= local.local_head {
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
@@ -975,6 +982,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         }
         std::hint::spin_loop();
     }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,7 +1411,8 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     let header = unsafe { &*local.cached_header_ptr };
     let mask = local.cached_capacity_mask;
 
-    loop {
+    // Bounded retry: avoids unbounded spinning under consumer contention.
+    for _attempt in 0..8 {
         let tail = header.tail.load(Ordering::Acquire);
         let index = (tail & mask) as usize;
 
@@ -1424,6 +1433,7 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
         }
         std::hint::spin_loop();
     }
+    None
 }
 
 // ---------------------------------------------------------------------------

@@ -64,9 +64,13 @@ impl<T> SpmcRing<T> {
     }
 
     /// Try to receive (multiple consumers — CAS on tail).
+    ///
+    /// Bounded retry: up to 8 CAS attempts to prevent unbounded spinning
+    /// under high consumer contention. Returns None if all attempts fail;
+    /// the caller retries on the next poll.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
-        loop {
+        for _attempt in 0..8 {
             let tail = self.tail.0.load(Ordering::Acquire);
             let head = self.head.0.load(Ordering::Acquire);
             if tail >= head {
@@ -94,6 +98,7 @@ impl<T> SpmcRing<T> {
             }
             std::hint::spin_loop();
         }
+        None
     }
 
     /// Read the most recent message without advancing any consumer.
