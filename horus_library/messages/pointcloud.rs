@@ -152,92 +152,6 @@ impl PointXYZI {
     }
 }
 
-/// Point cloud header for array transmission
-///
-/// This header is sent before the point data array via IPC.
-///
-/// Size: 64 bytes
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, Pod, Zeroable)]
-pub struct PointCloudHeader {
-    /// Number of points in the cloud
-    pub num_points: u64,
-    /// Point type: 0=XYZ, 1=XYZRGB, 2=XYZI
-    pub point_type: u32,
-    /// Bytes per point
-    pub point_stride: u32,
-    /// Timestamp (nanoseconds since epoch)
-    pub timestamp_ns: u64,
-    /// Sequence number
-    pub seq: u64,
-    /// Frame ID (sensor/coordinate frame)
-    pub frame_id: [u8; 32],
-}
-
-impl PointCloudHeader {
-    /// Create header for PointXYZ cloud
-    pub fn xyz(num_points: u64) -> Self {
-        Self {
-            num_points,
-            point_type: 0,
-            point_stride: std::mem::size_of::<PointXYZ>() as u32,
-            timestamp_ns: 0,
-            seq: 0,
-            frame_id: [0u8; 32],
-        }
-    }
-
-    /// Create header for PointXYZRGB cloud
-    pub fn xyzrgb(num_points: u64) -> Self {
-        Self {
-            num_points,
-            point_type: 1,
-            point_stride: std::mem::size_of::<PointXYZRGB>() as u32,
-            timestamp_ns: 0,
-            seq: 0,
-            frame_id: [0u8; 32],
-        }
-    }
-
-    /// Create header for PointXYZI cloud
-    pub fn xyzi(num_points: u64) -> Self {
-        Self {
-            num_points,
-            point_type: 2,
-            point_stride: std::mem::size_of::<PointXYZI>() as u32,
-            timestamp_ns: 0,
-            seq: 0,
-            frame_id: [0u8; 32],
-        }
-    }
-
-    /// Set frame ID
-    pub fn with_frame_id(mut self, frame_id: &str) -> Self {
-        let bytes = frame_id.as_bytes();
-        let len = bytes.len().min(31);
-        self.frame_id[..len].copy_from_slice(&bytes[..len]);
-        self.frame_id[len..].fill(0);
-        self
-    }
-
-    /// Set timestamp
-    pub fn with_timestamp(mut self, timestamp_ns: u64) -> Self {
-        self.timestamp_ns = timestamp_ns;
-        self
-    }
-
-    /// Get frame ID as string
-    pub fn get_frame_id(&self) -> &str {
-        let end = self.frame_id.iter().position(|&b| b == 0).unwrap_or(32);
-        std::str::from_utf8(&self.frame_id[..end]).unwrap_or("")
-    }
-
-    /// Calculate total data size
-    pub fn data_size(&self) -> usize {
-        (self.num_points as usize) * (self.point_stride as usize)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,11 +169,6 @@ mod tests {
     #[test]
     fn test_point_xyzi_size() {
         assert_eq!(std::mem::size_of::<PointXYZI>(), 16);
-    }
-
-    #[test]
-    fn test_header_size() {
-        assert_eq!(std::mem::size_of::<PointCloudHeader>(), 64);
     }
 
     #[test]
@@ -282,21 +191,6 @@ mod tests {
         assert_eq!(packed >> 24, 255);
         assert_eq!((packed >> 16) & 0xFF, 128);
         assert_eq!((packed >> 8) & 0xFF, 64);
-    }
-
-    #[test]
-    fn test_header_data_size() {
-        let header = PointCloudHeader::xyz(1000);
-        assert_eq!(header.data_size(), 1000 * 12);
-
-        let header_rgb = PointCloudHeader::xyzrgb(500);
-        assert_eq!(header_rgb.data_size(), 500 * 16);
-    }
-
-    #[test]
-    fn test_header_frame_id() {
-        let header = PointCloudHeader::xyz(100).with_frame_id("lidar_front");
-        assert_eq!(header.get_frame_id(), "lidar_front");
     }
 
     #[test]

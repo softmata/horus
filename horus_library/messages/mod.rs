@@ -62,7 +62,7 @@ pub use diagnostics::{
 };
 
 // Vision — unified Image + ImageEncoding from horus_types, others from vision module
-pub use horus_types::{Image, ImageEncoding};
+pub use horus_types::ImageEncoding;
 pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
 
 // Navigation
@@ -71,22 +71,19 @@ pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 
-// Perception — unified PointCloud + DepthImage from horus_types, others from perception module
-pub use horus_types::{DepthImage, PointCloud};
+// Perception
 pub use perception::{PlaneDetection};
 
-// Tensor types for zero-copy ML workloads
-pub mod tensor;
-pub use tensor::{Device, HorusTensor, TensorDevice, TensorDtype};
+// Domain-specific types (RAII wrappers with rich API for data access)
+pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
-
-// Domain-specific handles (RAII wrappers with rich API for data access)
-pub use horus_core::memory::{DepthImageHandle, ImageHandle, PointCloudHandle};
+// Domain-specific topics (new(), send(), recv() only)
+pub use horus_core::communication::topic::{DepthTopic, ImageTopic, PointCloudTopic};
 
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
-pub use pointcloud::{PointCloudHeader, PointXYZ, PointXYZI, PointXYZRGB};
+pub use pointcloud::{PointXYZ, PointXYZI, PointXYZRGB};
 pub use segmentation::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 

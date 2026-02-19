@@ -72,7 +72,7 @@ pub mod prelude {
     // Scheduler Configuration Types
     // ============================================
     pub use horus_core::scheduling::{
-        ConfigValue, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
+        FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
         ResourceConfig, TimingConfig,
     };
 
@@ -95,11 +95,6 @@ pub mod prelude {
         WCETEnforcer,
         Watchdog,
     };
-
-    // ============================================
-    // Executors
-    // ============================================
-    pub use horus_core::scheduling::ParallelExecutor;
 
     // ============================================
     // Telemetry
@@ -166,8 +161,8 @@ pub mod prelude {
     // ============================================
     pub use horus_core::memory::{shm_base_dir, TensorHandle, TensorPool, TensorPoolConfig};
 
-    // Domain-specific handles (RAII wrappers with rich API for data access)
-    pub use horus_core::memory::{DepthImageHandle, ImageHandle, PointCloudHandle};
+    // Domain-specific types (RAII wrappers with rich API for data access)
+    pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
     // CUDA support (requires "cuda" feature)
     #[cfg(feature = "cuda")]
@@ -197,16 +192,12 @@ pub mod prelude {
     // Message Types (ALL from horus_library)
     // ============================================
     pub use horus_types::{Device, HorusTensor, TensorDtype};
-    // Backward-compatible alias
-    pub use horus_library::messages::tensor::TensorDevice;
     // Re-export all message types from horus_library
     pub use horus_library::messages::*;
 
     // ============================================
-    // Error Types (clean aliases - no Horus prefix)
+    // Error Types
     // ============================================
-    pub use horus_core::error::{Error, Result};
-    // Backward compatibility - users can still use HorusError/HorusResult
     pub use horus_core::error::{HorusError, HorusResult};
 
     // ============================================
@@ -250,7 +241,7 @@ pub mod prelude {
     // Driver & Plugin System
     // ============================================
     pub use horus_core::driver::{
-        Actuator, Driver, DriverCategory, DriverStatus, DriversConfig, Sensor, SingleDriverConfig,
+        DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig,
     };
     pub use horus_core::plugin::{
         AutoDetectable, BackendHealth, BackendId, BackendInfo, DriverPlugin,
