@@ -209,11 +209,6 @@ impl PyNodeBuilder {
         slf
     }
 
-    /// Alias for order() - set execution priority.
-    fn priority(slf: PyRefMut<'_, Self>, priority: u32) -> PyRefMut<'_, Self> {
-        Self::order(slf, priority)
-    }
-
     /// Set node-specific tick rate in Hz.
     fn rate_hz(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
         slf.rate_hz = Some(rate);

@@ -1,18 +1,11 @@
 /// Network communication utilities for HORUS
 ///
 /// This module provides network-related utilities:
-/// - Developer-friendly network error handling
 /// - mDNS/DNS-SD node discovery (behind `mdns` feature)
-
-// Developer-friendly network error handling
-pub mod network_error;
 
 // mDNS/DNS-SD for zero-config networking
 #[cfg(feature = "mdns")]
 pub mod mdns;
-
-// Network error re-exports
-pub use network_error::{NetworkError, NetworkErrorCode, NetworkErrorContext};
 
 // mDNS re-exports
 #[cfg(feature = "mdns")]

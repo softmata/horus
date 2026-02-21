@@ -143,20 +143,12 @@ pub fn lock_all_memory() -> RuntimeResult<()> {
     ))
 }
 
-/// Pre-fault stack memory to avoid page faults during execution
+/// Pre-fault stack memory to avoid page faults during execution.
+///
+/// Delegates to [`crate::core::rt_config::prefault_stack`] which uses
+/// recursive stack touching with `black_box` for reliable prefaulting.
 pub fn prefault_stack(stack_size: usize) -> RuntimeResult<()> {
-    // Allocate and touch stack memory to force page allocation
-    let mut stack_buffer = vec![0u8; stack_size];
-
-    // Touch every page (typically 4KB)
-    let page_size = 4096;
-    for i in (0..stack_size).step_by(page_size) {
-        stack_buffer[i] = 1;
-    }
-
-    // Prevent optimization from removing the touches
-    std::hint::black_box(&stack_buffer);
-
+    crate::core::rt_config::prefault_stack(stack_size);
     println!("[RT] Pre-faulted {}KB of stack", stack_size / 1024);
     Ok(())
 }

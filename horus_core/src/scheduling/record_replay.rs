@@ -114,6 +114,47 @@ impl RecordingConfig {
     }
 }
 
+/// Convert YAML-based recording config to runtime recording config.
+///
+/// This bridges the declarative `SchedulerConfig` preset system with the
+/// runtime `RecordingConfig` used by `NodeRecorder` and `Scheduler::enable_recording_with_config()`.
+impl From<super::config::RecordingConfigYaml> for RecordingConfig {
+    fn from(yaml: super::config::RecordingConfigYaml) -> Self {
+        let base_dir = yaml
+            .output_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(RECORDINGS_DIR)
+            });
+
+        let session_name = yaml.session_name.unwrap_or_else(|| {
+            format!(
+                "recording_{}",
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            )
+        });
+
+        Self {
+            session_name,
+            base_dir,
+            max_size: if yaml.max_size_mb > 0 {
+                yaml.max_size_mb * 1024 * 1024
+            } else {
+                MAX_RECORDING_SIZE
+            },
+            compress: yaml.compress,
+            interval: yaml.interval as u64,
+            include_nodes: yaml.include_nodes,
+            exclude_nodes: yaml.exclude_nodes,
+        }
+    }
+}
+
 /// A snapshot of a node's state at a specific tick
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTickSnapshot {
@@ -782,71 +823,6 @@ impl Node for ReplayNode {
 }
 
 // ============================================================================
-// Compression utilities using flate2 (gzip)
-// ============================================================================
-
-/// Compress data using gzip.
-/// Level 0-9, where 0 is no compression and 9 is maximum compression.
-/// Level 6 is the default balance between speed and compression ratio.
-pub fn compress_data(data: &[u8], level: i32) -> std::io::Result<Vec<u8>> {
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-    use std::io::Write;
-
-    let compression_level = Compression::new(level.clamp(0, 9) as u32);
-    let mut encoder = GzEncoder::new(Vec::new(), compression_level);
-    encoder.write_all(data)?;
-    encoder.finish()
-}
-
-/// Decompress gzip-compressed data.
-pub fn decompress_data(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-
-    let mut decoder = GzDecoder::new(data);
-    let mut decompressed = Vec::new();
-    decoder.read_to_end(&mut decompressed)?;
-    Ok(decompressed)
-}
-
-/// Save a recording with optional compression.
-pub fn save_recording_compressed(
-    recording: &NodeRecording,
-    path: &PathBuf,
-    compress: bool,
-) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let serialized =
-        bincode::serialize(recording).map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    let data = if compress {
-        compress_data(&serialized, 3)? // Level 3 is a good balance
-    } else {
-        serialized
-    };
-
-    fs::write(path, data)
-}
-
-/// Load a recording with automatic decompression detection.
-pub fn load_recording_compressed(path: &PathBuf) -> std::io::Result<NodeRecording> {
-    let data = fs::read(path)?;
-
-    // Try to detect if compressed (gzip magic number: 0x1F 0x8B)
-    let decompressed = if data.len() >= 2 && data[0] == 0x1F && data[1] == 0x8B {
-        decompress_data(&data)?
-    } else {
-        data
-    };
-
-    bincode::deserialize(&decompressed).map_err(|e| std::io::Error::other(e.to_string()))
-}
-
-// ============================================================================
 // Advanced Debugging: Breakpoints, Stepping, Watch Expressions
 // ============================================================================
 
@@ -1511,321 +1487,6 @@ impl ReplayDebugger {
     /// Get mutable access to the underlying replayer
     pub fn replayer_mut(&mut self) -> &mut NodeReplayer {
         &mut self.replayer
-    }
-}
-
-// ============================================================================
-// Auto-Recording Triggers
-// ============================================================================
-
-/// Trigger condition for auto-recording
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AutoRecordTrigger {
-    /// Start recording when an error occurs
-    OnError {
-        /// Error patterns to match (in topic names or data)
-        patterns: Vec<String>,
-    },
-    /// Start recording when a condition is met
-    OnCondition {
-        /// Topic to monitor
-        topic: String,
-        /// Condition type
-        condition: TriggerCondition,
-    },
-    /// Start recording when a specific topic receives data
-    OnTopicActivity {
-        /// Topic to monitor
-        topic: String,
-    },
-    /// Start recording when execution time exceeds threshold
-    OnSlowExecution {
-        /// Threshold in nanoseconds
-        threshold_ns: u64,
-    },
-}
-
-/// Condition for OnCondition trigger
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TriggerCondition {
-    /// Data equals specific bytes
-    DataEquals(Vec<u8>),
-    /// Data contains specific bytes
-    DataContains(Vec<u8>),
-    /// Data length exceeds threshold
-    LengthExceeds(usize),
-    /// Any data received
-    AnyData,
-}
-
-/// Configuration for auto-recording
-#[derive(Debug, Clone)]
-pub struct AutoRecordConfig {
-    /// The trigger that starts recording
-    pub trigger: AutoRecordTrigger,
-    /// Number of ticks to keep before trigger (circular buffer)
-    pub pre_trigger_ticks: usize,
-    /// Number of ticks to record after trigger
-    pub post_trigger_ticks: usize,
-    /// Session name prefix
-    pub session_prefix: String,
-    /// Whether to compress recordings
-    pub compress: bool,
-    /// Maximum number of auto-recordings to keep
-    pub max_recordings: usize,
-}
-
-impl Default for AutoRecordConfig {
-    fn default() -> Self {
-        Self {
-            trigger: AutoRecordTrigger::OnError {
-                patterns: vec!["error".to_string()],
-            },
-            pre_trigger_ticks: 100,
-            post_trigger_ticks: 50,
-            session_prefix: "auto".to_string(),
-            compress: true,
-            max_recordings: 10,
-        }
-    }
-}
-
-impl AutoRecordConfig {
-    /// Create config for error recording
-    pub fn on_error() -> Self {
-        Self {
-            trigger: AutoRecordTrigger::OnError {
-                patterns: vec!["error".to_string(), "fault".to_string(), "fail".to_string()],
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Create config for slow execution recording
-    pub fn on_slow_execution(threshold_ms: u64) -> Self {
-        Self {
-            trigger: AutoRecordTrigger::OnSlowExecution {
-                threshold_ns: threshold_ms * 1_000_000,
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Create config for topic activity
-    pub fn on_topic(topic: &str) -> Self {
-        Self {
-            trigger: AutoRecordTrigger::OnTopicActivity {
-                topic: topic.to_string(),
-            },
-            ..Default::default()
-        }
-    }
-
-    /// Set pre-trigger buffer size
-    pub fn with_pre_trigger(mut self, ticks: usize) -> Self {
-        self.pre_trigger_ticks = ticks;
-        self
-    }
-
-    /// Set post-trigger recording length
-    pub fn with_post_trigger(mut self, ticks: usize) -> Self {
-        self.post_trigger_ticks = ticks;
-        self
-    }
-}
-
-/// Auto-recorder that monitors and triggers recording automatically
-pub struct AutoRecorder {
-    /// Configuration
-    config: AutoRecordConfig,
-    /// Circular buffer for pre-trigger snapshots
-    pre_buffer: std::collections::VecDeque<NodeTickSnapshot>,
-    /// Post-trigger snapshots being recorded
-    post_buffer: Vec<NodeTickSnapshot>,
-    /// Whether we're in triggered state
-    triggered: bool,
-    /// Remaining post-trigger ticks to record
-    post_remaining: usize,
-    /// Node info
-    node_name: String,
-    node_id: String,
-    /// Recordings that have been completed
-    completed_recordings: Vec<PathBuf>,
-    /// Base directory for recordings
-    base_dir: PathBuf,
-}
-
-impl AutoRecorder {
-    pub fn new(node_name: &str, node_id: &str, config: AutoRecordConfig) -> Self {
-        let base_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(RECORDINGS_DIR)
-            .join("auto");
-
-        Self {
-            config,
-            pre_buffer: std::collections::VecDeque::new(),
-            post_buffer: Vec::new(),
-            triggered: false,
-            post_remaining: 0,
-            node_name: node_name.to_string(),
-            node_id: node_id.to_string(),
-            completed_recordings: Vec::new(),
-            base_dir,
-        }
-    }
-
-    /// Process a tick snapshot
-    pub fn process_tick(&mut self, snapshot: NodeTickSnapshot) -> Option<PathBuf> {
-        if self.triggered {
-            // Recording post-trigger
-            self.post_buffer.push(snapshot);
-            self.post_remaining = self.post_remaining.saturating_sub(1);
-
-            if self.post_remaining == 0 {
-                // Finished recording, save it
-                return self.save_recording();
-            }
-        } else {
-            // Check if trigger condition is met
-            if self.check_trigger(&snapshot) {
-                self.triggered = true;
-                self.post_remaining = self.config.post_trigger_ticks;
-                // Start post-trigger recording
-                self.post_buffer.push(snapshot);
-            } else {
-                // Add to circular buffer
-                self.pre_buffer.push_back(snapshot);
-                while self.pre_buffer.len() > self.config.pre_trigger_ticks {
-                    self.pre_buffer.pop_front();
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Check if the trigger condition is met
-    fn check_trigger(&self, snapshot: &NodeTickSnapshot) -> bool {
-        match &self.config.trigger {
-            AutoRecordTrigger::OnError { patterns } => {
-                // Check topic names and data for error patterns
-                for topic in snapshot.outputs.keys().chain(snapshot.inputs.keys()) {
-                    for pattern in patterns {
-                        if topic.to_lowercase().contains(&pattern.to_lowercase()) {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-            AutoRecordTrigger::OnCondition { topic, condition } => {
-                let data = snapshot
-                    .outputs
-                    .get(topic)
-                    .or_else(|| snapshot.inputs.get(topic));
-
-                match (data, condition) {
-                    (Some(data), TriggerCondition::DataEquals(expected)) => data == expected,
-                    (Some(data), TriggerCondition::DataContains(needle)) => {
-                        data.windows(needle.len()).any(|w| w == needle.as_slice())
-                    }
-                    (Some(data), TriggerCondition::LengthExceeds(threshold)) => {
-                        data.len() > *threshold
-                    }
-                    (Some(_), TriggerCondition::AnyData) => true,
-                    (None, _) => false,
-                }
-            }
-            AutoRecordTrigger::OnTopicActivity { topic } => {
-                snapshot.outputs.contains_key(topic) || snapshot.inputs.contains_key(topic)
-            }
-            AutoRecordTrigger::OnSlowExecution { threshold_ns } => {
-                snapshot.duration_ns > *threshold_ns
-            }
-        }
-    }
-
-    /// Save the completed recording
-    fn save_recording(&mut self) -> Option<PathBuf> {
-        let session_name = format!(
-            "{}_{}_{}",
-            self.config.session_prefix,
-            self.node_name,
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        );
-
-        let mut recording = NodeRecording::new(&self.node_name, &self.node_id, &session_name);
-
-        // Add pre-trigger snapshots
-        for snapshot in self.pre_buffer.drain(..) {
-            recording.add_snapshot(snapshot);
-        }
-
-        // Add post-trigger snapshots
-        for snapshot in self.post_buffer.drain(..) {
-            recording.add_snapshot(snapshot);
-        }
-
-        recording.finish();
-
-        // Save to file
-        let path = self.base_dir.join(&session_name).join(format!(
-            "{}@{}.{}",
-            self.node_name, self.node_id, RECORDING_EXT
-        ));
-
-        if let Err(e) = recording.save(&path) {
-            eprintln!("Failed to save auto-recording: {}", e);
-            self.triggered = false;
-            return None;
-        }
-
-        self.completed_recordings.push(path.clone());
-
-        // Clean up old recordings if we have too many
-        while self.completed_recordings.len() > self.config.max_recordings {
-            if let Some(old_path) = self.completed_recordings.first() {
-                if let Some(parent) = old_path.parent() {
-                    let _ = fs::remove_dir_all(parent);
-                }
-            }
-            self.completed_recordings.remove(0);
-        }
-
-        self.triggered = false;
-        Some(path)
-    }
-
-    /// Reset the auto-recorder
-    pub fn reset(&mut self) {
-        self.pre_buffer.clear();
-        self.post_buffer.clear();
-        self.triggered = false;
-        self.post_remaining = 0;
-    }
-
-    /// Check if currently recording (post-trigger)
-    pub fn is_recording(&self) -> bool {
-        self.triggered
-    }
-
-    /// Get completed recordings
-    pub fn completed_recordings(&self) -> &[PathBuf] {
-        &self.completed_recordings
-    }
-
-    /// Get the pre-trigger buffer contents (for inspection)
-    pub fn pre_buffer(&self) -> &std::collections::VecDeque<NodeTickSnapshot> {
-        &self.pre_buffer
-    }
-
-    /// Get remaining post-trigger ticks
-    pub fn post_remaining(&self) -> usize {
-        self.post_remaining
     }
 }
 

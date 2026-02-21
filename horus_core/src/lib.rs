@@ -54,7 +54,7 @@ pub mod error;
 pub mod memory;
 pub mod params;
 pub mod scheduling;
-pub mod terminal;
+pub(crate) mod terminal;
 pub mod types;
 pub(crate) mod utils;
 

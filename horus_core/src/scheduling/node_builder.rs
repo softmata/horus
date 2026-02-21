@@ -87,13 +87,6 @@ impl NodeRegistration {
         self
     }
 
-    /// Alias for `order()` - set execution priority.
-    ///
-    /// Note: Lower values = higher priority (executed first).
-    pub fn priority(self, priority: u32) -> Self {
-        self.order(priority)
-    }
-
     /// Set a node-specific tick rate in Hz.
     ///
     /// If not set, the node uses the scheduler's global tick rate.
@@ -265,11 +258,6 @@ impl<'a> NodeBuilder<'a> {
     pub fn order(mut self, order: u32) -> Self {
         self.config = self.config.order(order);
         self
-    }
-
-    /// Alias for `order()` - set execution priority.
-    pub fn priority(self, priority: u32) -> Self {
-        self.order(priority)
     }
 
     /// Set a node-specific tick rate in Hz.

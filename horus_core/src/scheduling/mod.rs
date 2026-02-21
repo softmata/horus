@@ -77,14 +77,7 @@ pub use blackbox::{create_shared_blackbox, BlackBox, BlackBoxEvent, SharedBlackB
 
 // Re-export record/replay (public API)
 pub use record_replay::{
-    compress_data,
-    decompress_data,
     diff_recordings,
-    load_recording_compressed,
-    save_recording_compressed,
-    AutoRecordConfig,
-    AutoRecordTrigger,
-    AutoRecorder,
     Breakpoint,
     BreakpointCondition,
     DebugEvent,
@@ -99,7 +92,6 @@ pub use record_replay::{
     RecordingManager,
     ReplayDebugger,
     SchedulerRecording,
-    TriggerCondition,
     WatchExpression,
     WatchType,
     WatchValue,

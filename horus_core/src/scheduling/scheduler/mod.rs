@@ -536,78 +536,19 @@ impl Scheduler {
         Self::new().with_config(super::config::SchedulerConfig::hard_realtime())
     }
 
-    /// Internal: Apply RT priority without error on failure.
+    /// Internal: Apply RT priority (delegates to rt module).
     fn apply_rt_priority_internal(&self, priority: i32) -> crate::error::HorusResult<()> {
-        #[cfg(target_os = "linux")]
-        // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
-        unsafe {
-            use libc::{sched_param, sched_setscheduler, SCHED_FIFO};
-
-            let param = sched_param {
-                sched_priority: priority,
-            };
-
-            if sched_setscheduler(0, SCHED_FIFO, &param) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!("sched_setscheduler failed: {}", err));
-            }
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "RT priority only on Linux".to_string(),
-            ))
-        }
+        super::rt::set_realtime_priority(priority).map_err(Into::into)
     }
 
-    /// Internal: Apply memory locking without error on failure.
+    /// Internal: Apply memory locking (delegates to rt module).
     fn apply_memory_lock_internal(&self) -> crate::error::HorusResult<()> {
-        #[cfg(target_os = "linux")]
-        // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
-        unsafe {
-            use libc::{mlockall, MCL_CURRENT, MCL_FUTURE};
-
-            if mlockall(MCL_CURRENT | MCL_FUTURE) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!("mlockall failed: {}", err));
-            }
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "Memory locking only on Linux".to_string(),
-            ))
-        }
+        super::rt::lock_all_memory().map_err(Into::into)
     }
 
-    /// Internal: Apply CPU affinity without error on failure.
+    /// Internal: Apply CPU affinity (delegates to rt module).
     fn apply_cpu_affinity_internal(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
-        #[cfg(target_os = "linux")]
-        // SAFETY: pid 0 = current thread; cpuset is properly zeroed and initialized with valid cpu_id.
-        unsafe {
-            use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
-
-            let mut cpuset: cpu_set_t = std::mem::zeroed();
-            CPU_ZERO(&mut cpuset);
-            CPU_SET(cpu_id, &mut cpuset);
-
-            if sched_setaffinity(0, std::mem::size_of::<cpu_set_t>(), &cpuset) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!("sched_setaffinity failed: {}", err));
-            }
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "CPU affinity only on Linux".to_string(),
-            ))
-        }
+        super::rt::set_thread_affinity(&[cpu_id]).map_err(Into::into)
     }
 
     /// Get the detected runtime capabilities.

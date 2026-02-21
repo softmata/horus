@@ -34,6 +34,7 @@ static TERMINAL_RAW_MODE: AtomicBool = AtomicBool::new(false);
 /// # Arguments
 ///
 /// * `enabled` - Whether raw terminal mode is enabled
+#[allow(dead_code)]
 pub fn set_raw_mode(enabled: bool) {
     TERMINAL_RAW_MODE.store(enabled, Ordering::SeqCst);
 }

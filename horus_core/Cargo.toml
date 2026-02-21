@@ -32,8 +32,6 @@ chrono = { version = "0.4", features = ["serde", "std"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 dirs = "5.0"
 lazy_static = "1.4"
-flate2 = "1.0"  # Compression for record/replay
-sha2 = "0.10"   # SHA256 checksums for model verification
 
 # Error handling
 thiserror = "1.0"
