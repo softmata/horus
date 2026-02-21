@@ -59,6 +59,16 @@ impl std::fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
+impl From<RuntimeError> for crate::error::HorusError {
+    fn from(err: RuntimeError) -> Self {
+        match err {
+            RuntimeError::PermissionDenied(msg) => crate::error::HorusError::PermissionDenied(msg),
+            RuntimeError::NotSupported(msg) => crate::error::HorusError::Unsupported(msg),
+            other => crate::error::HorusError::Scheduling(other.to_string()),
+        }
+    }
+}
+
 // ============================================================================
 // CPU Core Affinity
 // ============================================================================

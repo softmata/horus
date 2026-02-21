@@ -92,6 +92,12 @@ impl std::fmt::Display for CudaError {
 
 impl std::error::Error for CudaError {}
 
+impl From<CudaError> for crate::error::HorusError {
+    fn from(err: CudaError) -> Self {
+        crate::error::HorusError::Memory(err.to_string())
+    }
+}
+
 /// CUDA IPC memory handle — 64 bytes opaque data
 #[repr(C)]
 #[derive(Clone, Copy)]

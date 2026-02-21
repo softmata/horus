@@ -51,6 +51,21 @@ pub enum HFrameError {
     ConfigError(String),
 }
 
+impl From<HFrameError> for horus_core::error::HorusError {
+    fn from(err: HFrameError) -> Self {
+        match err {
+            HFrameError::FrameNotFound(name) => {
+                horus_core::error::HorusError::NotFound(format!("Frame '{}'", name))
+            }
+            HFrameError::FrameAlreadyExists(name) => {
+                horus_core::error::HorusError::AlreadyExists(format!("Frame '{}'", name))
+            }
+            HFrameError::ConfigError(msg) => horus_core::error::HorusError::Config(msg),
+            other => horus_core::error::HorusError::Communication(other.to_string()),
+        }
+    }
+}
+
 /// Result type for HFrame operations
 pub type HFrameResult<T> = Result<T, HFrameError>;
 
