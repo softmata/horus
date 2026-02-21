@@ -11,33 +11,9 @@
 
 use crate::messages::geometry::{Point3, Vector3};
 use horus_core::core::LogSummary;
-use horus_macros::LogSummary;
+use horus_types::TensorDtype;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
-
-/// Point field description for flexible point cloud data
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[repr(u8)]
-#[derive(Default, LogSummary)]
-pub enum PointFieldType {
-    /// 8-bit integer
-    Int8 = 1,
-    /// 8-bit unsigned integer
-    UInt8 = 2,
-    /// 16-bit integer
-    Int16 = 3,
-    /// 16-bit unsigned integer
-    UInt16 = 4,
-    /// 32-bit integer
-    Int32 = 5,
-    /// 32-bit unsigned integer
-    UInt32 = 6,
-    /// 32-bit float
-    #[default]
-    Float32 = 7,
-    /// 64-bit float
-    Float64 = 8,
-}
 
 /// Point field descriptor
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -46,15 +22,15 @@ pub struct PointField {
     pub name: [u8; 16],
     /// Byte offset in point data structure
     pub offset: u32,
-    /// Data type of this field
-    pub datatype: PointFieldType,
+    /// Data type of this field (uses canonical TensorDtype from horus_types)
+    pub datatype: TensorDtype,
     /// Number of elements (1 for scalar, >1 for vector/array)
     pub count: u32,
 }
 
 impl PointField {
     /// Create a new point field
-    pub fn new(name: &str, offset: u32, datatype: PointFieldType, count: u32) -> Self {
+    pub fn new(name: &str, offset: u32, datatype: TensorDtype, count: u32) -> Self {
         let mut field = Self {
             offset,
             datatype,
@@ -78,13 +54,7 @@ impl PointField {
 
     /// Get size in bytes of this field
     pub fn field_size(&self) -> u32 {
-        let type_size = match self.datatype {
-            PointFieldType::Int8 | PointFieldType::UInt8 => 1,
-            PointFieldType::Int16 | PointFieldType::UInt16 => 2,
-            PointFieldType::Int32 | PointFieldType::UInt32 | PointFieldType::Float32 => 4,
-            PointFieldType::Float64 => 8,
-        };
-        type_size * self.count
+        self.datatype.element_size() as u32 * self.count
     }
 }
 
@@ -176,7 +146,7 @@ pub struct PlaneArray {
 
 impl LogSummary for PointField {
     fn log_summary(&self) -> String {
-        format!("PointField('{}', {:?})", self.name_str(), self.datatype)
+        format!("PointField('{}', {})", self.name_str(), self.datatype)
     }
 }
 

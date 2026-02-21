@@ -7,24 +7,9 @@
 // of vision/perception data, see the Pod types in detection.rs, segmentation.rs, etc.
 
 use horus_core::core::LogSummary;
+use horus_types::TensorDtype;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-/// Data type for tensor elements
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DataType {
-    Float32,
-    Float64,
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    UInt8,
-    UInt16,
-    UInt32,
-    UInt64,
-    Bool,
-}
 
 /// Generic tensor for ML model inputs and outputs
 ///
@@ -34,27 +19,28 @@ pub enum DataType {
 ///
 /// # Example
 /// ```rust,ignore
-/// use horus_library::messages::ml::{Tensor, DataType};
+/// use horus_library::messages::ml::TensorData;
+/// use horus_types::TensorDtype;
 ///
 /// // Create a 3x3 tensor
 /// let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
-/// let tensor = Tensor::new(data, vec![3, 3], DataType::Float32);
+/// let tensor = TensorData::new(data, vec![3, 3], TensorDtype::F32);
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Tensor {
+pub struct TensorData {
     /// Flattened tensor data (row-major order)
     pub data: Vec<f32>,
     /// Shape of the tensor (e.g., [batch, channels, height, width])
     pub shape: Vec<usize>,
     /// Data type of tensor elements
-    pub dtype: DataType,
+    pub dtype: TensorDtype,
     /// Optional name for the tensor
     pub name: Option<String>,
 }
 
-impl Tensor {
+impl TensorData {
     /// Create a new tensor with given data, shape, and dtype
-    pub fn new(data: Vec<f32>, shape: Vec<usize>, dtype: DataType) -> Self {
+    pub fn new(data: Vec<f32>, shape: Vec<usize>, dtype: TensorDtype) -> Self {
         Self {
             data,
             shape,
@@ -161,107 +147,6 @@ pub struct ModelInfo {
     pub metadata: HashMap<String, String>,
 }
 
-/// ML model detection output
-///
-/// Represents a single detected object from ML inference with bounding box,
-/// class, and confidence score. Named `MlDetection` to distinguish from
-/// `detection_pod::Detection` (zero-copy) in horus_library.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MlDetection {
-    /// Bounding box [x, y, width, height] in pixels
-    pub bbox: [f32; 4],
-    /// Class ID
-    pub class_id: u32,
-    /// Class name (if available)
-    pub class_name: Option<String>,
-    /// Confidence score (0.0 to 1.0)
-    pub confidence: f32,
-    /// Optional tracking ID (for multi-object tracking)
-    pub track_id: Option<u32>,
-}
-
-/// Array of ML model detections
-///
-/// Used by object detection models (YOLO, SSD, etc.) to return
-/// multiple detections from a single image.
-///
-/// # Example
-/// ```rust,ignore
-/// use horus_library::messages::ml::{MlDetectionArray, MlDetection};
-///
-/// let detections = MlDetectionArray {
-///     detections: vec![
-///         MlDetection {
-///             bbox: [100.0, 100.0, 200.0, 300.0],
-///             class_id: 0,
-///             class_name: Some("person".into()),
-///             confidence: 0.95,
-///             track_id: None,
-///         }
-///     ],
-///     image_width: 640,
-///     image_height: 480,
-///     timestamp_ns: 0,
-/// };
-/// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MlDetectionArray {
-    /// List of detections
-    pub detections: Vec<MlDetection>,
-    /// Image width in pixels
-    pub image_width: u32,
-    /// Image height in pixels
-    pub image_height: u32,
-    /// Timestamp in nanoseconds
-    pub timestamp_ns: u64,
-}
-
-/// Human pose keypoint
-///
-/// Represents a single keypoint in pose estimation. Named `PoseKeypoint`
-/// to distinguish from `landmark::Landmark` (zero-copy Pod for IPC).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PoseKeypoint {
-    /// X coordinate in pixels
-    pub x: f32,
-    /// Y coordinate in pixels
-    pub y: f32,
-    /// Z coordinate (3D pose, optional)
-    pub z: Option<f32>,
-    /// Confidence score (0.0 to 1.0)
-    pub confidence: f32,
-    /// Keypoint name (e.g., "nose", "left_shoulder")
-    pub name: String,
-}
-
-/// Human pose estimation result
-///
-/// Contains detected keypoints for a single person.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Pose {
-    /// List of keypoints (typically 17-33 points depending on model)
-    pub keypoints: Vec<PoseKeypoint>,
-    /// Overall pose confidence
-    pub confidence: f32,
-    /// Person/instance ID (for multi-person pose)
-    pub person_id: u32,
-    /// Bounding box of the person [x, y, width, height]
-    pub bbox: Option<[f32; 4]>,
-}
-
-/// Multi-person pose estimation result
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PoseArray {
-    /// List of detected poses
-    pub poses: Vec<Pose>,
-    /// Image width in pixels
-    pub image_width: u32,
-    /// Image height in pixels
-    pub image_height: u32,
-    /// Timestamp in nanoseconds
-    pub timestamp_ns: u64,
-}
-
 /// Feature vector for embeddings
 ///
 /// Used for feature extraction, similarity search, and transfer learning.
@@ -352,9 +237,9 @@ pub struct TrainingMetrics {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlTrajectoryPoint {
     /// Observation (sensor data, image features, etc.)
-    pub observation: Tensor,
+    pub observation: TensorData,
     /// Action taken
-    pub action: Tensor,
+    pub action: TensorData,
     /// Reward (optional)
     pub reward: Option<f32>,
     /// Done flag (episode termination)
@@ -388,10 +273,10 @@ pub struct DeploymentConfig {
 // LogSummary implementations
 // ============================================================================
 
-impl LogSummary for Tensor {
+impl LogSummary for TensorData {
     fn log_summary(&self) -> String {
         format!(
-            "Tensor {{ shape: {:?}, {} elements }}",
+            "TensorData {{ shape: {:?}, {} elements }}",
             self.shape,
             self.size()
         )
@@ -418,12 +303,6 @@ impl LogSummary for InferenceMetrics {
             "InferenceMetrics {{ {}, {:.1}ms, {:.1} fps }}",
             self.model_name, self.latency_ms, self.throughput
         )
-    }
-}
-
-impl LogSummary for PoseArray {
-    fn log_summary(&self) -> String {
-        format!("PoseArray {{ {} poses }}", self.poses.len())
     }
 }
 

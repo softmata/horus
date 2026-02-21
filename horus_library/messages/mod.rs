@@ -89,10 +89,13 @@ pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
 // ML types (serde-based)
 pub use ml::{
-    ChatMessage, Classification, DataType, DeploymentConfig, FeatureVector, InferenceMetrics,
-    LLMRequest, LLMResponse, MlDetection, MlDetectionArray, MlTrajectoryPoint, ModelFormat,
-    ModelInfo, Pose, PoseArray, PoseKeypoint, Predictions, Tensor, TrainingMetrics,
+    ChatMessage, Classification, DeploymentConfig, FeatureVector, InferenceMetrics, LLMRequest,
+    LLMResponse, MlTrajectoryPoint, ModelFormat, ModelInfo, Predictions, TensorData,
+    TrainingMetrics,
 };
+
+// Canonical dtype from horus_types (replaces ml::DataType and perception::PointFieldType)
+pub use horus_types::TensorDtype;
 
 // Input (existing)
 pub use joystick_msg::JoystickInput;
