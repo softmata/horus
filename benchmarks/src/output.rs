@@ -7,7 +7,7 @@
 
 use crate::{BenchmarkResult, PlatformInfo};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -215,13 +215,6 @@ pub fn write_csv_report<P: AsRef<Path>>(report: &BenchmarkReport, path: P) -> st
     }
 
     Ok(())
-}
-
-/// Load a baseline report from JSON
-pub fn load_baseline<P: AsRef<Path>>(path: P) -> std::io::Result<BenchmarkReport> {
-    let content = fs::read_to_string(path)?;
-    let report: BenchmarkReport = serde_json::from_str(&content)?;
-    Ok(report)
 }
 
 /// Detect current git commit hash

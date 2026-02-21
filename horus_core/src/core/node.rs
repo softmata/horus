@@ -569,8 +569,17 @@ pub struct TopicMetadata {
 /// }
 /// ```
 pub trait Node: Send {
-    /// Get the node's name (must be unique)
-    fn name(&self) -> &'static str;
+    /// Get the node's name (must be unique within a scheduler).
+    ///
+    /// Defaults to the struct's type name (e.g. `MotorController`).
+    /// Override for a custom name — string literals and `&self.name` both work.
+    fn name(&self) -> &str {
+        let full = std::any::type_name::<Self>();
+        match full.rfind("::") {
+            Some(pos) => &full[pos + 2..],
+            None => full,
+        }
+    }
 
     /// Initialize the node (called once at startup).
     ///
@@ -610,12 +619,6 @@ pub trait Node: Send {
     /// Use `hlog!()` for logging instead of the old ctx parameter.
     fn on_error(&mut self, error: &str) {
         crate::hlog!(error, "Node error: {}", error);
-    }
-
-    /// Get node priority (optional override)
-    /// Lower numbers = higher priority. Default is 50 (normal priority).
-    fn priority(&self) -> u32 {
-        50 // Normal priority
     }
 
     /// Node's tick rate in Hz (optional)

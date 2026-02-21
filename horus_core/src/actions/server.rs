@@ -48,7 +48,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Result of goal execution.
@@ -387,7 +387,6 @@ where
 #[allow(clippy::type_complexity)]
 pub struct ActionServerNode<A: Action> {
     name: String,
-    static_name: OnceLock<&'static str>,
 
     // Callbacks
     goal_callback: Option<GoalCallback<A>>,
@@ -435,7 +434,6 @@ where
     ) -> Self {
         Self {
             name: format!("{}_server", A::name()),
-            static_name: OnceLock::new(),
             goal_callback,
             cancel_callback,
             execute_callback,
@@ -824,9 +822,8 @@ where
     A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
     A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
 {
-    fn name(&self) -> &'static str {
-        self.static_name
-            .get_or_init(|| Box::leak(self.name.clone().into_boxed_str()))
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn init(&mut self) -> HorusResult<()> {

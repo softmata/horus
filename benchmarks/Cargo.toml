@@ -43,11 +43,9 @@ path = "src/bin/all_paths_latency.rs"
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
-tokio = { version = "1.0", features = ["full"] }
 bytemuck = { version = "1.24", features = ["derive"] }
 serde.workspace = true
 serde_json = "1.0"
-serde_bytes = "0.11"
 serde_arrays = "0.1"
 colored = "2.0"
 anyhow = "1.0"

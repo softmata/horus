@@ -27,7 +27,7 @@ impl CounterNode {
 }
 
 impl Node for CounterNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         self.name
     }
 

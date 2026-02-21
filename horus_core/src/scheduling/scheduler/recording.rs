@@ -124,6 +124,7 @@ impl Scheduler {
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
             node: Box::new(replay_node),
+            name: node_name.clone(),
             priority,
             initialized: false,
             context: None,
@@ -271,7 +272,7 @@ impl Scheduler {
                         Err(e) => {
                             print_line(&format!(
                                 "Failed to save recording for '{}': {}",
-                                registered.node.name(),
+                                registered.name,
                                 e
                             ));
                         }

@@ -252,64 +252,6 @@ impl Default for PrecisionTimer {
     }
 }
 
-/// Simple timing guard for scoped measurements
-pub struct TimingGuard<'a> {
-    timer: &'a PrecisionTimer,
-    start_cycles: u64,
-    result: &'a mut u64,
-}
-
-impl<'a> TimingGuard<'a> {
-    /// Create a new timing guard
-    pub fn new(timer: &'a PrecisionTimer, result: &'a mut u64) -> Self {
-        Self {
-            timer,
-            start_cycles: timer.start(),
-            result,
-        }
-    }
-}
-
-impl<'a> Drop for TimingGuard<'a> {
-    fn drop(&mut self) {
-        *self.result = self.timer.elapsed_ns(self.start_cycles);
-    }
-}
-
-/// Instant-based timer for platforms without RDTSC or when cycle counting isn't needed
-pub struct InstantTimer;
-
-impl InstantTimer {
-    /// Measure a closure using std::time::Instant
-    #[inline(always)]
-    pub fn measure<F, R>(f: F) -> (R, u64)
-    where
-        F: FnOnce() -> R,
-    {
-        let start = Instant::now();
-        let result = std::hint::black_box(f());
-        let elapsed = start.elapsed().as_nanos() as u64;
-        (result, elapsed)
-    }
-
-    /// Measure a closure N times
-    pub fn measure_n<F>(iterations: usize, mut f: F) -> Vec<u64>
-    where
-        F: FnMut(),
-    {
-        let mut latencies = Vec::with_capacity(iterations);
-
-        for _ in 0..iterations {
-            let start = Instant::now();
-            f();
-            std::hint::black_box(());
-            latencies.push(start.elapsed().as_nanos() as u64);
-        }
-
-        latencies
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,16 +332,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_instant_timer() {
-        let (_, elapsed) = InstantTimer::measure(|| {
-            std::thread::sleep(Duration::from_millis(1));
-        });
-
-        assert!(
-            elapsed > 500_000 && elapsed < 100_000_000,
-            "Unexpected elapsed time: {} ns",
-            elapsed
-        );
-    }
 }

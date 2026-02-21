@@ -27,12 +27,11 @@ struct PyNodeAdapter {
     scheduler_running: Arc<AtomicBool>,
     publishers_list: Vec<TopicMetadata>,
     subscribers_list: Vec<TopicMetadata>,
-    priority_val: u32,
     rate: Option<f64>,
 }
 
 impl CoreNode for PyNodeAdapter {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         self.leaked_name
     }
 
@@ -171,10 +170,6 @@ impl CoreNode for PyNodeAdapter {
 
     fn subscribers(&self) -> Vec<TopicMetadata> {
         self.subscribers_list.clone()
-    }
-
-    fn priority(&self) -> u32 {
-        self.priority_val
     }
 
     fn rate_hz(&self) -> Option<f64> {
@@ -343,7 +338,6 @@ impl PyScheduler {
             scheduler_running: self.scheduler_running.clone(),
             publishers_list: publishers,
             subscribers_list: subscribers,
-            priority_val: order,
             rate: node_rate,
         };
 

@@ -693,7 +693,7 @@ impl Scheduler {
     ) -> Option<super::fault_tolerance::FailureHandlerStats> {
         self.nodes
             .iter()
-            .find(|n| n.node.name() == node_name)
+            .find(|n| n.name == node_name)
             .map(|n| n.failure_handler.stats())
     }
 
@@ -706,7 +706,7 @@ impl Scheduler {
     pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
         self.nodes
             .iter()
-            .find(|n| n.node.name() == node_name)
+            .find(|n| n.name == node_name)
             .map(|n| {
                 let stats = n.failure_handler.stats();
                 if stats.is_suppressed {
@@ -966,14 +966,14 @@ impl Scheduler {
                     if stats.is_suppressed {
                         lines.push(format!(
                             "    - {}: SUPPRESSED ({}, {})",
-                            node.node.name(),
+                            node.name.as_str(),
                             stats.policy,
                             stats.state
                         ));
                     } else if stats.failure_count > 0 {
                         lines.push(format!(
                             "    - {}: {} failures ({}, {})",
-                            node.node.name(),
+                            node.name.as_str(),
                             stats.failure_count,
                             stats.policy,
                             stats.state
@@ -1132,7 +1132,7 @@ impl Scheduler {
             // Configure critical nodes and WCET budgets for RT nodes
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
-                    let node_name = registered.node.name().to_string();
+                    let node_name = registered.name.clone();
 
                     // Add as critical node with watchdog if configured
                     if config.realtime.watchdog_enabled {
@@ -1617,6 +1617,7 @@ impl Scheduler {
         let policy = failure_policy.unwrap_or_else(|| resolved_tier.default_failure_policy());
         self.nodes.push(RegisteredNode {
             node,
+            name: node_name.clone(),
             priority,
             initialized: false,
             context: Some(context),
@@ -1704,7 +1705,7 @@ impl Scheduler {
             return self;
         }
         for registered in self.nodes.iter_mut() {
-            if registered.node.name() == name {
+            if registered.name == name {
                 registered.rate_hz = Some(rate_hz);
                 registered.last_tick = Some(Instant::now());
                 print_line(&format!("Set node '{}' rate to {:.1} Hz", name, rate_hz));
@@ -1788,7 +1789,7 @@ impl Scheduler {
 
             // Initialize nodes
             for registered in self.nodes.iter_mut() {
-                let node_name = registered.node.name();
+                let node_name = registered.name.as_str();
                 let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
 
                 if should_run && !registered.initialized {
@@ -1895,7 +1896,7 @@ impl Scheduler {
                 // Re-initialize nodes that need restart (set by control commands)
                 for registered in self.nodes.iter_mut() {
                     if !registered.is_stopped && !registered.is_paused && !registered.initialized {
-                        let node_name = registered.node.name();
+                        let node_name = registered.name.as_str();
                         if let Some(ref mut ctx) = registered.context {
                             // Set node context for hlog!() macro
                             set_node_context(node_name, 0);
@@ -1972,7 +1973,7 @@ impl Scheduler {
                             }
                             print_line(&format!(
                                 "  {} - Policy: {}, State: {}, Failures: {}{}",
-                                registered.node.name(),
+                                registered.name.as_str(),
                                 stats.policy,
                                 stats.state,
                                 stats.failure_count,
@@ -2018,7 +2019,7 @@ impl Scheduler {
                         tm.gauge("nodes_active", self.nodes.len() as f64);
 
                         for registered in &self.nodes {
-                            let node_name = registered.node.name();
+                            let node_name = registered.name.as_str();
                             if let Some(stats) = self.profiler.node_stats.get(node_name) {
                                 let mut labels = std::collections::HashMap::new();
                                 labels.insert("node".to_string(), node_name.to_string());
@@ -2060,7 +2061,7 @@ impl Scheduler {
 
             // Shutdown nodes
             for registered in self.nodes.iter_mut() {
-                let node_name = registered.node.name();
+                let node_name = registered.name.as_str();
                 let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
 
                 if should_run && registered.initialized {
@@ -2150,16 +2151,16 @@ impl Scheduler {
     pub fn get_node_list(&self) -> Vec<String> {
         self.nodes
             .iter()
-            .map(|registered| registered.node.name().to_string())
+            .map(|registered| registered.name.clone())
             .collect()
     }
 
     /// Get detailed information about a specific node
     pub fn get_node_info(&self, name: &str) -> Option<HashMap<String, String>> {
         for registered in &self.nodes {
-            if registered.node.name() == name {
+            if registered.name == name {
                 let mut info = HashMap::new();
-                info.insert("name".to_string(), registered.node.name().to_string());
+                info.insert("name".to_string(), registered.name.clone());
                 info.insert("priority".to_string(), registered.priority.to_string());
                 return Some(info);
             }
@@ -2185,7 +2186,7 @@ impl Scheduler {
         self.nodes
             .iter()
             .map(|registered| {
-                let name = registered.node.name().to_string();
+                let name = registered.name.clone();
                 let priority = registered.priority;
 
                 // Get metrics from context if available
@@ -2222,7 +2223,7 @@ impl Scheduler {
     pub fn get_monitoring_summary(&self) -> Vec<(String, u32)> {
         self.nodes
             .iter()
-            .map(|registered| (registered.node.name().to_string(), registered.priority))
+            .map(|registered| (registered.name.clone(), registered.priority))
             .collect()
     }
 
@@ -2233,7 +2234,7 @@ impl Scheduler {
 
             // Collect pub/sub info from each node
             let nodes_json: Vec<String> = self.nodes.iter().map(|registered| {
-                let name = registered.node.name();
+                let name = registered.name.as_str();
                 let priority = registered.priority;
 
                 // Get pub/sub from Node trait (macro-declared)
@@ -2321,8 +2322,8 @@ impl Scheduler {
                             // Find and process the node
                             let mut found = false;
                             for registered in &mut self.nodes {
-                                if registered.node.name() == node_name
-                                    || registered.node.name().contains(&node_name)
+                                if registered.name.as_str() == node_name
+                                    || registered.name.as_str().contains(&node_name)
                                 {
                                     found = true;
                                     match cmd.as_str() {
@@ -2413,7 +2414,7 @@ impl Scheduler {
 
             // Collect node info including state and health
             let nodes_json: Vec<String> = self.nodes.iter().map(|registered| {
-                let name = registered.node.name();
+                let name = registered.name.as_str();
                 let priority = registered.priority;
 
                 // Get pub/sub from Node trait (macro-declared)
@@ -2490,10 +2491,10 @@ impl Scheduler {
             return false;
         }
 
-        let (should_run, node_name, should_tick) = {
+        let (should_run, should_tick) = {
             let registered = &self.nodes[i];
-            let node_name = registered.node.name();
-            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
+            let name = registered.name.as_str();
+            let should_run = node_filter.is_none_or(|filter| filter.contains(&name));
 
             // Check rate limiting
             let should_tick = if let Some(rate_hz) = registered.rate_hz {
@@ -2509,7 +2510,7 @@ impl Scheduler {
                 true
             };
 
-            (should_run, node_name, should_tick)
+            (should_run, should_tick)
         };
 
         if !should_tick {
@@ -2530,7 +2531,7 @@ impl Scheduler {
             // Feed watchdog for RT nodes
             if self.nodes[i].is_rt_node {
                 if let Some(ref monitor) = self.monitor.safety {
-                    monitor.feed_watchdog(node_name);
+                    monitor.feed_watchdog(&self.nodes[i].name);
                 }
             }
 
@@ -2542,7 +2543,7 @@ impl Scheduler {
 
                     // Set node context for hlog!() macro
                     let tick_number = context.metrics().total_ticks;
-                    set_node_context(node_name, tick_number);
+                    set_node_context(&registered.name, tick_number);
 
                     // Execute node tick with panic handling
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2558,7 +2559,7 @@ impl Scheduler {
 
             let tick_duration = tick_start.elapsed();
 
-            return self.process_tick_result(i, node_name, tick_start, tick_duration, tick_result);
+            return self.process_tick_result(i, tick_start, tick_duration, tick_result);
         }
         false
     }
@@ -2568,47 +2569,52 @@ impl Scheduler {
     fn process_tick_result(
         &mut self,
         i: usize,
-        node_name: &'static str,
         tick_start: Instant,
         tick_duration: Duration,
         tick_result: std::thread::Result<()>,
     ) -> bool {
-        // Check if node execution failed
-        if tick_result.is_err() {
-            self.profiler.record_node_failure(node_name);
-            print_line(&format!("Node '{}' panicked during execution", node_name));
-        }
+        // Profiling and monitoring use direct field access (no borrow conflict)
+        {
+            let node_name = self.nodes[i].name.as_str();
 
-        // Record profiling data
-        self.profiler.record(node_name, tick_duration);
-
-        // Check WCET budget for RT nodes
-        if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-            if let Some(ref monitor) = self.monitor.safety {
-                if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                    print_line(&format!(
-                        " WCET violation in {}: {:?} > {:?}",
-                        violation.node_name, violation.actual, violation.budget
-                    ));
-                }
+            // Check if node execution failed
+            if tick_result.is_err() {
+                self.profiler.record_node_failure(node_name);
+                print_line(&format!("Node '{}' panicked during execution", node_name));
             }
-        }
 
-        // Check deadline for RT nodes
-        if self.nodes[i].is_rt_node {
-            if let Some(deadline) = self.nodes[i].deadline {
-                let elapsed = tick_start.elapsed();
-                if elapsed > deadline {
-                    if let Some(ref monitor) = self.monitor.safety {
-                        monitor.record_deadline_miss(node_name);
+            // Record profiling data
+            self.profiler.record(node_name, tick_duration);
+
+            // Check WCET budget for RT nodes
+            if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
+                if let Some(ref monitor) = self.monitor.safety {
+                    if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
                         print_line(&format!(
-                            " Deadline miss in {}: {:?} > {:?}",
-                            node_name, elapsed, deadline
+                            " WCET violation in {}: {:?} > {:?}",
+                            violation.node_name, violation.actual, violation.budget
                         ));
                     }
                 }
             }
+
+            // Check deadline for RT nodes
+            if self.nodes[i].is_rt_node {
+                if let Some(deadline) = self.nodes[i].deadline {
+                    let elapsed = tick_start.elapsed();
+                    if elapsed > deadline {
+                        if let Some(ref monitor) = self.monitor.safety {
+                            monitor.record_deadline_miss(node_name);
+                            print_line(&format!(
+                                " Deadline miss in {}: {:?} > {:?}",
+                                node_name, elapsed, deadline
+                            ));
+                        }
+                    }
+                }
+            }
         }
+        // node_name borrow ends here — safe to mutate self.nodes[i] below
 
         // Handle tick result with policy-driven dispatch
         match tick_result {
@@ -2630,12 +2636,14 @@ impl Scheduler {
                     "Node panicked with unknown error".to_string()
                 };
 
+                // Clone name for error path (rare — only on node panic)
+                let node_name = self.nodes[i].name.clone();
                 let registered = &mut self.nodes[i];
                 if let Some(ref mut context) = registered.context {
                     context.record_tick_failure(error_msg.clone());
 
                     // Set context for on_error handler
-                    set_node_context(node_name, context.metrics().total_ticks);
+                    set_node_context(&node_name, context.metrics().total_ticks);
                     registered.node.on_error(&error_msg);
                     clear_node_context();
 
@@ -2738,7 +2746,7 @@ impl Scheduler {
                 continue;
             }
 
-            let node_name = self.nodes[i].node.name();
+            let node_name = self.nodes[i].name.as_str();
             let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
             if !should_run {
                 continue;
@@ -2803,7 +2811,6 @@ impl Scheduler {
         // Parallel tick: each thread ticks one node, returns (index, name, duration, result)
         struct ParallelResult {
             index: usize,
-            node_name: &'static str,
             tick_start: Instant,
             duration: Duration,
             result: std::thread::Result<()>,
@@ -2818,7 +2825,6 @@ impl Scheduler {
                     // crossbeam::scope guarantees threads don't outlive the borrow.
                     let node_ref = unsafe { &mut *nodes_ptr.add(i) };
                     s.spawn(move |_| {
-                        let node_name = node_ref.node.name();
                         let tick_start = Instant::now();
                         let result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2827,7 +2833,6 @@ impl Scheduler {
                         let duration = tick_start.elapsed();
                         ParallelResult {
                             index: i,
-                            node_name,
                             tick_start,
                             duration,
                             result,
@@ -2847,7 +2852,6 @@ impl Scheduler {
         for pr in parallel_results {
             if self.process_tick_result(
                 pr.index,
-                pr.node_name,
                 pr.tick_start,
                 pr.duration,
                 pr.result,

@@ -268,29 +268,6 @@ pub fn filter_outliers(samples: &[u64]) -> Vec<u64> {
         .collect()
 }
 
-/// Calculate variance
-pub fn variance(samples: &[u64]) -> f64 {
-    if samples.len() < 2 {
-        return 0.0;
-    }
-    let m = mean(samples);
-    samples
-        .iter()
-        .map(|&x| {
-            let diff = x as f64 - m;
-            diff * diff
-        })
-        .sum::<f64>()
-        / samples.len() as f64
-}
-
-/// Calculate interquartile range
-pub fn iqr(sorted_samples: &[u64]) -> f64 {
-    let q1 = calculate_percentile(sorted_samples, 25.0) as f64;
-    let q3 = calculate_percentile(sorted_samples, 75.0) as f64;
-    q3 - q1
-}
-
 // ============================================================================
 // Normality Testing
 // ============================================================================

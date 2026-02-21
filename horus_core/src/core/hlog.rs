@@ -30,7 +30,7 @@ thread_local! {
 /// Thread-local context for node logging.
 pub struct NodeLogContext {
     /// The node's name for log attribution.
-    pub name: &'static str,
+    pub name: String,
     /// When the current tick started (for timing info).
     pub tick_start: Option<Instant>,
     /// Current tick number.
@@ -39,20 +39,37 @@ pub struct NodeLogContext {
 
 /// Set the current node context for this thread.
 /// Called by the scheduler before invoking node lifecycle methods.
-pub fn set_node_context(name: &'static str, tick_number: u64) {
+///
+/// Reuses the existing allocation when possible — zero alloc in steady state.
+pub fn set_node_context(name: &str, tick_number: u64) {
     CURRENT_NODE.with(|ctx| {
-        *ctx.borrow_mut() = Some(NodeLogContext {
-            name,
-            tick_start: Some(Instant::now()),
-            tick_number,
-        });
+        let mut slot = ctx.borrow_mut();
+        if let Some(ref mut existing) = *slot {
+            // Reuse allocation: clear + push_str avoids realloc if capacity suffices
+            existing.name.clear();
+            existing.name.push_str(name);
+            existing.tick_start = Some(Instant::now());
+            existing.tick_number = tick_number;
+        } else {
+            *slot = Some(NodeLogContext {
+                name: name.to_owned(),
+                tick_start: Some(Instant::now()),
+                tick_number,
+            });
+        }
     });
 }
 
 /// Clear the current node context for this thread.
 /// Called by the scheduler after node lifecycle methods complete.
+///
+/// Keeps the allocation alive — next `set_node_context` reuses it.
 pub fn clear_node_context() {
-    CURRENT_NODE.with(|ctx| *ctx.borrow_mut() = None);
+    CURRENT_NODE.with(|ctx| {
+        if let Some(ref mut existing) = *ctx.borrow_mut() {
+            existing.tick_start = None;
+        }
+    });
 }
 
 /// Get the current node name if set, otherwise "unknown".
@@ -60,7 +77,8 @@ pub fn current_node_name() -> String {
     CURRENT_NODE.with(|ctx| {
         ctx.borrow()
             .as_ref()
-            .map(|c| c.name.to_string())
+            .filter(|c| c.tick_start.is_some())
+            .map(|c| c.name.clone())
             .unwrap_or_else(|| "unknown".to_string())
     })
 }
@@ -77,13 +95,15 @@ pub fn log_with_context(level: LogType, message: String) {
 
     let (node_name, tick_us, tick_number) = CURRENT_NODE.with(|ctx| {
         if let Some(ref c) = *ctx.borrow() {
-            (
-                c.name.to_string(),
-                c.tick_start
-                    .map(|t| t.elapsed().as_micros() as u64)
-                    .unwrap_or(0),
-                c.tick_number,
-            )
+            if let Some(tick_start) = c.tick_start {
+                (
+                    c.name.clone(),
+                    tick_start.elapsed().as_micros() as u64,
+                    c.tick_number,
+                )
+            } else {
+                ("unknown".to_string(), 0, 0)
+            }
         } else {
             ("unknown".to_string(), 0, 0)
         }
@@ -172,7 +192,7 @@ pub fn log_with_context(level: LogType, message: String) {
 /// use horus::hlog;
 ///
 /// impl Node for MyNode {
-///     fn name(&self) -> &'static str { "my_node" }
+///     fn name(&self) -> &str { "my_node" }
 ///
 ///     fn init(&mut self) -> HorusResult<()> {
 ///         hlog!(info, "Initializing with config: {:?}", self.config);

@@ -632,7 +632,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
         }
 
         impl ::horus::horus_core::core::node::Node for #struct_name {
-            fn name(&self) -> &'static str {
+            fn name(&self) -> &str {
                 #node_name_str
             }
 

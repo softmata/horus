@@ -778,23 +778,17 @@ use crate::core::Node;
 /// A node that replays recorded data instead of executing real logic.
 ///
 /// This wrapper allows mixing live nodes with recorded data for debugging.
-/// Note: Uses `Box::leak` for the node name to satisfy the `&'static str` requirement.
 pub struct ReplayNode {
-    node_name: &'static str,
+    node_name: String,
     node_id: String,
     tick_count: u64,
 }
 
 impl ReplayNode {
     /// Create a new replay node.
-    ///
-    /// Note: The node_name is leaked to get a `&'static str` reference.
-    /// This is intentional for replay nodes which are long-lived.
     pub fn new(node_name: String, node_id: String) -> Self {
-        // Leak the string to get a 'static lifetime
-        let leaked_name: &'static str = Box::leak(node_name.into_boxed_str());
         Self {
-            node_name: leaked_name,
+            node_name,
             node_id,
             tick_count: 0,
         }
@@ -807,8 +801,8 @@ impl ReplayNode {
 }
 
 impl Node for ReplayNode {
-    fn name(&self) -> &'static str {
-        self.node_name
+    fn name(&self) -> &str {
+        &self.node_name
     }
 
     fn tick(&mut self) {

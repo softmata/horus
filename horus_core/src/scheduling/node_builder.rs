@@ -71,6 +71,8 @@ impl NodeRegistration {
 
     /// Set the execution order (lower = earlier in tick sequence).
     ///
+    /// This is the correct way to set execution priority for a node.
+    ///
     /// # Priority Guidelines
     /// - **0-9**: Critical real-time (motor control, safety)
     /// - **10-49**: High priority (sensors, fast control loops)

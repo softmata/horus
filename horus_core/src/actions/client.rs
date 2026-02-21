@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Handle to a goal sent by the client.
@@ -525,7 +525,6 @@ where
 /// - Managing goal handles
 pub struct ActionClientNode<A: Action> {
     name: String,
-    static_name: OnceLock<&'static str>,
     inner: Arc<ActionClientInner<A>>,
 
     // Metrics
@@ -545,7 +544,6 @@ where
     fn new(inner: Arc<ActionClientInner<A>>) -> Self {
         Self {
             name: format!("{}_client", A::name()),
-            static_name: OnceLock::new(),
             inner,
             goals_sent: AtomicU64::new(0),
             goals_succeeded: AtomicU64::new(0),
@@ -701,9 +699,8 @@ where
     A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
     A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
 {
-    fn name(&self) -> &'static str {
-        self.static_name
-            .get_or_init(|| Box::leak(self.name.clone().into_boxed_str()))
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn init(&mut self) -> HorusResult<()> {

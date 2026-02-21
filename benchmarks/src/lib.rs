@@ -32,29 +32,6 @@ pub use stats::{
 };
 pub use timing::{calibrate_rdtsc, cycles_to_ns, rdtsc};
 
-/// Standard message sizes used in robotics applications (bytes)
-pub const MESSAGE_SIZES: &[(&str, usize)] = &[
-    ("control_cmd", 16),         // CmdVel: 2x f32
-    ("motor_cmd", 64),           // Motor command with metadata
-    ("imu_reading", 128),        // Basic IMU data
-    ("sensor_fusion", 256),      // Fused sensor state
-    ("lidar_scan", 4096),        // Single LiDAR scan line
-    ("point_cloud", 65536),      // Small point cloud
-    ("camera_frame", 1_000_000), // 640x480 grayscale
-    ("map_update", 10_000_000),  // Large map chunk
-];
-
-/// Common frequencies in robotics systems (Hz)
-pub const FREQUENCIES: &[(&str, u32)] = &[
-    ("servo_loop", 10000),  // Fast servo control
-    ("control_loop", 1000), // Standard control
-    ("imu_rate", 400),      // IMU sampling
-    ("planning", 100),      // Motion planning
-    ("localization", 50),   // SLAM/localization
-    ("perception", 30),     // Vision processing
-    ("lidar", 10),          // LiDAR spin rate
-];
-
 /// Benchmark configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkConfig {
@@ -197,39 +174,3 @@ where
     }
 }
 
-/// Benchmark message for testing (variable size payload)
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BenchmarkMessage {
-    pub id: u64,
-    pub timestamp_ns: u64,
-    #[serde(with = "serde_bytes")]
-    pub payload: Vec<u8>,
-}
-
-impl BenchmarkMessage {
-    pub fn new(id: u64, payload_size: usize) -> Self {
-        Self {
-            id,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
-            payload: vec![0u8; payload_size],
-        }
-    }
-
-    /// Create with embedded RDTSC timestamp for cycle-accurate latency
-    #[cfg(target_arch = "x86_64")]
-    pub fn with_rdtsc(id: u64, payload_size: usize) -> Self {
-        Self {
-            id,
-            timestamp_ns: timing::rdtsc(),
-            payload: vec![0u8; payload_size],
-        }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    pub fn with_rdtsc(id: u64, payload_size: usize) -> Self {
-        Self::new(id, payload_size)
-    }
-}

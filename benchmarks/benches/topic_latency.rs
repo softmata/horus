@@ -116,21 +116,6 @@ fn bench_latency_comparison(c: &mut Criterion) {
         });
     });
 
-    // Zenoh would be added here when feature is enabled
-    // This is a placeholder showing the structure
-    #[cfg(feature = "zenoh")]
-    {
-        // Note: Zenoh benchmarks require async runtime
-        // For criterion, we use block_on or a dedicated async benchmark
-        group.bench_function("zenoh_16B", |b| {
-            // Zenoh setup would go here
-            b.iter(|| {
-                // Zenoh send/recv would go here
-                black_box(42)
-            });
-        });
-    }
-
     group.finish();
 }
 

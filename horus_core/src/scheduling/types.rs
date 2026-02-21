@@ -86,6 +86,8 @@ mod node_tier_tests {
 /// Enhanced node registration info with lifecycle tracking and per-node rate control
 pub(crate) struct RegisteredNode {
     pub(crate) node: Box<dyn Node>,
+    /// Cached node name — captured once at registration, used everywhere.
+    pub(crate) name: String,
     pub(crate) priority: u32,
     pub(crate) initialized: bool,
     pub(crate) context: Option<NodeInfo>,
