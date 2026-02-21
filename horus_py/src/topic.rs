@@ -866,7 +866,6 @@ where
         + serde::de::DeserializeOwned
         + std::fmt::Debug,
 {
-    use horus::communication::{BackendHint, TopicConfig};
 
     // Check if this is a network endpoint
     if endpoint.contains('@') {
@@ -882,34 +881,11 @@ where
         });
     }
 
-    // Determine backend hint
-    let hint = match backend {
-        Some("direct") => BackendHint::DirectChannel,
-        Some("spsc") => BackendHint::SpscIntra,
-        Some("mpsc") => BackendHint::MpscIntra,
-        Some("spmc") => BackendHint::SpmcIntra,
-        Some("mpmc") => BackendHint::MpmcIntra,
-        Some("spsc_shm") => BackendHint::SpscShm,
-        Some("mpsc_shm") => BackendHint::MpscShm,
-        Some("spmc_shm") => BackendHint::SpmcShm,
-        Some("mpmc_shm") => BackendHint::MpmcShm,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Unknown backend hint: '{}'. Valid options: direct, spsc, mpsc, spmc, mpmc, \
-                 spsc_shm, mpsc_shm, spmc_shm, mpmc_shm",
-                other
-            )));
-        }
-        None => BackendHint::Auto,
-    };
+    // Backend hints are ignored — Topic auto-selects the optimal backend
+    // based on topology (pub/sub count, same-process, POD type, etc.)
+    let _ = backend; // Accepted for API compatibility but unused
 
-    // Create topic configuration
-    let config = TopicConfig::new(endpoint)
-        .with_capacity(capacity as u32)
-        .with_backend(hint);
-
-    // Create topic from config
-    Topic::from_config(config).map_err(|e| {
+    Topic::with_capacity(endpoint, capacity as u32, None).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create Topic: {}", e))
     })
 }

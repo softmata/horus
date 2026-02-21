@@ -550,23 +550,6 @@ impl NodeReplayer {
     }
 }
 
-/// Replay mode for the scheduler
-#[derive(Debug, Clone)]
-pub enum ReplayMode {
-    /// Replay all nodes from a scheduler recording
-    Full { scheduler_path: PathBuf },
-    /// Replay specific nodes while others run live
-    Mixed {
-        replay_nodes: HashMap<String, PathBuf>,
-    },
-    /// Replay from specific ticks
-    TimeTravel {
-        scheduler_path: PathBuf,
-        start_tick: u64,
-        end_tick: Option<u64>,
-    },
-}
-
 /// Manager for session discovery
 pub struct RecordingManager {
     base_dir: PathBuf,

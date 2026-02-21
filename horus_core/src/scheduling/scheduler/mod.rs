@@ -16,7 +16,7 @@ mod recording;
 
 // Record/Replay imports
 use super::record_replay::{
-    NodeRecorder, NodeReplayer, RecordingConfig, ReplayMode, SchedulerRecording,
+    NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording,
 };
 
 use super::types::NodeTier;
@@ -128,7 +128,6 @@ pub(crate) struct MonitorState {
 
 /// Replay state — only present when replaying a recording.
 pub(crate) struct ReplayState {
-    pub mode: ReplayMode,
     pub nodes: HashMap<String, NodeReplayer>,
     pub overrides: HashMap<String, HashMap<String, Vec<u8>>>,
     pub stop_tick: Option<u64>,

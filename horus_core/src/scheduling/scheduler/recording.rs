@@ -12,7 +12,7 @@ use crate::terminal::print_line;
 
 use super::super::types::NodeTier;
 use super::super::record_replay::{
-    NodeReplayer, RecordingConfig, RecordingManager, ReplayMode, ReplayNode, SchedulerRecording,
+    NodeReplayer, RecordingConfig, RecordingManager, ReplayNode, SchedulerRecording,
 };
 use super::super::types::RegisteredNode;
 use super::{RecordingState, ReplayState, Scheduler};
@@ -113,9 +113,6 @@ impl Scheduler {
         // Initialize replay state if not already present
         if self.replay.is_none() {
             self.replay = Some(ReplayState {
-                mode: ReplayMode::Mixed {
-                    replay_nodes: HashMap::new(),
-                },
                 nodes: HashMap::new(),
                 overrides: HashMap::new(),
                 stop_tick: None,
@@ -170,9 +167,6 @@ impl Scheduler {
             Self::new().with_name(&format!("Replay({})", scheduler_recording.session_name));
 
         scheduler.replay = Some(ReplayState {
-            mode: ReplayMode::Full {
-                scheduler_path: scheduler_path.clone(),
-            },
             nodes: HashMap::new(),
             overrides: HashMap::new(),
             stop_tick: None,
