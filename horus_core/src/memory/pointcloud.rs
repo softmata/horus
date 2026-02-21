@@ -240,21 +240,10 @@ impl PointCloud {
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn descriptor_mut(&mut self) -> &mut PointCloudDescriptor {
-        &mut self.descriptor
-    }
-
-    #[inline]
     pub(crate) fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn refcount(&self) -> u32 {
-        self.pool.refcount(self.descriptor.tensor())
-    }
 }
 
 impl Clone for PointCloud {

@@ -300,25 +300,13 @@ impl Image {
         &self.descriptor
     }
 
-    /// Get a mutable reference to the descriptor (internal).
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn descriptor_mut(&mut self) -> &mut ImageDescriptor {
-        &mut self.descriptor
-    }
-
     /// Get the pool (internal).
+
     #[inline]
     pub(crate) fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 
-    /// Current reference count (internal, for debugging).
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn refcount(&self) -> u32 {
-        self.pool.refcount(self.descriptor.tensor())
-    }
 }
 
 impl Clone for Image {
