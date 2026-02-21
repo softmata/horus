@@ -224,7 +224,7 @@ impl Detection {
     }
 
     /// Get the class name as a string
-    pub fn get_class_name(&self) -> &str {
+    pub fn class_name(&self) -> &str {
         let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
         std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
     }
@@ -296,7 +296,7 @@ impl Detection3D {
     }
 
     /// Get the class name as a string
-    pub fn get_class_name(&self) -> &str {
+    pub fn class_name(&self) -> &str {
         let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
         std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
     }
@@ -338,11 +338,11 @@ mod tests {
     fn test_detection_class_name() {
         let mut det = Detection::default();
         det.set_class_name("person");
-        assert_eq!(det.get_class_name(), "person");
+        assert_eq!(det.class_name(), "person");
 
         // Test truncation
         det.set_class_name("this_is_a_very_long_class_name_that_should_be_truncated");
-        assert_eq!(det.get_class_name().len(), 31);
+        assert_eq!(det.class_name().len(), 31);
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
         .with_velocity(10.0, 5.0, 0.0);
         assert_eq!(det.velocity_x, 10.0);
         assert_eq!(det.velocity_y, 5.0);
-        assert_eq!(det.get_class_name(), "car");
+        assert_eq!(det.class_name(), "car");
     }
 
     #[test]

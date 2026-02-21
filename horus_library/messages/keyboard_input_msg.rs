@@ -103,7 +103,7 @@ impl KeyboardInput {
     }
 
     /// Get the key name as a String
-    pub fn get_key_name(&self) -> String {
+    pub fn key_name(&self) -> String {
         // Find null terminator or use full buffer
         let end = self
             .key_name
@@ -116,7 +116,7 @@ impl KeyboardInput {
     }
 
     /// Get modifier names as `Vec<String>` (for compatibility)
-    pub fn get_modifiers(&self) -> Vec<String> {
+    pub fn modifiers(&self) -> Vec<String> {
         let mut modifiers = Vec::new();
         if (self.modifier_flags & MODIFIER_CTRL) != 0 {
             modifiers.push("Ctrl".to_string());

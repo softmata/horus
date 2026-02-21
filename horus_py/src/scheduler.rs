@@ -747,7 +747,7 @@ impl PyScheduler {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("Stats unavailable while scheduler is running"))?;
 
-        for metric in inner.get_metrics() {
+        for metric in inner.metrics() {
             if metric.name == node_name {
                 let failure = inner.failure_stats(&node_name);
                 return Self::metric_to_dict(py, &metric, failure.as_ref(), self.tick_rate_hz);
@@ -785,7 +785,7 @@ impl PyScheduler {
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
 
         let mut result = Vec::new();
-        for metric in inner.get_metrics() {
+        for metric in inner.metrics() {
             if removed.contains(&metric.name) {
                 continue;
             }
@@ -813,7 +813,7 @@ impl PyScheduler {
                     .removed_nodes
                     .lock()
                     .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-                Ok(sched.get_node_list().len() - removed.len())
+                Ok(sched.node_list().len() - removed.len())
             }
             None => Ok(0),
         }
@@ -831,7 +831,7 @@ impl PyScheduler {
                     .removed_nodes
                     .lock()
                     .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-                Ok(sched.get_node_list().contains(&name) && !removed.contains(&name))
+                Ok(sched.node_list().contains(&name) && !removed.contains(&name))
             }
             None => Ok(false),
         }
@@ -850,7 +850,7 @@ impl PyScheduler {
                     .lock()
                     .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
                 Ok(sched
-                    .get_node_list()
+                    .node_list()
                     .into_iter()
                     .filter(|n| !removed.contains(n))
                     .collect())
@@ -872,7 +872,7 @@ impl PyScheduler {
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
         match guard.as_ref() {
             Some(sched) => {
-                for metric in sched.get_metrics() {
+                for metric in sched.metrics() {
                     if metric.name == name {
                         return Ok(Some(metric.priority));
                     }
@@ -1202,7 +1202,7 @@ impl PyScheduler {
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
         let count = guard
             .as_ref()
-            .map(|s| s.get_node_list().len())
+            .map(|s| s.node_list().len())
             .unwrap_or(0);
         Ok(format!(
             "Scheduler(nodes={}, tick_rate={}Hz)",

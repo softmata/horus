@@ -26,7 +26,7 @@ pub fn run_list(long: bool) -> HorusResult<()> {
         for session in sessions {
             if long {
                 // Get detailed info
-                let recordings = manager.get_session_recordings(&session).unwrap_or_default();
+                let recordings = manager.session_recordings(&session).unwrap_or_default();
                 let total_size: u64 = recordings
                     .iter()
                     .filter_map(|p| std::fs::metadata(p).ok())
@@ -52,7 +52,7 @@ pub fn run_list(long: bool) -> HorusResult<()> {
 pub fn run_info(session: String) -> HorusResult<()> {
     let manager = RecordingManager::new();
     let recordings = manager
-        .get_session_recordings(&session)
+        .session_recordings(&session)
         .map_err(|e| horus_internal!("Failed to get session info: {}", e))?;
 
     if recordings.is_empty() {
@@ -132,7 +132,7 @@ pub fn run_replay(
     } else {
         // Treat as session name - find the scheduler recording
         let recordings = manager
-            .get_session_recordings(&recording)
+            .session_recordings(&recording)
             .map_err(|e| horus_internal!("Failed to get session '{}': {}", recording, e))?;
 
         if recordings.is_empty() {
@@ -237,11 +237,11 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
 
     // Get recordings from both sessions
     let recordings1 = manager
-        .get_session_recordings(&session1)
+        .session_recordings(&session1)
         .map_err(|e| horus_internal!("Failed to load session '{}': {}", session1, e))?;
 
     let recordings2 = manager
-        .get_session_recordings(&session2)
+        .session_recordings(&session2)
         .map_err(|e| horus_internal!("Failed to load session '{}': {}", session2, e))?;
 
     // Find matching nodes
@@ -340,7 +340,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
     );
 
     let recordings = manager
-        .get_session_recordings(&session)
+        .session_recordings(&session)
         .map_err(|e| horus_internal!("Failed to load session: {}", e))?;
 
     if format == "json" {
@@ -453,7 +453,7 @@ pub fn run_inject(
 
     // Get all recordings from the session
     let recordings = manager
-        .get_session_recordings(&session)
+        .session_recordings(&session)
         .map_err(|e| horus_internal!("Failed to load session '{}': {}", session, e))?;
 
     if recordings.is_empty() {

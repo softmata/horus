@@ -770,7 +770,7 @@ pub async fn logs_all_handler() -> impl IntoResponse {
 pub async fn logs_node_handler(Path(node_name): Path<String>) -> impl IntoResponse {
     use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
 
-    let logs = GLOBAL_LOG_BUFFER.get_for_node(&node_name);
+    let logs = GLOBAL_LOG_BUFFER.for_node(&node_name);
 
     (
         StatusCode::OK,
@@ -791,7 +791,7 @@ pub async fn logs_topic_handler(Path(topic_name): Path<String>) -> impl IntoResp
         .unwrap_or(&topic_name)
         .to_string();
 
-    let logs = GLOBAL_LOG_BUFFER.get_for_topic(&original_topic);
+    let logs = GLOBAL_LOG_BUFFER.for_topic(&original_topic);
 
     (
         StatusCode::OK,

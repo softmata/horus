@@ -2002,7 +2002,7 @@ impl Scheduler {
     }
 
     /// Get information about all registered nodes
-    pub fn get_node_list(&self) -> Vec<String> {
+    pub fn node_list(&self) -> Vec<String> {
         self.nodes
             .iter()
             .map(|registered| registered.name.clone())
@@ -2010,7 +2010,7 @@ impl Scheduler {
     }
 
     /// Get detailed information about a specific node
-    pub fn get_node_info(&self, name: &str) -> Option<HashMap<String, String>> {
+    pub fn node_info(&self, name: &str) -> Option<HashMap<String, String>> {
         for registered in &self.nodes {
             if registered.name == name {
                 let mut info = HashMap::new();
@@ -2029,14 +2029,14 @@ impl Scheduler {
     ///
     /// # Example
     /// ```ignore
-    /// let metrics = scheduler.get_metrics();
+    /// let metrics = scheduler.metrics();
     /// for node_metrics in metrics {
     ///     println!("Node: {}", node_metrics.name);
     ///     println!("  Avg tick: {:.2}ms", node_metrics.avg_tick_duration_ms);
     ///     println!("  Total ticks: {}", node_metrics.total_ticks);
     /// }
     /// ```
-    pub fn get_metrics(&self) -> Vec<SchedulerNodeMetrics> {
+    pub fn metrics(&self) -> Vec<SchedulerNodeMetrics> {
         self.nodes
             .iter()
             .map(|registered| {
@@ -2074,7 +2074,7 @@ impl Scheduler {
     }
 
     /// Get monitoring summary by creating temporary contexts for each node
-    pub fn get_monitoring_summary(&self) -> Vec<(String, u32)> {
+    pub fn monitoring_summary(&self) -> Vec<(String, u32)> {
         self.nodes
             .iter()
             .map(|registered| (registered.name.clone(), registered.priority))

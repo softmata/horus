@@ -131,7 +131,7 @@ impl TrackedObject {
     }
 
     /// Get class name
-    pub fn get_class_name(&self) -> &str {
+    pub fn class_name(&self) -> &str {
         let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(16);
         std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
     }
@@ -304,6 +304,6 @@ mod tests {
     fn test_class_name() {
         let mut track = TrackedObject::default();
         track.set_class_name("person");
-        assert_eq!(track.get_class_name(), "person");
+        assert_eq!(track.class_name(), "person");
     }
 }

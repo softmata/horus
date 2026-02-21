@@ -188,7 +188,7 @@ impl SharedLogBuffer {
     }
 
     /// Get logs for a specific node
-    pub fn get_for_node(&self, node_name: &str) -> Vec<LogEntry> {
+    pub fn for_node(&self, node_name: &str) -> Vec<LogEntry> {
         self.get_all()
             .into_iter()
             .filter(|e| e.node_name == node_name)
@@ -196,7 +196,7 @@ impl SharedLogBuffer {
     }
 
     /// Get logs for a specific topic
-    pub fn get_for_topic(&self, topic: &str) -> Vec<LogEntry> {
+    pub fn for_topic(&self, topic: &str) -> Vec<LogEntry> {
         self.get_all()
             .into_iter()
             .filter(|e| e.topic.as_ref().is_some_and(|t| t == topic))

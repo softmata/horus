@@ -141,12 +141,12 @@ impl BlackBox {
     }
 
     /// Get all recorded events
-    pub fn get_events(&self) -> Vec<BlackBoxRecord> {
+    pub fn events(&self) -> Vec<BlackBoxRecord> {
         self.buffer.iter().cloned().collect()
     }
 
     /// Get all errors and warnings
-    pub fn get_anomalies(&self) -> Vec<BlackBoxRecord> {
+    pub fn anomalies(&self) -> Vec<BlackBoxRecord> {
         self.buffer
             .iter()
             .filter(|r| {
@@ -168,7 +168,7 @@ impl BlackBox {
         if let Some(ref path) = self.persist_path {
             let file = File::create(path)?;
             let writer = BufWriter::new(file);
-            serde_json::to_writer_pretty(writer, &self.get_events())?;
+            serde_json::to_writer_pretty(writer, &self.events())?;
             info!(
                 "[BLACKBOX] Saved {} events to {:?}",
                 self.buffer.len(),
@@ -288,7 +288,7 @@ mod tests {
             actual_us: 2000,
         });
 
-        let anomalies = bb.get_anomalies();
+        let anomalies = bb.anomalies();
         assert_eq!(anomalies.len(), 2);
     }
 }

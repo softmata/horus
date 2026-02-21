@@ -2627,11 +2627,11 @@ impl TuiDashboard {
         // Get logs based on panel target
         let (_title, logs) = match &self.panel_target {
             Some(LogPanelTarget::Node(node_name)) => {
-                let logs = GLOBAL_LOG_BUFFER.get_for_node(node_name);
+                let logs = GLOBAL_LOG_BUFFER.for_node(node_name);
                 (format!("Logs: {}", node_name), logs)
             }
             Some(LogPanelTarget::Topic(topic_name)) => {
-                let logs = GLOBAL_LOG_BUFFER.get_for_topic(topic_name);
+                let logs = GLOBAL_LOG_BUFFER.for_topic(topic_name);
                 (format!("Logs: {}", topic_name), logs)
             }
             None => ("Logs".to_string(), Vec::new()),

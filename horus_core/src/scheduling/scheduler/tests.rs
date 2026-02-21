@@ -44,14 +44,14 @@ impl Node for CounterNode {
 fn test_scheduler_new() {
     let scheduler = Scheduler::new();
     assert!(scheduler.is_running());
-    assert_eq!(scheduler.get_node_list().len(), 0);
+    assert_eq!(scheduler.node_list().len(), 0);
 }
 
 #[test]
 fn test_scheduler_default() {
     let scheduler = Scheduler::default();
     assert!(scheduler.is_running());
-    assert_eq!(scheduler.get_node_list().len(), 0);
+    assert_eq!(scheduler.node_list().len(), 0);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn test_scheduler_with_capacity() {
     let scheduler = Scheduler::new().with_capacity(100);
     assert!(scheduler.is_running());
     // Capacity is pre-allocated but empty
-    assert_eq!(scheduler.get_node_list().len(), 0);
+    assert_eq!(scheduler.node_list().len(), 0);
 }
 
 // ============================================================================
@@ -78,7 +78,7 @@ fn test_scheduler_add_node() {
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("test_node")).order(0).done();
 
-    let nodes = scheduler.get_node_list();
+    let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0], "test_node");
 }
@@ -90,7 +90,7 @@ fn test_scheduler_add_multiple_nodes() {
     scheduler.add(CounterNode::new("node2")).order(1).done();
     scheduler.add(CounterNode::new("node3")).order(2).done();
 
-    let nodes = scheduler.get_node_list();
+    let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 3);
 }
 
@@ -112,7 +112,7 @@ fn test_scheduler_node_priority_ordering() {
         .done();
 
     // After sorting by priority, high_priority should come first
-    let nodes = scheduler.get_node_list();
+    let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 3);
     // Note: nodes are sorted by priority
 }
@@ -125,7 +125,7 @@ fn test_scheduler_add_basic() {
         .order(0)
         .done();
 
-    let info = scheduler.get_node_info("basic_node");
+    let info = scheduler.node_info("basic_node");
     assert!(info.is_some());
 }
 
@@ -183,11 +183,11 @@ fn test_scheduler_set_node_rate_nonexistent() {
 // ============================================================================
 
 #[test]
-fn test_scheduler_get_node_info_existing() {
+fn test_scheduler_node_info_existing() {
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("info_node")).order(0).done();
 
-    let info = scheduler.get_node_info("info_node");
+    let info = scheduler.node_info("info_node");
     assert!(info.is_some());
 
     let info_map = info.unwrap();
@@ -196,16 +196,16 @@ fn test_scheduler_get_node_info_existing() {
 }
 
 #[test]
-fn test_scheduler_get_node_info_nonexistent() {
+fn test_scheduler_node_info_nonexistent() {
     let scheduler = Scheduler::new();
-    let info = scheduler.get_node_info("nonexistent");
+    let info = scheduler.node_info("nonexistent");
     assert!(info.is_none());
 }
 
 #[test]
-fn test_scheduler_get_node_list_empty() {
+fn test_scheduler_node_list_empty() {
     let scheduler = Scheduler::new();
-    let nodes = scheduler.get_node_list();
+    let nodes = scheduler.node_list();
     assert!(nodes.is_empty());
 }
 
@@ -214,19 +214,19 @@ fn test_scheduler_get_node_list_empty() {
 // ============================================================================
 
 #[test]
-fn test_scheduler_get_monitoring_summary() {
+fn test_scheduler_monitoring_summary() {
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("mon_node1")).order(0).done();
     scheduler.add(CounterNode::new("mon_node2")).order(1).done();
 
-    let summary = scheduler.get_monitoring_summary();
+    let summary = scheduler.monitoring_summary();
     assert_eq!(summary.len(), 2);
 }
 
 #[test]
 fn test_scheduler_monitoring_summary_empty() {
     let scheduler = Scheduler::new();
-    let summary = scheduler.get_monitoring_summary();
+    let summary = scheduler.monitoring_summary();
     assert!(summary.is_empty());
 }
 
@@ -295,7 +295,7 @@ fn test_scheduler_add_rt_node() {
         .deadline_ms(1)
         .done();
 
-    let nodes = scheduler.get_node_list();
+    let nodes = scheduler.node_list();
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0], "rt_node");
 }
@@ -337,7 +337,7 @@ fn test_scheduler_chainable_api() {
         .done();
 
     assert!(scheduler.is_running());
-    assert_eq!(scheduler.get_node_list().len(), 1);
+    assert_eq!(scheduler.node_list().len(), 1);
 }
 
 // ============================================================================

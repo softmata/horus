@@ -155,7 +155,7 @@ impl JoystickInput {
     }
 
     /// Get the event type as a String
-    pub fn get_event_type(&self) -> String {
+    pub fn event_type(&self) -> String {
         let end = self
             .event_type
             .iter()
@@ -167,7 +167,7 @@ impl JoystickInput {
     }
 
     /// Get the element name as a String
-    pub fn get_element_name(&self) -> String {
+    pub fn element_name(&self) -> String {
         let end = self
             .element_name
             .iter()
@@ -179,19 +179,19 @@ impl JoystickInput {
     }
 
     pub fn is_button(&self) -> bool {
-        self.get_event_type() == "button"
+        self.event_type() == "button"
     }
 
     pub fn is_axis(&self) -> bool {
-        self.get_event_type() == "axis"
+        self.event_type() == "axis"
     }
 
     pub fn is_hat(&self) -> bool {
-        self.get_event_type() == "hat"
+        self.event_type() == "hat"
     }
 
     pub fn is_connection_event(&self) -> bool {
-        self.get_event_type() == "connection"
+        self.event_type() == "connection"
     }
 
     pub fn is_connected(&self) -> bool {

@@ -272,7 +272,7 @@ impl Path {
     }
 
     /// Get valid waypoints
-    pub fn get_waypoints(&self) -> &[Waypoint] {
+    pub fn waypoints(&self) -> &[Waypoint] {
         &self.waypoints[..self.waypoint_count as usize]
     }
 
@@ -285,7 +285,7 @@ impl Path {
         let mut min_distance = f64::INFINITY;
         let mut closest_index = 0;
 
-        for (i, waypoint) in self.get_waypoints().iter().enumerate() {
+        for (i, waypoint) in self.waypoints().iter().enumerate() {
             let distance = current_pose.distance_to(&waypoint.pose);
             if distance < min_distance {
                 min_distance = distance;
@@ -399,7 +399,7 @@ impl OccupancyGrid {
     }
 
     /// Get occupancy value at grid coordinates
-    pub fn get_occupancy(&self, grid_x: u32, grid_y: u32) -> Option<i8> {
+    pub fn occupancy(&self, grid_x: u32, grid_y: u32) -> Option<i8> {
         if grid_x < self.width && grid_y < self.height {
             let index = (grid_y * self.width + grid_x) as usize;
             self.data.get(index).copied()
@@ -423,7 +423,7 @@ impl OccupancyGrid {
     /// Check if a point is free (< 50% occupancy)
     pub fn is_free(&self, x: f64, y: f64) -> bool {
         if let Some((gx, gy)) = self.world_to_grid(x, y) {
-            if let Some(occupancy) = self.get_occupancy(gx, gy) {
+            if let Some(occupancy) = self.occupancy(gx, gy) {
                 return (0..50).contains(&occupancy);
             }
         }
@@ -433,7 +433,7 @@ impl OccupancyGrid {
     /// Check if a point is occupied (>= 50% occupancy)
     pub fn is_occupied(&self, x: f64, y: f64) -> bool {
         if let Some((gx, gy)) = self.world_to_grid(x, y) {
-            if let Some(occupancy) = self.get_occupancy(gx, gy) {
+            if let Some(occupancy) = self.occupancy(gx, gy) {
                 return occupancy >= 50;
             }
         }
@@ -575,7 +575,7 @@ impl CostMap {
     }
 
     /// Get cost at world coordinates
-    pub fn get_cost(&self, x: f64, y: f64) -> Option<u8> {
+    pub fn cost(&self, x: f64, y: f64) -> Option<u8> {
         if let Some((gx, gy)) = self.occupancy_grid.world_to_grid(x, y) {
             let index = (gy * self.occupancy_grid.width + gx) as usize;
             self.costs.get(index).copied()
@@ -663,7 +663,7 @@ mod tests {
 
         // Test occupancy setting
         assert!(grid.set_occupancy(10, 10, 100));
-        assert_eq!(grid.get_occupancy(10, 10), Some(100));
+        assert_eq!(grid.occupancy(10, 10), Some(100));
 
         let (x, y) = grid.grid_to_world(10, 10).unwrap();
         assert!(grid.is_occupied(x, y));
@@ -725,7 +725,7 @@ impl PathPlan {
     }
 
     /// Get waypoint at index as [x, y, theta]
-    pub fn get_waypoint(&self, index: u16) -> Option<[f32; 3]> {
+    pub fn waypoint(&self, index: u16) -> Option<[f32; 3]> {
         if index >= self.waypoint_count {
             return None;
         }

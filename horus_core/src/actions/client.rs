@@ -136,12 +136,12 @@ where
     /// Get the result if the goal has completed.
     ///
     /// Returns `None` if the goal is still active or no result has been received.
-    pub fn get_result(&self) -> Option<A::Result> {
+    pub fn result(&self) -> Option<A::Result> {
         self.state.read().result.clone()
     }
 
     /// Get the last feedback received.
-    pub fn get_last_feedback(&self) -> Option<A::Feedback> {
+    pub fn last_feedback(&self) -> Option<A::Feedback> {
         self.state.read().last_feedback.clone()
     }
 
@@ -167,7 +167,7 @@ where
 
         while start.elapsed() < timeout {
             if self.is_done() {
-                return self.get_result();
+                return self.result();
             }
             std::thread::sleep(poll_interval);
         }
@@ -607,7 +607,7 @@ where
     }
 
     /// Get the status of a specific goal.
-    pub fn get_goal_status(&self, goal_id: GoalId) -> Option<GoalStatus> {
+    pub fn goal_status(&self, goal_id: GoalId) -> Option<GoalStatus> {
         self.inner
             .goals
             .read()

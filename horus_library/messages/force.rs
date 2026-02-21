@@ -154,7 +154,7 @@ impl TactileArray {
     }
 
     /// Get active sensor readings
-    pub fn get_active_sensors(&self) -> &[f32] {
+    pub fn active_sensors(&self) -> &[f32] {
         &self.sensors[..self.sensor_count as usize]
     }
 
@@ -169,7 +169,7 @@ impl TactileArray {
     }
 
     /// Get sensor reading
-    pub fn get_sensor(&self, index: u8) -> Option<f32> {
+    pub fn sensor(&self, index: u8) -> Option<f32> {
         if index < self.sensor_count && (index as usize) < self.sensors.len() {
             Some(self.sensors[index as usize])
         } else {
@@ -179,7 +179,7 @@ impl TactileArray {
 
     /// Calculate total force from all sensors
     pub fn total_force(&self) -> f32 {
-        self.get_active_sensors().iter().sum::<f32>() * self.sensitivity
+        self.active_sensors().iter().sum::<f32>() * self.sensitivity
     }
 
     /// Calculate center of pressure for grid arrangement
@@ -216,14 +216,14 @@ impl TactileArray {
 
     /// Detect contact (any sensor above threshold)
     pub fn detect_contact(&self, threshold: f32) -> bool {
-        self.get_active_sensors()
+        self.active_sensors()
             .iter()
             .any(|&reading| reading > threshold)
     }
 
     /// Get contact pattern as boolean array
     pub fn contact_pattern(&self, threshold: f32) -> Vec<bool> {
-        self.get_active_sensors()
+        self.active_sensors()
             .iter()
             .map(|&reading| reading > threshold)
             .collect()

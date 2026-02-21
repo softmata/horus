@@ -104,7 +104,7 @@ pub(crate) struct RegisteredNode {
 
 /// Performance metrics for a scheduler node
 ///
-/// Returned by `Scheduler::get_metrics()` to provide performance data
+/// Returned by `Scheduler::metrics()` to provide performance data
 /// for monitoring and debugging.
 #[derive(Debug, Clone, Default)]
 pub struct SchedulerNodeMetrics {

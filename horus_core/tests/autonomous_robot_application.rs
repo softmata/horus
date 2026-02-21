@@ -1114,7 +1114,7 @@ fn test_robot_performance_metrics() {
     }
 
     impl Node for InstrumentedMotorController {
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             self.inner.name()
         }
         fn init(&mut self) -> Result<()> {

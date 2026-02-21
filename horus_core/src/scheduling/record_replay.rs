@@ -259,12 +259,12 @@ impl NodeRecording {
     }
 
     /// Get snapshot for a specific tick
-    pub fn get_snapshot(&self, tick: u64) -> Option<&NodeTickSnapshot> {
+    pub fn snapshot(&self, tick: u64) -> Option<&NodeTickSnapshot> {
         self.snapshots.iter().find(|s| s.tick == tick)
     }
 
     /// Get snapshots in a tick range
-    pub fn get_snapshots_range(&self, start_tick: u64, end_tick: u64) -> Vec<&NodeTickSnapshot> {
+    pub fn snapshots_range(&self, start_tick: u64, end_tick: u64) -> Vec<&NodeTickSnapshot> {
         self.snapshots
             .iter()
             .filter(|s| s.tick >= start_tick && s.tick <= end_tick)
@@ -530,12 +530,12 @@ impl NodeReplayer {
     }
 
     /// Get outputs for the current tick
-    pub fn get_outputs(&self) -> Option<&HashMap<String, Vec<u8>>> {
+    pub fn outputs(&self) -> Option<&HashMap<String, Vec<u8>>> {
         self.current_snapshot().map(|s| &s.outputs)
     }
 
     /// Get a specific output for the current tick
-    pub fn get_output(&self, topic: &str) -> Option<&Vec<u8>> {
+    pub fn output(&self, topic: &str) -> Option<&Vec<u8>> {
         self.current_snapshot().and_then(|s| s.outputs.get(topic))
     }
 
@@ -628,7 +628,7 @@ impl RecordingManager {
     }
 
     /// Get all recordings in a session
-    pub fn get_session_recordings(&self, session: &str) -> std::io::Result<Vec<PathBuf>> {
+    pub fn session_recordings(&self, session: &str) -> std::io::Result<Vec<PathBuf>> {
         let session_dir = self.base_dir.join(session);
         let mut recordings = Vec::new();
 
@@ -664,7 +664,7 @@ impl RecordingManager {
 
         if self.base_dir.exists() {
             for session in self.list_sessions()? {
-                for path in self.get_session_recordings(&session)? {
+                for path in self.session_recordings(&session)? {
                     if let Ok(metadata) = fs::metadata(&path) {
                         total += metadata.len();
                     }
@@ -694,8 +694,8 @@ pub fn diff_recordings(
     let end = recording1.last_tick.min(recording2.last_tick);
 
     for tick in start..=end {
-        let snap1 = recording1.get_snapshot(tick);
-        let snap2 = recording2.get_snapshot(tick);
+        let snap1 = recording1.snapshot(tick);
+        let snap2 = recording2.snapshot(tick);
 
         match (snap1, snap2) {
             (Some(s1), Some(s2)) => {
@@ -1598,7 +1598,7 @@ mod tests {
         assert_eq!(recording.last_tick, 1);
         assert_eq!(recording.snapshot_count(), 2);
 
-        let snap = recording.get_snapshot(1).unwrap();
+        let snap = recording.snapshot(1).unwrap();
         assert_eq!(snap.inputs.get("sensor").unwrap(), &vec![7, 8, 9]);
     }
 
@@ -1655,11 +1655,11 @@ mod tests {
         let mut replayer = NodeReplayer::from_recording(recording);
 
         assert_eq!(replayer.current_tick(), 0);
-        assert_eq!(replayer.get_output("motor").unwrap(), &vec![1, 2, 3]);
+        assert_eq!(replayer.output("motor").unwrap(), &vec![1, 2, 3]);
 
         replayer.advance();
         assert_eq!(replayer.current_tick(), 1);
-        assert_eq!(replayer.get_output("motor").unwrap(), &vec![4, 5, 6]);
+        assert_eq!(replayer.output("motor").unwrap(), &vec![4, 5, 6]);
 
         replayer.seek(2);
         assert_eq!(replayer.current_tick(), 2);

@@ -88,7 +88,7 @@ impl SegmentationMask {
     }
 
     /// Get frame ID as string
-    pub fn get_frame_id(&self) -> &str {
+    pub fn frame_id(&self) -> &str {
         let end = self.frame_id.iter().position(|&b| b == 0).unwrap_or(32);
         std::str::from_utf8(&self.frame_id[..end]).unwrap_or("")
     }
@@ -189,6 +189,6 @@ mod tests {
     fn test_frame_id() {
         let mask = SegmentationMask::semantic(640, 480, 20)
             .with_frame_id("camera_front");
-        assert_eq!(mask.get_frame_id(), "camera_front");
+        assert_eq!(mask.frame_id(), "camera_front");
     }
 }

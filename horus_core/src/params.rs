@@ -134,26 +134,6 @@ impl RuntimeParams {
         self.get(key).unwrap_or(default)
     }
 
-    /// Get parameter as f64 with default
-    pub fn get_f64(&self, key: &str, default: f64) -> f64 {
-        self.get_or(key, default)
-    }
-
-    /// Get parameter as i32 with default
-    pub fn get_i32(&self, key: &str, default: i32) -> i32 {
-        self.get_or(key, default)
-    }
-
-    /// Get parameter as bool with default
-    pub fn get_bool(&self, key: &str, default: bool) -> bool {
-        self.get_or(key, default)
-    }
-
-    /// Get parameter as string with default
-    pub fn get_string(&self, key: &str, default: &str) -> String {
-        self.get_or(key, default.to_string())
-    }
-
     /// Set a parameter value with validation
     pub fn set<T: Serialize>(&self, key: &str, value: T) -> Result<(), HorusError> {
         let json_value = serde_json::to_value(value)?;
@@ -573,7 +553,7 @@ mod tests {
         let params = create_test_params();
         params.set("test_float", 1.23456).unwrap();
 
-        let value = params.get_f64("test_float", 0.0);
+        let value: f64 = params.get_or("test_float", 0.0);
         assert_eq!(value, 1.23456);
     }
 
@@ -582,7 +562,7 @@ mod tests {
         let params = create_test_params();
         params.set("age", 25).unwrap();
 
-        let value = params.get_i32("age", 0);
+        let value: i32 = params.get_or("age", 0);
         assert_eq!(value, 25);
     }
 
@@ -591,7 +571,7 @@ mod tests {
         let params = create_test_params();
         params.set("enabled", true).unwrap();
 
-        let value = params.get_bool("enabled", false);
+        let value: bool = params.get_or("enabled", false);
         assert!(value);
     }
 
@@ -600,7 +580,7 @@ mod tests {
         let params = create_test_params();
         params.set("name", "HORUS").unwrap();
 
-        let value = params.get_string("name", "default");
+        let value: String = params.get_or("name", "default".to_string());
         assert_eq!(value, "HORUS");
     }
 
