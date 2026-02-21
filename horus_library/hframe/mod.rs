@@ -89,7 +89,7 @@ pub use config::HFrameConfig;
 pub use core::HFrameCore;
 pub use registry::FrameRegistry;
 pub use slot::{FrameSlot, TransformEntry};
-pub use types::{FrameId, HFrameError, HFrameResult, INVALID_FRAME, NO_PARENT};
+pub use types::{FrameId, INVALID_FRAME, NO_PARENT};
 
 // Re-export Transform and message types
 pub use messages::{
@@ -99,6 +99,8 @@ pub use messages::{
 };
 pub use transform::Transform;
 
+use horus_core::error::HorusError;
+use horus_core::HorusResult;
 use std::sync::Arc;
 
 /// Main HFrame interface combining core storage and name registry
@@ -167,8 +169,8 @@ impl HFrame {
     ///
     /// # Returns
     /// * `Ok(FrameId)` - The assigned frame ID for fast lookups
-    /// * `Err(HFrameError)` - If frame already exists or parent not found
-    pub fn register_frame(&self, name: &str, parent: Option<&str>) -> HFrameResult<FrameId> {
+    /// * `Err(HorusError)` - If frame already exists or parent not found
+    pub fn register_frame(&self, name: &str, parent: Option<&str>) -> HorusResult<FrameId> {
         self.registry.register(name, parent)
     }
 
@@ -180,7 +182,7 @@ impl HFrame {
         name: &str,
         parent: Option<&str>,
         transform: &Transform,
-    ) -> HFrameResult<FrameId> {
+    ) -> HorusResult<FrameId> {
         let id = self.registry.register_static(name, parent)?;
         self.core.set_static_transform(id, transform);
         Ok(id)
@@ -189,7 +191,7 @@ impl HFrame {
     /// Unregister a dynamic frame
     ///
     /// Only dynamic frames can be unregistered. Static frames are permanent.
-    pub fn unregister_frame(&self, name: &str) -> HFrameResult<()> {
+    pub fn unregister_frame(&self, name: &str) -> HorusResult<()> {
         self.registry.unregister(name)
     }
 
@@ -245,21 +247,21 @@ impl HFrame {
         name: &str,
         transform: &Transform,
         timestamp_ns: u64,
-    ) -> HFrameResult<()> {
+    ) -> HorusResult<()> {
         let id = self
             .registry
             .lookup(name)
-            .ok_or_else(|| HFrameError::FrameNotFound(name.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", name)))?;
         self.core.update(id, transform, timestamp_ns);
         Ok(())
     }
 
     /// Set a static transform (for frames that never change)
-    pub fn set_static_transform(&self, name: &str, transform: &Transform) -> HFrameResult<()> {
+    pub fn set_static_transform(&self, name: &str, transform: &Transform) -> HorusResult<()> {
         let id = self
             .registry
             .lookup(name)
-            .ok_or_else(|| HFrameError::FrameNotFound(name.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", name)))?;
         self.core.set_static_transform(id, transform);
         Ok(())
     }
@@ -278,19 +280,19 @@ impl HFrame {
     /// let tf = hf.tf("camera_frame", "base_link")?;
     /// let point_in_base = tf.transform_point(point_in_camera);
     /// ```
-    pub fn tf(&self, src: &str, dst: &str) -> HFrameResult<Transform> {
+    pub fn tf(&self, src: &str, dst: &str) -> HorusResult<Transform> {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HFrameError::FrameNotFound(src.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HFrameError::FrameNotFound(dst.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
 
         self.core
             .resolve(src_id, dst_id)
-            .ok_or(HFrameError::NoPath(src.to_string(), dst.to_string()))
+            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))
     }
 
     /// Get transform at specific timestamp with interpolation (by name)
@@ -298,19 +300,19 @@ impl HFrame {
     /// If the exact timestamp isn't available, interpolates between
     /// the two nearest samples using linear interpolation for translation
     /// and SLERP for rotation.
-    pub fn tf_at(&self, src: &str, dst: &str, timestamp_ns: u64) -> HFrameResult<Transform> {
+    pub fn tf_at(&self, src: &str, dst: &str, timestamp_ns: u64) -> HorusResult<Transform> {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HFrameError::FrameNotFound(src.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HFrameError::FrameNotFound(dst.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
 
         self.core
             .resolve_at(src_id, dst_id, timestamp_ns)
-            .ok_or(HFrameError::NoPath(src.to_string(), dst.to_string()))
+            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))
     }
 
     /// Get latest transform between two frames (by ID - fastest)
@@ -340,7 +342,7 @@ impl HFrame {
     // ========================================================================
 
     /// Transform a point from one frame to another
-    pub fn transform_point(&self, src: &str, dst: &str, point: [f64; 3]) -> HFrameResult<[f64; 3]> {
+    pub fn transform_point(&self, src: &str, dst: &str, point: [f64; 3]) -> HorusResult<[f64; 3]> {
         let tf = self.tf(src, dst)?;
         Ok(tf.transform_point(point))
     }
@@ -351,7 +353,7 @@ impl HFrame {
         src: &str,
         dst: &str,
         vector: [f64; 3],
-    ) -> HFrameResult<[f64; 3]> {
+    ) -> HorusResult<[f64; 3]> {
         let tf = self.tf(src, dst)?;
         Ok(tf.transform_vector(vector))
     }
@@ -377,20 +379,20 @@ impl HFrame {
     }
 
     /// Get the frame chain from src to dst
-    pub fn frame_chain(&self, src: &str, dst: &str) -> HFrameResult<Vec<String>> {
+    pub fn frame_chain(&self, src: &str, dst: &str) -> HorusResult<Vec<String>> {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HFrameError::FrameNotFound(src.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HFrameError::FrameNotFound(dst.to_string()))?;
+            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
 
         let chain = self
             .core
             .frame_chain(src_id, dst_id)
-            .ok_or(HFrameError::NoPath(src.to_string(), dst.to_string()))?;
+            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))?;
 
         Ok(chain
             .iter()
@@ -414,7 +416,7 @@ impl HFrame {
     }
 
     /// Validate the frame tree structure
-    pub fn validate(&self) -> HFrameResult<()> {
+    pub fn validate(&self) -> HorusResult<()> {
         self.core.validate()
     }
 }

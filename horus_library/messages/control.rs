@@ -48,10 +48,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -65,10 +62,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -82,10 +76,7 @@ impl MotorCommand {
             max_acceleration: f64::INFINITY,
             feed_forward: 0.0,
             enable: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -124,10 +115,7 @@ impl DifferentialDriveCommand {
             right_velocity: right,
             max_acceleration: f64::INFINITY,
             enable: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -138,10 +126,7 @@ impl DifferentialDriveCommand {
             right_velocity: 0.0,
             max_acceleration: f64::INFINITY,
             enable: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -184,10 +169,7 @@ impl ServoCommand {
             position,
             speed: 0.5,
             enable: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -198,10 +180,7 @@ impl ServoCommand {
             position,
             speed: speed.clamp(0.0, 1.0),
             enable: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -212,10 +191,7 @@ impl ServoCommand {
             position: 0.0,
             speed: 0.0,
             enable: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -258,10 +234,7 @@ impl PidConfig {
             integral_limit: f64::INFINITY,
             output_limit: f64::INFINITY,
             anti_windup: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -391,10 +364,7 @@ impl JointCommand {
     /// Create a new joint command
     pub fn new() -> Self {
         Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
             ..Default::default()
         }
     }
@@ -475,10 +445,7 @@ impl PwmCommand {
             enable: 1,
             brake_mode: 0,
             current_limit: 0.0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -501,10 +468,7 @@ impl PwmCommand {
             enable: 0,
             brake_mode: 0,
             current_limit: 0.0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -517,10 +481,7 @@ impl PwmCommand {
             enable: 1,
             brake_mode: 1,
             current_limit: 0.0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -611,10 +572,7 @@ impl StepperCommand {
             enable: 1,
             microsteps: 16,
             current_limit: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -629,10 +587,7 @@ impl StepperCommand {
             enable: 1,
             microsteps: 16,
             current_limit: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -647,10 +602,7 @@ impl StepperCommand {
             enable: 1,
             microsteps: 16,
             current_limit: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -665,10 +617,7 @@ impl StepperCommand {
             enable: 1,
             microsteps: 16,
             current_limit: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -683,10 +632,7 @@ impl StepperCommand {
             enable: 0,
             microsteps: 16,
             current_limit: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 

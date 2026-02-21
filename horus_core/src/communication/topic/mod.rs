@@ -164,7 +164,7 @@ pub use metrics::{MigrationMetrics, TopicMetrics};
 /// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
 const READY_FLAG_SPIN_LIMIT: u32 = 256;
 pub use migration::{BackendMigrator, MigrationResult};
-pub use types::{BackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole};
+pub use types::{BackendMode, ConnectionState, TopicConfig, TopicDescriptor, TopicRole};
 
 use header::current_time_ms;
 use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};

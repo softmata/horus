@@ -29,10 +29,7 @@ impl Twist {
         Self {
             linear,
             angular,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -77,10 +74,7 @@ impl Pose2D {
             x,
             y,
             theta,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -135,10 +129,7 @@ impl TransformStamped {
         Self {
             translation,
             rotation,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 

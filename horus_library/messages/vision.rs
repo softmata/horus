@@ -47,10 +47,7 @@ impl CompressedImage {
             width: 0,
             height: 0,
             frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -116,10 +113,7 @@ impl CameraInfo {
             height,
             camera_matrix: [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
             projection_matrix: [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
             ..Default::default()
         }
     }

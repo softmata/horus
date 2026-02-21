@@ -90,10 +90,7 @@ impl PlaneDetection {
             inlier_count: 0,
             confidence: 0.5,
             plane_type: [0; 16],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 

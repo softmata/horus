@@ -11,7 +11,10 @@ use super::transform::Transform;
 
 use super::config::HFrameConfig;
 use super::slot::FrameSlot;
-use super::types::{FrameId, FrameType, HFrameError, HFrameResult, NO_PARENT};
+use horus_core::error::HorusError;
+use horus_core::HorusResult;
+
+use super::types::{FrameId, FrameType, NO_PARENT};
 
 /// Core HFrame storage with lock-free operations
 ///
@@ -331,7 +334,7 @@ impl HFrameCore {
     // ========================================================================
 
     /// Validate the frame tree structure
-    pub fn validate(&self) -> HFrameResult<()> {
+    pub fn validate(&self) -> HorusResult<()> {
         // Check for cycles
         for id in 0..self.slots.len() {
             if !self.is_allocated(id as FrameId) {
@@ -343,7 +346,7 @@ impl HFrameCore {
 
             while current != NO_PARENT {
                 if !visited.insert(current) {
-                    return Err(HFrameError::CycleDetected);
+                    return Err(HorusError::InvalidInput("Cycle detected in frame tree".to_string()));
                 }
                 if (current as usize) >= self.parents.len() {
                     break;

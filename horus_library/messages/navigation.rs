@@ -38,10 +38,7 @@ impl Goal {
             timeout_seconds: 0.0,
             priority: 1,
             goal_id: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -146,10 +143,7 @@ impl GoalResult {
             eta_seconds: 0.0,
             progress: 0.0,
             error_message: [0; 64],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -244,10 +238,7 @@ impl Path {
     /// Create a new empty path
     pub fn new() -> Self {
         Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
             ..Default::default()
         }
     }
@@ -364,10 +355,7 @@ impl OccupancyGrid {
             data: vec![-1; data_size], // Initialize as unknown
             frame_id: [0; 32],
             metadata: [0; 64],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -703,10 +691,7 @@ impl PathPlan {
     /// Create a new empty path plan
     pub fn new() -> Self {
         Self {
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
             ..Default::default()
         }
     }

@@ -17,10 +17,7 @@ impl CmdVel {
     /// Create a new CmdVel message with current timestamp
     pub fn new(linear: f32, angular: f32) -> Self {
         Self {
-            stamp_nanos: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            stamp_nanos: crate::hframe::timestamp_now(),
             linear,
             angular,
         }

@@ -35,10 +35,7 @@ impl WrenchStamped {
             torque,
             point_of_application: Point3::origin(),
             frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -145,10 +142,7 @@ impl TactileArray {
         Self {
             sensor_count,
             arrangement,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
             ..Default::default()
         }
     }
@@ -260,10 +254,7 @@ impl ImpedanceParameters {
             inertia: [1.0, 1.0, 1.0, 0.1, 0.1, 0.1],
             force_limits: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0],
             enabled: 0,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -288,19 +279,13 @@ impl ImpedanceParameters {
     /// Enable impedance control
     pub fn enable(&mut self) {
         self.enabled = 1;
-        self.timestamp_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.timestamp_ns = crate::hframe::timestamp_now();
     }
 
     /// Disable impedance control
     pub fn disable(&mut self) {
         self.enabled = 0;
-        self.timestamp_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        self.timestamp_ns = crate::hframe::timestamp_now();
     }
 }
 
@@ -346,10 +331,7 @@ impl ForceCommand {
             gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             timeout_seconds: 0.0,
             frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -365,10 +347,7 @@ impl ForceCommand {
             gains: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
             timeout_seconds: 0.0,
             frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -460,10 +439,7 @@ impl ContactInfo {
             confidence: 0.5,
             contact_start_time: 0,
             frame_id: [0; 32],
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -519,10 +495,7 @@ impl HapticFeedback {
             force_feedback: Vector3::zero(),
             pattern_type: Self::PATTERN_CONSTANT,
             enabled: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 
@@ -535,10 +508,7 @@ impl HapticFeedback {
             force_feedback: force,
             pattern_type: Self::PATTERN_CONSTANT,
             enabled: 1,
-            timestamp_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64,
+            timestamp_ns: crate::hframe::timestamp_now(),
         }
     }
 

@@ -6,8 +6,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use horus_core::error::HorusError;
+use horus_core::HorusResult;
+
 use super::core::HFrameCore;
-use super::types::{FrameId, HFrameError, HFrameResult, NO_PARENT};
+use super::types::{FrameId, NO_PARENT};
 
 /// Frame name registry
 ///
@@ -45,12 +48,12 @@ impl FrameRegistry {
     /// Register a new dynamic frame
     ///
     /// Returns the assigned frame ID.
-    pub fn register(&self, name: &str, parent_name: Option<&str>) -> HFrameResult<FrameId> {
+    pub fn register(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
         // Check for existing frame
         {
             let name_map = self.name_to_id.read().unwrap();
             if name_map.contains_key(name) {
-                return Err(HFrameError::FrameAlreadyExists(name.to_string()));
+                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
             }
         }
 
@@ -59,7 +62,7 @@ impl FrameRegistry {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
                 .get(parent)
-                .ok_or_else(|| HFrameError::ParentNotFound(parent.to_string()))?
+                .ok_or_else(|| HorusError::NotFound(format!("Parent frame '{}'", parent)))?
         } else {
             NO_PARENT
         };
@@ -85,12 +88,12 @@ impl FrameRegistry {
     }
 
     /// Register a static frame
-    pub fn register_static(&self, name: &str, parent_name: Option<&str>) -> HFrameResult<FrameId> {
+    pub fn register_static(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
         // Check for existing frame
         {
             let name_map = self.name_to_id.read().unwrap();
             if name_map.contains_key(name) {
-                return Err(HFrameError::FrameAlreadyExists(name.to_string()));
+                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
             }
         }
 
@@ -99,7 +102,7 @@ impl FrameRegistry {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
                 .get(parent)
-                .ok_or_else(|| HFrameError::ParentNotFound(parent.to_string()))?
+                .ok_or_else(|| HorusError::NotFound(format!("Parent frame '{}'", parent)))?
         } else {
             NO_PARENT
         };
@@ -125,17 +128,17 @@ impl FrameRegistry {
     }
 
     /// Unregister a frame (only dynamic frames can be unregistered)
-    pub fn unregister(&self, name: &str) -> HFrameResult<()> {
+    pub fn unregister(&self, name: &str) -> HorusResult<()> {
         let id = {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
                 .get(name)
-                .ok_or_else(|| HFrameError::FrameNotFound(name.to_string()))?
+                .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", name)))?
         };
 
         // Check if static
         if self.core.is_static(id) {
-            return Err(HFrameError::CannotUnregisterStatic(name.to_string()));
+            return Err(HorusError::PermissionDenied(format!("Cannot unregister static frame '{}'", name)));
         }
 
         // Reset the slot
@@ -194,7 +197,7 @@ impl FrameRegistry {
     /// Get or create a frame (useful for auto-registration)
     ///
     /// If the frame exists, returns its ID. Otherwise creates it.
-    pub fn get_or_create(&self, name: &str, parent_name: Option<&str>) -> HFrameResult<FrameId> {
+    pub fn get_or_create(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
         // Fast path: check if exists
         if let Some(id) = self.lookup(name) {
             return Ok(id);
@@ -205,12 +208,12 @@ impl FrameRegistry {
     }
 
     /// Rename a frame
-    pub fn rename(&self, old_name: &str, new_name: &str) -> HFrameResult<()> {
+    pub fn rename(&self, old_name: &str, new_name: &str) -> HorusResult<()> {
         // Check new name doesn't exist
         {
             let name_map = self.name_to_id.read().unwrap();
             if name_map.contains_key(new_name) {
-                return Err(HFrameError::FrameAlreadyExists(new_name.to_string()));
+                return Err(HorusError::AlreadyExists(format!("Frame '{}'", new_name)));
             }
         }
 
@@ -219,7 +222,7 @@ impl FrameRegistry {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
                 .get(old_name)
-                .ok_or_else(|| HFrameError::FrameNotFound(old_name.to_string()))?
+                .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", old_name)))?
         };
 
         // Update mappings
@@ -259,7 +262,7 @@ impl FrameRegistry {
     // ========================================================================
 
     /// Allocate a new frame ID
-    fn allocate_id(&self) -> HFrameResult<FrameId> {
+    fn allocate_id(&self) -> HorusResult<FrameId> {
         let mut next_id = self.next_id.write().unwrap();
 
         if (*next_id as usize) >= self.max_frames {
@@ -267,7 +270,7 @@ impl FrameRegistry {
             if let Some(free_id) = self.find_free_slot() {
                 return Ok(free_id);
             }
-            return Err(HFrameError::MaxFramesReached(self.max_frames));
+            return Err(HorusError::InvalidInput(format!("Maximum frame limit ({}) reached", self.max_frames)));
         }
 
         let id = *next_id;
@@ -331,7 +334,7 @@ mod tests {
         let registry = make_registry();
 
         let result = registry.register("orphan", Some("nonexistent"));
-        assert!(matches!(result, Err(HFrameError::ParentNotFound(_))));
+        assert!(matches!(result, Err(HorusError::NotFound(ref msg)) if msg.contains("Parent frame")));
     }
 
     #[test]
@@ -340,7 +343,7 @@ mod tests {
 
         registry.register("world", None).unwrap();
         let result = registry.register("world", None);
-        assert!(matches!(result, Err(HFrameError::FrameAlreadyExists(_))));
+        assert!(matches!(result, Err(HorusError::AlreadyExists(_))));
     }
 
     #[test]

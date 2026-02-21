@@ -176,27 +176,6 @@ impl ConnectionState {
 }
 
 // ============================================================================
-// Backend Hint
-// ============================================================================
-
-/// Backend hint for topic creation (kept for API compatibility, ignored — Topic auto-selects)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BackendHint {
-    #[default]
-    Auto,
-    DirectChannel,
-    SpscIntra,
-    SpscShm,
-    PodShm,
-    MpmcShm,
-    MpscIntra,
-    SpmcIntra,
-    MpmcIntra,
-    MpscShm,
-    SpmcShm,
-}
-
-// ============================================================================
 // Topic Descriptor
 // ============================================================================
 
@@ -262,9 +241,4 @@ impl TopicConfig {
         self
     }
 
-    /// Set the backend hint (ignored — Topic auto-selects optimal backend)
-    #[deprecated(note = "Backend hints are ignored. Topic auto-selects the optimal backend.")]
-    pub fn with_backend(self, _hint: BackendHint) -> Self {
-        self
-    }
 }
