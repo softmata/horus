@@ -4,13 +4,11 @@
 
 use pyo3::prelude::*;
 
-mod ai;
 mod config;
 mod hframe;
 mod messages;
 mod node;
 mod perception;
-mod router;
 #[allow(deprecated)] // with_gil/allow_threads deprecated in PyO3 0.27, still functional
 mod scheduler;
 mod tensor;
@@ -20,7 +18,6 @@ mod types;
 use config::PySchedulerConfig;
 use hframe::{PyHFrame, PyHFrameConfig, PyTransform};
 use node::{PyNode, PyNodeInfo, PyNodeState};
-use router::{PyRouterClient, PyRouterServer};
 use scheduler::PyScheduler;
 use topic::PyTopic;
 use types::Priority;
@@ -35,14 +32,8 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNode>()?;
     m.add_class::<PyNodeInfo>()?;
     m.add_class::<PyTopic>()?; // Unified communication API
-    m.add_class::<PyRouterClient>()?; // Explicit router connection management
-    m.add_class::<PyRouterServer>()?; // Router server management
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyNodeState>()?;
-
-    // Router utility functions
-    m.add_function(wrap_pyfunction!(router::default_router_endpoint, m)?)?;
-    m.add_function(wrap_pyfunction!(router::router_endpoint, m)?)?;
 
     // Configuration classes
     m.add_class::<PySchedulerConfig>()?;
@@ -58,9 +49,6 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Tensor system - zero-copy shared memory tensors
     tensor::register_tensor_classes(m)?;
-
-    // AI/ML utilities - DLPack, dtype, Device
-    ai::register_ai_module(m)?;
 
     // Perception types - Detection, PointCloud, Landmark
     perception::register_perception_module(m)?;
