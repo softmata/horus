@@ -920,13 +920,6 @@ impl Scheduler {
         self.deterministic.as_ref().and_then(|d| d.trace.clone())
     }
 
-    /// Get the deterministic configuration (simulation mode only).
-    ///
-    /// Contains the seed, tick duration, and tracing settings.
-    pub fn deterministic_config(&self) -> Option<&DeterministicConfig> {
-        self.deterministic.as_ref().map(|d| &d.config)
-    }
-
     /// Get the seed used for deterministic RNG (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
@@ -1008,15 +1001,6 @@ impl Scheduler {
             print_line("Safety monitor configured for RT nodes");
         }
 
-        // Apply timing configuration
-        if config.timing.per_node_rates {
-            // Per-node rate control already supported via set_node_rate()
-        }
-
-        // Global rate control
-        let _tick_period_ms = (1000.0 / config.timing.global_rate_hz) as u64;
-        // This will be used in the run loop (store for later)
-
         // Apply fault tolerance
         for registered in self.nodes.iter_mut() {
             if config.fault.circuit_breaker_enabled {
@@ -1056,7 +1040,9 @@ impl Scheduler {
 
         // 2. Black box flight recorder
         if config.monitoring.black_box_enabled && config.monitoring.black_box_size_mb > 0 {
-            let mut bb = super::blackbox::BlackBox::new(config.monitoring.black_box_size_mb);
+            let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
+            let mut bb = super::blackbox::BlackBox::new(config.monitoring.black_box_size_mb)
+                .with_path(bb_dir);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
@@ -1110,7 +1096,28 @@ impl Scheduler {
             }
         }
 
-        // 7. Recording configuration for record/replay system
+        // 7. Deterministic execution (simulation mode)
+        if let Some(ref det_config) = config.deterministic {
+            let clock = Arc::new(DeterministicClock::new(det_config));
+            let trace = if det_config.record_trace {
+                Some(Arc::new(ParkingMutex::new(ExecutionTrace::new(
+                    det_config.clone(),
+                ))))
+            } else {
+                None
+            };
+            self.deterministic = Some(DeterministicState {
+                clock,
+                trace,
+                config: det_config.clone(),
+            });
+            print_line(&format!(
+                "[SCHEDULER] Deterministic mode enabled (seed={}, virtual_time={})",
+                det_config.seed, det_config.virtual_time
+            ));
+        }
+
+        // 8. Recording configuration for record/replay system
         if let Some(ref recording_yaml) = config.recording {
             if recording_yaml.enabled {
                 // Generate session name if not provided
@@ -1372,20 +1379,6 @@ impl Scheduler {
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
         super::node_builder::NodeBuilder::new(self, Box::new(node))
-    }
-
-    /// Add a boxed node using the fluent builder API.
-    ///
-    /// Use this if you already have a `Box<dyn Node>`. Otherwise, prefer `add()`
-    /// which doesn't require boxing.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let node: Box<dyn Node> = factory.create_node();
-    /// scheduler.add_dyn(node).order(0).done();
-    /// ```
-    pub fn add_dyn(&mut self, node: Box<dyn Node>) -> super::node_builder::NodeBuilder<'_> {
-        super::node_builder::NodeBuilder::new(self, node)
     }
 
     /// Add a node using a pre-built NodeRegistration.
@@ -1894,23 +1887,39 @@ impl Scheduler {
                     }
                 }
 
-                // Use pre-computed tick period (from config or default ~60Hz)
-                // Apply replay speed adjustment if in replay mode
-                let sleep_duration = if let Some(ref replay) = self.replay {
-                    if replay.speed != 1.0 {
-                        Duration::from_nanos(
-                            (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
-                        )
+                // Skip wall-clock sleep in virtual time mode (run as fast as possible)
+                let use_virtual_time = self
+                    .deterministic
+                    .as_ref()
+                    .is_some_and(|d| d.config.virtual_time);
+
+                if !use_virtual_time {
+                    // Use pre-computed tick period (from config or default ~60Hz)
+                    // Apply replay speed adjustment if in replay mode
+                    let sleep_duration = if let Some(ref replay) = self.replay {
+                        if replay.speed != 1.0 {
+                            Duration::from_nanos(
+                                (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
+                            )
+                        } else {
+                            self.tick_period
+                        }
                     } else {
                         self.tick_period
-                    }
-                } else {
-                    self.tick_period
-                };
-                tokio::time::sleep(sleep_duration).await;
+                    };
+                    tokio::time::sleep(sleep_duration).await;
+                }
 
                 // Increment tick counter for replay tracking
                 self.current_tick += 1;
+
+                // Advance deterministic clock and finalize trace
+                if let Some(ref det) = self.deterministic {
+                    det.clock.advance_tick();
+                    if let Some(ref trace) = det.trace {
+                        trace.lock().finalize_tick(self.current_tick - 1);
+                    }
+                }
             }
 
             // Shutdown nodes
@@ -2389,6 +2398,13 @@ impl Scheduler {
                 }
             }
 
+            // Begin recording tick (before node execution)
+            {
+                if let Some(ref mut recorder) = self.nodes[i].recorder {
+                    recorder.begin_tick(self.current_tick);
+                }
+            }
+
             let tick_start = Instant::now();
             let tick_result = {
                 let registered = &mut self.nodes[i];
@@ -2439,6 +2455,17 @@ impl Scheduler {
 
             // Record profiling data
             self.profiler.record(node_name, tick_duration);
+        }
+
+        // End recording tick (after profiling, before failure handling)
+        {
+            if let Some(ref mut recorder) = self.nodes[i].recorder {
+                recorder.end_tick(tick_duration.as_nanos() as u64);
+            }
+        }
+
+        {
+            let node_name = self.nodes[i].name.as_str();
 
             // Check WCET budget for RT nodes
             if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
