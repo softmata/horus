@@ -4,7 +4,7 @@
 //! from other frameworks (PyTorch, JAX, TensorFlow, etc.) into HORUS.
 
 use super::ffi::{DLDevice, DLManagedTensor};
-use crate::tensor::TensorDescriptor;
+use crate::memory::tensor_descriptor::TensorDescriptor;
 use horus_types::{Device, TensorDtype};
 use thiserror::Error;
 
@@ -28,9 +28,9 @@ pub enum DLPackImportError {
     InvalidTensor(String),
 }
 
-impl From<DLPackImportError> for horus_core::error::HorusError {
+impl From<DLPackImportError> for crate::error::HorusError {
     fn from(err: DLPackImportError) -> Self {
-        horus_core::error::HorusError::Memory(err.to_string())
+        crate::error::HorusError::Memory(err.to_string())
     }
 }
 

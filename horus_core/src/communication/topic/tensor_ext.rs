@@ -19,7 +19,7 @@
 //! use horus_core::communication::Topic;
 //! use horus_types::{HorusTensor, TensorDtype, Device};
 //!
-//! let topic: Topic<HorusTensor> = Topic::new("camera/rgb")?;
+//! let topic: RingTopic<HorusTensor> = RingTopic::new("camera/rgb")?;
 //!
 //! // Allocate a 1080p RGB image from the topic's pool
 //! let mut handle = topic.alloc(&[1080, 1920, 3], TensorDtype::U8, Device::cpu())?;
@@ -35,12 +35,13 @@
 use std::sync::Arc;
 
 use super::pool_registry::get_or_create_pool;
-use super::Topic;
+use super::RingTopic;
 use crate::error::HorusResult;
 use crate::memory::{TensorHandle, TensorPool};
 use horus_types::{Device, HorusTensor, TensorDtype};
 
-impl Topic<HorusTensor> {
+#[allow(dead_code)] // Accessed via Topic<HorusTensor> wrapper
+impl RingTopic<HorusTensor> {
     /// Get or create the auto-managed tensor pool for this topic.
     ///
     /// On first call, opens an existing pool (if another process created it)
@@ -96,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_topic_tensor_pool_roundtrip() {
-        let topic: Topic<HorusTensor> = Topic::new("test/tensor_ext_roundtrip").unwrap();
+        let topic: RingTopic<HorusTensor> = RingTopic::new("test/tensor_ext_roundtrip").unwrap();
 
         // Allocate a tensor
         let handle = topic
@@ -129,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_pool_shared_across_calls() {
-        let topic: Topic<HorusTensor> = Topic::new("test/tensor_ext_shared_pool").unwrap();
+        let topic: RingTopic<HorusTensor> = RingTopic::new("test/tensor_ext_shared_pool").unwrap();
 
         let pool1 = topic.pool();
         let pool2 = topic.pool();

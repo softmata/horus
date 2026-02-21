@@ -89,7 +89,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
 use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
-use super::Topic;
+use super::RingTopic;
 use super::local_state::{LEASE_REFRESH_INTERVAL, EPOCH_CHECK_INTERVAL};
 use crate::utils::unlikely;
 
@@ -97,8 +97,8 @@ use crate::utils::unlikely;
 // Type aliases for function pointers
 // ============================================================================
 
-pub(super) type SendFn<T> = fn(&Topic<T>, T) -> Result<(), T>;
-pub(super) type RecvFn<T> = fn(&Topic<T>) -> Option<T>;
+pub(super) type SendFn<T> = fn(&RingTopic<T>, T) -> Result<(), T>;
+pub(super) type RecvFn<T> = fn(&RingTopic<T>) -> Option<T>;
 
 // ============================================================================
 // Epoch guard macros — detect topology changes and re-dispatch
@@ -186,7 +186,7 @@ macro_rules! intra_send_fn {
     ($name:ident, $variant:ident) => {
         #[inline(always)]
         pub(super) fn $name<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-            topic: &Topic<T>,
+            topic: &RingTopic<T>,
             msg: T,
         ) -> Result<(), T> {
             epoch_guard_send!(topic, msg);
@@ -217,7 +217,7 @@ macro_rules! intra_recv_fn {
     ($name:ident, $variant:ident) => {
         #[inline(always)]
         pub(super) fn $name<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-            topic: &Topic<T>,
+            topic: &RingTopic<T>,
         ) -> Option<T> {
             epoch_guard_recv!(topic);
 
@@ -307,7 +307,7 @@ unsafe fn read_serde_slot<T: DeserializeOwned>(slot_ptr: *const u8, slot_size: u
 
 #[inline(always)]
 pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     let local = topic.local();
@@ -333,7 +333,7 @@ pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
 
 #[inline(always)]
 pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     let local = topic.local();
     let tail = local.local_tail;
@@ -376,7 +376,7 @@ pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
 
 #[inline(always)]
 pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     let local = topic.local();
@@ -411,7 +411,7 @@ pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
 
 #[inline(always)]
 pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     let local = topic.local();
     // SAFETY: Same pointer reinterpretation as send_direct_channel_cached
@@ -458,7 +458,7 @@ intra_send_fn!(send_mpmc_intra, MpmcIntra);
 
 #[inline(always)]
 pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -497,7 +497,7 @@ pub(super) fn send_shm_sp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
 #[inline(always)]
 pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -543,7 +543,7 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 
 #[inline(always)]
 pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -574,7 +574,7 @@ pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -629,7 +629,7 @@ pub(super) fn send_shm_sp_serde<T: Clone + Send + Sync + Serialize + Deserialize
 
 #[inline(always)]
 pub(super) fn send_shm_mp_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -710,7 +710,7 @@ unsafe fn colo_data<T>(data_ptr: *mut u8, index: usize) -> *mut T {
 
 #[inline(always)]
 pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -753,7 +753,7 @@ pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
 
 #[inline(always)]
 pub(super) fn send_shm_mp_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -792,7 +792,7 @@ pub(super) fn send_shm_mp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
 
 #[inline(always)]
 pub(super) fn send_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     epoch_guard_send!(topic, msg);
@@ -821,7 +821,7 @@ pub(super) fn send_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
 #[cold]
 #[inline(never)]
 pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
     if topic.ensure_producer().is_err() {
@@ -851,7 +851,7 @@ intra_recv_fn!(recv_mpmc_intra, MpmcIntra);
 
 #[inline(always)]
 pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -894,7 +894,7 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
 #[inline(always)]
 pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -945,7 +945,7 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
 #[inline(always)]
 pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -991,7 +991,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
 #[inline(always)]
 pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1041,7 +1041,7 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
 #[inline(always)]
 pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1095,7 +1095,7 @@ pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1138,7 +1138,7 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
 #[inline(always)]
 pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1192,7 +1192,7 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
 #[inline(always)]
 pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1240,7 +1240,7 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
 #[inline(always)]
 pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1311,7 +1311,7 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
 #[inline(always)]
 pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1361,7 +1361,7 @@ pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1403,7 +1403,7 @@ pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1442,7 +1442,7 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1487,7 +1487,7 @@ pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 
 #[inline(always)]
 pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
 
@@ -1537,7 +1537,7 @@ pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
 #[cold]
 #[inline(never)]
 pub(super) fn recv_uninitialized<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
-    topic: &Topic<T>,
+    topic: &RingTopic<T>,
 ) -> Option<T> {
     if topic.ensure_consumer().is_err() {
         return None;

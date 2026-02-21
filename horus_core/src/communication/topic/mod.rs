@@ -126,13 +126,14 @@ pub(crate) mod pool_registry;
 // Auto-managed tensor pool extensions
 pub mod tensor_ext;
 
-// Domain-specific topic wrappers (new(), send(), recv() only)
+// TopicMessage trait — unified wire protocol for Topic<T>
+pub mod topic_message;
+pub use topic_message::TopicMessage;
+
+// Legacy domain-specific topic wrappers (retained for tests, replaced by Topic<T: TopicMessage>)
 mod image_ext;
 mod pointcloud_ext;
 mod depth_ext;
-pub use image_ext::ImageTopic;
-pub use pointcloud_ext::PointCloudTopic;
-pub use depth_ext::DepthTopic;
 
 #[cfg(test)]
 mod tests;
@@ -150,7 +151,7 @@ use crate::memory::shm_region::ShmRegion;
 use crate::memory::simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 use crate::utils::unlikely;
 
-pub use header::{TopicHeader, ParticipantEntry};
+pub(crate) use header::TopicHeader;
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 use local_state::LocalState;
 pub use metrics::{MigrationMetrics, TopicMetrics};
@@ -163,9 +164,7 @@ pub use metrics::{MigrationMetrics, TopicMetrics};
 /// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
 const READY_FLAG_SPIN_LIMIT: u32 = 256;
 pub use migration::{BackendMigrator, MigrationResult};
-pub use types::{
-    BackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole,
-};
+pub use types::{BackendMode, BackendHint, ConnectionState, TopicConfig, TopicDescriptor, TopicRole};
 
 use header::current_time_ms;
 use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
@@ -309,12 +308,15 @@ macro_rules! topics {
 // Topic - Main Public API
 // ============================================================================
 
-/// Topic - Universal Smart Detection IPC
+/// RingTopic - Internal ring buffer with smart detection IPC
 ///
-/// `Topic<T>` provides fully automatic backend detection. Users just call
+/// `RingTopic<T>` provides fully automatic backend detection. Users just call
 /// `send()`/`recv()` and the system auto-detects the optimal backend from 10 paths
 /// based on topology and access patterns.
-pub struct Topic<T> {
+///
+/// This is the internal ring buffer type. Users should use `Topic<T>` which
+/// wraps this with the `TopicMessage` conversion layer.
+pub(crate) struct RingTopic<T> {
     /// Topic name
     name: String,
 
@@ -353,12 +355,12 @@ pub struct Topic<T> {
     _marker: PhantomData<T>,
 }
 
-// Safety: Topic can be sent between threads
+// Safety: RingTopic can be sent between threads
 // The UnsafeCell is only accessed through &self with internal synchronization
-unsafe impl<T: Send> Send for Topic<T> {}
-unsafe impl<T: Send + Sync> Sync for Topic<T> {}
+unsafe impl<T: Send> Send for RingTopic<T> {}
+unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
     /// Header size in shared memory
     const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
 
@@ -1652,7 +1654,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for Topic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for RingTopic<T> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -1670,7 +1672,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
     }
 }
 
-impl<T> Drop for Topic<T> {
+impl<T> Drop for RingTopic<T> {
     fn drop(&mut self) {
         // Registry entries are NOT removed here — other instances may still
         // reference the same backend Arc. Entries are cleaned up automatically
@@ -1683,7 +1685,7 @@ impl<T> Drop for Topic<T> {
 // Logging Support (requires LogSummary bound)
 // ============================================================================
 
-impl<T> Topic<T>
+impl<T> RingTopic<T>
 where
     T: Clone + Send + Sync + Serialize + DeserializeOwned + crate::core::LogSummary + 'static,
 {
@@ -1698,11 +1700,365 @@ where
 // TopicConfig Support
 // ============================================================================
 
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Topic<T> {
+impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
     /// Create a topic from configuration
-    pub fn from_config(config: TopicConfig) -> HorusResult<Self> {
+    pub(crate) fn from_config(config: TopicConfig) -> HorusResult<Self> {
         Self::with_capacity(&config.name, config.capacity, None)
     }
+}
 
+// ============================================================================
+// Topic<T: TopicMessage> — Public Unified API
+// ============================================================================
+//
+// This wraps RingTopic<T::Wire> with a TopicMessage conversion layer.
+// For direct types (CmdVel, i32, etc.), Wire = T → zero overhead.
+// For pool-backed types (Image, PointCloud, DepthImage), Wire = XxxDescriptor.
 
+use crate::memory::TensorPool;
+use crate::memory::image::Image;
+use crate::memory::pointcloud::PointCloud;
+use crate::memory::depth_image::DepthImage;
+use horus_types::HorusTensor;
+
+/// Topic — Universal IPC with automatic backend detection.
+///
+/// `Topic<T>` provides a single API for all HORUS communication. It automatically
+/// selects the optimal backend from 10 paths based on topology and access patterns.
+///
+/// Works with any type:
+/// - **Direct types** (`CmdVel`, `Imu`, `i32`, `String`, ...): zero-overhead pass-through
+/// - **Pool-backed types** (`Image`, `PointCloud`, `DepthImage`): automatic zero-copy
+///   transport via lightweight descriptors
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+///
+/// // Direct type — same as before
+/// let topic: Topic<CmdVel> = Topic::new("cmd_vel")?;
+/// topic.send(CmdVel { linear: 1.0, angular: 0.0 });
+///
+/// // Pool-backed type — same API!
+/// let topic: Topic<Image> = Topic::new("camera/rgb")?;
+/// let img = Image::new(480, 640, Rgb8)?;
+/// topic.send(&img);
+/// let img = topic.recv();
+/// ```
+pub struct Topic<T: TopicMessage> {
+    /// Internal ring buffer typed with the wire format
+    ring: RingTopic<T::Wire>,
+    /// Pool for pool-backed types (None for direct types)
+    pool: Option<Arc<TensorPool>>,
+}
+
+// Safety: Topic delegates to RingTopic which handles synchronization.
+// The pool field is Arc (Send+Sync).
+unsafe impl<T: TopicMessage> Send for Topic<T>
+where
+    T::Wire: Send,
+{}
+unsafe impl<T: TopicMessage> Sync for Topic<T>
+where
+    T::Wire: Send + Sync,
+{}
+
+// ============================================================================
+// Shared methods — all TopicMessage types
+// ============================================================================
+
+impl<T: TopicMessage> Topic<T> {
+    /// Get the topic name.
+    pub fn name(&self) -> &str {
+        self.ring.name()
+    }
+
+    /// Get the current backend mode.
+    pub fn mode(&self) -> BackendMode {
+        self.ring.mode()
+    }
+
+    /// Get the current role.
+    pub fn role(&self) -> TopicRole {
+        self.ring.role()
+    }
+
+    /// Get raw migration metrics.
+    pub fn migration_metrics(&self) -> &MigrationMetrics {
+        self.ring.migration_metrics()
+    }
+
+    /// Get a snapshot of the topic's metrics.
+    pub fn metrics(&self) -> TopicMetrics {
+        self.ring.metrics()
+    }
+
+    /// Get the current connection state.
+    pub fn connection_state(&self) -> ConnectionState {
+        self.ring.connection_state()
+    }
+
+    /// Check if a message is available without consuming it.
+    pub fn has_message(&self) -> bool {
+        self.ring.has_message()
+    }
+
+    /// Get the number of pending messages.
+    pub fn pending_count(&self) -> u64 {
+        self.ring.pending_count()
+    }
+
+    /// Get the backend name (for debugging).
+    pub fn backend_name(&self) -> &'static str {
+        self.ring.backend_name()
+    }
+
+    /// Check if all participants are in the same process.
+    pub fn is_same_process(&self) -> bool {
+        self.ring.is_same_process()
+    }
+
+    /// Check if caller is on same thread as creator.
+    pub fn is_same_thread(&self) -> bool {
+        self.ring.is_same_thread()
+    }
+
+    /// Get publisher count.
+    pub fn pub_count(&self) -> u32 {
+        self.ring.pub_count()
+    }
+
+    /// Get subscriber count.
+    pub fn sub_count(&self) -> u32 {
+        self.ring.sub_count()
+    }
+
+    /// Force a migration check NOW.
+    pub fn check_migration_now(&self) {
+        self.ring.check_migration_now()
+    }
+
+    /// Force a backend migration (for testing).
+    pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
+        self.ring.force_migrate(mode)
+    }
+
+    /// Get raw pointer to the SHM header (for benchmarking).
+    pub fn local_state_header_ptr(&self) -> *const header::TopicHeader {
+        self.ring.local_state_header_ptr()
+    }
+}
+
+// ============================================================================
+// Unified constructor — single `new()` for all TopicMessage types
+// ============================================================================
+
+impl<T: TopicMessage> Topic<T>
+where
+    T::Wire: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    /// Create a new topic with auto-sized ring buffer capacity.
+    ///
+    /// Works for all types:
+    /// - Direct types (CmdVel, i32, String, ...): zero-overhead pass-through
+    /// - Pool-backed types (Image, PointCloud, DepthImage): automatic zero-copy
+    pub fn new(name: impl Into<String>) -> HorusResult<Self> {
+        let ring = RingTopic::new(name)?;
+        let pool = if T::needs_pool() {
+            Some(pool_registry::global_pool())
+        } else {
+            None
+        };
+        Ok(Self { ring, pool })
+    }
+
+    /// Create a new topic with custom capacity.
+    pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
+        let ring = RingTopic::with_capacity(name, capacity, slot_size)?;
+        let pool = if T::needs_pool() {
+            Some(pool_registry::global_pool())
+        } else {
+            None
+        };
+        Ok(Self { ring, pool })
+    }
+
+    /// Create a topic from configuration.
+    pub fn from_config(config: TopicConfig) -> HorusResult<Self> {
+        let ring = RingTopic::from_config(config)?;
+        let pool = if T::needs_pool() {
+            Some(pool_registry::global_pool())
+        } else {
+            None
+        };
+        Ok(Self { ring, pool })
+    }
+}
+
+// ============================================================================
+// Direct types — T: TopicMessage<Wire = T> (CmdVel, i32, String, HorusTensor, ...)
+// ============================================================================
+//
+// When Wire = T, the wrapper is pure pass-through. No conversion, no pool.
+
+impl<T> Topic<T>
+where
+    T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    /// Send a message (fire-and-forget with bounded retry).
+    #[inline(always)]
+    pub fn send(&self, msg: T) {
+        self.ring.send(msg)
+    }
+
+    /// Try to send a message, returning it on failure.
+    #[inline(always)]
+    pub fn try_send(&self, msg: T) -> Result<(), T> {
+        self.ring.try_send(msg)
+    }
+
+    /// Receive a message.
+    #[inline(always)]
+    pub fn recv(&self) -> Option<T> {
+        self.ring.recv()
+    }
+
+    /// Try to receive a message without logging.
+    #[inline(always)]
+    pub fn try_recv(&self) -> Option<T> {
+        self.ring.try_recv()
+    }
+
+    /// Read the most recent message without advancing the consumer position.
+    pub fn read_latest(&self) -> Option<T>
+    where
+        T: Copy,
+    {
+        self.ring.read_latest()
+    }
+}
+
+// Direct types with LogSummary support
+impl<T> Topic<T>
+where
+    T: TopicMessage<Wire = T>
+        + Clone
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + crate::core::LogSummary
+        + 'static,
+{
+    /// Enable automatic logging on send/recv.
+    pub fn with_logging(mut self) -> Self {
+        self.ring = self.ring.with_logging();
+        self
+    }
+}
+
+// Clone for direct types
+impl<T> Clone for Topic<T>
+where
+    T: TopicMessage<Wire = T> + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            ring: self.ring.clone(),
+            pool: self.pool.clone(),
+        }
+    }
+}
+
+// ============================================================================
+// Image — Topic<Image> send/recv with zero-copy pool transport
+// ============================================================================
+
+impl Topic<Image> {
+    /// Send an image (zero-copy).
+    ///
+    /// Retains the tensor so it stays alive for receivers, then sends the
+    /// 288-byte descriptor through the ring buffer.
+    pub fn send(&self, img: &Image) {
+        let wire = img.to_wire(&self.pool);
+        self.ring.send(wire);
+    }
+
+    /// Receive the next image.
+    pub fn recv(&self) -> Option<Image> {
+        let wire = self.ring.recv()?;
+        Some(Image::from_wire(wire, &self.pool))
+    }
+}
+
+// ============================================================================
+// PointCloud — Topic<PointCloud> send/recv with zero-copy pool transport
+// ============================================================================
+
+impl Topic<PointCloud> {
+    /// Send a point cloud (zero-copy).
+    pub fn send(&self, pc: &PointCloud) {
+        let wire = pc.to_wire(&self.pool);
+        self.ring.send(wire);
+    }
+
+    /// Receive the next point cloud.
+    pub fn recv(&self) -> Option<PointCloud> {
+        let wire = self.ring.recv()?;
+        Some(PointCloud::from_wire(wire, &self.pool))
+    }
+}
+
+// ============================================================================
+// DepthImage — Topic<DepthImage> send/recv with zero-copy pool transport
+// ============================================================================
+
+impl Topic<DepthImage> {
+    /// Send a depth image (zero-copy).
+    pub fn send(&self, depth: &DepthImage) {
+        let wire = depth.to_wire(&self.pool);
+        self.ring.send(wire);
+    }
+
+    /// Receive the next depth image.
+    pub fn recv(&self) -> Option<DepthImage> {
+        let wire = self.ring.recv()?;
+        Some(DepthImage::from_wire(wire, &self.pool))
+    }
+}
+
+// ============================================================================
+// HorusTensor — Topic<HorusTensor> with pool-managed tensor handles
+// ============================================================================
+
+impl Topic<HorusTensor> {
+    /// Get or create the auto-managed tensor pool for this topic.
+    pub fn pool(&self) -> Arc<TensorPool> {
+        pool_registry::get_or_create_pool(self.ring.name())
+    }
+
+    /// Allocate a tensor from this topic's auto-managed pool.
+    pub fn alloc_tensor(
+        &self,
+        shape: &[u64],
+        dtype: horus_types::TensorDtype,
+        device: horus_types::Device,
+    ) -> HorusResult<crate::memory::TensorHandle> {
+        let pool = self.pool();
+        crate::memory::TensorHandle::alloc(pool, shape, dtype, device)
+    }
+
+    /// Send a tensor handle through this topic (zero-copy).
+    pub fn send_handle(&self, handle: &crate::memory::TensorHandle) {
+        handle.pool().retain(handle.tensor());
+        self.ring.send(*handle.tensor());
+    }
+
+    /// Receive a tensor and wrap it in a `TensorHandle`.
+    pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
+        let tensor = self.ring.recv()?;
+        let pool = self.pool();
+        Some(crate::memory::TensorHandle::from_owned(tensor, pool))
+    }
 }

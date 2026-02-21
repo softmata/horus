@@ -152,11 +152,6 @@ pub mod prelude {
     };
 
     // ============================================
-    // ML Model Registry
-    // ============================================
-    pub use horus_ai::ml::{ModelEntry, ModelLoader, ModelRegistry};
-
-    // ============================================
     // Memory & Tensors
     // ============================================
     pub use horus_core::memory::{shm_base_dir, TensorHandle, TensorPool, TensorPoolConfig};

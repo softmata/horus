@@ -77,8 +77,8 @@ pub use perception::{PlaneDetection};
 // Domain-specific types (RAII wrappers with rich API for data access)
 pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
-// Domain-specific topics (new(), send(), recv() only)
-pub use horus_core::communication::topic::{DepthTopic, ImageTopic, PointCloudTopic};
+// TopicMessage trait for unified Topic<T> API
+pub use horus_core::communication::TopicMessage;
 
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};

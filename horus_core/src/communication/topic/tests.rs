@@ -12,6 +12,7 @@
 //! - Robotics simulation: realistic multi-node data flow patterns
 
 use super::*;
+use super::header::ParticipantEntry;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -620,7 +621,7 @@ fn topic_same_thread_uses_direct_channel() {
     t.send(1);
     let _ = t.recv();
 
-    let local = t.local();
+    let local = t.ring.local();
     assert_eq!(
         local.cached_mode,
         BackendMode::DirectChannel,
@@ -1219,13 +1220,13 @@ fn migration_epoch_visible_across_clones() {
     t1.send(1);
     let _ = t2.recv();
 
-    let epoch_before = t1.header().migration_epoch.load(Ordering::Acquire);
+    let epoch_before = t1.ring.header().migration_epoch.load(Ordering::Acquire);
 
     // Force migrate to a heap-backed intra-process mode
     let result = t1.force_migrate(BackendMode::MpmcIntra);
     assert!(matches!(result, MigrationResult::Success { .. }));
 
-    let epoch_after = t1.header().migration_epoch.load(Ordering::Acquire);
+    let epoch_after = t1.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(epoch_after > epoch_before, "Epoch should increment after forced migration");
 
     // t2's check_migration_now detects the new epoch and updates its state.
@@ -1233,7 +1234,7 @@ fn migration_epoch_visible_across_clones() {
     // for same-thread topology), which itself increments the epoch further.
     t2.check_migration_now();
 
-    let t2_epoch = t2.header().migration_epoch.load(Ordering::Acquire);
+    let t2_epoch = t2.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(
         t2_epoch >= epoch_after,
         "t2 should have picked up the epoch change (t2={}, expected >= {})",
@@ -1721,20 +1722,20 @@ fn epoch_notification_across_threads() {
     t1.send(1);
     let _ = t2.recv();
 
-    let epoch_before = t1.header().migration_epoch.load(Ordering::Acquire);
+    let epoch_before = t1.ring.header().migration_epoch.load(Ordering::Acquire);
 
     // Force migration from one participant
     let result = t1.force_migrate(BackendMode::MpmcShm);
     assert!(matches!(result, MigrationResult::Success { .. }));
 
-    let epoch_after = t1.header().migration_epoch.load(Ordering::Acquire);
+    let epoch_after = t1.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(epoch_after > epoch_before);
 
     // notify_epoch_change uses try_lock — under parallel test execution the
     // registry lock may be briefly contended. Verify via the SHM header
     // (ground truth) and check that t2 can pick up the change.
     t2.check_migration_now();
-    let t2_epoch = t2.header().migration_epoch.load(Ordering::Acquire);
+    let t2_epoch = t2.ring.header().migration_epoch.load(Ordering::Acquire);
     assert!(
         t2_epoch >= epoch_after,
         "SHM epoch should be at least {} after migration, got {}",

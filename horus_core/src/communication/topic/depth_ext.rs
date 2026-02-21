@@ -1,64 +1,11 @@
-//! `DepthTopic` — zero-copy depth image transport with `new()`, `send()`, `recv()`
-
-use super::pool_registry::global_pool;
-use super::Topic;
-use crate::error::HorusResult;
-use crate::memory::depth_image::DepthImage;
-use horus_types::DepthImageDescriptor;
-
-/// Topic for sending and receiving `DepthImage` via zero-copy shared memory.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus::prelude::*;
-///
-/// let topic = DepthTopic::new("depth/camera")?;
-///
-/// let mut depth = DepthImage::new(480, 640, TensorDtype::F32)?;
-/// depth.set_depth(100, 200, 1.5);
-/// topic.send(&depth);
-///
-/// if let Some(depth) = topic.recv() {
-///     let d = depth.get_depth(100, 200);
-/// }
-/// ```
-pub struct DepthTopic {
-    inner: Topic<DepthImageDescriptor>,
-}
-
-impl DepthTopic {
-    /// Create a new depth image topic.
-    pub fn new(name: impl Into<String>) -> HorusResult<Self> {
-        Ok(Self {
-            inner: Topic::new(name)?,
-        })
-    }
-
-    /// Send a depth image (zero-copy).
-    pub fn send(&self, depth: &DepthImage) {
-        depth.pool().retain(depth.descriptor().tensor());
-        self.inner.send(*depth.descriptor());
-    }
-
-    /// Receive the next depth image.
-    pub fn recv(&self) -> Option<DepthImage> {
-        let descriptor = self.inner.recv()?;
-        let pool = global_pool();
-        Some(DepthImage::from_owned(descriptor, pool))
-    }
-
-    /// Topic name.
-    pub fn name(&self) -> &str {
-        self.inner.name()
-    }
-}
+//! DepthImage topic tests — validates Topic<DepthImage> zero-copy roundtrip
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::communication::pod::is_pod;
-    use horus_types::TensorDtype;
+    use crate::communication::topic::Topic;
+    use crate::memory::depth_image::DepthImage;
+    use horus_types::{DepthImageDescriptor, TensorDtype};
 
     #[test]
     fn test_depth_descriptor_is_pod() {
@@ -72,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_depth_topic_roundtrip() {
-        let topic = DepthTopic::new("test/depth_topic_roundtrip").unwrap();
+        let topic: Topic<DepthImage> = Topic::new("test/depth_topic_roundtrip_unified").unwrap();
 
         let mut depth = DepthImage::new(2, 3, TensorDtype::F32).unwrap();
 

@@ -23,6 +23,7 @@
 pub mod platform;
 pub mod shm_region;
 pub mod simd;
+pub mod tensor_descriptor;
 pub mod tensor_handle;
 pub mod tensor_pool;
 
@@ -40,6 +41,7 @@ pub mod cuda_pool;
 pub use platform::*;
 pub use shm_region::ShmRegion;
 pub use simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
+pub use tensor_descriptor::TensorDescriptor;
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{
     Device, HorusTensor, TensorDtype, TensorPool, TensorPoolConfig, TensorPoolStats,

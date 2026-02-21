@@ -26,6 +26,7 @@ Example:
 from .tensor import Tensor
 from .device import device, Device, get_default_device, set_default_device
 from .model import Model
+from .registry import ModelRegistry, ModelEntry
 from .node import mlnode, MLNodeConfig
 from . import transforms
 
@@ -47,6 +48,8 @@ __all__ = [
     # Core classes
     "Tensor",
     "Model",
+    "ModelRegistry",
+    "ModelEntry",
     "Device",
     "device",
     "mlnode",

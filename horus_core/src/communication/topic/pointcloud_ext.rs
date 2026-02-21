@@ -1,64 +1,11 @@
-//! `PointCloudTopic` — zero-copy point cloud transport with `new()`, `send()`, `recv()`
-
-use super::pool_registry::global_pool;
-use super::Topic;
-use crate::error::HorusResult;
-use crate::memory::pointcloud::PointCloud;
-use horus_types::PointCloudDescriptor;
-
-/// Topic for sending and receiving `PointCloud` via zero-copy shared memory.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus::prelude::*;
-///
-/// let topic = PointCloudTopic::new("lidar/points")?;
-///
-/// let mut pc = PointCloud::new(1000, 3, TensorDtype::F32)?;
-/// // Fill point data...
-/// topic.send(&pc);
-///
-/// if let Some(pc) = topic.recv() {
-///     let xyz = pc.extract_xyz();
-/// }
-/// ```
-pub struct PointCloudTopic {
-    inner: Topic<PointCloudDescriptor>,
-}
-
-impl PointCloudTopic {
-    /// Create a new point cloud topic.
-    pub fn new(name: impl Into<String>) -> HorusResult<Self> {
-        Ok(Self {
-            inner: Topic::new(name)?,
-        })
-    }
-
-    /// Send a point cloud (zero-copy).
-    pub fn send(&self, pc: &PointCloud) {
-        pc.pool().retain(pc.descriptor().tensor());
-        self.inner.send(*pc.descriptor());
-    }
-
-    /// Receive the next point cloud.
-    pub fn recv(&self) -> Option<PointCloud> {
-        let descriptor = self.inner.recv()?;
-        let pool = global_pool();
-        Some(PointCloud::from_owned(descriptor, pool))
-    }
-
-    /// Topic name.
-    pub fn name(&self) -> &str {
-        self.inner.name()
-    }
-}
+//! PointCloud topic tests — validates Topic<PointCloud> zero-copy roundtrip
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::communication::pod::is_pod;
-    use horus_types::TensorDtype;
+    use crate::communication::topic::Topic;
+    use crate::memory::pointcloud::PointCloud;
+    use horus_types::{PointCloudDescriptor, TensorDtype};
 
     #[test]
     fn test_pointcloud_descriptor_is_pod() {
@@ -72,7 +19,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_topic_roundtrip() {
-        let topic = PointCloudTopic::new("test/pc_topic_roundtrip").unwrap();
+        let topic: Topic<PointCloud> = Topic::new("test/pc_topic_roundtrip_unified").unwrap();
 
         let pc = PointCloud::new(4, 3, TensorDtype::F32).unwrap();
 

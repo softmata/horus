@@ -46,5 +46,5 @@ pub mod network;
 pub mod pod;
 
 // Re-export commonly used types for convenience
-pub use topic::{BackendHint, Topic, TopicConfig};
+pub use topic::{Topic, TopicMessage};
 pub use pod::PodMessage;

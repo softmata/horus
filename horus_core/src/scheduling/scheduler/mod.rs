@@ -1415,19 +1415,10 @@ impl Scheduler {
 
     /// Set OS-level scheduling priority using SCHED_FIFO (Linux RT-PREEMPT required).
     ///
-    /// This sets the scheduler thread's OS priority, giving it preferential
-    /// CPU scheduling over normal processes.
+    /// Delegates to [`super::rt::set_realtime_priority`].
     ///
     /// # Arguments
     /// * `priority` - Priority level (1-99, higher = more important)
-    ///   - 99: Critical control loops (motors, safety)
-    ///   - 90: High-priority sensors
-    ///   - 80: Normal control
-    ///   - 50-70: Background tasks
-    ///
-    /// # Requirements
-    /// - RT-PREEMPT kernel (linux-image-rt)
-    /// - CAP_SYS_NICE capability or root
     ///
     /// # Example
     /// ```ignore
@@ -1439,153 +1430,52 @@ impl Scheduler {
                 "Priority must be between 1 and 99",
             ));
         }
-
-        #[cfg(target_os = "linux")]
-        // SAFETY: pid 0 = current thread; sched_param is properly initialized with valid priority.
-        unsafe {
-            use libc::{sched_param, sched_setscheduler, SCHED_FIFO};
-
-            let param = sched_param {
-                sched_priority: priority,
-            };
-
-            if sched_setscheduler(0, SCHED_FIFO, &param) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!(
-                    "Failed to set OS priority: {}. \
-                     Ensure you have RT-PREEMPT kernel and CAP_SYS_NICE capability.",
-                    err
-                ));
-            }
-
-            print_line(&format!(
-                "[OK] OS priority set to {} (SCHED_FIFO)",
-                priority
-            ));
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "OS priority scheduling is only supported on Linux".to_string(),
-            ))
-        }
+        super::rt::set_realtime_priority(priority)?;
+        print_line(&format!(
+            "[OK] OS priority set to {} (SCHED_FIFO)",
+            priority
+        ));
+        Ok(())
     }
 
-    /// Pin scheduler to a specific CPU core (prevent context switches)
+    /// Pin scheduler to a specific CPU core (prevent context switches).
     ///
-    /// # Arguments
-    /// * `cpu_id` - CPU core number (0-N)
-    ///
-    /// # Best Practices
-    /// - Use isolated cores (boot with isolcpus=7 kernel parameter)
-    /// - Reserve core for RT tasks only
-    /// - Disable hyperthreading for predictable performance
+    /// Delegates to [`super::rt::set_thread_affinity`].
     ///
     /// # Example
     /// ```ignore
-    /// // Pin to isolated core 7
     /// scheduler.pin_to_cpu(7)?;
     /// ```
     pub fn pin_to_cpu(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
-        #[cfg(target_os = "linux")]
-        // SAFETY: pid 0 = current thread; cpuset is properly zeroed and initialized with valid cpu_id.
-        unsafe {
-            use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
-
-            let mut cpuset: cpu_set_t = std::mem::zeroed();
-            CPU_ZERO(&mut cpuset);
-            CPU_SET(cpu_id, &mut cpuset);
-
-            if sched_setaffinity(0, std::mem::size_of::<cpu_set_t>(), &cpuset) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!("Failed to set CPU affinity: {}", err));
-            }
-
-            print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "CPU pinning is only supported on Linux".to_string(),
-            ))
-        }
+        super::rt::set_thread_affinity(&[cpu_id])?;
+        print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
+        Ok(())
     }
 
-    /// Lock all memory pages to prevent page faults (critical for <20μs latency)
+    /// Lock all memory pages to prevent page faults (critical for <20μs latency).
     ///
-    /// This prevents the OS from swapping out scheduler memory, which would
-    /// cause multi-millisecond delays. Essential for hard real-time systems.
-    ///
-    /// # Requirements
-    /// - Sufficient locked memory limit (ulimit -l)
-    /// - CAP_IPC_LOCK capability or root
-    ///
-    /// # Warning
-    /// This locks ALL current and future memory allocations. Ensure your
-    /// application has bounded memory usage.
+    /// Delegates to [`super::rt::lock_all_memory`].
     ///
     /// # Example
     /// ```ignore
     /// scheduler.lock_memory()?;
     /// ```
     pub fn lock_memory(&self) -> crate::error::HorusResult<()> {
-        #[cfg(target_os = "linux")]
-        // SAFETY: MCL_CURRENT | MCL_FUTURE are valid POSIX flag constants for mlockall.
-        unsafe {
-            use libc::{mlockall, MCL_CURRENT, MCL_FUTURE};
-
-            if mlockall(MCL_CURRENT | MCL_FUTURE) != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(horus_internal!(
-                    "Failed to lock memory: {}. \
-                     Check ulimit -l and ensure CAP_IPC_LOCK capability.",
-                    err
-                ));
-            }
-
-            print_line("[OK] Memory locked (no page faults)");
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(crate::error::HorusError::Unsupported(
-                "Memory locking is only supported on Linux".to_string(),
-            ))
-        }
+        super::rt::lock_all_memory()?;
+        print_line("[OK] Memory locked (no page faults)");
+        Ok(())
     }
 
-    /// Pre-fault stack to prevent page faults during execution
+    /// Pre-fault stack to prevent page faults during execution.
     ///
-    /// Touches stack pages to ensure they're resident in RAM before
-    /// time-critical execution begins.
-    ///
-    /// # Arguments
-    /// * `stack_size` - Stack size to pre-fault (bytes)
+    /// Delegates to [`super::rt::prefault_stack`].
     ///
     /// # Example
     /// ```ignore
     /// scheduler.prefault_stack(8 * 1024 * 1024)?;  // 8MB stack
     /// ```
     pub fn prefault_stack(&self, stack_size: usize) -> crate::error::HorusResult<()> {
-        // Allocate array on stack and touch each page
-        let page_size = 4096; // Standard page size
-        let pages = stack_size / page_size;
-
-        // Use volatile writes to prevent optimization
-        for i in 0..pages {
-            let offset = i * page_size;
-            let mut dummy_stack = vec![0u8; page_size];
-            // SAFETY: pointer is within bounds of the allocated dummy_stack buffer.
-            unsafe {
-                std::ptr::write_volatile(&mut dummy_stack[offset % page_size], 0xFF);
-            }
-        }
-
+        super::rt::prefault_stack(stack_size)?;
         print_line(&format!(
             "[OK] Pre-faulted {} KB of stack",
             stack_size / 1024

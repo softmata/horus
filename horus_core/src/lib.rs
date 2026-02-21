@@ -49,6 +49,7 @@
 pub mod actions;
 pub mod communication;
 pub mod core;
+pub mod dlpack;
 pub mod driver;
 pub mod error;
 pub mod memory;
@@ -60,7 +61,7 @@ pub(crate) mod utils;
 
 // Re-export commonly used types for easy access
 // Unified Topic API - the single way to create IPC channels
-pub use communication::{PodMessage, Topic};
+pub use communication::{PodMessage, Topic, TopicMessage};
 pub use core::{
     announce_started, announce_stopped, detect_isolated_cpus, detect_nohz_full_cpus,
     get_rt_recommended_cpus, pin_thread_to_core, HealthStatus, LogSummary, Node, NodeAnnouncement,

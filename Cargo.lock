@@ -223,15 +223,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
-name = "approx"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2404,7 +2395,6 @@ name = "horus"
 version = "0.1.9"
 dependencies = [
  "anyhow",
- "horus_ai",
  "horus_core",
  "horus_library",
  "horus_macros",
@@ -2412,24 +2402,6 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tokio",
-]
-
-[[package]]
-name = "horus_ai"
-version = "0.1.9"
-dependencies = [
- "approx",
- "bytemuck",
- "dirs",
- "horus_core",
- "horus_library",
- "horus_types",
- "parking_lot",
- "reqwest",
- "serde",
- "serde_yaml_ng",
- "sha2",
- "thiserror 1.0.69",
 ]
 
 [[package]]

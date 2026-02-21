@@ -14,7 +14,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use horus_ai::dlpack::{to_dlpack, from_dlpack};
+//! use horus_core::dlpack::{to_dlpack, from_dlpack};
 //!
 //! // Export HORUS tensor to DLPack
 //! let managed = to_dlpack(&horus_tensor);
