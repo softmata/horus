@@ -2442,133 +2442,38 @@ pub fn get_active_drivers() -> DriverConfig {
     }
 }
 
-/// Map a driver name and optional backend to Cargo feature(s)
-///
-/// This is the central mapping from user-friendly driver names to Cargo features.
-/// Users never need to know about features - they just specify drivers.
-///
-/// # Example mappings:
-/// - `imu` + `mpu6050` → `["mpu6050-imu"]`
-/// - `imu` + `bno055` → `["bno055-imu"]`
-/// - `camera` + `opencv` → `["opencv-backend"]`
-/// - `lidar` + `rplidar` → `["rplidar"]`
-pub fn driver_to_features(driver: &str, backend: Option<&str>) -> Vec<String> {
-    match driver.to_lowercase().as_str() {
-        // IMU drivers
-        "imu" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("mpu6050") => vec!["mpu6050-imu".to_string()],
-            Some("bno055") => vec!["bno055-imu".to_string()],
-            Some("icm20948") => vec!["icm20948-imu".to_string()],
-            _ => vec![], // Simulation - no feature needed
-        },
-
-        // Camera drivers
-        "camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("opencv") => vec!["opencv-backend".to_string()],
-            Some("v4l2") => vec![],
-            Some("realsense") => vec![],
-            Some("zed") => vec!["zed".to_string()],
-            _ => vec![], // Simulation - no feature needed
-        },
-
-        // Depth camera
-        "depth-camera" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("realsense") => vec![],
-            Some("zed") => vec![],
-            _ => vec![],
-        },
-
-        // LiDAR drivers
-        "lidar" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("rplidar") | Some("rplidar-a2") | Some("rplidar-a3") => {
-                vec!["rplidar".to_string()]
-            }
-            _ => vec![], // Simulation - no feature needed
-        },
-
-        // GPS drivers
-        "gps" => match backend.map(|s| s.to_lowercase()).as_deref() {
-            Some("nmea") => vec!["nmea-gps".to_string()],
-            _ => vec![],
-        },
-
-        // Input drivers
-        "joystick" => vec!["gilrs".to_string()],
-        "keyboard" => vec!["crossterm".to_string()],
-
-        // Modbus
-        "modbus" => vec!["modbus-hardware".to_string()],
-
-        // Hardware buses
-        "i2c" => vec!["i2c-hardware".to_string()],
-        "spi" => vec!["spi-hardware".to_string()],
-        "serial" => vec!["serial-hardware".to_string()],
-
-        // Motor drivers
-        "dc-motor" | "motor" => vec!["gpio-hardware".to_string()],
-        "servo" => vec!["gpio-hardware".to_string()],
-        "dynamixel" => vec!["serial-hardware".to_string()],
-
-        // Encoder
-        "encoder" => vec!["gpio-hardware".to_string()],
-
-        // GPIO
-        "gpio" => vec!["gpio-hardware".to_string()],
-
-        // Unknown driver - no features
-        _ => vec![],
-    }
-}
-
 /// Get Cargo features to enable based on driver configuration
 ///
-/// Reads driver config and returns a list of Cargo features to pass to `cargo build --features`.
-/// For known built-in drivers, uses the hardcoded mapping.
-/// For unknown drivers, queries the HORUS registry for required features.
+/// Queries the HORUS registry for each driver's required features.
+/// Driver metadata (required_features, cargo_dependencies, etc.) lives in the
+/// registry — not hardcoded in the CLI.
 pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
+    use crate::registry::RegistryClient;
+
     let mut features = Vec::new();
+    let client = RegistryClient::new();
 
     for driver in &config.drivers {
         let backend = config.backends.get(driver).map(|s| s.as_str());
-        let driver_features = driver_to_features(driver, backend);
 
-        if driver_features.is_empty() {
-            // Try registry lookup for unknown drivers
-            if let Some(registry_features) = query_registry_for_driver_features(driver, backend) {
-                for f in registry_features {
-                    if !features.contains(&f) {
-                        features.push(f);
-                    }
+        // Construct driver name for registry lookup (e.g., "lidar" + "rplidar" -> "lidar-rplidar")
+        let driver_name = if let Some(b) = backend {
+            format!("{}-{}", driver, b)
+        } else {
+            driver.to_string()
+        };
+
+        // Query registry for required features (silent failure if registry unreachable)
+        if let Some(registry_features) = client.query_driver_features(&driver_name) {
+            for f in registry_features {
+                if !features.contains(&f) {
+                    features.push(f);
                 }
-                continue;
-            }
-        }
-
-        for f in driver_features {
-            if !features.contains(&f) {
-                features.push(f);
             }
         }
     }
 
     features
-}
-
-/// Query the HORUS registry for driver features
-/// Used as fallback when driver_to_features() returns empty for unknown drivers
-fn query_registry_for_driver_features(driver: &str, backend: Option<&str>) -> Option<Vec<String>> {
-    use crate::registry::RegistryClient;
-
-    // Construct driver name for lookup
-    let driver_name = if let Some(b) = backend {
-        format!("{}-{}", driver, b)
-    } else {
-        driver.to_string()
-    };
-
-    // Try to query registry (silent failure - returns None if registry unreachable)
-    let client = RegistryClient::new();
-    client.query_driver_features(&driver_name)
 }
 
 /// Get features string for cargo build command
