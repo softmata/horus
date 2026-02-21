@@ -69,7 +69,7 @@ pub use core::{
     RtConfigBuilder, RtCpuInfo, RtDegradation, RtKernelInfo, RtScheduler, TopicMetadata,
     DISCOVERY_TOPIC,
 };
-pub use error::{HorusError, HorusResult};
+pub use error::{HorusError, HorusResult, Result};
 pub use params::RuntimeParams;
 pub use scheduling::Scheduler;
 

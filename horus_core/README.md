@@ -53,11 +53,13 @@ let mut scheduler = Scheduler::safety_critical(); // Safety systems
 let mut scheduler = Scheduler::high_performance();// Parallel + 10kHz
 let mut scheduler = Scheduler::deterministic();   // Reproducible
 
-// Builder for custom configuration
+// Custom configuration via SchedulerConfig
+let mut config = SchedulerConfig::standard();
+config.realtime.rt_scheduling_class = true;
+config.monitoring.black_box_enabled = true;
 let mut scheduler = Scheduler::new()
-    .realtime()
+    .with_config(config)
     .tick_hz(1000.0)
-    .with_blackbox(16)
     .with_name("my_robot");
 
 // Add nodes with execution order

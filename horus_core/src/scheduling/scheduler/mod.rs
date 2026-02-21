@@ -185,10 +185,11 @@ impl Scheduler {
     /// // Minimal — just capability detection, no syscalls
     /// let scheduler = Scheduler::new();
     ///
-    /// // With RT features opted in
-    /// let scheduler = Scheduler::new()
-    ///     .realtime()          // RT priority + memory lock + CPU pin (best-effort)
-    ///     .with_blackbox(16);  // 16MB flight recorder
+    /// // With RT features via config
+    /// let mut config = SchedulerConfig::standard();
+    /// config.realtime.rt_scheduling_class = true;
+    /// config.monitoring.black_box_enabled = true;
+    /// let scheduler = Scheduler::new().with_config(config);
     ///
     /// // Check detected capabilities
     /// if let Some(caps) = scheduler.capabilities() {
@@ -240,134 +241,6 @@ impl Scheduler {
     // BUILDER METHODS — opt in to features one at a time
     // ========================================================================
 
-    /// Apply all available RT features (best-effort, non-fatal).
-    ///
-    /// Attempts to apply in order:
-    /// 1. **RT priority** (SCHED_FIFO) — if available
-    /// 2. **Memory locking** (mlockall) — if permitted
-    /// 3. **CPU affinity** — only to isolated CPUs if they exist
-    ///
-    /// Features that fail are recorded as degradations (not errors).
-    /// Check `scheduler.degradations()` after calling.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .realtime()    // Best-effort RT
-    ///     .with_blackbox(16); // 16MB flight recorder
-    ///
-    /// // Check what was actually applied
-    /// for deg in scheduler.degradations() {
-    ///     println!("{}: {}", deg.feature, deg.reason);
-    /// }
-    /// ```
-    pub fn realtime(mut self) -> Self {
-        let caps = match &self.rt.capabilities {
-            Some(c) => c.clone(),
-            None => return self,
-        };
-
-        // 1. RT priority
-        if caps.has_rt_support() {
-            let priority = caps.recommended_rt_priority();
-            match self.apply_rt_priority_internal(priority) {
-                Ok(()) => {
-                    print_line(
-                        &format!("[RT] Priority {} applied (SCHED_FIFO)", priority)
-                            .green()
-                            .to_string(),
-                    );
-                }
-                Err(e) => {
-                    self.rt.degradations.push(RtDegradation {
-                        feature: RtFeature::RtPriority,
-                        reason: e.to_string(),
-                        severity: DegradationSeverity::High,
-                    });
-                }
-            }
-        } else {
-            self.rt.degradations.push(RtDegradation {
-                feature: RtFeature::RtPriority,
-                reason: format!(
-                    "RT scheduling not available (max_priority={}, preempt_rt={})",
-                    caps.max_rt_priority, caps.preempt_rt
-                ),
-                severity: DegradationSeverity::High,
-            });
-        }
-
-        // 2. Memory locking
-        if caps.can_lock_memory() {
-            if let Err(e) = self.apply_memory_lock_internal() {
-                self.rt.degradations.push(RtDegradation {
-                    feature: RtFeature::MemoryLocking,
-                    reason: e.to_string(),
-                    severity: DegradationSeverity::Medium,
-                });
-            }
-        } else {
-            self.rt.degradations.push(RtDegradation {
-                feature: RtFeature::MemoryLocking,
-                reason: format!(
-                    "Memory locking not permitted (mlockall_permitted={}, limit={} bytes)",
-                    caps.mlockall_permitted, caps.memlock_limit_bytes
-                ),
-                severity: DegradationSeverity::Medium,
-            });
-        }
-
-        // 3. CPU affinity — only isolated CPUs
-        if !caps.isolated_cpus.is_empty() {
-            let best_cpu = caps
-                .isolated_cpus
-                .iter()
-                .find(|cpu| caps.nohz_full_cpus.contains(cpu))
-                .or_else(|| caps.isolated_cpus.first())
-                .copied();
-
-            if let Some(cpu) = best_cpu {
-                if let Err(e) = self.apply_cpu_affinity_internal(cpu) {
-                    self.rt.degradations.push(RtDegradation {
-                        feature: RtFeature::CpuAffinity,
-                        reason: e.to_string(),
-                        severity: DegradationSeverity::Low,
-                    });
-                }
-            }
-        }
-
-        // Print degradation warnings
-        for deg in &self.rt.degradations {
-            let msg = format!("[WARN] {}: {}", deg.feature, deg.reason);
-            match deg.severity {
-                DegradationSeverity::High => print_line(&msg.red().to_string()),
-                DegradationSeverity::Medium => print_line(&msg.yellow().to_string()),
-                DegradationSeverity::Low => print_line(&msg.white().to_string()),
-            }
-        }
-
-        self
-    }
-
-    /// Enable the BlackBox flight recorder for post-mortem crash analysis.
-    ///
-    /// The BlackBox records scheduler events (start, stop, deadline misses,
-    /// WCET violations, emergency stops) in a fixed-size ring buffer.
-    ///
-    /// # Arguments
-    /// * `size_mb` - Buffer size in megabytes (e.g., 16 for 16MB)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::new()
-    ///     .with_blackbox(16); // 16MB flight recorder
-    /// ```
-    pub fn with_blackbox(mut self, size_mb: usize) -> Self {
-        self.monitor.blackbox = Some(super::blackbox::BlackBox::new(size_mb));
-        self
-    }
-
     /// Set the global tick rate in Hz.
     ///
     /// # Example
@@ -391,8 +264,7 @@ impl Scheduler {
     /// Equivalent to:
     /// ```rust,ignore
     /// Scheduler::new()
-    ///     .realtime()
-    ///     .with_blackbox(16)
+    ///     .with_config(SchedulerConfig::deploy())
     ///     .with_name("Deploy")
     /// ```
     ///
@@ -409,8 +281,7 @@ impl Scheduler {
     /// ```
     pub fn deploy() -> Self {
         Self::new()
-            .realtime()
-            .with_blackbox(16)
+            .with_config(super::config::SchedulerConfig::deploy())
             .with_name("Deploy")
     }
 
@@ -534,21 +405,6 @@ impl Scheduler {
     /// - Aerospace systems
     pub fn hard_realtime() -> Self {
         Self::new().with_config(super::config::SchedulerConfig::hard_realtime())
-    }
-
-    /// Internal: Apply RT priority (delegates to rt module).
-    fn apply_rt_priority_internal(&self, priority: i32) -> crate::error::HorusResult<()> {
-        super::rt::set_realtime_priority(priority).map_err(Into::into)
-    }
-
-    /// Internal: Apply memory locking (delegates to rt module).
-    fn apply_memory_lock_internal(&self) -> crate::error::HorusResult<()> {
-        super::rt::lock_all_memory().map_err(Into::into)
-    }
-
-    /// Internal: Apply CPU affinity (delegates to rt module).
-    fn apply_cpu_affinity_internal(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
-        super::rt::set_thread_affinity(&[cpu_id]).map_err(Into::into)
     }
 
     /// Get the detected runtime capabilities.
@@ -1328,11 +1184,6 @@ impl Scheduler {
         self
     }
 
-    /// Enable safety monitor with maximum allowed deadline misses
-    pub fn with_safety_monitor(mut self, max_deadline_misses: u64) -> Self {
-        self.monitor.safety = Some(SafetyMonitor::new(max_deadline_misses));
-        self
-    }
 
     /// Add a critical node to the safety monitor with a watchdog timeout.
     ///
@@ -1346,8 +1197,9 @@ impl Scheduler {
     /// use horus_core::Scheduler;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new()
-    ///     .with_safety_monitor(10);
+    /// let mut config = SchedulerConfig::standard();
+    /// config.realtime.safety_monitor = true;
+    /// let mut scheduler = Scheduler::new().with_config(config);
     /// scheduler.add_critical_node("motor_controller", Duration::from_millis(100))?;
     /// # Ok::<(), horus_core::error::HorusError>(())
     /// ```
@@ -1364,7 +1216,7 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Call with_safety_monitor() first.".to_string(),
+                "Safety monitor not enabled. Set config.realtime.safety_monitor = true in SchedulerConfig.".to_string(),
             ))
         }
     }
@@ -1378,10 +1230,12 @@ impl Scheduler {
     /// # Example
     /// ```no_run
     /// use horus_core::Scheduler;
+    /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
-    /// let mut scheduler = Scheduler::new()
-    ///     .with_safety_monitor(10);
+    /// let mut config = SchedulerConfig::standard();
+    /// config.realtime.safety_monitor = true;
+    /// let mut scheduler = Scheduler::new().with_config(config);
     /// scheduler.set_wcet_budget("motor_controller", Duration::from_micros(500))?;
     /// # Ok::<(), horus_core::error::HorusError>(())
     /// ```
@@ -1398,7 +1252,7 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Call with_safety_monitor() first.".to_string(),
+                "Safety monitor not enabled. Set config.realtime.safety_monitor = true in SchedulerConfig.".to_string(),
             ))
         }
     }

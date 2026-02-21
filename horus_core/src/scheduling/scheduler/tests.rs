@@ -242,7 +242,10 @@ fn test_scheduler_is_recording_default() {
 
 #[test]
 fn test_scheduler_enable_recording() {
-    let scheduler = Scheduler::new().enable_recording("test_session");
+    use crate::scheduling::config::RecordingConfigYaml;
+    let mut config = crate::scheduling::config::SchedulerConfig::standard();
+    config.recording = Some(RecordingConfigYaml::full());
+    let scheduler = Scheduler::new().with_config(config);
     assert!(scheduler.is_recording());
 }
 
@@ -270,7 +273,10 @@ fn test_scheduler_start_at_tick() {
 
 #[test]
 fn test_scheduler_with_safety_monitor() {
-    let scheduler = Scheduler::new().with_safety_monitor(10);
+    let mut config = crate::scheduling::config::SchedulerConfig::standard();
+    config.realtime.safety_monitor = true;
+    config.realtime.max_deadline_misses = 10;
+    let scheduler = Scheduler::new().with_config(config);
     assert!(scheduler.is_running());
 }
 

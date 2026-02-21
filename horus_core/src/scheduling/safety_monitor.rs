@@ -16,7 +16,7 @@ pub enum SafetyState {
 
 /// Watchdog for monitoring node health
 #[derive(Debug)]
-pub struct Watchdog {
+pub(crate) struct Watchdog {
     /// Node name being monitored
     node_name: String,
     /// Timeout duration
@@ -28,7 +28,7 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    pub fn new(node_name: String, timeout: Duration) -> Self {
+    pub(crate) fn new(node_name: String, timeout: Duration) -> Self {
         Self {
             node_name,
             timeout,
@@ -38,13 +38,13 @@ impl Watchdog {
     }
 
     /// Feed the watchdog (reset timer)
-    pub fn feed(&self) {
+    pub(crate) fn feed(&self) {
         *self.last_heartbeat.lock() = Instant::now();
         self.expired.store(false, Ordering::SeqCst);
     }
 
     /// Check if watchdog has expired
-    pub fn check(&self) -> bool {
+    pub(crate) fn check(&self) -> bool {
         let last = *self.last_heartbeat.lock();
         let expired = last.elapsed() > self.timeout;
         if expired {
@@ -53,22 +53,22 @@ impl Watchdog {
         expired
     }
 
-    pub fn is_expired(&self) -> bool {
+    pub(crate) fn is_expired(&self) -> bool {
         self.expired.load(Ordering::SeqCst)
     }
 
-    pub fn node_name(&self) -> &str {
+    pub(crate) fn node_name(&self) -> &str {
         &self.node_name
     }
 }
 
 /// WCET (Worst-Case Execution Time) enforcer
 #[derive(Debug)]
-pub struct WCETEnforcer {
+pub(crate) struct WCETEnforcer {
     /// WCET budgets per node
     budgets: HashMap<String, Duration>,
     /// Overrun counter
-    overruns: AtomicU64,
+    pub(crate) overruns: AtomicU64,
     /// Critical overruns (that triggered emergency stop)
     critical_overruns: AtomicU64,
 }
@@ -84,17 +84,17 @@ impl Default for WCETEnforcer {
 }
 
 impl WCETEnforcer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Set WCET budget for a node
-    pub fn set_budget(&mut self, node: String, budget: Duration) {
+    pub(crate) fn set_budget(&mut self, node: String, budget: Duration) {
         self.budgets.insert(node, budget);
     }
 
     /// Check if execution time is within budget
-    pub fn check_budget(&self, node: &str, actual: Duration) -> Result<(), WCETViolation> {
+    pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), WCETViolation> {
         if let Some(&budget) = self.budgets.get(node) {
             if actual > budget {
                 self.overruns.fetch_add(1, Ordering::SeqCst);
@@ -110,11 +110,11 @@ impl WCETEnforcer {
         Ok(())
     }
 
-    pub fn get_overrun_count(&self) -> u64 {
+    pub(crate) fn get_overrun_count(&self) -> u64 {
         self.overruns.load(Ordering::SeqCst)
     }
 
-    pub fn mark_critical_overrun(&self) {
+    pub(crate) fn mark_critical_overrun(&self) {
         self.critical_overruns.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -130,7 +130,7 @@ pub struct WCETViolation {
 
 /// Safety monitor for real-time critical systems
 #[derive(Debug)]
-pub struct SafetyMonitor {
+pub(crate) struct SafetyMonitor {
     /// Current safety state
     state: Arc<Mutex<SafetyState>>,
     /// Emergency stop flag
@@ -148,7 +148,7 @@ pub struct SafetyMonitor {
 }
 
 impl SafetyMonitor {
-    pub fn new(max_deadline_misses: u64) -> Self {
+    pub(crate) fn new(max_deadline_misses: u64) -> Self {
         Self {
             state: Arc::new(Mutex::new(SafetyState::Normal)),
             emergency_stop: Arc::new(AtomicBool::new(false)),
@@ -161,7 +161,7 @@ impl SafetyMonitor {
     }
 
     /// Add a critical node that must be monitored
-    pub fn add_critical_node(&mut self, node_name: String, watchdog_timeout: Duration) {
+    pub(crate) fn add_critical_node(&mut self, node_name: String, watchdog_timeout: Duration) {
         self.critical_nodes.push(node_name.clone());
         self.watchdogs.lock().insert(
             node_name.clone(),
@@ -170,19 +170,19 @@ impl SafetyMonitor {
     }
 
     /// Set WCET budget for a node
-    pub fn set_wcet_budget(&mut self, node_name: String, budget: Duration) {
+    pub(crate) fn set_wcet_budget(&mut self, node_name: String, budget: Duration) {
         self.wcet_enforcer.lock().set_budget(node_name, budget);
     }
 
     /// Feed watchdog for a node
-    pub fn feed_watchdog(&self, node_name: &str) {
+    pub(crate) fn feed_watchdog(&self, node_name: &str) {
         if let Some(watchdog) = self.watchdogs.lock().get(node_name) {
             watchdog.feed();
         }
     }
 
     /// Check all watchdogs and return expired ones
-    pub fn check_watchdogs(&self) -> Vec<String> {
+    pub(crate) fn check_watchdogs(&self) -> Vec<String> {
         let mut expired = Vec::new();
         for (name, watchdog) in self.watchdogs.lock().iter() {
             if watchdog.check() {
@@ -204,7 +204,7 @@ impl SafetyMonitor {
     }
 
     /// Check WCET budget for a node
-    pub fn check_wcet(
+    pub(crate) fn check_wcet(
         &self,
         node_name: &str,
         execution_time: Duration,
@@ -229,7 +229,7 @@ impl SafetyMonitor {
     }
 
     /// Record a deadline miss
-    pub fn record_deadline_miss(&self, node_name: &str) {
+    pub(crate) fn record_deadline_miss(&self, node_name: &str) {
         let misses = self.deadline_misses.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Critical node deadline miss or too many misses trigger emergency
@@ -241,24 +241,24 @@ impl SafetyMonitor {
     }
 
     /// Trigger emergency stop
-    pub fn trigger_emergency_stop(&self, reason: String) {
+    pub(crate) fn trigger_emergency_stop(&self, reason: String) {
         eprintln!(" EMERGENCY STOP: {}", reason);
         self.emergency_stop.store(true, Ordering::SeqCst);
         *self.state.lock() = SafetyState::EmergencyStop;
     }
 
     /// Check if emergency stop is active
-    pub fn is_emergency_stop(&self) -> bool {
+    pub(crate) fn is_emergency_stop(&self) -> bool {
         self.emergency_stop.load(Ordering::SeqCst)
     }
 
     /// Get current safety state
-    pub fn get_state(&self) -> SafetyState {
+    pub(crate) fn get_state(&self) -> SafetyState {
         *self.state.lock()
     }
 
     /// Get safety statistics
-    pub fn get_stats(&self) -> SafetyStats {
+    pub(crate) fn get_stats(&self) -> SafetyStats {
         SafetyStats {
             state: self.get_state(),
             wcet_overruns: self.wcet_enforcer.lock().get_overrun_count(),
@@ -273,7 +273,7 @@ impl SafetyMonitor {
     }
 
     /// Reset counters (for testing or after recovery)
-    pub fn reset_counters(&self) {
+    pub(crate) fn reset_counters(&self) {
         self.deadline_misses.store(0, Ordering::SeqCst);
         self.wcet_enforcer
             .lock()

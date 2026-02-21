@@ -81,25 +81,21 @@ pub mod prelude {
     // ============================================
     pub use horus_core::scheduling::{
         // BlackBox flight recorder
-        create_shared_blackbox,
         BlackBox,
         BlackBoxEvent,
         // Circuit breaker
         CircuitBreaker,
         CircuitState,
         // Safety monitoring
-        SafetyMonitor,
         SafetyState,
         SafetyStats,
-        SharedBlackBox,
-        WCETEnforcer,
-        Watchdog,
+        WCETViolation,
     };
 
     // ============================================
     // Telemetry
     // ============================================
-    pub use horus_core::scheduling::{TelemetryEndpoint, TelemetryManager};
+    pub use horus_core::scheduling::TelemetryEndpoint;
 
     // ============================================
     // Node Tier
@@ -110,7 +106,7 @@ pub mod prelude {
     // Record/Replay
     // ============================================
     pub use horus_core::scheduling::{
-        NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingConfig,
+        NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot,
         RecordingManager, SchedulerRecording,
     };
 
@@ -148,7 +144,6 @@ pub mod prelude {
         RtPriority,
         RtScheduler,
         RtStats,
-        WCETViolation,
     };
 
     // ============================================
@@ -193,7 +188,7 @@ pub mod prelude {
     // ============================================
     // Error Types
     // ============================================
-    pub use horus_core::error::{HorusError, HorusResult};
+    pub use horus_core::error::{HorusError, HorusResult, Result};
 
     // ============================================
     // Common Std Types

@@ -271,6 +271,47 @@ impl SchedulerConfig {
         }
     }
 
+    /// Deploy configuration for production robots.
+    ///
+    /// Standard rate (60 Hz) with RT features (best-effort) and a 16MB BlackBox flight recorder.
+    pub fn deploy() -> Self {
+        Self {
+            execution: ExecutionMode::Sequential,
+            timing: TimingConfig {
+                global_rate_hz: 60.0,
+                per_node_rates: true,
+            },
+            fault: FaultConfig {
+                circuit_breaker_enabled: true,
+                max_failures: 5,
+                recovery_threshold: 3,
+                circuit_timeout_ms: 5000,
+            },
+            realtime: RealTimeConfig {
+                wcet_enforcement: false,
+                deadline_monitoring: true,
+                watchdog_enabled: true,
+                watchdog_timeout_ms: 1000,
+                safety_monitor: false,
+                max_deadline_misses: 100,
+                memory_locking: true,
+                rt_scheduling_class: true,
+            },
+            resources: ResourceConfig {
+                cpu_cores: None,
+                numa_aware: false,
+            },
+            monitoring: MonitoringConfig {
+                profiling_enabled: true,
+                metrics_interval_ms: 1000,
+                black_box_enabled: true,
+                black_box_size_mb: 16,
+                telemetry_endpoint: None,
+            },
+            recording: None,
+        }
+    }
+
     /// Deterministic configuration for safety certification and replay
     pub fn deterministic() -> Self {
         Self {

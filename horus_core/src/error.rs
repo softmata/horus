@@ -128,6 +128,9 @@ macro_rules! horus_internal {
 /// Convenience type alias for Results using HorusError
 pub type HorusResult<T> = std::result::Result<T, HorusError>;
 
+/// Short alias — `Result<T>` is equivalent to `HorusResult<T>`
+pub type Result<T> = HorusResult<T>;
+
 
 // ============================================
 // From implementations for common error types

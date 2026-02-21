@@ -2,7 +2,7 @@
 ///
 /// The API uses progressive disclosure:
 /// - `Scheduler::new()` — lightweight, no syscalls
-/// - Builder methods opt in to features: `.realtime()`, `.with_blackbox()`, `.tick_hz()`
+/// - `SchedulerConfig` fields opt in to features: RT, BlackBox, safety monitor
 /// - Presets bundle common configurations: `deploy()`, `safety_critical()`, `deterministic()`
 use horus_core::scheduling::{config::SchedulerConfig, Scheduler};
 
@@ -39,33 +39,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ========================================================================
-    // Pattern 3: Builder — compose exactly what you need
+    // Pattern 3: Config — compose exactly what you need
     // ========================================================================
-    println!("Pattern 3: Builder Composition");
-    println!("------------------------------");
+    println!("Pattern 3: Config Composition");
+    println!("-----------------------------");
 
+    let mut config = SchedulerConfig::standard();
+    config.realtime.rt_scheduling_class = true;
+    config.monitoring.black_box_enabled = true;
+    config.monitoring.black_box_size_mb = 8;
     let _scheduler = Scheduler::new()
-        .realtime()        // RT priority + memory lock + CPU pin
-        .with_blackbox(8)  // 8MB flight recorder
+        .with_config(config)
         .tick_hz(1000.0)   // 1kHz control loop
         .with_name("CustomRobot");
 
-    println!("[OK] Custom builder composition");
+    println!("[OK] Custom config composition");
     println!("  RT: enabled, BlackBox: 8MB, Rate: 1kHz\n");
 
     // ========================================================================
-    // Pattern 4: Config Preset (advanced)
+    // Pattern 4: Config Preset + extras
     // ========================================================================
-    println!("Pattern 4: Config Preset");
-    println!("------------------------");
+    println!("Pattern 4: Config Preset + Extras");
+    println!("---------------------------------");
 
+    let mut config = SchedulerConfig::hard_realtime();
+    config.realtime.safety_monitor = true;
+    config.realtime.max_deadline_misses = 3;
     let _scheduler = Scheduler::new()
-        .with_config(SchedulerConfig::hard_realtime())
+        .with_config(config)
         .with_capacity(128)
-        .with_safety_monitor(3)
         .with_name("HardRT");
 
-    println!("[OK] hard_realtime config preset");
+    println!("[OK] hard_realtime config preset + safety monitor");
     println!("  WCET enforcement, 10ms watchdog, panic on deadline miss\n");
 
     // ========================================================================
@@ -123,10 +128,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Scheduler::hard_realtime()    Strict deadlines");
     println!("  Scheduler::deterministic()    Reproducible execution");
     println!();
-    println!("  .realtime()       Opt-in RT priority + memory lock + CPU pin");
-    println!("  .with_blackbox(N) Opt-in N MB flight recorder");
-    println!("  .tick_hz(Hz)      Set global tick rate");
     println!("  .with_config(C)   Apply a SchedulerConfig preset");
+    println!("  .tick_hz(Hz)      Set global tick rate");
+    println!("  .with_name(S)     Name the scheduler instance");
+    println!("  .with_capacity(N) Pre-allocate node slots");
 
     Ok(())
 }

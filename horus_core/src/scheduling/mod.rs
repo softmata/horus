@@ -62,7 +62,7 @@ pub use config::{
     ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
     ResourceConfig, SchedulerConfig, TimingConfig,
 };
-pub use safety_monitor::{SafetyMonitor, SafetyState, SafetyStats, WCETEnforcer, Watchdog};
+pub use safety_monitor::{SafetyState, SafetyStats, WCETViolation};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
 pub use types::SchedulerNodeMetrics;
 
@@ -73,7 +73,7 @@ pub use rt::{
 };
 
 // Re-export blackbox flight recorder
-pub use blackbox::{create_shared_blackbox, BlackBox, BlackBoxEvent, SharedBlackBox};
+pub use blackbox::{BlackBox, BlackBoxEvent};
 
 // Re-export record/replay (public API)
 pub use record_replay::{
@@ -87,7 +87,6 @@ pub use record_replay::{
     NodeRecording,
     NodeReplayer,
     NodeTickSnapshot,
-    RecordingConfig,
     RecordingDiff,
     RecordingManager,
     ReplayDebugger,
@@ -100,8 +99,8 @@ pub use record_replay::{
 // Re-export node tier from types
 pub use types::NodeTier;
 
-// Re-export telemetry
-pub use telemetry::{TelemetryEndpoint, TelemetryManager};
+// Re-export telemetry (only user-facing endpoint type)
+pub use telemetry::TelemetryEndpoint;
 
 // Re-export fault tolerance (public API)
 pub use fault_tolerance::{

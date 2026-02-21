@@ -77,7 +77,7 @@ impl TelemetryEndpoint {
 }
 
 /// Telemetry collector and exporter
-pub struct TelemetryManager {
+pub(crate) struct TelemetryManager {
     /// Endpoint for export
     endpoint: TelemetryEndpoint,
     /// Export interval
@@ -328,7 +328,7 @@ impl Default for TelemetryManager {
 }
 
 /// Thread-safe telemetry wrapper
-pub type SharedTelemetry = Arc<Mutex<TelemetryManager>>;
+pub(crate) type SharedTelemetry = Arc<Mutex<TelemetryManager>>;
 
 #[cfg(test)]
 mod tests {

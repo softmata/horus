@@ -12,71 +12,12 @@ use crate::terminal::print_line;
 
 use super::super::types::NodeTier;
 use super::super::record_replay::{
-    NodeReplayer, RecordingConfig, RecordingManager, ReplayNode, SchedulerRecording,
+    NodeReplayer, RecordingManager, ReplayNode, SchedulerRecording,
 };
 use super::super::types::RegisteredNode;
-use super::{RecordingState, ReplayState, Scheduler};
+use super::{ReplayState, Scheduler};
 
 impl Scheduler {
-    /// Enable recording for this scheduler session (builder pattern).
-    ///
-    /// When enabled, all node inputs/outputs are recorded to disk for later replay.
-    /// Recordings are saved to `~/.horus/recordings/<session_name>/`.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use horus_core::Scheduler;
-    /// let scheduler = Scheduler::new()
-    ///     .enable_recording("crash_investigation");  // One line!
-    /// ```
-    pub fn enable_recording(mut self, session_name: &str) -> Self {
-        let config = RecordingConfig::with_name(session_name);
-        let scheduler_id = generate_scheduler_id();
-
-        self.recording = Some(RecordingState {
-            scheduler_recording: SchedulerRecording::new(&scheduler_id, session_name),
-            config,
-        });
-
-        print_line(&format!(
-            "[RECORDING] Enabled for session '{}' (scheduler@{})",
-            session_name, scheduler_id
-        ));
-        self
-    }
-
-    /// Enable recording with custom configuration.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::RecordingConfig;
-    ///
-    /// let config = RecordingConfig {
-    ///     session_name: "my_session".to_string(),
-    ///     compress: true,
-    ///     interval: 1,  // Record every tick
-    ///     ..Default::default()
-    /// };
-    /// let scheduler = Scheduler::new()
-    ///     .enable_recording_with_config(config);
-    /// ```
-    pub fn enable_recording_with_config(mut self, config: RecordingConfig) -> Self {
-        let scheduler_id = generate_scheduler_id();
-        let session_name = config.session_name.clone();
-
-        self.recording = Some(RecordingState {
-            scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
-            config,
-        });
-
-        print_line(&format!(
-            "[RECORDING] Enabled with custom config for session '{}'",
-            session_name
-        ));
-        self
-    }
-
     /// Add a replay node from a recording file.
     ///
     /// The replay node will output exactly what was recorded, allowing
@@ -314,16 +255,4 @@ impl Scheduler {
             .delete_session(session_name)
             .map_err(|e| horus_internal!("Failed to delete recording: {}", e))
     }
-}
-
-/// Generate a unique scheduler ID from timestamp and process ID.
-fn generate_scheduler_id() -> String {
-    format!(
-        "{:x}{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0),
-        std::process::id() as u64
-    )
 }

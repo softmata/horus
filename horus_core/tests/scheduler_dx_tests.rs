@@ -229,18 +229,21 @@ fn test_new_no_blackbox_by_default() {
 
     assert!(
         scheduler.blackbox().is_none(),
-        "new() should NOT auto-create BlackBox (opt-in via .with_blackbox())"
+        "new() should NOT auto-create BlackBox (opt-in via config.monitoring.black_box_enabled)"
     );
 }
 
 #[test]
 fn test_with_blackbox_creates_blackbox() {
     cleanup_stale_shm();
-    let scheduler = Scheduler::new().with_blackbox(16);
+    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    config.monitoring.black_box_enabled = true;
+    config.monitoring.black_box_size_mb = 16;
+    let scheduler = Scheduler::new().with_config(config);
 
     assert!(
         scheduler.blackbox().is_some(),
-        "with_blackbox() should create BlackBox"
+        "config.monitoring.black_box_enabled should create BlackBox"
     );
 }
 
@@ -249,7 +252,10 @@ fn test_blackbox_mut_accessor() {
     cleanup_stale_shm();
     use horus_core::scheduling::BlackBoxEvent;
 
-    let mut scheduler = Scheduler::new().with_blackbox(16);
+    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    config.monitoring.black_box_enabled = true;
+    config.monitoring.black_box_size_mb = 16;
+    let mut scheduler = Scheduler::new().with_config(config);
 
     let bb = scheduler.blackbox_mut().expect("BlackBox should exist");
     bb.record(BlackBoxEvent::Custom {
@@ -261,7 +267,10 @@ fn test_blackbox_mut_accessor() {
 #[test]
 fn test_status_shows_blackbox() {
     cleanup_stale_shm();
-    let scheduler = Scheduler::new().with_blackbox(16);
+    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    config.monitoring.black_box_enabled = true;
+    config.monitoring.black_box_size_mb = 16;
+    let scheduler = Scheduler::new().with_config(config);
     let status = scheduler.status();
 
     assert!(
