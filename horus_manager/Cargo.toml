@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "horus"
 path = "src/main.rs"
 
+[[bin]]
+name = "ci_test_node"
+path = "src/bin/ci_test_node.rs"
+
 
 [dependencies]
 horus_core = { path = "../horus_core" }

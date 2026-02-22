@@ -18,10 +18,6 @@ pub struct PySchedulerConfig {
     /// Global tick rate in Hz
     pub tick_rate: f64,
 
-    #[pyo3(get, set)]
-    /// Enable per-node rate control
-    pub per_node_rates: bool,
-
     // --- Fault ---
     #[pyo3(get, set)]
     /// Enable circuit breaker pattern
@@ -276,12 +272,6 @@ impl PySchedulerConfig {
         self.clone()
     }
 
-    /// Enable per-node rate control.
-    pub fn enable_per_node_rates(&mut self) -> Self {
-        self.per_node_rates = true;
-        self.clone()
-    }
-
     /// Set max deadline misses before emergency stop.
     pub fn max_misses(&mut self, n: u64) -> Self {
         self.max_deadline_misses = n;
@@ -327,9 +317,8 @@ impl PySchedulerConfig {
         };
 
         config.timing.global_rate_hz = self.tick_rate;
-        config.timing.per_node_rates = self.per_node_rates;
 
-        config.fault.circuit_breaker_enabled = self.circuit_breaker;
+        config.circuit_breaker = self.circuit_breaker;
 
         config.realtime.wcet_enforcement = self.wcet_enforcement;
         config.realtime.deadline_monitoring = self.deadline_monitoring;
@@ -365,8 +354,7 @@ impl PySchedulerConfig {
                 ExecutionMode::Sequential => "sequential".to_string(),
             },
             tick_rate: rust_config.timing.global_rate_hz,
-            per_node_rates: rust_config.timing.per_node_rates,
-            circuit_breaker: rust_config.fault.circuit_breaker_enabled,
+            circuit_breaker: rust_config.circuit_breaker,
             wcet_enforcement: rust_config.realtime.wcet_enforcement,
             deadline_monitoring: rust_config.realtime.deadline_monitoring,
             watchdog_enabled: rust_config.realtime.watchdog_enabled,

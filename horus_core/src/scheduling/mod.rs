@@ -60,7 +60,7 @@ pub mod node_builder;
 
 pub use crate::core::rt_node::WCETViolation;
 pub use config::{
-    ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
+    ExecutionMode, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
     ResourceConfig, SchedulerConfig, TimingConfig,
 };
 pub use safety_monitor::{SafetyState, SafetyStats};

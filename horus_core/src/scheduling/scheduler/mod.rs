@@ -154,7 +154,6 @@ pub struct Scheduler {
     pub(super) execution_mode: ExecutionMode,
     pub(super) scheduler_name: String,
     pub(super) last_instant: Instant,
-    pub(super) config: Option<super::config::SchedulerConfig>,
 
     // Grouped sub-structs
     pub(super) rt: RtState,
@@ -215,7 +214,6 @@ impl Scheduler {
             execution_mode: ExecutionMode::Sequential,
             scheduler_name: "Scheduler".to_string(),
             last_instant: now,
-            config: None,
 
             rt: RtState {
                 capabilities: Some(caps),
@@ -1000,7 +998,7 @@ impl Scheduler {
 
         // Apply fault tolerance
         for registered in self.nodes.iter_mut() {
-            if config.fault.circuit_breaker_enabled {
+            if config.circuit_breaker {
                 // Tier-based defaults are already set; reset handlers to clear any accumulated state
                 registered.failure_handler.reset();
             } else {
@@ -1052,36 +1050,58 @@ impl Scheduler {
             ));
         }
 
-        // 3. Real-time optimizations (Linux-specific)
-        #[cfg(target_os = "linux")]
+        // 3. Real-time optimizations — delegate to RtConfig for single syscall path
         {
-            // Memory locking
-            if config.realtime.memory_locking && super::rt::lock_all_memory().is_ok() {
-                print_line("[SCHEDULER] Memory locked (mlockall)");
-            }
+            use crate::core::rt_config::{RtApplyResult, RtConfig, RtScheduler};
 
-            // RT scheduling class
-            if config.realtime.rt_scheduling_class {
-                let priority = 50; // Default RT priority
-                if super::rt::set_realtime_priority(priority).is_ok() {
-                    print_line(&format!(
-                        "[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority {})",
-                        priority
-                    ));
+            let has_rt_features = config.realtime.memory_locking
+                || config.realtime.rt_scheduling_class
+                || config.resources.cpu_cores.is_some();
+
+            if has_rt_features {
+                let mut builder = RtConfig::new()
+                    .memory_locked(config.realtime.memory_locking)
+                    .warn_on_degradation(true);
+
+                if config.realtime.rt_scheduling_class {
+                    builder = builder.scheduler(RtScheduler::Fifo).priority(50);
+                }
+
+                if let Some(ref cores) = config.resources.cpu_cores {
+                    builder = builder.cpu_affinity(cores);
+                }
+
+                let rt_config = builder.build();
+                match rt_config.apply() {
+                    Ok(RtApplyResult::FullSuccess) => {
+                        if config.realtime.memory_locking {
+                            print_line("[SCHEDULER] Memory locked (mlockall)");
+                        }
+                        if config.realtime.rt_scheduling_class {
+                            print_line("[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority 50)");
+                        }
+                        if let Some(ref cores) = config.resources.cpu_cores {
+                            print_line(&format!(
+                                "[SCHEDULER] CPU affinity set to cores {:?}",
+                                cores
+                            ));
+                        }
+                    }
+                    Ok(RtApplyResult::Degraded(degradations)) => {
+                        for d in &degradations {
+                            print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
+                        }
+                    }
+                    Ok(RtApplyResult::Failed(msg)) => {
+                        print_line(&format!("[SCHEDULER] RT config failed: {}", msg));
+                    }
+                    Err(e) => {
+                        print_line(&format!("[SCHEDULER] RT config error: {}", e));
+                    }
                 }
             }
 
-            // CPU core affinity
-            if let Some(ref cores) = config.resources.cpu_cores {
-                if super::rt::set_thread_affinity(cores).is_ok() {
-                    print_line(&format!(
-                        "[SCHEDULER] CPU affinity set to cores {:?}",
-                        cores
-                    ));
-                }
-            }
-
-            // NUMA awareness
+            // NUMA awareness (detection only, no syscall)
             if config.resources.numa_aware {
                 let numa_nodes = super::rt::get_numa_node_count();
                 if numa_nodes > 1 {
@@ -1184,8 +1204,6 @@ impl Scheduler {
             ));
         }
 
-        // Store config for runtime use
-        self.config = Some(config);
     }
 
     /// Pre-allocate node capacity (prevents reallocations during runtime)
@@ -1579,442 +1597,469 @@ impl Scheduler {
             .nodes
             .iter()
             .filter_map(|n| n.rate_hz)
-            .fold(current_rate, f64::max);
+            .fold(0.0_f64, f64::max);
 
         if max_node_rate > current_rate {
-            self.tick_period = Duration::from_micros((1_000_000.0 / max_node_rate) as u64);
+            let new_period = Duration::from_secs_f64(1.0 / max_node_rate);
+            print_line(&format!(
+                "Adjusting scheduler tick rate from {:.1} Hz to {:.1} Hz (fastest node requires it)",
+                current_rate, max_node_rate
+            ));
+            self.tick_period = new_period;
         }
     }
 
-    /// Main loop with automatic signal handling and cleanup
+    /// Main loop with automatic signal handling and cleanup.
     pub fn run(&mut self) -> HorusResult<()> {
         self.run_with_filter(None, None)
     }
 
-    /// Run all nodes for a specified duration, then shutdown gracefully
+    /// Run all nodes for a specified duration, then shutdown gracefully.
     pub fn run_for(&mut self, duration: Duration) -> HorusResult<()> {
         self.run_with_filter(None, Some(duration))
     }
 
-    /// Run specific nodes for a specified duration, then shutdown gracefully
+    /// Run specific nodes for a specified duration, then shutdown gracefully.
     pub fn tick_for(&mut self, node_names: &[&str], duration: Duration) -> HorusResult<()> {
         self.run_with_filter(Some(node_names), Some(duration))
     }
 
-    /// Internal method to run scheduler with optional node filtering and duration
+    /// Internal method to run scheduler with optional node filtering and duration.
     fn run_with_filter(
         &mut self,
         node_filter: Option<&[&str]>,
         duration: Option<Duration>,
     ) -> HorusResult<()> {
-        // Create tokio runtime for nodes that need async
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| horus_internal!("Failed to create tokio runtime: {}", e))?;
 
         rt.block_on(async {
-            // Track start time for duration-limited runs
             let start_time = Instant::now();
 
-            // Set up signal handling
-            let running = self.running.clone();
-            if let Err(e) = ctrlc::set_handler(move || {
-                print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
-                running.store(false, Ordering::SeqCst);
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    print_line("Force terminating - cleaning up session...");
-                    // Clean up session before forced exit to prevent stale files
-                    Self::cleanup_session();
-                    std::process::exit(0);
-                });
-            }) {
-                print_line(&format!("Warning: Failed to set signal handler: {}", e));
-            }
-
-            // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
-            #[cfg(unix)]
-            // SAFETY: SIGTERM is a valid signal; sigterm_handler is a valid function pointer.
-            unsafe {
-                libc::signal(
-                    libc::SIGTERM,
-                    sigterm_handler as *const () as libc::sighandler_t,
-                );
-            }
-
-            // Initialize nodes
-            for registered in self.nodes.iter_mut() {
-                let node_name = registered.name.as_str();
-                let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
-
-                if should_run && !registered.initialized {
-                    if let Some(ref mut ctx) = registered.context {
-                        // Set node context for hlog!() macro
-                        set_node_context(node_name, 0);
-                        let init_result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                registered.node.init()
-                            }));
-                        clear_node_context();
-
-                        // Convert panic to error
-                        let init_result = match init_result {
-                            Ok(result) => result,
-                            Err(_) => Err(crate::HorusError::Node {
-                                node: node_name.to_string(),
-                                message: "panicked during init".to_string(),
-                            }),
-                        };
-
-                        match init_result {
-                            Ok(()) => {
-                                registered.initialized = true;
-                                // Announce to discovery topic
-                                let publishers = registered.node.publishers();
-                                let subscribers = registered.node.subscribers();
-                                announce_started(node_name, &publishers, &subscribers);
-
-                                // Write presence file for monitor detection
-                                let presence = NodePresence::new(
-                                    node_name,
-                                    Some(&self.scheduler_name),
-                                    publishers,
-                                    subscribers,
-                                    registered.priority,
-                                    registered.rate_hz,
-                                );
-                                if let Err(e) = presence.write() {
-                                    print_line(&format!(
-                                        "Warning: Failed to write presence file for '{}': {}",
-                                        node_name, e
-                                    ));
-                                }
-
-                                print_line(&format!("Initialized node '{}'", node_name));
-                            }
-                            Err(e) => {
-                                print_line(&format!(
-                                    "Failed to initialize node '{}': {}",
-                                    node_name, e
-                                ));
-                                ctx.transition_to_error(format!("Initialization failed: {}", e));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Create control directory for per-node lifecycle commands
+            self.setup_signal_handlers();
+            self.initialize_filtered_nodes(node_filter);
             Self::setup_control_directory();
-
-            // Write initial registry
             self.update_registry();
-
-            // Auto-derive tick_period from the fastest registered node rate.
-            // If any node declares a higher rate than the current tick_period implies,
-            // increase the tick rate so that node can actually run at its declared frequency.
             self.adjust_tick_period_for_node_rates();
 
             // Main tick loop
             while self.is_running() {
-                // Check if duration limit has been reached
-                if let Some(max_duration) = duration {
-                    if start_time.elapsed() >= max_duration {
-                        print_line(&format!(
-                            "Scheduler reached time limit of {:?}",
-                            max_duration
-                        ));
-                        break;
-                    }
-                }
-
-                // Check if replay stop tick has been reached
-                if let Some(stop_tick) = self.replay.as_ref().and_then(|r| r.stop_tick) {
-                    if self.current_tick >= stop_tick {
-                        print_line(&format!("[REPLAY] Reached stop tick {}", stop_tick));
-                        break;
-                    }
-                }
-
-                // Check if SIGTERM was received (e.g., from `kill` or `timeout`)
-                if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
-                    print_line("\nSIGTERM received! Shutting down HORUS scheduler...");
+                if self.should_stop_loop(start_time, duration) {
                     break;
                 }
-
-                // Process per-node control commands (stop, restart, pause, resume)
                 self.process_control_commands();
-
-                let now = Instant::now();
-                self.last_instant = now;
-
-                // Re-initialize nodes that need restart (set by control commands)
-                for registered in self.nodes.iter_mut() {
-                    if !registered.is_stopped && !registered.is_paused && !registered.initialized {
-                        let node_name = registered.name.as_str();
-                        if let Some(ref mut ctx) = registered.context {
-                            // Set node context for hlog!() macro
-                            set_node_context(node_name, 0);
-                            let init_result = registered.node.init();
-                            clear_node_context();
-
-                            match init_result {
-                                Ok(()) => {
-                                    registered.initialized = true;
-                                    print_line(&format!(
-                                        "[CONTROL] Node '{}' re-initialized",
-                                        node_name
-                                    ));
-                                }
-                                Err(e) => {
-                                    print_line(&format!(
-                                        "[CONTROL] Failed to re-initialize node '{}': {}",
-                                        node_name, e
-                                    ));
-                                    ctx.transition_to_error(format!(
-                                        "Re-initialization failed: {}",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Execute nodes in priority order
+                self.last_instant = Instant::now();
+                self.reinit_pending_nodes();
                 self.execute_nodes(node_filter).await;
-
-                // Check watchdogs and handle emergency stop for RT systems
-                if let Some(ref monitor) = self.monitor.safety {
-                    // Check all watchdogs
-                    let expired_watchdogs = monitor.check_watchdogs();
-                    if !expired_watchdogs.is_empty() {
-                        print_line(&format!(
-                            " Watchdog expired for nodes: {:?}",
-                            expired_watchdogs
-                        ));
-                    }
-
-                    // Check if emergency stop was triggered
-                    if monitor.is_emergency_stop() {
-                        print_line(" Emergency stop activated - shutting down scheduler");
-                        // Record to blackbox
-                        if let Some(ref mut bb) = self.monitor.blackbox {
-                            bb.record(super::blackbox::BlackBoxEvent::EmergencyStop {
-                                reason: "Safety monitor triggered emergency stop".to_string(),
-                            });
-                        }
-                        break;
-                    }
+                if self.check_safety_monitors() {
+                    break;
                 }
-
-                // Periodic registry snapshot (every 5 seconds)
-                if self.monitor.last_snapshot.elapsed() >= Duration::from_secs(5) {
-                    self.snapshot_state_to_registry();
-                    self.monitor.last_snapshot = Instant::now();
-
-                    // Log failure handler status for nodes with issues
-                    let mut has_failure_issues = false;
-                    let mut suppressed_count = 0u32;
-                    for registered in &self.nodes {
-                        let stats = registered.failure_handler.stats();
-                        if stats.is_suppressed {
-                            suppressed_count += 1;
-                        }
-                        if stats.failure_count > 0 || stats.is_suppressed {
-                            if !has_failure_issues {
-                                print_line("\nFailure Handler Status:");
-                                has_failure_issues = true;
-                            }
-                            print_line(&format!(
-                                "  {} - Policy: {}, State: {}, Failures: {}{}",
-                                registered.name.as_str(),
-                                stats.policy,
-                                stats.state,
-                                stats.failure_count,
-                                if stats.is_suppressed {
-                                    " [SUPPRESSED]"
-                                } else {
-                                    ""
-                                }
-                            ));
-                        }
-                    }
-
-                    // Record degradation to blackbox when nodes are suppressed
-                    if suppressed_count > 0 {
-                        if let Some(ref mut bb) = self.monitor.blackbox {
-                            bb.record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "safety".to_string(),
-                                message: format!("{} nodes suppressed", suppressed_count),
-                            });
-                        }
-                    }
+                self.periodic_monitoring(start_time);
+                if let Some(sleep_dur) = self.compute_tick_sleep() {
+                    tokio::time::sleep(sleep_dur).await;
                 }
-
-                // === Runtime feature integrations ===
-
-                // Black box tick increment
-                if let Some(ref mut bb) = self.monitor.blackbox {
-                    bb.tick();
-                }
-
-                // Telemetry export (if interval elapsed)
-                if let Some(ref mut tm) = self.monitor.telemetry {
-                    if tm.should_export() {
-                        let total_ticks = self
-                            .profiler
-                            .node_stats
-                            .values()
-                            .map(|s| s.count)
-                            .max()
-                            .unwrap_or(0) as u64;
-                        tm.counter("scheduler_ticks", total_ticks);
-                        tm.gauge("scheduler_uptime_secs", start_time.elapsed().as_secs_f64());
-                        tm.gauge("nodes_active", self.nodes.len() as f64);
-
-                        for registered in &self.nodes {
-                            let node_name = registered.name.as_str();
-                            if let Some(stats) = self.profiler.node_stats.get(node_name) {
-                                let mut labels = std::collections::HashMap::new();
-                                labels.insert("node".to_string(), node_name.to_string());
-                                tm.gauge_with_labels(
-                                    "node_avg_duration_us",
-                                    stats.avg_us,
-                                    labels.clone(),
-                                );
-                                tm.counter_with_labels(
-                                    "node_tick_count",
-                                    stats.count as u64,
-                                    labels,
-                                );
-                            }
-                        }
-
-                        let _ = tm.export();
-                    }
-                }
-
-                // Skip wall-clock sleep in virtual time mode (run as fast as possible)
-                let use_virtual_time = self
-                    .deterministic
-                    .as_ref()
-                    .is_some_and(|d| d.config.virtual_time);
-
-                if !use_virtual_time {
-                    // Use pre-computed tick period (from config or default ~60Hz)
-                    // Apply replay speed adjustment if in replay mode
-                    let sleep_duration = if let Some(ref replay) = self.replay {
-                        if replay.speed != 1.0 {
-                            Duration::from_nanos(
-                                (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
-                            )
-                        } else {
-                            self.tick_period
-                        }
-                    } else {
-                        self.tick_period
-                    };
-                    tokio::time::sleep(sleep_duration).await;
-                }
-
-                // Increment tick counter for replay tracking
-                self.current_tick += 1;
-
-                // Advance deterministic clock and finalize trace
-                if let Some(ref det) = self.deterministic {
-                    det.clock.advance_tick();
-                    if let Some(ref trace) = det.trace {
-                        trace.lock().finalize_tick(self.current_tick - 1);
-                    }
-                }
+                self.advance_tick();
             }
 
-            // Shutdown nodes
-            for registered in self.nodes.iter_mut() {
-                let node_name = registered.name.as_str();
-                let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
-
-                if should_run && registered.initialized {
-                    if let Some(ref mut ctx) = registered.context {
-                        ctx.record_shutdown();
-
-                        // Set node context for hlog!() macro
-                        set_node_context(node_name, ctx.metrics().total_ticks);
-                        let shutdown_result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                registered.node.shutdown()
-                            }));
-                        clear_node_context();
-
-                        // Convert panic to error
-                        let shutdown_result = match shutdown_result {
-                            Ok(result) => result,
-                            Err(_) => Err(crate::HorusError::Node {
-                                node: node_name.to_string(),
-                                message: "panicked during shutdown".to_string(),
-                            }),
-                        };
-
-                        match shutdown_result {
-                            Ok(()) => {
-                                announce_stopped(node_name);
-                                // Remove presence file
-                                if let Err(e) = NodePresence::remove(node_name) {
-                                    print_line(&format!(
-                                        "Warning: Failed to remove presence file for '{}': {}",
-                                        node_name, e
-                                    ));
-                                }
-                                print_line(&format!("Shutdown node '{}' successfully", node_name));
-                            }
-                            Err(e) => {
-                                // Still try to remove presence file on error
-                                let _ = NodePresence::remove(node_name);
-                                print_line(&format!(
-                                    "Error shutting down node '{}': {}",
-                                    node_name, e
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Get total tick count from profiler stats
-            let total_ticks = self
-                .profiler
-                .node_stats
-                .values()
-                .map(|s| s.count)
-                .max()
-                .unwrap_or(0) as u64;
-
-            // Record scheduler stop to blackbox and save
-            if let Some(ref mut bb) = self.monitor.blackbox {
-                bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
-                    reason: "Normal shutdown".to_string(),
-                    total_ticks,
-                });
-                if let Err(e) = bb.save() {
-                    print_line(&format!("[BLACKBOX] Failed to save: {}", e));
-                }
-            }
-
-            // Final telemetry export
-            if let Some(ref mut tm) = self.monitor.telemetry {
-                tm.counter("scheduler_ticks", total_ticks);
-                tm.gauge("scheduler_shutdown", 1.0);
-                let _ = tm.export();
-            }
-
-            // Clean up registry file and session
-            self.cleanup_registry();
-            Self::cleanup_session();
-
-            print_line("Scheduler shutdown complete");
+            self.shutdown_filtered_nodes(node_filter);
+            self.finalize_run();
         });
 
         Ok(())
+    }
+
+    /// Set up Ctrl+C and SIGTERM signal handlers for graceful shutdown.
+    fn setup_signal_handlers(&self) {
+        let running = self.running.clone();
+        if let Err(e) = ctrlc::set_handler(move || {
+            print_line("\nCtrl+C received! Shutting down HORUS scheduler...");
+            running.store(false, Ordering::SeqCst);
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                print_line("Force terminating - cleaning up session...");
+                // Clean up session before forced exit to prevent stale files
+                Self::cleanup_session();
+                std::process::exit(0);
+            });
+        }) {
+            print_line(&format!("Warning: Failed to set signal handler: {}", e));
+        }
+
+        // Set up SIGTERM handler for graceful termination (e.g., from `kill` or `timeout`)
+        #[cfg(unix)]
+        // SAFETY: SIGTERM is a valid signal; sigterm_handler is a valid function pointer.
+        unsafe {
+            libc::signal(
+                libc::SIGTERM,
+                sigterm_handler as *const () as libc::sighandler_t,
+            );
+        }
+    }
+
+    /// Initialize nodes matching the optional filter.
+    fn initialize_filtered_nodes(&mut self, node_filter: Option<&[&str]>) {
+        for registered in self.nodes.iter_mut() {
+            let node_name = registered.name.as_str();
+            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
+
+            if should_run && !registered.initialized {
+                if let Some(ref mut ctx) = registered.context {
+                    // Set node context for hlog!() macro
+                    set_node_context(node_name, 0);
+                    let init_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            registered.node.init()
+                        }));
+                    clear_node_context();
+
+                    // Convert panic to error
+                    let init_result = match init_result {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::HorusError::Node {
+                            node: node_name.to_string(),
+                            message: "panicked during init".to_string(),
+                        }),
+                    };
+
+                    match init_result {
+                        Ok(()) => {
+                            registered.initialized = true;
+                            // Announce to discovery topic
+                            let publishers = registered.node.publishers();
+                            let subscribers = registered.node.subscribers();
+                            announce_started(node_name, &publishers, &subscribers);
+
+                            // Write presence file for monitor detection
+                            let presence = NodePresence::new(
+                                node_name,
+                                Some(&self.scheduler_name),
+                                publishers,
+                                subscribers,
+                                registered.priority,
+                                registered.rate_hz,
+                            );
+                            if let Err(e) = presence.write() {
+                                print_line(&format!(
+                                    "Warning: Failed to write presence file for '{}': {}",
+                                    node_name, e
+                                ));
+                            }
+
+                            print_line(&format!("Initialized node '{}'", node_name));
+                        }
+                        Err(e) => {
+                            print_line(&format!(
+                                "Failed to initialize node '{}': {}",
+                                node_name, e
+                            ));
+                            ctx.transition_to_error(format!("Initialization failed: {}", e));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if the main loop should stop (duration limit, replay stop tick, or SIGTERM).
+    fn should_stop_loop(&self, start_time: Instant, duration: Option<Duration>) -> bool {
+        if let Some(max_duration) = duration {
+            if start_time.elapsed() >= max_duration {
+                print_line(&format!(
+                    "Scheduler reached time limit of {:?}",
+                    max_duration
+                ));
+                return true;
+            }
+        }
+
+        if let Some(stop_tick) = self.replay.as_ref().and_then(|r| r.stop_tick) {
+            if self.current_tick >= stop_tick {
+                print_line(&format!("[REPLAY] Reached stop tick {}", stop_tick));
+                return true;
+            }
+        }
+
+        if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
+            print_line("\nSIGTERM received! Shutting down HORUS scheduler...");
+            return true;
+        }
+
+        false
+    }
+
+    /// Re-initialize nodes that need restart (set by control commands).
+    fn reinit_pending_nodes(&mut self) {
+        for registered in self.nodes.iter_mut() {
+            if !registered.is_stopped && !registered.is_paused && !registered.initialized {
+                let node_name = registered.name.as_str();
+                if let Some(ref mut ctx) = registered.context {
+                    // Set node context for hlog!() macro
+                    set_node_context(node_name, 0);
+                    let init_result = registered.node.init();
+                    clear_node_context();
+
+                    match init_result {
+                        Ok(()) => {
+                            registered.initialized = true;
+                            print_line(&format!(
+                                "[CONTROL] Node '{}' re-initialized",
+                                node_name
+                            ));
+                        }
+                        Err(e) => {
+                            print_line(&format!(
+                                "[CONTROL] Failed to re-initialize node '{}': {}",
+                                node_name, e
+                            ));
+                            ctx.transition_to_error(format!(
+                                "Re-initialization failed: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check watchdogs and handle emergency stop. Returns `true` if scheduler should stop.
+    fn check_safety_monitors(&mut self) -> bool {
+        if let Some(ref monitor) = self.monitor.safety {
+            let expired_watchdogs = monitor.check_watchdogs();
+            if !expired_watchdogs.is_empty() {
+                print_line(&format!(
+                    " Watchdog expired for nodes: {:?}",
+                    expired_watchdogs
+                ));
+            }
+
+            if monitor.is_emergency_stop() {
+                print_line(" Emergency stop activated - shutting down scheduler");
+                if let Some(ref mut bb) = self.monitor.blackbox {
+                    bb.record(super::blackbox::BlackBoxEvent::EmergencyStop {
+                        reason: "Safety monitor triggered emergency stop".to_string(),
+                    });
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Periodic registry snapshot, failure logging, blackbox tick, and telemetry export.
+    fn periodic_monitoring(&mut self, start_time: Instant) {
+        // Registry snapshot every 5 seconds
+        if self.monitor.last_snapshot.elapsed() >= Duration::from_secs(5) {
+            self.snapshot_state_to_registry();
+            self.monitor.last_snapshot = Instant::now();
+
+            // Log failure handler status for nodes with issues
+            let mut has_failure_issues = false;
+            let mut suppressed_count = 0u32;
+            for registered in &self.nodes {
+                let stats = registered.failure_handler.stats();
+                if stats.is_suppressed {
+                    suppressed_count += 1;
+                }
+                if stats.failure_count > 0 || stats.is_suppressed {
+                    if !has_failure_issues {
+                        print_line("\nFailure Handler Status:");
+                        has_failure_issues = true;
+                    }
+                    print_line(&format!(
+                        "  {} - Policy: {}, State: {}, Failures: {}{}",
+                        registered.name.as_str(),
+                        stats.policy,
+                        stats.state,
+                        stats.failure_count,
+                        if stats.is_suppressed {
+                            " [SUPPRESSED]"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+
+            // Record degradation to blackbox when nodes are suppressed
+            if suppressed_count > 0 {
+                if let Some(ref mut bb) = self.monitor.blackbox {
+                    bb.record(super::blackbox::BlackBoxEvent::Custom {
+                        category: "safety".to_string(),
+                        message: format!("{} nodes suppressed", suppressed_count),
+                    });
+                }
+            }
+        }
+
+        // === Runtime feature integrations ===
+
+        // Black box tick increment
+        if let Some(ref mut bb) = self.monitor.blackbox {
+            bb.tick();
+        }
+
+        // Telemetry export (if interval elapsed)
+        if let Some(ref mut tm) = self.monitor.telemetry {
+            if tm.should_export() {
+                let total_ticks = self
+                    .profiler
+                    .node_stats
+                    .values()
+                    .map(|s| s.count)
+                    .max()
+                    .unwrap_or(0) as u64;
+                tm.counter("scheduler_ticks", total_ticks);
+                tm.gauge("scheduler_uptime_secs", start_time.elapsed().as_secs_f64());
+                tm.gauge("nodes_active", self.nodes.len() as f64);
+
+                for registered in &self.nodes {
+                    let node_name = registered.name.as_str();
+                    if let Some(stats) = self.profiler.node_stats.get(node_name) {
+                        let mut labels = std::collections::HashMap::new();
+                        labels.insert("node".to_string(), node_name.to_string());
+                        tm.gauge_with_labels(
+                            "node_avg_duration_us",
+                            stats.avg_us,
+                            labels.clone(),
+                        );
+                        tm.counter_with_labels(
+                            "node_tick_count",
+                            stats.count as u64,
+                            labels,
+                        );
+                    }
+                }
+
+                let _ = tm.export();
+            }
+        }
+    }
+
+    /// Compute the tick sleep duration, returning `None` in virtual-time mode.
+    fn compute_tick_sleep(&self) -> Option<Duration> {
+        let use_virtual_time = self
+            .deterministic
+            .as_ref()
+            .is_some_and(|d| d.config.virtual_time);
+
+        if use_virtual_time {
+            return None;
+        }
+
+        let sleep_duration = if let Some(ref replay) = self.replay {
+            if replay.speed != 1.0 {
+                Duration::from_nanos(
+                    (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
+                )
+            } else {
+                self.tick_period
+            }
+        } else {
+            self.tick_period
+        };
+
+        Some(sleep_duration)
+    }
+
+    /// Increment tick counter and advance deterministic clock if configured.
+    fn advance_tick(&mut self) {
+        self.current_tick += 1;
+
+        if let Some(ref det) = self.deterministic {
+            det.clock.advance_tick();
+            if let Some(ref trace) = det.trace {
+                trace.lock().finalize_tick(self.current_tick - 1);
+            }
+        }
+    }
+
+    /// Shutdown nodes matching the optional filter.
+    fn shutdown_filtered_nodes(&mut self, node_filter: Option<&[&str]>) {
+        for registered in self.nodes.iter_mut() {
+            let node_name = registered.name.as_str();
+            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
+
+            if should_run && registered.initialized {
+                if let Some(ref mut ctx) = registered.context {
+                    ctx.record_shutdown();
+
+                    // Set node context for hlog!() macro
+                    set_node_context(node_name, ctx.metrics().total_ticks);
+                    let shutdown_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            registered.node.shutdown()
+                        }));
+                    clear_node_context();
+
+                    // Convert panic to error
+                    let shutdown_result = match shutdown_result {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::HorusError::Node {
+                            node: node_name.to_string(),
+                            message: "panicked during shutdown".to_string(),
+                        }),
+                    };
+
+                    match shutdown_result {
+                        Ok(()) => {
+                            announce_stopped(node_name);
+                            // Remove presence file
+                            if let Err(e) = NodePresence::remove(node_name) {
+                                print_line(&format!(
+                                    "Warning: Failed to remove presence file for '{}': {}",
+                                    node_name, e
+                                ));
+                            }
+                            print_line(&format!("Shutdown node '{}' successfully", node_name));
+                        }
+                        Err(e) => {
+                            // Still try to remove presence file on error
+                            let _ = NodePresence::remove(node_name);
+                            print_line(&format!(
+                                "Error shutting down node '{}': {}",
+                                node_name, e
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record final blackbox/telemetry events and clean up registry/session files.
+    fn finalize_run(&mut self) {
+        let total_ticks = self
+            .profiler
+            .node_stats
+            .values()
+            .map(|s| s.count)
+            .max()
+            .unwrap_or(0) as u64;
+
+        // Record scheduler stop to blackbox and save
+        if let Some(ref mut bb) = self.monitor.blackbox {
+            bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
+                reason: "Normal shutdown".to_string(),
+                total_ticks,
+            });
+            if let Err(e) = bb.save() {
+                print_line(&format!("[BLACKBOX] Failed to save: {}", e));
+            }
+        }
+
+        // Final telemetry export
+        if let Some(ref mut tm) = self.monitor.telemetry {
+            tm.counter("scheduler_ticks", total_ticks);
+            tm.gauge("scheduler_shutdown", 1.0);
+            let _ = tm.export();
+        }
+
+        // Clean up registry file and session
+        self.cleanup_registry();
+        Self::cleanup_session();
+
+        print_line("Scheduler shutdown complete");
     }
 
     /// Get information about all registered nodes

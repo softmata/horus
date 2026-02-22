@@ -113,13 +113,10 @@ pub mod prelude {
     // ============================================
     pub use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
 
-    // ============================================
-    // Scheduler Configuration Types
-    // ============================================
-    pub use horus_core::scheduling::{
-        FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml, ResourceConfig,
-        TimingConfig,
-    };
+    // Note: Infrastructure config sub-structs (TimingConfig, RealTimeConfig,
+    // MonitoringConfig, ResourceConfig, RecordingConfigYaml) are intentionally
+    // NOT in the prelude. Access them via horus::scheduling::* when customizing
+    // presets. Most users only need SchedulerConfig presets directly.
 
     // ============================================
     // Safety & Fault Tolerance
@@ -148,12 +145,14 @@ pub mod prelude {
     };
 
     // ============================================
-    // Real-Time Configuration & Nodes
+    // Real-Time Nodes
     // ============================================
     pub use horus_core::core::{
-        DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority,
-        RtStats,
+        DeadlineMissPolicy, RtClass, RtDegradation, RtNode, RtPriority, RtStats,
     };
+
+    // Note: RtConfig and RtConfigBuilder are for thread-level RT setup.
+    // Access them via horus::RtConfig or horus::core::rt_config::* when needed.
 
     // ============================================
     // Memory & Tensors

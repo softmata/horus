@@ -16,18 +16,16 @@ pub enum ExecutionMode {
 pub struct TimingConfig {
     /// Global tick rate in Hz (default: 60)
     pub global_rate_hz: f64,
-    /// Enable per-node rate control
-    pub per_node_rates: bool,
 }
 
-/// Fault tolerance configuration
-#[derive(Debug, Clone)]
-pub struct FaultConfig {
-    /// Enable circuit breaker pattern
-    pub circuit_breaker_enabled: bool,
-}
-
-/// Real-time configuration
+/// Real-time configuration for the scheduler thread.
+///
+/// These are **policy flags** that control scheduler behavior. The actual OS-level
+/// syscalls (mlockall, sched_setscheduler, sched_setaffinity) are delegated to
+/// [`RtConfig::apply()`](crate::core::rt_config::RtConfig) internally.
+///
+/// For standalone thread-level RT configuration (outside the scheduler), use
+/// [`RtConfig`](crate::core::rt_config::RtConfig) directly.
 #[derive(Debug, Clone)]
 pub struct RealTimeConfig {
     /// Enable WCET enforcement
@@ -167,8 +165,11 @@ pub struct SchedulerConfig {
     pub execution: ExecutionMode,
     /// Timing configuration
     pub timing: TimingConfig,
-    /// Fault tolerance configuration
-    pub fault: FaultConfig,
+    /// Enable tier-based fault tolerance (circuit breaker, restart policies)
+    ///
+    /// When true, nodes use their tier's default FailurePolicy.
+    /// When false, all nodes get FailurePolicy::Ignore.
+    pub circuit_breaker: bool,
     /// Real-time configuration
     pub realtime: RealTimeConfig,
     /// Resource management
@@ -197,11 +198,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
-                per_node_rates: false,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: false,
-            },
+            circuit_breaker: false,
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
                 deadline_monitoring: false,
@@ -234,11 +232,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
-                per_node_rates: true,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: true,
-            },
+            circuit_breaker: true,
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
                 deadline_monitoring: false,
@@ -273,11 +268,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
-                per_node_rates: true,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: true,
-            },
+            circuit_breaker: true,
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
                 deadline_monitoring: true,
@@ -310,11 +302,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 1000.0,
-                per_node_rates: false,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: false,
-            },
+            circuit_breaker: false,
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
                 deadline_monitoring: true,
@@ -347,11 +336,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 1000.0,
-                per_node_rates: false,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: false,
-            },
+            circuit_breaker: false,
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
                 deadline_monitoring: true,
@@ -384,11 +370,8 @@ impl SchedulerConfig {
             execution: ExecutionMode::Parallel,
             timing: TimingConfig {
                 global_rate_hz: 10000.0,
-                per_node_rates: true,
             },
-            fault: FaultConfig {
-                circuit_breaker_enabled: true,
-            },
+            circuit_breaker: true,
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
                 deadline_monitoring: true,
@@ -420,7 +403,7 @@ impl SchedulerConfig {
         let mut config = Self::standard();
         config.execution = ExecutionMode::Parallel;
         config.timing.global_rate_hz = 1000.0;
-        config.fault.circuit_breaker_enabled = true;
+        config.circuit_breaker = true;
         config.realtime.wcet_enforcement = true;
         config.realtime.deadline_monitoring = true;
         config.realtime.watchdog_enabled = true;
