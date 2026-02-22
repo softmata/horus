@@ -66,9 +66,9 @@ impl HFrameReader {
         let mut found_any = false;
 
         // Try to read from dynamic tf topic
-        // Use try_recv() for streaming (new messages only)
+        // Use recv() for streaming (new messages only)
         if let Ok(topic) = Topic::<HFMessage>::new(HF_TOPIC) {
-            if let Some(msg) = topic.try_recv() {
+            if let Some(msg) = topic.recv() {
                 for tf in msg.iter() {
                     self.add_transform(tf, false);
                     found_any = true;
@@ -95,7 +95,7 @@ impl HFrameReader {
                     || topic_info.topic_name.contains("hframe")
                 {
                     if let Ok(topic) = Topic::<TransformStamped>::new(&topic_info.topic_name) {
-                        if let Some(tf) = topic.try_recv() {
+                        if let Some(tf) = topic.recv() {
                             self.add_transform(&tf, false);
                             found_any = true;
                         }

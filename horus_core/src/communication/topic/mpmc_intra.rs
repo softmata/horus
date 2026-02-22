@@ -18,11 +18,15 @@ pub(crate) struct MpmcRing<T> {
     slots: Box<[MpSlot<T>]>,
 }
 
+// SAFETY: MpmcRing can be sent between threads. All shared state (head, tail,
+// slot sequences) is accessed through atomics with appropriate orderings.
+// The data slots use UnsafeCell<MaybeUninit<T>> but are only accessed after
+// successful CAS claims, ensuring exclusive write and synchronized read access.
 unsafe impl<T: Send> Send for MpmcRing<T> {}
 unsafe impl<T: Send + Sync> Sync for MpmcRing<T> {}
 
 impl<T> MpmcRing<T> {
-    pub fn new(capacity: u32) -> Self {
+    pub(crate) fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
         Self {
             head: CachePadded(AtomicU64::new(0)),
@@ -35,22 +39,24 @@ impl<T> MpmcRing<T> {
 
     /// Check how many messages are pending in the ring.
     #[inline]
-    pub fn pending_count(&self) -> u64 {
+    pub(crate) fn pending_count(&self) -> u64 {
         ring_pending_count!(self)
     }
 
     /// Try to send (multiple producers — CAS on head). Delegates to shared `mp_try_send!` macro.
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         mp_try_send!(self, msg)
     }
 
     /// Try to receive (multiple consumers — CAS on tail).
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         loop {
             let tail = self.tail.0.load(Ordering::Relaxed);
             let index = (tail & self.mask) as usize;
+            // SAFETY: index is (tail & mask) where mask = capacity - 1,
+            // so index is always in [0, capacity). Capacity equals slots.len().
             let slot = unsafe { self.slots.get_unchecked(index) };
             let seq = slot.sequence.load(Ordering::Acquire);
 
@@ -95,7 +101,7 @@ impl<T> MpmcRing<T> {
     /// slot, drop the value (freeing heap memory), and a producer can rewrite
     /// it on the next ring pass. `T: Copy` guarantees no heap pointers — the
     /// bytes are always safe to read regardless of consumption state.
-    pub fn read_latest(&self) -> Option<T>
+    pub(crate) fn read_latest(&self) -> Option<T>
     where
         T: Copy,
     {
@@ -106,6 +112,8 @@ impl<T> MpmcRing<T> {
         }
         let prev = head.wrapping_sub(1);
         let index = (prev & self.mask) as usize;
+        // SAFETY: index is (prev & mask) where mask = capacity - 1,
+        // so index is always in [0, capacity). Capacity equals slots.len().
         let slot = unsafe { self.slots.get_unchecked(index) };
         let seq = slot.sequence.load(Ordering::Acquire);
         // Slot is readable when sequence == prev + 1 (write completed).

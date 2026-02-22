@@ -100,10 +100,10 @@
 //!   interleaving for SPSC, SPMC, MPSC, and MPMC algorithms, including
 //!   `read_latest` + `try_recv` races
 
-pub mod header;
-pub mod local_state;
+pub(crate) mod header;
+pub(crate) mod local_state;
 pub mod metrics;
-pub mod migration;
+pub(crate) mod migration;
 pub mod types;
 
 // Shared types and macros — must be declared before ring modules that use the macros
@@ -121,10 +121,10 @@ pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
 // Shared pool registry for all tensor topic extensions
-pub mod pool_registry;
+pub(crate) mod pool_registry;
 
 // Auto-managed tensor pool extensions
-pub mod tensor_ext;
+pub(crate) mod tensor_ext;
 
 // TopicMessage trait — unified wire protocol for Topic<T>
 pub mod topic_message;
@@ -166,7 +166,7 @@ pub use metrics::TopicMetrics;
 const READY_FLAG_SPIN_LIMIT: u32 = 256;
 pub(crate) use migration::{BackendMigrator, MigrationResult};
 pub use types::TopicDescriptor;
-pub(crate) use types::{BackendMode, ConnectionState, TopicConfig, TopicRole};
+pub(crate) use types::{BackendMode, ConnectionState, TopicRole};
 
 use header::current_time_ms;
 use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
@@ -522,51 +522,34 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Register as producer if not already registered
+    #[inline]
     fn ensure_producer(&self) -> HorusResult<()> {
-        let local = self.local();
-        if local.role.can_send() {
-            return Ok(());
-        }
-
-        let header = self.header();
-        let slot = header.register_producer()?;
-
-        local.slot_index = slot as i32;
-        local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
-        let cap = header.capacity as usize;
-        // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
-        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr =
-            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
-        local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
-        Self::sync_local(local, header, false);
-        // Set role LAST - this gates the fast path via can_send()
-        local.role = if local.role == TopicRole::Consumer {
-            TopicRole::Both
-        } else {
-            TopicRole::Producer
-        };
-
-        self.metrics.estimated_latency_ns.store(
-            local.cached_mode.expected_latency_ns() as u32,
-            Ordering::Relaxed,
-        );
-
-        self.check_migration();
-        self.initialize_backend();
-
-        Ok(())
+        self.ensure_role(true)
     }
 
     /// Register as consumer if not already registered
+    #[inline]
     fn ensure_consumer(&self) -> HorusResult<()> {
+        self.ensure_role(false)
+    }
+
+    /// Shared registration logic for producer (is_producer=true) or consumer.
+    fn ensure_role(&self, is_producer: bool) -> HorusResult<()> {
         let local = self.local();
-        if local.role.can_recv() {
+        if is_producer {
+            if local.role.can_send() {
+                return Ok(());
+            }
+        } else if local.role.can_recv() {
             return Ok(());
         }
 
         let header = self.header();
-        let slot = header.register_consumer()?;
+        let slot = if is_producer {
+            header.register_producer()?
+        } else {
+            header.register_consumer()?
+        };
 
         local.slot_index = slot as i32;
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
@@ -577,11 +560,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         Self::sync_local(local, header, false);
-        // Set role LAST - this gates the fast path via can_recv()
-        local.role = if local.role == TopicRole::Producer {
-            TopicRole::Both
+        // Set role LAST — this gates the fast path via can_send()/can_recv()
+        local.role = if is_producer {
+            if local.role == TopicRole::Consumer { TopicRole::Both } else { TopicRole::Producer }
         } else {
-            TopicRole::Consumer
+            if local.role == TopicRole::Producer { TopicRole::Both } else { TopicRole::Consumer }
         };
 
         self.metrics.estimated_latency_ns.store(
@@ -1747,17 +1730,6 @@ where
 }
 
 // ============================================================================
-// TopicConfig Support
-// ============================================================================
-
-impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
-    /// Create a topic from configuration
-    pub(crate) fn from_config(config: TopicConfig) -> HorusResult<Self> {
-        Self::with_capacity(&config.name, config.capacity, None)
-    }
-}
-
-// ============================================================================
 // Topic<T: TopicMessage> — Public Unified API
 // ============================================================================
 //
@@ -1820,20 +1792,17 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the current backend mode.
-    #[doc(hidden)]
-    pub fn mode(&self) -> BackendMode {
+    pub(crate) fn mode(&self) -> BackendMode {
         self.ring.mode()
     }
 
     /// Get the current role.
-    #[doc(hidden)]
-    pub fn role(&self) -> TopicRole {
+    pub(crate) fn role(&self) -> TopicRole {
         self.ring.role()
     }
 
     /// Get raw migration metrics.
-    #[doc(hidden)]
-    pub fn migration_metrics(&self) -> &MigrationMetrics {
+    pub(crate) fn migration_metrics(&self) -> &MigrationMetrics {
         self.ring.migration_metrics()
     }
 
@@ -1843,8 +1812,7 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the current connection state.
-    #[doc(hidden)]
-    pub fn connection_state(&self) -> ConnectionState {
+    pub(crate) fn connection_state(&self) -> ConnectionState {
         self.ring.connection_state()
     }
 
@@ -1865,14 +1833,12 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Check if all participants are in the same process.
-    #[doc(hidden)]
-    pub fn is_same_process(&self) -> bool {
+    pub(crate) fn is_same_process(&self) -> bool {
         self.ring.is_same_process()
     }
 
     /// Check if caller is on same thread as creator.
-    #[doc(hidden)]
-    pub fn is_same_thread(&self) -> bool {
+    pub(crate) fn is_same_thread(&self) -> bool {
         self.ring.is_same_thread()
     }
 
@@ -1895,15 +1861,29 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Force a backend migration (for testing).
-    #[doc(hidden)]
-    pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
+    pub(crate) fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         self.ring.force_migrate(mode)
     }
 
     /// Get raw pointer to the SHM header (for benchmarking).
     #[doc(hidden)]
-    pub fn local_state_header_ptr(&self) -> *const header::TopicHeader {
-        self.ring.local_state_header_ptr()
+    pub fn local_state_header_ptr(&self) -> *const u8 {
+        self.ring.local_state_header_ptr() as *const u8
+    }
+
+    /// Get a raw pointer to the SHM sequence/head atomic (for raw latency benchmarking).
+    ///
+    /// Returns a pointer to the `AtomicU64` used as the producer sequence counter
+    /// in shared memory. Returns null if no SHM header is mapped.
+    #[doc(hidden)]
+    pub fn sequence_head_ptr(&self) -> *const std::sync::atomic::AtomicU64 {
+        let header_ptr = self.ring.local_state_header_ptr();
+        if header_ptr.is_null() {
+            return std::ptr::null();
+        }
+        // SAFETY: header_ptr is a valid pointer to a TopicHeader in mapped SHM.
+        // sequence_or_head is at a fixed offset within the repr(C) struct.
+        unsafe { &(*header_ptr).sequence_or_head as *const std::sync::atomic::AtomicU64 }
     }
 }
 
@@ -1941,16 +1921,6 @@ where
         Ok(Self { ring, pool })
     }
 
-    /// Create a topic from configuration.
-    pub(crate) fn from_config(config: TopicConfig) -> HorusResult<Self> {
-        let ring = RingTopic::from_config(config)?;
-        let pool = if T::needs_pool() {
-            Some(pool_registry::global_pool())
-        } else {
-            None
-        };
-        Ok(Self { ring, pool })
-    }
 }
 
 // ============================================================================
@@ -1969,9 +1939,9 @@ where
         self.ring.send(msg)
     }
 
-    /// Try to send a message, returning it on failure.
+    /// Try to send a message, returning it on failure (internal use only).
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         self.ring.try_send(msg)
     }
 
@@ -1981,9 +1951,9 @@ where
         self.ring.recv()
     }
 
-    /// Try to receive a message without logging.
+    /// Try to receive a message without logging (internal use only).
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         self.ring.try_recv()
     }
 

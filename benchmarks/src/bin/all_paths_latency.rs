@@ -1306,7 +1306,7 @@ fn collect_pod_shm(
     iterations: u64,
     cal: &RdtscCalibration,
 ) -> (Vec<u64>, Vec<u64>, u64, u64) {
-    let header_ptr = consumer.local_state_header_ptr();
+    let seq_ptr = consumer.sequence_head_ptr();
     let overhead = cal.overhead_cycles;
     let deadline = Instant::now() + TIMEOUT;
     let idle_threshold = cal.ns_to_cycles(2_000_000_000); // 2s for warmup
@@ -1335,8 +1335,8 @@ fn collect_pod_shm(
     }
 
     // Snapshot producer head after warmup for freshness baseline
-    let mut prev_head = if !header_ptr.is_null() {
-        unsafe { (*header_ptr).sequence_or_head.load(Ordering::Acquire) }
+    let mut prev_head = if !seq_ptr.is_null() {
+        unsafe { (*seq_ptr).load(Ordering::Acquire) }
     } else {
         0
     };
@@ -1364,8 +1364,8 @@ fn collect_pod_shm(
             last_recv_cycles = recv_cycles;
 
             // Read current producer head for freshness calculation
-            if !header_ptr.is_null() {
-                let head = unsafe { (*header_ptr).sequence_or_head.load(Ordering::Acquire) };
+            if !seq_ptr.is_null() {
+                let head = unsafe { (*seq_ptr).load(Ordering::Acquire) };
                 let advance = head.saturating_sub(prev_head);
                 if advance > 0 {
                     freshness.push(advance);
@@ -1500,10 +1500,10 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
     // Wait for child to start writing
     thread::sleep(Duration::from_millis(200));
 
-    // Get pointer to header.sequence_or_head — we'll use this as our raw atomic.
+    // Get pointer to sequence_or_head atomic — we'll use this as our raw atomic.
     // Both processes access the same SHM-mapped header.
-    let header_ptr = consumer.local_state_header_ptr();
-    if header_ptr.is_null() {
+    let seq_ptr = consumer.sequence_head_ptr();
+    if seq_ptr.is_null() {
         child.wait().ok();
         return ScenarioResult {
             name: "RawAtomic",
@@ -1513,13 +1513,13 @@ fn bench_raw_atomic(timer: &PrecisionTimer) -> ScenarioResult {
             latencies_ns: vec![],
             total_sent: total_writes,
             total_received: 0,
-            note: Some("header_ptr null"),
+            note: Some("seq_ptr null"),
             freshness_samples: None,
             delivery_ratio: None,
             skip_count: None,
         };
     }
-    let atom = unsafe { &(*header_ptr).sequence_or_head };
+    let atom = unsafe { &*seq_ptr };
 
     // Phase 1: Warmup
     let mut last_val = 0u64;
@@ -1576,12 +1576,12 @@ fn run_child_atomic_writer(topic_name: &str, count: u64) {
     topic.send(CmdVel::with_timestamp(0.0, 0.0, 0));
     thread::sleep(Duration::from_millis(100));
 
-    let header_ptr = topic.local_state_header_ptr();
-    if header_ptr.is_null() {
-        eprintln!("  [raw-atomic] header_ptr null, aborting");
+    let seq_ptr = topic.sequence_head_ptr();
+    if seq_ptr.is_null() {
+        eprintln!("  [raw-atomic] seq_ptr null, aborting");
         return;
     }
-    let atom = unsafe { &(*header_ptr).sequence_or_head };
+    let atom = unsafe { &*seq_ptr };
 
     eprintln!(
         "  [raw-atomic] PID={} core={} writing {} timestamps",

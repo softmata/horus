@@ -23,11 +23,15 @@ pub(crate) struct MpscRing<T> {
     slots: Box<[MpSlot<T>]>,
 }
 
+// SAFETY: MpscRing can be sent between threads. All shared state (head, slot
+// sequences) is accessed through atomics. The tail is consumer-owned (single
+// consumer guarantee). Data slots use UnsafeCell<MaybeUninit<T>> but are only
+// accessed after successful CAS (producer) or sequence check (consumer).
 unsafe impl<T: Send> Send for MpscRing<T> {}
 unsafe impl<T: Send + Sync> Sync for MpscRing<T> {}
 
 impl<T> MpscRing<T> {
-    pub fn new(capacity: u32) -> Self {
+    pub(crate) fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
         Self {
             head: CachePadded(AtomicU64::new(0)),
@@ -40,19 +44,19 @@ impl<T> MpscRing<T> {
 
     /// Check how many messages are pending in the ring.
     #[inline]
-    pub fn pending_count(&self) -> u64 {
+    pub(crate) fn pending_count(&self) -> u64 {
         ring_pending_count!(self)
     }
 
     /// Try to send (multiple producers — CAS on head to claim slot). Delegates to shared `mp_try_send!` macro.
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         mp_try_send!(self, msg)
     }
 
     /// Try to receive (single consumer only).
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         let tail = self.tail.0.load(Ordering::Relaxed);
         let index = (tail & self.mask) as usize;
         // SAFETY: index is within bounds
@@ -80,7 +84,7 @@ impl<T> MpscRing<T> {
     ///
     /// Uses `Clone` instead of moving to avoid double-free: the slot remains
     /// valid for `try_recv` to consume later.
-    pub fn read_latest(&self) -> Option<T>
+    pub(crate) fn read_latest(&self) -> Option<T>
     where
         T: Clone,
     {

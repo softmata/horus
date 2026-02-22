@@ -37,7 +37,7 @@ unsafe impl<T: Send + Sync> Sync for DirectSlot<T> {}
 
 impl<T> DirectSlot<T> {
     /// Create a new direct channel with the given capacity (must be power of 2).
-    pub fn new(capacity: u32) -> Self {
+    pub(crate) fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
         let mut buffer = Vec::with_capacity(cap);
         for _ in 0..cap {
@@ -57,7 +57,7 @@ impl<T> DirectSlot<T> {
     /// Same-thread only — no atomics needed for correctness, but we use
     /// Relaxed ordering (plain MOV on x86) to keep the AtomicU64 API.
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
         if head.wrapping_sub(tail) >= self.capacity {
@@ -75,7 +75,7 @@ impl<T> DirectSlot<T> {
 
     /// Check how many messages are pending.
     #[inline]
-    pub fn pending_count(&self) -> u64 {
+    pub(crate) fn pending_count(&self) -> u64 {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Relaxed);
         head.wrapping_sub(tail)

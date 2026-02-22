@@ -46,33 +46,33 @@ pub(crate) const MAX_PARTICIPANTS: usize = 16;
 /// Participant entry in the header (24 bytes, cache-friendly)
 #[repr(C)]
 #[derive(Debug)]
-pub struct ParticipantEntry {
+pub(crate) struct ParticipantEntry {
     /// Process ID (0 = empty slot)
     /// MUST be atomic for cross-process visibility in shared memory
-    pub pid: AtomicU32,
+    pub(crate) pid: AtomicU32,
     /// Thread ID hash (lower 32 bits for same-thread detection)
     /// MUST be atomic for cross-process visibility in shared memory
-    pub thread_id_hash: AtomicU32,
+    pub(crate) thread_id_hash: AtomicU32,
     /// Role: 0=none, 1=producer, 2=consumer, 3=both
-    pub role: AtomicU8,
+    pub(crate) role: AtomicU8,
     /// Active flag for atomic operations
-    pub active: AtomicU8,
+    pub(crate) active: AtomicU8,
     /// Padding for alignment
-    pub _pad: [u8; 6],
+    pub(crate) _pad: [u8; 6],
     /// Last heartbeat timestamp (milliseconds since epoch)
-    pub lease_expires_ms: AtomicU64,
+    pub(crate) lease_expires_ms: AtomicU64,
 }
 
 impl ParticipantEntry {
     /// Check if this entry is empty (no participant)
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.active.load(Ordering::Acquire) == 0
     }
 
     /// Check if the lease has expired
     #[inline]
-    pub fn is_lease_expired(&self, now_ms: u64) -> bool {
+    pub(crate) fn is_lease_expired(&self, now_ms: u64) -> bool {
         let expires = self.lease_expires_ms.load(Ordering::Acquire);
         if expires == 0 {
             return true;
@@ -82,13 +82,13 @@ impl ParticipantEntry {
 
     /// Update lease expiration timestamp
     #[inline]
-    pub fn refresh_lease(&self, now_ms: u64, timeout_ms: u64) {
+    pub(crate) fn refresh_lease(&self, now_ms: u64, timeout_ms: u64) {
         self.lease_expires_ms
             .store(now_ms + timeout_ms, Ordering::Release);
     }
 
     /// Clear this entry (use atomic for thread safety)
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.active.store(0, Ordering::Release);
         self.lease_expires_ms.store(0, Ordering::Release);
         self.role.store(0, Ordering::Release);
@@ -122,72 +122,72 @@ impl ParticipantEntry {
 /// - Cache line 4: Counters and timestamps
 /// - Cache lines 5-10: Participant tracking
 #[repr(C, align(64))]
-pub struct TopicHeader {
+pub(crate) struct TopicHeader {
     // === Cache line 1 (bytes 0-63): Core metadata (read-mostly) ===
     /// Magic number for validation
-    pub magic: u64,
+    pub(crate) magic: u64,
     /// Header version for compatibility
-    pub version: u32,
+    pub(crate) version: u32,
     /// Type size in bytes
-    pub type_size: u32,
+    pub(crate) type_size: u32,
     /// Type alignment requirement
-    pub type_align: u32,
+    pub(crate) type_align: u32,
     /// Is POD type: 0=unknown, 1=no, 2=yes
-    pub is_pod: AtomicU8,
+    pub(crate) is_pod: AtomicU8,
     /// Current backend mode (BackendMode as u8)
-    pub backend_mode: AtomicU8,
+    pub(crate) backend_mode: AtomicU8,
     /// Migration lock: 0=unlocked, 1=locked
-    pub migration_lock: AtomicU8,
+    pub(crate) migration_lock: AtomicU8,
     /// Reserved flags
-    pub _flags: u8,
+    pub(crate) _flags: u8,
     /// Creator process ID
-    pub creator_pid: u32,
+    pub(crate) creator_pid: u32,
     /// Creator thread ID hash (for same-thread detection)
-    pub creator_thread_id_hash: u64,
+    pub(crate) creator_thread_id_hash: u64,
     /// Migration epoch (incremented on each backend switch)
-    pub migration_epoch: AtomicU64,
+    pub(crate) migration_epoch: AtomicU64,
     /// Padding to 64 bytes
-    pub _pad1: [u8; 16],
+    pub(crate) _pad1: [u8; 16],
 
     // === Cache line 2 (bytes 64-127): PRODUCER WRITE LINE ===
     // This cache line is ONLY written by producers (senders)
     // NEVER put consumer-written fields here!
     /// Write sequence / head (for POD/ring backends) - PRODUCER ONLY
-    pub sequence_or_head: AtomicU64,
+    pub(crate) sequence_or_head: AtomicU64,
     /// Ring buffer capacity (power of 2)
-    pub capacity: u32,
+    pub(crate) capacity: u32,
     /// Capacity mask for fast modulo (capacity - 1, only valid if capacity is power of 2)
-    pub capacity_mask: u32,
+    pub(crate) capacity_mask: u32,
     /// Slot size in bytes (for non-POD types, includes header + data)
-    pub slot_size: u32,
+    pub(crate) slot_size: u32,
     /// Padding to fill cache line (64 - 8 - 4 - 4 - 4 = 44 bytes)
-    pub _pad_producer: [u8; 44],
+    pub(crate) _pad_producer: [u8; 44],
 
     // === Cache line 3 (bytes 128-191): CONSUMER WRITE LINE ===
     // This cache line is ONLY written by consumers (receivers)
     // NEVER put producer-written fields here!
     /// Read tail (for ring backends) - CONSUMER ONLY
-    pub tail: AtomicU64,
+    pub(crate) tail: AtomicU64,
     /// Padding to fill cache line (64 - 8 = 56 bytes)
-    pub _pad_consumer: [u8; 56],
+    pub(crate) _pad_consumer: [u8; 56],
 
     // === Cache line 4 (bytes 192-255): Counters and metadata ===
     /// Number of active publishers
-    pub publisher_count: AtomicU32,
+    pub(crate) publisher_count: AtomicU32,
     /// Number of active subscribers
-    pub subscriber_count: AtomicU32,
+    pub(crate) subscriber_count: AtomicU32,
     /// Total participants ever connected
-    pub total_participants: AtomicU32,
+    pub(crate) total_participants: AtomicU32,
     /// Lease timeout in milliseconds
-    pub lease_timeout_ms: u32,
+    pub(crate) lease_timeout_ms: u32,
     /// Last topology change timestamp (ms)
-    pub last_topology_change_ms: AtomicU64,
+    pub(crate) last_topology_change_ms: AtomicU64,
     /// Padding to 64 bytes (4+4+4+4+8 = 24, need 40 more)
-    pub _pad_counters: [u8; 40],
+    pub(crate) _pad_counters: [u8; 40],
 
     // === Cache lines 5-10 (bytes 256-639): Participant tracking (384 bytes = 16 * 24) ===
     /// Participant entries for lease management
-    pub participants: [ParticipantEntry; MAX_PARTICIPANTS],
+    pub(crate) participants: [ParticipantEntry; MAX_PARTICIPANTS],
 }
 
 // Size assertion: Header must be exactly 640 bytes (10 cache lines)
@@ -384,72 +384,20 @@ impl TopicHeader {
 
     /// Register as a publisher (returns slot index or error)
     pub fn register_producer(&self) -> HorusResult<usize> {
-        let now_ms = current_time_ms();
-        let pid = std::process::id();
-        let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
-        let timeout_ms = self.lease_timeout_ms as u64;
-
-        // First, try to find existing entry for this thread
-        for (i, p) in self.participants.iter().enumerate() {
-            if p.active.load(Ordering::Acquire) != 0
-                && p.pid.load(Ordering::Acquire) == pid
-                && p.thread_id_hash.load(Ordering::Acquire) == thread_hash
-            {
-                let old_role = p.role.fetch_or(1, Ordering::AcqRel);
-                if old_role & 1 == 0 {
-                    self.publisher_count.fetch_add(1, Ordering::AcqRel);
-                    self.last_topology_change_ms
-                        .store(now_ms, Ordering::Release);
-                }
-                p.refresh_lease(now_ms, timeout_ms);
-                return Ok(i);
-            }
-        }
-
-        // Find empty slot or expired lease
-        for (i, p) in self.participants.iter().enumerate() {
-            let is_active = p.active.load(Ordering::Acquire) != 0;
-            let is_expired = is_active && p.is_lease_expired(now_ms);
-
-            if !is_active || is_expired {
-                if is_expired {
-                    let old_role = p.role.load(Ordering::Acquire);
-                    if old_role & 1 != 0 {
-                        self.publisher_count.fetch_sub(1, Ordering::AcqRel);
-                    }
-                    if old_role & 2 != 0 {
-                        self.subscriber_count.fetch_sub(1, Ordering::AcqRel);
-                    }
-                }
-
-                if p.active
-                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                    || (is_expired
-                        && p.active
-                            .compare_exchange(1, 1, Ordering::AcqRel, Ordering::Acquire)
-                            .is_ok())
-                {
-                    p.pid.store(pid, Ordering::Release);
-                    p.thread_id_hash.store(thread_hash, Ordering::Release);
-                    p.role.store(1, Ordering::Release); // Producer
-                    p.refresh_lease(now_ms, timeout_ms);
-                    self.publisher_count.fetch_add(1, Ordering::AcqRel);
-                    self.total_participants.fetch_add(1, Ordering::AcqRel);
-                    self.last_topology_change_ms
-                        .store(now_ms, Ordering::Release);
-                    return Ok(i);
-                }
-            }
-        }
-
-        Err(HorusError::Communication(
-            "No available participant slots".to_string(),
-        ))
+        self.register_role(1, &self.publisher_count)
     }
 
     /// Register as a subscriber (returns slot index or error)
     pub fn register_consumer(&self) -> HorusResult<usize> {
+        self.register_role(2, &self.subscriber_count)
+    }
+
+    /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
+    fn register_role(
+        &self,
+        role_bit: u8,
+        counter: &AtomicU32,
+    ) -> HorusResult<usize> {
         let now_ms = current_time_ms();
         let pid = std::process::id();
         let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
@@ -461,9 +409,9 @@ impl TopicHeader {
                 && p.pid.load(Ordering::Acquire) == pid
                 && p.thread_id_hash.load(Ordering::Acquire) == thread_hash
             {
-                let old_role = p.role.fetch_or(2, Ordering::AcqRel);
-                if old_role & 2 == 0 {
-                    self.subscriber_count.fetch_add(1, Ordering::AcqRel);
+                let old_role = p.role.fetch_or(role_bit, Ordering::AcqRel);
+                if old_role & role_bit == 0 {
+                    counter.fetch_add(1, Ordering::AcqRel);
                     self.last_topology_change_ms
                         .store(now_ms, Ordering::Release);
                 }
@@ -498,9 +446,9 @@ impl TopicHeader {
                 {
                     p.pid.store(pid, Ordering::Release);
                     p.thread_id_hash.store(thread_hash, Ordering::Release);
-                    p.role.store(2, Ordering::Release); // Consumer
+                    p.role.store(role_bit, Ordering::Release);
                     p.refresh_lease(now_ms, timeout_ms);
-                    self.subscriber_count.fetch_add(1, Ordering::AcqRel);
+                    counter.fetch_add(1, Ordering::AcqRel);
                     self.total_participants.fetch_add(1, Ordering::AcqRel);
                     self.last_topology_change_ms
                         .store(now_ms, Ordering::Release);

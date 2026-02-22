@@ -69,7 +69,7 @@ const GLOBAL_POOL_NAME: &str = "__horus_global__";
 ///
 /// Used by `Image::new()`, `PointCloud::new()`, `DepthImage::new()` when
 /// creating types outside of a Topic context. Also used by Python bindings.
-pub fn global_pool() -> Arc<TensorPool> {
+pub(crate) fn global_pool() -> Arc<TensorPool> {
     get_or_create_pool(GLOBAL_POOL_NAME)
 }
 

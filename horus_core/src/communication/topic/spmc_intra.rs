@@ -29,11 +29,16 @@ pub(crate) struct SpmcRing<T> {
     buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
 }
 
+// SAFETY: SpmcRing can be sent between threads. The head is producer-owned
+// (single producer guarantee) and uses Release stores. Consumers CAS on tail
+// (atomic). The cached_send_tail Cell is only accessed by the single producer.
+// Data slots use UnsafeCell<MaybeUninit<T>> but are written by the sole producer
+// after a full-check and read by consumers only after a successful CAS claim.
 unsafe impl<T: Send> Send for SpmcRing<T> {}
 unsafe impl<T: Send + Sync> Sync for SpmcRing<T> {}
 
 impl<T> SpmcRing<T> {
-    pub fn new(capacity: u32) -> Self {
+    pub(crate) fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
         Self {
             head: CachePadded(AtomicU64::new(0)),
@@ -47,13 +52,13 @@ impl<T> SpmcRing<T> {
 
     /// Try to send (single producer only). Delegates to shared `sp_try_send!` macro.
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         sp_try_send!(self, msg)
     }
 
     /// Check how many messages are pending in the ring.
     #[inline]
-    pub fn pending_count(&self) -> u64 {
+    pub(crate) fn pending_count(&self) -> u64 {
         ring_pending_count!(self)
     }
 
@@ -63,7 +68,7 @@ impl<T> SpmcRing<T> {
     /// under high consumer contention. Returns None if all attempts fail;
     /// the caller retries on the next poll.
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         for _attempt in 0..8 {
             let tail = self.tail.0.load(Ordering::Acquire);
             let head = self.head.0.load(Ordering::Acquire);
@@ -107,7 +112,7 @@ impl<T> SpmcRing<T> {
     /// and drop the value. For types with heap allocations (String, Vec), this
     /// would be use-after-free. `T: Copy` guarantees no heap pointers — the
     /// bytes in the slot are always safe to read even after logical consumption.
-    pub fn read_latest(&self) -> Option<T>
+    pub(crate) fn read_latest(&self) -> Option<T>
     where
         T: Copy,
     {

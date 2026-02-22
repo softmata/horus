@@ -36,12 +36,18 @@ pub(crate) struct SpscRing<T> {
     buffer: Box<[UnsafeCell<MaybeUninit<T>>]>,
 }
 
+// SAFETY: SpscRing can be sent between threads. The head is producer-owned and
+// the tail is consumer-owned (single producer, single consumer guarantee).
+// Cached values (cached_send_tail, cached_recv_head) are Cell but only accessed
+// by their respective single owner. Data slots use UnsafeCell<MaybeUninit<T>>
+// but are written only by the producer and read only by the consumer, with
+// Release/Acquire ordering on head/tail ensuring visibility.
 unsafe impl<T: Send> Send for SpscRing<T> {}
 unsafe impl<T: Send + Sync> Sync for SpscRing<T> {}
 
 impl<T> SpscRing<T> {
     /// Create a new SPSC ring with the given capacity (must be power of 2).
-    pub fn new(capacity: u32) -> Self {
+    pub(crate) fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
         Self {
             head: CachePadded(AtomicU64::new(0)),
@@ -57,13 +63,13 @@ impl<T> SpscRing<T> {
     /// Try to send a message. Returns Err(msg) if the buffer is full.
     /// Delegates to shared `sp_try_send!` macro (single-producer with lazy tail caching).
     #[inline(always)]
-    pub fn try_send(&self, msg: T) -> Result<(), T> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
         sp_try_send!(self, msg)
     }
 
     /// Check how many messages are pending in the ring.
     #[inline]
-    pub fn pending_count(&self) -> u64 {
+    pub(crate) fn pending_count(&self) -> u64 {
         ring_pending_count!(self)
     }
 
@@ -73,7 +79,7 @@ impl<T> SpscRing<T> {
     /// Uses lazy head loading: only fetches the producer's head atomic when
     /// the cached check says "empty".
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         let tail = self.tail.0.load(Ordering::Relaxed);
         // Lazy: use cached head first, refresh only when "empty"
         let mut head = self.cached_recv_head.0.get();
@@ -102,7 +108,7 @@ impl<T> SpscRing<T> {
     ///
     /// Uses `Clone` instead of moving to avoid double-free: the slot remains
     /// valid for `try_recv` to consume later.
-    pub fn read_latest(&self) -> Option<T>
+    pub(crate) fn read_latest(&self) -> Option<T>
     where
         T: Clone,
     {
