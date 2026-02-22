@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Black box event types
@@ -235,14 +234,6 @@ impl Default for BlackBox {
     fn default() -> Self {
         Self::new(0) // Disabled by default
     }
-}
-
-/// Thread-safe black box wrapper
-pub type SharedBlackBox = Arc<Mutex<BlackBox>>;
-
-/// Create a thread-safe black box
-pub fn create_shared_blackbox(max_size_mb: usize) -> SharedBlackBox {
-    Arc::new(Mutex::new(BlackBox::new(max_size_mb)))
 }
 
 #[cfg(test)]

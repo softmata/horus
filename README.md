@@ -112,10 +112,10 @@ scheduler.run()?;
 **Presets** for common use cases:
 
 ```rust
-Scheduler::deploy()           // Production: real-time + flight recorder
-Scheduler::safety_critical()  // Watchdogs + sequential execution
-Scheduler::high_performance() // Parallel execution + 10kHz
-Scheduler::deterministic()    // Reproducible execution for debugging
+Scheduler::new().with_config(SchedulerConfig::deploy())           // Production: RT + flight recorder
+Scheduler::new().with_config(SchedulerConfig::safety_critical())  // Watchdogs + sequential
+Scheduler::new().with_config(SchedulerConfig::high_performance()) // Parallel + 10kHz
+Scheduler::new().with_config(SchedulerConfig::deterministic())    // Reproducible execution
 ```
 
 ### Topics (Pub/Sub)

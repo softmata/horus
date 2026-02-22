@@ -43,6 +43,7 @@ macro_rules! impl_with_frame_id {
 pub(crate) use impl_with_frame_id;
 
 // Core message modules
+pub mod clock;
 pub mod control;
 pub mod diagnostics;
 pub mod force;
@@ -55,7 +56,6 @@ pub mod vision;
 // Pod/Zeroable types for zero-copy IPC
 pub mod detection;
 pub mod landmark;
-pub mod pointcloud;
 pub mod segmentation;
 pub mod tracking;
 
@@ -71,10 +71,19 @@ pub mod cmd_vel;
 
 // Re-export all message types for convenience
 // Geometry
-pub use geometry::{Point3, Pose2D, Quaternion, TransformStamped, Twist, Vector3};
+pub use geometry::{
+    Accel, AccelStamped, Point3, Pose2D, Pose3D, PoseStamped, PoseWithCovariance, Quaternion,
+    TransformStamped, Twist, TwistWithCovariance, Vector3,
+};
 
 // Sensor
-pub use sensor::{BatteryState, Imu, LaserScan, NavSatFix, Odometry, Range};
+pub use sensor::{
+    BatteryState, FluidPressure, Illuminance, Imu, JointState, LaserScan, MagneticField, NavSatFix,
+    Odometry, Range, Temperature,
+};
+
+// Clock & Time
+pub use clock::{Clock, TimeReference, SOURCE_REPLAY, SOURCE_SIM, SOURCE_WALL};
 
 // Control
 pub use control::{
@@ -88,8 +97,7 @@ pub use diagnostics::{
     NodeState, ResourceUsage, SafetyStatus, Status, StatusLevel,
 };
 
-// Vision — unified Image + ImageEncoding from horus_types, others from vision module
-pub use horus_types::ImageEncoding;
+// Vision
 pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
 
 // Navigation
@@ -101,16 +109,9 @@ pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 // Perception
 pub use perception::PlaneDetection;
 
-// Domain-specific types (RAII wrappers with rich API for data access)
-pub use horus_core::memory::{DepthImage, Image, PointCloud};
-
-// TopicMessage trait for unified Topic<T> API
-pub use horus_core::communication::TopicMessage;
-
 // Perception types (zero-copy IPC)
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
-pub use pointcloud::{PointXYZ, PointXYZI, PointXYZRGB};
 pub use segmentation::SegmentationMask;
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
@@ -120,9 +121,6 @@ pub use ml::{
     LLMResponse, MlTrajectoryPoint, ModelFormat, ModelInfo, Predictions, TensorData,
     TrainingMetrics,
 };
-
-// Canonical dtype from horus_types (replaces ml::DataType and perception::PointFieldType)
-pub use horus_types::TensorDtype;
 
 // Input (existing)
 pub use joystick_msg::JoystickInput;

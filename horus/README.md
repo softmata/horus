@@ -61,11 +61,11 @@ fn main() -> Result<()> {
 ## Scheduler Presets
 
 ```rust
-Scheduler::new()                // Lightweight default
-Scheduler::deploy()             // Production with flight recorder
-Scheduler::safety_critical()    // Watchdogs + sequential execution
-Scheduler::high_performance()   // Parallel execution + 10kHz
-Scheduler::deterministic()      // Reproducible execution for debugging
+Scheduler::new()                                                  // Lightweight default
+Scheduler::new().with_config(SchedulerConfig::deploy())           // Production + flight recorder
+Scheduler::new().with_config(SchedulerConfig::safety_critical())  // Watchdogs + sequential
+Scheduler::new().with_config(SchedulerConfig::high_performance()) // Parallel + 10kHz
+Scheduler::new().with_config(SchedulerConfig::deterministic())    // Reproducible execution
 ```
 
 ## License

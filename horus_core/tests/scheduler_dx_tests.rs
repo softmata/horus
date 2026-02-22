@@ -1,15 +1,14 @@
 //! Integration tests for Scheduler DX (Developer Experience) API
 //!
-//! Tests the intent-based constructors:
-//! - `Scheduler::new()` - Auto-optimizing with capability detection
-//! - `Scheduler::safety_critical()` - Safety-critical preset
-//! - `Scheduler::high_performance()` - High-performance preset
-//! - `Scheduler::deterministic()` - Deterministic preset
-//! - `Scheduler::hard_realtime()` - Hard real-time preset
+//! Tests the preset constructors via SchedulerConfig:
+//! - `Scheduler::new().with_config(SchedulerConfig::safety_critical())`
+//! - `Scheduler::new().with_config(SchedulerConfig::high_performance())`
+//! - `Scheduler::new().with_config(SchedulerConfig::deterministic())`
+//! - `Scheduler::new().with_config(SchedulerConfig::hard_realtime())`
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
-use horus_core::scheduling::Scheduler;
+use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,7 +120,7 @@ fn test_new_with_capacity() {
 #[test]
 fn test_safety_critical_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::safety_critical();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -136,7 +135,7 @@ fn test_safety_critical_creates_scheduler() {
 #[test]
 fn test_high_performance_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -151,7 +150,7 @@ fn test_high_performance_creates_scheduler() {
 #[test]
 fn test_deterministic_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::deterministic();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -166,7 +165,7 @@ fn test_deterministic_creates_scheduler() {
 #[test]
 fn test_hard_realtime_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::hard_realtime();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::hard_realtime());
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler

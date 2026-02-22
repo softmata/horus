@@ -205,11 +205,11 @@ sched.run()?;
 | Method | Description |
 |--------|-------------|
 | `Scheduler::new()` | Default scheduler |
-| `Scheduler::deploy()` | Production deployment preset |
-| `Scheduler::safety_critical()` | Safety-critical preset |
-| `Scheduler::high_performance()` | Performance-optimized preset |
-| `Scheduler::deterministic()` | Deterministic execution preset |
-| `Scheduler::hard_realtime()` | Hard real-time preset |
+| `Scheduler::new().with_config(SchedulerConfig::deploy())` | Production deployment |
+| `Scheduler::new().with_config(SchedulerConfig::safety_critical())` | Safety-critical |
+| `Scheduler::new().with_config(SchedulerConfig::high_performance())` | Performance-optimized |
+| `Scheduler::new().with_config(SchedulerConfig::deterministic())` | Deterministic execution |
+| `Scheduler::new().with_config(SchedulerConfig::hard_realtime())` | Hard real-time |
 
 **Configuration:**
 
@@ -648,6 +648,12 @@ Define action types with Goal/Feedback/Result.
 |------|-------------|------------------|
 | `Twist` | Linear + angular velocity | `new()`, `new_2d()`, `stop()` |
 | `Pose2D` | 2D position + heading | `new()`, `origin()` |
+| `Pose3D` | Full 6DOF pose (position + quaternion) | `new()`, `identity()`, `from_pose_2d()`, `distance_to()` |
+| `PoseStamped` | Pose3D with frame context | `new()`, `with_frame_id()` |
+| `PoseWithCovariance` | Pose3D + 6×6 covariance (EKF/AMCL output) | `new()`, `position_variance()`, `orientation_variance()` |
+| `TwistWithCovariance` | Twist + 6×6 covariance (sensor fusion) | `new()`, `linear_variance()`, `angular_variance()` |
+| `Accel` | Linear + angular acceleration | `new()` |
+| `AccelStamped` | Accel with frame context | `new()`, `with_frame_id()` |
 | `Point3` | 3D point | `new()`, `origin()` |
 | `Vector3` | 3D vector | `new()`, `zero()`, `normalize()`, `dot()`, `cross()` |
 | `Quaternion` | Rotation quaternion | `new()`, `identity()`, `from_euler()` |
@@ -663,6 +669,18 @@ Define action types with Goal/Feedback/Result.
 | `Range` | Single distance measurement | `new()`, `ULTRASONIC`, `INFRARED` |
 | `BatteryState` | Battery status | `new()`, `is_low()`, `is_critical()` |
 | `NavSatFix` | GPS/GNSS position | `new()`, `from_coordinates()`, `distance_to()` |
+| `JointState` | Joint feedback (up to 16 joints) | `add_joint()`, `joint_name()`, `position()`, `velocity()`, `effort()` |
+| `MagneticField` | 3-axis magnetometer (Tesla) + 3×3 covariance | `new()`, `with_frame_id()` |
+| `Temperature` | Temperature reading (°C) + variance | `new()`, `with_frame_id()` |
+| `FluidPressure` | Barometer/pressure (Pa) + variance | `new()`, `with_frame_id()` |
+| `Illuminance` | Light sensor (Lux) + variance | `new()`, `with_frame_id()` |
+
+### Clock & Time
+
+| Type | Description | Key Constructors |
+|------|-------------|------------------|
+| `Clock` | Simulation/replay time broadcast | `wall_clock()`, `sim_time()`, `replay_time()`, `is_paused()` |
+| `TimeReference` | External time sync (GPS/NTP/PTP) | `new()`, `source_name()`, `correct_timestamp()` |
 
 ### Control
 

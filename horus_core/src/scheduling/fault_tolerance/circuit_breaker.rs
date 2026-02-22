@@ -182,6 +182,7 @@ impl CircuitBreaker {
     }
 
     /// Reset circuit breaker to closed state
+    #[allow(dead_code)]
     pub fn reset(&self) {
         self.state
             .store(CircuitState::Closed as u8, Ordering::SeqCst);
@@ -203,6 +204,7 @@ impl CircuitBreaker {
 
 /// Statistics for monitoring
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CircuitBreakerStats {
     pub state: CircuitState,
     pub failure_count: u32,

@@ -716,46 +716,6 @@ fn prefault_stack_recursive(remaining_pages: usize, depth: usize) {
     prefault_stack_recursive(remaining_pages - 1, depth + 1);
 }
 
-/// Prefault stack using a single large allocation (alternative implementation).
-///
-/// This variant uses alloca-style stack allocation for systems where
-/// recursive prefaulting might have too much overhead.
-///
-/// # Arguments
-/// * `size` - Stack size in bytes to prefault (will be rounded up to page boundary)
-///
-/// # Note
-/// This function uses a different approach than `prefault_stack`:
-/// - Faster for large stacks (no recursion overhead)
-/// - May cause stack overflow if size exceeds available stack
-/// - Use with caution and ensure thread stack size is sufficient
-#[inline(never)]
-pub fn prefault_stack_linear(size: usize) {
-    const PAGE_SIZE: usize = 4096;
-
-    // Cap at reasonable maximum to prevent stack overflow
-    let capped_size = size.min(8 * 1024 * 1024); // 8MB max
-
-    // Number of pages to touch
-    let num_pages = capped_size.div_ceil(PAGE_SIZE);
-
-    // Use a volatile write to each page to ensure they're faulted in
-    // We can't actually allocate variable-sized arrays on stack in safe Rust,
-    // so we touch pages by using fixed-size chunks
-    for page_idx in 0..num_pages {
-        // Create a small marker on the stack for each page
-        // The recursive calls ensure we actually use stack space
-        let marker: [u8; 64] = [page_idx as u8; 64];
-        black_box(&marker);
-
-        // Force compiler to not optimize away by reading the value
-        if black_box(marker[0]) == 255 {
-            // This branch is never taken but prevents optimization
-            std::hint::spin_loop();
-        }
-    }
-}
-
 // ============================================================================
 // STANDALONE HELPER FUNCTIONS FOR CPU AFFINITY AND ISOLATION
 // ============================================================================
@@ -1157,12 +1117,6 @@ mod tests {
         // Prefault a medium stack (128KB = 32 pages)
         // This should not panic
         super::prefault_stack(128 * 1024);
-    }
-
-    #[test]
-    fn test_prefault_stack_linear() {
-        // Test the linear variant
-        super::prefault_stack_linear(64 * 1024);
     }
 
     #[test]

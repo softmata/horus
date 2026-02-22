@@ -5,6 +5,7 @@ use horus_macros::LogSummary;
 // robotics applications for representing position, orientation, and motion.
 
 use serde::{Deserialize, Serialize};
+use serde_arrays;
 
 /// 3D velocity command with linear and angular components
 ///
@@ -305,14 +306,280 @@ impl Quaternion {
 }
 
 // =============================================================================
+// 3D Pose Types
+// =============================================================================
+
+/// Full 6DOF pose (position + orientation)
+///
+/// Used for representing robot or object poses in 3D space.
+/// Composes existing `Point3` (position) and `Quaternion` (orientation).
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Pose3D {
+    /// Position in 3D space
+    pub position: Point3,
+    /// Orientation as quaternion
+    pub orientation: Quaternion,
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Pose3D {
+    /// Create a new 3D pose
+    pub fn new(position: Point3, orientation: Quaternion) -> Self {
+        Self {
+            position,
+            orientation,
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    /// Identity pose (origin, no rotation)
+    pub fn identity() -> Self {
+        Self::new(Point3::origin(), Quaternion::identity())
+    }
+
+    /// Create from a 2D pose (z=0, yaw-only rotation)
+    pub fn from_pose_2d(pose: &Pose2D) -> Self {
+        let half_theta = pose.theta / 2.0;
+        Self {
+            position: Point3::new(pose.x, pose.y, 0.0),
+            orientation: Quaternion::new(0.0, 0.0, half_theta.sin(), half_theta.cos()),
+            timestamp_ns: pose.timestamp_ns,
+        }
+    }
+
+    /// Calculate euclidean distance to another pose (position only)
+    pub fn distance_to(&self, other: &Pose3D) -> f64 {
+        self.position.distance_to(&other.position)
+    }
+
+    /// Check if all values are finite and quaternion is valid
+    pub fn is_valid(&self) -> bool {
+        self.position.x.is_finite()
+            && self.position.y.is_finite()
+            && self.position.z.is_finite()
+            && self.orientation.is_valid()
+    }
+}
+
+/// 3D pose with frame context
+///
+/// Attaches a coordinate frame ID to a `Pose3D` for unambiguous spatial reference.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct PoseStamped {
+    /// The pose
+    pub pose: Pose3D,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl PoseStamped {
+    /// Create a new PoseStamped
+    pub fn new(pose: Pose3D) -> Self {
+        Self {
+            pose,
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// 3D pose with 6x6 covariance matrix
+///
+/// Used for localization output (AMCL, EKF) where uncertainty information
+/// is critical for downstream sensor fusion.
+///
+/// Covariance is row-major 6x6: [x, y, z, roll, pitch, yaw].
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct PoseWithCovariance {
+    /// The pose
+    pub pose: Pose3D,
+    /// 6x6 covariance matrix (row-major): x, y, z, roll, pitch, yaw
+    #[serde(with = "serde_arrays")]
+    pub covariance: [f64; 36],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for PoseWithCovariance {
+    fn default() -> Self {
+        Self {
+            pose: Pose3D::default(),
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl PoseWithCovariance {
+    /// Create a new PoseWithCovariance
+    pub fn new(pose: Pose3D) -> Self {
+        Self {
+            pose,
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+
+    /// Get position variance [var_x, var_y, var_z] from diagonal
+    pub fn position_variance(&self) -> [f64; 3] {
+        [self.covariance[0], self.covariance[7], self.covariance[14]]
+    }
+
+    /// Get orientation variance [var_roll, var_pitch, var_yaw] from diagonal
+    pub fn orientation_variance(&self) -> [f64; 3] {
+        [self.covariance[21], self.covariance[28], self.covariance[35]]
+    }
+}
+
+/// 3D twist with 6x6 covariance matrix
+///
+/// Used for sensor fusion velocity input (EKF). Wraps existing `Twist`
+/// with uncertainty information.
+///
+/// Covariance is row-major 6x6: [vx, vy, vz, wx, wy, wz].
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
+pub struct TwistWithCovariance {
+    /// The twist (linear + angular velocity)
+    pub twist: Twist,
+    /// 6x6 covariance matrix (row-major): vx, vy, vz, wx, wy, wz
+    #[serde(with = "serde_arrays")]
+    pub covariance: [f64; 36],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for TwistWithCovariance {
+    fn default() -> Self {
+        Self {
+            twist: Twist::default(),
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl TwistWithCovariance {
+    /// Create a new TwistWithCovariance
+    pub fn new(twist: Twist) -> Self {
+        Self {
+            twist,
+            covariance: [0.0; 36],
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+
+    /// Get linear velocity variance [var_vx, var_vy, var_vz] from diagonal
+    pub fn linear_variance(&self) -> [f64; 3] {
+        [self.covariance[0], self.covariance[7], self.covariance[14]]
+    }
+
+    /// Get angular velocity variance [var_wx, var_wy, var_wz] from diagonal
+    pub fn angular_variance(&self) -> [f64; 3] {
+        [self.covariance[21], self.covariance[28], self.covariance[35]]
+    }
+}
+
+// =============================================================================
+// Acceleration Types
+// =============================================================================
+
+/// 3D acceleration (linear + angular)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Accel {
+    /// Linear acceleration [x, y, z] in m/s²
+    pub linear: [f64; 3],
+    /// Angular acceleration [roll, pitch, yaw] in rad/s²
+    pub angular: [f64; 3],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Accel {
+    /// Create a new acceleration message
+    pub fn new(linear: [f64; 3], angular: [f64; 3]) -> Self {
+        Self {
+            linear,
+            angular,
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    /// Check if all values are finite
+    pub fn is_valid(&self) -> bool {
+        self.linear.iter().all(|v| v.is_finite()) && self.angular.iter().all(|v| v.is_finite())
+    }
+}
+
+/// 3D acceleration with frame context
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct AccelStamped {
+    /// The acceleration
+    pub accel: Accel,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl AccelStamped {
+    /// Create a new AccelStamped
+    pub fn new(accel: Accel) -> Self {
+        Self {
+            accel,
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+// =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
 // for real-time robotics control loops. Topic automatically uses POD backend.
 
-crate::messages::impl_pod_message!(Twist, Pose2D, TransformStamped, Point3, Vector3, Quaternion);
-
-// Note: POD types are now auto-detected via needs_drop, no registration needed
+crate::messages::impl_pod_message!(
+    Twist, Pose2D, TransformStamped, Point3, Vector3, Quaternion,
+    Pose3D, PoseStamped, PoseWithCovariance, TwistWithCovariance,
+    Accel, AccelStamped,
+);
 
 #[cfg(test)]
 mod tests {

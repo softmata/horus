@@ -514,9 +514,253 @@ impl LogSummary for NavSatFix {
 }
 
 // =============================================================================
+// Joint State
+// =============================================================================
+
+/// Joint state feedback message
+///
+/// Reports positions, velocities, and efforts for up to 16 joints.
+/// Mirrors `JointCommand` layout for consistency (same 16-joint limit,
+/// same name encoding).
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct JointState {
+    /// Joint names (null-terminated strings, max 31 chars each)
+    #[serde(with = "serde_arrays")]
+    pub names: [[u8; 32]; 16],
+    /// Number of valid joints
+    pub joint_count: u8,
+    /// Joint positions in radians (revolute) or meters (prismatic)
+    #[serde(with = "serde_arrays")]
+    pub positions: [f64; 16],
+    /// Joint velocities in rad/s or m/s
+    #[serde(with = "serde_arrays")]
+    pub velocities: [f64; 16],
+    /// Joint efforts (torque in Nm or force in N)
+    #[serde(with = "serde_arrays")]
+    pub efforts: [f64; 16],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Default for JointState {
+    fn default() -> Self {
+        Self {
+            names: [[0; 32]; 16],
+            joint_count: 0,
+            positions: [0.0; 16],
+            velocities: [0.0; 16],
+            efforts: [0.0; 16],
+            timestamp_ns: 0,
+        }
+    }
+}
+
+impl JointState {
+    /// Create a new empty JointState
+    pub fn new() -> Self {
+        Self {
+            timestamp_ns: crate::hframe::timestamp_now(),
+            ..Self::default()
+        }
+    }
+
+    /// Add a joint with position, velocity, and effort.
+    /// Returns Err if 16-joint limit is reached.
+    pub fn add_joint(
+        &mut self,
+        name: &str,
+        position: f64,
+        velocity: f64,
+        effort: f64,
+    ) -> Result<(), &'static str> {
+        if self.joint_count >= 16 {
+            return Err("Maximum 16 joints supported");
+        }
+        let idx = self.joint_count as usize;
+        let name_bytes = name.as_bytes();
+        let len = name_bytes.len().min(31);
+        self.names[idx][..len].copy_from_slice(&name_bytes[..len]);
+        self.names[idx][len] = 0;
+        self.positions[idx] = position;
+        self.velocities[idx] = velocity;
+        self.efforts[idx] = effort;
+        self.joint_count += 1;
+        Ok(())
+    }
+
+    /// Get the name of a joint by index
+    pub fn joint_name(&self, index: usize) -> Option<&str> {
+        if index >= self.joint_count as usize {
+            return None;
+        }
+        let bytes = &self.names[index];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        std::str::from_utf8(&bytes[..end]).ok()
+    }
+
+    /// Find a joint index by name
+    fn find_joint(&self, name: &str) -> Option<usize> {
+        (0..self.joint_count as usize).find(|&i| self.joint_name(i) == Some(name))
+    }
+
+    /// Get position of a joint by name
+    pub fn position(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.positions[i])
+    }
+
+    /// Get velocity of a joint by name
+    pub fn velocity(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.velocities[i])
+    }
+
+    /// Get effort of a joint by name
+    pub fn effort(&self, name: &str) -> Option<f64> {
+        self.find_joint(name).map(|i| self.efforts[i])
+    }
+}
+
+impl LogSummary for JointState {
+    fn log_summary(&self) -> String {
+        format!("JointState: {} joints", self.joint_count)
+    }
+}
+
+// =============================================================================
+// Environmental Sensor Types
+// =============================================================================
+
+/// Magnetometer data
+///
+/// Reports 3-axis magnetic field strength with covariance.
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct MagneticField {
+    /// Magnetic field vector [x, y, z] in Tesla
+    pub magnetic_field: [f64; 3],
+    /// 3x3 covariance matrix (row-major). Set [0] to -1 if unknown.
+    pub magnetic_field_covariance: [f64; 9],
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl MagneticField {
+    /// Create a new MagneticField message
+    pub fn new(field: [f64; 3]) -> Self {
+        Self {
+            magnetic_field: field,
+            magnetic_field_covariance: [-1.0; 9], // Unknown covariance
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Temperature sensor reading
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Temperature {
+    /// Temperature in degrees Celsius
+    pub temperature: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Temperature {
+    /// Create a new Temperature message
+    pub fn new(temperature: f64) -> Self {
+        Self {
+            temperature,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Fluid pressure sensor reading (barometer, etc.)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct FluidPressure {
+    /// Pressure in Pascals
+    pub fluid_pressure: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl FluidPressure {
+    /// Create a new FluidPressure message
+    pub fn new(pressure: f64) -> Self {
+        Self {
+            fluid_pressure: pressure,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+/// Illuminance sensor reading (light level)
+///
+/// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
+pub struct Illuminance {
+    /// Illuminance in Lux
+    pub illuminance: f64,
+    /// Variance (0 if exact)
+    pub variance: f64,
+    /// Coordinate frame ID (null-terminated, max 31 chars)
+    pub frame_id: [u8; 32],
+    /// Timestamp in nanoseconds since epoch
+    pub timestamp_ns: u64,
+}
+
+impl Illuminance {
+    /// Create a new Illuminance message
+    pub fn new(illuminance: f64) -> Self {
+        Self {
+            illuminance,
+            variance: 0.0,
+            frame_id: [0; 32],
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+
+    crate::messages::impl_with_frame_id!();
+}
+
+// =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
 // for real-time robotics sensor data. Topic automatically uses POD backend.
 
-crate::messages::impl_pod_message!(LaserScan, Imu, Odometry, Range, BatteryState, NavSatFix);
+crate::messages::impl_pod_message!(
+    LaserScan, Imu, Odometry, Range, BatteryState, NavSatFix,
+    JointState, MagneticField, Temperature, FluidPressure, Illuminance,
+);

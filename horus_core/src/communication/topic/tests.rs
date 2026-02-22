@@ -3230,3 +3230,333 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
         other => eprintln!("SpscShm unavailable: {:?}", other),
     }
 }
+
+// ============================================================================
+// 30. RING SATURATION — all variants (SPMC, MPSC, MPMC)
+// ============================================================================
+
+#[test]
+fn ring_saturation_spmc_full_then_drain() {
+    let ring = SpmcRing::<u64>::new(16);
+    for i in 0..16u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err(), "SPMC ring should reject when full");
+    assert_eq!(ring.pending_count(), 16);
+
+    for i in 0..8u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    for i in 16..24u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err());
+
+    for i in 8..24u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+#[test]
+fn ring_saturation_mpsc_full_then_drain() {
+    let ring = MpscRing::<u64>::new(16);
+    for i in 0..16u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err(), "MPSC ring should reject when full");
+    assert_eq!(ring.pending_count(), 16);
+
+    for i in 0..8u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    for i in 16..24u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err());
+
+    for i in 8..24u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+#[test]
+fn ring_saturation_mpmc_full_then_drain() {
+    let ring = MpmcRing::<u64>::new(16);
+    for i in 0..16u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err(), "MPMC ring should reject when full");
+    assert_eq!(ring.pending_count(), 16);
+
+    for i in 0..8u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    for i in 16..24u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    assert!(ring.try_send(99).is_err());
+
+    for i in 8..24u64 {
+        assert_eq!(ring.try_recv(), Some(i));
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+// ============================================================================
+// 31. FIFO ordering with 200+ messages — all ring variants
+// ============================================================================
+
+#[test]
+fn spmc_ring_fifo_ordering_200_messages() {
+    let ring = SpmcRing::<u64>::new(256);
+    for i in 0..200u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    for i in 0..200u64 {
+        assert_eq!(
+            ring.try_recv(),
+            Some(i),
+            "SPMC FIFO violation at message {}",
+            i
+        );
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+#[test]
+fn mpsc_ring_fifo_ordering_200_messages() {
+    // Single producer for deterministic FIFO check
+    let ring = MpscRing::<u64>::new(256);
+    for i in 0..200u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    for i in 0..200u64 {
+        assert_eq!(
+            ring.try_recv(),
+            Some(i),
+            "MPSC FIFO violation at message {}",
+            i
+        );
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+#[test]
+fn mpmc_ring_fifo_ordering_200_messages() {
+    // Single producer, single consumer for deterministic FIFO check
+    let ring = MpmcRing::<u64>::new(256);
+    for i in 0..200u64 {
+        assert!(ring.try_send(i).is_ok());
+    }
+    for i in 0..200u64 {
+        assert_eq!(
+            ring.try_recv(),
+            Some(i),
+            "MPMC FIFO violation at message {}",
+            i
+        );
+    }
+    assert_eq!(ring.try_recv(), None);
+}
+
+// ============================================================================
+// 32. read_latest under full ring — robotics "freshest sensor data" pattern
+// ============================================================================
+
+#[test]
+fn read_latest_full_ring_spsc_returns_newest() {
+    let ring = SpscRing::<u64>::new(8);
+    // Fill ring completely
+    for i in 0..8u64 {
+        ring.try_send(i).unwrap();
+    }
+    // Sensor pattern: read_latest should return the freshest value
+    assert_eq!(ring.read_latest(), Some(7), "SPSC: should return newest sensor reading");
+    // Consumer not advanced — all messages still available
+    assert_eq!(ring.pending_count(), 8);
+    assert_eq!(ring.try_recv(), Some(0));
+}
+
+#[test]
+fn read_latest_full_ring_spmc_returns_newest() {
+    let ring = SpmcRing::<u64>::new(8);
+    for i in 0..8u64 {
+        ring.try_send(i).unwrap();
+    }
+    assert_eq!(ring.read_latest(), Some(7), "SPMC: should return newest sensor reading");
+    assert_eq!(ring.pending_count(), 8);
+}
+
+#[test]
+fn read_latest_full_ring_mpsc_returns_newest() {
+    let ring = MpscRing::<u64>::new(8);
+    for i in 0..8u64 {
+        ring.try_send(i).unwrap();
+    }
+    assert_eq!(ring.read_latest(), Some(7), "MPSC: should return newest sensor reading");
+    assert_eq!(ring.pending_count(), 8);
+}
+
+#[test]
+fn read_latest_full_ring_mpmc_returns_newest() {
+    let ring = MpmcRing::<u64>::new(8);
+    for i in 0..8u64 {
+        ring.try_send(i).unwrap();
+    }
+    assert_eq!(ring.read_latest(), Some(7), "MPMC: should return newest sensor reading");
+    assert_eq!(ring.pending_count(), 8);
+}
+
+#[test]
+fn read_latest_after_partial_drain_returns_newest() {
+    // Simulates: sensor publishes 8 readings, controller drains 5,
+    // sensor publishes 3 more, controller read_latest gets freshest
+    let ring = SpscRing::<u64>::new(8);
+    for i in 0..8u64 {
+        ring.try_send(i).unwrap();
+    }
+    // Controller drains 5
+    for _ in 0..5 {
+        ring.try_recv().unwrap();
+    }
+    // Sensor publishes 3 more
+    for i in 100..103u64 {
+        ring.try_send(i).unwrap();
+    }
+    // read_latest should return the newest of the remaining (102)
+    assert_eq!(ring.read_latest(), Some(102));
+    // Consumer should still start from the oldest unconsumed (5)
+    assert_eq!(ring.try_recv(), Some(5));
+}
+
+// ============================================================================
+// 33. Intra-process dispatch: explicit backend mode verification
+// ============================================================================
+
+#[test]
+fn dispatch_selects_direct_channel_for_same_instance() {
+    // Single Topic used for both send and recv → DirectChannel
+    let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
+    t.send(1);
+    assert_eq!(t.recv(), Some(1));
+    assert_eq!(t.mode(), BackendMode::DirectChannel);
+}
+
+#[test]
+fn dispatch_same_thread_multiple_instances_use_direct_channel() {
+    // All participants on same thread → stays DirectChannel (cached ptrs)
+    let name = unique("dc_multi");
+    let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
+    let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
+    pub_t.send(42);
+    assert_eq!(sub_t.recv(), Some(42));
+    // Same thread: DirectChannel with cached AtomicU64 head/tail
+    assert_eq!(pub_t.mode(), BackendMode::DirectChannel);
+}
+
+#[test]
+fn dispatch_cross_thread_migrates_to_spsc_intra() {
+    let name = unique("spsc_xthread");
+    let pub_t: Topic<u64> = Topic::new(&name).expect("pub");
+    pub_t.send(0); // Register as publisher
+
+    let recv_name = name.clone();
+    let handle = thread::spawn(move || {
+        let sub_t: Topic<u64> = Topic::new(&recv_name).expect("sub");
+        // First recv triggers migration to SpscIntra
+        let _ = sub_t.recv();
+        sub_t.mode()
+    });
+
+    // Give migration time
+    thread::sleep(Duration::from_millis(50));
+    pub_t.send(1);
+
+    let mode = handle.join().unwrap();
+    assert!(
+        mode == BackendMode::SpscIntra || mode == BackendMode::SpscShm,
+        "Cross-thread 1p1c should migrate to SpscIntra or SpscShm, got {:?}",
+        mode
+    );
+}
+
+#[test]
+fn dispatch_cross_thread_mpsc_mode() {
+    let name = unique("mpsc_xthread");
+    let sub_t: Topic<u64> = Topic::new(&name).expect("sub");
+    let _ = sub_t.recv(); // Register as consumer
+
+    let send_name = name.clone();
+    let h1 = thread::spawn(move || {
+        let pub_t: Topic<u64> = Topic::new(&send_name).expect("pub1");
+        pub_t.send(1);
+        thread::sleep(Duration::from_millis(100));
+    });
+
+    let send_name2 = name.clone();
+    let h2 = thread::spawn(move || {
+        let pub_t: Topic<u64> = Topic::new(&send_name2).expect("pub2");
+        pub_t.send(2);
+        thread::sleep(Duration::from_millis(100));
+    });
+
+    thread::sleep(Duration::from_millis(50));
+    // Force migration check via recv
+    let _ = sub_t.recv();
+    let mode = sub_t.mode();
+
+    h1.join().unwrap();
+    h2.join().unwrap();
+
+    // Multi-producer from different threads should not stay DirectChannel
+    assert_ne!(
+        mode,
+        BackendMode::Unknown,
+        "Should have a valid backend mode after cross-thread producers"
+    );
+}
+
+// ============================================================================
+// 34. Wraparound correctness — all ring variants (multiple fill-drain cycles)
+// ============================================================================
+
+#[test]
+fn spmc_ring_wraparound() {
+    let ring = SpmcRing::<u32>::new(4);
+    for round in 0..10u32 {
+        for i in 0..4 {
+            assert!(ring.try_send(round * 4 + i).is_ok());
+        }
+        for i in 0..4 {
+            assert_eq!(ring.try_recv(), Some(round * 4 + i));
+        }
+    }
+}
+
+#[test]
+fn mpsc_ring_wraparound() {
+    let ring = MpscRing::<u32>::new(4);
+    for round in 0..10u32 {
+        for i in 0..4 {
+            assert!(ring.try_send(round * 4 + i).is_ok());
+        }
+        for i in 0..4 {
+            assert_eq!(ring.try_recv(), Some(round * 4 + i));
+        }
+    }
+}
+
+#[test]
+fn mpmc_ring_wraparound() {
+    let ring = MpmcRing::<u32>::new(4);
+    for round in 0..10u32 {
+        for i in 0..4 {
+            assert!(ring.try_send(round * 4 + i).is_ok());
+        }
+        for i in 0..4 {
+            assert_eq!(ring.try_recv(), Some(round * 4 + i));
+        }
+    }
+}

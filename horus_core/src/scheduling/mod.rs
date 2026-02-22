@@ -18,7 +18,7 @@
 //! scheduler.run()?;
 //!
 //! // Production — RT features + flight recorder
-//! let mut scheduler = Scheduler::deploy();
+//! let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
 //! scheduler.add(motor_ctrl).order(0).rt().done();
 //! scheduler.run()?;
 //! ```
@@ -30,21 +30,21 @@
 //! - **200+**: Background priority (logging, diagnostics)
 
 pub mod config;
-pub mod safety_monitor;
+pub(crate) mod safety_monitor;
 pub mod scheduler;
-pub mod types;
+pub(crate) mod types;
 
-// Advanced execution modules
-pub mod fault_tolerance;
+// Advanced execution modules — individual types re-exported below
+pub(crate) mod fault_tolerance;
 
 // Runtime profiler (moved from intelligence/)
 pub(crate) mod profiler;
 
-// Telemetry export for live monitoring
+// Telemetry export for live monitoring (internal — TelemetryEndpoint re-exported below)
 #[cfg(feature = "telemetry")]
-pub mod telemetry;
+pub(crate) mod telemetry;
 #[cfg(not(feature = "telemetry"))]
-pub mod telemetry {
+pub(crate) mod telemetry {
     //! No-op telemetry stub (feature "telemetry" disabled).
     use std::collections::HashMap;
 
@@ -72,15 +72,14 @@ pub mod telemetry {
 // Runtime OS-level features + capability detection (merged)
 pub(crate) mod rt;
 
-// Flight recorder
+// Flight recorder (internal — BlackBox/BlackBoxEvent re-exported below)
 #[cfg(feature = "blackbox")]
-pub mod blackbox;
+pub(crate) mod blackbox;
 #[cfg(not(feature = "blackbox"))]
-pub mod blackbox {
+pub(crate) mod blackbox {
     //! No-op blackbox stub (feature "blackbox" disabled).
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum BlackBoxEvent {
@@ -119,10 +118,6 @@ pub mod blackbox {
         pub fn is_empty(&self) -> bool { true }
     }
 
-    pub type SharedBlackBox = Arc<Mutex<BlackBox>>;
-    pub fn create_shared_blackbox(_max_size_mb: usize) -> SharedBlackBox {
-        Arc::new(Mutex::new(BlackBox))
-    }
 }
 
 // Record/Replay system
@@ -135,10 +130,7 @@ pub(crate) mod deterministic;
 pub mod node_builder;
 
 pub use crate::core::rt_node::WCETViolation;
-pub use config::{
-    ExecutionMode, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
-    ResourceConfig, SchedulerConfig, TimingConfig,
-};
+pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
 pub use safety_monitor::{SafetyState, SafetyStats};
 pub use scheduler::{RtDegradation, Scheduler};
 pub use types::SchedulerNodeMetrics;
@@ -160,9 +152,11 @@ pub use types::NodeTier;
 // Re-export telemetry (only user-facing endpoint type)
 pub use telemetry::TelemetryEndpoint;
 
-// Re-export fault tolerance (public API)
+// Re-export fault tolerance
+// User-facing: FailurePolicy (NodeBuilder), CircuitState/FailureHandlerStats (introspection)
+// Power-user: FailureHandler/FailureAction (direct fault handling in tests/tools)
 pub use fault_tolerance::{
-    CircuitBreaker, CircuitState, FailureHandler, FailureHandlerStats, FailurePolicy,
+    CircuitState, FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy,
 };
 
 // Re-export node builder

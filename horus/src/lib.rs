@@ -122,7 +122,7 @@ pub mod prelude {
     // Safety & Fault Tolerance
     // ============================================
     pub use horus_core::scheduling::{
-        BlackBox, BlackBoxEvent, CircuitBreaker, CircuitState, SafetyState, SafetyStats,
+        BlackBox, BlackBoxEvent, CircuitState, SafetyState, SafetyStats,
         WCETViolation,
     };
 
@@ -182,7 +182,8 @@ pub mod prelude {
     // Message Types (ALL from horus_library)
     // ============================================
     pub use horus_library::messages::*;
-    pub use horus_types::{Device, HorusTensor, TensorDtype};
+    pub use horus_types::{Device, HorusTensor, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
+    pub use horus_core::communication::TopicMessage;
 
     // ============================================
     // Error Types

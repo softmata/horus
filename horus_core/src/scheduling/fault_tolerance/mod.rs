@@ -4,5 +4,5 @@ pub mod circuit_breaker;
 /// Tier-aware failure policies
 pub mod failure_policy;
 
-pub use circuit_breaker::{CircuitBreaker, CircuitState};
+pub use circuit_breaker::CircuitState;
 pub use failure_policy::{FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy};

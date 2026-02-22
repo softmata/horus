@@ -8,7 +8,7 @@
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
-use horus_core::scheduling::fault_tolerance::{FailureAction, FailureHandler, FailurePolicy};
+use horus_core::scheduling::{FailureAction, FailureHandler, FailurePolicy};
 use horus_core::scheduling::{Scheduler, SchedulerConfig};
 use std::time::Duration;
 

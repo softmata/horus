@@ -123,9 +123,9 @@ pub mod prelude {
     pub use crate::messages::{
         detection::{BoundingBox2D, Detection},
         landmark::Landmark,
-        pointcloud::{PointXYZ, PointXYZRGB},
         tracking::TrackedObject,
     };
+    pub use horus_types::{PointXYZ, PointXYZRGB};
 
     // Note: sim2d and sim3d are separate crates to avoid cyclic dependencies.
     // Import them directly: use sim2d::*; or use sim3d::*;

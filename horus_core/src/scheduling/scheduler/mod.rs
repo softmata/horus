@@ -198,10 +198,12 @@ impl Scheduler {
     /// ```
     ///
     /// # Presets
-    /// - `Scheduler::deploy()` — Production: RT features + blackbox + profiling
-    /// - `Scheduler::safety_critical()` — Safety: WCET + watchdog + sequential
-    /// - `Scheduler::high_performance()` — Speed: parallel + 10kHz
-    /// - `Scheduler::hard_realtime()` — Hard RT: strict deadlines + watchdog
+    /// ```rust,ignore
+    /// Scheduler::new().with_config(SchedulerConfig::deploy())
+    /// Scheduler::new().with_config(SchedulerConfig::safety_critical())
+    /// Scheduler::new().with_config(SchedulerConfig::high_performance())
+    /// Scheduler::new().with_config(SchedulerConfig::hard_realtime())
+    /// ```
     pub fn new() -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
@@ -303,158 +305,6 @@ impl Scheduler {
         tm.set_scheduler_name(&self.scheduler_name);
         self.monitor.telemetry = Some(tm);
         self
-    }
-
-    // ========================================================================
-    // PRESET CONSTRUCTORS
-    // ========================================================================
-
-    /// Production deployment preset — RT features + blackbox + profiling.
-    ///
-    /// Equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new()
-    ///     .with_config(SchedulerConfig::deploy())
-    ///     .with_name("Deploy")
-    /// ```
-    ///
-    /// # What it does
-    /// - Applies RT priority, memory locking, CPU affinity (best-effort)
-    /// - Enables 16MB BlackBox flight recorder for crash analysis
-    /// - Ready for production with sensible defaults
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let mut scheduler = Scheduler::deploy();
-    /// scheduler.add(MotorController::new()).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    pub fn deploy() -> Self {
-        Self::new()
-            .with_config(super::config::SchedulerConfig::deploy())
-            .with_name("Deploy")
-    }
-
-    /// Create a scheduler configured for safety-critical systems.
-    ///
-    /// This is a convenience constructor equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new().with_config(SchedulerConfig::safety_critical())
-    /// ```
-    ///
-    /// # Configuration
-    /// - **Execution**: Sequential (deterministic)
-    /// - **Tick Rate**: 1000 Hz (1kHz)
-    /// - **Real-Time**: Full WCET enforcement, watchdogs (100ms), memory locking, SCHED_FIFO
-    /// - **Fault Tolerance**: Circuit breaker disabled, no auto-restart
-    /// - **Deadline Policy**: Panic (fail-safe)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let mut scheduler = Scheduler::safety_critical();
-    /// scheduler.add(motor_controller).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    ///
-    /// # Use Cases
-    /// - Medical devices
-    /// - Surgical robots
-    /// - Safety-critical industrial systems
-    pub fn safety_critical() -> Self {
-        Self::new().with_config(super::config::SchedulerConfig::safety_critical())
-    }
-
-    /// Create a scheduler configured for high-performance applications.
-    ///
-    /// This is a convenience constructor equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new().with_config(SchedulerConfig::high_performance())
-    /// ```
-    ///
-    /// # Configuration
-    /// - **Execution**: Parallel
-    /// - **Tick Rate**: 10,000 Hz (10kHz)
-    /// - **Real-Time**: WCET enforcement, memory locking, SCHED_FIFO
-    /// - **Deadline Policy**: Skip (maintain throughput)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let mut scheduler = Scheduler::high_performance();
-    /// scheduler.add(racing_controller).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    ///
-    /// # Use Cases
-    /// - Racing robots
-    /// - Competition systems
-    /// - High-speed control loops
-    pub fn high_performance() -> Self {
-        Self::new().with_config(super::config::SchedulerConfig::high_performance())
-    }
-
-    /// Create a scheduler configured for deterministic execution.
-    ///
-    /// This is a convenience constructor equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new().with_config(SchedulerConfig::deterministic())
-    /// ```
-    ///
-    /// # Configuration
-    /// - **Execution**: Sequential (deterministic)
-    /// - **Topology**: Strict validation, startup barrier, frozen after start
-    /// - **RNG**: Deterministic seed
-    /// - **Learning**: Disabled
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let mut scheduler = Scheduler::deterministic();
-    /// scheduler.add(controller).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    ///
-    /// # Use Cases
-    /// - Formal verification
-    /// - Safety certification
-    /// - Reproducible testing
-    pub fn deterministic() -> Self {
-        Self::new().with_config(super::config::SchedulerConfig::deterministic())
-    }
-
-    /// Create a scheduler configured for hard real-time applications.
-    ///
-    /// This is a convenience constructor equivalent to:
-    /// ```rust,ignore
-    /// Scheduler::new().with_config(SchedulerConfig::hard_realtime())
-    /// ```
-    ///
-    /// # Configuration
-    /// - **Execution**: Parallel
-    /// - **Tick Rate**: 1000 Hz
-    /// - **Jitter**: <5μs
-    /// - **Real-Time**: Full enforcement, 10ms watchdog
-    /// - **Deadline Policy**: Panic
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    ///
-    /// let mut scheduler = Scheduler::hard_realtime();
-    /// scheduler.add(cnc_controller).order(0).done();
-    /// scheduler.run()?;
-    /// ```
-    ///
-    /// # Use Cases
-    /// - CNC machines
-    /// - Surgical robots
-    /// - Aerospace systems
-    pub fn hard_realtime() -> Self {
-        Self::new().with_config(super::config::SchedulerConfig::hard_realtime())
     }
 
     /// Get the detected runtime capabilities.

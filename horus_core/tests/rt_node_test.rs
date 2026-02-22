@@ -221,7 +221,7 @@ fn test_rt_node_basic() {
     // Use standard config (RT features disabled)
     let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
 
-    // Add RT nodes as regular nodes (RtNodeWrapper handles the conversion)
+    // Add RT nodes as regular nodes
     scheduler
         .add(MotorControlNode::new("motor_ctrl"))
         .order(0)

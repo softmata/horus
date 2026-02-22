@@ -380,6 +380,218 @@ impl PyLaserScan {
     }
 }
 
+/// 3D pose (position + orientation)
+///
+/// Attributes:
+///     x, y, z: Position in meters
+///     qx, qy, qz, qw: Orientation as quaternion (w-last convention)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
+///
+/// Examples:
+///     pose = Pose3D(1.0, 2.0, 3.0)                    # Position only (identity rotation)
+///     pose = Pose3D(1.0, 2.0, 3.0, 0, 0, 0.707, 0.707)  # With rotation
+#[pyclass(name = "Pose3D")]
+#[derive(Clone, Debug)]
+pub struct PyPose3D {
+    #[pyo3(get, set)]
+    pub x: f64,
+    #[pyo3(get, set)]
+    pub y: f64,
+    #[pyo3(get, set)]
+    pub z: f64,
+    #[pyo3(get, set)]
+    pub qx: f64,
+    #[pyo3(get, set)]
+    pub qy: f64,
+    #[pyo3(get, set)]
+    pub qz: f64,
+    #[pyo3(get, set)]
+    pub qw: f64,
+    #[pyo3(get, set)]
+    pub timestamp_ns: u64,
+}
+
+#[pymethods]
+impl PyPose3D {
+    /// Create a new Pose3D message
+    ///
+    /// Args:
+    ///     x, y, z: Position in meters
+    ///     qx, qy, qz, qw: Quaternion orientation (default: identity)
+    ///     timestamp_ns: Optional timestamp in nanoseconds
+    #[new]
+    #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, timestamp_ns=0))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(x: f64, y: f64, z: f64, qx: f64, qy: f64, qz: f64, qw: f64, timestamp_ns: u64) -> Self {
+        Self { x, y, z, qx, qy, qz, qw, timestamp_ns }
+    }
+
+    /// Topic name for this message type
+    #[classattr]
+    fn __topic_name__() -> &'static str {
+        "pose3d"
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Pose3D(pos=[{:.3}, {:.3}, {:.3}], quat=[{:.3}, {:.3}, {:.3}, {:.3}], timestamp_ns={})",
+            self.x, self.y, self.z, self.qx, self.qy, self.qz, self.qw, self.timestamp_ns
+        )
+    }
+}
+
+/// Joint state feedback message
+///
+/// Reports positions, velocities, and efforts for up to 16 joints.
+///
+/// Attributes:
+///     names: List of joint names (strings)
+///     positions: List of joint positions (radians or meters)
+///     velocities: List of joint velocities
+///     efforts: List of joint efforts (torques or forces)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
+///
+/// Examples:
+///     js = JointState(names=["shoulder", "elbow"], positions=[0.5, 1.2])
+#[pyclass(name = "JointState")]
+#[derive(Clone, Debug)]
+pub struct PyJointState {
+    #[pyo3(get, set)]
+    pub names: Vec<String>,
+    #[pyo3(get, set)]
+    pub positions: Vec<f64>,
+    #[pyo3(get, set)]
+    pub velocities: Vec<f64>,
+    #[pyo3(get, set)]
+    pub efforts: Vec<f64>,
+    #[pyo3(get, set)]
+    pub timestamp_ns: u64,
+}
+
+#[pymethods]
+impl PyJointState {
+    /// Create a new JointState message
+    ///
+    /// Args:
+    ///     names: Joint names (max 16)
+    ///     positions: Joint positions (radians or meters)
+    ///     velocities: Joint velocities (default: zeros)
+    ///     efforts: Joint efforts/torques (default: zeros)
+    ///     timestamp_ns: Optional timestamp in nanoseconds
+    #[new]
+    #[pyo3(signature = (names=None, positions=None, velocities=None, efforts=None, timestamp_ns=0))]
+    fn new(
+        names: Option<Vec<String>>,
+        positions: Option<Vec<f64>>,
+        velocities: Option<Vec<f64>>,
+        efforts: Option<Vec<f64>>,
+        timestamp_ns: u64,
+    ) -> Self {
+        let names = names.unwrap_or_default();
+        let count = names.len();
+        Self {
+            names,
+            positions: positions.unwrap_or_else(|| vec![0.0; count]),
+            velocities: velocities.unwrap_or_else(|| vec![0.0; count]),
+            efforts: efforts.unwrap_or_else(|| vec![0.0; count]),
+            timestamp_ns,
+        }
+    }
+
+    /// Topic name for this message type
+    #[classattr]
+    fn __topic_name__() -> &'static str {
+        "joint_states"
+    }
+
+    /// Number of joints
+    fn __len__(&self) -> usize {
+        self.names.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "JointState({} joints: [{}], timestamp_ns={})",
+            self.names.len(),
+            self.names.join(", "),
+            self.timestamp_ns
+        )
+    }
+}
+
+/// Clock / time synchronization message
+///
+/// Attributes:
+///     clock_ns: Current simulation/replay time in nanoseconds
+///     realtime_ns: Wall clock time for comparison
+///     sim_speed: Playback speed multiplier (1.0 = real-time)
+///     paused: Whether the clock is paused
+///     source: Clock source (0=wall, 1=sim, 2=replay)
+///     timestamp_ns: Timestamp in nanoseconds (default: 0)
+///
+/// Examples:
+///     clk = Clock(clock_ns=1000000000, sim_speed=2.0, source=1)  # 1s sim time at 2x
+#[pyclass(name = "Clock")]
+#[derive(Clone, Debug)]
+pub struct PyClock {
+    #[pyo3(get, set)]
+    pub clock_ns: u64,
+    #[pyo3(get, set)]
+    pub realtime_ns: u64,
+    #[pyo3(get, set)]
+    pub sim_speed: f64,
+    #[pyo3(get, set)]
+    pub paused: bool,
+    #[pyo3(get, set)]
+    pub source: u8,
+    #[pyo3(get, set)]
+    pub timestamp_ns: u64,
+}
+
+#[pymethods]
+impl PyClock {
+    /// Create a new Clock message
+    ///
+    /// Args:
+    ///     clock_ns: Simulation/replay time in nanoseconds
+    ///     realtime_ns: Wall clock time in nanoseconds
+    ///     sim_speed: Playback speed (1.0 = real-time)
+    ///     paused: Whether the clock is paused
+    ///     source: 0=wall, 1=sim, 2=replay
+    ///     timestamp_ns: Optional timestamp in nanoseconds
+    #[new]
+    #[pyo3(signature = (clock_ns=0, realtime_ns=0, sim_speed=1.0, paused=false, source=0, timestamp_ns=0))]
+    fn new(
+        clock_ns: u64,
+        realtime_ns: u64,
+        sim_speed: f64,
+        paused: bool,
+        source: u8,
+        timestamp_ns: u64,
+    ) -> Self {
+        Self { clock_ns, realtime_ns, sim_speed, paused, source, timestamp_ns }
+    }
+
+    /// Topic name for this message type
+    #[classattr]
+    fn __topic_name__() -> &'static str {
+        "clock"
+    }
+
+    fn __repr__(&self) -> String {
+        let source_str = match self.source {
+            0 => "wall",
+            1 => "sim",
+            2 => "replay",
+            _ => "unknown",
+        };
+        format!(
+            "Clock(clock_ns={}, speed={:.1}x, paused={}, source={}, timestamp_ns={})",
+            self.clock_ns, self.sim_speed, self.paused, source_str, self.timestamp_ns
+        )
+    }
+}
+
 /// Register all message classes with the Python module
 pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCmdVel>()?;
@@ -387,5 +599,8 @@ pub fn register_message_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImu>()?;
     m.add_class::<PyOdometry>()?;
     m.add_class::<PyLaserScan>()?;
+    m.add_class::<PyPose3D>()?;
+    m.add_class::<PyJointState>()?;
+    m.add_class::<PyClock>()?;
     Ok(())
 }

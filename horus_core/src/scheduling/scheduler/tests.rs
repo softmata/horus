@@ -456,7 +456,7 @@ fn test_rt_feature_display() {
 #[test]
 fn test_parallel_execution_all_nodes_tick() {
     // Create scheduler in parallel mode via high_performance preset
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     let c1 = Arc::new(AtomicUsize::new(0));
     let c2 = Arc::new(AtomicUsize::new(0));
@@ -488,7 +488,7 @@ fn test_parallel_execution_all_nodes_tick() {
 #[test]
 fn test_parallel_rt_nodes_run_sequentially() {
     // RT nodes must run sequentially even in parallel mode
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
 
     let rt_counter = Arc::new(AtomicUsize::new(0));
     let normal_counter = Arc::new(AtomicUsize::new(0));
@@ -607,7 +607,7 @@ fn test_rate_limiting_does_not_lower_tick_period() {
 
 #[test]
 fn test_deterministic_config_wires_clock() {
-    let scheduler = Scheduler::deterministic();
+    let scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
     assert!(scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_some());
     assert!(scheduler.execution_trace().is_some());
@@ -635,7 +635,7 @@ fn test_deterministic_config_virtual_time() {
 #[test]
 fn test_deterministic_advances_on_run() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::deterministic();
+    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
     scheduler
         .add(CounterNode::with_counter("test", counter.clone()))
         .order(0)
@@ -723,7 +723,7 @@ fn test_blackbox_with_path() {
 
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
-    let scheduler = Scheduler::deploy();
+    let scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
     assert!(
         scheduler.blackbox().is_some(),
         "Deploy preset should create a blackbox"

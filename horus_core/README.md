@@ -47,11 +47,11 @@ pub trait Node: Send {
 // Lightweight default
 let mut scheduler = Scheduler::new();
 
-// Presets for common configurations
-let mut scheduler = Scheduler::deploy();          // Production
-let mut scheduler = Scheduler::safety_critical(); // Safety systems
-let mut scheduler = Scheduler::high_performance();// Parallel + 10kHz
-let mut scheduler = Scheduler::deterministic();   // Reproducible
+// Presets via SchedulerConfig
+let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
+let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
+let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
 
 // Custom configuration via SchedulerConfig
 let mut config = SchedulerConfig::standard();
