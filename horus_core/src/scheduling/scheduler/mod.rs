@@ -17,8 +17,6 @@ mod recording;
 // Record/Replay imports
 use super::record_replay::{NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording};
 
-use super::types::NodeTier;
-
 // Import types from types module
 use super::types::{RegisteredNode, SchedulerNodeMetrics};
 
@@ -115,11 +113,19 @@ pub(crate) struct RtState {
     pub degradations: Vec<RtDegradation>,
 }
 
-/// Monitoring features: safety, blackbox flight recorder, telemetry.
+/// Tick-loop timing state.
+pub(crate) struct TickState {
+    pub period: Duration,
+    pub current: u64,
+    pub last_instant: Instant,
+}
+
+/// Monitoring features: safety, blackbox flight recorder, telemetry, profiling.
 pub(crate) struct MonitorState {
     pub safety: Option<SafetyMonitor>,
     pub blackbox: Option<super::blackbox::BlackBox>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
+    pub profiler: RuntimeProfiler,
     pub last_snapshot: Instant,
     pub working_dir: PathBuf,
 }
@@ -149,15 +155,12 @@ pub(crate) struct DeterministicState {
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
-    pub(super) tick_period: Duration,
-    pub(super) current_tick: u64,
     pub(super) execution_mode: ExecutionMode,
     pub(super) scheduler_name: String,
-    pub(super) last_instant: Instant,
 
     // Grouped sub-structs
+    pub(super) tick: TickState,
     pub(super) rt: RtState,
-    pub(super) profiler: RuntimeProfiler,
     pub(super) monitor: MonitorState,
     pub(super) replay: Option<ReplayState>,
     pub(super) recording: Option<RecordingState>,
@@ -209,21 +212,23 @@ impl Scheduler {
         Self {
             nodes: Vec::new(),
             running,
-            tick_period: Duration::from_micros(16667), // ~60Hz default
-            current_tick: 0,
             execution_mode: ExecutionMode::Sequential,
             scheduler_name: "Scheduler".to_string(),
-            last_instant: now,
 
+            tick: TickState {
+                period: Duration::from_micros(16667), // ~60Hz default
+                current: 0,
+                last_instant: now,
+            },
             rt: RtState {
                 capabilities: Some(caps),
                 degradations: Vec::new(),
             },
-            profiler: RuntimeProfiler::new_default(),
             monitor: MonitorState {
                 safety: None,
                 blackbox: None,
                 telemetry: None,
+                profiler: RuntimeProfiler::new_default(),
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             },
@@ -246,8 +251,57 @@ impl Scheduler {
     /// ```
     pub fn tick_hz(mut self, hz: f64) -> Self {
         if hz.is_finite() && hz > 0.0 {
-            self.tick_period = Duration::from_micros((1_000_000.0 / hz) as u64);
+            self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
         }
+        self
+    }
+
+    /// Enable recording with sensible defaults.
+    ///
+    /// Equivalent to applying `SchedulerConfig` with `recording: Some(RecordingConfigYaml::full())`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::new()
+    ///     .tick_hz(100.0)
+    ///     .with_recording();
+    /// ```
+    pub fn with_recording(mut self) -> Self {
+        let recording_yaml = super::config::RecordingConfigYaml::full();
+        let recording_config = super::record_replay::RecordingConfig::from(recording_yaml);
+        let scheduler_id = format!(
+            "{:x}{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            std::process::id() as u64
+        );
+        let session_name = recording_config.session_name.clone();
+        self.recording = Some(RecordingState {
+            config: recording_config,
+            scheduler_recording: super::record_replay::SchedulerRecording::new(
+                &scheduler_id,
+                &session_name,
+            ),
+        });
+        self
+    }
+
+    /// Enable telemetry export to the given endpoint.
+    ///
+    /// Supported formats: `"udp://host:port"`, `"file:///path/to/metrics.json"`
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::new()
+    ///     .with_telemetry("udp://localhost:9999");
+    /// ```
+    pub fn with_telemetry(mut self, endpoint: &str) -> Self {
+        let ep = super::telemetry::TelemetryEndpoint::from_string(endpoint);
+        let mut tm = super::telemetry::TelemetryManager::new(ep, 1000);
+        tm.set_scheduler_name(&self.scheduler_name);
+        self.monitor.telemetry = Some(tm);
         self
     }
 
@@ -670,16 +724,29 @@ impl Scheduler {
     /// // ==================================================================
     /// ```
     pub fn status(&self) -> String {
-        let mut lines = Vec::new();
         let sep = "==================================================================";
-        let thin_sep = "------------------------------------------------------------------";
+        let mut lines = Vec::new();
 
         // Header
         lines.push(sep.to_string());
         lines.push(format!("SCHEDULER STATUS: {}", self.scheduler_name));
         lines.push(sep.to_string());
 
-        // Platform info
+        // Sections
+        lines.extend(self.platform_status_lines());
+        lines.extend(self.safety_status_lines());
+        lines.extend(self.node_health_status_lines());
+
+        // Footer
+        lines.push(sep.to_string());
+        lines.join("\n")
+    }
+
+    /// Build platform and RT capability status lines.
+    fn platform_status_lines(&self) -> Vec<String> {
+        let thin_sep = "------------------------------------------------------------------";
+        let mut lines = Vec::new();
+
         if let Some(caps) = &self.rt.capabilities {
             lines.push(format!(
                 "Platform: {} ({} CPUs, {} NUMA nodes)",
@@ -724,6 +791,14 @@ impl Scheduler {
             lines.push("Platform: (capabilities not detected)".to_string());
         }
 
+        lines
+    }
+
+    /// Build safety features, execution mode, and WCET statistics status lines.
+    fn safety_status_lines(&self) -> Vec<String> {
+        let thin_sep = "------------------------------------------------------------------";
+        let mut lines = Vec::new();
+
         // Execution mode
         lines.push(thin_sep.to_string());
         lines.push("Execution Mode:".to_string());
@@ -756,9 +831,7 @@ impl Scheduler {
                 " "
             }
         ));
-        // Tier-aware failure policies
         lines.push("  [x] Failure Policies (tier-aware)".to_string());
-        // WCET enforcement is enabled when SafetyMonitor is present
         let has_wcet =
             self.monitor.safety.is_some() && self.nodes.iter().any(|n| n.wcet_budget.is_some());
         lines.push(format!(
@@ -766,7 +839,7 @@ impl Scheduler {
             if has_wcet { "x" } else { " " }
         ));
 
-        // WCET Stats (if safety monitor enabled and has data)
+        // WCET Stats
         if let Some(ref monitor) = self.monitor.safety {
             let stats = monitor.get_stats();
             if stats.wcet_overruns > 0 || stats.deadline_misses > 0 {
@@ -787,6 +860,14 @@ impl Scheduler {
                 }
             }
         }
+
+        lines
+    }
+
+    /// Build node health and RT degradation status lines.
+    fn node_health_status_lines(&self) -> Vec<String> {
+        let thin_sep = "------------------------------------------------------------------";
+        let mut lines = Vec::new();
 
         // Node Health (failure policy states)
         if !self.nodes.is_empty() {
@@ -811,7 +892,6 @@ impl Scheduler {
                     failing_count,
                     self.nodes.len() - suppressed_count - failing_count
                 ));
-                // List unhealthy nodes
                 for node in &self.nodes {
                     let stats = node.failure_handler.stats();
                     if stats.is_suppressed {
@@ -834,7 +914,7 @@ impl Scheduler {
             }
         }
 
-        // Degradations (if any)
+        // Degradations
         if !self.rt.degradations.is_empty() {
             lines.push(thin_sep.to_string());
             lines.push("Degradations:".to_string());
@@ -851,11 +931,9 @@ impl Scheduler {
             }
         }
 
-        // Footer
-        lines.push(sep.to_string());
-
-        lines.join("\n")
+        lines
     }
+
 
     // =========================================================================
     // Deterministic Execution Accessors (Simulation Mode)
@@ -954,7 +1032,7 @@ impl Scheduler {
     fn apply_config(&mut self, config: super::config::SchedulerConfig) {
         use super::config::*;
 
-        // Apply execution mode
+        // Execution mode
         self.execution_mode = config.execution;
         match config.execution {
             ExecutionMode::Parallel => {
@@ -965,27 +1043,56 @@ impl Scheduler {
             }
         }
 
-        // Apply real-time configuration
-        if config.realtime.safety_monitor
-            || config.realtime.wcet_enforcement
-            || config.realtime.deadline_monitoring
-        {
-            // Create safety monitor with configured deadline miss limit
-            let mut monitor = SafetyMonitor::new(config.realtime.max_deadline_misses);
+        // Global tick rate
+        let rate_hz =
+            if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
+                config.timing.global_rate_hz
+            } else {
+                100.0 // Safe fallback for invalid rate
+            };
+        self.tick.period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
 
-            // Configure critical nodes and WCET budgets for RT nodes
+        // RT safety, fault tolerance, and OS-level optimizations
+        self.apply_safety_config(&config.realtime);
+        self.apply_fault_tolerance(config.circuit_breaker);
+        self.apply_rt_optimizations(&config.realtime, &config.resources);
+
+        // Resource configuration
+        if let Some(ref cores) = config.resources.cpu_cores {
+            print_line(&format!("CPU cores configuration: {:?}", cores));
+        }
+
+        // Monitoring (profiling, blackbox, telemetry)
+        self.apply_monitoring_config(&config.monitoring);
+
+        // Deterministic execution (simulation mode)
+        if let Some(ref det_config) = config.deterministic {
+            self.apply_deterministic_config(det_config);
+        }
+
+        // Recording
+        if let Some(ref recording_yaml) = config.recording {
+            if recording_yaml.enabled {
+                self.apply_recording_config(recording_yaml);
+            }
+        }
+    }
+
+    /// Configure the safety monitor for RT nodes (watchdogs, WCET, deadlines).
+    fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
+        if rt.safety_monitor || rt.wcet_enforcement || rt.deadline_monitoring {
+            let mut monitor = SafetyMonitor::new(rt.max_deadline_misses);
+
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
                     let node_name = registered.name.clone();
 
-                    // Add as critical node with watchdog if configured
-                    if config.realtime.watchdog_enabled {
+                    if rt.watchdog_enabled {
                         let watchdog_timeout =
-                            Duration::from_millis(config.realtime.watchdog_timeout_ms);
+                            Duration::from_millis(rt.watchdog_timeout_ms);
                         monitor.add_critical_node(node_name.clone(), watchdog_timeout);
                     }
 
-                    // Set WCET budget if available
                     if let Some(wcet) = registered.wcet_budget {
                         monitor.set_wcet_budget(node_name, wcet);
                     }
@@ -995,206 +1102,119 @@ impl Scheduler {
             self.monitor.safety = Some(monitor);
             print_line("Safety monitor configured for RT nodes");
         }
+    }
 
-        // Apply fault tolerance
+    /// Apply fault tolerance configuration to all registered nodes.
+    fn apply_fault_tolerance(&mut self, circuit_breaker: bool) {
         for registered in self.nodes.iter_mut() {
-            if config.circuit_breaker {
-                // Tier-based defaults are already set; reset handlers to clear any accumulated state
+            if circuit_breaker {
                 registered.failure_handler.reset();
             } else {
-                // Disable fault handling entirely — all nodes get Ignore policy
                 registered.failure_handler =
                     super::fault_tolerance::FailureHandler::new(FailurePolicy::Ignore);
             }
         }
+    }
 
-        // Apply resource configuration
-        if let Some(ref cores) = config.resources.cpu_cores {
-            print_line(&format!("CPU cores configuration: {:?}", cores));
+    /// Apply OS-level RT optimizations (memory locking, scheduling, affinity, NUMA).
+    fn apply_rt_optimizations(
+        &mut self,
+        rt: &super::config::RealTimeConfig,
+        resources: &super::config::ResourceConfig,
+    ) {
+        use crate::core::rt_config::{RtApplyResult, RtConfig, RtScheduler};
+
+        let has_rt_features = rt.memory_locking
+            || rt.rt_scheduling_class
+            || resources.cpu_cores.is_some();
+
+        if has_rt_features {
+            let mut builder = RtConfig::new()
+                .memory_locked(rt.memory_locking)
+                .warn_on_degradation(true);
+
+            if rt.rt_scheduling_class {
+                builder = builder.scheduler(RtScheduler::Fifo).priority(50);
+            }
+
+            if let Some(ref cores) = resources.cpu_cores {
+                builder = builder.cpu_affinity(cores);
+            }
+
+            let rt_config = builder.build();
+            match rt_config.apply() {
+                Ok(RtApplyResult::FullSuccess) => {
+                    if rt.memory_locking {
+                        print_line("[SCHEDULER] Memory locked (mlockall)");
+                    }
+                    if rt.rt_scheduling_class {
+                        print_line("[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority 50)");
+                    }
+                    if let Some(ref cores) = resources.cpu_cores {
+                        print_line(&format!(
+                            "[SCHEDULER] CPU affinity set to cores {:?}",
+                            cores
+                        ));
+                    }
+                }
+                Ok(RtApplyResult::Degraded(degradations)) => {
+                    for d in &degradations {
+                        print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
+                    }
+                }
+                Ok(RtApplyResult::Failed(msg)) => {
+                    print_line(&format!("[SCHEDULER] RT config failed: {}", msg));
+                }
+                Err(e) => {
+                    print_line(&format!("[SCHEDULER] RT config error: {}", e));
+                }
+            }
         }
 
-        // Apply monitoring configuration
-        if config.monitoring.profiling_enabled {
-            self.profiler.enable();
+        // NUMA awareness (detection only, no syscall)
+        if resources.numa_aware {
+            let numa_nodes = super::rt::get_numa_node_count();
+            if numa_nodes > 1 {
+                print_line(&format!(
+                    "[SCHEDULER] NUMA-aware scheduling ({} nodes detected)",
+                    numa_nodes
+                ));
+            }
+        }
+    }
+
+    /// Apply monitoring configuration (profiling, blackbox, telemetry).
+    fn apply_monitoring_config(&mut self, monitoring: &super::config::MonitoringConfig) {
+        // Profiling
+        if monitoring.profiling_enabled {
+            self.monitor.profiler.enable();
             print_line("Profiling enabled");
         } else {
-            self.profiler.disable();
+            self.monitor.profiler.disable();
             print_line("Profiling disabled");
         }
 
-        // === Apply new runtime features ===
-
-        // 1. Global tick rate enforcement
-        let rate_hz =
-            if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
-                config.timing.global_rate_hz
-            } else {
-                100.0 // Safe fallback for invalid rate
-            };
-        self.tick_period = std::time::Duration::from_micros((1_000_000.0 / rate_hz) as u64);
-
-        // 2. Black box flight recorder
-        if config.monitoring.black_box_enabled && config.monitoring.black_box_size_mb > 0 {
+        // Black box flight recorder
+        if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-            let mut bb = super::blackbox::BlackBox::new(config.monitoring.black_box_size_mb)
+            let mut bb = super::blackbox::BlackBox::new(monitoring.black_box_size_mb)
                 .with_path(bb_dir);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
-                config: format!("rate={}Hz", config.timing.global_rate_hz),
+                config: format!("rate={}Hz", 1_000_000.0 / self.tick.period.as_micros() as f64),
             });
             self.monitor.blackbox = Some(bb);
             print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
-                config.monitoring.black_box_size_mb
+                monitoring.black_box_size_mb
             ));
         }
 
-        // 3. Real-time optimizations — delegate to RtConfig for single syscall path
-        {
-            use crate::core::rt_config::{RtApplyResult, RtConfig, RtScheduler};
-
-            let has_rt_features = config.realtime.memory_locking
-                || config.realtime.rt_scheduling_class
-                || config.resources.cpu_cores.is_some();
-
-            if has_rt_features {
-                let mut builder = RtConfig::new()
-                    .memory_locked(config.realtime.memory_locking)
-                    .warn_on_degradation(true);
-
-                if config.realtime.rt_scheduling_class {
-                    builder = builder.scheduler(RtScheduler::Fifo).priority(50);
-                }
-
-                if let Some(ref cores) = config.resources.cpu_cores {
-                    builder = builder.cpu_affinity(cores);
-                }
-
-                let rt_config = builder.build();
-                match rt_config.apply() {
-                    Ok(RtApplyResult::FullSuccess) => {
-                        if config.realtime.memory_locking {
-                            print_line("[SCHEDULER] Memory locked (mlockall)");
-                        }
-                        if config.realtime.rt_scheduling_class {
-                            print_line("[SCHEDULER] RT scheduling enabled (SCHED_FIFO, priority 50)");
-                        }
-                        if let Some(ref cores) = config.resources.cpu_cores {
-                            print_line(&format!(
-                                "[SCHEDULER] CPU affinity set to cores {:?}",
-                                cores
-                            ));
-                        }
-                    }
-                    Ok(RtApplyResult::Degraded(degradations)) => {
-                        for d in &degradations {
-                            print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
-                        }
-                    }
-                    Ok(RtApplyResult::Failed(msg)) => {
-                        print_line(&format!("[SCHEDULER] RT config failed: {}", msg));
-                    }
-                    Err(e) => {
-                        print_line(&format!("[SCHEDULER] RT config error: {}", e));
-                    }
-                }
-            }
-
-            // NUMA awareness (detection only, no syscall)
-            if config.resources.numa_aware {
-                let numa_nodes = super::rt::get_numa_node_count();
-                if numa_nodes > 1 {
-                    print_line(&format!(
-                        "[SCHEDULER] NUMA-aware scheduling ({} nodes detected)",
-                        numa_nodes
-                    ));
-                }
-            }
-        }
-
-        // 7. Deterministic execution (simulation mode)
-        if let Some(ref det_config) = config.deterministic {
-            let clock = Arc::new(DeterministicClock::new(det_config));
-            let trace = if det_config.record_trace {
-                Some(Arc::new(ParkingMutex::new(ExecutionTrace::new(
-                    det_config.clone(),
-                ))))
-            } else {
-                None
-            };
-            self.deterministic = Some(DeterministicState {
-                clock,
-                trace,
-                config: det_config.clone(),
-            });
-            print_line(&format!(
-                "[SCHEDULER] Deterministic mode enabled (seed={}, virtual_time={})",
-                det_config.seed, det_config.virtual_time
-            ));
-        }
-
-        // 8. Recording configuration for record/replay system
-        if let Some(ref recording_yaml) = config.recording {
-            if recording_yaml.enabled {
-                // Generate session name if not provided
-                let session_name = recording_yaml.session_name.clone().unwrap_or_else(|| {
-                    use std::time::{SystemTime, UNIX_EPOCH};
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    format!("session_{}", timestamp)
-                });
-
-                // Convert YAML config to internal RecordingConfig
-                let mut recording_config = RecordingConfig::new(session_name.clone());
-                recording_config.compress = recording_yaml.compress;
-                recording_config.interval = (recording_yaml.interval as u64).max(1);
-
-                if let Some(ref output_dir) = recording_yaml.output_dir {
-                    recording_config.base_dir = PathBuf::from(output_dir);
-                }
-
-                // Store include/exclude filters in the config
-                recording_config.include_nodes = recording_yaml.include_nodes.clone();
-                recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
-
-                // Wire up recording control flags
-                if recording_yaml.max_size_mb > 0 {
-                    recording_config.max_size = recording_yaml.max_size_mb * 1024 * 1024;
-                }
-                recording_config.record_inputs = recording_yaml.record_inputs;
-                recording_config.record_outputs = recording_yaml.record_outputs;
-                recording_config.record_timing = recording_yaml.record_timing;
-
-                // Generate unique scheduler ID
-                let scheduler_id = format!(
-                    "{:x}{:x}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0),
-                    std::process::id() as u64
-                );
-
-                // Enable recording
-                self.recording = Some(RecordingState {
-                    config: recording_config,
-                    scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
-                });
-
-                print_line(&format!(
-                    "[SCHEDULER] Recording enabled (session: {}, compress: {})",
-                    session_name, recording_yaml.compress
-                ));
-            }
-        }
-
-        // 8. Telemetry export
-        if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
+        // Telemetry export
+        if let Some(ref endpoint_str) = monitoring.telemetry_endpoint {
             let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
-            let interval_ms = config.monitoring.metrics_interval_ms;
+            let interval_ms = monitoring.metrics_interval_ms;
             let mut tm = super::telemetry::TelemetryManager::new(endpoint, interval_ms);
             tm.set_scheduler_name(&self.scheduler_name);
             self.monitor.telemetry = Some(tm);
@@ -1203,8 +1223,84 @@ impl Scheduler {
                 endpoint_str
             ));
         }
-
     }
+
+    /// Apply deterministic execution configuration for simulation mode.
+    fn apply_deterministic_config(&mut self, det_config: &super::deterministic::DeterministicConfig) {
+        let clock = Arc::new(DeterministicClock::new(det_config));
+        let trace = if det_config.record_trace {
+            Some(Arc::new(ParkingMutex::new(ExecutionTrace::new(
+                det_config.clone(),
+            ))))
+        } else {
+            None
+        };
+        self.deterministic = Some(DeterministicState {
+            clock,
+            trace,
+            config: det_config.clone(),
+        });
+        print_line(&format!(
+            "[SCHEDULER] Deterministic mode enabled (seed={}, virtual_time={})",
+            det_config.seed, det_config.virtual_time
+        ));
+    }
+
+    /// Apply recording configuration for the record/replay system.
+    fn apply_recording_config(&mut self, recording_yaml: &super::config::RecordingConfigYaml) {
+        // Generate session name if not provided
+        let session_name = recording_yaml.session_name.clone().unwrap_or_else(|| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("session_{}", timestamp)
+        });
+
+        // Convert YAML config to internal RecordingConfig
+        let mut recording_config = RecordingConfig::new(session_name.clone());
+        recording_config.compress = recording_yaml.compress;
+        recording_config.interval = (recording_yaml.interval as u64).max(1);
+
+        if let Some(ref output_dir) = recording_yaml.output_dir {
+            recording_config.base_dir = PathBuf::from(output_dir);
+        }
+
+        // Store include/exclude filters in the config
+        recording_config.include_nodes = recording_yaml.include_nodes.clone();
+        recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
+
+        // Wire up recording control flags
+        if recording_yaml.max_size_mb > 0 {
+            recording_config.max_size = recording_yaml.max_size_mb * 1024 * 1024;
+        }
+        recording_config.record_inputs = recording_yaml.record_inputs;
+        recording_config.record_outputs = recording_yaml.record_outputs;
+        recording_config.record_timing = recording_yaml.record_timing;
+
+        // Generate unique scheduler ID
+        let scheduler_id = format!(
+            "{:x}{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            std::process::id() as u64
+        );
+
+        // Enable recording
+        self.recording = Some(RecordingState {
+            config: recording_config,
+            scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
+        });
+
+        print_line(&format!(
+            "[SCHEDULER] Recording enabled (session: {}, compress: {})",
+            session_name, recording_yaml.compress
+        ));
+    }
+
 
     /// Pre-allocate node capacity (prevents reallocations during runtime)
     ///
@@ -1420,42 +1516,23 @@ impl Scheduler {
     /// scheduler.add_configured(config);
     /// ```
     pub fn add_configured(&mut self, config: super::node_builder::NodeRegistration) -> &mut Self {
-        // Extract config fields
+        self.add_configured_internal(config)
+    }
+
+    /// Internal method to add a fully configured node.
+    fn add_configured_internal(
+        &mut self,
+        config: super::node_builder::NodeRegistration,
+    ) -> &mut Self {
         let node = config.node;
         let priority = config.order;
         let custom_rate = config.rate_hz;
-        let is_rt = config.is_rt;
+        let is_rt_node = config.is_rt;
         let wcet_budget = config.wcet_budget;
         let deadline = config.deadline;
         let tier = config.tier;
         let failure_policy = config.failure_policy;
 
-        // Use the internal add logic
-        self.add_configured_internal(
-            node,
-            priority,
-            custom_rate,
-            is_rt,
-            wcet_budget,
-            deadline,
-            tier,
-            failure_policy,
-        )
-    }
-
-    /// Internal method to add a fully configured node.
-    #[allow(clippy::too_many_arguments)]
-    fn add_configured_internal(
-        &mut self,
-        node: Box<dyn Node>,
-        priority: u32,
-        custom_rate: Option<f64>,
-        is_rt_node: bool,
-        wcet_budget: Option<std::time::Duration>,
-        deadline: Option<std::time::Duration>,
-        tier: Option<NodeTier>,
-        failure_policy: Option<super::fault_tolerance::FailurePolicy>,
-    ) -> &mut Self {
         let node_name = node.name().to_string();
 
         let context = NodeInfo::new(node_name.clone());
@@ -1592,7 +1669,7 @@ impl Scheduler {
     /// If a node declares rate_hz(500), the scheduler must tick at >= 500Hz
     /// for that node to actually achieve its declared rate.
     fn adjust_tick_period_for_node_rates(&mut self) {
-        let current_rate = 1_000_000.0 / self.tick_period.as_micros() as f64;
+        let current_rate = 1_000_000.0 / self.tick.period.as_micros() as f64;
         let max_node_rate = self
             .nodes
             .iter()
@@ -1605,7 +1682,7 @@ impl Scheduler {
                 "Adjusting scheduler tick rate from {:.1} Hz to {:.1} Hz (fastest node requires it)",
                 current_rate, max_node_rate
             ));
-            self.tick_period = new_period;
+            self.tick.period = new_period;
         }
     }
 
@@ -1648,7 +1725,7 @@ impl Scheduler {
                     break;
                 }
                 self.process_control_commands();
-                self.last_instant = Instant::now();
+                self.tick.last_instant = Instant::now();
                 self.reinit_pending_nodes();
                 self.execute_nodes(node_filter).await;
                 if self.check_safety_monitors() {
@@ -1773,7 +1850,7 @@ impl Scheduler {
         }
 
         if let Some(stop_tick) = self.replay.as_ref().and_then(|r| r.stop_tick) {
-            if self.current_tick >= stop_tick {
+            if self.tick.current >= stop_tick {
                 print_line(&format!("[REPLAY] Reached stop tick {}", stop_tick));
                 return true;
             }
@@ -1903,6 +1980,7 @@ impl Scheduler {
         if let Some(ref mut tm) = self.monitor.telemetry {
             if tm.should_export() {
                 let total_ticks = self
+                    .monitor
                     .profiler
                     .node_stats
                     .values()
@@ -1915,7 +1993,7 @@ impl Scheduler {
 
                 for registered in &self.nodes {
                     let node_name = registered.name.as_str();
-                    if let Some(stats) = self.profiler.node_stats.get(node_name) {
+                    if let Some(stats) = self.monitor.profiler.node_stats.get(node_name) {
                         let mut labels = std::collections::HashMap::new();
                         labels.insert("node".to_string(), node_name.to_string());
                         tm.gauge_with_labels(
@@ -1950,13 +2028,13 @@ impl Scheduler {
         let sleep_duration = if let Some(ref replay) = self.replay {
             if replay.speed != 1.0 {
                 Duration::from_nanos(
-                    (self.tick_period.as_nanos() as f64 / replay.speed) as u64,
+                    (self.tick.period.as_nanos() as f64 / replay.speed) as u64,
                 )
             } else {
-                self.tick_period
+                self.tick.period
             }
         } else {
-            self.tick_period
+            self.tick.period
         };
 
         Some(sleep_duration)
@@ -1964,12 +2042,12 @@ impl Scheduler {
 
     /// Increment tick counter and advance deterministic clock if configured.
     fn advance_tick(&mut self) {
-        self.current_tick += 1;
+        self.tick.current += 1;
 
         if let Some(ref det) = self.deterministic {
             det.clock.advance_tick();
             if let Some(ref trace) = det.trace {
-                trace.lock().finalize_tick(self.current_tick - 1);
+                trace.lock().finalize_tick(self.tick.current - 1);
             }
         }
     }
@@ -2030,6 +2108,7 @@ impl Scheduler {
     /// Record final blackbox/telemetry events and clean up registry/session files.
     fn finalize_run(&mut self) {
         let total_ticks = self
+            .monitor
             .profiler
             .node_stats
             .values()
@@ -2449,7 +2528,7 @@ impl Scheduler {
             // Begin recording tick (before node execution)
             {
                 if let Some(ref mut recorder) = self.nodes[i].recorder {
-                    recorder.begin_tick(self.current_tick);
+                    recorder.begin_tick(self.tick.current);
                 }
             }
 
@@ -2491,152 +2570,157 @@ impl Scheduler {
         tick_duration: Duration,
         tick_result: std::thread::Result<()>,
     ) -> bool {
-        // Profiling and monitoring use direct field access (no borrow conflict)
+        // Profiling and monitoring
         {
             let node_name = self.nodes[i].name.as_str();
-
-            // Check if node execution failed
             if tick_result.is_err() {
-                self.profiler.record_node_failure(node_name);
+                self.monitor.profiler.record_node_failure(node_name);
                 print_line(&format!("Node '{}' panicked during execution", node_name));
             }
-
-            // Record profiling data
-            self.profiler.record(node_name, tick_duration);
+            self.monitor.profiler.record(node_name, tick_duration);
         }
 
-        // End recording tick (after profiling, before failure handling)
-        {
-            if let Some(ref mut recorder) = self.nodes[i].recorder {
-                recorder.end_tick(tick_duration.as_nanos() as u64);
-            }
+        // End recording tick
+        if let Some(ref mut recorder) = self.nodes[i].recorder {
+            recorder.end_tick(tick_duration.as_nanos() as u64);
         }
 
-        {
-            let node_name = self.nodes[i].name.as_str();
-
-            // Check WCET budget for RT nodes
-            if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-                if let Some(ref monitor) = self.monitor.safety {
-                    if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                        print_line(&format!(
-                            " WCET violation in {}: {:?} > {:?}",
-                            violation.node_name, violation.actual, violation.budget
-                        ));
-                    }
-                }
-            }
-
-            // Check deadline for RT nodes
-            if self.nodes[i].is_rt_node {
-                if let Some(deadline) = self.nodes[i].deadline {
-                    let elapsed = tick_start.elapsed();
-                    if elapsed > deadline {
-                        if let Some(ref monitor) = self.monitor.safety {
-                            monitor.record_deadline_miss(node_name);
-                            print_line(&format!(
-                                " Deadline miss in {}: {:?} > {:?}",
-                                node_name, elapsed, deadline
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        // node_name borrow ends here — safe to mutate self.nodes[i] below
+        // Check timing violations for RT nodes
+        self.check_timing_violations(i, tick_start, tick_duration);
 
         // Handle tick result with policy-driven dispatch
         match tick_result {
             Ok(_) => {
                 self.nodes[i].failure_handler.record_success();
-
                 if let Some(ref mut context) = self.nodes[i].context {
                     context.record_tick();
                 }
                 false
             }
-            Err(panic_err) => {
-                let action = self.nodes[i].failure_handler.record_failure();
-                let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                    format!("Node panicked: {}", s)
-                } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                    format!("Node panicked: {}", s)
-                } else {
-                    "Node panicked with unknown error".to_string()
-                };
+            Err(panic_err) => self.handle_tick_failure(i, panic_err),
+        }
+    }
 
-                // Clone name for error path (rare — only on node panic)
-                let node_name = self.nodes[i].name.clone();
-                let registered = &mut self.nodes[i];
-                if let Some(ref mut context) = registered.context {
-                    context.record_tick_failure(error_msg.clone());
+    /// Check WCET budget and deadline violations for real-time nodes.
+    fn check_timing_violations(&self, i: usize, tick_start: Instant, tick_duration: Duration) {
+        let node_name = self.nodes[i].name.as_str();
 
-                    // Set context for on_error handler
-                    set_node_context(&node_name, context.metrics().total_ticks);
-                    registered.node.on_error(&error_msg);
-                    clear_node_context();
+        // Check WCET budget for RT nodes
+        if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
+            if let Some(ref monitor) = self.monitor.safety {
+                if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
+                    print_line(&format!(
+                        " WCET violation in {}: {:?} > {:?}",
+                        violation.node_name, violation.actual, violation.budget
+                    ));
+                }
+            }
+        }
 
-                    match action {
-                        FailureAction::StopScheduler => {
-                            print_line(&format!(
-                                " FATAL: Node '{}' failed — stopping scheduler: {}",
-                                node_name, error_msg
-                            ));
-                            context.transition_to_crashed(error_msg);
-                            self.stop();
-                            return true;
-                        }
-                        FailureAction::FatalAfterRestarts => {
-                            print_line(&format!(
-                                " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
-                                node_name
-                            ));
-                            context.transition_to_crashed(format!(
-                                "Max restarts exceeded: {}",
-                                error_msg
-                            ));
-                            self.stop();
-                            return true;
-                        }
-                        FailureAction::RestartNode => {
-                            let stats = registered.failure_handler.stats();
-                            print_line(&format!(
-                                " Node '{}' failed, restarting (attempt {}): {}",
-                                node_name, stats.restart_count, error_msg
-                            ));
-                            match context.restart() {
-                                Ok(_) => {
-                                    registered.initialized = true;
-                                }
-                                Err(e) => {
-                                    print_line(&format!(
-                                        " Node '{}' restart failed: {}",
-                                        node_name, e
-                                    ));
-                                    context.transition_to_crashed(format!("Restart failed: {}", e));
-                                    registered.initialized = false;
-                                }
-                            }
-                        }
-                        FailureAction::SkipNode => {
-                            print_line(&format!(
-                                " Node '{}' circuit opened — skipping until cooldown: {}",
-                                node_name, error_msg
-                            ));
-                            context.transition_to_error(error_msg);
-                        }
-                        FailureAction::Continue => {
-                            print_line(&format!(
-                                " Node '{}' failed (continuing): {}",
-                                node_name, error_msg
-                            ));
-                        }
+        // Check deadline for RT nodes
+        if self.nodes[i].is_rt_node {
+            if let Some(deadline) = self.nodes[i].deadline {
+                let elapsed = tick_start.elapsed();
+                if elapsed > deadline {
+                    if let Some(ref monitor) = self.monitor.safety {
+                        monitor.record_deadline_miss(node_name);
+                        print_line(&format!(
+                            " Deadline miss in {}: {:?} > {:?}",
+                            node_name, elapsed, deadline
+                        ));
                     }
                 }
-                false
             }
         }
     }
+
+    /// Handle a node tick failure according to its failure policy.
+    /// Returns `true` if the scheduler should stop (fatal failure).
+    fn handle_tick_failure(
+        &mut self,
+        i: usize,
+        panic_err: Box<dyn std::any::Any + Send>,
+    ) -> bool {
+        let action = self.nodes[i].failure_handler.record_failure();
+        let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+            format!("Node panicked: {}", s)
+        } else if let Some(s) = panic_err.downcast_ref::<String>() {
+            format!("Node panicked: {}", s)
+        } else {
+            "Node panicked with unknown error".to_string()
+        };
+
+        // Clone name for error path (rare — only on node panic)
+        let node_name = self.nodes[i].name.clone();
+        let registered = &mut self.nodes[i];
+        if let Some(ref mut context) = registered.context {
+            context.record_tick_failure(error_msg.clone());
+
+            // Set context for on_error handler
+            set_node_context(&node_name, context.metrics().total_ticks);
+            registered.node.on_error(&error_msg);
+            clear_node_context();
+
+            match action {
+                FailureAction::StopScheduler => {
+                    print_line(&format!(
+                        " FATAL: Node '{}' failed — stopping scheduler: {}",
+                        node_name, error_msg
+                    ));
+                    context.transition_to_crashed(error_msg);
+                    self.stop();
+                    return true;
+                }
+                FailureAction::FatalAfterRestarts => {
+                    print_line(&format!(
+                        " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
+                        node_name
+                    ));
+                    context.transition_to_crashed(format!(
+                        "Max restarts exceeded: {}",
+                        error_msg
+                    ));
+                    self.stop();
+                    return true;
+                }
+                FailureAction::RestartNode => {
+                    let stats = registered.failure_handler.stats();
+                    print_line(&format!(
+                        " Node '{}' failed, restarting (attempt {}): {}",
+                        node_name, stats.restart_count, error_msg
+                    ));
+                    match context.restart() {
+                        Ok(_) => {
+                            registered.initialized = true;
+                        }
+                        Err(e) => {
+                            print_line(&format!(
+                                " Node '{}' restart failed: {}",
+                                node_name, e
+                            ));
+                            context.transition_to_crashed(format!("Restart failed: {}", e));
+                            registered.initialized = false;
+                        }
+                    }
+                }
+                FailureAction::SkipNode => {
+                    print_line(&format!(
+                        " Node '{}' circuit opened — skipping until cooldown: {}",
+                        node_name, error_msg
+                    ));
+                    context.transition_to_error(error_msg);
+                }
+                FailureAction::Continue => {
+                    print_line(&format!(
+                        " Node '{}' failed (continuing): {}",
+                        node_name, error_msg
+                    ));
+                }
+            }
+        }
+        false
+    }
+
 
     /// Execute nodes in priority order with profiling and RT support.
     ///

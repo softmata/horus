@@ -25,9 +25,19 @@ serde = { workspace = true }
 # ============================================================================
 # HORUS ships minimal by default - fast IPC via shared memory.
 # For multi-robot networking: horus pkg install horus-ros2
-default = ["macros"]
+default = ["macros", "telemetry", "blackbox"]
 
 macros = ["dep:horus_macros"]
+
+# ============================================================================
+# MONITORING
+# ============================================================================
+
+# Telemetry export for live monitoring (HTTP, UDP, file)
+telemetry = ["horus_core/telemetry"]
+
+# Black box flight recorder for post-mortem crash analysis
+blackbox = ["horus_core/blackbox"]
 
 # ============================================================================
 # DISCOVERY

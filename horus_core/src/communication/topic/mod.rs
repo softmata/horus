@@ -403,57 +403,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let total_size = Self::HEADER_SIZE + seq_array_size + data_size;
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
-
-        // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for TopicHeader
-        let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
-
-        std::sync::atomic::fence(Ordering::Acquire);
-
-        let final_slot_size = if header.magic != TOPIC_MAGIC {
-            if storage.is_owner() {
-                // Fresh SHM — clear any stale registry entries from a previous
-                // topic lifetime (e.g., previous owner dropped and SHM was unlinked,
-                // then re-created with the same name).
-                registry::remove_topic(name);
-
-                header.init(
-                    type_size,
-                    type_align,
-                    is_pod,
-                    capacity,
-                    actual_slot_size as u32,
-                );
-                actual_slot_size
-            } else {
-                for _ in 0..100 {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                    std::sync::atomic::fence(Ordering::Acquire);
-                    if header.magic == TOPIC_MAGIC {
-                        break;
-                    }
-                }
-                if header.magic != TOPIC_MAGIC {
-                    return Err(HorusError::Communication(
-                        "Timeout waiting for topic header initialization".to_string(),
-                    ));
-                }
-                header.slot_size as usize
-            }
-        } else {
-            if header.version != TOPIC_VERSION {
-                return Err(HorusError::Communication(format!(
-                    "Incompatible topic version: {} (expected {})",
-                    header.version, TOPIC_VERSION
-                )));
-            }
-            if is_pod && header.type_size != type_size {
-                return Err(HorusError::Communication(format!(
-                    "Type size mismatch: {} (expected {})",
-                    header.type_size, type_size
-                )));
-            }
-            header.slot_size as usize
-        };
+        let final_slot_size = Self::negotiate_shm_header(
+            name, &storage, type_size, type_align, is_pod, capacity, actual_slot_size,
+        )?;
 
         Ok(Self {
             name: name.to_string(),
@@ -472,6 +424,62 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
             _marker: PhantomData,
         })
+    }
+
+    /// Negotiate SHM header: initialize if owner, wait if joiner, validate if existing.
+    ///
+    /// Returns the final slot size from the header.
+    fn negotiate_shm_header(
+        name: &str,
+        storage: &ShmRegion,
+        type_size: u32,
+        type_align: u32,
+        is_pod: bool,
+        capacity: u32,
+        actual_slot_size: usize,
+    ) -> HorusResult<usize> {
+        // SAFETY: storage is properly sized (>= HEADER_SIZE) and aligned for TopicHeader
+        let header = unsafe { &mut *(storage.as_ptr() as *mut TopicHeader) };
+
+        std::sync::atomic::fence(Ordering::Acquire);
+
+        if header.magic != TOPIC_MAGIC {
+            if storage.is_owner() {
+                // Fresh SHM — clear stale registry entries from a previous topic lifetime.
+                registry::remove_topic(name);
+                header.init(type_size, type_align, is_pod, capacity, actual_slot_size as u32);
+                return Ok(actual_slot_size);
+            }
+            // Joiner: wait for owner to initialize the header.
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::sync::atomic::fence(Ordering::Acquire);
+                if header.magic == TOPIC_MAGIC {
+                    break;
+                }
+            }
+            if header.magic != TOPIC_MAGIC {
+                return Err(HorusError::Communication(
+                    "Timeout waiting for topic header initialization".to_string(),
+                ));
+            }
+            return Ok(header.slot_size as usize);
+        }
+
+        // Header already initialized — validate compatibility.
+        if header.version != TOPIC_VERSION {
+            return Err(HorusError::Communication(format!(
+                "Incompatible topic version: {} (expected {})",
+                header.version, TOPIC_VERSION
+            )));
+        }
+        if is_pod && header.type_size != type_size {
+            return Err(HorusError::Communication(format!(
+                "Type size mismatch: {} (expected {})",
+                header.type_size, type_size
+            )));
+        }
+        Ok(header.slot_size as usize)
     }
 
     /// Check if T is a POD type (auto-detected via needs_drop)
@@ -688,13 +696,31 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let local = self.local();
         let mode = local.cached_mode;
         let epoch = local.cached_epoch;
+        let is_pod = local.is_pod;
         let capacity = local.cached_capacity as u32;
 
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         let backend = unsafe { &mut *self.backend.get() };
 
-        // Check if current backend already matches the mode
-        let already_matched = match (&*backend, mode) {
+        if Self::backend_matches_mode(backend, mode) {
+            // Backend matches but fn ptrs may be stale (e.g., first call after construction).
+            self.set_dispatch_fn_ptrs(mode, is_pod);
+            return;
+        }
+
+        if mode.is_intra_process() {
+            let cap = if capacity == 0 { 64 } else { capacity };
+            self.init_intra_backend(backend, mode, epoch, cap);
+        } else {
+            self.init_shm_backend(backend, epoch);
+        }
+
+        self.set_dispatch_fn_ptrs(mode, is_pod);
+    }
+
+    /// Check if the current backend storage already matches the requested mode.
+    fn backend_matches_mode(backend: &BackendStorage<T>, mode: BackendMode) -> bool {
+        match (backend, mode) {
             (BackendStorage::DirectChannel(_), BackendMode::DirectChannel) => true,
             (BackendStorage::SpscIntra(_), BackendMode::SpscIntra) => true,
             (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
@@ -706,95 +732,98 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 true
             }
             _ => false,
-        };
-        if already_matched {
-            // Backend matches but fn ptrs may be stale (e.g., first call after construction).
-            // SAFETY: UnsafeCell accessed from single thread.
-            self.set_dispatch_fn_ptrs(mode, local.is_pod);
-            return;
+        }
+    }
+
+    /// Initialize an intra-process backend (DirectChannel or ring buffer).
+    ///
+    /// Looks up existing rings from the registry first, then creates new ones
+    /// if needed. Drains old data during backend transitions.
+    fn init_intra_backend(
+        &self,
+        backend: &mut BackendStorage<T>,
+        mode: BackendMode,
+        epoch: u64,
+        cap: u32,
+    ) {
+        // First, try to look up an existing ring from the registry.
+        // Another participant may have already created one for this (topic, epoch).
+        if let Some(existing) = registry::lookup_backend(&self.name, epoch) {
+            if self.try_set_backend_from_registry(backend, &existing, mode) {
+                return;
+            }
         }
 
-        if mode.is_intra_process() {
-            let cap = if capacity == 0 { 64 } else { capacity };
-
-            // First, try to look up an existing ring from the registry.
-            // Another participant may have already created one for this (topic, epoch).
-            if let Some(existing) = registry::lookup_backend(&self.name, epoch) {
-                if self.try_set_backend_from_registry(backend, &existing, mode) {
-                    self.set_dispatch_fn_ptrs(mode, local.is_pod);
-                    return;
-                }
-            }
-
-            // Create a new intra-process ring, drain old data, and register it.
-            // All 4 ring types (SPSC/SPMC/MPSC/MPMC) follow identical logic:
-            // create → drain old → store_or_get from registry → downcast.
-            macro_rules! create_intra_ring {
-                ($Ring:ty, $Variant:ident, $cap:expr) => {{
-                    let new_ring = Arc::new(<$Ring>::new($cap));
-                    self.drain_old_into_ring(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name,
-                        epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    *backend = if let Ok(ring) = shared.downcast::<$Ring>() {
-                        BackendStorage::$Variant(ring)
-                    } else {
-                        BackendStorage::$Variant(new_ring)
-                    };
-                }};
-            }
-
-            // Not found in registry — create new ring, drain old data, and store.
-            match mode {
-                BackendMode::DirectChannel => {
-                    let new_ring = Arc::new(DirectSlot::new(cap));
-                    self.drain_old_into_direct(&new_ring, epoch);
-                    let shared = registry::store_or_get_backend(
-                        &self.name,
-                        epoch,
-                        new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
-                    );
-                    *backend = if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
-                        BackendStorage::DirectChannel(slot)
-                    } else {
-                        BackendStorage::DirectChannel(new_ring)
-                    };
-                }
-                BackendMode::SpscIntra => create_intra_ring!(SpscRing<T>, SpscIntra, cap),
-                BackendMode::SpmcIntra => create_intra_ring!(SpmcRing<T>, SpmcIntra, cap),
-                BackendMode::MpscIntra => create_intra_ring!(MpscRing<T>, MpscIntra, cap),
-                BackendMode::MpmcIntra => create_intra_ring!(MpmcRing<T>, MpmcIntra, cap),
-                _ => {
-                    // Unrecognized intra-process mode — keep ShmData
-                    *backend = BackendStorage::ShmData;
-                }
-            }
-        } else {
-            // Cross-process or Unknown: use ShmData.
-            // Drain old heap ring messages into SHM before switching.
-            self.drain_old_into_shm(epoch);
-
-            *backend = BackendStorage::ShmData;
-
-            // Restore SHM cached pointers. DirectChannel setup overwrites
-            // cached_data_ptr/cached_seq_ptr to point at the DirectSlot heap
-            // buffer. SHM dispatch functions rely on these pointing into the
-            // mmap'd storage region. Without this restore, a DC→SHM migration
-            // (e.g., when a cross-process participant joins) would cause SHM
-            // dispatch to read/write the DirectSlot buffer instead of SHM — UB.
-            let cap = local.cached_capacity as usize;
-            // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
-            local.cached_seq_ptr =
-                unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-            local.cached_data_ptr =
-                unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
+        // Create a new intra-process ring, drain old data, and register it.
+        // All 4 ring types (SPSC/SPMC/MPSC/MPMC) follow identical logic:
+        // create → drain old → store_or_get from registry → downcast.
+        macro_rules! create_intra_ring {
+            ($Ring:ty, $Variant:ident, $cap:expr) => {{
+                let new_ring = Arc::new(<$Ring>::new($cap));
+                self.drain_old_into_ring(&new_ring, epoch);
+                let shared = registry::store_or_get_backend(
+                    &self.name,
+                    epoch,
+                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
+                );
+                *backend = if let Ok(ring) = shared.downcast::<$Ring>() {
+                    BackendStorage::$Variant(ring)
+                } else {
+                    BackendStorage::$Variant(new_ring)
+                };
+            }};
         }
 
-        // Set function pointers to match the new backend.
-        // SAFETY: UnsafeCell accessed from single thread.
-        self.set_dispatch_fn_ptrs(mode, local.is_pod);
+        match mode {
+            BackendMode::DirectChannel => {
+                let new_ring = Arc::new(DirectSlot::new(cap));
+                self.drain_old_into_direct(&new_ring, epoch);
+                let shared = registry::store_or_get_backend(
+                    &self.name,
+                    epoch,
+                    new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
+                );
+                *backend = if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
+                    BackendStorage::DirectChannel(slot)
+                } else {
+                    BackendStorage::DirectChannel(new_ring)
+                };
+            }
+            BackendMode::SpscIntra => create_intra_ring!(SpscRing<T>, SpscIntra, cap),
+            BackendMode::SpmcIntra => create_intra_ring!(SpmcRing<T>, SpmcIntra, cap),
+            BackendMode::MpscIntra => create_intra_ring!(MpscRing<T>, MpscIntra, cap),
+            BackendMode::MpmcIntra => create_intra_ring!(MpmcRing<T>, MpmcIntra, cap),
+            _ => {
+                // Unrecognized intra-process mode — keep ShmData
+                *backend = BackendStorage::ShmData;
+            }
+        }
+    }
+
+    /// Initialize a cross-process SHM backend, restoring cached pointers.
+    ///
+    /// Drains old heap ring messages into SHM and restores cached data/seq
+    /// pointers that may have been overwritten by DirectChannel setup.
+    fn init_shm_backend(&self, backend: &mut BackendStorage<T>, epoch: u64) {
+        // Cross-process or Unknown: use ShmData.
+        // Drain old heap ring messages into SHM before switching.
+        self.drain_old_into_shm(epoch);
+
+        *backend = BackendStorage::ShmData;
+
+        // Restore SHM cached pointers. DirectChannel setup overwrites
+        // cached_data_ptr/cached_seq_ptr to point at the DirectSlot heap
+        // buffer. SHM dispatch functions rely on these pointing into the
+        // mmap'd storage region. Without this restore, a DC→SHM migration
+        // (e.g., when a cross-process participant joins) would cause SHM
+        // dispatch to read/write the DirectSlot buffer instead of SHM — UB.
+        let local = self.local();
+        let cap = local.cached_capacity as usize;
+        // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
+        local.cached_seq_ptr =
+            unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_data_ptr =
+            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
     }
 
     /// Set dispatch function pointers based on the current backend mode and POD status.
@@ -808,110 +837,118 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // for non-SPSC recv paths (MpscShm, SpmcShm, MpmcShm, PodShm).
         let colo = is_pod && mem::size_of::<T>() + 8 <= 64;
         let local = self.local();
-        let can_send = local.role.can_send();
-        let can_recv = local.role.can_recv();
+        let role = local.role;
 
-        // For DirectChannel: cache DirectSlot pointers into LocalState so dispatch
-        // functions skip BackendStorage traversal entirely.
-        //   - role==Both (DC-local): cache buffer + plain u64 head/tail (no atomics)
-        //   - role==Publisher/Consumer (DC-cached): cache buffer + AtomicU64 head/tail ptrs
         if mode == BackendMode::DirectChannel {
-            // SAFETY: backend UnsafeCell accessed from single thread
-            if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
-                local.cached_data_ptr = slot.buffer.as_ptr() as *mut u8;
-                local.cached_capacity = slot.capacity;
-                local.cached_capacity_mask = slot.mask;
-                if local.role == TopicRole::Both {
-                    // DC-local: plain u64 head/tail (single-instance optimization)
-                    local.local_head = slot.head.load(Ordering::Relaxed);
-                    local.local_tail = slot.tail.load(Ordering::Relaxed);
-                } else {
-                    // DC-cached: cache pointers to atomic head/tail for separate instances
-                    local.cached_header_ptr = &slot.head as *const AtomicU64 as *const TopicHeader;
-                    local.cached_seq_ptr = &slot.tail as *const AtomicU64 as *mut u8;
-                }
-            }
+            self.cache_direct_channel_ptrs(local);
         }
 
         // SAFETY: UnsafeCell accessed from single thread (same guarantee as backend/local)
         unsafe {
-            // Only set send_fn if registered as producer.
-            // Keeping send_uninitialized ensures ensure_producer() is called on first send,
-            // which registers the participant and triggers correct topology detection.
-            *self.send_fn.get() = if !can_send {
-                dispatch::send_uninitialized::<T>
-            } else {
-                match mode {
-                    // Pure LocalState path when both pub+sub on same Topic (benchmark path).
-                    // Uses cached buffer pointer + plain u64 head/tail — no atomics, no
-                    // epoch_guard, no BackendStorage traversal. ~0ns like Copper-rs.
-                    BackendMode::DirectChannel if local.role == TopicRole::Both => {
-                        dispatch::send_direct_channel_local::<T>
-                    }
-                    // Cached path for separate instances sharing DirectSlot.
-                    // Skips epoch_guard + BackendStorage traversal; amortized epoch check.
-                    BackendMode::DirectChannel => dispatch::send_direct_channel_cached::<T>,
-                    BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
-                    BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
-                    BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
-                    BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
-                    BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
-                        dispatch::send_shm_sp_pod_colo::<T>
-                    }
-                    BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => {
-                        dispatch::send_shm_sp_pod::<T>
-                    }
-                    BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
-                    BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
-                    BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-                    BackendMode::MpscShm | BackendMode::MpmcShm if colo => {
-                        dispatch::send_shm_mp_pod_colo::<T>
-                    }
-                    BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => {
-                        dispatch::send_shm_mp_pod::<T>
-                    }
-                    BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
-                    BackendMode::Unknown => dispatch::send_uninitialized::<T>,
-                }
-            };
+            *self.send_fn.get() = Self::resolve_send_fn(mode, is_pod, colo, role);
+            *self.recv_fn.get() = Self::resolve_recv_fn(mode, is_pod, colo, role);
+        }
+    }
 
-            // Only set recv_fn if registered as consumer.
-            // Keeping recv_uninitialized ensures ensure_consumer() is called on first recv,
-            // which registers the participant and triggers correct topology detection
-            // (e.g., enabling DirectChannel when both pub+sub are on the same thread).
-            *self.recv_fn.get() = if !can_recv {
-                dispatch::recv_uninitialized::<T>
+    /// Cache DirectSlot pointers into LocalState so dispatch functions skip
+    /// BackendStorage traversal entirely.
+    fn cache_direct_channel_ptrs(&self, local: &mut LocalState) {
+        // SAFETY: backend UnsafeCell accessed from single thread
+        if let BackendStorage::DirectChannel(slot) = unsafe { &*self.backend.get() } {
+            local.cached_data_ptr = slot.buffer.as_ptr() as *mut u8;
+            local.cached_capacity = slot.capacity;
+            local.cached_capacity_mask = slot.mask;
+            if local.role == TopicRole::Both {
+                // DC-local: plain u64 head/tail (single-instance optimization)
+                local.local_head = slot.head.load(Ordering::Relaxed);
+                local.local_tail = slot.tail.load(Ordering::Relaxed);
             } else {
-                match mode {
-                    BackendMode::DirectChannel if local.role == TopicRole::Both => {
-                        dispatch::recv_direct_channel_local::<T>
-                    }
-                    // Cached path for separate instances sharing DirectSlot.
-                    BackendMode::DirectChannel => dispatch::recv_direct_channel_cached::<T>,
-                    BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
-                    BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
-                    BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
-                    BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
-                    // SpscShm: MUST poll header.sequence_or_head (separate cache line).
-                    // Polling inline seq would contend with producer's data write.
-                    BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
-                    BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
-                    // Non-SPSC: inline seq + data on same cache line → 1 fewer transfer
-                    BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
-                    BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
-                    BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
-                    BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
-                    BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
-                    BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
-                    BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
-                    BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
-                    BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
-                    BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
-                    BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
-                    BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
-                    BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
-                }
-            };
+                // DC-cached: cache pointers to atomic head/tail for separate instances
+                local.cached_header_ptr = &slot.head as *const AtomicU64 as *const TopicHeader;
+                local.cached_seq_ptr = &slot.tail as *const AtomicU64 as *mut u8;
+            }
+        }
+    }
+
+    /// Resolve the send dispatch function pointer for the given backend mode.
+    ///
+    /// Returns `send_uninitialized` if the role cannot send, ensuring
+    /// `ensure_producer()` is called on first send to register the participant.
+    fn resolve_send_fn(
+        mode: BackendMode,
+        is_pod: bool,
+        colo: bool,
+        role: TopicRole,
+    ) -> dispatch::SendFn<T> {
+        if !role.can_send() {
+            return dispatch::send_uninitialized::<T>;
+        }
+        match mode {
+            BackendMode::DirectChannel if role == TopicRole::Both => {
+                dispatch::send_direct_channel_local::<T>
+            }
+            BackendMode::DirectChannel => dispatch::send_direct_channel_cached::<T>,
+            BackendMode::SpscIntra => dispatch::send_spsc_intra::<T>,
+            BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
+            BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
+            BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
+            BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
+                dispatch::send_shm_sp_pod_colo::<T>
+            }
+            BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => {
+                dispatch::send_shm_sp_pod::<T>
+            }
+            BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
+            BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
+            BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
+            BackendMode::MpscShm | BackendMode::MpmcShm if colo => {
+                dispatch::send_shm_mp_pod_colo::<T>
+            }
+            BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => {
+                dispatch::send_shm_mp_pod::<T>
+            }
+            BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
+            BackendMode::Unknown => dispatch::send_uninitialized::<T>,
+        }
+    }
+
+    /// Resolve the recv dispatch function pointer for the given backend mode.
+    ///
+    /// Returns `recv_uninitialized` if the role cannot recv, ensuring
+    /// `ensure_consumer()` is called on first recv to register the participant.
+    fn resolve_recv_fn(
+        mode: BackendMode,
+        is_pod: bool,
+        colo: bool,
+        role: TopicRole,
+    ) -> dispatch::RecvFn<T> {
+        if !role.can_recv() {
+            return dispatch::recv_uninitialized::<T>;
+        }
+        match mode {
+            BackendMode::DirectChannel if role == TopicRole::Both => {
+                dispatch::recv_direct_channel_local::<T>
+            }
+            BackendMode::DirectChannel => dispatch::recv_direct_channel_cached::<T>,
+            BackendMode::SpscIntra => dispatch::recv_spsc_intra::<T>,
+            BackendMode::SpmcIntra => dispatch::recv_spmc_intra::<T>,
+            BackendMode::MpscIntra => dispatch::recv_mpsc_intra::<T>,
+            BackendMode::MpmcIntra => dispatch::recv_mpmc_intra::<T>,
+            BackendMode::SpscShm if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
+            BackendMode::SpscShm if is_pod => dispatch::recv_shm_spsc_pod::<T>,
+            BackendMode::MpscShm if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
+            BackendMode::MpscShm if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
+            BackendMode::SpmcShm if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
+            BackendMode::SpmcShm if is_pod => dispatch::recv_shm_spmc_pod::<T>,
+            BackendMode::PodShm if colo => dispatch::recv_shm_pod_broadcast_colo::<T>,
+            BackendMode::PodShm => dispatch::recv_shm_pod_broadcast::<T>,
+            BackendMode::MpmcShm if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
+            BackendMode::MpmcShm if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
+            BackendMode::SpscShm => dispatch::recv_shm_spsc_serde::<T>,
+            BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
+            BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
+            BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
+            BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
         }
     }
 
@@ -1844,6 +1881,48 @@ impl<T: TopicMessage> Topic<T> {
         // sequence_or_head is at a fixed offset within the repr(C) struct.
         unsafe { &(*header_ptr).sequence_or_head as *const std::sync::atomic::AtomicU64 }
     }
+
+    /// Get the current backend mode.
+    #[doc(hidden)]
+    pub fn mode(&self) -> BackendMode {
+        self.ring.mode()
+    }
+
+    /// Get the topic role.
+    #[allow(dead_code)]
+    pub fn role(&self) -> TopicRole {
+        self.ring.role()
+    }
+
+    /// Get migration metrics.
+    #[allow(dead_code)]
+    pub fn migration_metrics(&self) -> &MigrationMetrics {
+        self.ring.migration_metrics()
+    }
+
+    /// Get connection state.
+    #[allow(dead_code)]
+    pub fn connection_state(&self) -> ConnectionState {
+        self.ring.connection_state()
+    }
+
+    /// Check if topic is on the same thread.
+    #[allow(dead_code)]
+    pub fn is_same_thread(&self) -> bool {
+        self.ring.is_same_thread()
+    }
+
+    /// Check if topic is in the same process.
+    #[allow(dead_code)]
+    pub fn is_same_process(&self) -> bool {
+        self.ring.is_same_process()
+    }
+
+    /// Force migration to a different backend mode.
+    #[doc(hidden)]
+    pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
+        self.ring.force_migrate(mode)
+    }
 }
 
 // ============================================================================
@@ -1910,6 +1989,18 @@ where
         T: Copy,
     {
         self.ring.read_latest()
+    }
+
+    /// Try to send a message, returning it on failure (for explicit retry).
+    #[inline(always)]
+    pub fn try_send(&self, msg: T) -> Result<(), T> {
+        self.ring.try_send(msg)
+    }
+
+    /// Try to receive a message.
+    #[inline(always)]
+    pub fn try_recv(&self) -> Option<T> {
+        self.ring.try_recv()
     }
 }
 

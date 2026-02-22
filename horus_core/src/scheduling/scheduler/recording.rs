@@ -142,7 +142,7 @@ impl Scheduler {
 
     /// Set replay to start at a specific tick (time travel).
     pub fn start_at_tick(mut self, tick: u64) -> Self {
-        self.current_tick = tick;
+        self.tick.current = tick;
         if let Some(ref mut replay) = self.replay {
             for replayer in replay.nodes.values_mut() {
                 replayer.seek(tick);
@@ -197,7 +197,7 @@ impl Scheduler {
 
     /// Get the current tick number.
     pub fn current_tick(&self) -> u64 {
-        self.current_tick
+        self.tick.current
     }
 
     /// Stop recording and save all data to disk.

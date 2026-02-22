@@ -529,7 +529,7 @@ fn test_rate_limiting_adjusts_tick_period() {
     let mut scheduler = Scheduler::new();
 
     // Default tick period is ~60Hz = 16667us
-    let default_period = scheduler.tick_period;
+    let default_period = scheduler.tick.period;
 
     // Add a node at 500Hz
     scheduler
@@ -540,12 +540,12 @@ fn test_rate_limiting_adjusts_tick_period() {
 
     // tick_period should now be <= 2000us (500Hz)
     assert!(
-        scheduler.tick_period <= Duration::from_micros(2000),
+        scheduler.tick.period <= Duration::from_micros(2000),
         "tick_period should have been adjusted to >= 500Hz, got {:?}",
-        scheduler.tick_period
+        scheduler.tick.period
     );
     assert!(
-        scheduler.tick_period < default_period,
+        scheduler.tick.period < default_period,
         "tick_period should be faster than default 60Hz"
     );
 }
@@ -587,7 +587,7 @@ fn test_rate_limiting_does_not_lower_tick_period() {
     // If a node has a rate lower than default, tick_period should stay the same
     let mut scheduler = Scheduler::new();
 
-    let default_period = scheduler.tick_period;
+    let default_period = scheduler.tick.period;
 
     scheduler
         .add(CounterNode::new("slow_node"))
@@ -596,7 +596,7 @@ fn test_rate_limiting_does_not_lower_tick_period() {
         .done();
 
     assert_eq!(
-        scheduler.tick_period, default_period,
+        scheduler.tick.period, default_period,
         "tick_period should not decrease for a 10Hz node"
     );
 }

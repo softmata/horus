@@ -293,7 +293,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "DISABLED (no password set)".yellow()
         );
     } else {
-        println!("{}  {}", "║  Auth:".green(), "Password protected");
+        println!("{}  Password protected", "║  Auth:".green());
     }
 
     // Show workspace info

@@ -58,10 +58,18 @@ tempfile = "3.0"
 loom = "0.7"
 
 [features]
-default = ["macros"]
+default = ["macros", "telemetry", "blackbox"]
 macros = ["horus_macros"]
 
-# CUDA IPC for cross-process GPU memory sharing (requires NVIDIA GPU)
+# Telemetry export for live monitoring (HTTP, UDP, file)
+telemetry = []
+
+# Black box flight recorder for post-mortem crash analysis
+blackbox = []
+
+# CUDA IPC for cross-process GPU memory sharing.
+# No crate dependency — uses system CUDA Runtime API via FFI.
+# Requires: NVIDIA GPU + CUDA toolkit installed on the system.
 cuda = []
 
 # mDNS/DNS-SD for automatic peer discovery on local networks
