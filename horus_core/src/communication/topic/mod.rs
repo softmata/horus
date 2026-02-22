@@ -121,7 +121,7 @@ pub(crate) mod spmc_intra;
 pub(crate) mod spsc_intra;
 
 // Shared pool registry for all tensor topic extensions
-pub(crate) mod pool_registry;
+pub mod pool_registry;
 
 // Auto-managed tensor pool extensions
 pub mod tensor_ext;

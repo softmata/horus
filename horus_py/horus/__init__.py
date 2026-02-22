@@ -35,6 +35,10 @@ try:
         TensorHandle,
         cuda_is_available,
         cuda_device_count,
+        # Domain types — clean API hiding DLPack/TensorPool internals
+        Image,
+        PointCloud,
+        DepthImage,
         # Native message classes (registered from Rust)
         CmdVel as _RustCmdVel,
         Pose2D as _RustPose2D,
@@ -90,6 +94,15 @@ except ImportError:
             return {}
 
     class TensorHandle:
+        pass
+
+    class Image:
+        pass
+
+    class PointCloud:
+        pass
+
+    class DepthImage:
         pass
 
 __version__ = "0.1.9"
@@ -1532,7 +1545,11 @@ __all__ = [
     "msggen",  # horus.msggen module for custom typed messages
     # AI/ML submodule
     "ai",  # horus.ai module for ML integration
-    # Tensor system for zero-copy ML/AI
+    # Domain types — clean API hiding DLPack/TensorPool
+    "Image",
+    "PointCloud",
+    "DepthImage",
+    # Tensor system for zero-copy ML/AI (advanced)
     "TensorPool",
     "TensorHandle",
     # Simple async API

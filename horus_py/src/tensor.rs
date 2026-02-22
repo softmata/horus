@@ -4,13 +4,16 @@
 //! and the buffer protocol.
 
 use horus::memory::{TensorHandle, TensorPool, TensorPoolConfig};
-use horus_types::{Device, HorusTensor, TensorDtype};
+use horus_types::{HorusTensor, TensorDtype};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use std::collections::HashMap;
+use std::ffi::{c_void, CString};
 use std::sync::Arc;
+
+use crate::dlpack_utils;
 
 // Global pool registry - allows multiple pools to be accessed by ID
 lazy_static::lazy_static! {
@@ -258,7 +261,10 @@ impl PyTensorHandle {
 
     /// DLPack export - returns a PyCapsule containing DLManagedTensor
     ///
-    /// This enables: torch.from_dlpack(tensor_handle)
+    /// This enables: torch.from_dlpack(tensor_handle), np.from_dlpack(tensor_handle)
+    ///
+    /// Creates a real PyCapsule wrapping a C-ABI DLManagedTensor via horus_core::dlpack.
+    /// No numpy/torch dependency required for export.
     ///
     /// Args:
     ///     stream: Optional CUDA stream for synchronization (ignored for CPU tensors)
@@ -273,12 +279,9 @@ impl PyTensorHandle {
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
 
         let tensor = handle.tensor();
-        let _ = stream; // Stream synchronization not implemented yet
+        let _ = stream;
 
-        // Convert shape to i64
         let shape: Vec<i64> = handle.shape().iter().map(|&x| x as i64).collect();
-
-        // Convert strides from bytes to elements
         let elem_size = tensor.dtype.element_size() as i64;
         let strides: Vec<i64> = handle
             .strides()
@@ -286,68 +289,13 @@ impl PyTensorHandle {
             .map(|&x| (x as i64) / elem_size)
             .collect();
 
-        // Get dtype in DLPack format (code, bits, lanes)
-        let (dl_code, dl_bits, dl_lanes) = dtype_to_dlpack(tensor.dtype);
-
-        // Get device type and id
-        let (device_type, device_id) = device_to_dlpack(tensor.device());
-
-        // Get data pointer
         let data_ptr = if handle.is_cuda() {
-            // For CUDA, extract pointer from IPC handle
-            u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as usize
+            u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
         } else {
-            handle.data_ptr() as usize
+            handle.data_ptr() as *mut c_void
         };
 
-        // Create PyCapsule via Python ctypes
-        // We'll create the DLManagedTensor structure in Python for simplicity
-        let _ctypes = py.import("ctypes")?;
-
-        // Create the capsule using a helper function
-        let _dlpack_module = py.import("builtins")?;
-
-        // Build DLManagedTensor dict representation for Python
-        let dl_tensor = PyDict::new(py);
-        dl_tensor.set_item("data", data_ptr)?;
-        dl_tensor.set_item("device_type", device_type)?;
-        dl_tensor.set_item("device_id", device_id)?;
-        dl_tensor.set_item("ndim", shape.len())?;
-        dl_tensor.set_item("dtype_code", dl_code)?;
-        dl_tensor.set_item("dtype_bits", dl_bits)?;
-        dl_tensor.set_item("dtype_lanes", dl_lanes)?;
-        dl_tensor.set_item("shape", shape)?;
-        dl_tensor.set_item("strides", strides)?;
-        dl_tensor.set_item("byte_offset", 0u64)?;
-
-        // Use numpy's DLPack support if available, otherwise return dict
-        // This is a simplified implementation - full implementation would use PyCapsule
-        match py.import("numpy") {
-            Ok(np) => {
-                // Try to use numpy's __dlpack__ path via as_tensor
-                if handle.is_cuda() {
-                    // For CUDA, use torch if available
-                    match py.import("torch") {
-                        Ok(torch) => {
-                            // Create tensor from cuda array interface, then get dlpack
-                            let cuda_iface = self.__cuda_array_interface__(py)?;
-                            let t = torch.call_method1("as_tensor", (cuda_iface,))?;
-                            Ok(t.call_method1("__dlpack__", (stream,))?.unbind())
-                        }
-                        Err(_) => Err(PyRuntimeError::new_err(
-                            "CUDA DLPack export requires PyTorch. Install torch or use __cuda_array_interface__."
-                        ))
-                    }
-                } else {
-                    // For CPU, create numpy array and get dlpack from it
-                    let arr = np.call_method1("asarray", (self.__array_interface__(py)?,))?;
-                    Ok(arr.call_method1("__dlpack__", ())?.unbind())
-                }
-            }
-            Err(_) => Err(PyRuntimeError::new_err(
-                "DLPack export requires numpy. Install numpy.",
-            )),
-        }
+        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, tensor.dtype, tensor.device())
     }
 
     /// DLPack device info - returns (device_type, device_id)
@@ -363,113 +311,80 @@ impl PyTensorHandle {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
 
-        let tensor = handle.tensor();
-        Ok(device_to_dlpack(tensor.device()))
+        let device = handle.tensor().device();
+        Ok((device.to_dlpack_device_type(), device.to_dlpack_device_id()))
     }
 
     /// Import a DLPack tensor
     ///
     /// Creates a TensorHandle from any object that implements __dlpack__.
+    /// Parses the PyCapsule directly via horus_core::dlpack — no numpy/torch required.
     ///
     /// Args:
     ///     obj: Object with __dlpack__ method (PyTorch tensor, JAX array, etc.)
     ///
     /// Returns:
-    ///     TensorHandle wrapping the DLPack tensor data
+    ///     TensorHandle wrapping a copy of the DLPack tensor data
     #[staticmethod]
     fn from_dlpack(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Self> {
-        // Try to call __dlpack__ on the object to verify it supports DLPack
-        let _capsule = obj.call_method1(py, "__dlpack__", ())?;
+        // Get capsule from __dlpack__(stream=None)
+        let capsule_obj = obj.call_method1(py, "__dlpack__", (py.None(),))?;
 
-        // Get device info
-        let device_info: (i32, i32) = obj.call_method0(py, "__dlpack_device__")?.extract(py)?;
-        let (device_type, device_id) = device_info;
-
-        // For now, convert via numpy/torch for simplicity
-        // Full implementation would parse the PyCapsule directly
-        if device_type == 1 {
-            // CPU - use numpy
-            let np = py.import("numpy")?;
-            let arr = np.call_method1("from_dlpack", (obj,))?;
-
-            // Get array info
-            let shape: Vec<u64> = arr
-                .getattr("shape")?
-                .extract::<Vec<i64>>()?
-                .iter()
-                .map(|&x| x as u64)
-                .collect();
-            let dtype_str: String = arr.getattr("dtype")?.call_method0("__str__")?.extract()?;
-
-            // Create a pool and allocate tensor
-            let pool = get_or_create_pool(1, None)?;
-            let dtype = parse_dtype(&dtype_str)?;
-            let handle =
-                TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, Device::cpu())
-                    .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
-
-            // Copy data
-            let np_copy = np.getattr("copyto")?;
-            let dest_arr = np.call_method1(
-                "asarray",
-                (PyTensorHandle {
-                    handle: Some(handle.clone()),
-                },),
-            )?;
-            np_copy.call1((dest_arr, arr))?;
-
-            Ok(Self {
-                handle: Some(handle),
-            })
-        } else if device_type == 2 {
-            // CUDA - use torch
-            let torch = py.import("torch")?;
-            let t = torch.call_method1("from_dlpack", (obj,))?;
-
-            // Get tensor info
-            let shape: Vec<u64> = t
-                .getattr("shape")?
-                .extract::<Vec<i64>>()?
-                .iter()
-                .map(|&x| x as u64)
-                .collect();
-            let dtype_str: String = t.getattr("dtype")?.call_method0("__str__")?.extract()?;
-            let dtype_str = dtype_str.replace("torch.", "");
-
-            // Map torch dtype to our dtype
-            let dtype = parse_dtype(&dtype_str)?;
-            let device = if device_id >= 0 {
-                Device::cuda(device_id as u32)
-            } else {
-                return Err(PyValueError::new_err(format!(
-                    "Unsupported CUDA device: {}",
-                    device_id
-                )));
-            };
-
-            // Create pool and allocate
-            let pool = get_or_create_pool(1, None)?;
-            let handle = TensorHandle::alloc(Arc::clone(&pool), &shape, dtype, device)
-                .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
-
-            // Copy via torch
-            let dest_t = torch.call_method1(
-                "as_tensor",
-                (PyTensorHandle {
-                    handle: Some(handle.clone()),
-                },),
-            )?;
-            dest_t.call_method1("copy_", (t,))?;
-
-            Ok(Self {
-                handle: Some(handle),
-            })
-        } else {
-            Err(PyValueError::new_err(format!(
-                "Unsupported device type: {}",
-                device_type
-            )))
+        // Extract DLManagedTensor* from PyCapsule
+        let capsule_name = CString::new("dltensor").unwrap();
+        let managed_ptr = unsafe {
+            pyo3::ffi::PyCapsule_GetPointer(capsule_obj.as_ptr(), capsule_name.as_ptr())
+        };
+        if managed_ptr.is_null() {
+            return Err(PyRuntimeError::new_err(
+                "Invalid DLPack capsule (not a dltensor or already consumed)",
+            ));
         }
+
+        // Parse tensor metadata via horus_core
+        let descriptor = unsafe {
+            horus_core::dlpack::from_dlpack(
+                managed_ptr as *const horus_core::dlpack::DLManagedTensor,
+            )
+        }
+        .map_err(|e| PyRuntimeError::new_err(format!("DLPack import failed: {}", e)))?;
+
+        // Rename capsule to "used_dltensor" (DLPack spec: prevents double-consume)
+        let used_name = CString::new("used_dltensor").unwrap();
+        unsafe {
+            pyo3::ffi::PyCapsule_SetName(capsule_obj.as_ptr(), used_name.as_ptr());
+        }
+        std::mem::forget(used_name);
+
+        // Allocate HORUS TensorHandle and copy data from source
+        let pool = get_or_create_pool(1, None)?;
+        let handle = TensorHandle::alloc(
+            Arc::clone(&pool),
+            &descriptor.shape,
+            descriptor.dtype,
+            descriptor.device,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+
+        let src_ptr = descriptor.data_ptr as *const u8;
+        let dst_ptr = handle.data_ptr();
+        let copy_len = descriptor.size_bytes as usize;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
+        }
+
+        // Call deleter on the original DLManagedTensor (we're done with the data)
+        unsafe {
+            let managed =
+                managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
+            if let Some(deleter) = (*managed).deleter {
+                deleter(managed);
+            }
+        }
+
+        Ok(Self {
+            handle: Some(handle),
+        })
     }
 
     /// Get tensor shape
@@ -855,73 +770,12 @@ impl PyTensorHandle {
 
 // === Helper functions ===
 
-fn parse_dtype(s: &str) -> PyResult<TensorDtype> {
-    match s.to_lowercase().as_str() {
-        "float32" | "f32" | "float" => Ok(TensorDtype::F32),
-        "float64" | "f64" | "double" => Ok(TensorDtype::F64),
-        "float16" | "f16" | "half" => Ok(TensorDtype::F16),
-        "bfloat16" | "bf16" => Ok(TensorDtype::BF16),
-        "int8" | "i8" => Ok(TensorDtype::I8),
-        "int16" | "i16" => Ok(TensorDtype::I16),
-        "int32" | "i32" | "int" => Ok(TensorDtype::I32),
-        "int64" | "i64" | "long" => Ok(TensorDtype::I64),
-        "uint8" | "u8" | "byte" => Ok(TensorDtype::U8),
-        "uint16" | "u16" => Ok(TensorDtype::U16),
-        "uint32" | "u32" => Ok(TensorDtype::U32),
-        "uint64" | "u64" => Ok(TensorDtype::U64),
-        "bool" => Ok(TensorDtype::Bool),
-        _ => Err(PyValueError::new_err(format!("Unknown dtype: {}", s))),
-    }
-}
-
-fn dtype_to_str(dtype: TensorDtype) -> &'static str {
-    match dtype {
-        TensorDtype::F32 => "float32",
-        TensorDtype::F64 => "float64",
-        TensorDtype::F16 => "float16",
-        TensorDtype::BF16 => "bfloat16",
-        TensorDtype::I8 => "int8",
-        TensorDtype::I16 => "int16",
-        TensorDtype::I32 => "int32",
-        TensorDtype::I64 => "int64",
-        TensorDtype::U8 => "uint8",
-        TensorDtype::U16 => "uint16",
-        TensorDtype::U32 => "uint32",
-        TensorDtype::U64 => "uint64",
-        TensorDtype::Bool => "bool",
-    }
-}
-
-fn parse_device(s: &str) -> PyResult<Device> {
-    Device::parse(s).ok_or_else(|| PyValueError::new_err(format!("Unknown device: {}", s)))
-}
+// All helper functions (parse_dtype, dtype_to_str, parse_device, device_to_string,
+// dlpack_capsule_destructor) are in crate::dlpack_utils to avoid duplication.
+use dlpack_utils::{parse_dtype, dtype_to_str, parse_device, device_to_string};
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()
-}
-
-fn device_to_string(device: Device) -> String {
-    device.to_string()
-}
-
-/// Convert TensorDtype to DLPack format (code, bits, lanes)
-///
-/// DLPack dtype codes:
-/// - 0 = kDLInt (signed integer)
-/// - 1 = kDLUInt (unsigned integer)
-/// - 2 = kDLFloat (IEEE floating point)
-/// - 4 = kDLBfloat (bfloat16)
-fn dtype_to_dlpack(dtype: TensorDtype) -> (u8, u8, u16) {
-    dtype.to_dlpack()
-}
-
-/// Convert TensorDevice to DLPack format (device_type, device_id)
-///
-/// DLPack device types:
-/// - 1 = kDLCPU
-/// - 2 = kDLCUDA
-fn device_to_dlpack(device: Device) -> (i32, i32) {
-    (device.to_dlpack_device_type(), device.to_dlpack_device_id())
 }
 
 /// Check if CUDA is available

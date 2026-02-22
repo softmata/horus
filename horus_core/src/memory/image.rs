@@ -64,10 +64,10 @@ impl Image {
         Ok(Self { descriptor, pool })
     }
 
-    /// Create an Image from a descriptor and pool (internal).
+    /// Create an Image from a descriptor and pool.
     ///
-    /// Used by Topic extensions after allocation or receive.
-    pub(crate) fn from_owned(descriptor: ImageDescriptor, pool: Arc<TensorPool>) -> Self {
+    /// Used by Topic extensions and Python bindings after allocation or receive.
+    pub fn from_owned(descriptor: ImageDescriptor, pool: Arc<TensorPool>) -> Self {
         Self { descriptor, pool }
     }
 
@@ -292,18 +292,17 @@ impl Image {
         self.descriptor.frame_id()
     }
 
-    // === Internal accessors (for Topic extensions) ===
+    // === Descriptor / pool accessors ===
 
-    /// Get the underlying descriptor (internal).
+    /// Get the underlying descriptor.
     #[inline]
-    pub(crate) fn descriptor(&self) -> &ImageDescriptor {
+    pub fn descriptor(&self) -> &ImageDescriptor {
         &self.descriptor
     }
 
-    /// Get the pool (internal).
-
+    /// Get the pool reference.
     #[inline]
-    pub(crate) fn pool(&self) -> &Arc<TensorPool> {
+    pub fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 

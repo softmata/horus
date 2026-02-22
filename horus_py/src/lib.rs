@@ -5,10 +5,14 @@
 use pyo3::prelude::*;
 
 mod config;
+mod depth_image;
+mod dlpack_utils;
 mod hframe;
+mod image;
 mod messages;
 mod node;
 mod perception;
+mod pointcloud;
 #[allow(deprecated)] // with_gil/allow_threads deprecated in PyO3 0.27, still functional
 mod scheduler;
 mod tensor;
@@ -49,6 +53,11 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Tensor system - zero-copy shared memory tensors
     tensor::register_tensor_classes(m)?;
+
+    // Domain types — hide DLPack/TensorPool internals behind clean API
+    m.add_class::<image::PyImage>()?;
+    m.add_class::<pointcloud::PyPointCloud>()?;
+    m.add_class::<depth_image::PyDepthImage>()?;
 
     // Perception types - Detection, PointCloud, Landmark
     perception::register_perception_module(m)?;

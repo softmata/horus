@@ -50,8 +50,8 @@ impl PointCloud {
         Ok(Self { descriptor, pool })
     }
 
-    /// Create a PointCloud from a descriptor and pool (internal).
-    pub(crate) fn from_owned(descriptor: PointCloudDescriptor, pool: Arc<TensorPool>) -> Self {
+    /// Create a PointCloud from a descriptor and pool.
+    pub fn from_owned(descriptor: PointCloudDescriptor, pool: Arc<TensorPool>) -> Self {
         Self { descriptor, pool }
     }
 
@@ -232,15 +232,17 @@ impl PointCloud {
         self.descriptor.frame_id()
     }
 
-    // === Internal accessors ===
+    // === Descriptor / pool accessors ===
 
+    /// Get the underlying descriptor.
     #[inline]
-    pub(crate) fn descriptor(&self) -> &PointCloudDescriptor {
+    pub fn descriptor(&self) -> &PointCloudDescriptor {
         &self.descriptor
     }
 
+    /// Get the pool reference.
     #[inline]
-    pub(crate) fn pool(&self) -> &Arc<TensorPool> {
+    pub fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
 
