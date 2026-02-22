@@ -140,14 +140,8 @@ pub(crate) enum ConnectionState {
     /// Not connected
     #[default]
     Disconnected,
-    /// Connection in progress
-    Connecting,
     /// Connected and operational
     Connected,
-    /// Reconnecting after a disconnect
-    Reconnecting,
-    /// Connection permanently failed
-    Failed,
 }
 
 impl ConnectionState {
@@ -155,21 +149,15 @@ impl ConnectionState {
     pub fn into_u8(self) -> u8 {
         match self {
             ConnectionState::Disconnected => 0,
-            ConnectionState::Connecting => 1,
             ConnectionState::Connected => 2,
-            ConnectionState::Reconnecting => 3,
-            ConnectionState::Failed => 4,
         }
     }
 
     /// Convert from u8
+    #[allow(dead_code)]
     pub fn from_u8(value: u8) -> Self {
         match value {
-            0 => ConnectionState::Disconnected,
-            1 => ConnectionState::Connecting,
             2 => ConnectionState::Connected,
-            3 => ConnectionState::Reconnecting,
-            4 => ConnectionState::Failed,
             _ => ConnectionState::Disconnected,
         }
     }

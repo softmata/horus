@@ -64,12 +64,6 @@ pub(crate) struct ParticipantEntry {
 }
 
 impl ParticipantEntry {
-    /// Check if this entry is empty (no participant)
-    #[inline]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.active.load(Ordering::Acquire) == 0
-    }
-
     /// Check if the lease has expired
     #[inline]
     pub(crate) fn is_lease_expired(&self, now_ms: u64) -> bool {
@@ -194,7 +188,7 @@ pub(crate) struct TopicHeader {
 const _: () = assert!(mem::size_of::<TopicHeader>() == 640);
 
 impl TopicHeader {
-    /// Create a zeroed header (for testing or pre-allocation)
+    #[allow(dead_code)] // used by tests
     pub fn zeroed() -> Self {
         Self {
             magic: 0,
@@ -292,12 +286,6 @@ impl TopicHeader {
         self.magic = TOPIC_MAGIC;
     }
 
-    /// Check if the header has valid magic number
-    #[inline]
-    pub fn is_valid(&self) -> bool {
-        self.magic == TOPIC_MAGIC && self.version == TOPIC_VERSION
-    }
-
     /// Get the current backend mode
     #[inline]
     pub fn mode(&self) -> BackendMode {
@@ -321,6 +309,7 @@ impl TopicHeader {
 
     /// Check if caller is on the same thread as creator
     #[inline]
+    #[allow(dead_code)]
     pub fn is_same_thread(&self) -> bool {
         self.is_same_process()
             && self.creator_thread_id_hash == hash_thread_id(std::thread::current().id())
@@ -526,33 +515,6 @@ impl TopicHeader {
         }
     }
 
-    /// Clean up expired leases and update counts
-    pub fn cleanup_expired_leases(&self) -> u32 {
-        let now_ms = current_time_ms();
-        let mut cleaned = 0u32;
-
-        for p in &self.participants {
-            let is_active = p.active.load(Ordering::Acquire) != 0;
-            if is_active && p.is_lease_expired(now_ms) {
-                let old_role = p.role.load(Ordering::Acquire);
-                if old_role & 1 != 0 {
-                    self.publisher_count.fetch_sub(1, Ordering::AcqRel);
-                }
-                if old_role & 2 != 0 {
-                    self.subscriber_count.fetch_sub(1, Ordering::AcqRel);
-                }
-                p.clear();
-                cleaned += 1;
-            }
-        }
-
-        if cleaned > 0 {
-            self.last_topology_change_ms
-                .store(now_ms, Ordering::Release);
-        }
-
-        cleaned
-    }
 }
 
 // ============================================================================

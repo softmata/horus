@@ -1296,14 +1296,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.header().mode()
     }
 
-    /// Get the current role
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn role(&self) -> TopicRole {
         self.local().role
     }
 
-    /// Get raw migration metrics (for internal use)
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         &self.metrics
     }
@@ -1318,8 +1316,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
-    /// Get the current connection state
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn connection_state(&self) -> ConnectionState {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
@@ -1501,8 +1498,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.check_migration();
     }
 
-    /// Force a backend migration (for testing)
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         let migrator = BackendMigrator::new(self.header());
         let result = migrator.try_migrate(mode);
@@ -1655,14 +1651,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
-    /// Check if all participants are in the same process (for debugging)
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn is_same_process(&self) -> bool {
         self.header().is_same_process()
     }
 
-    /// Check if caller is on same thread as creator (for debugging)
-    #[doc(hidden)]
+    #[allow(dead_code)] // used by tests
     pub fn is_same_thread(&self) -> bool {
         self.header().is_same_thread()
     }
@@ -1791,29 +1785,9 @@ impl<T: TopicMessage> Topic<T> {
         self.ring.name()
     }
 
-    /// Get the current backend mode.
-    pub(crate) fn mode(&self) -> BackendMode {
-        self.ring.mode()
-    }
-
-    /// Get the current role.
-    pub(crate) fn role(&self) -> TopicRole {
-        self.ring.role()
-    }
-
-    /// Get raw migration metrics.
-    pub(crate) fn migration_metrics(&self) -> &MigrationMetrics {
-        self.ring.migration_metrics()
-    }
-
     /// Get a snapshot of the topic's metrics.
     pub fn metrics(&self) -> TopicMetrics {
         self.ring.metrics()
-    }
-
-    /// Get the current connection state.
-    pub(crate) fn connection_state(&self) -> ConnectionState {
-        self.ring.connection_state()
     }
 
     /// Check if a message is available without consuming it.
@@ -1832,16 +1806,6 @@ impl<T: TopicMessage> Topic<T> {
         self.ring.backend_name()
     }
 
-    /// Check if all participants are in the same process.
-    pub(crate) fn is_same_process(&self) -> bool {
-        self.ring.is_same_process()
-    }
-
-    /// Check if caller is on same thread as creator.
-    pub(crate) fn is_same_thread(&self) -> bool {
-        self.ring.is_same_thread()
-    }
-
     /// Get publisher count.
     #[doc(hidden)]
     pub fn pub_count(&self) -> u32 {
@@ -1858,11 +1822,6 @@ impl<T: TopicMessage> Topic<T> {
     #[doc(hidden)]
     pub fn check_migration_now(&self) {
         self.ring.check_migration_now()
-    }
-
-    /// Force a backend migration (for testing).
-    pub(crate) fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
-        self.ring.force_migrate(mode)
     }
 
     /// Get raw pointer to the SHM header (for benchmarking).
@@ -1939,22 +1898,10 @@ where
         self.ring.send(msg)
     }
 
-    /// Try to send a message, returning it on failure (internal use only).
-    #[inline(always)]
-    pub(crate) fn try_send(&self, msg: T) -> Result<(), T> {
-        self.ring.try_send(msg)
-    }
-
     /// Receive a message.
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
         self.ring.recv()
-    }
-
-    /// Try to receive a message without logging (internal use only).
-    #[inline(always)]
-    pub(crate) fn try_recv(&self) -> Option<T> {
-        self.ring.try_recv()
     }
 
     /// Read the most recent message without advancing the consumer position.
