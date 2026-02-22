@@ -16,9 +16,8 @@
 
 use std::sync::Arc;
 
-use horus_types::{Device, ImageDescriptor, ImageEncoding, TensorDtype};
+use horus_types::{Device, ImageDescriptor, ImageEncoding};
 
-use super::simd::fast_copy_to_shm;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -35,6 +34,9 @@ pub struct Image {
     descriptor: ImageDescriptor,
     pool: Arc<TensorPool>,
 }
+
+// Shared methods: data access, lifecycle, metadata delegation
+impl_tensor_backed!(Image, ImageDescriptor, "image");
 
 impl Image {
     /// Create a new image with the given dimensions and encoding.
@@ -65,47 +67,7 @@ impl Image {
         Ok(Self { descriptor, pool })
     }
 
-    /// Create an Image from a descriptor and pool.
-    ///
-    /// Used by Topic extensions and Python bindings after allocation or receive.
-    pub fn from_owned(descriptor: ImageDescriptor, pool: Arc<TensorPool>) -> Self {
-        Self { descriptor, pool }
-    }
-
-    // === Pixel data access ===
-
-    /// Get raw pixel data as a byte slice (zero-copy).
-    #[inline]
-    pub fn data(&self) -> &[u8] {
-        self.pool.data_slice(self.descriptor.tensor())
-    }
-
-    /// Get raw pixel data as a mutable byte slice (zero-copy).
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub fn data_mut(&self) -> &mut [u8] {
-        self.pool.data_slice_mut(self.descriptor.tensor())
-    }
-
-    /// Copy pixel data from a buffer into this image.
-    ///
-    /// Returns `&mut Self` for method chaining.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `src` length doesn't match `nbytes()`.
-    pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
-        let data = self.data_mut();
-        assert_eq!(
-            src.len(),
-            data.len(),
-            "source buffer size ({}) doesn't match image size ({})",
-            src.len(),
-            data.len()
-        );
-        fast_copy_to_shm(src, data);
-        self
-    }
+    // === Pixel-specific methods ===
 
     /// Get a single pixel at (x, y) as a byte slice.
     ///
@@ -184,48 +146,7 @@ impl Image {
         Some(result)
     }
 
-    /// Set the frame ID (camera identifier).
-    ///
-    /// Returns `&mut Self` for method chaining.
-    pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
-        self.descriptor.set_frame_id(id);
-        self
-    }
-
-    /// Set the timestamp in nanoseconds.
-    ///
-    /// Returns `&mut Self` for method chaining.
-    pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
-        self.descriptor.set_timestamp_ns(ts);
-        self
-    }
-
-    /// Get pixel data as a typed slice.
-    ///
-    /// # Safety
-    /// Caller must ensure the dtype matches the requested type T.
-    #[inline]
-    pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
-        let bytes = self.data();
-        let ptr = bytes.as_ptr() as *const T;
-        let len = bytes.len() / std::mem::size_of::<T>();
-        std::slice::from_raw_parts(ptr, len)
-    }
-
-    /// Get pixel data as a mutable typed slice.
-    ///
-    /// # Safety
-    /// Caller must ensure the dtype matches the requested type T.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
-        let bytes = self.data_mut();
-        let ptr = bytes.as_mut_ptr() as *mut T;
-        let len = bytes.len() / std::mem::size_of::<T>();
-        std::slice::from_raw_parts_mut(ptr, len)
-    }
-
-    // === Metadata accessors ===
+    // === Image-specific metadata accessors ===
 
     /// Image height in pixels.
     #[inline]
@@ -251,76 +172,10 @@ impl Image {
         self.descriptor.encoding()
     }
 
-    /// Element data type.
-    #[inline]
-    pub fn dtype(&self) -> TensorDtype {
-        self.descriptor.dtype()
-    }
-
     /// Bytes per row.
     #[inline]
     pub fn step(&self) -> u32 {
         self.descriptor.step()
-    }
-
-    /// Total bytes of image data.
-    #[inline]
-    pub fn nbytes(&self) -> u64 {
-        self.descriptor.nbytes()
-    }
-
-    /// Whether tensor data is on CPU.
-    #[inline]
-    pub fn is_cpu(&self) -> bool {
-        self.descriptor.is_cpu()
-    }
-
-    /// Whether tensor data is on CUDA.
-    #[inline]
-    pub fn is_cuda(&self) -> bool {
-        self.descriptor.is_cuda()
-    }
-
-    /// Timestamp in nanoseconds.
-    #[inline]
-    pub fn timestamp_ns(&self) -> u64 {
-        self.descriptor.timestamp_ns()
-    }
-
-    /// Frame ID.
-    #[inline]
-    pub fn frame_id(&self) -> &str {
-        self.descriptor.frame_id()
-    }
-
-    // === Descriptor / pool accessors ===
-
-    /// Get the underlying descriptor.
-    #[inline]
-    pub fn descriptor(&self) -> &ImageDescriptor {
-        &self.descriptor
-    }
-
-    /// Get the pool reference.
-    #[inline]
-    pub fn pool(&self) -> &Arc<TensorPool> {
-        &self.pool
-    }
-}
-
-impl Clone for Image {
-    fn clone(&self) -> Self {
-        self.pool.retain(self.descriptor.tensor());
-        Self {
-            descriptor: self.descriptor,
-            pool: Arc::clone(&self.pool),
-        }
-    }
-}
-
-impl Drop for Image {
-    fn drop(&mut self) {
-        self.pool.release(self.descriptor.tensor());
     }
 }
 
@@ -333,8 +188,3 @@ impl std::fmt::Debug for Image {
             .finish()
     }
 }
-
-// Safety: Image can be sent between threads.
-// The underlying pool uses atomic operations for all shared state.
-unsafe impl Send for Image {}
-unsafe impl Sync for Image {}

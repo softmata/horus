@@ -168,31 +168,17 @@ unsafe impl<T: Send + Sync> Sync for LoomSpmcRing<T> {}
 impl<T> LoomSpmcRing<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
-        let mut buffer = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
-        }
         Self {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            buffer,
+            buffer: alloc_loom_buffer(cap),
         }
     }
 
     fn try_send(&self, msg: T) -> Result<(), T> {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head.wrapping_sub(tail) >= self.capacity {
-            return Err(msg);
-        }
-        let index = (head & self.mask) as usize;
-        self.buffer[index].with_mut(|ptr| unsafe {
-            ptr.write(MaybeUninit::new(msg));
-        });
-        self.head.store(head.wrapping_add(1), Ordering::Release);
-        Ok(())
+        loom_sp_try_send!(self, msg)
     }
 
     fn try_recv(&self) -> Option<T> {
@@ -242,25 +228,13 @@ impl<T> LoomSpmcRing<T> {
 
 impl<T> Drop for LoomSpmcRing<T> {
     fn drop(&mut self) {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            self.buffer[index].with_mut(|ptr| unsafe {
-                (*ptr).assume_init_drop();
-            });
-        }
+        loom_sp_drop!(self);
     }
 }
 
 // ============================================================================
 // Simplified MPSC Ring (mirrors mpsc_intra.rs algorithm)
 // ============================================================================
-
-struct LoomMpSlot<T> {
-    sequence: AtomicU64,
-    data: UnsafeCell<MaybeUninit<T>>,
-}
 
 /// Minimal MPSC ring: multi-producer CAS on head with per-slot sequences.
 struct LoomMpscRing<T> {
@@ -277,19 +251,12 @@ unsafe impl<T: Send + Sync> Sync for LoomMpscRing<T> {}
 impl<T> LoomMpscRing<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
-        let mut slots = Vec::with_capacity(cap);
-        for i in 0..cap {
-            slots.push(LoomMpSlot {
-                sequence: AtomicU64::new(i as u64),
-                data: UnsafeCell::new(MaybeUninit::uninit()),
-            });
-        }
         Self {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            slots,
+            slots: alloc_loom_mp_slots(cap),
         }
     }
 
@@ -349,17 +316,7 @@ impl<T> LoomMpscRing<T> {
 
 impl<T> Drop for LoomMpscRing<T> {
     fn drop(&mut self) {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            let seq = self.slots[index].sequence.load(Ordering::Relaxed);
-            if seq == i.wrapping_add(1) {
-                self.slots[index].data.with_mut(|ptr| unsafe {
-                    (*ptr).assume_init_drop();
-                });
-            }
-        }
+        loom_mp_drop!(self);
     }
 }
 
@@ -389,19 +346,12 @@ const MPMC_MAX_RETRIES: usize = 4;
 impl<T> LoomMpmcRing<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
-        let mut slots = Vec::with_capacity(cap);
-        for i in 0..cap {
-            slots.push(LoomMpSlot {
-                sequence: AtomicU64::new(i as u64),
-                data: UnsafeCell::new(MaybeUninit::uninit()),
-            });
-        }
         Self {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            slots,
+            slots: alloc_loom_mp_slots(cap),
         }
     }
 
@@ -503,17 +453,7 @@ impl<T> LoomMpmcRing<T> {
 
 impl<T> Drop for LoomMpmcRing<T> {
     fn drop(&mut self) {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            let seq = self.slots[index].sequence.load(Ordering::Relaxed);
-            if seq == i.wrapping_add(1) {
-                self.slots[index].data.with_mut(|ptr| unsafe {
-                    (*ptr).assume_init_drop();
-                });
-            }
-        }
+        loom_mp_drop!(self);
     }
 }
 

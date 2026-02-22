@@ -64,14 +64,8 @@ pub use config::{
     ResourceConfig, SchedulerConfig, TimingConfig,
 };
 pub use safety_monitor::{SafetyState, SafetyStats};
-pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
+pub use scheduler::{RtDegradation, Scheduler};
 pub use types::SchedulerNodeMetrics;
-
-// Re-export runtime features
-pub use rt::{
-    apply_rt_optimizations, get_core_count, get_max_rt_priority, get_numa_node_count,
-    lock_all_memory, set_thread_affinity,
-};
 
 // Re-export blackbox flight recorder
 pub use blackbox::{BlackBox, BlackBoxEvent};

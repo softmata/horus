@@ -1,3 +1,4 @@
+#![allow(private_interfaces)]
 //! Backend migration coordinator.
 //!
 //! Handles safe backend transitions with CAS-based locking, epoch versioning,
@@ -14,7 +15,7 @@ use super::types::BackendMode;
 
 /// Result of a migration attempt
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationResult {
+pub(crate) enum MigrationResult {
     /// Migration successful, new epoch returned
     Success { new_epoch: u64 },
     /// No migration needed (already at optimal backend)
@@ -55,7 +56,7 @@ pub struct MigrationStats {
 /// - CAS-based locking to prevent concurrent migrations
 /// - Epoch versioning for reader/writer coordination
 /// - Drain logic to ensure no in-flight message loss
-pub struct BackendMigrator<'a> {
+pub(crate) struct BackendMigrator<'a> {
     header: &'a TopicHeader,
     /// Spin count before yielding during drain
     spin_count: u32,

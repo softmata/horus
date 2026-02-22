@@ -27,6 +27,170 @@ pub mod tensor_descriptor;
 pub mod tensor_handle;
 pub mod tensor_pool;
 
+/// Generate shared methods and trait impls for tensor-backed RAII types.
+///
+/// All three domain types (Image, PointCloud, DepthImage) share the same
+/// `descriptor: D` + `pool: Arc<TensorPool>` structure and identical
+/// data access, lifecycle, and metadata delegation code.
+///
+/// This macro generates: `from_owned`, `data`, `data_mut`, `copy_from`,
+/// `data_as`, `data_as_mut`, `set_frame_id`, `set_timestamp_ns`,
+/// `dtype`, `nbytes`, `is_cpu`, `is_cuda`, `timestamp_ns`, `frame_id`,
+/// `descriptor`, `pool`, plus `Clone`, `Drop`, `Send`, `Sync` impls.
+macro_rules! impl_tensor_backed {
+    ($type_name:ident, $desc_type:ty, $label:expr) => {
+        impl $type_name {
+            /// Create from a descriptor and pool (used by Topic recv and Python bindings).
+            pub fn from_owned(descriptor: $desc_type, pool: std::sync::Arc<super::tensor_pool::TensorPool>) -> Self {
+                Self { descriptor, pool }
+            }
+
+            /// Get raw data as a byte slice (zero-copy from shared memory).
+            #[inline]
+            pub fn data(&self) -> &[u8] {
+                self.pool.data_slice(self.descriptor.tensor())
+            }
+
+            /// Get raw data as a mutable byte slice (zero-copy from shared memory).
+            #[inline]
+            #[allow(clippy::mut_from_ref)]
+            pub fn data_mut(&self) -> &mut [u8] {
+                self.pool.data_slice_mut(self.descriptor.tensor())
+            }
+
+            /// Copy data from a buffer into shared memory.
+            ///
+            /// Returns `&mut Self` for method chaining.
+            ///
+            /// # Panics
+            ///
+            /// Panics if `src` length doesn't match `nbytes()`.
+            pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
+                let data = self.data_mut();
+                assert_eq!(
+                    src.len(),
+                    data.len(),
+                    "source buffer size ({}) doesn't match {} size ({})",
+                    src.len(),
+                    $label,
+                    data.len()
+                );
+                super::simd::fast_copy_to_shm(src, data);
+                self
+            }
+
+            /// Get data as a typed slice.
+            ///
+            /// # Safety
+            /// Caller must ensure the dtype matches the requested type T.
+            #[inline]
+            pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
+                let bytes = self.data();
+                let ptr = bytes.as_ptr() as *const T;
+                let len = bytes.len() / std::mem::size_of::<T>();
+                std::slice::from_raw_parts(ptr, len)
+            }
+
+            /// Get data as a mutable typed slice.
+            ///
+            /// # Safety
+            /// Caller must ensure the dtype matches the requested type T.
+            #[inline]
+            #[allow(clippy::mut_from_ref)]
+            pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
+                let bytes = self.data_mut();
+                let ptr = bytes.as_mut_ptr() as *mut T;
+                let len = bytes.len() / std::mem::size_of::<T>();
+                std::slice::from_raw_parts_mut(ptr, len)
+            }
+
+            /// Set the frame ID.
+            ///
+            /// Returns `&mut Self` for method chaining.
+            pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
+                self.descriptor.set_frame_id(id);
+                self
+            }
+
+            /// Set the timestamp in nanoseconds.
+            ///
+            /// Returns `&mut Self` for method chaining.
+            pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
+                self.descriptor.set_timestamp_ns(ts);
+                self
+            }
+
+            /// Element data type.
+            #[inline]
+            pub fn dtype(&self) -> horus_types::TensorDtype {
+                self.descriptor.dtype()
+            }
+
+            /// Total bytes of data.
+            #[inline]
+            pub fn nbytes(&self) -> u64 {
+                self.descriptor.nbytes()
+            }
+
+            /// Whether tensor data is on CPU.
+            #[inline]
+            pub fn is_cpu(&self) -> bool {
+                self.descriptor.is_cpu()
+            }
+
+            /// Whether tensor data is on CUDA.
+            #[inline]
+            pub fn is_cuda(&self) -> bool {
+                self.descriptor.is_cuda()
+            }
+
+            /// Timestamp in nanoseconds.
+            #[inline]
+            pub fn timestamp_ns(&self) -> u64 {
+                self.descriptor.timestamp_ns()
+            }
+
+            /// Frame ID.
+            #[inline]
+            pub fn frame_id(&self) -> &str {
+                self.descriptor.frame_id()
+            }
+
+            /// Get the underlying descriptor.
+            #[inline]
+            pub fn descriptor(&self) -> &$desc_type {
+                &self.descriptor
+            }
+
+            /// Get the pool reference.
+            #[inline]
+            pub fn pool(&self) -> &std::sync::Arc<super::tensor_pool::TensorPool> {
+                &self.pool
+            }
+        }
+
+        impl Clone for $type_name {
+            fn clone(&self) -> Self {
+                self.pool.retain(self.descriptor.tensor());
+                Self {
+                    descriptor: self.descriptor,
+                    pool: std::sync::Arc::clone(&self.pool),
+                }
+            }
+        }
+
+        impl Drop for $type_name {
+            fn drop(&mut self) {
+                self.pool.release(self.descriptor.tensor());
+            }
+        }
+
+        // Safety: The underlying pool uses atomic operations for all shared state.
+        unsafe impl Send for $type_name {}
+        unsafe impl Sync for $type_name {}
+    };
+}
+
 // Domain-specific types (RAII wrappers with rich API for data access)
 pub mod depth_image;
 pub mod image;
@@ -39,22 +203,14 @@ pub mod cuda_ffi;
 pub mod cuda_pool;
 
 pub use platform::*;
-pub use shm_region::ShmRegion;
-pub use simd::{fast_copy_to_shm, simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
-pub use tensor_descriptor::TensorDescriptor;
 pub use tensor_handle::TensorHandle;
-pub use tensor_pool::{
-    Device, HorusTensor, TensorDtype, TensorPool, TensorPoolConfig, TensorPoolStats,
-    MAX_TENSOR_DIMS,
-};
+pub use tensor_pool::{TensorPool, TensorPoolConfig};
 
 pub use depth_image::DepthImage;
 pub use image::Image;
 pub use pointcloud::PointCloud;
 
 // CUDA exports
-#[cfg(feature = "cuda")]
-pub use cuda_ffi::{CudaIpcMemHandle, CUDA_IPC_HANDLE_SIZE};
 #[cfg(feature = "cuda")]
 pub use cuda_pool::{
     CudaPoolStats, CudaTensor, CudaTensorPool, CudaTensorPoolConfig, P2PAccessInfo, P2PManager,

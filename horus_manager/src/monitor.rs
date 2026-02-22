@@ -909,7 +909,7 @@ pub async fn packages_environments_handler() -> impl IntoResponse {
         // Use cache to avoid repeated scanning (16ms → <1ms after first load)
         let discovered_workspaces = workspace_cache()
             .write()
-            .unwrap()
+            .expect("workspace cache lock poisoned")
             .get_or_refresh(&current_workspace);
 
         for ws in discovered_workspaces {
@@ -1980,7 +1980,7 @@ pub struct SeekRequest {
 
 /// List all debug sessions
 pub async fn debug_sessions_list_handler() -> impl IntoResponse {
-    let sessions = DEBUG_SESSIONS.lock().unwrap();
+    let sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     let session_list: Vec<serde_json::Value> = sessions
         .iter()
@@ -2076,7 +2076,7 @@ pub async fn debug_session_create_handler(
             .as_nanos()
     );
 
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
     sessions.insert(session_id.clone(), DebugSessionData { debugger, state });
 
     (
@@ -2092,7 +2092,7 @@ pub async fn debug_session_create_handler(
 
 /// Get debug session details
 pub async fn debug_session_get_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let sessions = DEBUG_SESSIONS.lock().unwrap();
+    let sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get(&session_id) {
         Some(data) => {
@@ -2158,7 +2158,7 @@ pub async fn debug_session_get_handler(Path(session_id): Path<String>) -> impl I
 
 /// Delete a debug session
 pub async fn debug_session_delete_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.remove(&session_id) {
         Some(_) => (
@@ -2182,7 +2182,7 @@ pub async fn debug_add_breakpoint_handler(
     Path(session_id): Path<String>,
     Json(req): Json<AddBreakpointRequest>,
 ) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2246,7 +2246,7 @@ pub async fn debug_add_breakpoint_handler(
 pub async fn debug_remove_breakpoint_handler(
     Path((session_id, bp_id)): Path<(String, u32)>,
 ) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2282,7 +2282,7 @@ pub async fn debug_add_watch_handler(
     Path(session_id): Path<String>,
     Json(req): Json<AddWatchRequest>,
 ) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2330,7 +2330,7 @@ pub async fn debug_add_watch_handler(
 pub async fn debug_remove_watch_handler(
     Path((session_id, watch_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2363,7 +2363,7 @@ pub async fn debug_remove_watch_handler(
 
 /// Step forward one tick
 pub async fn debug_step_forward_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2393,7 +2393,7 @@ pub async fn debug_step_forward_handler(Path(session_id): Path<String>) -> impl 
 
 /// Step backward one tick
 pub async fn debug_step_backward_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2423,7 +2423,7 @@ pub async fn debug_step_backward_handler(Path(session_id): Path<String>) -> impl
 
 /// Continue execution until breakpoint
 pub async fn debug_continue_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2452,7 +2452,7 @@ pub async fn debug_continue_handler(Path(session_id): Path<String>) -> impl Into
 
 /// Pause execution
 pub async fn debug_pause_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2482,7 +2482,7 @@ pub async fn debug_seek_handler(
     Path(session_id): Path<String>,
     Json(req): Json<SeekRequest>,
 ) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2509,7 +2509,7 @@ pub async fn debug_seek_handler(
 
 /// Reset to the beginning
 pub async fn debug_reset_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {
@@ -2536,7 +2536,7 @@ pub async fn debug_reset_handler(Path(session_id): Path<String>) -> impl IntoRes
 
 /// Get current snapshot data
 pub async fn debug_snapshot_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let sessions = DEBUG_SESSIONS.lock().unwrap();
+    let sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get(&session_id) {
         Some(data) => {
@@ -2607,7 +2607,7 @@ pub async fn debug_snapshot_handler(Path(session_id): Path<String>) -> impl Into
 
 /// Get current watch values
 pub async fn debug_watches_values_handler(Path(session_id): Path<String>) -> impl IntoResponse {
-    let mut sessions = DEBUG_SESSIONS.lock().unwrap();
+    let mut sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get_mut(&session_id) {
         Some(data) => {

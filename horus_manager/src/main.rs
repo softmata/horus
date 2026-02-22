@@ -1296,7 +1296,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 );
 
                 tokio::runtime::Runtime::new()
-                    .unwrap()
+                    .expect("failed to create tokio runtime")
                     .block_on(monitor::run(port))
                     .map_err(|e| {
                         let err_str = e.to_string();

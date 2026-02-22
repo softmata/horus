@@ -23,20 +23,16 @@ pub mod presence;
 pub mod rt_config;
 pub mod rt_node;
 
-pub use discovery::{
-    announce_started, announce_stopped, NodeAnnouncement, NodeEvent, DISCOVERY_TOPIC,
-};
-pub use log_buffer::{LogEntry, LogType, SharedLogBuffer, GLOBAL_LOG_BUFFER};
+// Discovery internals (used by scheduler, not user-facing)
+pub(crate) use discovery::{announce_started, announce_stopped};
+
+// LogType must be pub for hlog! macro expansion in downstream crates
+pub use log_buffer::LogType;
+
 pub use node::{
     HealthStatus, LogSummary, NetworkStatus, Node, NodeConfig, NodeInfo, NodeMetrics, NodeState,
     TopicMetadata,
 };
 pub use presence::NodePresence;
-pub use rt_config::{
-    detect_isolated_cpus, detect_nohz_full_cpus, get_rt_recommended_cpus, pin_thread_to_core,
-    prefault_stack, prefault_stack_linear, RtApplyResult, RtConfig, RtConfigBuilder, RtCpuInfo,
-    RtDegradation, RtKernelInfo, RtScheduler,
-};
-pub use rt_node::{
-    DeadlineMissPolicy, RtClass, RtNode, RtNodeWrapper, RtPriority, RtStats, WCETViolation,
-};
+pub use rt_config::{RtConfig, RtConfigBuilder, RtDegradation};
+pub use rt_node::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats, WCETViolation};

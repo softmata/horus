@@ -154,7 +154,8 @@ use crate::utils::unlikely;
 pub(crate) use header::TopicHeader;
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 use local_state::LocalState;
-pub use metrics::{MigrationMetrics, TopicMetrics};
+pub(crate) use metrics::MigrationMetrics;
+pub use metrics::TopicMetrics;
 
 /// Bounded spin iterations for waiting on per-slot ready flags.
 ///
@@ -163,8 +164,9 @@ pub use metrics::{MigrationMetrics, TopicMetrics};
 /// iterations before returning None. On x86, each spin_loop() is a PAUSE (~10-20 cycles),
 /// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
 const READY_FLAG_SPIN_LIMIT: u32 = 256;
-pub use migration::{BackendMigrator, MigrationResult};
-pub use types::{BackendMode, ConnectionState, TopicConfig, TopicDescriptor, TopicRole};
+pub(crate) use migration::{BackendMigrator, MigrationResult};
+pub use types::TopicDescriptor;
+pub(crate) use types::{BackendMode, ConnectionState, TopicConfig, TopicRole};
 
 use header::current_time_ms;
 use local_state::{DEFAULT_SLOT_SIZE, EPOCH_CHECK_INTERVAL};
@@ -360,6 +362,7 @@ pub(crate) struct RingTopic<T> {
 unsafe impl<T: Send> Send for RingTopic<T> {}
 unsafe impl<T: Send + Sync> Sync for RingTopic<T> {}
 
+#[allow(private_interfaces)]
 impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<T> {
     /// Header size in shared memory
     const HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
@@ -1305,16 +1308,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Get the current backend mode
+    #[doc(hidden)]
     pub fn mode(&self) -> BackendMode {
         self.header().mode()
     }
 
     /// Get the current role
+    #[doc(hidden)]
     pub fn role(&self) -> TopicRole {
         self.local().role
     }
 
     /// Get raw migration metrics (for internal use)
+    #[doc(hidden)]
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         &self.metrics
     }
@@ -1330,6 +1336,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Get the current connection state
+    #[doc(hidden)]
     pub fn connection_state(&self) -> ConnectionState {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
@@ -1506,11 +1513,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     ///
     /// Useful when you know a cross-process participant has joined/left and
     /// want immediate migration without waiting for the periodic check.
+    #[doc(hidden)]
     pub fn check_migration_now(&self) {
         self.check_migration();
     }
 
     /// Force a backend migration (for testing)
+    #[doc(hidden)]
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         let migrator = BackendMigrator::new(self.header());
         let result = migrator.try_migrate(mode);
@@ -1646,6 +1655,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Get the backend name (for debugging)
+    #[doc(hidden)]
     pub fn backend_name(&self) -> &'static str {
         match self.mode() {
             BackendMode::Unknown => "Unknown",
@@ -1663,27 +1673,32 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Check if all participants are in the same process (for debugging)
+    #[doc(hidden)]
     pub fn is_same_process(&self) -> bool {
         self.header().is_same_process()
     }
 
     /// Check if caller is on same thread as creator (for debugging)
+    #[doc(hidden)]
     pub fn is_same_thread(&self) -> bool {
         self.header().is_same_thread()
     }
 
     /// Get publisher count (for debugging)
+    #[doc(hidden)]
     pub fn pub_count(&self) -> u32 {
         self.header().pub_count()
     }
 
     /// Get subscriber count (for debugging)
+    #[doc(hidden)]
     pub fn sub_count(&self) -> u32 {
         self.header().sub_count()
     }
 
     /// Get raw pointer to the SHM header (for benchmarking raw atomic latency).
     /// Returns null if the topic hasn't been initialized with SHM yet.
+    #[doc(hidden)]
     pub fn local_state_header_ptr(&self) -> *const header::TopicHeader {
         self.local().cached_header_ptr
     }
@@ -1797,6 +1812,7 @@ unsafe impl<T: TopicMessage> Sync for Topic<T> where T::Wire: Send + Sync {}
 // Shared methods — all TopicMessage types
 // ============================================================================
 
+#[allow(private_interfaces)]
 impl<T: TopicMessage> Topic<T> {
     /// Get the topic name.
     pub fn name(&self) -> &str {
@@ -1804,16 +1820,19 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the current backend mode.
+    #[doc(hidden)]
     pub fn mode(&self) -> BackendMode {
         self.ring.mode()
     }
 
     /// Get the current role.
+    #[doc(hidden)]
     pub fn role(&self) -> TopicRole {
         self.ring.role()
     }
 
     /// Get raw migration metrics.
+    #[doc(hidden)]
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         self.ring.migration_metrics()
     }
@@ -1824,6 +1843,7 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the current connection state.
+    #[doc(hidden)]
     pub fn connection_state(&self) -> ConnectionState {
         self.ring.connection_state()
     }
@@ -1839,41 +1859,49 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the backend name (for debugging).
+    #[doc(hidden)]
     pub fn backend_name(&self) -> &'static str {
         self.ring.backend_name()
     }
 
     /// Check if all participants are in the same process.
+    #[doc(hidden)]
     pub fn is_same_process(&self) -> bool {
         self.ring.is_same_process()
     }
 
     /// Check if caller is on same thread as creator.
+    #[doc(hidden)]
     pub fn is_same_thread(&self) -> bool {
         self.ring.is_same_thread()
     }
 
     /// Get publisher count.
+    #[doc(hidden)]
     pub fn pub_count(&self) -> u32 {
         self.ring.pub_count()
     }
 
     /// Get subscriber count.
+    #[doc(hidden)]
     pub fn sub_count(&self) -> u32 {
         self.ring.sub_count()
     }
 
     /// Force a migration check NOW.
+    #[doc(hidden)]
     pub fn check_migration_now(&self) {
         self.ring.check_migration_now()
     }
 
     /// Force a backend migration (for testing).
+    #[doc(hidden)]
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         self.ring.force_migrate(mode)
     }
 
     /// Get raw pointer to the SHM header (for benchmarking).
+    #[doc(hidden)]
     pub fn local_state_header_ptr(&self) -> *const header::TopicHeader {
         self.ring.local_state_header_ptr()
     }
@@ -1914,7 +1942,7 @@ where
     }
 
     /// Create a topic from configuration.
-    pub fn from_config(config: TopicConfig) -> HorusResult<Self> {
+    pub(crate) fn from_config(config: TopicConfig) -> HorusResult<Self> {
         let ring = RingTopic::from_config(config)?;
         let pool = if T::needs_pool() {
             Some(pool_registry::global_pool())

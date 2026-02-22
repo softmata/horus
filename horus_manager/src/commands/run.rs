@@ -460,7 +460,7 @@ path = "{}"
                             for item in list {
                                 if let Some(dep_str) = parse_yaml_cargo_dependency(item) {
                                     // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name = dep_str.split('=').next().unwrap().trim();
+                                    let dep_name = dep_str.split('=').next().unwrap_or(&dep_str).trim();
 
                                     // Skip if already added from cargo_packages
                                     if !added_cargo_deps.contains(dep_name) {
@@ -955,7 +955,7 @@ fn execute_multiple_files(
                 }
 
                 println!("  {} Started [{}]", "".green(), node_name.color(color));
-                children.lock().unwrap().push((node_name, child));
+                children.lock().expect("children lock poisoned").push((node_name, child));
             }
             Err(e) => {
                 eprintln!("  {} Failed to start [{}]: {}", "".red(), node_name, e);
@@ -971,7 +971,7 @@ fn execute_multiple_files(
     // Wait for all processes to complete (concurrent, checks running flag)
     loop {
         let mut all_done = true;
-        let mut children_lock = children.lock().unwrap();
+        let mut children_lock = children.lock().expect("children lock poisoned");
 
         // Check each child with try_wait (non-blocking)
         children_lock.retain_mut(|(name, child)| {
@@ -1490,7 +1490,7 @@ fn resolve_glob_pattern(pattern: &str) -> Result<Vec<ExecutionTarget>> {
 
     if files.len() == 1 {
         Ok(vec![ExecutionTarget::File(
-            files.into_iter().next().unwrap(),
+            files.into_iter().next().expect("checked len == 1"),
         )])
     } else {
         Ok(vec![ExecutionTarget::Multiple(files)])
@@ -2745,8 +2745,7 @@ fn split_dependencies_with_context(
         let dep = dep.trim();
 
         // Check for explicit prefixes
-        if dep.starts_with("pip:") {
-            let pkg_str = dep.strip_prefix("pip:").unwrap();
+        if let Some(pkg_str) = dep.strip_prefix("pip:") {
             match PipPackage::from_string(pkg_str) {
                 Ok(pkg) => pip_packages.push(pkg),
                 Err(e) => {
@@ -2763,8 +2762,7 @@ fn split_dependencies_with_context(
             continue;
         }
 
-        if dep.starts_with("cargo:") {
-            let pkg_str = dep.strip_prefix("cargo:").unwrap();
+        if let Some(pkg_str) = dep.strip_prefix("cargo:") {
             match CargoPackage::from_string(pkg_str) {
                 Ok(pkg) => cargo_packages.push(pkg),
                 Err(e) => {
@@ -2918,15 +2916,15 @@ impl GitPackage {
         // Parse URL and optional ref
         let (url, git_ref) = if let Some(idx) = url_and_ref.find(":branch=") {
             let (url, rest) = url_and_ref.split_at(idx);
-            let branch = rest.strip_prefix(":branch=").unwrap();
+            let branch = &rest[":branch=".len()..];
             (url.to_string(), GitRef::Branch(branch.to_string()))
         } else if let Some(idx) = url_and_ref.find(":tag=") {
             let (url, rest) = url_and_ref.split_at(idx);
-            let tag = rest.strip_prefix(":tag=").unwrap();
+            let tag = &rest[":tag=".len()..];
             (url.to_string(), GitRef::Tag(tag.to_string()))
         } else if let Some(idx) = url_and_ref.find(":rev=") {
             let (url, rest) = url_and_ref.split_at(idx);
-            let rev = rest.strip_prefix(":rev=").unwrap();
+            let rev = &rest[":rev=".len()..];
             (url.to_string(), GitRef::Rev(rev.to_string()))
         } else {
             (url_and_ref, GitRef::Default)
@@ -3007,8 +3005,7 @@ fn split_dependencies_with_path_context(
         }
 
         // Check for explicit prefixes
-        if dep.starts_with("pip:") {
-            let pkg_str = dep.strip_prefix("pip:").unwrap();
+        if let Some(pkg_str) = dep.strip_prefix("pip:") {
             match PipPackage::from_string(pkg_str) {
                 Ok(pkg) => pip_packages.push(pkg),
                 Err(e) => {
@@ -3023,8 +3020,7 @@ fn split_dependencies_with_path_context(
             continue;
         }
 
-        if dep.starts_with("cargo:") {
-            let pkg_str = dep.strip_prefix("cargo:").unwrap();
+        if let Some(pkg_str) = dep.strip_prefix("cargo:") {
             match CargoPackage::from_string(pkg_str) {
                 Ok(pkg) => cargo_packages.push(pkg),
                 Err(e) => {
@@ -4373,7 +4369,7 @@ path = "{}"
                             for item in list {
                                 if let Some(dep_str) = parse_yaml_cargo_dependency(item) {
                                     // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name = dep_str.split('=').next().unwrap().trim();
+                                    let dep_name = dep_str.split('=').next().unwrap_or(&dep_str).trim();
 
                                     // Skip if already added from cargo_packages
                                     if !added_cargo_deps.contains(dep_name) {

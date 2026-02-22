@@ -1,3 +1,4 @@
+#![allow(private_interfaces)]
 //! Shared memory header for topic detection.
 //!
 //! The `TopicHeader` is laid out in shared memory for cross-process

@@ -49,7 +49,7 @@ impl AuthService {
     pub fn login(&self, password: &str, ip_address: Option<String>) -> Result<Option<String>> {
         // Check rate limiting
         if let Some(ip) = &ip_address {
-            if !self.rate_limiter.write().unwrap().check_attempt(ip) {
+            if !self.rate_limiter.write().expect("rate_limiter lock poisoned").check_attempt(ip) {
                 anyhow::bail!("Too many login attempts. Please wait a minute.");
             }
         }
@@ -66,7 +66,7 @@ impl AuthService {
             let session_token = generate_session_token();
 
             // Store session
-            self.sessions.write().unwrap().insert(
+            self.sessions.write().expect("sessions lock poisoned").insert(
                 session_token.clone(),
                 SessionInfo {
                     _created_at: Instant::now(),
@@ -83,7 +83,7 @@ impl AuthService {
 
     /// Validate session token
     pub fn validate_session(&self, token: &str) -> bool {
-        let mut sessions = self.sessions.write().unwrap();
+        let mut sessions = self.sessions.write().expect("sessions lock poisoned");
 
         if let Some(session) = sessions.get_mut(token) {
             // Check if session is expired (1 hour of inactivity)
@@ -102,7 +102,7 @@ impl AuthService {
 
     /// Logout - invalidate session token
     pub fn logout(&self, token: &str) {
-        self.sessions.write().unwrap().remove(token);
+        self.sessions.write().expect("sessions lock poisoned").remove(token);
     }
 }
 

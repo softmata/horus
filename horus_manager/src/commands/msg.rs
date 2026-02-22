@@ -76,7 +76,7 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
 
         for module in modules {
             println!("  {}", format!("{}:", module).cyan().bold());
-            let msgs = by_module.get(&module).unwrap();
+            let Some(msgs) = by_module.get(&module) else { continue };
             for msg in msgs {
                 println!("    {} {}", "".white(), msg.name.white().bold());
                 if !msg.doc.is_empty() {
@@ -127,14 +127,12 @@ pub fn show_message(name: &str) -> HorusResult<()> {
             || format!("{}::{}", m.module, m.name).eq_ignore_ascii_case(name)
     });
 
-    if msg.is_none() {
+    let Some(msg) = msg else {
         return Err(HorusError::Config(format!(
             "Message type '{}' not found. Use 'horus msg list' to see available types.",
             name
         )));
-    }
-
-    let msg = msg.unwrap();
+    };
 
     println!("{}", "Message Type Definition".green().bold());
     println!();
@@ -185,14 +183,12 @@ pub fn message_hash(name: &str) -> HorusResult<()> {
             || format!("{}::{}", m.module, m.name).eq_ignore_ascii_case(name)
     });
 
-    if msg.is_none() {
+    let Some(msg) = msg else {
         return Err(HorusError::Config(format!(
             "Message type '{}' not found.",
             name
         )));
-    }
-
-    let msg = msg.unwrap();
+    };
     let md5 = compute_message_hash(msg);
     println!("{}", md5);
 

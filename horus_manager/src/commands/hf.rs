@@ -969,11 +969,8 @@ pub fn monitor_rates(window: Option<usize>) -> HorusResult<()> {
             let tracker = rate_trackers.get(frame);
 
             let (current_rate, avg_rate) = if let Some(samples) = tracker {
-                if samples.len() >= 2 {
-                    let duration = samples
-                        .last()
-                        .unwrap()
-                        .duration_since(*samples.first().unwrap());
+                if let (Some(first), Some(last)) = (samples.first(), samples.last()) {
+                    let duration = last.duration_since(*first);
                     let rate = if duration.as_secs_f64() > 0.0 {
                         (samples.len() - 1) as f64 / duration.as_secs_f64()
                     } else {

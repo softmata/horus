@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 /// Selected backend mode stored in shared memory
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendMode {
+pub(crate) enum BackendMode {
     /// Unknown/uninitialized - will be determined on first use
     Unknown = 0,
     /// DirectChannel - same thread (~3ns)
@@ -103,7 +103,7 @@ impl BackendMode {
 
 /// Role of a topic participant
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TopicRole {
+pub(crate) enum TopicRole {
     /// Not yet registered (first send/recv will determine)
     Unregistered,
     /// Producer only (can send)
@@ -136,7 +136,7 @@ impl TopicRole {
 
 /// Connection state for a topic (primarily for network backends)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ConnectionState {
+pub(crate) enum ConnectionState {
     /// Not connected
     #[default]
     Disconnected,
@@ -213,7 +213,7 @@ impl<T> TopicDescriptor<T> {
 /// Topic configuration for creating topics with specific settings.
 ///
 /// Used primarily by Python bindings and config-file-based topic creation.
-pub struct TopicConfig {
+pub(crate) struct TopicConfig {
     /// Topic name
     pub name: String,
     /// Ring buffer capacity

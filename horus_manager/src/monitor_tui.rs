@@ -5,7 +5,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use horus_core::core::{LogType, GLOBAL_LOG_BUFFER};
+use horus_core::core::LogType;
+use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
 use horus_core::memory::shm_topics_dir;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -818,7 +819,7 @@ impl TuiDashboard {
         let selected = Tab::all()
             .iter()
             .position(|&t| t == self.active_tab)
-            .unwrap();
+            .unwrap_or(0);
 
         let tabs = Tabs::new(titles)
             .select(selected)
@@ -2799,7 +2800,7 @@ impl TuiDashboard {
 
     fn next_tab(&mut self) {
         let tabs = Tab::all();
-        let current = tabs.iter().position(|&t| t == self.active_tab).unwrap();
+        let current = tabs.iter().position(|&t| t == self.active_tab).unwrap_or(0);
         self.active_tab = tabs[(current + 1) % tabs.len()];
         self.selected_index = 0;
 
@@ -2811,7 +2812,7 @@ impl TuiDashboard {
 
     fn prev_tab(&mut self) {
         let tabs = Tab::all();
-        let current = tabs.iter().position(|&t| t == self.active_tab).unwrap();
+        let current = tabs.iter().position(|&t| t == self.active_tab).unwrap_or(0);
         self.active_tab = tabs[if current == 0 {
             tabs.len() - 1
         } else {

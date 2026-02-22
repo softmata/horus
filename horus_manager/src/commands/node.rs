@@ -170,14 +170,12 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
     });
 
-    if node.is_none() {
+    let Some(node) = node else {
         return Err(HorusError::Config(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
         )));
-    }
-
-    let node = node.unwrap();
+    };
 
     println!("{}", "Node Information".green().bold());
     println!();
@@ -264,14 +262,12 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
         n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
     });
 
-    if node.is_none() {
+    let Some(node) = node else {
         return Err(HorusError::Config(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
         )));
-    }
-
-    let node = node.unwrap();
+    };
 
     println!("{} Stopping node: {}", "".cyan(), node.name.white().bold());
 
@@ -310,14 +306,12 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
         n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
     });
 
-    if node.is_none() {
+    let Some(node) = node else {
         return Err(HorusError::Config(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
         )));
-    }
-
-    let node = node.unwrap();
+    };
 
     println!(
         "{} Restarting node: {}",
@@ -351,14 +345,12 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
         n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
     });
 
-    if node.is_none() {
+    let Some(node) = node else {
         return Err(HorusError::Config(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
         )));
-    }
-
-    let node = node.unwrap();
+    };
 
     println!("{} Pausing node: {}", "".cyan(), node.name.white().bold());
 
@@ -389,14 +381,12 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
         n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
     });
 
-    if node.is_none() {
+    let Some(node) = node else {
         return Err(HorusError::Config(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
         )));
-    }
-
-    let node = node.unwrap();
+    };
 
     println!("{} Resuming node: {}", "".cyan(), node.name.white().bold());
 

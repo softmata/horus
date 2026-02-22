@@ -128,14 +128,12 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
                 .unwrap_or(false)
     });
 
-    if topic.is_none() {
+    let Some(topic) = topic else {
         return Err(HorusError::Config(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
         )));
-    }
-
-    let topic = topic.unwrap();
+    };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
 
     println!(
@@ -257,14 +255,12 @@ pub fn topic_info(name: &str) -> HorusResult<()> {
                 .unwrap_or(false)
     });
 
-    if topic.is_none() {
+    let Some(topic) = topic else {
         return Err(HorusError::Config(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
         )));
-    }
-
-    let topic = topic.unwrap();
+    };
 
     println!("{}", "Topic Information".green().bold());
     println!();
@@ -334,14 +330,12 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
                 .unwrap_or(false)
     });
 
-    if topic.is_none() {
+    let Some(topic) = topic else {
         return Err(HorusError::Config(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
         )));
-    }
-
-    let topic = topic.unwrap();
+    };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
     let window_size = window.unwrap_or(10);
 
@@ -373,11 +367,8 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
                     }
 
                     // Calculate rate
-                    if timestamps.len() >= 2 {
-                        let duration = timestamps
-                            .last()
-                            .unwrap()
-                            .duration_since(*timestamps.first().unwrap());
+                    if let (Some(first), Some(last)) = (timestamps.first(), timestamps.last()) {
+                        let duration = last.duration_since(*first);
                         let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
 
                         print!(

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::image_encoding::ImageEncoding;
 use crate::tensor::HorusTensor;
-use crate::TensorDtype;
 
 /// Unified image descriptor — Pod, 288 bytes.
 ///
@@ -139,22 +138,10 @@ impl ImageDescriptor {
         self.encoding
     }
 
-    /// Element data type.
-    #[inline]
-    pub fn dtype(&self) -> TensorDtype {
-        self.inner.dtype
-    }
-
     /// Total pixel count (height * width).
     #[inline]
     pub fn pixel_count(&self) -> u64 {
         self.height() as u64 * self.width() as u64
-    }
-
-    /// Total bytes of image data.
-    #[inline]
-    pub fn nbytes(&self) -> u64 {
-        self.inner.nbytes()
     }
 
     /// Bytes per row.
@@ -163,63 +150,15 @@ impl ImageDescriptor {
         self.step
     }
 
-    /// Whether tensor data is on CPU.
-    #[inline]
-    pub fn is_cpu(&self) -> bool {
-        self.inner.is_cpu()
-    }
-
-    /// Whether tensor data is on a CUDA GPU.
-    #[inline]
-    pub fn is_cuda(&self) -> bool {
-        self.inner.is_cuda()
-    }
-
-    /// Timestamp in nanoseconds since epoch.
-    #[inline]
-    pub fn timestamp_ns(&self) -> u64 {
-        self.timestamp_ns
-    }
-
-    /// Set the timestamp.
-    #[inline]
-    pub fn set_timestamp_ns(&mut self, ts: u64) {
-        self.timestamp_ns = ts;
-    }
-
-    /// Get frame ID as string.
-    pub fn frame_id(&self) -> &str {
-        let end = self.frame_id.iter().position(|&b| b == 0).unwrap_or(32);
-        std::str::from_utf8(&self.frame_id[..end]).unwrap_or("")
-    }
-
-    /// Set frame ID from string.
-    pub fn set_frame_id(&mut self, id: &str) {
-        let bytes = id.as_bytes();
-        let len = bytes.len().min(31);
-        self.frame_id = [0; 32];
-        self.frame_id[..len].copy_from_slice(&bytes[..len]);
-    }
-
-    // === Tensor access (for pool operations) ===
-
-    /// Get the inner tensor descriptor.
-    #[inline]
-    pub fn tensor(&self) -> &HorusTensor {
-        &self.inner
-    }
-
-    /// Get a mutable reference to the inner tensor descriptor.
-    #[inline]
-    pub fn tensor_mut(&mut self) -> &mut HorusTensor {
-        &mut self.inner
-    }
+    crate::impl_tensor_accessors!();
+    crate::impl_timestamp_field!();
+    crate::impl_frame_id_field!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use crate::{Device, TensorDtype};
 
     #[test]
     fn test_image_size() {

@@ -61,9 +61,9 @@ pub(crate) mod utils;
 // Re-export user-facing types for easy access
 pub use communication::{PodMessage, Topic};
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeAnnouncement, NodeConfig, NodeEvent,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig,
     NodeMetrics, NodePresence, NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation,
-    RtNode, RtPriority, RtStats, TopicMetadata,
+    RtNode, RtPriority, RtStats,
 };
 pub use error::{HorusError, HorusResult, Result};
 pub use params::RuntimeParams;

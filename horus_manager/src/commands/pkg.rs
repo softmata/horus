@@ -52,22 +52,24 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
         if let Ok(entries) = fs::read_dir(&bin_dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("horus-") && is_executable(&entry.path()) {
-                        let command = name.strip_prefix("horus-").unwrap().to_string();
-                        return Some(PluginMetadata {
-                            command,
-                            binary: entry.path(),
-                            package_name: package_dir
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("unknown")
-                                .to_string(),
-                            version: detect_version(package_dir)
-                                .unwrap_or_else(|| "0.0.0".to_string()),
-                            commands: vec![],
-                            compatibility: Compatibility::default(),
-                            permissions: vec![],
-                        });
+                    if let Some(command) = name.strip_prefix("horus-") {
+                        if is_executable(&entry.path()) {
+                            let command = command.to_string();
+                            return Some(PluginMetadata {
+                                command,
+                                binary: entry.path(),
+                                package_name: package_dir
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string(),
+                                version: detect_version(package_dir)
+                                    .unwrap_or_else(|| "0.0.0".to_string()),
+                                commands: vec![],
+                                compatibility: Compatibility::default(),
+                                permissions: vec![],
+                            });
+                        }
                     }
                 }
             }
@@ -1375,7 +1377,7 @@ pub fn run_unpublish(package: String, version: String, yes: bool) -> HorusResult
         );
 
         print!("\nType the package name '{}' to confirm: ", package);
-        io::stdout().flush().unwrap();
+        let _ = io::stdout().flush();
 
         let mut confirmation = String::new();
         io::stdin()

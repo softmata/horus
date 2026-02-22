@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 
 /// Migration and operational metrics for a Topic
 #[derive(Debug, Default)]
-pub struct MigrationMetrics {
+pub(crate) struct MigrationMetrics {
     /// Messages sent through this topic
     pub messages_sent: AtomicU64,
     /// Messages received through this topic

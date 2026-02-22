@@ -104,7 +104,7 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
     println!();
 
     print!("Enter the generated API key: ");
-    io::stdout().flush().unwrap();
+    let _ = io::stdout().flush();
 
     let mut api_key = String::new();
     io::stdin()
