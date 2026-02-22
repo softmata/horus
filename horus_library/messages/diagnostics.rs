@@ -76,7 +76,9 @@ impl Heartbeat {
 }
 
 /// Status level enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, LogSummary)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, LogSummary,
+)]
 #[repr(u8)]
 #[derive(Default)]
 pub enum StatusLevel {

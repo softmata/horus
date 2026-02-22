@@ -1,6 +1,4 @@
-use horus::scheduling::config::{
-    ExecutionMode, RecordingConfigYaml, SchedulerConfig,
-};
+use horus::scheduling::config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
 use pyo3::prelude::*;
 
 /// Full scheduler configuration for Python, faithfully mirroring horus_core's SchedulerConfig.

@@ -155,11 +155,8 @@ extern "C" {
     fn cudaMemset(dev_ptr: *mut c_void, value: i32, count: usize) -> i32;
 
     fn cudaIpcGetMemHandle(handle: *mut CudaIpcMemHandle, dev_ptr: *mut c_void) -> i32;
-    fn cudaIpcOpenMemHandle(
-        dev_ptr: *mut *mut c_void,
-        handle: CudaIpcMemHandle,
-        flags: u32,
-    ) -> i32;
+    fn cudaIpcOpenMemHandle(dev_ptr: *mut *mut c_void, handle: CudaIpcMemHandle, flags: u32)
+        -> i32;
     fn cudaIpcCloseMemHandle(dev_ptr: *mut c_void) -> i32;
 
     fn cudaGetLastError() -> i32;
@@ -197,12 +194,7 @@ extern "C" {
         kind: i32,
         stream: CudaStream,
     ) -> i32;
-    fn cudaMemsetAsync(
-        dev_ptr: *mut c_void,
-        value: i32,
-        count: usize,
-        stream: CudaStream,
-    ) -> i32;
+    fn cudaMemsetAsync(dev_ptr: *mut c_void, value: i32, count: usize, stream: CudaStream) -> i32;
 
     fn cudaDeviceCanAccessPeer(can_access: *mut i32, device: i32, peer_device: i32) -> i32;
     fn cudaDeviceEnablePeerAccess(peer_device: i32, flags: u32) -> i32;
@@ -484,7 +476,13 @@ pub fn memset_async(
 /// Check if peer access is possible between two devices
 pub fn device_can_access_peer(device: i32, peer_device: i32) -> CudaResult<bool> {
     let mut can_access = 0;
-    unsafe { check(cudaDeviceCanAccessPeer(&mut can_access, device, peer_device))? };
+    unsafe {
+        check(cudaDeviceCanAccessPeer(
+            &mut can_access,
+            device,
+            peer_device,
+        ))?
+    };
     Ok(can_access != 0)
 }
 

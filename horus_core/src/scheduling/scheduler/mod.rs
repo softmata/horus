@@ -15,9 +15,7 @@ use std::time::{Duration, Instant};
 mod recording;
 
 // Record/Replay imports
-use super::record_replay::{
-    NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording,
-};
+use super::record_replay::{NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording};
 
 use super::types::NodeTier;
 
@@ -447,7 +445,8 @@ impl Scheduler {
     /// Check if the scheduler has full RT capabilities (no high-severity degradations).
     pub fn has_full_rt(&self) -> bool {
         !self
-            .rt.degradations
+            .rt
+            .degradations
             .iter()
             .any(|d| d.severity == DegradationSeverity::High)
     }
@@ -560,17 +559,14 @@ impl Scheduler {
     /// - Healthy/allowed → `Closed`
     /// - Suppressed/in-backoff → `Open`
     pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
-        self.nodes
-            .iter()
-            .find(|n| n.name == node_name)
-            .map(|n| {
-                let stats = n.failure_handler.stats();
-                if stats.is_suppressed {
-                    super::fault_tolerance::CircuitState::Open
-                } else {
-                    super::fault_tolerance::CircuitState::Closed
-                }
-            })
+        self.nodes.iter().find(|n| n.name == node_name).map(|n| {
+            let stats = n.failure_handler.stats();
+            if stats.is_suppressed {
+                super::fault_tolerance::CircuitState::Open
+            } else {
+                super::fault_tolerance::CircuitState::Closed
+            }
+        })
     }
 
     /// Get a summary of all node failure handler states.
@@ -756,7 +752,11 @@ impl Scheduler {
         ));
         lines.push(format!(
             "  [{}] BlackBox Recorder",
-            if self.monitor.blackbox.is_some() { "x" } else { " " }
+            if self.monitor.blackbox.is_some() {
+                "x"
+            } else {
+                " "
+            }
         ));
         // Tier-aware failure policies
         lines.push("  [x] Failure Policies (tier-aware)".to_string());
@@ -805,10 +805,7 @@ impl Scheduler {
                 }
             }
             if suppressed_count == 0 && failing_count == 0 {
-                lines.push(format!(
-                    "  [OK] All {} nodes healthy",
-                    self.nodes.len()
-                ));
+                lines.push(format!("  [OK] All {} nodes healthy", self.nodes.len()));
             } else {
                 lines.push(format!(
                     "  [WARN] {} suppressed, {} with failures, {} healthy",
@@ -1191,7 +1188,6 @@ impl Scheduler {
         self
     }
 
-
     /// Add a critical node to the safety monitor with a watchdog timeout.
     ///
     /// Critical nodes are monitored more strictly:
@@ -1202,6 +1198,7 @@ impl Scheduler {
     /// # Example
     /// ```no_run
     /// use horus_core::Scheduler;
+    /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
     /// let mut config = SchedulerConfig::standard();
@@ -1450,7 +1447,9 @@ impl Scheduler {
             let recorder = NodeRecorder::new(&node_name, &node_id, rec_state.config.clone());
 
             let relative_path = format!("{}@{}.horus", node_name, node_id);
-            rec_state.scheduler_recording.add_node_recording(&node_id, &relative_path);
+            rec_state
+                .scheduler_recording
+                .add_node_recording(&node_id, &relative_path);
 
             Some(recorder)
         } else {
@@ -2344,11 +2343,7 @@ impl Scheduler {
 
     /// Execute a single node: tick + profiling + WCET + deadline + failure handling.
     /// Returns true if the scheduler should stop (fatal failure).
-    fn execute_single_node(
-        &mut self,
-        i: usize,
-        node_filter: Option<&[&str]>,
-    ) -> bool {
+    fn execute_single_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
         // Skip stopped or paused nodes
         if self.nodes[i].is_stopped || self.nodes[i].is_paused {
             return false;
@@ -2565,10 +2560,7 @@ impl Scheduler {
                                         " Node '{}' restart failed: {}",
                                         node_name, e
                                     ));
-                                    context.transition_to_crashed(format!(
-                                        "Restart failed: {}",
-                                        e
-                                    ));
+                                    context.transition_to_crashed(format!("Restart failed: {}", e));
                                     registered.initialized = false;
                                 }
                             }
@@ -2707,10 +2699,9 @@ impl Scheduler {
                     let node_ref = unsafe { &mut *nodes_ptr.add(i) };
                     s.spawn(move |_| {
                         let tick_start = Instant::now();
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                node_ref.node.tick();
-                            }));
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            node_ref.node.tick();
+                        }));
                         let duration = tick_start.elapsed();
                         ParallelResult {
                             index: i,
@@ -2731,17 +2722,11 @@ impl Scheduler {
 
         // Phase 4: Process results sequentially on main thread
         for pr in parallel_results {
-            if self.process_tick_result(
-                pr.index,
-                pr.tick_start,
-                pr.duration,
-                pr.result,
-            ) {
+            if self.process_tick_result(pr.index, pr.tick_start, pr.duration, pr.result) {
                 return; // Fatal failure
             }
         }
     }
-
 }
 
 #[cfg(test)]

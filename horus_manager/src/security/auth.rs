@@ -104,7 +104,6 @@ impl AuthService {
     pub fn logout(&self, token: &str) {
         self.sessions.write().unwrap().remove(token);
     }
-
 }
 
 impl RateLimiter {

@@ -1,6 +1,6 @@
 use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
-use horus::{NodeInfo as CoreNodeInfo, TopicMetadata};
+use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
 use horus_core::core::Node as CoreNode;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
@@ -117,10 +117,7 @@ impl CoreNode for PyNodeAdapter {
                         self.scheduler_running.store(false, Ordering::SeqCst);
                     } else {
                         // Panic for horus_core's catch_unwind / failure policy
-                        panic!(
-                            "Python node '{}' tick failed: {}",
-                            self.leaked_name, e
-                        );
+                        panic!("Python node '{}' tick failed: {}", self.leaked_name, e);
                     }
                 }
             }
@@ -256,7 +253,16 @@ impl PyNodeBuilder {
 
         {
             let sched = scheduler.borrow(py);
-            sched.add_node_internal(py, node, order, rate_hz, rt, deadline_ms, tier, failure_policy)?;
+            sched.add_node_internal(
+                py,
+                node,
+                order,
+                rate_hz,
+                rt,
+                deadline_ms,
+                tier,
+                failure_policy,
+            )?;
         }
 
         Ok(scheduler)
@@ -285,6 +291,7 @@ pub struct PyScheduler {
 }
 
 impl PyScheduler {
+    #[allow(clippy::too_many_arguments)]
     fn add_node_internal(
         &self,
         py: Python,
@@ -600,6 +607,7 @@ impl PyScheduler {
     }
 
     /// Add a node to the scheduler.
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, logging=true, tier=None, failure_policy=None))]
     fn add(
         &self,
@@ -609,12 +617,20 @@ impl PyScheduler {
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
-        #[allow(unused_variables)]
-        logging: bool,
+        #[allow(unused_variables)] logging: bool,
         tier: Option<String>,
         failure_policy: Option<String>,
     ) -> PyResult<()> {
-        self.add_node_internal(py, node, order, rate_hz, rt, deadline_ms, tier, failure_policy)
+        self.add_node_internal(
+            py,
+            node,
+            order,
+            rate_hz,
+            rt,
+            deadline_ms,
+            tier,
+            failure_policy,
+        )
     }
 
     /// Set per-node rate control
@@ -629,9 +645,9 @@ impl PyScheduler {
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        let inner = guard.as_mut().ok_or_else(|| {
-            PyRuntimeError::new_err("Cannot modify while scheduler is running")
-        })?;
+        let inner = guard
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("Cannot modify while scheduler is running"))?;
 
         inner.set_node_rate(&node_name, rate_hz);
         println!("Set node '{}' rate to {}Hz", node_name, rate_hz);
@@ -696,12 +712,7 @@ impl PyScheduler {
     }
 
     /// Run specific nodes for a specified duration (in seconds).
-    fn tick_for(
-        &self,
-        py: Python,
-        node_names: Vec<String>,
-        duration_seconds: f64,
-    ) -> PyResult<()> {
+    fn tick_for(&self, py: Python, node_names: Vec<String>, duration_seconds: f64) -> PyResult<()> {
         if duration_seconds <= 0.0 {
             return Err(PyRuntimeError::new_err("Duration must be positive"));
         }
@@ -743,9 +754,9 @@ impl PyScheduler {
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        let inner = guard
-            .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("Stats unavailable while scheduler is running"))?;
+        let inner = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("Stats unavailable while scheduler is running")
+        })?;
 
         for metric in inner.metrics() {
             if metric.name == node_name {
@@ -1200,10 +1211,7 @@ impl PyScheduler {
             .inner
             .lock()
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))?;
-        let count = guard
-            .as_ref()
-            .map(|s| s.node_list().len())
-            .unwrap_or(0);
+        let count = guard.as_ref().map(|s| s.node_list().len()).unwrap_or(0);
         Ok(format!(
             "Scheduler(nodes={}, tick_rate={}Hz)",
             count, self.tick_rate_hz

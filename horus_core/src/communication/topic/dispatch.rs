@@ -88,9 +88,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::backend::BackendStorage;
-use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
+use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
 use super::RingTopic;
-use super::local_state::{LEASE_REFRESH_INTERVAL, EPOCH_CHECK_INTERVAL};
+use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
 use crate::utils::unlikely;
 
 // ============================================================================
@@ -306,7 +306,9 @@ unsafe fn read_serde_slot<T: DeserializeOwned>(slot_ptr: *const u8, slot_size: u
 // local_head/local_tail). This achieves Copper-rs-level zero-dispatch.
 
 #[inline(always)]
-pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_direct_channel_local<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -332,7 +334,9 @@ pub(super) fn send_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
 }
 
 #[inline(always)]
-pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_direct_channel_local<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     let local = topic.local();
@@ -375,7 +379,9 @@ pub(super) fn recv_direct_channel_local<T: Clone + Send + Sync + Serialize + Des
 //   cached_capacity / cached_capacity_mask → from DirectSlot
 
 #[inline(always)]
-pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_direct_channel_cached<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -410,7 +416,9 @@ pub(super) fn send_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
 }
 
 #[inline(always)]
-pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_direct_channel_cached<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     let local = topic.local();
@@ -434,7 +442,7 @@ pub(super) fn recv_direct_channel_cached<T: Clone + Send + Sync + Serialize + De
         std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
     };
     // SAFETY: tail_ptr is &DirectSlot.tail (valid AtomicU64).
-    unsafe { (*(tail_ptr as *const AtomicU64)).store(tail.wrapping_add(1), Ordering::Relaxed) };
+    unsafe { (*tail_ptr).store(tail.wrapping_add(1), Ordering::Relaxed) };
 
     local.msg_counter = local.msg_counter.wrapping_add(1);
     if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
@@ -527,8 +535,8 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
     unsafe {
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
-        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
-            as *const std::sync::atomic::AtomicU64);
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
     }
     local.local_head = seq + 1;
@@ -542,7 +550,9 @@ pub(super) fn send_shm_mp_pod<T: Clone + Send + Sync + Serialize + DeserializeOw
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_shm_pod_broadcast<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -555,8 +565,8 @@ pub(super) fn send_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
     unsafe {
-        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
-            as *const std::sync::atomic::AtomicU64);
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         ready_ptr.store(0, Ordering::Release);
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
@@ -709,7 +719,9 @@ unsafe fn colo_data<T>(data_ptr: *mut u8, index: usize) -> *mut T {
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_shm_sp_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -752,7 +764,9 @@ pub(super) fn send_shm_sp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn send_shm_mp_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_shm_mp_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -791,7 +805,9 @@ pub(super) fn send_shm_mp_pod_colo<T: Clone + Send + Sync + Serialize + Deserial
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn send_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_shm_pod_broadcast_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -820,7 +836,9 @@ pub(super) fn send_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
 
 #[cold]
 #[inline(never)]
-pub(super) fn send_uninitialized<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn send_uninitialized<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
@@ -915,8 +933,8 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
     // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready_ok = unsafe {
-        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
-            as *const std::sync::atomic::AtomicU64);
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
@@ -968,9 +986,16 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
                 return None;
             }
         }
-        if header.tail.compare_exchange_weak(
-            tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-        ).is_ok() {
+        if header
+            .tail
+            .compare_exchange_weak(
+                tail,
+                tail.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             let msg = unsafe {
                 let base = local.cached_data_ptr as *const T;
                 simd_aware_read(base.add((tail & mask) as usize))
@@ -1012,17 +1037,24 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // SAFETY: cached_seq_ptr points to the per-slot ready-flag array in SHM.
     // index*8 is within bounds (index < capacity, array has capacity entries).
     let ready_ok = unsafe {
-        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
-            as *const std::sync::atomic::AtomicU64);
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         spin_for_ready(ready_ptr, tail.wrapping_add(1))
     };
     if !ready_ok {
         return None;
     }
 
-    if header.tail.compare_exchange_weak(
-        tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-    ).is_ok() {
+    if header
+        .tail
+        .compare_exchange_weak(
+            tail,
+            tail.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
         let msg = unsafe {
             let base = local.cached_data_ptr as *const T;
             simd_aware_read(base.add(index))
@@ -1040,7 +1072,9 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_pod_broadcast<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1070,8 +1104,8 @@ pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
 
     let index = (tail & mask) as usize;
     let ready = unsafe {
-        let ready_ptr = &*(local.cached_seq_ptr.add(index * 8)
-            as *const std::sync::atomic::AtomicU64);
+        let ready_ptr =
+            &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         let ready_val = ready_ptr.load(Ordering::Acquire);
         ready_val != 0 && ready_val >= tail.wrapping_add(1)
     };
@@ -1094,7 +1128,9 @@ pub(super) fn recv_shm_pod_broadcast<T: Clone + Send + Sync + Serialize + Deseri
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_spsc_serde<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1119,10 +1155,7 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
     // SAFETY: slot_ptr is valid for slot_size bytes within SHM. The producer's
     // sequence store (Release) was observed via our Acquire load on sequence_or_head.
-    let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
-        Some(m) => m,
-        None => return None,
-    };
+    let msg = unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) }?;
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1137,7 +1170,9 @@ pub(super) fn recv_shm_spsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_mpsc_serde<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1173,10 +1208,7 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 
     // SAFETY: slot_ptr is valid for slot_size bytes within SHM. Ready flag
     // was verified above, so the producer has finished writing this slot.
-    let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
-        Some(m) => m,
-        None => return None,
-    };
+    let msg = unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) }?;
 
     let new_tail = tail.wrapping_add(1);
     local.local_tail = new_tail;
@@ -1191,7 +1223,9 @@ pub(super) fn recv_shm_mpsc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_spmc_serde<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1210,15 +1244,24 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         }
     }
 
-    if header.tail.compare_exchange_weak(
-        tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-    ).is_ok() {
+    if header
+        .tail
+        .compare_exchange_weak(
+            tail,
+            tail.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
         let index = (tail & mask) as usize;
         let slot_offset = index * slot_size;
 
         // SAFETY: CAS succeeded so we own this slot. slot_ptr is valid for
         // slot_size bytes within the SHM data region.
-        let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+        let msg = match unsafe {
+            read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size)
+        } {
             Some(m) => m,
             None => {
                 local.local_tail = tail.wrapping_add(1);
@@ -1239,7 +1282,9 @@ pub(super) fn recv_shm_spmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_mpmc_serde<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1272,12 +1317,21 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
         return None;
     }
 
-    if header.tail.compare_exchange_weak(
-        tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-    ).is_ok() {
+    if header
+        .tail
+        .compare_exchange_weak(
+            tail,
+            tail.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
         // SAFETY: CAS succeeded so we own this slot. Ready flag was verified
         // above, so the producer has finished writing.
-        let msg = match unsafe { read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size) } {
+        let msg = match unsafe {
+            read_serde_slot::<T>(local.cached_data_ptr.add(slot_offset), slot_size)
+        } {
             Some(m) => m,
             None => {
                 local.local_tail = tail.wrapping_add(1);
@@ -1310,7 +1364,9 @@ pub(super) fn recv_shm_mpmc_serde<T: Clone + Send + Sync + Serialize + Deseriali
 //    Empty polls return in ~3ns via L1-cached local state (no SHM access).
 
 #[inline(always)]
-pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_spsc_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1360,7 +1416,9 @@ pub(super) fn recv_shm_spsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_mpsc_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1381,9 +1439,8 @@ pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     let index = (tail & mask) as usize;
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
-    let ready_ok = unsafe {
-        spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1))
-    };
+    let ready_ok =
+        unsafe { spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1)) };
     if !ready_ok {
         return None;
     }
@@ -1402,7 +1459,9 @@ pub(super) fn recv_shm_mpsc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_spmc_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1422,9 +1481,16 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
             return None;
         }
 
-        if header.tail.compare_exchange_weak(
-            tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-        ).is_ok() {
+        if header
+            .tail
+            .compare_exchange_weak(
+                tail,
+                tail.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
             local.local_tail = tail.wrapping_add(1);
 
@@ -1441,7 +1507,9 @@ pub(super) fn recv_shm_spmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_mpmc_pod_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1462,16 +1530,22 @@ pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
     let index = (tail & mask) as usize;
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
-    let ready_ok = unsafe {
-        spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1))
-    };
+    let ready_ok =
+        unsafe { spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1)) };
     if !ready_ok {
         return None;
     }
 
-    if header.tail.compare_exchange_weak(
-        tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-    ).is_ok() {
+    if header
+        .tail
+        .compare_exchange_weak(
+            tail,
+            tail.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_ok()
+    {
         let msg = unsafe { std::ptr::read(colo_data::<T>(local.cached_data_ptr, index)) };
         local.local_tail = tail.wrapping_add(1);
 
@@ -1486,7 +1560,9 @@ pub(super) fn recv_shm_mpmc_pod_colo<T: Clone + Send + Sync + Serialize + Deseri
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
-pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_shm_pod_broadcast_colo<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     epoch_guard_recv!(topic);
@@ -1536,7 +1612,9 @@ pub(super) fn recv_shm_pod_broadcast_colo<T: Clone + Send + Sync + Serialize + D
 
 #[cold]
 #[inline(never)]
-pub(super) fn recv_uninitialized<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static>(
+pub(super) fn recv_uninitialized<
+    T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+>(
     topic: &RingTopic<T>,
 ) -> Option<T> {
     if topic.ensure_consumer().is_err() {

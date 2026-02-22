@@ -138,7 +138,10 @@ impl FrameRegistry {
 
         // Check if static
         if self.core.is_static(id) {
-            return Err(HorusError::PermissionDenied(format!("Cannot unregister static frame '{}'", name)));
+            return Err(HorusError::PermissionDenied(format!(
+                "Cannot unregister static frame '{}'",
+                name
+            )));
         }
 
         // Reset the slot
@@ -270,7 +273,10 @@ impl FrameRegistry {
             if let Some(free_id) = self.find_free_slot() {
                 return Ok(free_id);
             }
-            return Err(HorusError::InvalidInput(format!("Maximum frame limit ({}) reached", self.max_frames)));
+            return Err(HorusError::InvalidInput(format!(
+                "Maximum frame limit ({}) reached",
+                self.max_frames
+            )));
         }
 
         let id = *next_id;
@@ -334,7 +340,9 @@ mod tests {
         let registry = make_registry();
 
         let result = registry.register("orphan", Some("nonexistent"));
-        assert!(matches!(result, Err(HorusError::NotFound(ref msg)) if msg.contains("Parent frame")));
+        assert!(
+            matches!(result, Err(HorusError::NotFound(ref msg)) if msg.contains("Parent frame"))
+        );
     }
 
     #[test]

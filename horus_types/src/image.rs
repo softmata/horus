@@ -267,8 +267,15 @@ mod tests {
 
     #[test]
     fn test_image_serde_roundtrip() {
-        let tensor =
-            HorusTensor::new(1, 42, 1, 0, &[1080, 1920, 3], TensorDtype::U8, Device::cpu());
+        let tensor = HorusTensor::new(
+            1,
+            42,
+            1,
+            0,
+            &[1080, 1920, 3],
+            TensorDtype::U8,
+            Device::cpu(),
+        );
         let mut img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
         img.set_frame_id("cam0");
         img.set_timestamp_ns(123456789);

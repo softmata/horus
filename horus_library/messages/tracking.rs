@@ -271,8 +271,7 @@ mod tests {
 
     #[test]
     fn test_track_lifecycle() {
-        let mut track =
-            TrackedObject::new(1, TrackingBBox::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
+        let mut track = TrackedObject::new(1, TrackingBBox::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
 
         assert!(track.is_tentative());
 

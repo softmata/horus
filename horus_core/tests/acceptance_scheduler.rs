@@ -92,9 +92,7 @@ impl Node for FailingInitNode {
     }
 
     fn init(&mut self) -> Result<()> {
-        Err(HorusError::InitializationFailed(
-            "Initialization failed".to_string(),
-        ))
+        Err(HorusError::Config("Initialization failed".to_string()))
     }
 
     fn tick(&mut self) {

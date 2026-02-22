@@ -540,7 +540,6 @@ impl NodeInfo {
     pub fn get_custom_data(&self, key: &str) -> Option<&String> {
         self.custom_data.get(key)
     }
-
 }
 
 /// Topic metadata for monitoring and introspection

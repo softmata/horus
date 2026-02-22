@@ -51,10 +51,7 @@ pub enum FailurePolicy {
     ///
     /// Use for: logging, telemetry, diagnostics, non-critical tasks.
     /// This is the default for `Background` and `AsyncIO` tiers.
-    Skip {
-        max_failures: u32,
-        cooldown_ms: u64,
-    },
+    Skip { max_failures: u32, cooldown_ms: u64 },
 
     /// Failures are completely ignored. The node keeps ticking every cycle.
     ///
@@ -103,9 +100,7 @@ enum FailureHandlerState {
         backoff_until: Option<Instant>,
     },
     /// Skip: delegates to CircuitBreaker
-    Skip {
-        breaker: CircuitBreaker,
-    },
+    Skip { breaker: CircuitBreaker },
     /// Ignore: no state needed
     Ignore,
 }
@@ -171,12 +166,10 @@ impl FailureHandler {
     pub fn should_allow(&self) -> bool {
         match &self.state {
             FailureHandlerState::Fatal => true,
-            FailureHandlerState::Restart { backoff_until, .. } => {
-                match backoff_until {
-                    Some(until) => Instant::now() >= *until,
-                    None => true,
-                }
-            }
+            FailureHandlerState::Restart { backoff_until, .. } => match backoff_until {
+                Some(until) => Instant::now() >= *until,
+                None => true,
+            },
             FailureHandlerState::Skip { breaker } => breaker.should_allow(),
             FailureHandlerState::Ignore => true,
         }

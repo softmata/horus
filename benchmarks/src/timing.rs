@@ -331,5 +331,4 @@ mod tests {
             min_latency
         );
     }
-
 }

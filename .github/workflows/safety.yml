@@ -21,7 +21,6 @@ on:
       # Only run on PRs that touch unsafe code
       - 'horus_core/src/memory/**'
       - 'horus_core/src/communication/**'
-      - 'horus_core/src/ipc/**'
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,12 +62,6 @@ jobs:
       - name: MIRI - horus_core communication module
         run: |
           cargo miri test -p horus_core --lib -- communication::
-        env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
-
-      - name: MIRI - horus_core ipc module
-        run: |
-          cargo miri test -p horus_core --lib -- ipc::
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 

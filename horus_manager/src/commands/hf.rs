@@ -10,8 +10,8 @@
 //!   horus hf info `<frame>`  - Show frame details
 
 use colored::*;
-use horus_core::error::HorusResult;
 use horus_core::communication::Topic;
+use horus_core::error::HorusResult;
 use horus_library::hframe::{HFMessage, HFrame, Transform, TransformStamped};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};

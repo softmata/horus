@@ -8,7 +8,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::primitives::CachePadded;
+use super::primitives::{alloc_uninit_buffer, CachePadded};
 
 /// Heap-backed SPSC ring buffer for cross-thread 1P1C communication.
 ///
@@ -43,10 +43,6 @@ impl<T> SpscRing<T> {
     /// Create a new SPSC ring with the given capacity (must be power of 2).
     pub fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
-        let mut buffer = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
-        }
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
@@ -54,7 +50,7 @@ impl<T> SpscRing<T> {
             cached_recv_head: CachePadded(std::cell::Cell::new(0)),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            buffer: buffer.into_boxed_slice(),
+            buffer: alloc_uninit_buffer(cap),
         }
     }
 
@@ -68,9 +64,7 @@ impl<T> SpscRing<T> {
     /// Check how many messages are pending in the ring.
     #[inline]
     pub fn pending_count(&self) -> u64 {
-        let head = self.head.0.load(Ordering::Acquire);
-        let tail = self.tail.0.load(Ordering::Acquire);
-        head.wrapping_sub(tail)
+        ring_pending_count!(self)
     }
 
     /// Try to receive a message. Returns None if the buffer is empty.
@@ -94,7 +88,7 @@ impl<T> SpscRing<T> {
         // SAFETY: index is within bounds; data was written by producer and
         // made visible via Release/Acquire on head
         let msg = unsafe {
-            let slot = &*self.buffer.get_unchecked(index);
+            let slot = self.buffer.get_unchecked(index);
             (*slot.get()).assume_init_read()
         };
         self.tail.0.store(tail.wrapping_add(1), Ordering::Release);
@@ -121,7 +115,7 @@ impl<T> SpscRing<T> {
         // SAFETY: slot is in [tail, head) — initialized and not yet consumed.
         // We clone instead of moving to preserve the slot for try_recv.
         let msg = unsafe {
-            let slot = &*self.buffer.get_unchecked(index);
+            let slot = self.buffer.get_unchecked(index);
             (*slot.get()).assume_init_ref().clone()
         };
         Some(msg)
@@ -130,16 +124,6 @@ impl<T> SpscRing<T> {
 
 impl<T> Drop for SpscRing<T> {
     fn drop(&mut self) {
-        let head = *self.head.0.get_mut();
-        let tail = *self.tail.0.get_mut();
-        // Drop all initialized but unconsumed messages in [tail, head)
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            // SAFETY: we have &mut self (exclusive access). All slots in
-            // [tail, head) were written by the producer and not yet consumed.
-            unsafe {
-                self.buffer[index].get_mut().assume_init_drop();
-            }
-        }
+        sp_drop_ring!(self);
     }
 }

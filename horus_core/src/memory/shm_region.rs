@@ -594,8 +594,15 @@ mod tests {
     use super::*;
 
     fn unique_name(prefix: &str) -> String {
-        format!("{}_{}_{}", prefix, std::process::id(), std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
+        format!(
+            "{}_{}_{}",
+            prefix,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
     }
 
     #[test]
@@ -641,7 +648,10 @@ mod tests {
 
         // Verify the marker is visible
         let val = unsafe { std::ptr::read(reader.as_ptr() as *const u64) };
-        assert_eq!(val, 0xDEAD_BEEF_CAFE_BABE, "Marker not visible through second mapping");
+        assert_eq!(
+            val, 0xDEAD_BEEF_CAFE_BABE,
+            "Marker not visible through second mapping"
+        );
 
         drop(reader);
         drop(owner);
@@ -666,7 +676,10 @@ mod tests {
 
         // After owner drops, the SHM should be gone
         let result = ShmRegion::open(&name);
-        assert!(result.is_err(), "SHM should be cleaned up after owner drops");
+        assert!(
+            result.is_err(),
+            "SHM should be cleaned up after owner drops"
+        );
     }
 
     #[test]
@@ -685,7 +698,8 @@ mod tests {
         assert_eq!(owner.size(), size);
 
         // Still openable
-        let _reader2 = ShmRegion::open(&name).expect("SHM should still exist after non-owner drops");
+        let _reader2 =
+            ShmRegion::open(&name).expect("SHM should still exist after non-owner drops");
 
         drop(_reader2);
         drop(owner); // Now owner cleans up
@@ -708,8 +722,8 @@ mod tests {
 
     #[test]
     fn shm_concurrent_rw_from_threads() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
 
         let name = unique_name("test_threaded");
         let size = 4096;
@@ -722,23 +736,28 @@ mod tests {
         let n_threads = 4;
         let n_increments = 1000;
 
-        let handles: Vec<_> = (0..n_threads).map(|_| {
-            let r = region.clone();
-            std::thread::spawn(move || {
-                let counter = unsafe { &*(r.as_ptr() as *const AtomicU64) };
-                for _ in 0..n_increments {
-                    counter.fetch_add(1, Ordering::Relaxed);
-                }
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let r = region.clone();
+                std::thread::spawn(move || {
+                    let counter = unsafe { &*(r.as_ptr() as *const AtomicU64) };
+                    for _ in 0..n_increments {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for h in handles {
             h.join().unwrap();
         }
 
         let final_val = unsafe { (*counter_ptr).load(Ordering::Relaxed) };
-        assert_eq!(final_val, (n_threads * n_increments) as u64,
-            "Concurrent atomic increments should sum correctly");
+        assert_eq!(
+            final_val,
+            (n_threads * n_increments) as u64,
+            "Concurrent atomic increments should sum correctly"
+        );
     }
 
     #[test]

@@ -20,7 +20,6 @@ The `horus` crate re-exports everything you need:
 
 - **Core Framework** - Node trait, Scheduler, Topic communication
 - **Standard Library** - Message types (CmdVel, Imu, LaserScan, Pose2D, Twist, etc.) and HFrame coordinate transforms
-- **AI** - ML model registry and loader
 - **Macros** - `node!` and `message!` macros for zero-boilerplate development
 - **Common Types** - Result/Error types, Duration, Arc, Mutex, Serde traits
 
@@ -37,7 +36,7 @@ pub struct MyNode {
 }
 
 impl Node for MyNode {
-    fn name(&self) -> &'static str { "MyNode" }
+    fn name(&self) -> &str { "MyNode" }
 
     fn tick(&mut self) {
         let data = SensorData(self.counter as f64 * 0.1, self.counter);
@@ -51,7 +50,7 @@ fn main() -> Result<()> {
         .with_name("my_app");
 
     scheduler.add(MyNode {
-        publisher: Topic::new("sensor_data", None)?,
+        publisher: Topic::new("sensor_data")?,
         counter: 0,
     }).order(0).done();
 

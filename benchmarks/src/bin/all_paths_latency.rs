@@ -45,9 +45,7 @@ use horus_benchmarks::platform::{detect_platform, has_constant_tsc, PlatformInfo
 use horus_benchmarks::set_cpu_affinity;
 use horus_benchmarks::stats::Statistics;
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
-use horus_benchmarks::{
-    BenchmarkConfig, BenchmarkResult, DeterminismMetrics, ThroughputMetrics,
-};
+use horus_benchmarks::{BenchmarkConfig, BenchmarkResult, DeterminismMetrics, ThroughputMetrics};
 use horus_library::messages::cmd_vel::CmdVel;
 use std::hint::spin_loop;
 use std::process::{Command, Stdio};
@@ -69,6 +67,7 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// 1. Setup (spawn consumer, wait for topology, trigger migration) takes ~350ms
 /// 2. At ~100ns/msg SHM speed, 105K msgs finishes in ~10ms
 /// 3. Publishers must still be running during the measurement phase
+///
 /// 10M msgs × ~100ns = ~1s — enough headroom for setup + warmup + measurement.
 const PODSHM_MSGS_PER_PUB: u64 = 10_000_000;
 
@@ -143,7 +142,12 @@ fn main() {
     // --- Child process entry points ---
     if args.len() >= 5 && args[1] == "--child-publisher" {
         let paced = args.get(5).map(|s| s == "--paced").unwrap_or(false);
-        run_child_publisher(&args[2], args[3].parse().unwrap(), args[4].parse().unwrap(), paced);
+        run_child_publisher(
+            &args[2],
+            args[3].parse().unwrap(),
+            args[4].parse().unwrap(),
+            paced,
+        );
         return;
     }
     if args.len() >= 5 && args[1] == "--child-consumer" {
@@ -174,11 +178,7 @@ fn main() {
     let mut results: Vec<ScenarioResult> = Vec::new();
 
     // === Intra-process (5 scenarios) ===
-    println!(
-        "{} Intra-Process {}",
-        "───",
-        "─".repeat(BOX_W - 19)
-    );
+    println!("─── Intra-Process {}", "─".repeat(BOX_W - 19));
     println!();
 
     let r = bench_direct_channel(&timer);
@@ -203,8 +203,7 @@ fn main() {
 
     // === Cross-process (4 scenarios) ===
     println!(
-        "{} Cross-Process (RDTSC-in-payload) {}",
-        "───",
+        "─── Cross-Process (RDTSC-in-payload) {}",
         "─".repeat(BOX_W - 37)
     );
     println!();
@@ -229,8 +228,7 @@ fn main() {
     // === Raw atomic probe (hardware floor) ===
     println!();
     println!(
-        "{} Hardware Floor (raw SHM atomic) {}",
-        "───",
+        "─── Hardware Floor (raw SHM atomic) {}",
         "─".repeat(BOX_W - 38)
     );
     println!();
@@ -243,8 +241,7 @@ fn main() {
     if !skip_stress {
         println!();
         println!(
-            "{} Scalability Stress (PodShm N-pub x M-sub) {}",
-            "───",
+            "─── Scalability Stress (PodShm N-pub x M-sub) {}",
             "─".repeat(BOX_W - 47)
         );
         println!();
@@ -290,10 +287,7 @@ fn print_header(platform: &PlatformInfo, cal: &RdtscCalibration) {
     println!();
     println!("{}", box_top());
     println!("{}", box_center("HORUS IPC Latency Benchmark v2.0"));
-    println!(
-        "{}",
-        box_center("Per-Message RDTSC-Instrumented Latency")
-    );
+    println!("{}", box_center("Per-Message RDTSC-Instrumented Latency"));
     println!("{}", box_sep());
 
     let model = truncate(&platform.cpu.model, BOX_W - 8);
@@ -1176,7 +1170,10 @@ fn wait_for_topology(topic: &Topic<CmdVel>, min_pubs: u32, min_subs: u32, timeou
         if Instant::now() > deadline {
             eprintln!(
                 "  [warn] topology timeout: wanted pubs>={} subs>={}, got pubs={} subs={}",
-                min_pubs, min_subs, topic.pub_count(), topic.sub_count()
+                min_pubs,
+                min_subs,
+                topic.pub_count(),
+                topic.sub_count()
             );
             break;
         }
@@ -1274,7 +1271,9 @@ fn collect_cross_proc(
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
             let send_cycles = msg.stamp_nanos;
-            let delta = recv_cycles.wrapping_sub(send_cycles).saturating_sub(overhead);
+            let delta = recv_cycles
+                .wrapping_sub(send_cycles)
+                .saturating_sub(overhead);
             latencies.push(cal.cycles_to_ns(delta));
             total += 1;
             last_recv_cycles = recv_cycles;
@@ -1357,7 +1356,9 @@ fn collect_pod_shm(
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
             let send_cycles = msg.stamp_nanos;
-            let delta = recv_cycles.wrapping_sub(send_cycles).saturating_sub(overhead);
+            let delta = recv_cycles
+                .wrapping_sub(send_cycles)
+                .saturating_sub(overhead);
             latencies.push(cal.cycles_to_ns(delta));
             total += 1;
             last_recv_cycles = recv_cycles;
@@ -1742,10 +1743,7 @@ fn print_detail(r: &ScenarioResult) {
 
     if r.latencies_ns.is_empty() {
         println!("  NO SAMPLES -- topology did not route messages to parent consumer");
-        println!(
-            "  Messages: {}/{} received",
-            r.total_received, r.total_sent
-        );
+        println!("  Messages: {}/{} received", r.total_received, r.total_sent);
         println!();
         return;
     }
@@ -1817,10 +1815,7 @@ fn print_pod_shm_detail(r: &ScenarioResult) {
             let fresh_stats = Statistics::from_samples(freshness, 95.0, false);
             println!(
                 "    Freshness (msgs between reads):  p50: {}  p95: {}  p99: {}  max: {}",
-                fresh_stats.median as u64,
-                fresh_stats.p95,
-                fresh_stats.p99,
-                fresh_stats.max,
+                fresh_stats.median as u64, fresh_stats.p95, fresh_stats.p99, fresh_stats.max,
             );
         }
     }
@@ -1853,8 +1848,8 @@ fn print_summary(results: &[ScenarioResult]) {
     let w = BOX_W + 4;
     println!("{}", "=".repeat(w));
     println!(
-        "  {:<18} {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  {}",
-        "Scenario", "Type", "p50", "p95", "p99", "p99.9", "max", "Backend"
+        "  {:<18} {:>7}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}  Backend",
+        "Scenario", "Type", "p50", "p95", "p99", "p99.9", "max"
     );
     println!("{}", "-".repeat(w));
 
@@ -1916,8 +1911,7 @@ fn print_overhead_analysis(results: &[ScenarioResult]) {
     let Some(floor_ns) = hw_floor else { return };
 
     println!(
-        "{} Framework Overhead (vs hardware floor: {}ns) {}",
-        "───",
+        "─── Framework Overhead (vs hardware floor: {}ns) {}",
         floor_ns,
         "─".repeat(BOX_W - 55)
     );
@@ -1955,11 +1949,7 @@ fn print_overhead_analysis(results: &[ScenarioResult]) {
 // ============================================================================
 
 fn print_methodology(cal: &RdtscCalibration) {
-    println!(
-        "{} Methodology {}",
-        "───",
-        "─".repeat(BOX_W - 18)
-    );
+    println!("─── Methodology {}", "─".repeat(BOX_W - 18));
     println!();
     println!("  Measurement types:");
     println!("    send      = producer-side send() latency (RDTSC, overhead subtracted)");
@@ -1990,7 +1980,9 @@ fn print_methodology(cal: &RdtscCalibration) {
         times[times.len() / 2]
     );
     println!("    Intra-process: RDTSC overhead subtracted from each sample");
-    println!("    Cross-process: RDTSC overhead subtracted (rdtsc on producer + rdtscp on consumer)");
+    println!(
+        "    Cross-process: RDTSC overhead subtracted (rdtsc on producer + rdtscp on consumer)"
+    );
     println!();
 
     println!("  Known limitations:");
@@ -2035,11 +2027,7 @@ fn write_json_output(path: &str, platform: &PlatformInfo, results: &[ScenarioRes
             raw_latencies_ns: Vec::new(),
             statistics: s.clone(),
             throughput: ThroughputMetrics {
-                messages_per_sec: if s.mean > 0.0 {
-                    1e9 / s.mean
-                } else {
-                    0.0
-                },
+                messages_per_sec: if s.mean > 0.0 { 1e9 / s.mean } else { 0.0 },
                 bytes_per_sec: if s.mean > 0.0 {
                     (std::mem::size_of::<CmdVel>() as f64) * 1e9 / s.mean
                 } else {
@@ -2106,12 +2094,7 @@ fn box_center(text: &str) -> String {
     let pad = BOX_W.saturating_sub(text.len());
     let left = pad / 2;
     let right = pad - left;
-    format!(
-        "║ {}{}{} ║",
-        " ".repeat(left),
-        text,
-        " ".repeat(right)
-    )
+    format!("║ {}{}{} ║", " ".repeat(left), text, " ".repeat(right))
 }
 fn box_left(text: &str) -> String {
     let content = if text.len() > BOX_W {

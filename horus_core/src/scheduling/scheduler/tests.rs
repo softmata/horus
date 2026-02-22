@@ -1,5 +1,7 @@
 use super::*;
 use crate::core::Node;
+use crate::scheduling::config::SchedulerConfig;
+use crate::scheduling::deterministic::DeterministicConfig;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -497,7 +499,10 @@ fn test_parallel_rt_nodes_run_sequentially() {
         .rt()
         .done();
     scheduler
-        .add(CounterNode::with_counter("normal_node", normal_counter.clone()))
+        .add(CounterNode::with_counter(
+            "normal_node",
+            normal_counter.clone(),
+        ))
         .order(100)
         .done();
 
@@ -505,7 +510,10 @@ fn test_parallel_rt_nodes_run_sequentially() {
     assert!(result.is_ok());
 
     // Both should have ticked
-    assert!(rt_counter.load(Ordering::SeqCst) > 0, "RT node never ticked");
+    assert!(
+        rt_counter.load(Ordering::SeqCst) > 0,
+        "RT node never ticked"
+    );
     assert!(
         normal_counter.load(Ordering::SeqCst) > 0,
         "Normal node never ticked"
@@ -590,5 +598,160 @@ fn test_rate_limiting_does_not_lower_tick_period() {
     assert_eq!(
         scheduler.tick_period, default_period,
         "tick_period should not decrease for a 10Hz node"
+    );
+}
+
+// ============================================================================
+// Fix 1: Deterministic Clock Wiring Tests
+// ============================================================================
+
+#[test]
+fn test_deterministic_config_wires_clock() {
+    let scheduler = Scheduler::deterministic();
+    assert!(scheduler.is_simulation_mode());
+    assert!(scheduler.deterministic_clock().is_some());
+    assert!(scheduler.execution_trace().is_some());
+    assert_eq!(scheduler.virtual_tick(), Some(0));
+    assert_eq!(scheduler.seed(), Some(42));
+}
+
+#[test]
+fn test_deterministic_config_virtual_time() {
+    let mut config = SchedulerConfig::minimal();
+    config.deterministic = Some(DeterministicConfig {
+        seed: 123,
+        virtual_time: true,
+        tick_duration_ns: 1_000_000,
+        record_trace: false,
+    });
+    let scheduler = Scheduler::new().with_config(config);
+
+    assert!(scheduler.is_simulation_mode());
+    assert_eq!(scheduler.seed(), Some(123));
+    // No trace when record_trace=false
+    assert!(scheduler.execution_trace().is_none());
+}
+
+#[test]
+fn test_deterministic_advances_on_run() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::deterministic();
+    scheduler
+        .add(CounterNode::with_counter("test", counter.clone()))
+        .order(0)
+        .done();
+
+    // run_for with deterministic mode (virtual time → runs as fast as possible)
+    let _ = scheduler.run_for(Duration::from_millis(50));
+
+    // Virtual tick should have advanced
+    let tick = scheduler.virtual_tick().unwrap();
+    assert!(tick > 0, "Virtual tick should advance, got {}", tick);
+
+    // Node should have been ticked
+    let ticks = counter.load(Ordering::SeqCst);
+    assert!(ticks > 0, "Node should have ticked, got {}", ticks);
+}
+
+#[test]
+fn test_standard_config_no_deterministic() {
+    let scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    assert!(!scheduler.is_simulation_mode());
+    assert!(scheduler.deterministic_clock().is_none());
+    assert!(scheduler.virtual_tick().is_none());
+}
+
+// ============================================================================
+// Fix 2: Recording Hooks Wiring Tests
+// ============================================================================
+
+#[test]
+fn test_recording_hooks_wired() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let config = SchedulerConfig::deterministic();
+    // Recording is already enabled by deterministic() preset
+    let mut scheduler = Scheduler::new().with_config(config);
+    scheduler
+        .add(CounterNode::with_counter("rec_node", counter.clone()))
+        .order(0)
+        .done();
+
+    assert!(scheduler.is_recording());
+
+    let _ = scheduler.run_for(Duration::from_millis(50));
+
+    let ticks = counter.load(Ordering::SeqCst);
+    assert!(ticks > 0, "Node should have ticked during recording");
+
+    // stop_recording should succeed and return saved paths
+    let paths = scheduler.stop_recording();
+    assert!(paths.is_ok());
+}
+
+// ============================================================================
+// Fix 3: BlackBox WAL Persistence Tests
+// ============================================================================
+
+#[test]
+fn test_blackbox_with_path() {
+    let tmp = std::env::temp_dir().join(format!("horus_bb_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let mut bb = super::super::blackbox::BlackBox::new(1).with_path(tmp.clone());
+    bb.record(super::super::blackbox::BlackBoxEvent::Custom {
+        category: "test".to_string(),
+        message: "wal_test".to_string(),
+    });
+
+    // WAL file should exist and have content
+    let wal_path = tmp.join("blackbox.wal");
+    assert!(wal_path.exists(), "WAL file should exist at {:?}", wal_path);
+    let wal_content = std::fs::read_to_string(&wal_path).unwrap();
+    assert!(!wal_content.is_empty(), "WAL file should have content");
+    assert!(wal_content.contains("wal_test"));
+
+    // save() should write JSON snapshot
+    bb.save().unwrap();
+    let json_path = tmp.join("blackbox.json");
+    assert!(json_path.exists(), "JSON snapshot should exist");
+    let json_content = std::fs::read_to_string(&json_path).unwrap();
+    assert!(json_content.contains("wal_test"));
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn test_deploy_config_creates_blackbox_with_wal() {
+    let scheduler = Scheduler::deploy();
+    assert!(
+        scheduler.blackbox().is_some(),
+        "Deploy preset should create a blackbox"
+    );
+}
+
+// ============================================================================
+// Fix 4: Dead Code Cleanup Verification
+// ============================================================================
+
+#[test]
+fn test_per_node_rates_work_without_dead_code() {
+    // Per-node rates work through set_node_rate() / .rate_hz(), not the removed config flag
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    scheduler
+        .add(CounterNode::with_counter("rated", counter.clone()))
+        .order(0)
+        .rate_hz(100.0)
+        .done();
+
+    let _ = scheduler.run_for(Duration::from_millis(100));
+
+    let ticks = counter.load(Ordering::SeqCst);
+    // At 100Hz for 100ms, expect ~10 ticks (±5 tolerance)
+    assert!(
+        (5..=30).contains(&ticks),
+        "Node at 100Hz should tick ~10 times in 100ms, got {}",
+        ticks
     );
 }

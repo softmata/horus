@@ -41,10 +41,10 @@
 //! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
 //! ```
 
-pub mod topic;
 pub mod network;
 pub mod pod;
+pub mod topic;
 
 // Re-export commonly used types for convenience
-pub use topic::{Topic, TopicMessage};
 pub use pod::PodMessage;
+pub use topic::{Topic, TopicMessage};

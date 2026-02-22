@@ -28,9 +28,9 @@ pub mod tensor_handle;
 pub mod tensor_pool;
 
 // Domain-specific types (RAII wrappers with rich API for data access)
+pub mod depth_image;
 pub mod image;
 pub mod pointcloud;
-pub mod depth_image;
 
 // CUDA IPC support (optional feature)
 #[cfg(feature = "cuda")]
@@ -40,7 +40,7 @@ pub mod cuda_pool;
 
 pub use platform::*;
 pub use shm_region::ShmRegion;
-pub use simd::{simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
+pub use simd::{fast_copy_to_shm, simd_copy_from_shm, simd_copy_to_shm, SIMD_COPY_THRESHOLD};
 pub use tensor_descriptor::TensorDescriptor;
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{
@@ -48,9 +48,9 @@ pub use tensor_pool::{
     MAX_TENSOR_DIMS,
 };
 
+pub use depth_image::DepthImage;
 pub use image::Image;
 pub use pointcloud::PointCloud;
-pub use depth_image::DepthImage;
 
 // CUDA exports
 #[cfg(feature = "cuda")]

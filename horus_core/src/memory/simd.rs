@@ -1,19 +1,22 @@
 //! # SIMD-accelerated memory operations for HORUS
 //!
 //! This module provides high-performance memory copy operations using AVX2
-//! SIMD instructions for large message transfers in shared memory.
+//! SIMD instructions for large data transfers in shared memory.
 //!
 //! ## Performance Benefits
 //!
-//! - **Streaming stores**: Use non-temporal stores to avoid cache pollution
-//!   for large buffers that won't be read again soon
+//! - **Streaming stores**: Non-temporal stores bypass the CPU cache,
+//!   ideal for write-once patterns (camera frames, LiDAR scans)
 //! - **Wide operations**: Copy 256 bits (32 bytes) per instruction
 //! - **Prefetching**: Hardware prefetch hints on reads for better bandwidth
 //!
-//! ## Usage
+//! ## Where SIMD is Used
 //!
-//! These functions are used internally by `Topic` for messages
-//! larger than `SIMD_COPY_THRESHOLD` (4KB). No user-facing API changes.
+//! Perception types that handle large buffers (images, point clouds, depth maps):
+//! - `Image::copy_from()` — e.g. 640×480 RGB8 = 921KB at 30fps
+//! - `PointCloud::copy_from()` — e.g. 100K points = 1.2MB at 10Hz
+//! - `DepthImage::copy_from()` — e.g. 640×480 F32 = 1.2MB at 30fps
+//! - Topic send/recv for messages larger than `SIMD_COPY_THRESHOLD`
 //!
 //! ## Runtime Detection
 //!
@@ -122,6 +125,39 @@ pub unsafe fn simd_copy_from_shm(src: *const u8, dst: *mut u8, len: usize) {
     // Fallback: standard copy
     std::ptr::copy_nonoverlapping(src, dst, len);
 }
+
+// ============================================================================
+// SAFE SLICE-BASED WRAPPERS
+// ============================================================================
+
+/// Copy `src` into `dst` using SIMD-accelerated streaming stores when beneficial.
+///
+/// Safe wrapper around `simd_copy_to_shm`. For buffers >= 4KB on x86-64 with
+/// AVX2, uses non-temporal stores that bypass the CPU cache — ideal for
+/// write-once patterns like loading camera frames into shared memory.
+///
+/// # Panics
+///
+/// Panics if `src.len() != dst.len()`.
+#[inline]
+pub fn fast_copy_to_shm(src: &[u8], dst: &mut [u8]) {
+    assert_eq!(
+        src.len(),
+        dst.len(),
+        "fast_copy_to_shm: src ({}) and dst ({}) must be same length",
+        src.len(),
+        dst.len()
+    );
+    // SAFETY: src and dst are valid, non-overlapping slices of equal length.
+    // &[u8] and &mut [u8] guarantee non-overlap by Rust's borrow rules.
+    unsafe {
+        simd_copy_to_shm(src.as_ptr(), dst.as_mut_ptr(), src.len());
+    }
+}
+
+// ============================================================================
+// AVX2 IMPLEMENTATIONS
+// ============================================================================
 
 /// AVX2 implementation of streaming copy TO shared memory.
 ///
@@ -330,6 +366,32 @@ mod tests {
         }
 
         assert_eq!(&src[offset..], &dst[offset..]);
+    }
+
+    #[test]
+    fn test_fast_copy_to_shm_small() {
+        let src = vec![99u8; 256];
+        let mut dst = vec![0u8; 256];
+        fast_copy_to_shm(&src, &mut dst);
+        assert_eq!(src, dst);
+    }
+
+    #[test]
+    fn test_fast_copy_to_shm_large() {
+        // Simulate a 640x480 grayscale image (307,200 bytes)
+        let size = 640 * 480;
+        let src: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+        let mut dst = vec![0u8; size];
+        fast_copy_to_shm(&src, &mut dst);
+        assert_eq!(src, dst);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be same length")]
+    fn test_fast_copy_to_shm_mismatched_panics() {
+        let src = vec![0u8; 100];
+        let mut dst = vec![0u8; 200];
+        fast_copy_to_shm(&src, &mut dst);
     }
 
     #[test]

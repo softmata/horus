@@ -25,7 +25,6 @@ impl MotorControlNode {
             simulate_overrun: false,
         }
     }
-
 }
 
 impl Node for MotorControlNode {

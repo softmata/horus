@@ -177,7 +177,11 @@ pub fn run_deploy(
     let effective_dir = remote_dir
         .or(resolved.dir)
         .unwrap_or_else(|| "~/horus_deploy".to_string());
-    let effective_port = if port != 22 { port } else { resolved.port.unwrap_or(22) };
+    let effective_port = if port != 22 {
+        port
+    } else {
+        resolved.port.unwrap_or(22)
+    };
     let effective_identity = identity.or(resolved.identity);
 
     // Parse target architecture

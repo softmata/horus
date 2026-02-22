@@ -346,7 +346,9 @@ impl HFrameCore {
 
             while current != NO_PARENT {
                 if !visited.insert(current) {
-                    return Err(HorusError::InvalidInput("Cycle detected in frame tree".to_string()));
+                    return Err(HorusError::InvalidInput(
+                        "Cycle detected in frame tree".to_string(),
+                    ));
                 }
                 if (current as usize) >= self.parents.len() {
                     break;

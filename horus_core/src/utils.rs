@@ -20,5 +20,3 @@ pub(crate) fn unlikely(b: bool) -> bool {
     }
     b
 }
-
-

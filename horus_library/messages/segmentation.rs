@@ -187,8 +187,7 @@ mod tests {
 
     #[test]
     fn test_frame_id() {
-        let mask = SegmentationMask::semantic(640, 480, 20)
-            .with_frame_id("camera_front");
+        let mask = SegmentationMask::semantic(640, 480, 20).with_frame_id("camera_front");
         assert_eq!(mask.frame_id(), "camera_front");
     }
 }

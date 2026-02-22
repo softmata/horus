@@ -44,7 +44,7 @@ pub struct JoystickInput {
     pub element_id: u32,        // Button/axis/hat number
     pub element_name: [u8; 32], // Fixed-size element name buffer (null-terminated)
     pub value: f32,             // Button: 0.0/1.0, Axis: -1.0 to 1.0, Hat: directional
-    pub pressed: u8,             // For buttons: 1 when pressed, 0 when released
+    pub pressed: u8,            // For buttons: 1 when pressed, 0 when released
     pub timestamp_ms: u64,      // Unix timestamp_ms in milliseconds
 }
 
@@ -211,4 +211,3 @@ impl JoystickInput {
 unsafe impl horus_core::bytemuck::Pod for JoystickInput {}
 unsafe impl horus_core::bytemuck::Zeroable for JoystickInput {}
 unsafe impl horus_core::communication::PodMessage for JoystickInput {}
-

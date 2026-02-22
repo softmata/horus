@@ -16,10 +16,6 @@ pub enum HorusError {
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// Backend-specific errors
-    #[error("Backend '{backend}' error: {message}")]
-    Backend { backend: String, message: String },
-
     /// Communication layer errors
     #[error("Communication error: {0}")]
     Communication(String),
@@ -28,29 +24,13 @@ pub enum HorusError {
     #[error("Node '{node}' error: {message}")]
     Node { node: String, message: String },
 
-    /// Driver-related errors
-    #[error("Driver error: {0}")]
-    Driver(String),
-
-    /// Scheduling errors
-    #[error("Scheduling error: {0}")]
-    Scheduling(String),
-
     /// Memory management errors
     #[error("Memory error: {0}")]
     Memory(String),
 
-    /// Parameter management errors
-    #[error("Parameter error: {0}")]
-    Parameter(String),
-
     /// Serialization/Deserialization errors
     #[error("Serialization error: {0}")]
     Serialization(String),
-
-    /// Timeout errors
-    #[error("Operation timed out: {0}")]
-    Timeout(String),
 
     /// Resource not found errors
     #[error("Resource not found: {0}")]
@@ -64,10 +44,6 @@ pub enum HorusError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
-    /// Initialization errors
-    #[error("Initialization failed: {0}")]
-    InitializationFailed(String),
-
     /// Already exists errors (for creation operations)
     #[error("Already exists: {0}")]
     AlreadyExists(String),
@@ -75,14 +51,6 @@ pub enum HorusError {
     /// Parse errors
     #[error("Parse error: {0}")]
     Parse(String),
-
-    /// External command execution errors
-    #[error("Command execution failed: {0}")]
-    CommandFailed(String),
-
-    /// Feature not available errors
-    #[error("Feature not available: {0}")]
-    FeatureNotAvailable(String),
 
     /// Operation not supported on this platform
     #[error("Unsupported: {0}")]
@@ -128,9 +96,8 @@ macro_rules! horus_internal {
 /// Convenience type alias for Results using HorusError
 pub type HorusResult<T> = std::result::Result<T, HorusError>;
 
-/// Short alias — `Result<T>` is equivalent to `HorusResult<T>`
+/// Short alias — `use horus::prelude::*` brings this into scope
 pub type Result<T> = HorusResult<T>;
-
 
 // ============================================
 // From implementations for common error types
@@ -242,14 +209,6 @@ impl HorusError {
         HorusError::Config(msg.into())
     }
 
-    /// Create a backend error with backend name and message
-    pub fn backend<S: Into<String>, T: Into<String>>(backend: S, message: T) -> Self {
-        HorusError::Backend {
-            backend: backend.into(),
-            message: message.into(),
-        }
-    }
-
     /// Create a node error with node name and message
     pub fn node<S: Into<String>, T: Into<String>>(node: S, message: T) -> Self {
         HorusError::Node {
@@ -261,11 +220,6 @@ impl HorusError {
     /// Create a communication error
     pub fn communication<S: Into<String>>(msg: S) -> Self {
         HorusError::Communication(msg.into())
-    }
-
-    /// Create a driver error
-    pub fn driver<S: Into<String>>(msg: S) -> Self {
-        HorusError::Driver(msg.into())
     }
 
     /// Create a memory error
@@ -286,5 +240,4 @@ impl HorusError {
             line: 0,
         }
     }
-
 }

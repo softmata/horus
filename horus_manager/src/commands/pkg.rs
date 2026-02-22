@@ -90,20 +90,18 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
 
                 if package_name.starts_with("horus-") {
                     // Find the first [[bin]] entry
-                    let bin_name = toml
-                        .get("bin")
-                        .and_then(|b| b.as_array())
-                        .and_then(|bins| {
-                            bins.first()
-                                .and_then(|b| b.get("name"))
-                                .and_then(|n| n.as_str())
-                        });
+                    let bin_name = toml.get("bin").and_then(|b| b.as_array()).and_then(|bins| {
+                        bins.first()
+                            .and_then(|b| b.get("name"))
+                            .and_then(|n| n.as_str())
+                    });
 
-                    let command = bin_name
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            package_name.strip_prefix("horus-").unwrap_or(package_name).to_string()
-                        });
+                    let command = bin_name.map(|s| s.to_string()).unwrap_or_else(|| {
+                        package_name
+                            .strip_prefix("horus-")
+                            .unwrap_or(package_name)
+                            .to_string()
+                    });
 
                     // Look for the built binary
                     if let Some(binary) = find_binary(package_dir, &command) {
@@ -1091,7 +1089,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool) -> HorusResult<(
             q
         );
         let results = client
-            .search(&q)
+            .search(&q, None, None)
             .map_err(|e| HorusError::Config(e.to_string()))?;
 
         if results.is_empty() {

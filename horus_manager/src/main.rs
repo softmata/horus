@@ -1066,8 +1066,6 @@ fn parse_override(s: &str) -> Result<(String, String, String), String> {
     ))
 }
 
-// SimCommands enum removed - sim now uses flags directly with 3D as default
-
 fn main() {
     // First, try to handle as a plugin command before clap parsing
     // This allows plugins to be invoked as: `horus <plugin-name> [args...]`
@@ -1094,9 +1092,6 @@ fn main() {
                 | "pkg"
                 | "env"
                 | "auth"
-                | "sim2d"
-                | "sim3d"
-                | "driver"
                 | "deploy"
                 | "add"
                 | "remove"

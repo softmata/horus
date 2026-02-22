@@ -115,8 +115,8 @@ pub mod prelude {
 
     // HFrame - High-performance transform system
     pub use crate::hframe::{
-        timestamp_now, FrameId, FrameRegistry, FrameSlot, HFrame, HFrameConfig, HFrameCore,
-        HFMessage, StaticTransformStamped, TFMessage, Transform, TransformStamped,
+        timestamp_now, FrameId, FrameRegistry, FrameSlot, HFMessage, HFrame, HFrameConfig,
+        HFrameCore, StaticTransformStamped, TFMessage, Transform, TransformStamped,
     };
 
     // Perception types (zero-copy IPC)

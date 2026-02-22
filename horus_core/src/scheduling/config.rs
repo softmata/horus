@@ -1,5 +1,7 @@
 // Scheduler configuration - preset factories and data structs
 
+use super::deterministic::DeterministicConfig;
+
 /// Execution mode for the scheduler
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
@@ -181,6 +183,8 @@ pub struct SchedulerConfig {
     pub monitoring: MonitoringConfig,
     /// Recording configuration for record/replay system
     pub recording: Option<RecordingConfigYaml>,
+    /// Deterministic execution configuration (virtual time, seeded RNG, trace)
+    pub deterministic: Option<DeterministicConfig>,
 }
 
 impl Default for SchedulerConfig {
@@ -229,6 +233,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: None,
+            deterministic: None,
         }
     }
 
@@ -268,6 +273,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: None,
+            deterministic: None,
         }
     }
 
@@ -309,6 +315,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: None,
+            deterministic: None,
         }
     }
 
@@ -348,6 +355,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: Some(RecordingConfigYaml::full()),
+            deterministic: Some(DeterministicConfig::default()),
         }
     }
 
@@ -387,6 +395,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: Some(RecordingConfigYaml::full()),
+            deterministic: None,
         }
     }
 
@@ -426,6 +435,7 @@ impl SchedulerConfig {
                 telemetry_endpoint: None,
             },
             recording: None,
+            deterministic: None,
         }
     }
 

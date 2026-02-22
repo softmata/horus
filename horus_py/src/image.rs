@@ -8,15 +8,13 @@
 //! t = img.to_torch()  # zero-copy, no DLPack visible
 //! ```
 
-use std::ffi::c_void;
-
 use horus_core::memory::Image;
 use horus_types::ImageEncoding;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
-use crate::dlpack_utils::{dtype_to_str, make_dlpack_capsule};
+use crate::dlpack_utils;
 
 /// Parse a user-facing encoding string into `ImageEncoding`.
 fn parse_encoding(s: &str) -> PyResult<ImageEncoding> {
@@ -103,7 +101,11 @@ impl PyImage {
     /// Create an Image from a numpy array.
     #[staticmethod]
     #[pyo3(signature = (array, encoding=None))]
-    fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>, encoding: Option<&str>) -> PyResult<Self> {
+    fn from_numpy(
+        py: Python<'_>,
+        array: &Bound<'_, PyAny>,
+        encoding: Option<&str>,
+    ) -> PyResult<Self> {
         let shape_obj = array.getattr("shape")?;
         let shape_tuple: Vec<u64> = shape_obj.extract()?;
         let dtype_obj = array.getattr("dtype")?;
@@ -137,8 +139,12 @@ impl PyImage {
         if bytes.len() != expected {
             return Err(PyValueError::new_err(format!(
                 "Array data size ({}) doesn't match image size ({} = {}x{}x{}x{})",
-                bytes.len(), expected, height, width,
-                enc.channels(), enc.tensor_dtype().element_size()
+                bytes.len(),
+                expected,
+                height,
+                width,
+                enc.channels(),
+                enc.tensor_dtype().element_size()
             )));
         }
 
@@ -149,15 +155,12 @@ impl PyImage {
     /// Create an Image from a PyTorch tensor (CPU only).
     #[staticmethod]
     #[pyo3(signature = (tensor, encoding=None))]
-    fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>, encoding: Option<&str>) -> PyResult<Self> {
-        let device = tensor.getattr("device")?;
-        let device_type: String = device.getattr("type")?.extract()?;
-        if device_type != "cpu" {
-            return Err(PyValueError::new_err(
-                "Tensor must be on CPU. Call tensor.cpu() first.",
-            ));
-        }
-        let arr = tensor.call_method0("numpy")?;
+    fn from_torch(
+        py: Python<'_>,
+        tensor: &Bound<'_, PyAny>,
+        encoding: Option<&str>,
+    ) -> PyResult<Self> {
+        let arr = dlpack_utils::torch_to_numpy(tensor)?;
         Self::from_numpy(py, &arr, encoding)
     }
 
@@ -173,7 +176,8 @@ impl PyImage {
         if data.len() != expected {
             return Err(PyValueError::new_err(format!(
                 "Data size ({}) doesn't match image size ({})",
-                data.len(), expected,
+                data.len(),
+                expected,
             )));
         }
 
@@ -185,26 +189,18 @@ impl PyImage {
 
     /// Convert to numpy array (zero-copy).
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = slf.borrow();
-        if inner.inner.is_cuda() {
-            return Err(PyTypeError::new_err(
-                "Cannot create numpy array from CUDA image. Use .to_torch() for GPU images.",
-            ));
-        }
-        let np = py.import("numpy")?;
-        np.call_method1("asarray", (slf,))
+        let is_cuda = slf.borrow().inner.is_cuda();
+        dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "image")
     }
 
     /// Convert to torch tensor (zero-copy via DLPack).
     fn to_torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let torch = py.import("torch")?;
-        torch.call_method1("from_dlpack", (slf,))
+        dlpack_utils::to_torch_impl(slf.as_any(), py)
     }
 
     /// Convert to JAX array (zero-copy via DLPack).
     fn to_jax<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let jax_dlpack = py.import("jax.dlpack")?;
-        jax_dlpack.call_method1("from_dlpack", (slf,))
+        dlpack_utils::to_jax_impl(slf.as_any(), py)
     }
 
     // === DLPack Protocol ===
@@ -213,23 +209,13 @@ impl PyImage {
     fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
         let _ = stream;
         let tensor = self.inner.descriptor().tensor();
-
-        let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
-        let elem_size = tensor.dtype.element_size() as i64;
-        let strides: Vec<i64> = tensor.strides().iter().map(|&x| (x as i64) / elem_size).collect();
-
-        let data_ptr = if self.inner.is_cuda() {
-            u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
-        } else {
-            self.inner.pool().data_ptr(tensor) as *mut c_void
-        };
-
-        make_dlpack_capsule(py, data_ptr, &shape, &strides, tensor.dtype, tensor.device())
+        let (data_ptr, shape, strides, dtype, device) =
+            dlpack_utils::prepare_dlpack_args(tensor, self.inner.pool());
+        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, dtype, device)
     }
 
     fn __dlpack_device__(&self) -> (i32, i32) {
-        let device = self.inner.descriptor().tensor().device();
-        (device.to_dlpack_device_type(), device.to_dlpack_device_id())
+        dlpack_utils::dlpack_device_tuple(self.inner.descriptor().tensor())
     }
 
     // === Numpy Array Interface ===
@@ -249,7 +235,11 @@ impl PyImage {
         let shape: Vec<i64> = if channels == 1 {
             vec![self.inner.height() as i64, self.inner.width() as i64]
         } else {
-            vec![self.inner.height() as i64, self.inner.width() as i64, channels as i64]
+            vec![
+                self.inner.height() as i64,
+                self.inner.width() as i64,
+                channels as i64,
+            ]
         };
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
         dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
@@ -267,13 +257,18 @@ impl PyImage {
     // === Pixel Access ===
 
     fn pixel(&self, x: u32, y: u32) -> PyResult<Vec<u8>> {
-        self.inner.pixel(x, y).map(|p| p.to_vec())
+        self.inner
+            .pixel(x, y)
+            .map(|p| p.to_vec())
             .ok_or_else(|| PyValueError::new_err(format!("Pixel ({}, {}) out of bounds", x, y)))
     }
 
     fn set_pixel(&mut self, x: u32, y: u32, value: Vec<u8>) -> PyResult<()> {
         if x >= self.inner.width() || y >= self.inner.height() {
-            return Err(PyValueError::new_err(format!("Pixel ({}, {}) out of bounds", x, y)));
+            return Err(PyValueError::new_err(format!(
+                "Pixel ({}, {}) out of bounds",
+                x, y
+            )));
         }
         self.inner.set_pixel(x, y, &value);
         Ok(())
@@ -288,7 +283,9 @@ impl PyImage {
         let expected = self.inner.nbytes() as usize;
         if data.len() != expected {
             return Err(PyValueError::new_err(format!(
-                "Data size ({}) doesn't match image size ({})", data.len(), expected,
+                "Data size ({}) doesn't match image size ({})",
+                data.len(),
+                expected,
             )));
         }
         self.inner.copy_from(data);
@@ -296,48 +293,83 @@ impl PyImage {
     }
 
     fn roi(&self, x: u32, y: u32, w: u32, h: u32) -> PyResult<Vec<u8>> {
-        self.inner.roi(x, y, w, h)
+        self.inner
+            .roi(x, y, w, h)
             .ok_or_else(|| PyValueError::new_err("ROI extends beyond image bounds"))
     }
 
     // === Properties ===
 
     #[getter]
-    fn height(&self) -> u32 { self.inner.height() }
+    fn height(&self) -> u32 {
+        self.inner.height()
+    }
     #[getter]
-    fn width(&self) -> u32 { self.inner.width() }
+    fn width(&self) -> u32 {
+        self.inner.width()
+    }
     #[getter]
-    fn channels(&self) -> u32 { self.inner.channels() }
+    fn channels(&self) -> u32 {
+        self.inner.channels()
+    }
     #[getter]
-    fn encoding(&self) -> &'static str { encoding_to_str(self.inner.encoding()) }
+    fn encoding(&self) -> &'static str {
+        encoding_to_str(self.inner.encoding())
+    }
     #[getter]
-    fn dtype(&self) -> &'static str { dtype_to_str(self.inner.dtype()) }
+    fn dtype(&self) -> &'static str {
+        dlpack_utils::dtype_to_str(self.inner.dtype())
+    }
     #[getter]
-    fn nbytes(&self) -> u64 { self.inner.nbytes() }
+    fn nbytes(&self) -> u64 {
+        self.inner.nbytes()
+    }
     #[getter]
-    fn step(&self) -> u32 { self.inner.step() }
+    fn step(&self) -> u32 {
+        self.inner.step()
+    }
     #[getter]
-    fn frame_id(&self) -> &str { self.inner.frame_id() }
+    fn frame_id(&self) -> &str {
+        self.inner.frame_id()
+    }
     #[getter]
-    fn timestamp_ns(&self) -> u64 { self.inner.timestamp_ns() }
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns()
+    }
 
-    fn set_frame_id(&mut self, id: &str) { self.inner.set_frame_id(id); }
-    fn set_timestamp_ns(&mut self, ts: u64) { self.inner.set_timestamp_ns(ts); }
-    fn is_cpu(&self) -> bool { self.inner.is_cpu() }
-    fn is_cuda(&self) -> bool { self.inner.is_cuda() }
+    fn set_frame_id(&mut self, id: &str) {
+        self.inner.set_frame_id(id);
+    }
+    fn set_timestamp_ns(&mut self, ts: u64) {
+        self.inner.set_timestamp_ns(ts);
+    }
+    fn is_cpu(&self) -> bool {
+        self.inner.is_cpu()
+    }
+    fn is_cuda(&self) -> bool {
+        self.inner.is_cuda()
+    }
 
     fn __repr__(&self) -> String {
         format!(
             "Image(height={}, width={}, encoding='{}', dtype='{}')",
-            self.inner.height(), self.inner.width(),
-            encoding_to_str(self.inner.encoding()), dtype_to_str(self.inner.dtype()),
+            self.inner.height(),
+            self.inner.width(),
+            encoding_to_str(self.inner.encoding()),
+            dlpack_utils::dtype_to_str(self.inner.dtype()),
         )
     }
 
-    fn __str__(&self) -> String { self.__repr__() }
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
 }
 
 impl PyImage {
-    pub fn from_inner(inner: Image) -> Self { Self { inner } }
-    pub fn inner(&self) -> &Image { &self.inner }
+    pub fn from_inner(inner: Image) -> Self {
+        Self { inner }
+    }
+    pub fn inner(&self) -> &Image {
+        &self.inner
+    }
 }

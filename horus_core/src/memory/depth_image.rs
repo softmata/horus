@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use horus_types::{DepthImageDescriptor, Device, TensorDtype};
 
+use super::simd::fast_copy_to_shm;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -59,6 +60,26 @@ impl DepthImage {
         self.pool.data_slice_mut(self.descriptor.tensor())
     }
 
+    /// Copy raw depth data from a buffer into this depth image.
+    ///
+    /// Returns `&mut Self` for method chaining.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `src` length doesn't match `nbytes()`.
+    pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
+        let data = self.data_mut();
+        assert_eq!(
+            src.len(),
+            data.len(),
+            "source buffer size ({}) doesn't match depth image size ({})",
+            src.len(),
+            data.len()
+        );
+        fast_copy_to_shm(src, data);
+        self
+    }
+
     /// Get depth at pixel (x, y) as f32 meters.
     ///
     /// For U16 data, converts from millimeters using depth_scale.
@@ -73,7 +94,12 @@ impl DepthImage {
             let data = self.data();
             let offset = idx * 4;
             if offset + 4 <= data.len() {
-                let bytes = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+                let bytes = [
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ];
                 Some(f32::from_le_bytes(bytes))
             } else {
                 None
@@ -264,7 +290,6 @@ impl DepthImage {
     pub fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
-
 }
 
 impl Clone for DepthImage {

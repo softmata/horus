@@ -117,11 +117,7 @@ fn cross_process_shm_pod_roundtrip() {
     t.send(0); // trigger ensure_producer → SpscIntra (1p+0c, same process)
 
     // Spawn child (will register as consumer, detect cross-process → migrate to SpscShm)
-    let child = spawn_child(
-        "cross_process_shm_pod_roundtrip",
-        &topic_name,
-        msg_count,
-    );
+    let child = spawn_child("cross_process_shm_pod_roundtrip", &topic_name, msg_count);
 
     // Wait for child to register and trigger cross-process migration to SpscShm.
     // The child's check_migration detects different PIDs → same_process=false → SpscShm.
@@ -202,11 +198,7 @@ fn cross_process_shm_stress_no_crash() {
     let t: Topic<u64> = Topic::new(&topic_name).expect("parent: Topic::new");
     t.send(0);
 
-    let child = spawn_child(
-        "cross_process_shm_stress_no_crash",
-        &topic_name,
-        msg_count,
-    );
+    let child = spawn_child("cross_process_shm_stress_no_crash", &topic_name, msg_count);
 
     std::thread::sleep(Duration::from_millis(1000));
     t.check_migration_now();

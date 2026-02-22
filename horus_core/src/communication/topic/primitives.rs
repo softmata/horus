@@ -12,6 +12,92 @@ use std::sync::atomic::AtomicU64;
 #[repr(C, align(64))]
 pub(crate) struct CachePadded<T>(pub T);
 
+// === Shared allocation helpers ===
+
+/// Allocate an uninitialized buffer for single-producer ring buffers (SPSC, SPMC).
+pub(crate) fn alloc_uninit_buffer<T>(cap: usize) -> Box<[UnsafeCell<MaybeUninit<T>>]> {
+    let mut buffer = Vec::with_capacity(cap);
+    for _ in 0..cap {
+        buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
+    }
+    buffer.into_boxed_slice()
+}
+
+/// Allocate sequence-tracked slots for multi-producer ring buffers (MPSC, MPMC).
+///
+/// Each slot's sequence is initialized to its index, meaning "slot i is
+/// available for sequence i" on the first round of writes.
+pub(crate) fn alloc_mp_slots<T>(cap: usize) -> Box<[MpSlot<T>]> {
+    let mut slots = Vec::with_capacity(cap);
+    for i in 0..cap {
+        slots.push(MpSlot {
+            sequence: AtomicU64::new(i as u64),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+        });
+    }
+    slots.into_boxed_slice()
+}
+
+// === Shared ring buffer macros ===
+
+/// Pending count implementation shared by all ring buffer variants.
+///
+/// Expects `$self` to have fields: `head` (CachePadded<AtomicU64>),
+/// `tail` (CachePadded<AtomicU64>).
+macro_rules! ring_pending_count {
+    ($self:expr) => {{
+        let head = $self.head.0.load(Ordering::Acquire);
+        let tail = $self.tail.0.load(Ordering::Acquire);
+        head.wrapping_sub(tail)
+    }};
+}
+
+/// Drop implementation for single-producer ring buffers (SPSC, SPMC).
+///
+/// Expects `$self` to have fields: `head`, `tail`, `mask`, `buffer`
+/// (Box<[UnsafeCell<MaybeUninit<T>>]>).
+macro_rules! sp_drop_ring {
+    ($self:expr) => {{
+        let head = *$self.head.0.get_mut();
+        let tail = *$self.tail.0.get_mut();
+        for i in tail..head {
+            let index = (i & $self.mask) as usize;
+            // SAFETY: we have &mut self (exclusive access). All slots in
+            // [tail, head) were written by the producer and not yet consumed.
+            unsafe {
+                $self.buffer[index].get_mut().assume_init_drop();
+            }
+        }
+    }};
+}
+
+/// Drop implementation for multi-producer ring buffers (MPSC, MPMC).
+///
+/// Checks sequence numbers to handle the edge case where a producer
+/// panicked between claiming a slot and completing the write.
+///
+/// Expects `$self` to have fields: `head`, `tail`, `mask`, `slots`
+/// (Box<[MpSlot<T>]>).
+macro_rules! mp_drop_ring {
+    ($self:expr) => {{
+        let head = *$self.head.0.get_mut();
+        let tail = *$self.tail.0.get_mut();
+        for i in tail..head {
+            let index = (i & $self.mask) as usize;
+            let slot = &mut $self.slots[index];
+            let seq = *slot.sequence.get_mut();
+            // Slot is fully written when seq == i + 1
+            if seq == i.wrapping_add(1) {
+                // SAFETY: we have &mut self (exclusive access) and the
+                // sequence number confirms the write completed.
+                unsafe {
+                    slot.data.get_mut().assume_init_drop();
+                }
+            }
+        }
+    }};
+}
+
 /// Single-producer try_send implementation shared by SPSC and SPMC rings.
 ///
 /// Expects `$self` to have fields: `head`, `tail`, `cached_send_tail`,
@@ -36,7 +122,7 @@ macro_rules! sp_try_send {
         // SAFETY: single producer guarantee; index within bounds
         unsafe {
             let slot = &*$self.buffer.get_unchecked(index);
-            slot.get().write(MaybeUninit::new($msg));
+            slot.get().write(std::mem::MaybeUninit::new($msg));
         }
         $self.head.0.store(head.wrapping_add(1), Ordering::Release);
         Ok(())
@@ -99,7 +185,7 @@ macro_rules! mp_try_send {
 
         // SAFETY: we claimed this slot via fetch_add; no other producer writes here
         unsafe {
-            c_slot.data.get().write(MaybeUninit::new($msg));
+            c_slot.data.get().write(std::mem::MaybeUninit::new($msg));
         }
         c_slot
             .sequence

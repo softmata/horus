@@ -32,7 +32,11 @@ pub(crate) fn pool_id_from_name(name: &str) -> u32 {
         hash = hash.wrapping_mul(0x0100_0193); // FNV-1a prime
     }
     // Reserve 0 as sentinel — shift to 1
-    if hash == 0 { 1 } else { hash }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 /// Get or create the auto-managed tensor pool for a topic name.

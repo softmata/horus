@@ -1524,6 +1524,23 @@ impl RegistryClient {
                     .file_name(format!("{}-{}.tar.gz", safe_name, version)),
             );
 
+        // Add manifest metadata to initial upload
+        if let Some(ref cats) = manifest.categories {
+            if !cats.is_empty() {
+                form = form.text("categories", cats.clone());
+            }
+        }
+        if let Some(ref pt) = manifest.package_type {
+            if !pt.is_empty() {
+                form = form.text("package_type", pt.clone());
+            }
+        }
+        if let Some(ref src) = manifest.source_url {
+            if !src.is_empty() {
+                form = form.text("source_url", src.clone());
+            }
+        }
+
         if dry_run {
             form = form.text("dry_run", "true");
             println!(
@@ -1779,20 +1796,23 @@ impl RegistryClient {
         package_type: &str,
         api_key: &str,
     ) -> Result<()> {
-        let mut form = reqwest::blocking::multipart::Form::new()
-            .text("docs_url", docs_url.to_string())
-            .text("docs_type", docs_type.to_string())
-            .text("source_url", source_url.to_string());
+        let categories_vec: Vec<String> = if categories.is_empty() {
+            vec![]
+        } else {
+            categories
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
 
-        // Add categories if provided
-        if !categories.is_empty() {
-            form = form.text("categories", categories.to_string());
-        }
-
-        // Add package_type if provided
-        if !package_type.is_empty() {
-            form = form.text("package_type", package_type.to_string());
-        }
+        let body = serde_json::json!({
+            "docs_url": if docs_url.is_empty() { None } else { Some(docs_url) },
+            "docs_type": if docs_type.is_empty() { None } else { Some(docs_type) },
+            "source_url": if source_url.is_empty() { None } else { Some(source_url) },
+            "categories": if categories_vec.is_empty() { None } else { Some(&categories_vec) },
+            "package_type": if package_type.is_empty() { None } else { Some(package_type) },
+        });
 
         let response = self
             .client
@@ -1801,7 +1821,7 @@ impl RegistryClient {
                 self.base_url, name, version
             ))
             .header("Authorization", format!("Bearer {}", api_key))
-            .multipart(form)
+            .json(&body)
             .send()?;
 
         if !response.status().is_success() {
@@ -1864,9 +1884,20 @@ impl RegistryClient {
         Ok(())
     }
 
-    // Search for packages
-    pub fn search(&self, query: &str) -> Result<Vec<Package>> {
-        let url = format!("{}/api/packages/search?q={}", self.base_url, query);
+    // Search for packages with optional type and category filters
+    pub fn search(
+        &self,
+        query: &str,
+        package_type: Option<&str>,
+        category: Option<&str>,
+    ) -> Result<Vec<Package>> {
+        let mut url = format!("{}/api/packages/search?q={}", self.base_url, query);
+        if let Some(pt) = package_type {
+            url.push_str(&format!("&type={}", pt));
+        }
+        if let Some(cat) = category {
+            url.push_str(&format!("&category={}", cat));
+        }
 
         let response = self.client.get(&url).send()?;
 
@@ -4349,10 +4380,4 @@ pub fn generate_signing_keypair() -> Result<()> {
     );
 
     Ok(())
-}
-
-/// Fetch package type from registry
-pub fn fetch_package_type(package_name: &str) -> Result<String> {
-    let client = RegistryClient::new();
-    client.fetch_package_type(package_name)
 }

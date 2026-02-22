@@ -72,7 +72,7 @@ pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
 
 // Perception
-pub use perception::{PlaneDetection};
+pub use perception::PlaneDetection;
 
 // Domain-specific types (RAII wrappers with rich API for data access)
 pub use horus_core::memory::{DepthImage, Image, PointCloud};

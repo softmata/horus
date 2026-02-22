@@ -248,12 +248,20 @@ mod tests {
         assert_eq!(bytes.len(), 8);
         assert_eq!(bytes[0], DEVICE_TYPE_CUDA);
         // device_id = 42 in little-endian at offset 4
-        assert_eq!(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), 42);
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            42
+        );
     }
 
     #[test]
     fn test_device_serde_roundtrip() {
-        for device in [Device::cpu(), Device::cuda(0), Device::cuda(1), Device::cuda(15)] {
+        for device in [
+            Device::cpu(),
+            Device::cuda(0),
+            Device::cuda(1),
+            Device::cuda(15),
+        ] {
             let json = serde_json::to_string(&device).unwrap();
             let recovered: Device = serde_json::from_str(&json).unwrap();
             assert_eq!(recovered, device, "roundtrip failed for {}", device);

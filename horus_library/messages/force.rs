@@ -445,10 +445,7 @@ impl ContactInfo {
 
     /// Check if currently in contact
     pub fn is_in_contact(&self) -> bool {
-        matches!(
-            self.state,
-            1 | 2 | 4
-        )
+        matches!(self.state, 1 | 2 | 4)
     }
 
     /// Get contact duration in seconds
@@ -548,4 +545,3 @@ unsafe impl horus_core::communication::PodMessage for ContactInfo {}
 unsafe impl horus_core::bytemuck::Pod for HapticFeedback {}
 unsafe impl horus_core::bytemuck::Zeroable for HapticFeedback {}
 unsafe impl horus_core::communication::PodMessage for HapticFeedback {}
-

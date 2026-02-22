@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use horus_types::{Device, ImageDescriptor, ImageEncoding, TensorDtype};
 
+use super::simd::fast_copy_to_shm;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -102,7 +103,7 @@ impl Image {
             src.len(),
             data.len()
         );
-        data.copy_from_slice(src);
+        fast_copy_to_shm(src, data);
         self
     }
 
@@ -305,7 +306,6 @@ impl Image {
     pub fn pool(&self) -> &Arc<TensorPool> {
         &self.pool
     }
-
 }
 
 impl Clone for Image {

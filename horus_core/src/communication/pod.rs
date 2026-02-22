@@ -221,12 +221,7 @@ impl LogSummary for horus_types::DepthImageDescriptor {
         } else {
             "?"
         };
-        format!(
-            "DepthImage({}x{}, {})",
-            self.width(),
-            self.height(),
-            unit,
-        )
+        format!("DepthImage({}x{}, {})", self.width(), self.height(), unit,)
     }
 }
 

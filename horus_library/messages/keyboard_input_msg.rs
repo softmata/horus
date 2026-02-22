@@ -41,7 +41,7 @@ pub struct KeyboardInput {
     pub key_name: [u8; 32],  // Fixed-size key name buffer (null-terminated)
     pub code: u32,           // Raw key code
     pub modifier_flags: u32, // Bit flags for modifiers instead of Vec<String>
-    pub pressed: u8,          // 1 for press, 0 for release
+    pub pressed: u8,         // 1 for press, 0 for release
     pub timestamp_ms: u64,   // Unix timestamp_ms in milliseconds
     pub _padding: [u8; 16],  // Padding to match JoystickInput size (72 bytes)
 }
@@ -164,4 +164,3 @@ impl KeyboardInput {
 unsafe impl horus_core::bytemuck::Pod for KeyboardInput {}
 unsafe impl horus_core::bytemuck::Zeroable for KeyboardInput {}
 unsafe impl horus_core::communication::PodMessage for KeyboardInput {}
-

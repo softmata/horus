@@ -234,7 +234,10 @@ mod tests {
 
     #[test]
     fn test_size_bytes_alias() {
-        assert_eq!(TensorDtype::F32.size_bytes(), TensorDtype::F32.element_size());
+        assert_eq!(
+            TensorDtype::F32.size_bytes(),
+            TensorDtype::F32.element_size()
+        );
         assert_eq!(TensorDtype::U8.size_bytes(), TensorDtype::U8.element_size());
     }
 

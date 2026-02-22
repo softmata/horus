@@ -31,8 +31,8 @@ mod tests {
         // Write pixel data (2x3 RGB = 18 bytes)
         let pixels = img.data_mut();
         assert!(pixels.len() >= 18);
-        for i in 0..18 {
-            pixels[i] = i as u8;
+        for (i, pixel) in pixels[..18].iter_mut().enumerate() {
+            *pixel = i as u8;
         }
 
         topic.send(&img);
@@ -45,8 +45,8 @@ mod tests {
 
         // Verify pixel data (zero-copy — same shared memory)
         let recv_pixels = recv_img.data();
-        for i in 0..18 {
-            assert_eq!(recv_pixels[i], i as u8, "pixel mismatch at index {}", i);
+        for (i, pixel) in recv_pixels[..18].iter().enumerate() {
+            assert_eq!(*pixel, i as u8, "pixel mismatch at index {}", i);
         }
     }
 }

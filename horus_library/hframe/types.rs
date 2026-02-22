@@ -62,6 +62,6 @@ mod tests {
     fn test_constants() {
         assert_eq!(NO_PARENT, FrameId::MAX);
         assert_eq!(INVALID_FRAME, FrameId::MAX - 1);
-        assert!(MAX_SUPPORTED_FRAMES > 0);
+        assert_ne!(MAX_SUPPORTED_FRAMES, 0);
     }
 }

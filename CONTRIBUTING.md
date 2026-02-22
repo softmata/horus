@@ -230,8 +230,8 @@ horus/
 ├── horus_core/         # Core framework (Node, Topic, Scheduler)
 ├── horus_macros/       # Procedural macros (node!, message!)
 ├── horus_library/      # Standard message types and HFrame transforms
+├── horus_types/        # Core type definitions (descriptors, encodings, tensors)
 ├── horus_manager/      # CLI tool (horus command)
-├── horus_ai/           # ML model registry
 ├── horus_py/           # Python bindings
 ├── benchmarks/         # Performance benchmarks
 └── tests/              # Integration tests

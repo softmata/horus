@@ -11,8 +11,8 @@
 //! - Edge cases: empty recv, zero-sized types, large messages, drop ordering
 //! - Robotics simulation: realistic multi-node data flow patterns
 
-use super::*;
 use super::header::ParticipantEntry;
+use super::*;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -112,7 +112,11 @@ fn all_backend_modes_have_positive_latency() {
         BackendMode::MpmcShm,
     ];
     for mode in modes {
-        assert!(mode.expected_latency_ns() > 0, "{:?} has zero latency", mode);
+        assert!(
+            mode.expected_latency_ns() > 0,
+            "{:?} has zero latency",
+            mode
+        );
     }
 }
 
@@ -206,16 +210,23 @@ fn migrator_creation() {
 fn migration_not_needed_when_already_at_target() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
-    header.backend_mode.store(BackendMode::MpmcShm as u8, Ordering::Release);
+    header
+        .backend_mode
+        .store(BackendMode::MpmcShm as u8, Ordering::Release);
     let migrator = BackendMigrator::new(&header);
-    assert_eq!(migrator.try_migrate(BackendMode::MpmcShm), MigrationResult::NotNeeded);
+    assert_eq!(
+        migrator.try_migrate(BackendMode::MpmcShm),
+        MigrationResult::NotNeeded
+    );
 }
 
 #[test]
 fn migration_success_increments_epoch() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
-    header.backend_mode.store(BackendMode::Unknown as u8, Ordering::Release);
+    header
+        .backend_mode
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
     match migrator.try_migrate(BackendMode::SpscIntra) {
@@ -234,7 +245,10 @@ fn migration_concurrent_lock_returns_already_in_progress() {
     assert!(header.try_lock_migration());
 
     let migrator = BackendMigrator::new(&header);
-    assert_eq!(migrator.try_migrate(BackendMode::SpscIntra), MigrationResult::AlreadyInProgress);
+    assert_eq!(
+        migrator.try_migrate(BackendMode::SpscIntra),
+        MigrationResult::AlreadyInProgress
+    );
 
     header.unlock_migration();
     assert!(!migrator.is_migration_in_progress());
@@ -244,7 +258,9 @@ fn migration_concurrent_lock_returns_already_in_progress() {
 fn epoch_increments_on_successive_migrations() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
-    header.backend_mode.store(BackendMode::Unknown as u8, Ordering::Release);
+    header
+        .backend_mode
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
     for expected_epoch in 1..=5u64 {
@@ -267,7 +283,9 @@ fn epoch_increments_on_successive_migrations() {
 fn migrator_stats_reflect_header() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
-    header.backend_mode.store(BackendMode::SpscIntra as u8, Ordering::Release);
+    header
+        .backend_mode
+        .store(BackendMode::SpscIntra as u8, Ordering::Release);
     header.migration_epoch.store(42, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
@@ -281,7 +299,9 @@ fn migrator_stats_reflect_header() {
 fn migrate_to_optimal_works() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
-    header.backend_mode.store(BackendMode::Unknown as u8, Ordering::Release);
+    header
+        .backend_mode
+        .store(BackendMode::Unknown as u8, Ordering::Release);
 
     let migrator = BackendMigrator::new(&header);
     match migrator.migrate_to_optimal() {
@@ -363,11 +383,8 @@ fn spmc_ring_competing_consumers() {
             thread::spawn(move || {
                 b.wait();
                 let mut local = Vec::new();
-                loop {
-                    match r.try_recv() {
-                        Some(v) => local.push(v),
-                        None => break,
-                    }
+                while let Some(v) = r.try_recv() {
+                    local.push(v);
                 }
                 c.lock().unwrap().extend(local);
             })
@@ -533,28 +550,28 @@ fn mpmc_ring_concurrent_producers_and_consumers() {
 
 #[test]
 fn topic_creation_starts_unregistered() {
-    let topic: Topic<u64> = Topic::new(&unique("create")).expect("create");
-    assert_eq!(topic.name().starts_with("create_"), true);
+    let topic: Topic<u64> = Topic::new(unique("create")).expect("create");
+    assert!(topic.name().starts_with("create_"));
     assert_eq!(topic.role(), TopicRole::Unregistered);
 }
 
 #[test]
 fn topic_send_registers_as_producer() {
-    let topic: Topic<u64> = Topic::new(&unique("send_reg")).expect("create");
+    let topic: Topic<u64> = Topic::new(unique("send_reg")).expect("create");
     topic.send(42);
     assert!(topic.role().can_send());
 }
 
 #[test]
 fn topic_recv_registers_as_consumer() {
-    let topic: Topic<u64> = Topic::new(&unique("recv_reg")).expect("create");
+    let topic: Topic<u64> = Topic::new(unique("recv_reg")).expect("create");
     let _ = topic.recv();
     assert!(topic.role().can_recv());
 }
 
 #[test]
 fn topic_send_then_recv_same_instance() {
-    let t: Topic<u64> = Topic::new(&unique("same_inst")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("same_inst")).expect("create");
     t.send(42);
     assert_eq!(t.recv(), Some(42));
     assert_eq!(t.recv(), None);
@@ -562,7 +579,7 @@ fn topic_send_then_recv_same_instance() {
 
 #[test]
 fn topic_multiple_messages_fifo() {
-    let t: Topic<u32> = Topic::new(&unique("fifo")).expect("create");
+    let t: Topic<u32> = Topic::new(unique("fifo")).expect("create");
     for i in 0..50u32 {
         t.send(i);
     }
@@ -578,25 +595,25 @@ fn topic_separate_pub_sub_instances() {
     let pub_t: Topic<f32> = Topic::new(&name).expect("pub");
     let sub_t: Topic<f32> = Topic::new(&name).expect("sub");
 
-    pub_t.send(3.14);
-    assert_eq!(sub_t.recv(), Some(3.14));
+    pub_t.send(3.25);
+    assert_eq!(sub_t.recv(), Some(3.25));
 
-    pub_t.send(2.71);
-    assert_eq!(sub_t.recv(), Some(2.71));
+    pub_t.send(2.75);
+    assert_eq!(sub_t.recv(), Some(2.75));
 
     assert_eq!(sub_t.recv(), None);
 }
 
 #[test]
 fn topic_empty_recv_returns_none() {
-    let t: Topic<u64> = Topic::new(&unique("empty")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("empty")).expect("create");
     assert_eq!(t.recv(), None);
     assert_eq!(t.recv(), None);
 }
 
 #[test]
 fn topic_clone_shares_storage() {
-    let t: Topic<u64> = Topic::new(&unique("clone")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("clone")).expect("create");
     t.send(100);
     let cloned = t.clone();
     assert_eq!(cloned.role(), TopicRole::Unregistered);
@@ -605,7 +622,7 @@ fn topic_clone_shares_storage() {
 
 #[test]
 fn topic_has_message_and_pending_count() {
-    let t: Topic<u32> = Topic::new(&unique("pending")).expect("create");
+    let t: Topic<u32> = Topic::new(unique("pending")).expect("create");
     assert!(!t.has_message());
     assert_eq!(t.pending_count(), 0);
     t.send(1);
@@ -616,7 +633,7 @@ fn topic_has_message_and_pending_count() {
 
 #[test]
 fn topic_same_thread_uses_direct_channel() {
-    let t: Topic<u64> = Topic::new(&unique("dc_mode")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("dc_mode")).expect("create");
     // Trigger backend detection
     t.send(1);
     let _ = t.recv();
@@ -1021,7 +1038,7 @@ fn stress_mpsc_contention() {
         consumer_barrier.wait();
         let mut count = 0u64;
         while count < total {
-            if let Some(_) = consumer_ring.try_recv() {
+            if consumer_ring.try_recv().is_some() {
                 count += 1;
             } else {
                 std::hint::spin_loop();
@@ -1185,7 +1202,7 @@ fn topic_sustained_cross_thread_throughput() {
 
 #[test]
 fn force_migrate_changes_mode() {
-    let t: Topic<u64> = Topic::new(&unique("force_mig")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("force_mig")).expect("create");
     // Initialize backend
     t.send(1);
     let _ = t.recv();
@@ -1201,7 +1218,7 @@ fn force_migrate_changes_mode() {
 
 #[test]
 fn force_migrate_not_needed() {
-    let t: Topic<u64> = Topic::new(&unique("force_noop")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("force_noop")).expect("create");
     t.send(1);
     let _ = t.recv();
 
@@ -1227,7 +1244,10 @@ fn migration_epoch_visible_across_clones() {
     assert!(matches!(result, MigrationResult::Success { .. }));
 
     let epoch_after = t1.ring.header().migration_epoch.load(Ordering::Acquire);
-    assert!(epoch_after > epoch_before, "Epoch should increment after forced migration");
+    assert!(
+        epoch_after > epoch_before,
+        "Epoch should increment after forced migration"
+    );
 
     // t2's check_migration_now detects the new epoch and updates its state.
     // The auto-detection system may re-migrate back to DirectChannel (optimal
@@ -1258,14 +1278,14 @@ fn migration_epoch_visible_across_clones() {
 
 #[test]
 fn topic_string_messages() {
-    let t: Topic<String> = Topic::new(&unique("strings")).expect("create");
+    let t: Topic<String> = Topic::new(unique("strings")).expect("create");
     t.send("hello world".to_string());
     assert_eq!(t.recv(), Some("hello world".to_string()));
 }
 
 #[test]
 fn topic_vec_messages() {
-    let t: Topic<Vec<u8>> = Topic::new(&unique("vecs")).expect("create");
+    let t: Topic<Vec<u8>> = Topic::new(unique("vecs")).expect("create");
     let data: Vec<u8> = (0..=255).collect();
     t.send(data.clone());
     assert_eq!(t.recv(), Some(data));
@@ -1277,7 +1297,7 @@ fn topic_large_struct() {
     struct BigMsg {
         data: Vec<f64>,
     }
-    let t: Topic<BigMsg> = Topic::new(&unique("big")).expect("create");
+    let t: Topic<BigMsg> = Topic::new(unique("big")).expect("create");
     let msg = BigMsg {
         data: (0..1000).map(|i| i as f64 * 0.001).collect(),
     };
@@ -1434,7 +1454,11 @@ fn same_thread_latency_under_threshold() {
     let elapsed = start.elapsed();
     let avg_ns = elapsed.as_nanos() / iters as u128;
 
-    eprintln!("Same-thread latency: {}ns avg (mode: {:?})", avg_ns, t.mode());
+    eprintln!(
+        "Same-thread latency: {}ns avg (mode: {:?})",
+        avg_ns,
+        t.mode()
+    );
 
     // Debug builds are much slower; release should be <5us per round-trip
     #[cfg(debug_assertions)]
@@ -1575,14 +1599,8 @@ fn robotics_multi_sensor_multi_actuator() {
     let on = output_names.clone();
     let b = barrier.clone();
     let controller = thread::spawn(move || {
-        let subs: Vec<Topic<f64>> = sn
-            .iter()
-            .map(|n| Topic::new(n).expect("sub"))
-            .collect();
-        let pubs: Vec<Topic<f64>> = on
-            .iter()
-            .map(|n| Topic::new(n).expect("pub"))
-            .collect();
+        let subs: Vec<Topic<f64>> = sn.iter().map(|n| Topic::new(n).expect("sub")).collect();
+        let pubs: Vec<Topic<f64>> = on.iter().map(|n| Topic::new(n).expect("pub")).collect();
         b.wait();
 
         let mut total = 0;
@@ -1631,7 +1649,11 @@ fn robotics_multi_sensor_multi_actuator() {
         .map(|h| h.join().unwrap())
         .collect();
 
-    assert_eq!(ctrl_total, 3 * n_msgs, "Controller should process all sensor data");
+    assert_eq!(
+        ctrl_total,
+        3 * n_msgs,
+        "Controller should process all sensor data"
+    );
     let actuator_total: usize = actuator_totals.iter().sum();
     assert_eq!(
         actuator_total,
@@ -1646,7 +1668,7 @@ fn robotics_multi_sensor_multi_actuator() {
 
 #[test]
 fn metrics_count_messages() {
-    let t: Topic<u64> = Topic::new(&unique("metrics")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("metrics")).expect("create");
 
     let initial = t.metrics();
     assert_eq!(initial.messages_sent, 0);
@@ -1660,7 +1682,7 @@ fn metrics_count_messages() {
 
 #[test]
 fn migration_count_increments() {
-    let t: Topic<u64> = Topic::new(&unique("mig_count")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("mig_count")).expect("create");
     t.send(1);
     let _ = t.recv();
 
@@ -1750,7 +1772,7 @@ fn epoch_notification_across_threads() {
 
 #[test]
 fn connection_state_defaults_to_connected() {
-    let t: Topic<u64> = Topic::new(&unique("conn_state")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("conn_state")).expect("create");
     assert_eq!(t.connection_state(), ConnectionState::Connected);
 }
 
@@ -1760,7 +1782,7 @@ fn connection_state_defaults_to_connected() {
 
 #[test]
 fn backend_name_matches_mode() {
-    let t: Topic<u64> = Topic::new(&unique("bname")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("bname")).expect("create");
     t.send(1);
     let _ = t.recv();
     // Same-thread should be DirectChannel
@@ -1782,11 +1804,11 @@ fn pub_sub_count_tracks_registrations() {
     let initial_sub = t.sub_count();
 
     t.send(1);
-    assert!(t.pub_count() >= initial_pub + 1);
+    assert!(t.pub_count() > initial_pub);
 
     let t2: Topic<u64> = Topic::new(&name).expect("create2");
     let _ = t2.recv();
-    assert!(t2.sub_count() >= initial_sub + 1);
+    assert!(t2.sub_count() > initial_sub);
 }
 
 // ============================================================================
@@ -1795,7 +1817,7 @@ fn pub_sub_count_tracks_registrations() {
 
 #[test]
 fn same_thread_detection() {
-    let t: Topic<u64> = Topic::new(&unique("same_thread")).expect("create");
+    let t: Topic<u64> = Topic::new(unique("same_thread")).expect("create");
     t.send(1);
     // After sending, we registered as a producer on this thread
     assert!(t.is_same_thread());
@@ -1923,7 +1945,7 @@ fn direct_channel_drop_pending_messages() {
         for i in 0..5u64 {
             let index = (i & slot.mask) as usize;
             unsafe {
-                let s = &*slot.buffer.get_unchecked(index);
+                let s = slot.buffer.get_unchecked(index);
                 s.get().write(MaybeUninit::new(DropCounter::new(&counter)));
             }
             slot.head.store(i + 1, Ordering::Relaxed);
@@ -1932,7 +1954,7 @@ fn direct_channel_drop_pending_messages() {
         for i in 0..2u64 {
             let index = (i & slot.mask) as usize;
             let msg = unsafe {
-                let s = &*slot.buffer.get_unchecked(index);
+                let s = slot.buffer.get_unchecked(index);
                 (*s.get()).assume_init_read()
             };
             drop(msg);
@@ -1958,7 +1980,7 @@ fn ring_drop_with_string_messages_no_leak() {
                 .unwrap();
         }
         ring.try_recv(); // consume 1
-        // Drop with 5 pending String messages
+                         // Drop with 5 pending String messages
     }
 
     {
@@ -1982,8 +2004,12 @@ fn read_latest_returns_none_on_drained_spsc() {
     ring.try_send(2).unwrap();
     ring.try_recv().unwrap(); // consume 1
     ring.try_recv().unwrap(); // consume 2
-    // Ring is now fully drained: head=2, tail=2
-    assert_eq!(ring.read_latest(), None, "Drained SPSC ring must return None");
+                              // Ring is now fully drained: head=2, tail=2
+    assert_eq!(
+        ring.read_latest(),
+        None,
+        "Drained SPSC ring must return None"
+    );
 }
 
 #[test]
@@ -1991,7 +2017,11 @@ fn read_latest_returns_none_on_drained_spmc() {
     let ring = SpmcRing::<u64>::new(8);
     ring.try_send(1).unwrap();
     ring.try_recv().unwrap();
-    assert_eq!(ring.read_latest(), None, "Drained SPMC ring must return None");
+    assert_eq!(
+        ring.read_latest(),
+        None,
+        "Drained SPMC ring must return None"
+    );
 }
 
 #[test]
@@ -1999,7 +2029,11 @@ fn read_latest_returns_none_on_drained_mpsc() {
     let ring = MpscRing::<u64>::new(8);
     ring.try_send(1).unwrap();
     ring.try_recv().unwrap();
-    assert_eq!(ring.read_latest(), None, "Drained MPSC ring must return None");
+    assert_eq!(
+        ring.read_latest(),
+        None,
+        "Drained MPSC ring must return None"
+    );
 }
 
 #[test]
@@ -2007,7 +2041,11 @@ fn read_latest_returns_none_on_drained_mpmc() {
     let ring = MpmcRing::<u64>::new(8);
     ring.try_send(1).unwrap();
     ring.try_recv().unwrap();
-    assert_eq!(ring.read_latest(), None, "Drained MPMC ring must return None");
+    assert_eq!(
+        ring.read_latest(),
+        None,
+        "Drained MPMC ring must return None"
+    );
 }
 
 #[test]
@@ -2033,7 +2071,7 @@ fn read_latest_does_not_interfere_with_recv() {
 #[test]
 fn concurrent_read_latest_with_producer_spmc() {
     let ring = Arc::new(SpmcRing::<u64>::new(1024));
-    let n_messages = 50_000u64;
+    let n_messages: u64 = 50_000;
     let n_readers = 2;
     let n_consumers = 2;
     let done = Arc::new(AtomicU64::new(0));
@@ -2050,15 +2088,14 @@ fn concurrent_read_latest_with_producer_spmc() {
                 b.wait();
                 let deadline = Instant::now() + Duration::from_secs(10);
                 while Instant::now() < deadline {
-                    if let Some(_) = r.try_recv() {
+                    if r.try_recv().is_some() {
                         let prev = d.fetch_add(1, Ordering::Relaxed);
                         if prev + 1 >= n_messages {
                             break;
                         }
+                    } else if d.load(Ordering::Relaxed) >= n_messages {
+                        break;
                     } else {
-                        if d.load(Ordering::Relaxed) >= n_messages {
-                            break;
-                        }
                         std::hint::spin_loop();
                     }
                 }
@@ -2116,7 +2153,7 @@ fn concurrent_read_latest_with_producer_spmc() {
 #[test]
 fn concurrent_read_latest_with_producer_mpmc() {
     let ring = Arc::new(MpmcRing::<u64>::new(1024));
-    let n_messages = 20_000u64;
+    let n_messages: u64 = 20_000;
     let n_readers = 4;
     let n_consumers = 2;
     let done = Arc::new(AtomicU64::new(0));
@@ -2133,15 +2170,14 @@ fn concurrent_read_latest_with_producer_mpmc() {
                 b.wait();
                 let deadline = Instant::now() + Duration::from_secs(10);
                 while Instant::now() < deadline {
-                    if let Some(_) = r.try_recv() {
+                    if r.try_recv().is_some() {
                         let prev = d.fetch_add(1, Ordering::Relaxed);
-                        if prev + 1 >= n_messages as u64 {
+                        if prev + 1 >= n_messages {
                             break;
                         }
+                    } else if d.load(Ordering::Relaxed) >= n_messages {
+                        break;
                     } else {
-                        if d.load(Ordering::Relaxed) >= n_messages as u64 {
-                            break;
-                        }
                         std::hint::spin_loop();
                     }
                 }
@@ -2167,7 +2203,7 @@ fn concurrent_read_latest_with_producer_mpmc() {
                         assert!(v <= n_messages, "Invalid value: {}", v);
                         seen += 1;
                     }
-                    if d.load(Ordering::Relaxed) >= n_messages as u64 {
+                    if d.load(Ordering::Relaxed) >= n_messages {
                         break;
                     }
                     std::hint::spin_loop();
@@ -2606,11 +2642,7 @@ fn shm_backend_cross_thread_no_crash() {
 
     // No crash is the primary assertion. Any delivery is a bonus.
     for &v in &received {
-        assert!(
-            v >= 1 && v <= n,
-            "SHM cross-thread: corrupted value {}",
-            v
-        );
+        assert!(v >= 1 && v <= n, "SHM cross-thread: corrupted value {}", v);
     }
     eprintln!(
         "SHM cross-thread: received {}/{} messages",
@@ -2713,7 +2745,7 @@ fn dispatch_migration_during_burst() {
     // All received values must be valid
     for &v in &received_values {
         assert!(
-            v >= 1 && v <= 300,
+            (1..=300).contains(&v),
             "Corrupted value {} during burst+migration",
             v
         );
@@ -2792,7 +2824,12 @@ fn shm_dispatch_spsc_pod_colo() {
             assert!(!received.is_empty(), "SpscShm POD colo: no messages");
             // SPSC preserves ordering
             for w in received.windows(2) {
-                assert!(w[1] > w[0], "SpscShm POD colo: order broken {} → {}", w[0], w[1]);
+                assert!(
+                    w[1] > w[0],
+                    "SpscShm POD colo: order broken {} → {}",
+                    w[0],
+                    w[1]
+                );
             }
             assert_eq!(*received.last().unwrap(), 64);
             eprintln!("SpscShm POD colo: {}/64", received.len());
@@ -2886,7 +2923,7 @@ fn shm_dispatch_spmc_pod_colo() {
             }
             assert!(!received.is_empty(), "SpmcShm POD colo: no messages");
             for &v in &received {
-                assert!(v >= 1 && v <= 64, "SpmcShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "SpmcShm POD colo: corrupt {}", v);
             }
             eprintln!("SpmcShm POD colo: {}/64", received.len());
         }
@@ -2943,7 +2980,7 @@ fn shm_dispatch_mpsc_pod_colo() {
             }
             assert!(!received.is_empty(), "MpscShm POD colo: no messages");
             for &v in &received {
-                assert!(v >= 1 && v <= 64, "MpscShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "MpscShm POD colo: corrupt {}", v);
             }
             eprintln!("MpscShm POD colo: {}/64", received.len());
         }
@@ -3000,7 +3037,7 @@ fn shm_dispatch_mpmc_pod_colo() {
             }
             assert!(!received.is_empty(), "MpmcShm POD colo: no messages");
             for &v in &received {
-                assert!(v >= 1 && v <= 64, "MpmcShm POD colo: corrupt {}", v);
+                assert!((1..=64).contains(&v), "MpmcShm POD colo: corrupt {}", v);
             }
             eprintln!("MpmcShm POD colo: {}/64", received.len());
         }
@@ -3099,7 +3136,10 @@ fn shm_dispatch_all_modes_rapid_cycle() {
                     got,
                     Some(val),
                     "SHM cycle round {}: {:?} → expected Some({}), got {:?}",
-                    round, mode, val, got
+                    round,
+                    mode,
+                    val,
+                    got
                 );
             }
             _ => {
@@ -3209,7 +3249,7 @@ fn shm_dispatch_dc_to_shm_pointer_restore() {
             assert!(!received.is_empty(), "DC→SHM: no messages through SHM path");
             for &v in &received {
                 assert!(
-                    v >= 100 && v < 110,
+                    (100..110).contains(&v),
                     "DC→SHM: corrupted value {} (pointer restore failed?)",
                     v
                 );

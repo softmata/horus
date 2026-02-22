@@ -414,15 +414,7 @@ mod tests {
 
     #[test]
     fn test_tensor_cuda() {
-        let tensor = HorusTensor::new(
-            1,
-            0,
-            0,
-            0,
-            &[100, 100],
-            TensorDtype::F32,
-            Device::cuda(3),
-        );
+        let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::F32, Device::cuda(3));
 
         assert!(tensor.is_cuda());
         assert!(!tensor.is_cpu());
@@ -434,9 +426,8 @@ mod tests {
     fn test_tensor_unlimited_gpu() {
         // Test GPU indices beyond old 4-GPU limit
         for gpu_id in [0, 1, 4, 7, 15, 100, 1000] {
-            let tensor = HorusTensor::new(
-                0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id),
-            );
+            let tensor =
+                HorusTensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
             assert_eq!(tensor.device(), Device::cuda(gpu_id));
             assert_eq!(tensor.device().cuda_index(), Some(gpu_id));
         }
@@ -444,8 +435,7 @@ mod tests {
 
     #[test]
     fn test_tensor_strides() {
-        let tensor =
-            HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
+        let tensor = HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
 
         // Row-major strides for [2, 3, 4] with f32:
         // stride[2] = 4 (element size)
@@ -456,8 +446,7 @@ mod tests {
 
     #[test]
     fn test_tensor_view() {
-        let tensor =
-            HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
+        let tensor = HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
 
         let view = tensor.view(&[6, 4]).unwrap();
         assert_eq!(view.shape(), &[6, 4]);
@@ -469,8 +458,7 @@ mod tests {
 
     #[test]
     fn test_tensor_slice() {
-        let tensor =
-            HorusTensor::new(1, 2, 3, 0, &[10, 5], TensorDtype::F32, Device::cpu());
+        let tensor = HorusTensor::new(1, 2, 3, 0, &[10, 5], TensorDtype::F32, Device::cpu());
 
         let slice = tensor.slice_first_dim(2, 7).unwrap();
         assert_eq!(slice.shape(), &[5, 5]);
@@ -519,9 +507,7 @@ mod tests {
 
     #[test]
     fn test_tensor_set_device() {
-        let mut tensor = HorusTensor::new(
-            0, 0, 0, 0, &[10], TensorDtype::F32, Device::cpu(),
-        );
+        let mut tensor = HorusTensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cpu());
         assert!(tensor.is_cpu());
 
         tensor.set_device(Device::cuda(5));

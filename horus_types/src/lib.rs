@@ -17,10 +17,10 @@ pub mod dtype;
 pub mod tensor;
 
 // Vision/perception domain types
-pub mod image_encoding;
-pub mod image;
-pub mod pointcloud;
 pub mod depth_image;
+pub mod image;
+pub mod image_encoding;
+pub mod pointcloud;
 
 // Point element types (Pod, zero-copy)
 pub mod point;
@@ -29,9 +29,9 @@ pub use device::Device;
 pub use dtype::{dlpack_codes, TensorDtype};
 pub use tensor::{HorusTensor, CUDA_IPC_HANDLE_SIZE, MAX_TENSOR_DIMS};
 
-pub use image_encoding::ImageEncoding;
-pub use image::ImageDescriptor;
-pub use pointcloud::PointCloudDescriptor;
 pub use depth_image::DepthImageDescriptor;
+pub use image::ImageDescriptor;
+pub use image_encoding::ImageEncoding;
+pub use pointcloud::PointCloudDescriptor;
 
 pub use point::{PointXYZ, PointXYZI, PointXYZRGB};

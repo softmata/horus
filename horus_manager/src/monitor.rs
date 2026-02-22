@@ -815,7 +815,7 @@ pub async fn packages_registry_handler(Query(query): Query<SearchQuery>) -> impl
 
     let result = tokio::task::spawn_blocking(move || {
         let client = RegistryClient::new();
-        client.search(&query.q)
+        client.search(&query.q, None, None)
     })
     .await;
 

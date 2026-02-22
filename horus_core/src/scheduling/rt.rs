@@ -64,7 +64,7 @@ impl From<RuntimeError> for crate::error::HorusError {
         match err {
             RuntimeError::PermissionDenied(msg) => crate::error::HorusError::PermissionDenied(msg),
             RuntimeError::NotSupported(msg) => crate::error::HorusError::Unsupported(msg),
-            other => crate::error::HorusError::Scheduling(other.to_string()),
+            other => crate::error::HorusError::Config(other.to_string()),
         }
     }
 }
@@ -673,10 +673,8 @@ impl RuntimeCapabilities {
                     rlim_cur: 0,
                     rlim_max: 0,
                 };
-                if libc::getrlimit(libc::RLIMIT_RTPRIO, &mut rlim) == 0 {
-                    if rlim.rlim_cur > 0 {
-                        return true;
-                    }
+                if libc::getrlimit(libc::RLIMIT_RTPRIO, &mut rlim) == 0 && rlim.rlim_cur > 0 {
+                    return true;
                 }
 
                 // Check if running as root

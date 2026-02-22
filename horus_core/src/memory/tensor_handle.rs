@@ -288,9 +288,8 @@ mod tests {
     #[test]
     fn test_handle_alloc() {
         let pool = create_test_pool();
-        let handle =
-            TensorHandle::alloc(pool.clone(), &[10, 20], TensorDtype::F32, Device::cpu())
-                .expect("Failed to allocate");
+        let handle = TensorHandle::alloc(pool.clone(), &[10, 20], TensorDtype::F32, Device::cpu())
+            .expect("Failed to allocate");
 
         assert_eq!(handle.shape(), &[10, 20]);
         assert_eq!(handle.dtype(), TensorDtype::F32);
@@ -346,9 +345,8 @@ mod tests {
     #[test]
     fn test_slice() {
         let pool = create_test_pool();
-        let handle =
-            TensorHandle::alloc(pool.clone(), &[10, 5], TensorDtype::F32, Device::cpu())
-                .expect("Failed to allocate");
+        let handle = TensorHandle::alloc(pool.clone(), &[10, 5], TensorDtype::F32, Device::cpu())
+            .expect("Failed to allocate");
 
         assert_eq!(handle.refcount(), 1);
 

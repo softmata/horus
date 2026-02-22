@@ -10,14 +10,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+type BackendMap = HashMap<(String, u64), Arc<dyn Any + Send + Sync>>;
+
 /// Global registry mapping (topic_name, epoch) → Arc<dyn Any>.
 ///
 /// Each entry is a type-erased Arc to the backend (e.g., `Arc<SpscRing<T>>`).
 /// When a participant detects an epoch change, it looks up the new backend here.
-static REGISTRY: OnceLock<Mutex<HashMap<(String, u64), Arc<dyn Any + Send + Sync>>>> =
-    OnceLock::new();
+static REGISTRY: OnceLock<Mutex<BackendMap>> = OnceLock::new();
 
-fn registry() -> &'static Mutex<HashMap<(String, u64), Arc<dyn Any + Send + Sync>>> {
+fn registry() -> &'static Mutex<BackendMap> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

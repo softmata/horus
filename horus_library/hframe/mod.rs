@@ -94,8 +94,7 @@ pub use types::{FrameId, INVALID_FRAME, NO_PARENT};
 // Re-export Transform and message types
 pub use messages::{
     frame_id_to_string, string_to_frame_id, HFMessage, StaticTransformStamped, TFMessage,
-    TransformStamped,
-    FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
+    TransformStamped, FRAME_ID_SIZE, MAX_TRANSFORMS_PER_MESSAGE,
 };
 pub use transform::Transform;
 
@@ -292,7 +291,10 @@ impl HFrame {
 
         self.core
             .resolve(src_id, dst_id)
-            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))
+            .ok_or(HorusError::Communication(format!(
+                "No transform path between '{}' and '{}'",
+                src, dst
+            )))
     }
 
     /// Get transform at specific timestamp with interpolation (by name)
@@ -312,7 +314,10 @@ impl HFrame {
 
         self.core
             .resolve_at(src_id, dst_id, timestamp_ns)
-            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))
+            .ok_or(HorusError::Communication(format!(
+                "No transform path between '{}' and '{}'",
+                src, dst
+            )))
     }
 
     /// Get latest transform between two frames (by ID - fastest)
@@ -392,7 +397,10 @@ impl HFrame {
         let chain = self
             .core
             .frame_chain(src_id, dst_id)
-            .ok_or(HorusError::Communication(format!("No transform path between '{}' and '{}'", src, dst)))?;
+            .ok_or(HorusError::Communication(format!(
+                "No transform path between '{}' and '{}'",
+                src, dst
+            )))?;
 
         Ok(chain
             .iter()

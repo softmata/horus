@@ -1,4 +1,5 @@
 // Safety monitor for real-time critical systems
+use crate::core::rt_node::WCETViolation;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,8 +18,6 @@ pub enum SafetyState {
 /// Watchdog for monitoring node health
 #[derive(Debug)]
 pub(crate) struct Watchdog {
-    /// Node name being monitored
-    node_name: String,
     /// Timeout duration
     timeout: Duration,
     /// Last heartbeat time
@@ -28,9 +27,8 @@ pub(crate) struct Watchdog {
 }
 
 impl Watchdog {
-    pub(crate) fn new(node_name: String, timeout: Duration) -> Self {
+    pub(crate) fn new(timeout: Duration) -> Self {
         Self {
-            node_name,
             timeout,
             last_heartbeat: Mutex::new(Instant::now()),
             expired: AtomicBool::new(false),
@@ -55,10 +53,6 @@ impl Watchdog {
 
     pub(crate) fn is_expired(&self) -> bool {
         self.expired.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn node_name(&self) -> &str {
-        &self.node_name
     }
 }
 
@@ -119,15 +113,6 @@ impl WCETEnforcer {
     }
 }
 
-/// WCET violation details
-#[derive(Debug, Clone)]
-pub struct WCETViolation {
-    pub node_name: String,
-    pub budget: Duration,
-    pub actual: Duration,
-    pub overrun: Duration,
-}
-
 /// Safety monitor for real-time critical systems
 #[derive(Debug)]
 pub(crate) struct SafetyMonitor {
@@ -163,10 +148,9 @@ impl SafetyMonitor {
     /// Add a critical node that must be monitored
     pub(crate) fn add_critical_node(&mut self, node_name: String, watchdog_timeout: Duration) {
         self.critical_nodes.push(node_name.clone());
-        self.watchdogs.lock().insert(
-            node_name.clone(),
-            Watchdog::new(node_name, watchdog_timeout),
-        );
+        self.watchdogs
+            .lock()
+            .insert(node_name, Watchdog::new(watchdog_timeout));
     }
 
     /// Set WCET budget for a node
@@ -270,17 +254,6 @@ impl SafetyMonitor {
                 .filter(|w| w.is_expired())
                 .count() as u64,
         }
-    }
-
-    /// Reset counters (for testing or after recovery)
-    pub(crate) fn reset_counters(&self) {
-        self.deadline_misses.store(0, Ordering::SeqCst);
-        self.wcet_enforcer
-            .lock()
-            .overruns
-            .store(0, Ordering::SeqCst);
-        *self.state.lock() = SafetyState::Normal;
-        self.emergency_stop.store(false, Ordering::SeqCst);
     }
 }
 

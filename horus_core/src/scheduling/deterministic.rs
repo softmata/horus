@@ -50,7 +50,6 @@ impl DeterministicConfig {
             record_trace: true,
         }
     }
-
 }
 
 /// Deterministic clock that provides reproducible time
@@ -300,7 +299,6 @@ pub struct DivergenceInfo {
     pub message: String,
 }
 
-
 impl Serialize for DivergenceInfo {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -465,5 +463,4 @@ mod tests {
         assert!(div.is_some());
         assert_eq!(div.unwrap().tick, 2);
     }
-
 }

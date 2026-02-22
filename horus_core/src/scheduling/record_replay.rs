@@ -120,14 +120,11 @@ impl RecordingConfig {
 /// runtime `RecordingConfig` used by `NodeRecorder` and `Scheduler::apply_config()`.
 impl From<super::config::RecordingConfigYaml> for RecordingConfig {
     fn from(yaml: super::config::RecordingConfigYaml) -> Self {
-        let base_dir = yaml
-            .output_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(RECORDINGS_DIR)
-            });
+        let base_dir = yaml.output_dir.map(PathBuf::from).unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(RECORDINGS_DIR)
+        });
 
         let session_name = yaml.session_name.unwrap_or_else(|| {
             format!(

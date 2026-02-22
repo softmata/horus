@@ -66,7 +66,7 @@ impl<T> DirectSlot<T> {
         let index = (head & self.mask) as usize;
         // SAFETY: single-thread guarantee; index within bounds
         unsafe {
-            let slot = &*self.buffer.get_unchecked(index);
+            let slot = self.buffer.get_unchecked(index);
             slot.get().write(MaybeUninit::new(msg));
         }
         self.head.store(head.wrapping_add(1), Ordering::Relaxed);

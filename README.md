@@ -50,7 +50,7 @@ message!(MotorCommand = (f64,));       // voltage
 
 node! {
     SensorNode {
-        pub { reading: SensorReading -> "sensor/data" }
+        pub { reading: SensorReading -> "sensor.data" }
         data { position: f64 = 0.0 }
 
         tick {
@@ -62,8 +62,8 @@ node! {
 
 node! {
     ControllerNode {
-        sub { sensor: SensorReading -> "sensor/data" }
-        pub { command: MotorCommand -> "motor/cmd" }
+        sub { sensor: SensorReading -> "sensor.data" }
+        pub { command: MotorCommand -> "motor.cmd" }
         data { target: f64 = 1.0 }
 
         tick {
@@ -125,22 +125,12 @@ Nodes communicate through topics. The framework automatically picks the fastest 
 ```rust
 use horus::prelude::*;
 
-let topic: Topic<f64> = Topic::new("sensor_data", None)?;
+let topic: Topic<f64> = Topic::new("sensor_data")?;
 
 topic.send(42.0);
 if let Some(value) = topic.recv() {
     println!("Got: {}", value);
 }
-```
-
-For multi-machine setups, just add an address:
-
-```rust
-// Same-machine: shared memory (sub-microsecond)
-let local: Topic<f64> = Topic::new("sensors", None)?;
-
-// Cross-machine: network (microseconds)
-let remote: Topic<f64> = Topic::new("sensors@192.168.1.100:8000", None)?;
 ```
 
 ### Custom Nodes
@@ -154,8 +144,8 @@ message!(SensorData = (f64, u32));
 
 node! {
     MyNode {
-        pub { output: SensorData -> "sensor/output" }
-        sub { input: SensorData -> "sensor/input" }
+        pub { output: SensorData -> "sensor.output" }
+        sub { input: SensorData -> "sensor.input" }
         data { counter: u32 = 0 }
 
         tick {
@@ -184,7 +174,7 @@ HORUS includes standard robotics message types:
 ```rust
 use horus::prelude::*;
 
-let cmd_topic: Topic<CmdVel> = Topic::new("cmd_vel", None)?;
+let cmd_topic: Topic<CmdVel> = Topic::new("cmd_vel")?;
 cmd_topic.send(CmdVel::new(1.0, 0.0));
 ```
 
@@ -219,7 +209,6 @@ horus topic list            # See active topics
 horus node list             # See running nodes
 horus pkg install <name>    # Install packages
 horus deploy <target>       # Deploy to robot
-horus sim                   # Launch simulator
 ```
 
 Run `horus --help` for all commands.

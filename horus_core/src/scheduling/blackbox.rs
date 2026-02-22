@@ -105,6 +105,25 @@ impl BlackBox {
         }
     }
 
+    /// Set persistence path for WAL and JSON snapshot.
+    ///
+    /// Creates the directory if it doesn't exist. Enables:
+    /// - WAL file (`blackbox.wal`) for crash recovery (written on every `record()`)
+    /// - JSON snapshot (`blackbox.json`) for clean shutdown (written on `save()`)
+    pub fn with_path(mut self, dir: PathBuf) -> Self {
+        fs::create_dir_all(&dir).ok();
+        let wal_path = dir.join("blackbox.wal");
+        if let Ok(file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)
+        {
+            self.wal_file = Some(BufWriter::new(file));
+        }
+        self.persist_path = Some(dir.join("blackbox.json"));
+        self
+    }
+
     /// Record an event
     pub fn record(&mut self, event: BlackBoxEvent) {
         if !self.enabled {

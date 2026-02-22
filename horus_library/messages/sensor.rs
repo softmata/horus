@@ -542,4 +542,3 @@ unsafe impl horus_core::communication::PodMessage for BatteryState {}
 unsafe impl horus_core::bytemuck::Pod for NavSatFix {}
 unsafe impl horus_core::bytemuck::Zeroable for NavSatFix {}
 unsafe impl horus_core::communication::PodMessage for NavSatFix {}
-

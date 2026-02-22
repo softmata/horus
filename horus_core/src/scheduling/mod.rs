@@ -58,11 +58,12 @@ pub(crate) mod deterministic;
 // Node builder for fluent node configuration
 pub mod node_builder;
 
+pub use crate::core::rt_node::WCETViolation;
 pub use config::{
     ExecutionMode, FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
     ResourceConfig, SchedulerConfig, TimingConfig,
 };
-pub use safety_monitor::{SafetyState, SafetyStats, WCETViolation};
+pub use safety_monitor::{SafetyState, SafetyStats};
 pub use scheduler::{DegradationSeverity, RtDegradation, RtFeature, Scheduler};
 pub use types::SchedulerNodeMetrics;
 
@@ -77,23 +78,9 @@ pub use blackbox::{BlackBox, BlackBoxEvent};
 
 // Re-export record/replay (public API)
 pub use record_replay::{
-    diff_recordings,
-    Breakpoint,
-    BreakpointCondition,
-    DebugEvent,
-    DebugSessionState,
-    DebuggerState,
-    NodeRecorder,
-    NodeRecording,
-    NodeReplayer,
-    NodeTickSnapshot,
-    RecordingDiff,
-    RecordingManager,
-    ReplayDebugger,
-    SchedulerRecording,
-    WatchExpression,
-    WatchType,
-    WatchValue,
+    diff_recordings, Breakpoint, BreakpointCondition, DebugEvent, DebugSessionState, DebuggerState,
+    NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingDiff, RecordingManager,
+    ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 
 // Re-export node tier from types

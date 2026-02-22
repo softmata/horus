@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::primitives::CachePadded;
+use super::primitives::{alloc_uninit_buffer, CachePadded};
 
 /// Heap-backed SPMC ring buffer for 1 producer, N consumers.
 ///
@@ -35,17 +35,13 @@ unsafe impl<T: Send + Sync> Sync for SpmcRing<T> {}
 impl<T> SpmcRing<T> {
     pub fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
-        let mut buffer = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
-        }
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
             cached_send_tail: CachePadded(std::cell::Cell::new(0)),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            buffer: buffer.into_boxed_slice(),
+            buffer: alloc_uninit_buffer(cap),
         }
     }
 
@@ -58,9 +54,7 @@ impl<T> SpmcRing<T> {
     /// Check how many messages are pending in the ring.
     #[inline]
     pub fn pending_count(&self) -> u64 {
-        let head = self.head.0.load(Ordering::Acquire);
-        let tail = self.tail.0.load(Ordering::Acquire);
-        head.wrapping_sub(tail)
+        ring_pending_count!(self)
     }
 
     /// Try to receive (multiple consumers — CAS on tail).
@@ -91,7 +85,7 @@ impl<T> SpmcRing<T> {
                 // SAFETY: we successfully claimed this slot via CAS;
                 // data was written by producer and visible via Release/Acquire on head
                 let msg = unsafe {
-                    let slot = &*self.buffer.get_unchecked(index);
+                    let slot = self.buffer.get_unchecked(index);
                     (*slot.get()).assume_init_read()
                 };
                 return Some(msg);
@@ -130,7 +124,7 @@ impl<T> SpmcRing<T> {
         // (requires capacity writes), making concurrent producer writes
         // extremely unlikely during a single ptr::read.
         let msg = unsafe {
-            let slot = &*self.buffer.get_unchecked(index);
+            let slot = self.buffer.get_unchecked(index);
             (*slot.get()).assume_init_read()
         };
         Some(msg)
@@ -139,16 +133,6 @@ impl<T> SpmcRing<T> {
 
 impl<T> Drop for SpmcRing<T> {
     fn drop(&mut self) {
-        let head = *self.head.0.get_mut();
-        let tail = *self.tail.0.get_mut();
-        // Drop all initialized but unconsumed messages in [tail, head)
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            // SAFETY: we have &mut self (exclusive access). All slots in
-            // [tail, head) were written by the producer and not yet consumed.
-            unsafe {
-                self.buffer[index].get_mut().assume_init_drop();
-            }
-        }
+        sp_drop_ring!(self);
     }
 }

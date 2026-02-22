@@ -715,7 +715,11 @@ impl PathPlan {
             return None;
         }
         let idx = index as usize * 3;
-        Some([self.waypoint_data[idx], self.waypoint_data[idx + 1], self.waypoint_data[idx + 2]])
+        Some([
+            self.waypoint_data[idx],
+            self.waypoint_data[idx + 1],
+            self.waypoint_data[idx + 2],
+        ])
     }
 
     /// Check if path is empty

@@ -216,8 +216,7 @@ fn resolve_package_dir(name: &str, version: &str, global: bool) -> Option<PathBu
             return Some(plain);
         }
     } else {
-        let workspace_root =
-            workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+        let workspace_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
         let local = workspace_root.join(".horus/packages").join(name);
         if local.exists() {
             return Some(local);
@@ -238,9 +237,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         "{} Installing plugin: {}{}",
         "[PLUGIN]".magenta().bold(),
         plugin.yellow(),
-        ver.as_ref()
-            .map(|v| format!("@{}", v))
-            .unwrap_or_default()
+        ver.as_ref().map(|v| format!("@{}", v)).unwrap_or_default()
     );
 
     // Determine install target - plugins default to global
@@ -291,11 +288,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
                 );
             }
             Err(e) => {
-                println!(
-                    "\n  {} Failed to register plugin: {}",
-                    "⚠".yellow(),
-                    e
-                );
+                println!("\n  {} Failed to register plugin: {}", "⚠".yellow(), e);
             }
         }
     }
@@ -365,13 +358,9 @@ pub fn run_remove(plugin: String, global: bool) -> HorusResult<()> {
 
     // Try to unregister - the plugin command name might differ from package name
     // Convention: package "horus-foo" provides command "foo"
-    let command_name = plugin
-        .strip_prefix("horus-")
-        .unwrap_or(&plugin)
-        .to_string();
+    let command_name = plugin.strip_prefix("horus-").unwrap_or(&plugin).to_string();
 
-    if let Err(e) =
-        super::pkg::unregister_plugin(&command_name, is_global, project_root.as_deref())
+    if let Err(e) = super::pkg::unregister_plugin(&command_name, is_global, project_root.as_deref())
     {
         // Not fatal - plugin might not have had a CLI extension
         println!(

@@ -72,23 +72,15 @@ pub mod prelude {
     // Scheduler Configuration Types
     // ============================================
     pub use horus_core::scheduling::{
-        FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml,
-        ResourceConfig, TimingConfig,
+        FaultConfig, MonitoringConfig, RealTimeConfig, RecordingConfigYaml, ResourceConfig,
+        TimingConfig,
     };
 
     // ============================================
     // Safety & Fault Tolerance
     // ============================================
     pub use horus_core::scheduling::{
-        // BlackBox flight recorder
-        BlackBox,
-        BlackBoxEvent,
-        // Circuit breaker
-        CircuitBreaker,
-        CircuitState,
-        // Safety monitoring
-        SafetyState,
-        SafetyStats,
+        BlackBox, BlackBoxEvent, CircuitBreaker, CircuitState, SafetyState, SafetyStats,
         WCETViolation,
     };
 
@@ -106,50 +98,22 @@ pub mod prelude {
     // Record/Replay
     // ============================================
     pub use horus_core::scheduling::{
-        NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot,
-        RecordingManager, SchedulerRecording,
-    };
-
-    // ============================================
-    // Runtime (OS-level features)
-    // ============================================
-    pub use horus_core::scheduling::{
-        apply_rt_optimizations, get_core_count, get_max_rt_priority, get_numa_node_count,
-        lock_all_memory, set_thread_affinity,
+        NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingManager,
+        SchedulerRecording,
     };
 
     // ============================================
     // Real-Time Configuration & Nodes
     // ============================================
     pub use horus_core::core::{
-        // CPU affinity and isolation helpers
-        detect_isolated_cpus,
-        detect_nohz_full_cpus,
-        get_rt_recommended_cpus,
-        pin_thread_to_core,
-        // RtConfig - System-level RT configuration
-        prefault_stack,
-        prefault_stack_linear,
-        // RtNode - Node-level RT constraints
-        DeadlineMissPolicy,
-        RtApplyResult,
-        RtClass,
-        RtConfig,
-        RtConfigBuilder,
-        RtCpuInfo,
-        RtDegradation,
-        RtKernelInfo,
-        RtNode,
-        RtNodeWrapper,
-        RtPriority,
-        RtScheduler,
+        DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority,
         RtStats,
     };
 
     // ============================================
     // Memory & Tensors
     // ============================================
-    pub use horus_core::memory::{shm_base_dir, TensorHandle, TensorPool, TensorPoolConfig};
+    pub use horus_core::memory::{TensorHandle, TensorPool, TensorPoolConfig};
 
     // Domain-specific types (RAII wrappers with rich API for data access)
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
@@ -161,15 +125,7 @@ pub mod prelude {
     // CUDA Tensor Pool & IPC (requires "cuda" feature)
     #[cfg(feature = "cuda")]
     pub use horus_core::memory::{
-        // Low-level FFI for advanced usage
-        cuda_ffi,
-        CudaPoolStats,
-        // Core CUDA tensor types
-        CudaTensor,
-        CudaTensorPool,
-        CudaTensorPoolConfig,
-        // Multi-GPU P2P support
-        P2PAccessInfo,
+        cuda_ffi, CudaPoolStats, CudaTensor, CudaTensorPool, CudaTensorPoolConfig, P2PAccessInfo,
         P2PManager,
     };
 
@@ -181,9 +137,8 @@ pub mod prelude {
     // ============================================
     // Message Types (ALL from horus_library)
     // ============================================
-    pub use horus_types::{Device, HorusTensor, TensorDtype};
-    // Re-export all message types from horus_library
     pub use horus_library::messages::*;
+    pub use horus_types::{Device, HorusTensor, TensorDtype};
 
     // ============================================
     // Error Types
@@ -207,16 +162,12 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
 
-    // hlog!() macro for node logging
     pub use horus_core::hlog;
 
     // ============================================
     // Common Traits
     // ============================================
     pub use serde::{Deserialize, Serialize};
-
-    // Re-export anyhow for error handling
-    pub use anyhow::{anyhow, bail, ensure, Context, Result as AnyResult};
 
     // ============================================
     // Actions (Long-running tasks with feedback)
@@ -226,21 +177,6 @@ pub mod prelude {
         ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
         GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
     };
-
-    // ============================================
-    // Driver & Plugin System
-    // ============================================
-    pub use horus_core::driver::{
-        DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig,
-    };
-
-    // ============================================
-    // Node Infrastructure
-    // ============================================
-    // Core node types (Node, Topic) are re-exported from horus_core above.
-    // Users implement their own nodes using these building blocks.
-    // See horus_library::nodes module documentation for usage patterns.
-
 }
 
 /// Version information

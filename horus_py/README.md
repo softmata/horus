@@ -17,30 +17,22 @@ pip install horus-robotics
 ```python
 import horus
 
-# Create a topic for communication
-topic = horus.Topic("sensor_data")
+# Create a node with callbacks
+def my_tick(node):
+    node.send("output", 42.0)
+    msg = node.get("input")
+    if msg:
+        print(f"Got: {msg}")
 
-# Send and receive data
-topic.send({"temperature": 25.5, "humidity": 60})
-data = topic.recv()
-```
+node = horus.Node(
+    name="my_node",
+    pubs=["output"],
+    subs=["input"],
+    tick=my_tick,
+    rate=30,
+)
 
-## Nodes
-
-```python
-import horus
-
-class SensorNode(horus.Node):
-    def __init__(self):
-        super().__init__("sensor_node")
-        self.topic = horus.Topic("sensor_data")
-
-    def tick(self):
-        reading = self.read_sensor()
-        self.topic.send(reading)
-
-node = SensorNode()
-horus.run(node, rate_hz=100)
+horus.run(node, duration=10)
 ```
 
 ## Typed Messages
@@ -62,6 +54,25 @@ scheduler = horus.Scheduler()                    # Lightweight default
 scheduler = horus.Scheduler.deploy()             # Production
 scheduler = horus.Scheduler.safety_critical()    # Safety systems
 scheduler = horus.Scheduler.deterministic()      # Reproducible execution
+```
+
+## Multiple Nodes
+
+```python
+import horus
+
+def sensor_tick(node):
+    node.send("sensor_data", 42.0)
+
+def control_tick(node):
+    data = node.get("sensor_data")
+    if data:
+        node.send("cmd_vel", data * 0.5)
+
+sensor = horus.Node(name="sensor", pubs=["sensor_data"], tick=sensor_tick, rate=100)
+controller = horus.Node(name="controller", subs=["sensor_data"], pubs=["cmd_vel"], tick=control_tick, rate=100)
+
+horus.run(sensor, controller, duration=30)
 ```
 
 ## Cross-Language

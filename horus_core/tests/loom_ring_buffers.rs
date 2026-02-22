@@ -13,10 +13,89 @@
 //! Note: loom tests explore exponentially many interleavings. Keep ring
 //! capacities small (2-4) and message counts low (2-4).
 
+use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::Arc;
-use loom::cell::UnsafeCell;
 use std::mem::MaybeUninit;
+
+// ============================================================================
+// Shared helpers for loom ring buffer variants
+// ============================================================================
+
+/// Allocate an uninitialized loom UnsafeCell buffer for SP ring buffers.
+fn alloc_loom_buffer<T>(cap: usize) -> Vec<UnsafeCell<MaybeUninit<T>>> {
+    let mut buffer = Vec::with_capacity(cap);
+    for _ in 0..cap {
+        buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
+    }
+    buffer
+}
+
+/// Allocate sequence-tracked loom slots for MP ring buffers.
+fn alloc_loom_mp_slots<T>(cap: usize) -> Vec<LoomMpSlot<T>> {
+    let mut slots = Vec::with_capacity(cap);
+    for i in 0..cap {
+        slots.push(LoomMpSlot {
+            sequence: AtomicU64::new(i as u64),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+        });
+    }
+    slots
+}
+
+/// Single-producer try_send for loom SP ring buffers (SPSC, SPMC).
+macro_rules! loom_sp_try_send {
+    ($self:expr, $msg:expr) => {{
+        let head = $self.head.load(Ordering::Relaxed);
+        let tail = $self.tail.load(Ordering::Acquire);
+        if head.wrapping_sub(tail) >= $self.capacity {
+            return Err($msg);
+        }
+        let index = (head & $self.mask) as usize;
+        $self.buffer[index].with_mut(|ptr| unsafe {
+            ptr.write(MaybeUninit::new($msg));
+        });
+        $self.head.store(head.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }};
+}
+
+/// Drop implementation for loom SP ring buffers (SPSC, SPMC).
+macro_rules! loom_sp_drop {
+    ($self:expr) => {{
+        let head = $self.head.load(Ordering::Relaxed);
+        let tail = $self.tail.load(Ordering::Relaxed);
+        for i in tail..head {
+            let index = (i & $self.mask) as usize;
+            $self.buffer[index].with_mut(|ptr| unsafe {
+                (*ptr).assume_init_drop();
+            });
+        }
+    }};
+}
+
+/// Drop implementation for loom MP ring buffers (MPSC, MPMC).
+macro_rules! loom_mp_drop {
+    ($self:expr) => {{
+        let head = $self.head.load(Ordering::Relaxed);
+        let tail = $self.tail.load(Ordering::Relaxed);
+        for i in tail..head {
+            let index = (i & $self.mask) as usize;
+            let seq = $self.slots[index].sequence.load(Ordering::Relaxed);
+            if seq == i.wrapping_add(1) {
+                $self.slots[index].data.with_mut(|ptr| unsafe {
+                    (*ptr).assume_init_drop();
+                });
+            }
+        }
+    }};
+}
+
+/// Per-slot metadata for loom multi-producer ring buffers.
+struct LoomMpSlot<T> {
+    sequence: AtomicU64,
+    data: UnsafeCell<MaybeUninit<T>>,
+}
 
 // ============================================================================
 // Simplified SPSC Ring (mirrors spsc_intra.rs algorithm)
@@ -38,31 +117,17 @@ unsafe impl<T: Send + Sync> Sync for LoomSpscRing<T> {}
 impl<T> LoomSpscRing<T> {
     fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
-        let mut buffer = Vec::with_capacity(cap);
-        for _ in 0..cap {
-            buffer.push(UnsafeCell::new(MaybeUninit::uninit()));
-        }
         Self {
             head: AtomicU64::new(0),
             tail: AtomicU64::new(0),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            buffer,
+            buffer: alloc_loom_buffer(cap),
         }
     }
 
     fn try_send(&self, msg: T) -> Result<(), T> {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head.wrapping_sub(tail) >= self.capacity {
-            return Err(msg);
-        }
-        let index = (head & self.mask) as usize;
-        self.buffer[index].with_mut(|ptr| unsafe {
-            ptr.write(MaybeUninit::new(msg));
-        });
-        self.head.store(head.wrapping_add(1), Ordering::Release);
-        Ok(())
+        loom_sp_try_send!(self, msg)
     }
 
     fn try_recv(&self) -> Option<T> {
@@ -80,14 +145,7 @@ impl<T> LoomSpscRing<T> {
 
 impl<T> Drop for LoomSpscRing<T> {
     fn drop(&mut self) {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            self.buffer[index].with_mut(|ptr| unsafe {
-                (*ptr).assume_init_drop();
-            });
-        }
+        loom_sp_drop!(self);
     }
 }
 
@@ -520,8 +578,6 @@ fn loom_spsc_full_ring_backpressure() {
         }
 
         // All sent values should be accounted for
-        let total_received = consumed.map_or(0, |_| 1) + remaining.len()
-            + if result.is_ok() { 0 } else { 0 }; // send failure means value returned
         let total_sent = 2 + if result.is_ok() { 1 } else { 0 };
         assert_eq!(
             consumed.map_or(0, |_| 1) + remaining.len(),
@@ -531,8 +587,6 @@ fn loom_spsc_full_ring_backpressure() {
             consumed,
             remaining,
         );
-        // Silence unused variable warning
-        let _ = total_received;
     });
 }
 
@@ -614,14 +668,22 @@ fn loom_spmc_two_messages_two_consumers() {
 
         let c1 = loom::thread::spawn(move || {
             let mut got = Vec::new();
-            if let Some(v) = r1.try_recv() { got.push(v); }
-            if let Some(v) = r1.try_recv() { got.push(v); }
+            if let Some(v) = r1.try_recv() {
+                got.push(v);
+            }
+            if let Some(v) = r1.try_recv() {
+                got.push(v);
+            }
             got
         });
         let c2 = loom::thread::spawn(move || {
             let mut got = Vec::new();
-            if let Some(v) = r2.try_recv() { got.push(v); }
-            if let Some(v) = r2.try_recv() { got.push(v); }
+            if let Some(v) = r2.try_recv() {
+                got.push(v);
+            }
+            if let Some(v) = r2.try_recv() {
+                got.push(v);
+            }
             got
         });
 
@@ -719,8 +781,12 @@ fn loom_mpmc_concurrent_producers() {
 
         // Count successful sends
         let mut expected: Vec<u64> = Vec::new();
-        if res1.is_ok() { expected.push(1); }
-        if res2.is_ok() { expected.push(2); }
+        if res1.is_ok() {
+            expected.push(1);
+        }
+        if res2.is_ok() {
+            expected.push(2);
+        }
         expected.sort();
 
         assert_eq!(
@@ -745,14 +811,22 @@ fn loom_mpmc_concurrent_consumers() {
 
         let c1 = loom::thread::spawn(move || {
             let mut got = Vec::new();
-            if let Some(v) = r1.try_recv() { got.push(v); }
-            if let Some(v) = r1.try_recv() { got.push(v); }
+            if let Some(v) = r1.try_recv() {
+                got.push(v);
+            }
+            if let Some(v) = r1.try_recv() {
+                got.push(v);
+            }
             got
         });
         let c2 = loom::thread::spawn(move || {
             let mut got = Vec::new();
-            if let Some(v) = r2.try_recv() { got.push(v); }
-            if let Some(v) = r2.try_recv() { got.push(v); }
+            if let Some(v) = r2.try_recv() {
+                got.push(v);
+            }
+            if let Some(v) = r2.try_recv() {
+                got.push(v);
+            }
             got
         });
 
@@ -766,7 +840,11 @@ fn loom_mpmc_concurrent_consumers() {
             assert!(*v == 1 || *v == 2, "Invalid value: {}", v);
         }
         all.dedup();
-        assert_eq!(all.len(), all.len(), "No duplicate values should be received");
+        assert_eq!(
+            all.len(),
+            all.len(),
+            "No duplicate values should be received"
+        );
     });
 }
 
@@ -870,8 +948,12 @@ fn loom_spmc_read_latest_with_two_consumers() {
 
         // Consumers should collectively consume both messages (no duplicates)
         let mut consumed: Vec<u64> = Vec::new();
-        if let Some(v) = v1 { consumed.push(v); }
-        if let Some(v) = v2 { consumed.push(v); }
+        if let Some(v) = v1 {
+            consumed.push(v);
+        }
+        if let Some(v) = v2 {
+            consumed.push(v);
+        }
         consumed.sort();
 
         for v in &consumed {
@@ -880,11 +962,19 @@ fn loom_spmc_read_latest_with_two_consumers() {
         // No duplicates
         let before_dedup = consumed.len();
         consumed.dedup();
-        assert_eq!(consumed.len(), before_dedup, "Duplicate consumption detected");
+        assert_eq!(
+            consumed.len(),
+            before_dedup,
+            "Duplicate consumption detected"
+        );
 
         // read_latest must return a valid value or None
         if let Some(v) = latest {
-            assert!(v == 10 || v == 20, "read_latest returned invalid value: {}", v);
+            assert!(
+                v == 10 || v == 20,
+                "read_latest returned invalid value: {}",
+                v
+            );
         }
     });
 }

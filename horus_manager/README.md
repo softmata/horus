@@ -41,17 +41,14 @@ horus add <name>                # Smart add (auto-detects type)
 horus remove <name>             # Smart remove
 horus deploy <target>           # Deploy to remote robot (--run, --arch)
 horus launch <file>             # Launch nodes from YAML
-horus sim                       # Launch simulator (--2d for 2D mode)
 ```
 
 ### Other
 
 ```bash
-horus driver list|info|search   # Driver management
 horus plugin list|enable|disable # Plugin management
 horus env freeze|restore        # Environment reproducibility
 horus record list|play|info     # Recording/replay
-horus net check|ping|scan       # Network diagnostics
 horus cache info|clean          # Cache management
 horus auth login|logout|whoami  # Registry authentication
 ```

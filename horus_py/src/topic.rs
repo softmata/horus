@@ -866,13 +866,9 @@ where
         + serde::de::DeserializeOwned
         + std::fmt::Debug,
 {
-
     // Check if this is a network endpoint
     if endpoint.contains('@') {
-        let topic_name = endpoint
-            .split('@')
-            .next()
-            .unwrap_or(endpoint);
+        let topic_name = endpoint.split('@').next().unwrap_or(endpoint);
         return Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "Failed to create network Topic: {}",

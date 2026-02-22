@@ -524,7 +524,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     let init_impl = if let Some(ref init_section) = node_def.init_section {
         let init_body = &init_section.body;
         quote! {
-            fn init(&mut self) -> ::horus::horus_core::error::Result<()> {
+            fn init(&mut self) -> ::horus::horus_core::error::HorusResult<()> {
                 #init_body
             }
         }
@@ -537,7 +537,7 @@ pub fn impl_node_macro(input: TokenStream) -> TokenStream {
     let shutdown_impl = if let Some(ref shutdown_section) = node_def.shutdown_section {
         let shutdown_body = &shutdown_section.body;
         quote! {
-            fn shutdown(&mut self) -> ::horus::horus_core::error::Result<()> {
+            fn shutdown(&mut self) -> ::horus::horus_core::error::HorusResult<()> {
                 #shutdown_body
             }
         }

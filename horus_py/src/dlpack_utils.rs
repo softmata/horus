@@ -6,7 +6,7 @@
 use std::ffi::{c_void, CStr, CString};
 
 use horus_types::{Device, TensorDtype};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 // === Dtype helpers ===
@@ -60,7 +60,81 @@ pub fn device_to_string(device: Device) -> String {
     device.to_string()
 }
 
+// === ML framework conversion helpers ===
+
+/// Shared `to_torch` implementation: calls `torch.from_dlpack(obj)`.
+pub fn to_torch_impl<'py>(slf: &Bound<'py, PyAny>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let torch = py.import("torch")?;
+    torch.call_method1("from_dlpack", (slf,))
+}
+
+/// Shared `to_jax` implementation: calls `jax.dlpack.from_dlpack(obj)`.
+pub fn to_jax_impl<'py>(slf: &Bound<'py, PyAny>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let jax_dlpack = py.import("jax.dlpack")?;
+    jax_dlpack.call_method1("from_dlpack", (slf,))
+}
+
+/// Shared `to_numpy` implementation: calls `np.asarray(obj)` after CUDA check.
+pub fn to_numpy_impl<'py>(
+    slf: &Bound<'py, PyAny>,
+    py: Python<'py>,
+    is_cuda: bool,
+    type_name: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    if is_cuda {
+        return Err(PyTypeError::new_err(format!(
+            "Cannot create numpy array from CUDA {}. Use .to_torch() for GPU data.",
+            type_name,
+        )));
+    }
+    let np = py.import("numpy")?;
+    np.call_method1("asarray", (slf,))
+}
+
+/// Shared `from_torch` helper: verifies CPU, calls `.numpy()`, returns the numpy array.
+pub fn torch_to_numpy<'py>(tensor: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let device = tensor.getattr("device")?;
+    let device_type: String = device.getattr("type")?.extract()?;
+    if device_type != "cpu" {
+        return Err(PyValueError::new_err(
+            "Tensor must be on CPU. Call tensor.cpu() first.",
+        ));
+    }
+    tensor.call_method0("numpy")
+}
+
 // === DLPack helpers ===
+
+/// Prepare DLPack arguments from a HorusTensor + TensorPool.
+///
+/// Returns (data_ptr, shape, strides_in_elements, dtype, device) — everything
+/// needed by `make_dlpack_capsule`.
+pub fn prepare_dlpack_args(
+    tensor: &horus_types::HorusTensor,
+    pool: &horus_core::memory::TensorPool,
+) -> (*mut c_void, Vec<i64>, Vec<i64>, TensorDtype, Device) {
+    let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
+    let elem_size = tensor.dtype.element_size() as i64;
+    let strides: Vec<i64> = tensor
+        .strides()
+        .iter()
+        .map(|&x| (x as i64) / elem_size)
+        .collect();
+
+    let data_ptr = if tensor.device().is_cuda() {
+        u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
+    } else {
+        pool.data_ptr(tensor) as *mut c_void
+    };
+
+    (data_ptr, shape, strides, tensor.dtype, tensor.device())
+}
+
+/// Shared `__dlpack_device__` implementation for types wrapping a HorusTensor.
+pub fn dlpack_device_tuple(tensor: &horus_types::HorusTensor) -> (i32, i32) {
+    let device = tensor.device();
+    (device.to_dlpack_device_type(), device.to_dlpack_device_id())
+}
 
 /// Create a DLPack PyCapsule from a HORUS tensor's raw components.
 ///

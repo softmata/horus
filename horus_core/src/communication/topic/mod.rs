@@ -131,16 +131,16 @@ pub mod topic_message;
 pub use topic_message::TopicMessage;
 
 // Legacy domain-specific topic wrappers (retained for tests, replaced by Topic<T: TopicMessage>)
+mod depth_ext;
 mod image_ext;
 mod pointcloud_ext;
-mod depth_ext;
 
 #[cfg(test)]
 mod tests;
 
 use std::marker::PhantomData;
 use std::mem;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -533,7 +533,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let cap = header.capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
+        local.cached_data_ptr =
+            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         Self::sync_local(local, header, false);
         // Set role LAST - this gates the fast path via can_send()
@@ -569,7 +570,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let cap = header.capacity as usize;
         // SAFETY: HEADER_SIZE offset is within bounds of allocated storage region
         local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
-        local.cached_data_ptr = unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
+        local.cached_data_ptr =
+            unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         Self::sync_local(local, header, false);
         // Set role LAST - this gates the fast path via can_recv()
@@ -712,7 +714,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             (BackendStorage::SpmcIntra(_), BackendMode::SpmcIntra) => true,
             (BackendStorage::MpscIntra(_), BackendMode::MpscIntra) => true,
             (BackendStorage::MpmcIntra(_), BackendMode::MpmcIntra) => true,
-            (BackendStorage::ShmData, _) if mode.is_cross_process() || mode == BackendMode::Unknown => true,
+            (BackendStorage::ShmData, _)
+                if mode.is_cross_process() || mode == BackendMode::Unknown =>
+            {
+                true
+            }
             _ => false,
         };
         if already_matched {
@@ -742,7 +748,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     let new_ring = Arc::new(<$Ring>::new($cap));
                     self.drain_old_into_ring(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
+                        &self.name,
+                        epoch,
                         new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
                     );
                     *backend = if let Ok(ring) = shared.downcast::<$Ring>() {
@@ -759,7 +766,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     let new_ring = Arc::new(DirectSlot::new(cap));
                     self.drain_old_into_direct(&new_ring, epoch);
                     let shared = registry::store_or_get_backend(
-                        &self.name, epoch,
+                        &self.name,
+                        epoch,
                         new_ring.clone() as Arc<dyn std::any::Any + Send + Sync>,
                     );
                     *backend = if let Ok(slot) = shared.downcast::<DirectSlot<T>>() {
@@ -792,12 +800,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // dispatch to read/write the DirectSlot buffer instead of SHM — UB.
             let cap = local.cached_capacity as usize;
             // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
-            local.cached_seq_ptr = unsafe {
-                self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8
-            };
-            local.cached_data_ptr = unsafe {
-                self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8
-            };
+            local.cached_seq_ptr =
+                unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+            local.cached_data_ptr =
+                unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
         }
 
         // Set function pointers to match the new backend.
@@ -863,13 +869,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     BackendMode::SpmcIntra => dispatch::send_spmc_intra::<T>,
                     BackendMode::MpscIntra => dispatch::send_mpsc_intra::<T>,
                     BackendMode::MpmcIntra => dispatch::send_mpmc_intra::<T>,
-                    BackendMode::SpscShm | BackendMode::SpmcShm if colo => dispatch::send_shm_sp_pod_colo::<T>,
-                    BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
+                    BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
+                        dispatch::send_shm_sp_pod_colo::<T>
+                    }
+                    BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => {
+                        dispatch::send_shm_sp_pod::<T>
+                    }
                     BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
                     BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
                     BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
-                    BackendMode::MpscShm | BackendMode::MpmcShm if colo => dispatch::send_shm_mp_pod_colo::<T>,
-                    BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
+                    BackendMode::MpscShm | BackendMode::MpmcShm if colo => {
+                        dispatch::send_shm_mp_pod_colo::<T>
+                    }
+                    BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => {
+                        dispatch::send_shm_mp_pod::<T>
+                    }
                     BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
                     BackendMode::Unknown => dispatch::send_uninitialized::<T>,
                 }
@@ -913,7 +927,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 }
             };
         }
-
     }
 
     /// Try to set the backend from a registry entry (returns true if successful).
@@ -969,20 +982,30 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         R: RingDrain<T>,
     {
         // 1. Drain pending SHM messages
-        self.drain_shm(|msg| { let _ = new_ring.push(msg); });
+        self.drain_shm(|msg| {
+            let _ = new_ring.push(msg);
+        });
 
         // 2. Drain old heap ring from previous epoch
         if epoch > 0 {
             if let Some(old) = registry::lookup_backend(&self.name, epoch - 1) {
                 // Try each ring type
                 if let Ok(ring) = old.clone().downcast::<SpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() { let _ = new_ring.push(msg); }
+                    while let Some(msg) = ring.try_recv() {
+                        let _ = new_ring.push(msg);
+                    }
                 } else if let Ok(ring) = old.clone().downcast::<SpmcRing<T>>() {
-                    while let Some(msg) = ring.try_recv() { let _ = new_ring.push(msg); }
+                    while let Some(msg) = ring.try_recv() {
+                        let _ = new_ring.push(msg);
+                    }
                 } else if let Ok(ring) = old.clone().downcast::<MpscRing<T>>() {
-                    while let Some(msg) = ring.try_recv() { let _ = new_ring.push(msg); }
+                    while let Some(msg) = ring.try_recv() {
+                        let _ = new_ring.push(msg);
+                    }
                 } else if let Ok(ring) = old.clone().downcast::<MpmcRing<T>>() {
-                    while let Some(msg) = ring.try_recv() { let _ = new_ring.push(msg); }
+                    while let Some(msg) = ring.try_recv() {
+                        let _ = new_ring.push(msg);
+                    }
                 } else if let Ok(slot) = old.clone().downcast::<DirectSlot<T>>() {
                     // DirectSlot uses header-based head/tail (already drained by drain_shm)
                     let _ = slot; // Nothing extra needed
@@ -1004,11 +1027,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         loop {
             let tail = header.tail.load(Ordering::Acquire);
             let head = header.sequence_or_head.load(Ordering::Acquire);
-            if tail >= head { break; }
+            if tail >= head {
+                break;
+            }
 
-            if header.tail.compare_exchange(
-                tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed
-            ).is_ok() {
+            if header
+                .tail
+                .compare_exchange(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 let index = (tail & mask) as usize;
                 let msg = self.read_shm_slot(index);
                 let _ = new_slot.try_send(msg);
@@ -1053,11 +1085,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         loop {
             let tail = header.tail.load(Ordering::Acquire);
             let head = header.sequence_or_head.load(Ordering::Acquire);
-            if tail >= head { break; }
+            if tail >= head {
+                break;
+            }
 
-            if header.tail.compare_exchange(
-                tail, tail.wrapping_add(1), Ordering::AcqRel, Ordering::Relaxed,
-            ).is_ok() {
+            if header
+                .tail
+                .compare_exchange(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 let index = (tail & mask) as usize;
                 let msg = self.read_shm_slot(index);
                 push_fn(msg);
@@ -1132,17 +1173,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         let slot_offset = index * slot_size;
                         // SAFETY: slot_ptr is within storage bounds
                         unsafe {
-                            let slot_ptr =
-                                self.storage.as_ptr().add(data_off + slot_offset);
+                            let slot_ptr = self.storage.as_ptr().add(data_off + slot_offset);
                             // Format: [8 bytes padding][8 bytes length][data...]
                             let len_ptr = slot_ptr.add(8) as *mut u64;
                             std::ptr::write_volatile(len_ptr, bytes.len() as u64);
                             let data_ptr = slot_ptr.add(16) as *mut u8;
-                            std::ptr::copy_nonoverlapping(
-                                bytes.as_ptr(),
-                                data_ptr,
-                                bytes.len(),
-                            );
+                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
                         }
                     }
                     Err(_) => {
@@ -1248,7 +1284,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 header.tail.store(local.local_tail, Ordering::Release);
             }
             if local.role.can_send() {
-                header.sequence_or_head.fetch_max(local.local_head, Ordering::Release);
+                header
+                    .sequence_or_head
+                    .fetch_max(local.local_head, Ordering::Release);
             }
         }
 
@@ -1295,7 +1333,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     pub fn connection_state(&self) -> ConnectionState {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
-
 
     /// Send a message (fire-and-forget with bounded retry).
     ///
@@ -1369,7 +1406,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[inline(always)]
     fn send_lossy(&self, msg: T) {
         match self.try_send(msg) {
-            Ok(()) => return,
+            Ok(()) => (),
             Err(returned) => self.send_lossy_retry(returned),
         }
     }
@@ -1505,10 +1542,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         T: Copy,
     {
         // Ensure we're registered as a consumer so the header is initialized
-        if self.local().role == TopicRole::Unregistered {
-            if self.ensure_consumer().is_err() {
-                return None;
-            }
+        if self.local().role == TopicRole::Unregistered && self.ensure_consumer().is_err() {
+            return None;
         }
 
         let header = self.header();
@@ -1545,7 +1580,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 // SAFETY: idx within bounds; slot is in [tail, head) so data is initialized.
                 // T: Copy — bitwise copy, no double-free risk.
                 let msg = unsafe {
-                    let s = &*slot.buffer.get_unchecked(idx);
+                    let s = slot.buffer.get_unchecked(idx);
                     (*s.get()).assume_init_read()
                 };
                 return Some(msg);
@@ -1715,10 +1750,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 // For direct types (CmdVel, i32, etc.), Wire = T → zero overhead.
 // For pool-backed types (Image, PointCloud, DepthImage), Wire = XxxDescriptor.
 
-use crate::memory::TensorPool;
+use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
-use crate::memory::depth_image::DepthImage;
+use crate::memory::TensorPool;
 use horus_types::HorusTensor;
 
 /// Topic — Universal IPC with automatic backend detection.
@@ -1755,14 +1790,8 @@ pub struct Topic<T: TopicMessage> {
 
 // Safety: Topic delegates to RingTopic which handles synchronization.
 // The pool field is Arc (Send+Sync).
-unsafe impl<T: TopicMessage> Send for Topic<T>
-where
-    T::Wire: Send,
-{}
-unsafe impl<T: TopicMessage> Sync for Topic<T>
-where
-    T::Wire: Send + Sync,
-{}
+unsafe impl<T: TopicMessage> Send for Topic<T> where T::Wire: Send {}
+unsafe impl<T: TopicMessage> Sync for Topic<T> where T::Wire: Send + Sync {}
 
 // ============================================================================
 // Shared methods — all TopicMessage types

@@ -14,12 +14,12 @@ use horus::prelude::*;
 node! {
     RobotController {
         pub {
-            cmd_vel: CmdVel -> "robot/cmd_vel",
-            status: Status -> "robot/status",
+            cmd_vel: CmdVel -> "robot.cmd_vel",
+            status: Status -> "robot.status",
         }
 
         sub {
-            sensor_data: SensorData -> "sensors/lidar",
+            sensor_data: SensorData -> "sensors.lidar",
         }
 
         data {
@@ -39,7 +39,7 @@ node! {
         }
 
         shutdown {
-            self.cmd_vel.send(CmdVel::stop()).ok();
+            self.cmd_vel.send(CmdVel::zero()).ok();
             Ok(())
         }
 

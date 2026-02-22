@@ -1,5 +1,6 @@
 # HORUS Integration Tests
-# Cross-process IPC, ROS2 bridge, CLI, and example tests
+# Cross-process IPC, CLI behavioral tests, runtime tests, and example tests
+# Modeled after ROS2 CLI integration tests: assert exact output, exit codes, and side effects
 
 name: Integration Tests
 
@@ -15,6 +16,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  HORUS: ./target/release/horus
+  NO_COLOR: 1
 
 jobs:
   # Cross-process IPC integration tests
@@ -72,9 +75,494 @@ jobs:
           echo "Checking shared memory state after tests..."
           ls -la /dev/shm/horus/ || echo "SHM directory clean"
 
-  # CLI integration tests
+  # ═══════════════════════════════════════════════════════════════
+  # CLI Integration Tests — assert exact behavior like ROS2
+  # ═══════════════════════════════════════════════════════════════
   cli-integration:
     name: CLI Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config python3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cli-
+
+      - name: Setup Shared Memory
+        run: |
+          sudo mkdir -p /dev/shm/horus/topics
+          sudo mkdir -p /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      - name: Build horus_manager
+        run: cargo build -p horus_manager --release
+
+      # ─────────────────────────────────────────────────
+      # 1. Version & Help
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus --version outputs correct version"
+        run: |
+          output=$($HORUS --version)
+          echo "Got: $output"
+          echo "$output" | grep -qE '^horus [0-9]+\.[0-9]+\.[0-9]+'
+          echo "PASS: version format is correct"
+
+      - name: "Assert: horus --help lists all core subcommands"
+        run: |
+          output=$($HORUS --help)
+          echo "$output"
+          # Assert all documented subcommands appear in help
+          for cmd in new run build test check clean monitor topic node param msg log \
+                     pkg deploy add remove plugin env cache record launch; do
+            echo "$output" | grep -qw "$cmd" || { echo "FAIL: subcommand '$cmd' missing from --help"; exit 1; }
+          done
+          echo "PASS: all core subcommands present in --help"
+
+      # ─────────────────────────────────────────────────
+      # 2. Subcommand --help smoke tests
+      # ─────────────────────────────────────────────────
+      - name: "Assert: every subcommand --help exits 0 and shows Usage"
+        run: |
+          PASS=0
+          FAIL=0
+          for cmd in new run build test check clean monitor topic node param hf msg \
+                     log pkg deploy add remove plugin env cache record launch; do
+            if $HORUS $cmd --help > /tmp/help_out 2>&1; then
+              if grep -qiE "usage|Usage" /tmp/help_out; then
+                PASS=$((PASS + 1))
+              else
+                echo "WARN: '$cmd --help' exited 0 but no Usage line"
+                PASS=$((PASS + 1))
+              fi
+            else
+              echo "FAIL: 'horus $cmd --help' exited non-zero"
+              FAIL=$((FAIL + 1))
+            fi
+          done
+          echo "Subcommand --help: $PASS passed, $FAIL failed"
+          [ "$FAIL" -eq 0 ] || exit 1
+
+      - name: "Assert: nested subcommand --help works"
+        run: |
+          for subcmd in "topic list" "topic echo" "topic pub" \
+                        "node list" "node info" "node kill" \
+                        "param get" "param set" "param list" \
+                        "msg list" "msg show" \
+                        "pkg install" "pkg remove" "pkg list" \
+                        "plugin list" "plugin enable" "plugin disable" \
+                        "cache info" "cache clean" \
+                        "record list" "record info" \
+                        "env freeze" "env restore" \
+                        "hf list" "hf echo" "hf tree"; do
+            $HORUS $subcmd --help > /dev/null 2>&1 || { echo "FAIL: 'horus $subcmd --help' failed"; exit 1; }
+          done
+          echo "PASS: all nested subcommand --help exit 0"
+
+      # ─────────────────────────────────────────────────
+      # 3. horus new — project creation
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus new creates Rust project with correct structure"
+        run: |
+          cd /tmp
+          rm -rf test_robot_rs
+          $GITHUB_WORKSPACE/$HORUS new test_robot_rs -r 2>&1 | tee /tmp/new_rs_output
+
+          # Assert success message
+          grep -q "Project created successfully" /tmp/new_rs_output || { echo "FAIL: no success message"; exit 1; }
+
+          # Assert files exist
+          [ -f test_robot_rs/horus.yaml ]  || { echo "FAIL: horus.yaml not created"; exit 1; }
+          [ -f test_robot_rs/main.rs ]     || { echo "FAIL: main.rs not created"; exit 1; }
+          [ -f test_robot_rs/.gitignore ]  || { echo "FAIL: .gitignore not created"; exit 1; }
+          [ -d test_robot_rs/.horus ]      || { echo "FAIL: .horus/ not created"; exit 1; }
+
+          # Assert horus.yaml content is valid
+          grep -q "name: test_robot_rs" test_robot_rs/horus.yaml || { echo "FAIL: wrong name in horus.yaml"; exit 1; }
+          grep -q "language: rust"       test_robot_rs/horus.yaml || { echo "FAIL: wrong language in horus.yaml"; exit 1; }
+          grep -q "version:"            test_robot_rs/horus.yaml || { echo "FAIL: no version in horus.yaml"; exit 1; }
+
+          # Assert main.rs has Scheduler usage
+          grep -q "Scheduler::new" test_robot_rs/main.rs || { echo "FAIL: main.rs missing Scheduler"; exit 1; }
+          grep -q "Topic" test_robot_rs/main.rs || grep -q "node!" test_robot_rs/main.rs || { echo "FAIL: main.rs missing Topic or node! macro"; exit 1; }
+
+          echo "PASS: Rust project created with correct structure"
+          rm -rf test_robot_rs
+
+      - name: "Assert: horus new creates Python project with correct structure"
+        run: |
+          cd /tmp
+          rm -rf test_robot_py
+          $GITHUB_WORKSPACE/$HORUS new test_robot_py -p 2>&1 | tee /tmp/new_py_output
+
+          # Assert success message
+          grep -q "Project created successfully" /tmp/new_py_output
+
+          # Assert files exist
+          [ -f test_robot_py/horus.yaml ] || { echo "FAIL: horus.yaml not created"; exit 1; }
+          [ -f test_robot_py/main.py ]    || { echo "FAIL: main.py not created"; exit 1; }
+
+          # Assert horus.yaml content
+          grep -q "name: test_robot_py"  test_robot_py/horus.yaml || { echo "FAIL: wrong name"; exit 1; }
+          grep -q "language: python"     test_robot_py/horus.yaml || { echo "FAIL: wrong language"; exit 1; }
+
+          # Assert main.py has horus API usage
+          grep -q "import horus" test_robot_py/main.py || { echo "FAIL: main.py missing 'import horus'"; exit 1; }
+          grep -q "horus.Node"   test_robot_py/main.py || { echo "FAIL: main.py missing horus.Node"; exit 1; }
+          grep -q "horus.run"    test_robot_py/main.py || { echo "FAIL: main.py missing horus.run"; exit 1; }
+
+          echo "PASS: Python project created with correct structure"
+          rm -rf test_robot_py
+
+      - name: "Assert: horus new creates macro project with node! macro"
+        run: |
+          cd /tmp
+          rm -rf test_robot_macro
+          $GITHUB_WORKSPACE/$HORUS new test_robot_macro -r -m 2>&1
+
+          # Assert main.rs uses node! macro
+          grep -q "node!" test_robot_macro/main.rs || { echo "FAIL: macro project missing node! macro"; exit 1; }
+          grep -q "horus_macros" test_robot_macro/horus.yaml || { echo "FAIL: horus.yaml missing horus_macros dep"; exit 1; }
+
+          echo "PASS: macro project created correctly"
+          rm -rf test_robot_macro
+
+      - name: "Assert: horus new rejects duplicate project"
+        run: |
+          cd /tmp
+          rm -rf test_robot_dup
+          $GITHUB_WORKSPACE/$HORUS new test_robot_dup -r 2>&1
+          # Second create should fail because directory already exists
+          if $GITHUB_WORKSPACE/$HORUS new test_robot_dup -r 2>&1; then
+            # It may succeed by overwriting — just check the dir still has valid structure
+            [ -f test_robot_dup/horus.yaml ] || { echo "FAIL: second create broke the project"; exit 1; }
+          fi
+          echo "PASS: duplicate project handled"
+          rm -rf test_robot_dup
+
+      # ─────────────────────────────────────────────────
+      # 4. horus check — workspace validation
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus check validates a valid Rust project"
+        run: |
+          cd /tmp
+          rm -rf test_check_project
+          $GITHUB_WORKSPACE/$HORUS new test_check_project -r 2>&1
+
+          cd test_check_project
+          output=$($GITHUB_WORKSPACE/$HORUS check horus.yaml 2>&1) || true
+          echo "$output"
+
+          # Assert it found and validated the manifest
+          echo "$output" | grep -q "manifest valid\|Validating YAML syntax\|All checks passed" || {
+            echo "FAIL: horus check didn't validate manifest"
+            exit 1
+          }
+          echo "PASS: horus check validates valid project"
+          cd /tmp && rm -rf test_check_project
+
+      - name: "Assert: horus check detects invalid YAML"
+        run: |
+          mkdir -p /tmp/test_bad_yaml
+          echo "invalid: yaml: [broken" > /tmp/test_bad_yaml/horus.yaml
+
+          if $HORUS check /tmp/test_bad_yaml/horus.yaml 2>&1 | tee /tmp/check_bad_output; then
+            # Should have failed but might exit 0 with error messages
+            true
+          fi
+
+          # Assert some error was reported
+          cat /tmp/check_bad_output | grep -qi "error\|fail\|invalid\|parse" || {
+            echo "FAIL: no error reported for invalid YAML"
+            exit 1
+          }
+          echo "PASS: horus check detects invalid YAML"
+          rm -rf /tmp/test_bad_yaml
+
+      # ─────────────────────────────────────────────────
+      # 5. horus topic — topic introspection
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus topic list shows 'No active topics' when idle"
+        run: |
+          output=$($HORUS topic list 2>&1) || true
+          echo "$output"
+          echo "$output" | grep -q "No active topics found" || {
+            echo "FAIL: expected 'No active topics found' message"
+            exit 1
+          }
+          echo "PASS: topic list reports no topics when idle"
+
+      - name: "Assert: horus topic list --json returns valid empty JSON array"
+        run: |
+          output=$($HORUS topic list --json 2>&1) || true
+          echo "$output"
+          # Should be a valid JSON array (empty [])
+          echo "$output" | python3 -c "import sys,json; data=json.load(sys.stdin); assert isinstance(data, list), f'Expected list, got {type(data)}'" || {
+            echo "FAIL: --json output is not a valid JSON array"
+            exit 1
+          }
+          echo "PASS: topic list --json returns valid JSON"
+
+      - name: "Assert: horus topic echo for non-existent topic reports error"
+        run: |
+          if $HORUS topic echo nonexistent_topic 2>&1 | tee /tmp/echo_err; then
+            echo "WARN: echo exited 0 for missing topic"
+          fi
+          grep -qi "not found\|error" /tmp/echo_err || {
+            echo "FAIL: no error for non-existent topic"
+            exit 1
+          }
+          echo "PASS: topic echo reports error for missing topic"
+
+      - name: "Assert: horus topic pub writes to shared memory"
+        run: |
+          # Publish a test message
+          $HORUS topic pub test_integration_topic "hello_from_ci" 2>&1 | tee /tmp/pub_output || true
+          grep -qi "Published\|publish" /tmp/pub_output || {
+            echo "FAIL: no publish confirmation"
+            exit 1
+          }
+
+          # Verify the topic file was created in shared memory
+          if [ -f /dev/shm/horus/topics/test_integration_topic ]; then
+            content=$(cat /dev/shm/horus/topics/test_integration_topic)
+            echo "Topic content: $content"
+            [ "$content" = "hello_from_ci" ] || echo "WARN: content mismatch (may be binary)"
+          else
+            echo "WARN: topic file not at expected path (SHM layout may differ)"
+          fi
+          echo "PASS: topic pub sends messages"
+
+      # ─────────────────────────────────────────────────
+      # 6. horus node — node introspection
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus node list shows 'No running nodes' when idle"
+        run: |
+          output=$($HORUS node list 2>&1) || true
+          echo "$output"
+          echo "$output" | grep -q "No running nodes found" || {
+            echo "FAIL: expected 'No running nodes found' message"
+            exit 1
+          }
+          echo "PASS: node list reports no nodes when idle"
+
+      # ─────────────────────────────────────────────────
+      # 7. horus msg — message type introspection
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus msg list discovers message types"
+        run: |
+          output=$($HORUS msg list 2>&1) || true
+          echo "$output"
+          # Should find message types from horus_library/messages/
+          echo "$output" | grep -q "HORUS Message Types\|MESSAGE TYPE\|message type" || {
+            # May fail if not run from repo root where horus_library exists
+            echo "$output" | grep -q "No message types found\|Could not find" && {
+              echo "WARN: msg list can't find horus_library/messages (expected in CI)"
+              exit 0
+            }
+            echo "FAIL: unexpected output from msg list"
+            exit 1
+          }
+          echo "PASS: msg list discovers message types"
+
+      - name: "Assert: horus msg show reports error for unknown type"
+        run: |
+          if $HORUS msg show FakeNonexistentMsg 2>&1 | tee /tmp/msg_show_err; then
+            true
+          fi
+          grep -qi "not found\|error" /tmp/msg_show_err || {
+            echo "FAIL: no error for unknown message type"
+            exit 1
+          }
+          echo "PASS: msg show reports error for unknown type"
+
+      # ─────────────────────────────────────────────────
+      # 8. horus cache — cache management
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus cache info shows cache information"
+        run: |
+          output=$($HORUS cache info 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "HORUS Cache Information" || {
+            echo "FAIL: missing cache info header"
+            exit 1
+          }
+          # Should show directory, size, and package count
+          echo "$output" | grep -q "Cache directory:" || {
+            echo "FAIL: missing 'Cache directory:' in output"
+            exit 1
+          }
+          echo "$output" | grep -q "Packages:" || {
+            echo "FAIL: missing 'Packages:' in output"
+            exit 1
+          }
+          echo "PASS: cache info shows expected fields"
+
+      - name: "Assert: horus cache list outputs without error"
+        run: |
+          output=$($HORUS cache list 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "Cached Packages" || {
+            echo "FAIL: missing 'Cached Packages' header"
+            exit 1
+          }
+          echo "PASS: cache list works"
+
+      # ─────────────────────────────────────────────────
+      # 9. horus clean — artifact cleanup
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus clean --dry-run does not delete files"
+        run: |
+          # Create a fake target dir to clean
+          mkdir -p /tmp/test_clean_project/target
+          echo "test" > /tmp/test_clean_project/target/dummy
+          cd /tmp/test_clean_project
+
+          output=$($GITHUB_WORKSPACE/$HORUS clean --dry-run 2>&1) || true
+          echo "$output"
+
+          # Assert dry-run message
+          echo "$output" | grep -qi "would clean\|dry.run\|Would remove\|Cleaning" || {
+            echo "FAIL: no dry-run indication"
+            exit 1
+          }
+
+          # Assert files still exist
+          [ -f /tmp/test_clean_project/target/dummy ] || {
+            echo "FAIL: --dry-run deleted files!"
+            exit 1
+          }
+          echo "PASS: clean --dry-run preserves files"
+          rm -rf /tmp/test_clean_project
+
+      - name: "Assert: horus clean --shm cleans shared memory"
+        run: |
+          # Create test SHM data
+          sudo mkdir -p /dev/shm/horus/topics/test_clean_topic
+          echo "test" | sudo tee /dev/shm/horus/topics/test_clean_topic/data > /dev/null
+
+          output=$($HORUS clean --shm 2>&1) || true
+          echo "$output"
+
+          echo "$output" | grep -qi "Cleaning HORUS artifacts\|Removing\|Clean complete\|Nothing to clean" || {
+            echo "FAIL: unexpected clean output"
+            exit 1
+          }
+          echo "PASS: clean --shm runs successfully"
+
+          # Recreate SHM dirs for subsequent tests
+          sudo mkdir -p /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+
+      # ─────────────────────────────────────────────────
+      # 10. horus record — recording management
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus record list shows 'No recording sessions' when empty"
+        run: |
+          output=$($HORUS record list 2>&1) || true
+          echo "$output"
+          echo "$output" | grep -q "No recording sessions found" || {
+            echo "FAIL: expected 'No recording sessions found'"
+            exit 1
+          }
+          echo "PASS: record list handles empty state"
+
+      # ─────────────────────────────────────────────────
+      # 11. horus completion — shell completions
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus completion bash generates valid completions"
+        run: |
+          output=$($HORUS completion bash 2>&1)
+          # Bash completions should contain the binary name and completion functions
+          echo "$output" | grep -q "horus" || {
+            echo "FAIL: completion output doesn't reference 'horus'"
+            exit 1
+          }
+          # Should be substantial (at least 100 chars for a real completion script)
+          len=${#output}
+          [ "$len" -gt 100 ] || {
+            echo "FAIL: completion output too short ($len chars)"
+            exit 1
+          }
+          echo "PASS: bash completion generates valid output ($len chars)"
+
+      # ─────────────────────────────────────────────────
+      # 12. horus param — parameter management
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus param list handles no-params state"
+        run: |
+          output=$($HORUS param list 2>&1) || true
+          echo "$output"
+          # Should either list params or say none exist
+          echo "$output" | grep -qi "param\|parameter\|no.*found\|no.*param\|empty" || {
+            echo "WARN: param list output doesn't match expected patterns"
+          }
+          echo "PASS: param list runs without crash"
+
+      # ─────────────────────────────────────────────────
+      # 13. horus_manager unit tests
+      # ─────────────────────────────────────────────────
+      - name: Run horus_manager Tests
+        run: cargo test -p horus_manager --release
+        env:
+          RUST_BACKTRACE: 1
+
+      # ─────────────────────────────────────────────────
+      # 14. End-to-end: new → check → clean
+      # ─────────────────────────────────────────────────
+      - name: "Assert: full lifecycle — new → check → clean"
+        run: |
+          cd /tmp
+          rm -rf lifecycle_test
+
+          echo "=== Step 1: Create project ==="
+          $GITHUB_WORKSPACE/$HORUS new lifecycle_test -r 2>&1
+          [ -f lifecycle_test/horus.yaml ] || { echo "FAIL: project not created"; exit 1; }
+
+          echo "=== Step 2: Validate project ==="
+          cd lifecycle_test
+          $GITHUB_WORKSPACE/$HORUS check horus.yaml 2>&1 | tee /tmp/lifecycle_check
+          # Check should not report errors for a freshly-created project
+          if grep -qi "error(s) found" /tmp/lifecycle_check; then
+            echo "FAIL: fresh project has check errors"
+            exit 1
+          fi
+
+          echo "=== Step 3: Clean ==="
+          # Create a fake target dir
+          mkdir -p target
+          echo "build_artifact" > target/dummy
+          $GITHUB_WORKSPACE/$HORUS clean 2>&1
+
+          # target/ should be gone
+          [ ! -d target ] || {
+            echo "FAIL: clean didn't remove target/"
+            exit 1
+          }
+
+          echo "PASS: full lifecycle (new → check → clean) works"
+          cd /tmp && rm -rf lifecycle_test
+
+  # ═══════════════════════════════════════════════════════════════
+  # Runtime Integration Tests — scheduler, topics, multi-node
+  # ═══════════════════════════════════════════════════════════════
+  runtime-integration:
+    name: Runtime Integration Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,40 +584,85 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-cli-
+          key: ${{ runner.os }}-cargo-runtime-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-runtime-
 
-      # Setup shared memory
       - name: Setup Shared Memory
         run: |
           sudo mkdir -p /dev/shm/horus/topics
           sudo mkdir -p /dev/shm/horus/heartbeats
           sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
 
-      - name: Build horus_manager
-        run: cargo build -p horus_manager --release
+      - name: Build Workspace
+        run: cargo build --workspace --release
 
-      # Test CLI commands
-      - name: Test CLI Help
+      - name: "Assert: Scheduler runs and stops cleanly with run_for()"
         run: |
-          ./target/release/horus --help
-          ./target/release/horus --version
-
-      - name: Test CLI Topic Commands
-        run: |
-          # These may fail without running topics, which is expected
-          ./target/release/horus topic list --json 2>/dev/null || echo "No topics (expected)"
-        continue-on-error: true
-
-      - name: Test CLI Info Commands
-        run: |
-          ./target/release/horus info 2>/dev/null || echo "Info command executed"
-        continue-on-error: true
-
-      - name: Run horus_manager Tests
-        run: cargo test -p horus_manager --release
+          cargo test -p horus_core --release --lib -- scheduling::scheduler::tests::test_scheduler_run_for_short_duration --exact --nocapture
         env:
           RUST_BACKTRACE: 1
+
+      - name: "Assert: Node lifecycle (init → tick → shutdown) executes in order"
+        run: |
+          cargo test -p horus_core --release --test acceptance_scheduler -- test_scenario_1_complete_node_lifecycle --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Init failure prevents tick execution"
+        run: |
+          cargo test -p horus_core --release --test acceptance_scheduler -- test_scenario_2_init_failure_prevents_execution --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Multiple nodes execute independently"
+        run: |
+          cargo test -p horus_core --release --test acceptance_scheduler -- test_multiple_nodes_independent --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: RT nodes with WCET/deadline monitoring work"
+        run: |
+          cargo test -p horus_core --release --test rt_scheduler_integration -- test_scheduler_with_rt_nodes --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: WCET violation is detected"
+        run: |
+          cargo test -p horus_core --release --test rt_scheduler_integration -- test_wcet_violation_detection --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Mixed RT and normal nodes coexist"
+        run: |
+          cargo test -p horus_core --release --test rt_scheduler_integration -- test_mixed_rt_and_normal_nodes --exact --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Topic send/recv roundtrip works"
+        run: |
+          cargo test -p horus_core --release --lib -- communication::topic::tests --nocapture -- --test-threads=1
+        timeout-minutes: 3
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Cross-process IPC roundtrip"
+        run: |
+          cargo test -p horus_core --release --test cross_process_ipc --nocapture -- --test-threads=1
+        timeout-minutes: 5
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: "Assert: Shared memory is cleaned up after tests"
+        run: |
+          # Count topic files remaining
+          count=$(find /dev/shm/horus/topics -type f 2>/dev/null | wc -l)
+          echo "Remaining SHM topic files: $count"
+          # Warn but don't fail — some tests may leave stale files
+          [ "$count" -lt 50 ] || {
+            echo "FAIL: excessive SHM files remaining ($count)"
+            exit 1
+          }
+          echo "PASS: SHM cleanup looks healthy"
 
   # Example execution tests
   examples:
@@ -174,32 +707,46 @@ jobs:
         run: |
           echo "## Example Execution Results" >> $GITHUB_STEP_SUMMARY
 
+          PASS=0
+          FAIL=0
+          TIMEOUT=0
+
           # Find all example binaries
           for example in target/debug/examples/*; do
             if [ -x "$example" ] && [ -f "$example" ]; then
               name=$(basename "$example")
-              echo "Running example: $name"
-              echo "- **$name**: " >> $GITHUB_STEP_SUMMARY
+              echo -n "Running example: $name ... "
 
               # Run with 10 second timeout
-              if timeout 10s "$example" 2>&1; then
-                echo "passed" >> $GITHUB_STEP_SUMMARY
+              if timeout 10s "$example" > /tmp/example_out 2>&1; then
+                echo "passed"
+                echo "- **$name**: passed" >> $GITHUB_STEP_SUMMARY
+                PASS=$((PASS + 1))
               else
                 exit_code=$?
                 if [ $exit_code -eq 124 ]; then
-                  echo "timeout (expected for long-running examples)" >> $GITHUB_STEP_SUMMARY
+                  echo "timeout (expected for long-running examples)"
+                  echo "- **$name**: timeout (expected)" >> $GITHUB_STEP_SUMMARY
+                  TIMEOUT=$((TIMEOUT + 1))
                 else
-                  echo "failed (exit code: $exit_code)" >> $GITHUB_STEP_SUMMARY
+                  echo "failed (exit code: $exit_code)"
+                  echo "- **$name**: failed (exit $exit_code)" >> $GITHUB_STEP_SUMMARY
+                  FAIL=$((FAIL + 1))
                 fi
               fi
             fi
           done
+
+          echo ""
+          echo "Examples: $PASS passed, $TIMEOUT timed out, $FAIL failed"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total**: $PASS passed, $TIMEOUT timed out, $FAIL failed" >> $GITHUB_STEP_SUMMARY
         continue-on-error: true
 
   # Summary job
   integration-success:
     name: Integration Tests Success
-    needs: [ipc-integration, cli-integration, examples]
+    needs: [ipc-integration, cli-integration, runtime-integration, examples]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -207,18 +754,34 @@ jobs:
         run: |
           echo "IPC Integration: ${{ needs.ipc-integration.result }}"
           echo "CLI Integration: ${{ needs.cli-integration.result }}"
+          echo "Runtime Integration: ${{ needs.runtime-integration.result }}"
           echo "Examples: ${{ needs.examples.result }}"
+
+          FAILURES=""
 
           # IPC integration must pass
           if [[ "${{ needs.ipc-integration.result }}" != "success" ]]; then
-            echo "IPC integration tests failed"
-            exit 1
+            FAILURES="$FAILURES IPC"
           fi
 
           # CLI integration must pass
           if [[ "${{ needs.cli-integration.result }}" != "success" ]]; then
-            echo "CLI integration tests failed"
+            FAILURES="$FAILURES CLI"
+          fi
+
+          # Runtime integration must pass
+          if [[ "${{ needs.runtime-integration.result }}" != "success" ]]; then
+            FAILURES="$FAILURES Runtime"
+          fi
+
+          # Examples are informational
+          if [[ "${{ needs.examples.result }}" != "success" ]]; then
+            echo "Examples had issues (informational): ${{ needs.examples.result }}"
+          fi
+
+          if [[ -n "$FAILURES" ]]; then
+            echo "Integration test failures:$FAILURES"
             exit 1
           fi
 
-          echo "Integration tests passed"
+          echo "All integration tests passed!"

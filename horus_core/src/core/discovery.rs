@@ -126,5 +126,3 @@ pub fn announce_stopped(name: &str) {
         topic.send(announcement);
     }
 }
-
-

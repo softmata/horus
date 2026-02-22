@@ -11,7 +11,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::net::UdpSocket;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Telemetry metric types
@@ -300,25 +299,6 @@ impl TelemetryManager {
         println!("[TELEMETRY] ========================");
         Ok(())
     }
-
-    /// Get current metrics snapshot
-    pub fn get_snapshot(&self) -> TelemetrySnapshot {
-        TelemetrySnapshot {
-            timestamp_secs: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            scheduler_name: self.scheduler_name.clone(),
-            uptime_secs: self.start_time.elapsed().as_secs_f64(),
-            metrics: self.metrics.values().cloned().collect(),
-        }
-    }
-
-    /// Clear all metrics
-    pub fn clear(&mut self) {
-        self.metrics.clear();
-    }
-
 }
 
 impl Default for TelemetryManager {
@@ -326,9 +306,6 @@ impl Default for TelemetryManager {
         Self::new(TelemetryEndpoint::Disabled, 1000)
     }
 }
-
-/// Thread-safe telemetry wrapper
-pub(crate) type SharedTelemetry = Arc<Mutex<TelemetryManager>>;
 
 #[cfg(test)]
 mod tests {

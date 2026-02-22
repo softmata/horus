@@ -1,14 +1,12 @@
 //! Python bindings for HORUS DepthImage type
 
-use std::ffi::c_void;
-
 use horus_core::memory::DepthImage;
 use horus_types::TensorDtype;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 
-use crate::dlpack_utils::{dtype_to_str, make_dlpack_capsule};
+use crate::dlpack_utils;
 
 /// Parse a depth dtype string.
 fn parse_depth_dtype(s: &str) -> PyResult<TensorDtype> {
@@ -16,7 +14,8 @@ fn parse_depth_dtype(s: &str) -> PyResult<TensorDtype> {
         "float32" | "f32" | "float" | "meters" => Ok(TensorDtype::F32),
         "uint16" | "u16" | "millimeters" | "mm" => Ok(TensorDtype::U16),
         _ => Err(PyValueError::new_err(format!(
-            "Unknown depth dtype: '{}'. Valid: float32 (meters), uint16 (millimeters)", s
+            "Unknown depth dtype: '{}'. Valid: float32 (meters), uint16 (millimeters)",
+            s
         ))),
     }
 }
@@ -28,7 +27,8 @@ fn infer_depth_dtype(dtype_name: &str) -> PyResult<TensorDtype> {
         "uint16" => Ok(TensorDtype::U16),
         "float64" => Ok(TensorDtype::F32), // will convert
         _ => Err(PyValueError::new_err(format!(
-            "Cannot infer depth dtype from '{}'. Expected float32 or uint16.", dtype_name,
+            "Cannot infer depth dtype from '{}'. Expected float32 or uint16.",
+            dtype_name,
         ))),
     }
 }
@@ -68,7 +68,8 @@ impl PyDepthImage {
 
         if shape_tuple.len() != 2 {
             return Err(PyValueError::new_err(format!(
-                "Expected 2D array (H, W), got shape {:?}", shape_tuple
+                "Expected 2D array (H, W), got shape {:?}",
+                shape_tuple
             )));
         }
 
@@ -97,7 +98,8 @@ impl PyDepthImage {
         if bytes.len() != expected {
             return Err(PyValueError::new_err(format!(
                 "Array data size ({}) doesn't match depth image size ({})",
-                bytes.len(), expected,
+                bytes.len(),
+                expected,
             )));
         }
 
@@ -108,38 +110,23 @@ impl PyDepthImage {
     /// Create a DepthImage from a PyTorch tensor (CPU only).
     #[staticmethod]
     fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let device = tensor.getattr("device")?;
-        let device_type: String = device.getattr("type")?.extract()?;
-        if device_type != "cpu" {
-            return Err(PyValueError::new_err(
-                "Tensor must be on CPU. Call tensor.cpu() first.",
-            ));
-        }
-        let arr = tensor.call_method0("numpy")?;
+        let arr = dlpack_utils::torch_to_numpy(tensor)?;
         Self::from_numpy(py, &arr)
     }
 
     // === ML Framework Conversions ===
 
     fn to_numpy<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = slf.borrow();
-        if inner.inner.is_cuda() {
-            return Err(PyTypeError::new_err(
-                "Cannot create numpy array from CUDA depth image.",
-            ));
-        }
-        let np = py.import("numpy")?;
-        np.call_method1("asarray", (slf,))
+        let is_cuda = slf.borrow().inner.is_cuda();
+        dlpack_utils::to_numpy_impl(slf.as_any(), py, is_cuda, "depth image")
     }
 
     fn to_torch<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let torch = py.import("torch")?;
-        torch.call_method1("from_dlpack", (slf,))
+        dlpack_utils::to_torch_impl(slf.as_any(), py)
     }
 
     fn to_jax<'py>(slf: &Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let jax_dlpack = py.import("jax.dlpack")?;
-        jax_dlpack.call_method1("from_dlpack", (slf,))
+        dlpack_utils::to_jax_impl(slf.as_any(), py)
     }
 
     // === DLPack Protocol ===
@@ -148,23 +135,13 @@ impl PyDepthImage {
     fn __dlpack__(&self, py: Python<'_>, stream: Option<i64>) -> PyResult<Py<PyAny>> {
         let _ = stream;
         let tensor = self.inner.descriptor().tensor();
-
-        let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
-        let elem_size = tensor.dtype.element_size() as i64;
-        let strides: Vec<i64> = tensor.strides().iter().map(|&x| (x as i64) / elem_size).collect();
-
-        let data_ptr = if self.inner.is_cuda() {
-            u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
-        } else {
-            self.inner.pool().data_ptr(tensor) as *mut c_void
-        };
-
-        make_dlpack_capsule(py, data_ptr, &shape, &strides, tensor.dtype, tensor.device())
+        let (data_ptr, shape, strides, dtype, device) =
+            dlpack_utils::prepare_dlpack_args(tensor, self.inner.pool());
+        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, dtype, device)
     }
 
     fn __dlpack_device__(&self) -> (i32, i32) {
-        let device = self.inner.descriptor().tensor().device();
-        (device.to_dlpack_device_type(), device.to_dlpack_device_id())
+        dlpack_utils::dlpack_device_tuple(self.inner.descriptor().tensor())
     }
 
     // === Numpy Array Interface ===
@@ -198,15 +175,18 @@ impl PyDepthImage {
 
     /// Get depth at pixel (x, y) in meters.
     fn get_depth(&self, x: u32, y: u32) -> PyResult<f32> {
-        self.inner.get_depth(x, y).ok_or_else(|| {
-            PyValueError::new_err(format!("Pixel ({}, {}) out of bounds", x, y))
-        })
+        self.inner
+            .get_depth(x, y)
+            .ok_or_else(|| PyValueError::new_err(format!("Pixel ({}, {}) out of bounds", x, y)))
     }
 
     /// Set depth at pixel (x, y) in meters.
     fn set_depth(&mut self, x: u32, y: u32, value: f32) -> PyResult<()> {
         if x >= self.inner.width() || y >= self.inner.height() {
-            return Err(PyValueError::new_err(format!("Pixel ({}, {}) out of bounds", x, y)));
+            return Err(PyValueError::new_err(format!(
+                "Pixel ({}, {}) out of bounds",
+                x, y
+            )));
         }
         self.inner.set_depth(x, y, value);
         Ok(())
@@ -220,40 +200,78 @@ impl PyDepthImage {
     // === Properties ===
 
     #[getter]
-    fn height(&self) -> u32 { self.inner.height() }
+    fn height(&self) -> u32 {
+        self.inner.height()
+    }
     #[getter]
-    fn width(&self) -> u32 { self.inner.width() }
+    fn width(&self) -> u32 {
+        self.inner.width()
+    }
     #[getter]
-    fn dtype(&self) -> &'static str { dtype_to_str(self.inner.dtype()) }
+    fn dtype(&self) -> &'static str {
+        dlpack_utils::dtype_to_str(self.inner.dtype())
+    }
     #[getter]
-    fn nbytes(&self) -> u64 { self.inner.nbytes() }
+    fn nbytes(&self) -> u64 {
+        self.inner.nbytes()
+    }
     #[getter]
-    fn frame_id(&self) -> &str { self.inner.frame_id() }
+    fn frame_id(&self) -> &str {
+        self.inner.frame_id()
+    }
     #[getter]
-    fn timestamp_ns(&self) -> u64 { self.inner.timestamp_ns() }
+    fn timestamp_ns(&self) -> u64 {
+        self.inner.timestamp_ns()
+    }
     #[getter]
-    fn depth_scale(&self) -> f32 { self.inner.depth_scale() }
+    fn depth_scale(&self) -> f32 {
+        self.inner.depth_scale()
+    }
 
-    fn set_frame_id(&mut self, id: &str) { self.inner.set_frame_id(id); }
-    fn set_timestamp_ns(&mut self, ts: u64) { self.inner.set_timestamp_ns(ts); }
-    fn is_meters(&self) -> bool { self.inner.is_meters() }
-    fn is_millimeters(&self) -> bool { self.inner.is_millimeters() }
-    fn is_cpu(&self) -> bool { self.inner.is_cpu() }
-    fn is_cuda(&self) -> bool { self.inner.is_cuda() }
+    fn set_frame_id(&mut self, id: &str) {
+        self.inner.set_frame_id(id);
+    }
+    fn set_timestamp_ns(&mut self, ts: u64) {
+        self.inner.set_timestamp_ns(ts);
+    }
+    fn is_meters(&self) -> bool {
+        self.inner.is_meters()
+    }
+    fn is_millimeters(&self) -> bool {
+        self.inner.is_millimeters()
+    }
+    fn is_cpu(&self) -> bool {
+        self.inner.is_cpu()
+    }
+    fn is_cuda(&self) -> bool {
+        self.inner.is_cuda()
+    }
 
     fn __repr__(&self) -> String {
-        let kind = if self.inner.is_meters() { "meters" } else { "millimeters" };
+        let kind = if self.inner.is_meters() {
+            "meters"
+        } else {
+            "millimeters"
+        };
         format!(
             "DepthImage(height={}, width={}, dtype='{}', format={})",
-            self.inner.height(), self.inner.width(),
-            dtype_to_str(self.inner.dtype()), kind,
+            self.inner.height(),
+            self.inner.width(),
+            dlpack_utils::dtype_to_str(self.inner.dtype()),
+            kind,
         )
     }
 
-    fn __str__(&self) -> String { self.__repr__() }
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
 }
 
 impl PyDepthImage {
-    pub fn from_inner(inner: DepthImage) -> Self { Self { inner } }
-    pub fn inner(&self) -> &DepthImage { &self.inner }
+    pub fn from_inner(inner: DepthImage) -> Self {
+        Self { inner }
+    }
+    pub fn inner(&self) -> &DepthImage {
+        &self.inner
+    }
 }

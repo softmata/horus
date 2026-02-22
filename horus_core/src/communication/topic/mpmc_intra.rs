@@ -5,11 +5,9 @@
 //! - Producer: CAS head to claim write slot, write data, set slot.sequence = head + 1
 //! - Consumer: CAS tail to claim read slot, read data, set slot.sequence = tail + capacity
 
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::primitives::{CachePadded, MpSlot};
+use super::primitives::{alloc_mp_slots, CachePadded, MpSlot};
 
 /// Heap-backed MPMC ring buffer for N producers, N consumers.
 pub(crate) struct MpmcRing<T> {
@@ -26,28 +24,19 @@ unsafe impl<T: Send + Sync> Sync for MpmcRing<T> {}
 impl<T> MpmcRing<T> {
     pub fn new(capacity: u32) -> Self {
         let cap = capacity.next_power_of_two() as usize;
-        let mut slots = Vec::with_capacity(cap);
-        for i in 0..cap {
-            slots.push(MpSlot {
-                sequence: AtomicU64::new(i as u64),
-                data: UnsafeCell::new(MaybeUninit::uninit()),
-            });
-        }
         Self {
             head: CachePadded(AtomicU64::new(0)),
             tail: CachePadded(AtomicU64::new(0)),
             mask: (cap - 1) as u64,
             capacity: cap as u64,
-            slots: slots.into_boxed_slice(),
+            slots: alloc_mp_slots(cap),
         }
     }
 
     /// Check how many messages are pending in the ring.
     #[inline]
     pub fn pending_count(&self) -> u64 {
-        let head = self.head.0.load(Ordering::Acquire);
-        let tail = self.tail.0.load(Ordering::Acquire);
-        head.wrapping_sub(tail)
+        ring_pending_count!(self)
     }
 
     /// Try to send (multiple producers — CAS on head). Delegates to shared `mp_try_send!` macro.
@@ -136,23 +125,6 @@ impl<T> MpmcRing<T> {
 
 impl<T> Drop for MpmcRing<T> {
     fn drop(&mut self) {
-        let head = *self.head.0.get_mut();
-        let tail = *self.tail.0.get_mut();
-        // Drop all initialized but unconsumed messages in [tail, head).
-        // Check sequence numbers to handle the edge case where a producer
-        // panicked between CAS-claiming a slot and completing the write.
-        for i in tail..head {
-            let index = (i & self.mask) as usize;
-            let slot = &mut self.slots[index];
-            let seq = *slot.sequence.get_mut();
-            // Slot is fully written when seq == i + 1
-            if seq == i.wrapping_add(1) {
-                // SAFETY: we have &mut self (exclusive access) and the
-                // sequence number confirms the write completed.
-                unsafe {
-                    slot.data.get_mut().assume_init_drop();
-                }
-            }
-        }
+        mp_drop_ring!(self);
     }
 }

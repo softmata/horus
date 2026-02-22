@@ -240,5 +240,4 @@ impl TopicConfig {
         self.capacity = capacity;
         self
     }
-
 }

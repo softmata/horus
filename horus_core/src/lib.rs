@@ -50,7 +50,6 @@ pub mod actions;
 pub mod communication;
 pub mod core;
 pub mod dlpack;
-pub mod driver;
 pub mod error;
 pub mod memory;
 pub mod params;
@@ -59,22 +58,16 @@ pub(crate) mod terminal;
 pub mod types;
 pub(crate) mod utils;
 
-// Re-export commonly used types for easy access
-// Unified Topic API - the single way to create IPC channels
-pub use communication::{PodMessage, Topic, TopicMessage};
+// Re-export user-facing types for easy access
+pub use communication::{PodMessage, Topic};
 pub use core::{
-    announce_started, announce_stopped, detect_isolated_cpus, detect_nohz_full_cpus,
-    get_rt_recommended_cpus, pin_thread_to_core, HealthStatus, LogSummary, Node, NodeAnnouncement,
-    NodeConfig, NodeEvent, NodeInfo, NodeMetrics, NodePresence, NodeState, RtApplyResult, RtConfig,
-    RtConfigBuilder, RtCpuInfo, RtDegradation, RtKernelInfo, RtScheduler, TopicMetadata,
-    DISCOVERY_TOPIC,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeAnnouncement, NodeConfig, NodeEvent,
+    NodeMetrics, NodePresence, NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation,
+    RtNode, RtPriority, RtStats, TopicMetadata,
 };
 pub use error::{HorusError, HorusResult, Result};
 pub use params::RuntimeParams;
 pub use scheduling::Scheduler;
-
-// Re-export driver utilities
-pub use driver::{DriverCategory, DriverStatus, DriversConfig, SingleDriverConfig};
 
 // Re-export action types for easy access
 pub use actions::{

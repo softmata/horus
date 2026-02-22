@@ -29,8 +29,8 @@ mod tests {
         // Write XYZ data: 4 points * 3 floats = 12 floats
         let data = pc.data_mut();
         let floats: &mut [f32] = bytemuck::cast_slice_mut(&mut data[..48]);
-        for i in 0..12 {
-            floats[i] = (i as f32) * 0.1;
+        for (i, val) in floats.iter_mut().enumerate() {
+            *val = (i as f32) * 0.1;
         }
 
         topic.send(&pc);
@@ -41,8 +41,8 @@ mod tests {
 
         let recv_data = recv_pc.data();
         let recv_floats: &[f32] = bytemuck::cast_slice(&recv_data[..48]);
-        for i in 0..12 {
-            assert_eq!(recv_floats[i], (i as f32) * 0.1, "mismatch at {}", i);
+        for (i, val) in recv_floats.iter().enumerate() {
+            assert_eq!(*val, (i as f32) * 0.1, "mismatch at {}", i);
         }
     }
 }

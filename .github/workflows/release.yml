@@ -95,6 +95,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # Publish crates in dependency order
+      - name: Publish horus_types
+        run: cargo publish -p horus_types --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
+
+      - name: Wait for crates.io
+        run: sleep 30
+
       - name: Publish horus_core
         run: cargo publish -p horus_core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true
@@ -111,13 +118,6 @@ jobs:
 
       - name: Publish horus_library
         run: cargo publish -p horus_library --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true
-
-      - name: Wait for crates.io
-        run: sleep 30
-
-      - name: Publish horus_ai
-        run: cargo publish -p horus_ai --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true
 
       - name: Wait for crates.io

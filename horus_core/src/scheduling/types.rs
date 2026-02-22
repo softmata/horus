@@ -55,9 +55,7 @@ impl NodeTier {
     /// Each tier has a sensible default that matches its criticality:
     /// - **UltraFast/Fast**: `Fatal` — these are control-loop nodes; failure = stop.
     /// - **Normal**: `Restart` with exponential backoff (5 attempts, 100ms initial).
-    pub fn default_failure_policy(
-        &self,
-    ) -> super::fault_tolerance::failure_policy::FailurePolicy {
+    pub fn default_failure_policy(&self) -> super::fault_tolerance::failure_policy::FailurePolicy {
         use super::fault_tolerance::failure_policy::FailurePolicy;
         match self {
             NodeTier::UltraFast | NodeTier::Fast => FailurePolicy::Fatal,

@@ -480,8 +480,10 @@ fn test_topics_macro_with_nodes_pub_sub() {
     // usage where nodes in the same process share Topic handles.
 
     // Create shared topic handles (one per topic name, cloned to each node)
-    let motor_topic: horus_core::Topic<MotorCommand> = horus_core::Topic::new(MOTOR_CMD.name()).expect("create MOTOR_CMD");
-    let encoder_topic: horus_core::Topic<EncoderFeedback> = horus_core::Topic::new(ENCODER_FB.name()).expect("create ENCODER_FB");
+    let motor_topic: horus_core::Topic<MotorCommand> =
+        horus_core::Topic::new(MOTOR_CMD.name()).expect("create MOTOR_CMD");
+    let encoder_topic: horus_core::Topic<EncoderFeedback> =
+        horus_core::Topic::new(ENCODER_FB.name()).expect("create ENCODER_FB");
 
     let mut controller = ControllerNode {
         cmd_pub: motor_topic.clone(),
@@ -560,7 +562,8 @@ fn test_topics_macro_roundtrip_with_descriptor() {
         ROUNDTRIP_TOPIC: MotorCommand = "test_roundtrip_motor_cmd",
     }
 
-    let publisher: horus_core::Topic<MotorCommand> = horus_core::Topic::new(ROUNDTRIP_TOPIC.name()).expect("new");
+    let publisher: horus_core::Topic<MotorCommand> =
+        horus_core::Topic::new(ROUNDTRIP_TOPIC.name()).expect("new");
     let subscriber = publisher.clone();
 
     let cmd = MotorCommand {

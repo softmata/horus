@@ -33,7 +33,7 @@ use crate::TensorDtype;
 /// Total:                       336 bytes
 /// ```
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
 pub struct PointCloudDescriptor {
     /// Inner tensor: shape [N, K], data in pool
     inner: HorusTensor,
@@ -61,23 +61,6 @@ pub struct PointCloudDescriptor {
 // 232 + 8 + 32 + 16 + 8 + 1 + 1 + 2 + 32 + 4 = 336, 336 % 8 = 0.
 unsafe impl Zeroable for PointCloudDescriptor {}
 unsafe impl Pod for PointCloudDescriptor {}
-
-impl Default for PointCloudDescriptor {
-    fn default() -> Self {
-        Self {
-            inner: HorusTensor::default(),
-            timestamp_ns: 0,
-            field_names: [[0; 4]; 8],
-            field_offsets: [0; 8],
-            field_dtypes: [0; 8],
-            field_count: 0,
-            is_dense: 0,
-            _pad: [0; 2],
-            frame_id: [0; 32],
-            _reserved: [0; 4],
-        }
-    }
-}
 
 impl PointCloudDescriptor {
     /// Create an XYZ point cloud descriptor.
@@ -259,8 +242,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_xyz() {
-        let tensor =
-            HorusTensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
+        let tensor = HorusTensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
         let pc = PointCloudDescriptor::xyz(tensor);
         assert_eq!(pc.point_count(), 10000);
         assert_eq!(pc.fields_per_point(), 3);
@@ -271,8 +253,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_xyzi() {
-        let tensor =
-            HorusTensor::new(1, 0, 0, 0, &[5000, 4], TensorDtype::F32, Device::cpu());
+        let tensor = HorusTensor::new(1, 0, 0, 0, &[5000, 4], TensorDtype::F32, Device::cpu());
         let pc = PointCloudDescriptor::xyzi(tensor);
         assert_eq!(pc.point_count(), 5000);
         assert!(pc.has_intensity());

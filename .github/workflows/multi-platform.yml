@@ -16,7 +16,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # Minimum Supported Rust Version
-  # Requires 1.92.0+ due to horus_ai crate requirements
   MSRV: "1.92.0"
 
 jobs:
@@ -180,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: ["1.92.0"]  # MSRV - horus_ai requires 1.92.0
+        rust: ["1.92.0"]  # MSRV
     steps:
       - uses: actions/checkout@v4
 

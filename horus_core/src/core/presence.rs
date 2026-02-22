@@ -119,7 +119,6 @@ impl NodePresence {
         }
         nodes
     }
-
 }
 
 /// Check if a process exists

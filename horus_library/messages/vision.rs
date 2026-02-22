@@ -179,7 +179,6 @@ impl RegionOfInterest {
     }
 }
 
-
 /// Stereo camera pair information
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct StereoInfo {

@@ -295,7 +295,14 @@ impl PyTensorHandle {
             handle.data_ptr() as *mut c_void
         };
 
-        dlpack_utils::make_dlpack_capsule(py, data_ptr, &shape, &strides, tensor.dtype, tensor.device())
+        dlpack_utils::make_dlpack_capsule(
+            py,
+            data_ptr,
+            &shape,
+            &strides,
+            tensor.dtype,
+            tensor.device(),
+        )
     }
 
     /// DLPack device info - returns (device_type, device_id)
@@ -332,9 +339,8 @@ impl PyTensorHandle {
 
         // Extract DLManagedTensor* from PyCapsule
         let capsule_name = CString::new("dltensor").unwrap();
-        let managed_ptr = unsafe {
-            pyo3::ffi::PyCapsule_GetPointer(capsule_obj.as_ptr(), capsule_name.as_ptr())
-        };
+        let managed_ptr =
+            unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule_obj.as_ptr(), capsule_name.as_ptr()) };
         if managed_ptr.is_null() {
             return Err(PyRuntimeError::new_err(
                 "Invalid DLPack capsule (not a dltensor or already consumed)",
@@ -375,8 +381,7 @@ impl PyTensorHandle {
 
         // Call deleter on the original DLManagedTensor (we're done with the data)
         unsafe {
-            let managed =
-                managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
+            let managed = managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
             if let Some(deleter) = (*managed).deleter {
                 deleter(managed);
             }
@@ -652,7 +657,8 @@ impl PyTensorHandle {
         // Get device ID from target
         let device_id = target_device
             .cuda_index()
-            .ok_or_else(|| PyValueError::new_err("Invalid CUDA device"))? as i32;
+            .ok_or_else(|| PyValueError::new_err("Invalid CUDA device"))?
+            as i32;
 
         // Set CUDA device
         set_device(device_id)
@@ -772,7 +778,7 @@ impl PyTensorHandle {
 
 // All helper functions (parse_dtype, dtype_to_str, parse_device, device_to_string,
 // dlpack_capsule_destructor) are in crate::dlpack_utils to avoid duplication.
-use dlpack_utils::{parse_dtype, dtype_to_str, parse_device, device_to_string};
+use dlpack_utils::{device_to_string, dtype_to_str, parse_device, parse_dtype};
 
 fn dtype_numpy_typestr(dtype: TensorDtype) -> &'static str {
     dtype.numpy_typestr()

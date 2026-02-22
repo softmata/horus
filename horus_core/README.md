@@ -34,10 +34,10 @@ fn main() -> Result<()> {
 
 ```rust
 pub trait Node: Send {
-    fn name(&self) -> &'static str;
-    fn init(&mut self) -> Result<()>;
+    fn name(&self) -> &str;
+    fn init(&mut self) -> HorusResult<()>;
     fn tick(&mut self);
-    fn shutdown(&mut self) -> Result<()>;
+    fn shutdown(&mut self) -> HorusResult<()>;
 }
 ```
 
@@ -73,7 +73,7 @@ scheduler.run_for(Duration::from_secs(10))?;
 ## Topic Communication
 
 ```rust
-let topic: Topic<f64> = Topic::new("sensor_data", None)?;
+let topic: Topic<f64> = Topic::new("sensor_data")?;
 
 topic.send(42.0);
 if let Some(value) = topic.recv() {

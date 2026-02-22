@@ -10,10 +10,8 @@ use crate::error::HorusResult;
 use crate::horus_internal;
 use crate::terminal::print_line;
 
+use super::super::record_replay::{NodeReplayer, RecordingManager, ReplayNode, SchedulerRecording};
 use super::super::types::NodeTier;
-use super::super::record_replay::{
-    NodeReplayer, RecordingManager, ReplayNode, SchedulerRecording,
-};
 use super::super::types::RegisteredNode;
 use super::{ReplayState, Scheduler};
 
@@ -60,7 +58,11 @@ impl Scheduler {
                 speed: 1.0,
             });
         }
-        self.replay.as_mut().unwrap().nodes.insert(node_name.clone(), replayer);
+        self.replay
+            .as_mut()
+            .unwrap()
+            .nodes
+            .insert(node_name.clone(), replayer);
 
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
@@ -213,8 +215,7 @@ impl Scheduler {
                         Err(e) => {
                             print_line(&format!(
                                 "Failed to save recording for '{}': {}",
-                                registered.name,
-                                e
+                                registered.name, e
                             ));
                         }
                     }
@@ -228,10 +229,7 @@ impl Scheduler {
             if let Err(e) = rec_state.scheduler_recording.save(&path) {
                 print_line(&format!("Failed to save scheduler recording: {}", e));
             } else {
-                print_line(&format!(
-                    "[RECORDING] Saved scheduler: {}",
-                    path.display()
-                ));
+                print_line(&format!("[RECORDING] Saved scheduler: {}", path.display()));
                 saved_paths.push(path);
             }
         }

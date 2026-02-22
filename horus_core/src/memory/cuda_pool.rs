@@ -1113,7 +1113,6 @@ impl P2PManager {
 
         Ok(())
     }
-
 }
 
 impl Default for P2PManager {
