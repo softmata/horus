@@ -3,6 +3,8 @@
 //! This module provides helper functions for pkg subcommands that
 //! involve plugin management.
 
+use crate::cargo_utils::is_executable;
+use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::plugins::{
     CommandInfo, Compatibility, PluginEntry, PluginRegistry, PluginResolver, PluginScope,
     PluginSource, VerificationStatus, HORUS_VERSION,
@@ -19,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// Returns Some(PluginMetadata) if the package provides CLI extensions
 pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
     // Check for horus.yaml with plugin configuration
-    let horus_yaml = package_dir.join("horus.yaml");
+    let horus_yaml = package_dir.join(HORUS_YAML);
     if horus_yaml.exists() {
         if let Ok(content) = fs::read_to_string(&horus_yaml) {
             if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -31,7 +33,7 @@ pub fn detect_plugin_metadata(package_dir: &Path) -> Option<PluginMetadata> {
     }
 
     // Check for Cargo.toml with [package.metadata.horus] plugin config
-    let cargo_toml = package_dir.join("Cargo.toml");
+    let cargo_toml = package_dir.join(CARGO_TOML);
     if cargo_toml.exists() {
         if let Ok(content) = fs::read_to_string(&cargo_toml) {
             if let Ok(toml) = content.parse::<toml::Table>() {
@@ -320,7 +322,7 @@ fn find_binary(package_dir: &Path, binary_name: &str) -> Option<PathBuf> {
 
 fn detect_version(package_dir: &Path) -> Option<String> {
     // Try horus.yaml
-    let horus_yaml = package_dir.join("horus.yaml");
+    let horus_yaml = package_dir.join(HORUS_YAML);
     if horus_yaml.exists() {
         if let Ok(content) = fs::read_to_string(&horus_yaml) {
             if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -332,7 +334,7 @@ fn detect_version(package_dir: &Path) -> Option<String> {
     }
 
     // Try Cargo.toml
-    let cargo_toml = package_dir.join("Cargo.toml");
+    let cargo_toml = package_dir.join(CARGO_TOML);
     if cargo_toml.exists() {
         if let Ok(content) = fs::read_to_string(&cargo_toml) {
             if let Ok(toml) = content.parse::<toml::Table>() {
@@ -362,20 +364,6 @@ fn detect_version(package_dir: &Path) -> Option<String> {
     None
 }
 
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(metadata) = path.metadata() {
-        metadata.permissions().mode() & 0o111 != 0
-    } else {
-        false
-    }
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.exists()
-}
 
 /// Register a plugin after package installation
 pub fn register_plugin_after_install(
@@ -854,7 +842,7 @@ pub fn run_install(
             .map_err(|e| HorusError::Config(e.to_string()))?;
 
         // Update horus.yaml with path dependency
-        let horus_yaml_path = workspace_path.join("horus.yaml");
+        let horus_yaml_path = workspace_path.join(HORUS_YAML);
         if horus_yaml_path.exists() {
             if let Err(e) = yaml_utils::add_path_dependency_to_horus_yaml(
                 &horus_yaml_path,
@@ -892,7 +880,7 @@ pub fn run_install(
 
         // Update horus.yaml if installing locally
         if let workspace::InstallTarget::Local(workspace_path) = install_target {
-            let horus_yaml_path = workspace_path.join("horus.yaml");
+            let horus_yaml_path = workspace_path.join(HORUS_YAML);
             if horus_yaml_path.exists() {
                 let version = ver.as_deref().unwrap_or("latest");
                 if let Err(e) =
@@ -927,9 +915,8 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
     let remove_dir = if global {
         // Remove from global cache
-        let home = dirs::home_dir()
-            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-        let global_cache = home.join(".horus/cache");
+        let global_cache =
+            crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
         // Find versioned directory
         let mut found = None;
@@ -967,9 +954,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
     // Check for system package reference first
     let packages_dir = if global {
-        let home = dirs::home_dir()
-            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-        home.join(".horus/cache")
+        crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?
     } else if let Some(target_name) = &target {
         let reg =
             workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
@@ -989,7 +974,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
         let content = fs::read_to_string(&system_ref)
             .map_err(|e| HorusError::Config(format!("Failed to read system reference: {}", e)))?;
         let metadata: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| HorusError::Config(format!("Failed to parse system reference: {}", e)))?;
+            .map_err(|e| HorusError::Config(format!("failed to parse system reference: {}", e)))?;
 
         // Remove reference file
         fs::remove_file(&system_ref)
@@ -1017,7 +1002,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
         // Update horus.yaml if removing from local workspace
         if let Some(ws_path) = workspace_path {
-            let horus_yaml_path = ws_path.join("horus.yaml");
+            let horus_yaml_path = ws_path.join(HORUS_YAML);
             if horus_yaml_path.exists() {
                 let content = fs::read_to_string(&horus_yaml_path)
                     .map_err(|e| HorusError::Config(e.to_string()))?;
@@ -1066,7 +1051,7 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
 
     // Update horus.yaml if removing from local workspace
     if let Some(ws_path) = workspace_path {
-        let horus_yaml_path = ws_path.join("horus.yaml");
+        let horus_yaml_path = ws_path.join(HORUS_YAML);
         if horus_yaml_path.exists() {
             if let Err(e) =
                 yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &package)
@@ -1113,9 +1098,8 @@ pub fn run_list(query: Option<String>, global: bool, all: bool) -> HorusResult<(
         }
     } else if all {
         // List both local and global packages
-        let home = dirs::home_dir()
-            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-        let global_cache = home.join(".horus/cache");
+        let global_cache =
+            crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
         // Show local packages
         println!("{} Local packages:\n", "📦".cyan());
@@ -1188,9 +1172,8 @@ pub fn run_list(query: Option<String>, global: bool, all: bool) -> HorusResult<(
     } else if global {
         // List global cache packages
         println!("{} Global cache packages:\n", "🌐".cyan());
-        let home = dirs::home_dir()
-            .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-        let global_cache = home.join(".horus/cache");
+        let global_cache =
+            crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
         if !global_cache.exists() {
             println!("  No global packages yet");
@@ -1411,7 +1394,7 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
     // Find horus.yaml in current directory or workspace
     let workspace_path = workspace::find_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_yaml_path = workspace_path.join("horus.yaml");
+    let horus_yaml_path = workspace_path.join(HORUS_YAML);
 
     if !horus_yaml_path.exists() {
         return Err(HorusError::Config(
@@ -1465,7 +1448,7 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
     // Find horus.yaml in current directory or workspace
     let workspace_path = workspace::find_workspace_root()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let horus_yaml_path = workspace_path.join("horus.yaml");
+    let horus_yaml_path = workspace_path.join(HORUS_YAML);
 
     if !horus_yaml_path.exists() {
         return Err(HorusError::Config(
@@ -1516,7 +1499,7 @@ mod tests {
     #[test]
     fn test_detect_version_from_horus_yaml() {
         let temp_dir = TempDir::new().unwrap();
-        let yaml_path = temp_dir.path().join("horus.yaml");
+        let yaml_path = temp_dir.path().join(HORUS_YAML);
         fs::write(&yaml_path, "name: test\nversion: 1.2.3\n").unwrap();
 
         let version = detect_version(temp_dir.path());

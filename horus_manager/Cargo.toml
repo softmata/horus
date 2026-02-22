@@ -19,7 +19,7 @@ horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
 clap = { version = "4.4", features = ["derive"] }
 clap_complete = "4.4"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 colored = "2.0"
@@ -45,6 +45,7 @@ serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 regex = "1.10"
 glob = "0.3"
 log = "0.4"
+env_logger = "0.11"
 open = "5.0"
 hostname = "0.4"
 semver = "1.0"
@@ -68,7 +69,6 @@ futures = "0.3"
 qrcode = "0.14"
 
 # Security dependencies
-jsonwebtoken = "10.3"
 argon2 = "0.5"
 base64 = "0.21"
 rpassword = "7.3"
@@ -94,3 +94,5 @@ mdns = ["horus_core/mdns"]
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+assert_cmd = "2.0"
+predicates = "3.0"

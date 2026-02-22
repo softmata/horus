@@ -664,34 +664,7 @@ impl SafetyStatus {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for Heartbeat {}
-unsafe impl horus_core::bytemuck::Zeroable for Heartbeat {}
-unsafe impl horus_core::communication::PodMessage for Heartbeat {}
-
-unsafe impl horus_core::bytemuck::Pod for Status {}
-unsafe impl horus_core::bytemuck::Zeroable for Status {}
-unsafe impl horus_core::communication::PodMessage for Status {}
-
-unsafe impl horus_core::bytemuck::Pod for EmergencyStop {}
-unsafe impl horus_core::bytemuck::Zeroable for EmergencyStop {}
-unsafe impl horus_core::communication::PodMessage for EmergencyStop {}
-
-unsafe impl horus_core::bytemuck::Pod for ResourceUsage {}
-unsafe impl horus_core::bytemuck::Zeroable for ResourceUsage {}
-unsafe impl horus_core::communication::PodMessage for ResourceUsage {}
-
-unsafe impl horus_core::bytemuck::Pod for DiagnosticValue {}
-unsafe impl horus_core::bytemuck::Zeroable for DiagnosticValue {}
-unsafe impl horus_core::communication::PodMessage for DiagnosticValue {}
-
-unsafe impl horus_core::bytemuck::Pod for DiagnosticReport {}
-unsafe impl horus_core::bytemuck::Zeroable for DiagnosticReport {}
-unsafe impl horus_core::communication::PodMessage for DiagnosticReport {}
-
-unsafe impl horus_core::bytemuck::Pod for NodeHeartbeat {}
-unsafe impl horus_core::bytemuck::Zeroable for NodeHeartbeat {}
-unsafe impl horus_core::communication::PodMessage for NodeHeartbeat {}
-
-unsafe impl horus_core::bytemuck::Pod for SafetyStatus {}
-unsafe impl horus_core::bytemuck::Zeroable for SafetyStatus {}
-unsafe impl horus_core::communication::PodMessage for SafetyStatus {}
+crate::messages::impl_pod_message!(
+    Heartbeat, Status, EmergencyStop, ResourceUsage,
+    DiagnosticValue, DiagnosticReport, NodeHeartbeat, SafetyStatus,
+);

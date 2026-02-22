@@ -14,6 +14,14 @@ use horus_manager::{commands, monitor, monitor_tui, security};
 #[command(version = "0.1.9")]
 #[command(propagate_version = true)]
 struct Cli {
+    /// Increase output verbosity (show debug messages)
+    #[arg(short = 'v', long = "verbose", global = true)]
+    verbose: bool,
+
+    /// Suppress informational output
+    #[arg(short = 'Q', long = "quiet-all", global = true)]
+    quiet_all: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -1129,6 +1137,21 @@ fn main() {
 
     // Normal clap parsing
     let cli = Cli::parse();
+
+    // Initialize structured logging based on verbosity flags
+    let log_level = if cli.verbose {
+        "debug"
+    } else if cli.quiet_all {
+        "error"
+    } else {
+        "warn"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
+        .format_timestamp(None)
+        .format_target(false)
+        .init();
+
+    log::debug!("HORUS CLI v{}", env!("CARGO_PKG_VERSION"));
 
     if let Err(e) = run_command(cli.command) {
         eprintln!("{} {}", "Error:".red().bold(), e);

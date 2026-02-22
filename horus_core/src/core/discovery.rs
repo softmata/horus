@@ -85,20 +85,6 @@ impl NodeAnnouncement {
         }
     }
 
-    /// Create a crashed announcement
-    pub fn crashed(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            pid: std::process::id(),
-            event: NodeEvent::Crashed,
-            publishers: Vec::new(),
-            subscribers: Vec::new(),
-            timestamp_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        }
-    }
 }
 
 /// Global discovery topic (lazy initialized)

@@ -2,7 +2,7 @@
 //!
 //! Security through password authentication with Argon2 hashing and session tokens.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
@@ -59,7 +59,7 @@ impl AuthService {
 
         // Verify password
         let parsed_hash = PasswordHash::new(&self.password_hash)
-            .map_err(|e| anyhow::anyhow!("Invalid stored password hash: {}", e))?;
+            .map_err(|e| anyhow!("Invalid stored password hash: {}", e))?;
 
         if Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
@@ -154,13 +154,13 @@ pub fn hash_password(password: &str) -> Result<String> {
     argon2
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))
+        .map_err(|e| anyhow!("Failed to hash password: {}", e))
 }
 
 /// Verify a password against a hash
 pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
     let parsed_hash = PasswordHash::new(hash)
-        .map_err(|e| anyhow::anyhow!("Invalid password hash format: {}", e))?;
+        .map_err(|e| anyhow!("Invalid password hash format: {}", e))?;
 
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)
@@ -169,12 +169,8 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
 
 /// Get the path to the password hash file
 pub fn get_password_file_path() -> Result<PathBuf> {
-    let horus_dir = dirs::home_dir()
-        .context("Could not find home directory")?
-        .join(".horus");
-
-    std::fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
-
+    let horus_dir = crate::paths::horus_dir()?;
+    std::fs::create_dir_all(&horus_dir).context("failed to create .horus directory")?;
     Ok(horus_dir.join("dashboard_password.hash"))
 }
 

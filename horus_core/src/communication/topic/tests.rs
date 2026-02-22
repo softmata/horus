@@ -202,7 +202,7 @@ fn migrator_creation() {
     let mut header = TopicHeader::zeroed();
     header.init(8, 4, true, 100, 8);
     let migrator = BackendMigrator::new(&header);
-    assert_eq!(migrator.current_epoch(), 0);
+    assert_eq!(header.migration_epoch.load(Ordering::Acquire), 0);
     assert!(!migrator.is_migration_in_progress());
 }
 
@@ -276,23 +276,7 @@ fn epoch_increments_on_successive_migrations() {
             result
         );
     }
-    assert_eq!(migrator.current_epoch(), 5);
-}
-
-#[test]
-fn migrator_stats_reflect_header() {
-    let mut header = TopicHeader::zeroed();
-    header.init(8, 4, true, 100, 8);
-    header
-        .backend_mode
-        .store(BackendMode::SpscIntra as u8, Ordering::Release);
-    header.migration_epoch.store(42, Ordering::Release);
-
-    let migrator = BackendMigrator::new(&header);
-    let stats = migrator.stats();
-    assert_eq!(stats.current_mode, BackendMode::SpscIntra);
-    assert_eq!(stats.current_epoch, 42);
-    assert!(!stats.is_locked);
+    assert_eq!(header.migration_epoch.load(Ordering::Acquire), 5);
 }
 
 #[test]
@@ -1357,19 +1341,6 @@ fn topic_with_capacity() {
 fn topic_zero_capacity_errors() {
     let result = Topic::<u64>::with_capacity(&unique("zero_cap"), 0, None);
     assert!(result.is_err());
-}
-
-#[test]
-fn topic_from_config() {
-    let config = TopicConfig {
-        name: unique("from_cfg"),
-        capacity: 256,
-        create: true,
-        is_producer: true,
-    };
-    let t: Topic<u64> = Topic::from_config(config).expect("from_config");
-    t.send(1);
-    assert_eq!(t.recv(), Some(1));
 }
 
 // ============================================================================

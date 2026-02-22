@@ -44,12 +44,7 @@ impl Default for CmdVel {
     }
 }
 
-// Enable zero-copy serialization with bytemuck
-unsafe impl horus_core::bytemuck::Pod for CmdVel {}
-unsafe impl horus_core::bytemuck::Zeroable for CmdVel {}
-
-// Enable ultra-fast POD messaging (~50ns vs ~250ns with bincode)
-unsafe impl horus_core::communication::PodMessage for CmdVel {}
+crate::messages::impl_pod_message!(CmdVel);
 
 // Note: POD types are now auto-detected via needs_drop, no registration needed
 

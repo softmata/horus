@@ -29,24 +29,6 @@ pub(crate) enum MigrationResult {
 }
 
 // ============================================================================
-// Migration Statistics
-// ============================================================================
-
-/// Migration statistics for debugging and monitoring
-#[derive(Debug, Clone)]
-pub struct MigrationStats {
-    pub current_mode: BackendMode,
-    pub optimal_mode: BackendMode,
-    pub current_epoch: u64,
-    pub is_locked: bool,
-    pub publisher_count: u32,
-    pub subscriber_count: u32,
-    pub is_same_process: bool,
-    pub is_same_thread: bool,
-    pub is_pod: bool,
-}
-
-// ============================================================================
 // Backend Migrator
 // ============================================================================
 
@@ -72,12 +54,6 @@ impl<'a> BackendMigrator<'a> {
             header,
             spin_count: Self::DEFAULT_SPIN_COUNT,
         }
-    }
-
-    /// Get the current epoch
-    #[inline]
-    pub fn current_epoch(&self) -> u64 {
-        self.header.migration_epoch.load(Ordering::Acquire)
     }
 
     /// Check if migration is currently in progress
@@ -157,20 +133,5 @@ impl<'a> BackendMigrator<'a> {
         let current = self.header.mode();
         let optimal = self.header.detect_optimal_backend();
         current == optimal
-    }
-
-    /// Get migration statistics for debugging
-    pub fn stats(&self) -> MigrationStats {
-        MigrationStats {
-            current_mode: self.header.mode(),
-            optimal_mode: self.header.detect_optimal_backend(),
-            current_epoch: self.current_epoch(),
-            is_locked: self.is_migration_in_progress(),
-            publisher_count: self.header.pub_count(),
-            subscriber_count: self.header.sub_count(),
-            is_same_process: self.header.is_same_process(),
-            is_same_thread: self.header.is_same_thread(),
-            is_pod: self.header.is_pod_type(),
-        }
     }
 }

@@ -18,9 +18,6 @@ horus_types = { workspace = true }
 
 # Re-export commonly used dependencies
 serde = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-thiserror = { workspace = true }
 
 [features]
 # ============================================================================

@@ -195,8 +195,11 @@ impl Default for DLManagedTensor {
     }
 }
 
-// Safety: DLManagedTensor can be sent between threads if the underlying
-// data is thread-safe (which it should be for tensor data).
+// SAFETY: DLManagedTensor can be sent between threads. The tensor data it
+// references is either CPU memory (inherently sendable) or GPU device memory
+// (accessed via opaque device pointers, thread-safe by CUDA/GPU driver contract).
+// The deleter callback is a plain function pointer (not a closure), so it has
+// no captured state that could cause thread-safety issues.
 unsafe impl Send for DLManagedTensor {}
 
 #[cfg(test)]

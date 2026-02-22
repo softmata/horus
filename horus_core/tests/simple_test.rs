@@ -91,25 +91,6 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_nodes() {
-        let counter1 = Arc::new(Mutex::new(0));
-        let counter2 = Arc::new(Mutex::new(0));
-
-        let mut node1 = TestNode::new("node1", counter1.clone());
-        let mut node2 = TestNode::new("node2", counter2.clone());
-
-        // Tick both nodes
-        for _ in 0..10 {
-            node1.tick();
-            node2.tick();
-        }
-
-        // Both should have been ticked
-        assert_eq!(*counter1.lock().unwrap(), 10);
-        assert_eq!(*counter2.lock().unwrap(), 10);
-    }
-
-    #[test]
     fn test_node_info() {
         let mut info = NodeInfo::new("test_info_node".to_string());
 

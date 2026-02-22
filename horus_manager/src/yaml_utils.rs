@@ -1,6 +1,26 @@
-use anyhow::{anyhow, Result};
+use crate::config::HORUS_YAML;
+use anyhow::{anyhow, Context, Result};
+use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
+
+/// Load and deserialize a JSON config file.
+pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    log::debug!("loading config from {:?}", path);
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse JSON from {}", path.display()))
+}
+
+/// Load and deserialize a YAML config file.
+pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    log::debug!("loading config from {:?}", path);
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_yaml::from_str(&content)
+        .with_context(|| format!("failed to parse YAML from {}", path.display()))
+}
 
 /// Add a dependency to horus.yaml
 pub fn add_dependency_to_horus_yaml(
@@ -8,7 +28,8 @@ pub fn add_dependency_to_horus_yaml(
     package_name: &str,
     version: &str,
 ) -> Result<()> {
-    let content = fs::read_to_string(horus_yaml_path)?;
+    let content = fs::read_to_string(horus_yaml_path)
+        .with_context(|| format!("failed to read {}", horus_yaml_path.display()))?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     // Find the dependencies section
@@ -39,7 +60,7 @@ pub fn add_dependency_to_horus_yaml(
     let dependency_entry = format!("  - {}@{}", package_name, version);
 
     // Check for duplicates
-    let dep_prefix = format!("  - {}@", package_name);
+    let dep_prefix = format!("- {}@", package_name);
     let already_exists = lines
         .iter()
         .any(|line| line.trim().starts_with(&dep_prefix) || line.trim() == dependency_entry.trim());
@@ -70,13 +91,15 @@ pub fn add_dependency_to_horus_yaml(
         lines.insert(insert_idx, dependency_entry);
     }
 
-    fs::write(horus_yaml_path, lines.join("\n") + "\n")?;
+    fs::write(horus_yaml_path, lines.join("\n") + "\n")
+        .with_context(|| format!("failed to write {}", horus_yaml_path.display()))?;
     Ok(())
 }
 
 /// Remove a dependency from horus.yaml
 pub fn remove_dependency_from_horus_yaml(horus_yaml_path: &Path, package_name: &str) -> Result<()> {
-    let content = fs::read_to_string(horus_yaml_path)?;
+    let content = fs::read_to_string(horus_yaml_path)
+        .with_context(|| format!("failed to read {}", horus_yaml_path.display()))?;
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     // Find and remove the dependency line
@@ -149,7 +172,8 @@ pub fn remove_dependency_from_horus_yaml(horus_yaml_path: &Path, package_name: &
         }
     }
 
-    fs::write(horus_yaml_path, new_lines.join("\n") + "\n")?;
+    fs::write(horus_yaml_path, new_lines.join("\n") + "\n")
+        .with_context(|| format!("failed to write {}", horus_yaml_path.display()))?;
     Ok(())
 }
 
@@ -159,7 +183,8 @@ pub fn add_path_dependency_to_horus_yaml(
     package_name: &str,
     path: &str,
 ) -> Result<()> {
-    let content = fs::read_to_string(horus_yaml_path)?;
+    let content = fs::read_to_string(horus_yaml_path)
+        .with_context(|| format!("failed to read {}", horus_yaml_path.display()))?;
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
     // Find the dependencies section
@@ -225,7 +250,8 @@ pub fn add_path_dependency_to_horus_yaml(
         }
     }
 
-    fs::write(horus_yaml_path, lines.join("\n") + "\n")?;
+    fs::write(horus_yaml_path, lines.join("\n") + "\n")
+        .with_context(|| format!("failed to write {}", horus_yaml_path.display()))?;
     Ok(())
 }
 
@@ -236,11 +262,16 @@ pub fn is_path_like(input: &str) -> bool {
 
 /// Read package name from a directory by checking horus.yaml, Cargo.toml, or package.json
 pub fn read_package_name_from_path(path: &Path) -> Result<String> {
+    log::debug!("reading package name from path: {:?}", path);
+
     // Try horus.yaml first
-    let horus_yaml = path.join("horus.yaml");
+    let horus_yaml = path.join(HORUS_YAML);
     if horus_yaml.exists() {
-        let content = fs::read_to_string(&horus_yaml)?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)?;
+        log::debug!("trying horus.yaml at {:?}", horus_yaml);
+        let content = fs::read_to_string(&horus_yaml)
+            .with_context(|| format!("failed to read {}", horus_yaml.display()))?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+            .with_context(|| format!("failed to parse {}", horus_yaml.display()))?;
         if let Some(name) = yaml.get("name").and_then(|v| v.as_str()) {
             return Ok(name.to_string());
         }
@@ -249,7 +280,9 @@ pub fn read_package_name_from_path(path: &Path) -> Result<String> {
     // Try Cargo.toml (Rust)
     let cargo_toml = path.join("Cargo.toml");
     if cargo_toml.exists() {
-        let content = fs::read_to_string(&cargo_toml)?;
+        log::debug!("trying Cargo.toml at {:?}", cargo_toml);
+        let content = fs::read_to_string(&cargo_toml)
+            .with_context(|| format!("failed to read {}", cargo_toml.display()))?;
         if let Ok(toml) = content.parse::<toml::Value>() {
             if let Some(name) = toml
                 .get("package")
@@ -264,15 +297,339 @@ pub fn read_package_name_from_path(path: &Path) -> Result<String> {
     // Try package.json (Python/Node)
     let package_json = path.join("package.json");
     if package_json.exists() {
-        let content = fs::read_to_string(&package_json)?;
-        let json: serde_json::Value = serde_json::from_str(&content)?;
+        log::debug!("trying package.json at {:?}", package_json);
+        let content = fs::read_to_string(&package_json)
+            .with_context(|| format!("failed to read {}", package_json.display()))?;
+        let json: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse {}", package_json.display()))?;
         if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
             return Ok(name.to_string());
         }
     }
 
     Err(anyhow!(
-        "Could not determine package name from path: {}\nMake sure the directory contains horus.yaml, Cargo.toml, or package.json",
+        "could not determine package name from {}\n  expected horus.yaml, Cargo.toml, or package.json",
         path.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // =====================
+    // is_path_like Tests
+    // =====================
+
+    #[test]
+    fn test_is_path_like_with_slash() {
+        assert!(is_path_like("some/path"));
+        assert!(is_path_like("/absolute/path"));
+    }
+
+    #[test]
+    fn test_is_path_like_with_relative_prefix() {
+        assert!(is_path_like("./relative"));
+        assert!(is_path_like("../parent"));
+    }
+
+    #[test]
+    fn test_is_path_like_plain_name() {
+        assert!(!is_path_like("numpy"));
+        assert!(!is_path_like("horus-ros2"));
+        assert!(!is_path_like("my_package@1.0"));
+    }
+
+    // =====================
+    // add_dependency_to_horus_yaml Tests
+    // =====================
+
+    #[test]
+    fn test_add_dep_to_existing_deps() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - existing@1.0\n",
+        )
+        .unwrap();
+
+        add_dependency_to_horus_yaml(&yaml, "numpy", "1.24").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("  - numpy@1.24"));
+        assert!(content.contains("  - existing@1.0"));
+    }
+
+    #[test]
+    fn test_add_dep_to_empty_array() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(&yaml, "name: test-pkg\ndependencies: []\n").unwrap();
+
+        add_dependency_to_horus_yaml(&yaml, "torch", "2.0").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("dependencies:"));
+        assert!(!content.contains("dependencies: []"));
+        assert!(content.contains("  - torch@2.0"));
+    }
+
+    #[test]
+    fn test_add_dep_creates_section() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(&yaml, "name: test-pkg\nversion: 0.1.0\n").unwrap();
+
+        add_dependency_to_horus_yaml(&yaml, "numpy", "1.24").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("dependencies:"));
+        assert!(content.contains("  - numpy@1.24"));
+    }
+
+    #[test]
+    fn test_add_dep_duplicate_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
+        )
+        .unwrap();
+
+        add_dependency_to_horus_yaml(&yaml, "numpy", "1.24").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        // Should appear exactly once
+        assert_eq!(content.matches("numpy@1.24").count(), 1);
+    }
+
+    #[test]
+    fn test_add_dep_same_name_different_version_is_duplicate() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
+        )
+        .unwrap();
+
+        // Same package name with different version should be treated as duplicate
+        add_dependency_to_horus_yaml(&yaml, "numpy", "2.0").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("numpy@1.24"));
+        assert_eq!(content.matches("numpy@").count(), 1);
+    }
+
+    // =====================
+    // remove_dependency_from_horus_yaml Tests
+    // =====================
+
+    #[test]
+    fn test_remove_dep_with_version() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - numpy@1.24\n  - torch@2.0\n",
+        )
+        .unwrap();
+
+        remove_dependency_from_horus_yaml(&yaml, "numpy").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(!content.contains("numpy"));
+        assert!(content.contains("  - torch@2.0"));
+    }
+
+    #[test]
+    fn test_remove_last_dep_converts_to_empty_array() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
+        )
+        .unwrap();
+
+        remove_dependency_from_horus_yaml(&yaml, "numpy").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(!content.contains("numpy"));
+        assert!(content.contains("dependencies: []"));
+    }
+
+    #[test]
+    fn test_remove_dep_without_version() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - numpy\n  - torch@2.0\n",
+        )
+        .unwrap();
+
+        remove_dependency_from_horus_yaml(&yaml, "numpy").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(!content.contains("numpy"));
+        assert!(content.contains("torch@2.0"));
+    }
+
+    #[test]
+    fn test_remove_nonexistent_dep_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        let original = "name: test-pkg\ndependencies:\n  - torch@2.0\n";
+        fs::write(&yaml, original).unwrap();
+
+        remove_dependency_from_horus_yaml(&yaml, "nonexistent").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("torch@2.0"));
+    }
+
+    // =====================
+    // add_path_dependency_to_horus_yaml Tests
+    // =====================
+
+    #[test]
+    fn test_add_path_dep() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  - existing@1.0\n",
+        )
+        .unwrap();
+
+        add_path_dependency_to_horus_yaml(&yaml, "my-lib", "../my-lib").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(content.contains("  my-lib:"));
+        assert!(content.contains("    path: \"../my-lib\""));
+    }
+
+    #[test]
+    fn test_add_path_dep_to_empty_array() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(&yaml, "name: test-pkg\ndependencies: []\n").unwrap();
+
+        add_path_dependency_to_horus_yaml(&yaml, "my-lib", "./libs/my-lib").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        assert!(!content.contains("[]"));
+        assert!(content.contains("  my-lib:"));
+        assert!(content.contains("    path: \"./libs/my-lib\""));
+    }
+
+    #[test]
+    fn test_add_path_dep_duplicate_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(
+            &yaml,
+            "name: test-pkg\ndependencies:\n  my-lib:\n    path: \"../my-lib\"\n",
+        )
+        .unwrap();
+
+        add_path_dependency_to_horus_yaml(&yaml, "my-lib", "../other-path").unwrap();
+
+        let content = fs::read_to_string(&yaml).unwrap();
+        // Original path preserved
+        assert!(content.contains("\"../my-lib\""));
+        assert_eq!(content.matches("my-lib:").count(), 1);
+    }
+
+    #[test]
+    fn test_add_path_dep_no_deps_section_errors() {
+        let dir = TempDir::new().unwrap();
+        let yaml = dir.path().join(HORUS_YAML);
+        fs::write(&yaml, "name: test-pkg\nversion: 0.1.0\n").unwrap();
+
+        let result = add_path_dependency_to_horus_yaml(&yaml, "my-lib", "../my-lib");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No dependencies section"));
+    }
+
+    // =====================
+    // read_package_name_from_path Tests
+    // =====================
+
+    #[test]
+    fn test_read_name_from_horus_yaml() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(HORUS_YAML),
+            "name: my-robot-pkg\nversion: 0.1.0\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(dir.path()).unwrap();
+        assert_eq!(name, "my-robot-pkg");
+    }
+
+    #[test]
+    fn test_read_name_from_cargo_toml() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"my-rust-crate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(dir.path()).unwrap();
+        assert_eq!(name, "my-rust-crate");
+    }
+
+    #[test]
+    fn test_read_name_from_package_json() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            "{\"name\": \"my-node-pkg\", \"version\": \"1.0.0\"}",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(dir.path()).unwrap();
+        assert_eq!(name, "my-node-pkg");
+    }
+
+    #[test]
+    fn test_read_name_horus_yaml_takes_priority() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(HORUS_YAML),
+            "name: horus-name\nversion: 0.1.0\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"cargo-name\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let name = read_package_name_from_path(dir.path()).unwrap();
+        assert_eq!(name, "horus-name");
+    }
+
+    #[test]
+    fn test_read_name_no_manifest_errors() {
+        let dir = TempDir::new().unwrap();
+
+        let result = read_package_name_from_path(dir.path());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("could not determine package name"));
+    }
 }

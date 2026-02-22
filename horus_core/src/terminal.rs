@@ -8,50 +8,16 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use horus_core::terminal::{set_raw_mode, print_line};
+//! use horus_core::terminal::print_line;
 //!
-//! // When enabling raw terminal mode
-//! set_raw_mode(true);
-//!
-//! // Use print_line instead of println! for correct output
+//! // Use print_line instead of println! for correct output in raw mode
 //! print_line("This will display correctly in raw mode");
-//!
-//! // When disabling raw terminal mode
-//! set_raw_mode(false);
 //! ```
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Global flag indicating if the terminal is in raw mode.
-/// When true, output functions should use `\r\n` instead of just `\n`.
-static TERMINAL_RAW_MODE: AtomicBool = AtomicBool::new(false);
-
-/// Set the terminal raw mode flag.
+/// Check if terminal raw mode is currently enabled by probing the terminal state.
 ///
-/// When set to `true`, `print_line()` will output with `\r\n` line endings
-/// to prevent the staircase effect.
-///
-/// # Arguments
-///
-/// * `enabled` - Whether raw terminal mode is enabled
-#[allow(dead_code)]
-pub fn set_raw_mode(enabled: bool) {
-    TERMINAL_RAW_MODE.store(enabled, Ordering::SeqCst);
-}
-
-/// Check if terminal raw mode is currently enabled.
-///
-/// This function first checks the process-local flag, then falls back to
-/// actually probing the terminal state. This handles the case where another
-/// process has enabled raw mode on the shared terminal.
+/// On Unix, checks if OPOST or ICANON flags are disabled, which indicates raw mode.
 pub fn is_raw_mode() -> bool {
-    // First check the local flag (fast path)
-    if TERMINAL_RAW_MODE.load(Ordering::SeqCst) {
-        return true;
-    }
-
-    // Fall back to checking actual terminal state (handles cross-process raw mode)
-    // This detects when another process has put the terminal in raw mode
     is_terminal_in_raw_mode()
 }
 
@@ -118,16 +84,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_raw_mode_flag() {
-        // Default should be false
-        assert!(!is_raw_mode());
-
-        // Set to true
-        set_raw_mode(true);
-        assert!(is_raw_mode());
-
-        // Set back to false
-        set_raw_mode(false);
+    fn test_raw_mode_detection() {
+        // In a test environment, the terminal is not in raw mode
         assert!(!is_raw_mode());
     }
 }

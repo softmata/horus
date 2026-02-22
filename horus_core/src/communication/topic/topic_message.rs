@@ -71,77 +71,42 @@ where
 }
 
 // ============================================================================
-// Image: Wire = ImageDescriptor (288 bytes, Pod)
+// Pool-backed types: Image, PointCloud, DepthImage
+// All share the same to_wire/from_wire pattern via descriptor + pool.
 // ============================================================================
 
-impl TopicMessage for Image {
-    type Wire = ImageDescriptor;
+/// Implement TopicMessage for a pool-backed tensor type.
+///
+/// Requires the type to have: `pool()`, `descriptor()`, `from_owned(wire, pool)`.
+macro_rules! impl_pool_backed_topic_message {
+    ($($Type:ty => $Descriptor:ty),+ $(,)?) => {
+        $(
+            impl TopicMessage for $Type {
+                type Wire = $Descriptor;
 
-    #[inline]
-    fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> ImageDescriptor {
-        // Retain the tensor slot so receiver can access pixel data
-        self.pool().retain(self.descriptor().tensor());
-        *self.descriptor()
-    }
+                #[inline]
+                fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> $Descriptor {
+                    self.pool().retain(self.descriptor().tensor());
+                    *self.descriptor()
+                }
 
-    #[inline]
-    fn from_wire(wire: ImageDescriptor, pool: &Option<Arc<TensorPool>>) -> Self {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
-        Image::from_owned(wire, p)
-    }
+                #[inline]
+                fn from_wire(wire: $Descriptor, pool: &Option<Arc<TensorPool>>) -> Self {
+                    let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
+                    <$Type>::from_owned(wire, p)
+                }
 
-    #[inline(always)]
-    fn needs_pool() -> bool {
-        true
-    }
+                #[inline(always)]
+                fn needs_pool() -> bool {
+                    true
+                }
+            }
+        )+
+    };
 }
 
-// ============================================================================
-// PointCloud: Wire = PointCloudDescriptor (336 bytes, Pod)
-// ============================================================================
-
-impl TopicMessage for PointCloud {
-    type Wire = PointCloudDescriptor;
-
-    #[inline]
-    fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> PointCloudDescriptor {
-        self.pool().retain(self.descriptor().tensor());
-        *self.descriptor()
-    }
-
-    #[inline]
-    fn from_wire(wire: PointCloudDescriptor, pool: &Option<Arc<TensorPool>>) -> Self {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
-        PointCloud::from_owned(wire, p)
-    }
-
-    #[inline(always)]
-    fn needs_pool() -> bool {
-        true
-    }
-}
-
-// ============================================================================
-// DepthImage: Wire = DepthImageDescriptor (288 bytes, Pod)
-// ============================================================================
-
-impl TopicMessage for DepthImage {
-    type Wire = DepthImageDescriptor;
-
-    #[inline]
-    fn to_wire(&self, _pool: &Option<Arc<TensorPool>>) -> DepthImageDescriptor {
-        self.pool().retain(self.descriptor().tensor());
-        *self.descriptor()
-    }
-
-    #[inline]
-    fn from_wire(wire: DepthImageDescriptor, pool: &Option<Arc<TensorPool>>) -> Self {
-        let p = pool.as_ref().cloned().unwrap_or_else(global_pool);
-        DepthImage::from_owned(wire, p)
-    }
-
-    #[inline(always)]
-    fn needs_pool() -> bool {
-        true
-    }
-}
+impl_pool_backed_topic_message!(
+    Image      => ImageDescriptor,
+    PointCloud => PointCloudDescriptor,
+    DepthImage => DepthImageDescriptor,
+);

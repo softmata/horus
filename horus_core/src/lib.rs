@@ -55,7 +55,6 @@ pub mod memory;
 pub mod params;
 pub mod scheduling;
 pub(crate) mod terminal;
-pub mod types;
 pub(crate) mod utils;
 
 // Re-export user-facing types for easy access
@@ -90,7 +89,3 @@ pub use serde_yaml;
 
 // Re-export bytemuck for consistent Pod/Zeroable trait usage
 pub use bytemuck;
-
-// Internal types used by macros (not part of public API)
-#[doc(hidden)]
-pub use types::FixedString;

@@ -1,6 +1,5 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use colored::*;
-use dirs::home_dir;
 use horus_core::error::{HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -25,8 +24,7 @@ fn default_cloud_url() -> String {
 
 /// Get the path to the auth config file
 fn auth_config_path() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-    let config_dir = home.join(".horus");
+    let config_dir = crate::paths::horus_dir()?;
 
     // Create .horus directory if it doesn't exist
     if !config_dir.exists() {
@@ -34,6 +32,23 @@ fn auth_config_path() -> Result<PathBuf> {
     }
 
     Ok(config_dir.join("auth.json"))
+}
+
+/// Load auth config from disk. Returns error if not logged in.
+fn load_auth_config() -> HorusResult<AuthConfig> {
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+
+    if !config_path.exists() {
+        return Err(HorusError::Config(
+            "not authenticated. Please run: horus auth login".to_string(),
+        ));
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .map_err(|e| HorusError::Config(format!("failed to read auth config: {}", e)))?;
+
+    serde_json::from_str(&content)
+        .map_err(|e| HorusError::Config(format!("failed to parse auth config: {}", e)))
 }
 
 /// Login to the HORUS registry with GitHub
@@ -196,11 +211,7 @@ pub fn whoami() -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     // Try to fetch user info from registry
     let registry_url = config.registry_url.clone();
@@ -273,17 +284,7 @@ pub fn get_auth_token() -> Option<String> {
     }
 
     // Then check config file
-    if let Ok(config_path) = auth_config_path() {
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(&config_path) {
-                if let Ok(config) = serde_json::from_str::<AuthConfig>(&content) {
-                    return Some(config.api_key);
-                }
-            }
-        }
-    }
-
-    None
+    load_auth_config().ok().map(|c| c.api_key)
 }
 
 /// Get the registry URL
@@ -294,14 +295,8 @@ pub fn get_registry_url() -> String {
     }
 
     // Then check config file
-    if let Ok(config_path) = auth_config_path() {
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(&config_path) {
-                if let Ok(config) = serde_json::from_str::<AuthConfig>(&content) {
-                    return config.registry_url;
-                }
-            }
-        }
+    if let Ok(config) = load_auth_config() {
+        return config.registry_url;
     }
 
     // Default
@@ -316,14 +311,8 @@ pub fn get_cloud_url() -> String {
     }
 
     // Then check config file
-    if let Ok(config_path) = auth_config_path() {
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(&config_path) {
-                if let Ok(config) = serde_json::from_str::<AuthConfig>(&content) {
-                    return config.cloud_url;
-                }
-            }
-        }
+    if let Ok(config) = load_auth_config() {
+        return config.cloud_url;
     }
 
     // Default
@@ -341,11 +330,7 @@ pub fn org() -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     // Try to fetch org info from cloud
     let cloud_url = config.cloud_url.clone();
@@ -428,11 +413,7 @@ pub fn usage() -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     let cloud_url = config.cloud_url.clone();
     let client = reqwest::blocking::Client::new();
@@ -531,11 +512,7 @@ pub fn plan() -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     let cloud_url = config.cloud_url.clone();
     let client = reqwest::blocking::Client::new();
@@ -651,11 +628,7 @@ pub fn keys_list() -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     // Try registry first, then cloud
     let registry_url = config.registry_url.clone();
@@ -731,11 +704,7 @@ pub fn keys_revoke(key_id: &str) -> HorusResult<()> {
         return Ok(());
     }
 
-    let config_content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("Failed to read auth config: {}", e)))?;
-
-    let config: AuthConfig = serde_json::from_str(&config_content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse auth config: {}", e)))?;
+    let config = load_auth_config()?;
 
     let registry_url = config.registry_url.clone();
     let client = reqwest::blocking::Client::new();

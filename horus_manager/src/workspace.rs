@@ -1,5 +1,6 @@
 // Workspace tracking and detection for HORUS projects
 
+use crate::config::HORUS_YAML;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use colored::*;
@@ -31,24 +32,26 @@ impl WorkspaceRegistry {
             });
         }
 
-        let content = fs::read_to_string(&registry_path)?;
+        let content = fs::read_to_string(&registry_path)
+            .context("failed to read workspace registry")?;
         let registry: Self =
-            serde_json::from_str(&content).context("Failed to parse workspace registry")?;
+            serde_json::from_str(&content).context("failed to parse workspace registry")?;
 
         Ok(registry)
     }
 
     pub fn save(&self) -> Result<()> {
         let registry_path = Self::registry_path()?;
-        let content = serde_json::to_string_pretty(self)?;
-        fs::write(&registry_path, content)?;
+        let content = serde_json::to_string_pretty(self)
+            .context("failed to serialize workspace registry")?;
+        fs::write(&registry_path, content)
+            .context("failed to write workspace registry")?;
         Ok(())
     }
 
     fn registry_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().context("Could not find home directory")?;
-        let horus_dir = home.join(".horus");
-        fs::create_dir_all(&horus_dir)?;
+        let horus_dir = crate::paths::horus_dir()?;
+        fs::create_dir_all(&horus_dir).context("failed to create ~/.horus directory")?;
         Ok(horus_dir.join("workspaces.json"))
     }
 
@@ -84,16 +87,19 @@ impl WorkspaceRegistry {
 /// Find workspace root by searching upward for markers
 pub fn find_workspace_root() -> Option<PathBuf> {
     let mut current = std::env::current_dir().ok()?;
+    log::debug!("searching for workspace root from {:?}", current);
 
     // Search upwards for workspace markers (limit to 10 levels)
     for _ in 0..10 {
         // Priority 1: .horus/ directory (explicit HORUS workspace)
         if current.join(".horus").exists() {
+            log::debug!("found workspace root: {:?}", current);
             return Some(current);
         }
 
         // Priority 2: horus.yaml (workspace config)
-        if current.join("horus.yaml").exists() {
+        if current.join(HORUS_YAML).exists() {
+            log::debug!("found workspace root: {:?}", current);
             return Some(current);
         }
 
@@ -234,7 +240,7 @@ fn interactive_workspace_selector(
         fs::create_dir_all(&horus_dir).context("Failed to create .horus directory")?;
 
         // Create minimal horus.yaml
-        let horus_yaml = current.join("horus.yaml");
+        let horus_yaml = current.join(HORUS_YAML);
         let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
         fs::write(&horus_yaml, yaml_content).context("Failed to create horus.yaml")?;
 
@@ -282,7 +288,7 @@ pub fn register_current_workspace(name: Option<String>) -> Result<()> {
     }
 
     // Create minimal horus.yaml if it doesn't exist
-    let horus_yaml = current.join("horus.yaml");
+    let horus_yaml = current.join(HORUS_YAML);
     if !horus_yaml.exists() {
         let yaml_content = format!("name: {}\nversion: 0.1.9\n", workspace_name);
         fs::write(&horus_yaml, yaml_content)?;

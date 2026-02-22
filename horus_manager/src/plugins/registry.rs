@@ -201,14 +201,12 @@ impl PluginRegistry {
 
     /// Get the global registry path
     pub fn global_path() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-        Ok(home.join(".horus").join("plugins.lock"))
+        Ok(crate::paths::horus_dir()?.join("plugins.lock"))
     }
 
     /// Get the global bin directory path
     pub fn global_bin_dir() -> Result<PathBuf> {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-        Ok(home.join(".horus").join("bin"))
+        Ok(crate::paths::horus_dir()?.join("bin"))
     }
 
     /// Get the project registry path for a given project root
@@ -226,7 +224,7 @@ impl PluginRegistry {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read plugins.lock from {}", path.display()))?;
         let registry: Self = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse plugins.lock from {}", path.display()))?;
+            .with_context(|| format!("failed to parse plugins.lock from {}", path.display()))?;
         Ok(registry)
     }
 

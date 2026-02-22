@@ -206,38 +206,3 @@ impl<T> TopicDescriptor<T> {
     }
 }
 
-// ============================================================================
-// Topic Config
-// ============================================================================
-
-/// Topic configuration for creating topics with specific settings.
-///
-/// Used primarily by Python bindings and config-file-based topic creation.
-pub(crate) struct TopicConfig {
-    /// Topic name
-    pub name: String,
-    /// Ring buffer capacity
-    pub capacity: u32,
-    /// Whether to create (vs open existing)
-    pub create: bool,
-    /// Whether this is the producer side
-    pub is_producer: bool,
-}
-
-impl TopicConfig {
-    /// Create a new topic configuration
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            capacity: 64,
-            create: true,
-            is_producer: true,
-        }
-    }
-
-    /// Set the ring buffer capacity
-    pub fn with_capacity(mut self, capacity: u32) -> Self {
-        self.capacity = capacity;
-        self
-    }
-}

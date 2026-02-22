@@ -223,6 +223,10 @@ fn check(code: i32) -> CudaResult<()> {
 /// Check if CUDA is available at runtime
 pub fn cuda_available() -> bool {
     let mut count: i32 = 0;
+    // SAFETY: count is a valid mutable i32 on the stack. cudaGetDeviceCount
+    // writes the device count and returns 0 on success. If CUDA is not
+    // installed or the driver is unavailable, the FFI call may fail to link
+    // at load time (handled by the cuda feature gate).
     unsafe { cudaGetDeviceCount(&mut count) == 0 && count > 0 }
 }
 

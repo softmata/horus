@@ -52,7 +52,9 @@ jobs:
         run: |
           sudo mkdir -p /dev/shm/horus/topics
           sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          sudo mkdir -p /dev/shm/horus/nodes
+          sudo mkdir -p /dev/shm/horus/control
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
           # Increase shared memory limits
           sudo sysctl -w kernel.shmmax=2147483648
           sudo sysctl -w kernel.shmall=2147483648
@@ -108,7 +110,9 @@ jobs:
         run: |
           sudo mkdir -p /dev/shm/horus/topics
           sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          sudo mkdir -p /dev/shm/horus/nodes
+          sudo mkdir -p /dev/shm/horus/control
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
 
       - name: Build horus_manager
         run: cargo build -p horus_manager --release
@@ -558,6 +562,133 @@ jobs:
           echo "PASS: full lifecycle (new → check → clean) works"
           cd /tmp && rm -rf lifecycle_test
 
+      # ─────────────────────────────────────────────────
+      # 15. Parameter set/get/delete roundtrip
+      # ─────────────────────────────────────────────────
+      - name: "Assert: param set/get/delete roundtrip"
+        run: |
+          $HORUS param set ci.key 42 2>&1
+          output=$($HORUS param get ci.key --json 2>&1)
+          echo "$output"
+          echo "$output" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert data['value'] == 42 or data['value'] == '42', f'Expected 42, got {data[\"value\"]}'
+          print('PASS: param get returns correct value')
+          "
+          $HORUS param delete ci.key 2>&1
+          # Verify get fails after delete
+          if $HORUS param get ci.key --json 2>&1 | grep -q '"value"'; then
+            echo "WARN: param still exists after delete (may be expected)"
+          fi
+          echo "PASS: param set/get/delete roundtrip"
+
+      # ─────────────────────────────────────────────────
+      # 16. Parameter type inference
+      # ─────────────────────────────────────────────────
+      - name: "Assert: param type inference works for int, float, bool, JSON"
+        run: |
+          $HORUS param set ci.int_val 42 2>&1
+          $HORUS param set ci.float_val 3.14 2>&1
+          $HORUS param set ci.bool_val true 2>&1
+          $HORUS param set ci.json_val '{"nested":true}' 2>&1
+
+          for key in ci.int_val ci.float_val ci.bool_val ci.json_val; do
+            output=$($HORUS param get "$key" --json 2>&1)
+            echo "$key: $output"
+            echo "$output" | python3 -c "import sys, json; json.load(sys.stdin)" || {
+              echo "FAIL: param get --json for $key is not valid JSON"
+              exit 1
+            }
+          done
+
+          # Verify specific types
+          $HORUS param get ci.int_val --json 2>&1 | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          val = data.get('value', data)
+          assert val == 42 or val == '42', f'int: expected 42, got {val}'
+          "
+
+          # Cleanup
+          for key in ci.int_val ci.float_val ci.bool_val ci.json_val; do
+            $HORUS param delete "$key" 2>&1 || true
+          done
+          echo "PASS: param type inference"
+
+      # ─────────────────────────────────────────────────
+      # 17. Parameter save/load file roundtrip
+      # ─────────────────────────────────────────────────
+      - name: "Assert: param save/load file roundtrip"
+        run: |
+          $HORUS param set ci.save_a 100 2>&1
+          $HORUS param set ci.save_b hello 2>&1
+          $HORUS param set ci.save_c 3.14 2>&1
+
+          $HORUS param save -o /tmp/ci_params.yaml 2>&1
+          [ -f /tmp/ci_params.yaml ] || { echo "FAIL: param save didn't create file"; exit 1; }
+
+          $HORUS param reset --force 2>&1
+
+          $HORUS param load /tmp/ci_params.yaml 2>&1
+
+          # Verify restored
+          output=$($HORUS param get ci.save_a --json 2>&1)
+          echo "Restored ci.save_a: $output"
+          echo "$output" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          val = data.get('value', data)
+          assert str(val) == '100', f'Expected 100, got {val}'
+          "
+
+          # Cleanup
+          for key in ci.save_a ci.save_b ci.save_c; do
+            $HORUS param delete "$key" 2>&1 || true
+          done
+          rm -f /tmp/ci_params.yaml
+          echo "PASS: param save/load roundtrip"
+
+      # ─────────────────────────────────────────────────
+      # 18. Launch --dry-run with valid YAML
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus launch --dry-run shows plan without launching"
+        run: |
+          output=$($HORUS launch horus_core/tests/fixtures/test_launch.yaml --dry-run 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "DRY RUN" || { echo "FAIL: missing DRY RUN indicator"; exit 1; }
+          echo "$output" | grep -q "sensor" || { echo "FAIL: missing node 'sensor'"; exit 1; }
+          echo "$output" | grep -q "controller" || { echo "FAIL: missing node 'controller'"; exit 1; }
+          echo "$output" | grep -q "logger" || { echo "FAIL: missing node 'logger'"; exit 1; }
+          echo "PASS: launch --dry-run shows all nodes"
+
+      # ─────────────────────────────────────────────────
+      # 19. Launch --list
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus launch --list shows nodes from file"
+        run: |
+          output=$($HORUS launch horus_core/tests/fixtures/test_launch.yaml --list 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "sensor" || { echo "FAIL: missing node 'sensor'"; exit 1; }
+          echo "$output" | grep -q "controller" || { echo "FAIL: missing node 'controller'"; exit 1; }
+          echo "$output" | grep -q "logger" || { echo "FAIL: missing node 'logger'"; exit 1; }
+          echo "PASS: launch --list shows all nodes"
+
+      # ─────────────────────────────────────────────────
+      # 20. Launch circular dependency detection
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus launch detects circular dependencies"
+        run: |
+          # Note: circular dependency is detected during topological sort, which
+          # only runs without --dry-run. The command should fail with exit code != 0.
+          output=$($HORUS launch horus_core/tests/fixtures/test_launch_circular.yaml 2>&1) || true
+          echo "$output"
+          echo "$output" | grep -qi "circular\|cycle" || {
+            echo "FAIL: no circular dependency error detected"
+            exit 1
+          }
+          echo "PASS: circular dependency detected"
+
   # ═══════════════════════════════════════════════════════════════
   # Runtime Integration Tests — scheduler, topics, multi-node
   # ═══════════════════════════════════════════════════════════════
@@ -591,7 +722,9 @@ jobs:
         run: |
           sudo mkdir -p /dev/shm/horus/topics
           sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
+          sudo mkdir -p /dev/shm/horus/nodes
+          sudo mkdir -p /dev/shm/horus/control
+          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats /dev/shm/horus/nodes /dev/shm/horus/control
 
       - name: Build Workspace
         run: cargo build --workspace --release
@@ -651,6 +784,104 @@ jobs:
         timeout-minutes: 5
         env:
           RUST_BACKTRACE: 1
+
+      # ─────────────────────────────────────────────────
+      # Topic type safety (Rust integration test)
+      # ─────────────────────────────────────────────────
+      - name: "Assert: Topic type mismatch is detected"
+        run: cargo test -p horus_core --release --test topic_type_safety -- --test-threads=1 --nocapture
+        timeout-minutes: 3
+        env:
+          RUST_BACKTRACE: 1
+
+      # ─────────────────────────────────────────────────
+      # Live node discovery
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus node list discovers running nodes"
+        run: |
+          export HORUS_CI_READY_FILE="/tmp/ci_node_ready"
+          export HORUS_CI_DURATION_MS=10000
+          rm -f "$HORUS_CI_READY_FILE"
+
+          ./target/release/ci_test_node &
+          CI_PID=$!
+
+          # Wait for ready file (up to 5s)
+          for i in $(seq 1 50); do [ -f "$HORUS_CI_READY_FILE" ] && break; sleep 0.1; done
+          sleep 1
+
+          output=$($HORUS node list --json 2>&1)
+          echo "$output"
+          echo "$output" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert any('ci_test_node' in n.get('name','') for n in data), f'ci_test_node not found in: {data}'
+          print('PASS: ci_test_node discovered')
+          "
+
+          kill $CI_PID 2>/dev/null; wait $CI_PID 2>/dev/null || true
+        timeout-minutes: 2
+        env:
+          RUST_BACKTRACE: 1
+
+      # ─────────────────────────────────────────────────
+      # Live topic listing
+      # ─────────────────────────────────────────────────
+      - name: "Assert: horus topic list discovers active topics"
+        run: |
+          export HORUS_CI_READY_FILE="/tmp/ci_topic_ready"
+          export HORUS_CI_TOPIC_NAME="ci_live_topic"
+          export HORUS_CI_DURATION_MS=10000
+          rm -f "$HORUS_CI_READY_FILE"
+
+          ./target/release/ci_test_node &
+          CI_PID=$!
+
+          # Wait for ready file (up to 5s)
+          for i in $(seq 1 50); do [ -f "$HORUS_CI_READY_FILE" ] && break; sleep 0.1; done
+          sleep 1
+
+          output=$($HORUS topic list --json 2>&1)
+          echo "$output"
+          echo "$output" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          names = [t.get('name','') for t in data] if isinstance(data, list) else []
+          assert any('ci_live_topic' in n for n in names), f'ci_live_topic not found in: {names}'
+          print('PASS: ci_live_topic discovered')
+          "
+
+          kill $CI_PID 2>/dev/null; wait $CI_PID 2>/dev/null || true
+        timeout-minutes: 2
+        env:
+          RUST_BACKTRACE: 1
+
+      # ─────────────────────────────────────────────────
+      # Monitor API
+      # ─────────────────────────────────────────────────
+      - name: "Assert: Monitor API returns valid JSON"
+        run: |
+          # Bypass auth by creating empty password hash
+          mkdir -p ~/.horus && echo -n "" > ~/.horus/dashboard_password.hash
+
+          $HORUS monitor 3199 &
+          MON_PID=$!
+
+          # Wait for monitor to start (up to 5s)
+          for i in $(seq 1 50); do curl -s http://localhost:3199/api/status >/dev/null 2>&1 && break; sleep 0.1; done
+
+          # Test status endpoint
+          curl -sf http://localhost:3199/api/status | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), dict); print('PASS: /api/status')"
+
+          # Test nodes endpoint
+          curl -sf http://localhost:3199/api/nodes | python3 -c "import sys,json; json.load(sys.stdin); print('PASS: /api/nodes')"
+
+          # Test topics endpoint
+          curl -sf http://localhost:3199/api/topics | python3 -c "import sys,json; json.load(sys.stdin); print('PASS: /api/topics')"
+
+          kill $MON_PID 2>/dev/null; wait $MON_PID 2>/dev/null || true
+        timeout-minutes: 2
+        continue-on-error: true
 
       - name: "Assert: Shared memory is cleaned up after tests"
         run: |

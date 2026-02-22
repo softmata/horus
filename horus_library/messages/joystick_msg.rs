@@ -49,109 +49,71 @@ pub struct JoystickInput {
 }
 
 impl JoystickInput {
+    /// Core constructor — all public constructors delegate here.
+    fn new_event(
+        joystick_id: u32,
+        event_type_str: &[u8],
+        element_id: u32,
+        name: &str,
+        value: f32,
+        pressed: u8,
+    ) -> Self {
+        let mut event_type = [0u8; 16];
+        let len = event_type_str.len().min(15);
+        event_type[..len].copy_from_slice(&event_type_str[..len]);
+
+        let mut element_name = [0u8; 32];
+        let name_bytes = name.as_bytes();
+        let copy_len = name_bytes.len().min(31);
+        element_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+        Self {
+            joystick_id,
+            event_type,
+            element_id,
+            element_name,
+            value,
+            pressed,
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        }
+    }
+
     pub fn new_button(
         joystick_id: u32,
         button_id: u32,
         button_name: String,
         pressed: bool,
     ) -> Self {
-        let mut event_type = [0u8; 16];
-        let event_bytes = b"button";
-        event_type[..event_bytes.len()].copy_from_slice(event_bytes);
-
-        let mut element_name = [0u8; 32];
-        let name_bytes = button_name.as_bytes();
-        let copy_len = name_bytes.len().min(31);
-        element_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-
-        Self {
+        Self::new_event(
             joystick_id,
-            event_type,
-            element_id: button_id,
-            element_name,
-            value: if pressed { 1.0 } else { 0.0 },
-            pressed: pressed as u8,
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        }
+            b"button",
+            button_id,
+            &button_name,
+            if pressed { 1.0 } else { 0.0 },
+            pressed as u8,
+        )
     }
 
     pub fn new_axis(joystick_id: u32, axis_id: u32, axis_name: String, value: f32) -> Self {
-        let mut event_type = [0u8; 16];
-        let event_bytes = b"axis";
-        event_type[..event_bytes.len()].copy_from_slice(event_bytes);
-
-        let mut element_name = [0u8; 32];
-        let name_bytes = axis_name.as_bytes();
-        let copy_len = name_bytes.len().min(31);
-        element_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-
-        Self {
-            joystick_id,
-            event_type,
-            element_id: axis_id,
-            element_name,
-            value,
-            pressed: 0,
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        }
+        Self::new_event(joystick_id, b"axis", axis_id, &axis_name, value, 0)
     }
 
     pub fn new_hat(joystick_id: u32, hat_id: u32, hat_name: String, value: f32) -> Self {
-        let mut event_type = [0u8; 16];
-        let event_bytes = b"hat";
-        event_type[..event_bytes.len()].copy_from_slice(event_bytes);
-
-        let mut element_name = [0u8; 32];
-        let name_bytes = hat_name.as_bytes();
-        let copy_len = name_bytes.len().min(31);
-        element_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-
-        Self {
-            joystick_id,
-            event_type,
-            element_id: hat_id,
-            element_name,
-            value,
-            pressed: 0,
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        }
+        Self::new_event(joystick_id, b"hat", hat_id, &hat_name, value, 0)
     }
 
     pub fn new_connection(joystick_id: u32, connected: bool) -> Self {
-        let mut event_type = [0u8; 16];
-        let event_bytes = b"connection";
-        event_type[..event_bytes.len()].copy_from_slice(event_bytes);
-
-        let mut element_name = [0u8; 32];
-        let name_str = if connected {
-            "Connected"
-        } else {
-            "Disconnected"
-        };
-        let name_bytes = name_str.as_bytes();
-        element_name[..name_bytes.len()].copy_from_slice(name_bytes);
-
-        Self {
+        Self::new_event(
             joystick_id,
-            event_type,
-            element_id: 0,
-            element_name,
-            value: if connected { 1.0 } else { 0.0 },
-            pressed: 0,
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-        }
+            b"connection",
+            0,
+            if connected { "Connected" } else { "Disconnected" },
+            if connected { 1.0 } else { 0.0 },
+            0,
+        )
     }
 
     /// Get the event type as a String
@@ -208,6 +170,4 @@ impl JoystickInput {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for JoystickInput {}
-unsafe impl horus_core::bytemuck::Zeroable for JoystickInput {}
-unsafe impl horus_core::communication::PodMessage for JoystickInput {}
+crate::messages::impl_pod_message!(JoystickInput);

@@ -2,6 +2,7 @@
 //!
 //! Handles cross-compilation, file transfer, and remote execution.
 
+use crate::config::CARGO_TOML;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use std::collections::HashMap;
@@ -495,7 +496,7 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
 
 /// Find the binary name from Cargo.toml
 fn find_binary_name() -> Option<String> {
-    let cargo_toml = Path::new("Cargo.toml");
+    let cargo_toml = Path::new(CARGO_TOML);
     if !cargo_toml.exists() {
         return None;
     }

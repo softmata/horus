@@ -17,8 +17,6 @@ pub(crate) struct MigrationMetrics {
     pub migrations: AtomicU32,
     /// Current backend latency estimate (ns)
     pub estimated_latency_ns: AtomicU32,
-    /// Last observed epoch
-    pub last_epoch: AtomicU64,
 }
 
 /// Non-atomic snapshot of topic metrics (for external consumers)

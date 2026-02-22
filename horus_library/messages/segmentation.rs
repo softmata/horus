@@ -72,14 +72,7 @@ impl SegmentationMask {
         }
     }
 
-    /// Set frame ID
-    pub fn with_frame_id(mut self, frame_id: &str) -> Self {
-        let bytes = frame_id.as_bytes();
-        let len = bytes.len().min(31);
-        self.frame_id[..len].copy_from_slice(&bytes[..len]);
-        self.frame_id[len..].fill(0);
-        self
-    }
+    crate::messages::impl_with_frame_id!();
 
     /// Set timestamp
     pub fn with_timestamp(mut self, timestamp_ns: u64) -> Self {

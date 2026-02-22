@@ -73,8 +73,8 @@ pub use blackbox::{BlackBox, BlackBoxEvent};
 // Re-export record/replay (public API)
 pub use record_replay::{
     diff_recordings, Breakpoint, BreakpointCondition, DebugEvent, DebugSessionState, DebuggerState,
-    NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingDiff, RecordingManager,
-    ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
+    NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording, RecordingDiff,
+    RecordingManager, ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 
 // Re-export node tier from types

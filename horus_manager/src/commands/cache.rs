@@ -32,9 +32,7 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Show cache information (directory, size, package count)
 pub fn run_info() -> HorusResult<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-    let cache_dir = home.join(".horus/cache");
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
     println!("{}", "HORUS Cache Information".cyan().bold());
     println!("{}", "═".repeat(40));
@@ -72,9 +70,7 @@ pub fn run_info() -> HorusResult<()> {
 
 /// List all cached packages
 pub fn run_list() -> HorusResult<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-    let cache_dir = home.join(".horus/cache");
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
     println!("{}", "Cached Packages".cyan().bold());
     println!("{}", "─".repeat(60));
@@ -107,9 +103,7 @@ pub fn run_list() -> HorusResult<()> {
 
 /// Clean unused packages from cache
 pub fn run_clean(dry_run: bool) -> HorusResult<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-    let cache_dir = home.join(".horus/cache");
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
     println!("{} Scanning for unused packages...", "[CACHE]".cyan());
 
@@ -189,9 +183,7 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
 
 /// Purge the entire cache
 pub fn run_purge(yes: bool) -> HorusResult<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HorusError::Config("Could not find home directory".to_string()))?;
-    let cache_dir = home.join(".horus/cache");
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
     if !cache_dir.exists() {
         println!("Cache is already empty.");

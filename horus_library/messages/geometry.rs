@@ -310,30 +310,7 @@ impl Quaternion {
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
 // for real-time robotics control loops. Topic automatically uses POD backend.
 
-// Bytemuck implementations for safe byte casting
-unsafe impl horus_core::bytemuck::Pod for Twist {}
-unsafe impl horus_core::bytemuck::Zeroable for Twist {}
-unsafe impl horus_core::communication::PodMessage for Twist {}
-
-unsafe impl horus_core::bytemuck::Pod for Pose2D {}
-unsafe impl horus_core::bytemuck::Zeroable for Pose2D {}
-unsafe impl horus_core::communication::PodMessage for Pose2D {}
-
-unsafe impl horus_core::bytemuck::Pod for TransformStamped {}
-unsafe impl horus_core::bytemuck::Zeroable for TransformStamped {}
-unsafe impl horus_core::communication::PodMessage for TransformStamped {}
-
-unsafe impl horus_core::bytemuck::Pod for Point3 {}
-unsafe impl horus_core::bytemuck::Zeroable for Point3 {}
-unsafe impl horus_core::communication::PodMessage for Point3 {}
-
-unsafe impl horus_core::bytemuck::Pod for Vector3 {}
-unsafe impl horus_core::bytemuck::Zeroable for Vector3 {}
-unsafe impl horus_core::communication::PodMessage for Vector3 {}
-
-unsafe impl horus_core::bytemuck::Pod for Quaternion {}
-unsafe impl horus_core::bytemuck::Zeroable for Quaternion {}
-unsafe impl horus_core::communication::PodMessage for Quaternion {}
+crate::messages::impl_pod_message!(Twist, Pose2D, TransformStamped, Point3, Vector3, Quaternion);
 
 // Note: POD types are now auto-detected via needs_drop, no registration needed
 

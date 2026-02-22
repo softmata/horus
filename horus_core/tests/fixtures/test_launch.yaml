@@ -1,0 +1,17 @@
+session: ci_test_session
+namespace: ci
+nodes:
+  - name: sensor
+    command: "echo sensor"
+    rate_hz: 100
+    priority: 0
+
+  - name: controller
+    command: "echo controller"
+    depends_on: [sensor]
+    priority: 1
+
+  - name: logger
+    command: "echo logger"
+    depends_on: [controller]
+    priority: 100

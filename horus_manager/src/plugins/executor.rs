@@ -11,6 +11,7 @@ use std::process::{Command, Stdio};
 use super::registry::{PluginEntry, PluginRegistry};
 use super::resolver::PluginResolver;
 use super::HORUS_VERSION;
+use crate::cargo_utils::is_executable;
 
 /// Executes plugin commands
 pub struct PluginExecutor {
@@ -123,6 +124,14 @@ impl PluginExecutor {
 
         // Check compatibility
         if !self.resolver.global().is_compatible(entry) {
+            log::warn!(
+                "Plugin '{}' v{} may not be compatible with HORUS v{} (requires {} <= horus < {})",
+                entry.package,
+                entry.version,
+                HORUS_VERSION,
+                entry.compatibility.horus_min,
+                entry.compatibility.horus_max
+            );
             eprintln!(
                 "{} Plugin '{}' v{} may not be compatible with HORUS v{}",
                 "[WARN]".yellow(),
@@ -246,23 +255,6 @@ pub struct PluginInfo {
     pub description: String,
 }
 
-/// Check if a path is executable
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = path.metadata() {
-        let permissions = metadata.permissions();
-        permissions.mode() & 0o111 != 0
-    } else {
-        false
-    }
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.exists()
-}
 
 #[cfg(test)]
 mod tests {

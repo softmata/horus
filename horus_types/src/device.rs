@@ -201,12 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn test_device_constants() {
-        assert_eq!(Device::CPU, Device::cpu());
-        assert_eq!(Device::CUDA0, Device::cuda(0));
-    }
-
-    #[test]
     fn test_device_parse() {
         assert_eq!(Device::parse("cpu"), Some(Device::cpu()));
         assert_eq!(Device::parse("cuda"), Some(Device::cuda(0)));

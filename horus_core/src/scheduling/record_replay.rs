@@ -152,6 +152,41 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
     }
 }
 
+/// Shared trait for recording types that support save/load/finish via bincode.
+///
+/// Implementors must provide access to their `ended_at` field.
+pub trait Recording: Serialize + serde::de::DeserializeOwned + Sized {
+    /// Mutable access to the `ended_at` timestamp.
+    fn ended_at_mut(&mut self) -> &mut Option<u64>;
+
+    /// Mark recording as ended (sets `ended_at` to current time).
+    fn finish(&mut self) {
+        *self.ended_at_mut() = Some(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64,
+        );
+    }
+
+    /// Save to file using bincode.
+    fn save(&self, path: &PathBuf) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = File::create(path)?;
+        let writer = BufWriter::new(file);
+        bincode::serialize_into(writer, self).map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    /// Load from file using bincode.
+    fn load(path: &PathBuf) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        bincode::deserialize_from(reader).map_err(|e| std::io::Error::other(e.to_string()))
+    }
+}
+
 /// A snapshot of a node's state at a specific tick
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeTickSnapshot {
@@ -268,16 +303,6 @@ impl NodeRecording {
             .collect()
     }
 
-    /// Mark recording as ended
-    pub fn finish(&mut self) {
-        self.ended_at = Some(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
-        );
-    }
-
     /// Get total number of snapshots
     pub fn snapshot_count(&self) -> usize {
         self.snapshots.len()
@@ -295,28 +320,11 @@ impl NodeRecording {
             })
             .sum()
     }
+}
 
-    /// Save to file
-    pub fn save(&self, path: &PathBuf) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let file = File::create(path)?;
-        let writer = BufWriter::new(file);
-
-        // Use bincode for efficient serialization
-        bincode::serialize_into(writer, self).map_err(|e| std::io::Error::other(e.to_string()))?;
-
-        Ok(())
-    }
-
-    /// Load from file
-    pub fn load(path: &PathBuf) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        bincode::deserialize_from(reader).map_err(|e| std::io::Error::other(e.to_string()))
+impl Recording for NodeRecording {
+    fn ended_at_mut(&mut self) -> &mut Option<u64> {
+        &mut self.ended_at
     }
 }
 
@@ -370,36 +378,11 @@ impl SchedulerRecording {
         self.total_ticks += 1;
     }
 
-    /// Mark recording as ended
-    pub fn finish(&mut self) {
-        self.ended_at = Some(
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
-        );
-    }
+}
 
-    /// Save to file
-    pub fn save(&self, path: &PathBuf) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let file = File::create(path)?;
-        let writer = BufWriter::new(file);
-
-        bincode::serialize_into(writer, self).map_err(|e| std::io::Error::other(e.to_string()))?;
-
-        Ok(())
-    }
-
-    /// Load from file
-    pub fn load(path: &PathBuf) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        bincode::deserialize_from(reader).map_err(|e| std::io::Error::other(e.to_string()))
+impl Recording for SchedulerRecording {
+    fn ended_at_mut(&mut self) -> &mut Option<u64> {
+        &mut self.ended_at
     }
 }
 

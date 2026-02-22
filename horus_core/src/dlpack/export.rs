@@ -28,15 +28,21 @@ unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
         return;
     }
 
+    // SAFETY: null check above. The pointer was created by `Box::into_raw` in
+    // `to_dlpack` (or by the Python capsule path), so it is valid, aligned,
+    // and was allocated via the global allocator.
     let managed = &mut *managed;
 
     // Free the context
     if !managed.manager_ctx.is_null() {
+        // SAFETY: manager_ctx was created by `Box::into_raw(context)` in
+        // `to_dlpack`, so reconstructing the Box reclaims ownership.
         let _ = Box::from_raw(managed.manager_ctx as *mut DLPackContext);
     }
 
-    // Free the managed tensor itself
-    let _ = Box::from_raw(managed);
+    // SAFETY: `managed` was created by `Box::into_raw` in the export path.
+    // Reconstructing the Box drops it and frees the allocation.
+    let _ = Box::from_raw(managed as *mut DLManagedTensor);
 }
 
 /// Convert HORUS tensor information to DLPack format

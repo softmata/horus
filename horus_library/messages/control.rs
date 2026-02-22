@@ -676,34 +676,7 @@ impl LogSummary for StepperCommand {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for MotorCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for MotorCommand {}
-unsafe impl horus_core::communication::PodMessage for MotorCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for DifferentialDriveCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for DifferentialDriveCommand {}
-unsafe impl horus_core::communication::PodMessage for DifferentialDriveCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for ServoCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for ServoCommand {}
-unsafe impl horus_core::communication::PodMessage for ServoCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for PidConfig {}
-unsafe impl horus_core::bytemuck::Zeroable for PidConfig {}
-unsafe impl horus_core::communication::PodMessage for PidConfig {}
-
-unsafe impl horus_core::bytemuck::Pod for TrajectoryPoint {}
-unsafe impl horus_core::bytemuck::Zeroable for TrajectoryPoint {}
-unsafe impl horus_core::communication::PodMessage for TrajectoryPoint {}
-
-unsafe impl horus_core::bytemuck::Pod for JointCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for JointCommand {}
-unsafe impl horus_core::communication::PodMessage for JointCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for PwmCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for PwmCommand {}
-unsafe impl horus_core::communication::PodMessage for PwmCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for StepperCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for StepperCommand {}
-unsafe impl horus_core::communication::PodMessage for StepperCommand {}
+crate::messages::impl_pod_message!(
+    MotorCommand, DifferentialDriveCommand, ServoCommand, PidConfig,
+    TrajectoryPoint, JointCommand, PwmCommand, StepperCommand,
+);

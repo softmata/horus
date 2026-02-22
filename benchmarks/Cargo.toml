@@ -47,7 +47,6 @@ bytemuck = { version = "1.24", features = ["derive"] }
 serde.workspace = true
 serde_json = "1.0"
 serde_arrays = "0.1"
-colored = "2.0"
 anyhow = "1.0"
 libc = "0.2"
 rand = "0.8"

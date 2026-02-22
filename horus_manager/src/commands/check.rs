@@ -1,6 +1,7 @@
 //! Check command - validate horus.yaml, source files, or entire workspace
 
 use crate::commands::run::{check_hardware_requirements, parse_horus_yaml_dependencies_v2};
+use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::dependency_resolver::DependencySource;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
@@ -15,6 +16,7 @@ use walkdir::WalkDir;
 /// Run the check command on a path (directory or file)
 pub fn run_check(path: Option<PathBuf>, quiet: bool) -> HorusResult<()> {
     let target_path = path.unwrap_or_else(|| PathBuf::from("."));
+    log::debug!("checking path: {:?}", target_path);
 
     if !target_path.exists() {
         println!(
@@ -68,7 +70,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let ext = path.extension().and_then(|e| e.to_str());
 
-            if filename == "horus.yaml" {
+            if filename == HORUS_YAML {
                 horus_yamls.push(path.to_path_buf());
             } else if ext == Some("rs") && filename != "build.rs" {
                 rust_files.push(path.to_path_buf());
@@ -92,7 +94,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
         })
         .filter_map(|e| e.ok())
     {
-        if entry.file_name() == "Cargo.toml" {
+        if entry.file_name() == CARGO_TOML {
             if let Some(parent) = entry.path().parent() {
                 cargo_dirs.insert(parent.to_path_buf());
             }
@@ -135,7 +137,7 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                                     "rust" => {
                                         base_dir.join("main.rs").exists()
                                             || base_dir.join("src/main.rs").exists()
-                                            || base_dir.join("Cargo.toml").exists()
+                                            || base_dir.join(CARGO_TOML).exists()
                                     }
                                     "python" => base_dir.join("main.py").exists(),
                                     _ => true,
@@ -401,6 +403,7 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
     }
 
     if let Err(e) = check_hardware_requirements(path, "rust") {
+        log::warn!("Hardware check error: {}", e);
         eprintln!("\n{} Hardware check error: {}", "[WARNING]".yellow(), e);
     }
 
@@ -727,7 +730,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                 base_dir.join(path)
             };
 
-            let target_yaml = resolved_path.join("horus.yaml");
+            let target_yaml = resolved_path.join(HORUS_YAML);
             if target_yaml.exists() {
                 if let Ok(target_deps) =
                     parse_horus_yaml_dependencies_v2(&target_yaml.to_string_lossy())
@@ -879,7 +882,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
         if let Some(language) = yaml.get("language").and_then(|l| l.as_str()) {
             match language {
                 "rust" => {
-                    let has_cargo = base_dir.join("Cargo.toml").exists();
+                    let has_cargo = base_dir.join(CARGO_TOML).exists();
                     let has_main =
                         base_dir.join("main.rs").exists() || base_dir.join("src/main.rs").exists();
 

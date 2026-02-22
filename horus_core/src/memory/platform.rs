@@ -61,16 +61,6 @@ pub fn shm_network_dir() -> PathBuf {
     shm_base_dir().join("network")
 }
 
-/// Get the params directory for cross-process runtime parameters
-///
-/// Parameters stored here can be read/written by multiple processes,
-/// enabling dynamic runtime configuration (e.g., PID tuning).
-///
-/// Structure: `/dev/shm/horus/params/{param_name}` (one file per param)
-pub fn shm_params_dir() -> PathBuf {
-    shm_base_dir().join("params")
-}
-
 /// Get the control directory for node lifecycle commands
 ///
 /// Control files allow external processes (like `horus node kill`) to
@@ -138,8 +128,5 @@ mod tests {
 
         let nodes = shm_nodes_dir();
         assert!(nodes.starts_with(&base));
-
-        let params = shm_params_dir();
-        assert!(params.starts_with(&base));
     }
 }

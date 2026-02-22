@@ -96,13 +96,6 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
     )))
 }
 
-/// Get available CPU core count
-pub fn get_core_count() -> usize {
-    core_affinity::get_core_ids()
-        .map(|ids| ids.len())
-        .unwrap_or_else(num_cpus::get)
-}
-
 // ============================================================================
 // Memory Locking
 // ============================================================================
@@ -196,18 +189,6 @@ pub fn set_realtime_priority(_priority: i32) -> RuntimeResult<()> {
     ))
 }
 
-/// Get the maximum real-time priority available
-#[cfg(target_os = "linux")]
-pub fn get_max_rt_priority() -> i32 {
-    // SAFETY: SCHED_FIFO is a valid scheduling policy constant.
-    unsafe { libc::sched_get_priority_max(libc::SCHED_FIFO) }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn get_max_rt_priority() -> i32 {
-    99 // Default Linux max
-}
-
 // ============================================================================
 // NUMA Awareness
 // ============================================================================
@@ -230,63 +211,6 @@ pub fn get_numa_node_count() -> usize {
 #[cfg(not(target_os = "linux"))]
 pub fn get_numa_node_count() -> usize {
     1
-}
-
-// ============================================================================
-// Combined RT Setup
-// ============================================================================
-
-/// Apply all real-time optimizations at once
-pub fn apply_rt_optimizations(
-    cpu_cores: Option<&[usize]>,
-    lock_memory: bool,
-    rt_priority: Option<i32>,
-    prefault_stack_kb: Option<usize>,
-) -> Vec<RuntimeError> {
-    let mut errors = Vec::new();
-
-    // 1. Set CPU affinity
-    if let Some(cores) = cpu_cores {
-        if let Err(e) = set_thread_affinity(cores) {
-            eprintln!("[RT] Warning: {}", e);
-            errors.push(e);
-        }
-    }
-
-    // 2. Lock memory
-    if lock_memory {
-        if let Err(e) = lock_all_memory() {
-            eprintln!("[RT] Warning: {}", e);
-            errors.push(e);
-        }
-    }
-
-    // 3. Set RT priority
-    if let Some(priority) = rt_priority {
-        if let Err(e) = set_realtime_priority(priority) {
-            eprintln!("[RT] Warning: {}", e);
-            errors.push(e);
-        }
-    }
-
-    // 4. Pre-fault stack
-    if let Some(kb) = prefault_stack_kb {
-        if let Err(e) = prefault_stack(kb * 1024) {
-            eprintln!("[RT] Warning: {}", e);
-            errors.push(e);
-        }
-    }
-
-    if errors.is_empty() {
-        println!("[RT] All real-time optimizations applied successfully");
-    } else {
-        println!(
-            "[RT] Applied with {} warnings (may need root/capabilities)",
-            errors.len()
-        );
-    }
-
-    errors
 }
 
 // ============================================================================
@@ -697,12 +621,6 @@ impl RuntimeCapabilities {
 #[cfg(test)]
 mod runtime_tests {
     use super::*;
-
-    #[test]
-    fn test_get_core_count() {
-        let count = get_core_count();
-        assert!(count > 0);
-    }
 
     #[test]
     fn test_numa_node_count() {

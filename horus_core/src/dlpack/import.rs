@@ -61,6 +61,8 @@ pub unsafe fn from_dlpack(
         return Err(DLPackImportError::NullPointer);
     }
 
+    // SAFETY: null check above. Caller guarantees `managed` points to a valid
+    // DLManagedTensor per this function's documented safety requirements.
     let managed = &*managed;
     let tensor = &managed.dl_tensor;
 
@@ -94,6 +96,8 @@ pub unsafe fn from_dlpack(
     let ndim = tensor.ndim as usize;
 
     let shape: Vec<u64> = if ndim > 0 {
+        // SAFETY: shape is non-null (checked above for ndim > 0), and per DLPack
+        // spec it points to `ndim` contiguous i64 values owned by the producer.
         let raw_shape = std::slice::from_raw_parts(tensor.shape, ndim);
         let mut shape = Vec::with_capacity(ndim);
         for (i, &x) in raw_shape.iter().enumerate() {
@@ -117,6 +121,8 @@ pub unsafe fn from_dlpack(
     } else {
         // Convert element strides to byte strides
         let elem_size = dtype.size_bytes() as u64;
+        // SAFETY: strides is non-null (else branch), and per DLPack spec it
+        // points to `ndim` contiguous i64 values owned by the producer.
         let raw_strides = std::slice::from_raw_parts(tensor.strides, ndim);
         let mut strides = Vec::with_capacity(ndim);
         for (i, &x) in raw_strides.iter().enumerate() {

@@ -86,6 +86,8 @@ pub struct LaunchConfig {
 
 /// Run the launch command
 pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> HorusResult<()> {
+    log::debug!("launching from file: {:?}", file);
+
     // Check if file exists
     if !file.exists() {
         return Err(HorusError::Config(format!(
@@ -98,7 +100,7 @@ pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> Horu
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
     let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse launch file: {}", e)))?;
+        .map_err(|e| HorusError::Config(format!("failed to parse launch file: {}", e)))?;
 
     if config.nodes.is_empty() {
         println!("{}", "No nodes defined in launch file.".yellow());
@@ -253,7 +255,7 @@ pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> Horu
                 }
                 Ok(None) => {} // Still running
                 Err(e) => {
-                    eprintln!("Error checking node '{}': {}", name, e);
+                    log::error!("Error checking node '{}': {}", name, e);
                 }
             }
         }
@@ -491,7 +493,7 @@ pub fn list_launch_nodes(file: &Path) -> HorusResult<()> {
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
     let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(format!("Failed to parse launch file: {}", e)))?;
+        .map_err(|e| HorusError::Config(format!("failed to parse launch file: {}", e)))?;
 
     println!("{}", "Launch File Contents".green().bold());
     println!();

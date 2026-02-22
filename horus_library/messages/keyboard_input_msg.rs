@@ -161,6 +161,4 @@ impl KeyboardInput {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for KeyboardInput {}
-unsafe impl horus_core::bytemuck::Zeroable for KeyboardInput {}
-unsafe impl horus_core::communication::PodMessage for KeyboardInput {}
+crate::messages::impl_pod_message!(KeyboardInput);

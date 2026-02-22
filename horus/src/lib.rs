@@ -30,21 +30,7 @@
 //! - **Standard library of components**
 //! - **Comprehensive tooling**
 
-// Allow downstream crates to reach horus_core directly
-pub use horus_core;
-
-// Re-export horus_core modules so `horus::core::*`, `horus::communication::*` etc. still work
-pub use horus_core::actions;
-pub use horus_core::communication;
-pub use horus_core::core;
-pub use horus_core::dlpack;
-pub use horus_core::error;
-pub use horus_core::memory;
-pub use horus_core::params;
-pub use horus_core::scheduling;
-pub use horus_core::types;
-
-// === Core re-exports (user-facing convenience) ===
+// === User-facing re-exports ===
 pub use horus_core::communication::{PodMessage, Topic};
 pub use horus_core::core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig,
@@ -62,21 +48,6 @@ pub use horus_core::actions::{
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
 };
 
-// DLPack interop
-pub use horus_core::dlpack::{to_dlpack, from_dlpack, DLManagedTensor, DLTensor, DLDevice, DLDataType};
-
-// Macro support (doc-hidden, not for direct user use)
-#[doc(hidden)]
-pub use horus_core::paste;
-#[doc(hidden)]
-pub use horus_core::serde_json;
-#[doc(hidden)]
-pub use horus_core::serde_yaml;
-#[doc(hidden)]
-pub use horus_core::bytemuck;
-#[doc(hidden)]
-pub use horus_core::types::FixedString;
-
 // hlog macro
 pub use horus_core::hlog;
 
@@ -90,7 +61,34 @@ pub use horus_library as library;
 // Re-export core types crate
 pub use horus_types;
 
-// Re-export serde at crate root for macro-generated code
+// === Internal plumbing (hidden from docs, used by horus_py / macro-generated code) ===
+#[doc(hidden)]
+pub use horus_core;
+#[doc(hidden)]
+pub use horus_core::actions;
+#[doc(hidden)]
+pub use horus_core::communication;
+#[doc(hidden)]
+pub use horus_core::core;
+#[doc(hidden)]
+pub use horus_core::error;
+#[doc(hidden)]
+pub use horus_core::memory;
+#[doc(hidden)]
+pub use horus_core::params;
+#[doc(hidden)]
+pub use horus_core::scheduling;
+#[doc(hidden)]
+pub use horus_core::dlpack;
+#[doc(hidden)]
+pub use horus_core::paste;
+#[doc(hidden)]
+pub use horus_core::serde_json;
+#[doc(hidden)]
+pub use horus_core::serde_yaml;
+#[doc(hidden)]
+pub use horus_core::bytemuck;
+#[doc(hidden)]
 pub use serde;
 
 /// The HORUS prelude - everything you need to get started

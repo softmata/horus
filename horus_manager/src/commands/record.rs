@@ -3,7 +3,7 @@
 use colored::*;
 use horus_core::error::HorusResult;
 use horus_core::horus_internal;
-use horus_core::scheduling::{diff_recordings, RecordingManager};
+use horus_core::scheduling::{diff_recordings, Recording, RecordingManager};
 use std::path::PathBuf;
 
 /// List recording sessions
@@ -397,7 +397,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
                     let outputs_str: Vec<String> = snapshot
                         .outputs
                         .iter()
-                        .map(|(k, v)| {
+                        .map(|(k, v): (&String, &Vec<u8>)| {
                             let hex: String = v.iter().map(|b| format!("{:02x}", b)).collect();
                             format!("{}={}", k, hex)
                         })
@@ -489,6 +489,7 @@ pub fn run_inject(
                     injected_count += 1;
                 }
                 Err(e) => {
+                    log::error!("Failed to inject '{}': {}", node_name, e);
                     eprintln!("  {} Failed to inject '{}': {}", "✗".red(), node_name, e);
                 }
             }

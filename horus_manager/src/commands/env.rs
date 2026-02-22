@@ -86,7 +86,7 @@ pub fn run_restore(source: String) -> HorusResult<()> {
             .map_err(|e| HorusError::Config(format!("Failed to read freeze file: {}", e)))?;
 
         let manifest: registry::EnvironmentManifest = serde_yaml::from_str(&content)
-            .map_err(|e| HorusError::Config(format!("Failed to parse freeze file: {}", e)))?;
+            .map_err(|e| HorusError::Config(format!("failed to parse freeze file: {}", e)))?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
@@ -220,7 +220,7 @@ fn restore_packages(
                 if let Err(e) =
                     yaml_utils::add_dependency_to_horus_yaml(&yaml_path, &pkg.name, &pkg.version)
                 {
-                    eprintln!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+                    log::warn!("Failed to update horus.yaml: {}", e);
                 }
             }
         }

@@ -519,26 +519,4 @@ impl LogSummary for NavSatFix {
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
 // for real-time robotics sensor data. Topic automatically uses POD backend.
 
-unsafe impl horus_core::bytemuck::Pod for LaserScan {}
-unsafe impl horus_core::bytemuck::Zeroable for LaserScan {}
-unsafe impl horus_core::communication::PodMessage for LaserScan {}
-
-unsafe impl horus_core::bytemuck::Pod for Imu {}
-unsafe impl horus_core::bytemuck::Zeroable for Imu {}
-unsafe impl horus_core::communication::PodMessage for Imu {}
-
-unsafe impl horus_core::bytemuck::Pod for Odometry {}
-unsafe impl horus_core::bytemuck::Zeroable for Odometry {}
-unsafe impl horus_core::communication::PodMessage for Odometry {}
-
-unsafe impl horus_core::bytemuck::Pod for Range {}
-unsafe impl horus_core::bytemuck::Zeroable for Range {}
-unsafe impl horus_core::communication::PodMessage for Range {}
-
-unsafe impl horus_core::bytemuck::Pod for BatteryState {}
-unsafe impl horus_core::bytemuck::Zeroable for BatteryState {}
-unsafe impl horus_core::communication::PodMessage for BatteryState {}
-
-unsafe impl horus_core::bytemuck::Pod for NavSatFix {}
-unsafe impl horus_core::bytemuck::Zeroable for NavSatFix {}
-unsafe impl horus_core::communication::PodMessage for NavSatFix {}
+crate::messages::impl_pod_message!(LaserScan, Imu, Odometry, Range, BatteryState, NavSatFix);

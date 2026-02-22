@@ -296,14 +296,7 @@ impl Path {
         }
     }
 
-    /// Set frame ID
-    pub fn with_frame_id(mut self, frame_id: &str) -> Self {
-        let frame_bytes = frame_id.as_bytes();
-        let len = frame_bytes.len().min(31);
-        self.frame_id[..len].copy_from_slice(&frame_bytes[..len]);
-        self.frame_id[len] = 0;
-        self
-    }
+    crate::messages::impl_with_frame_id!();
 }
 
 /// Occupancy grid map
@@ -746,30 +739,7 @@ impl PathPlan {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for Goal {}
-unsafe impl horus_core::bytemuck::Zeroable for Goal {}
-unsafe impl horus_core::communication::PodMessage for Goal {}
-
-unsafe impl horus_core::bytemuck::Pod for GoalResult {}
-unsafe impl horus_core::bytemuck::Zeroable for GoalResult {}
-unsafe impl horus_core::communication::PodMessage for GoalResult {}
-
-unsafe impl horus_core::bytemuck::Pod for Waypoint {}
-unsafe impl horus_core::bytemuck::Zeroable for Waypoint {}
-unsafe impl horus_core::communication::PodMessage for Waypoint {}
-
-unsafe impl horus_core::bytemuck::Pod for Path {}
-unsafe impl horus_core::bytemuck::Zeroable for Path {}
-unsafe impl horus_core::communication::PodMessage for Path {}
-
-unsafe impl horus_core::bytemuck::Pod for VelocityObstacle {}
-unsafe impl horus_core::bytemuck::Zeroable for VelocityObstacle {}
-unsafe impl horus_core::communication::PodMessage for VelocityObstacle {}
-
-unsafe impl horus_core::bytemuck::Pod for VelocityObstacles {}
-unsafe impl horus_core::bytemuck::Zeroable for VelocityObstacles {}
-unsafe impl horus_core::communication::PodMessage for VelocityObstacles {}
-
-unsafe impl horus_core::bytemuck::Pod for PathPlan {}
-unsafe impl horus_core::bytemuck::Zeroable for PathPlan {}
-unsafe impl horus_core::communication::PodMessage for PathPlan {}
+crate::messages::impl_pod_message!(
+    Goal, GoalResult, Waypoint, Path,
+    VelocityObstacle, VelocityObstacles, PathPlan,
+);

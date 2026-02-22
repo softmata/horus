@@ -152,6 +152,12 @@ pub fn make_dlpack_capsule(
     let managed_ptr = Box::into_raw(managed);
 
     let capsule_name = CString::new("dltensor").unwrap();
+    // SAFETY: managed_ptr is a valid heap allocation from Box::into_raw above.
+    // PyCapsule_New takes ownership of the pointer and will call
+    // dlpack_capsule_destructor when the capsule is garbage collected.
+    // capsule_name is forgotten to prevent double-free (PyCapsule holds the C string).
+    // If PyCapsule_New fails (returns null), we manually call the deleter to
+    // prevent a memory leak.
     unsafe {
         let capsule = pyo3::ffi::PyCapsule_New(
             managed_ptr as *mut c_void,
@@ -160,6 +166,8 @@ pub fn make_dlpack_capsule(
         );
         std::mem::forget(capsule_name);
         if capsule.is_null() {
+            // SAFETY: managed_ptr is still valid (PyCapsule_New failed, so
+            // it did not take ownership). We call the deleter to clean up.
             let managed = &mut *managed_ptr;
             if let Some(deleter) = managed.deleter {
                 deleter(managed_ptr);
@@ -174,15 +182,25 @@ pub fn make_dlpack_capsule(
 ///
 /// Per DLPack spec: if capsule name is still "dltensor" at destruction time,
 /// the consumer never claimed it, so we must call the deleter.
+///
+/// # Safety
+///
+/// Called by Python's PyCapsule machinery. `capsule` must be a valid PyCapsule
+/// created by `make_dlpack_capsule` containing a `DLManagedTensor` pointer.
 pub unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
+    // SAFETY: capsule is a valid PyCapsule object provided by Python runtime.
     let name_ptr = pyo3::ffi::PyCapsule_GetName(capsule);
     if name_ptr.is_null() {
         return;
     }
+    // SAFETY: name_ptr is a valid null-terminated C string set by PyCapsule_New.
     let name = CStr::from_ptr(name_ptr);
     if name.to_bytes() == b"dltensor" {
+        // SAFETY: capsule contains a DLManagedTensor pointer set by PyCapsule_New.
         let ptr = pyo3::ffi::PyCapsule_GetPointer(capsule, name_ptr);
         if !ptr.is_null() {
+            // SAFETY: ptr is the DLManagedTensor* we stored in the capsule.
+            // Calling the deleter transfers ownership back and frees resources.
             let managed = ptr as *mut horus_core::dlpack::DLManagedTensor;
             if let Some(deleter) = (*managed).deleter {
                 deleter(managed);

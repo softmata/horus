@@ -15,6 +15,33 @@
 //
 // All message types are re-exported at the crate root for convenience.
 
+/// Implement Pod, Zeroable, and PodMessage for a `#[repr(C)]` message type.
+macro_rules! impl_pod_message {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            unsafe impl horus_core::bytemuck::Pod for $ty {}
+            unsafe impl horus_core::bytemuck::Zeroable for $ty {}
+            unsafe impl horus_core::communication::PodMessage for $ty {}
+        )+
+    };
+}
+pub(crate) use impl_pod_message;
+
+/// Generate `with_frame_id` builder method for types with a `frame_id: [u8; 32]` field.
+macro_rules! impl_with_frame_id {
+    () => {
+        /// Set the frame ID (builder pattern).
+        pub fn with_frame_id(mut self, frame_id: &str) -> Self {
+            let bytes = frame_id.as_bytes();
+            let len = bytes.len().min(31);
+            self.frame_id[..len].copy_from_slice(&bytes[..len]);
+            self.frame_id[len..].fill(0);
+            self
+        }
+    };
+}
+pub(crate) use impl_with_frame_id;
+
 // Core message modules
 pub mod control;
 pub mod diagnostics;

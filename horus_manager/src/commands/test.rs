@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::commands::run;
+use crate::config::{CARGO_TOML, HORUS_YAML};
 
 /// Check if Cargo.toml needs regeneration
 fn needs_rebuild(horus_dir: &Path) -> bool {
-    let cargo_toml = horus_dir.join("Cargo.toml");
-    let horus_yaml = PathBuf::from("horus.yaml");
+    let cargo_toml = horus_dir.join(CARGO_TOML);
+    let horus_yaml = PathBuf::from(HORUS_YAML);
 
     // If no Cargo.toml, definitely needs build
     if !cargo_toml.exists() {
@@ -76,7 +77,7 @@ pub fn run_tests(
 
     // Step 1: Build if needed (unless --no-build)
     if !no_build {
-        if needs_rebuild(&horus_dir) || !horus_dir.join("Cargo.toml").exists() {
+        if needs_rebuild(&horus_dir) || !horus_dir.join(CARGO_TOML).exists() {
             println!(
                 "  {} Generating/updating build configuration...",
                 "[*]".cyan()
@@ -91,7 +92,7 @@ pub fn run_tests(
     }
 
     // Verify .horus/Cargo.toml exists after potential build
-    let cargo_toml = horus_dir.join("Cargo.toml");
+    let cargo_toml = horus_dir.join(CARGO_TOML);
     if !cargo_toml.exists() {
         println!("{} No .horus/Cargo.toml found.", "[!]".yellow());
         println!(

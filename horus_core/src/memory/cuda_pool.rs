@@ -353,7 +353,12 @@ pub struct CudaTensorPool {
     is_owner: bool,
 }
 
-// Safety: Pool uses atomic operations and IPC handles are process-safe
+// SAFETY: CudaTensorPool can be sent between threads. The pool's shared state
+// (allocated_count, free_stack_head, slot state/refcount/generation) is accessed
+// exclusively through atomics with appropriate orderings. The mmap region is
+// process-shared memory backed by a file; concurrent access to slots is
+// coordinated via atomic CAS (free stack) or atomic state transitions.
+// CUDA IPC handles are process-safe by design (64-byte opaque tokens).
 unsafe impl Send for CudaTensorPool {}
 unsafe impl Sync for CudaTensorPool {}
 

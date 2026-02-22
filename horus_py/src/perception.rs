@@ -10,6 +10,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+use horus_library::messages::detection::BoundingBox2D;
+
 // ============================================
 // BoundingBox2D
 // ============================================
@@ -40,11 +42,12 @@ impl PyBoundingBox2D {
     /// Create from center coordinates (YOLO format)
     #[staticmethod]
     fn from_center(cx: f32, cy: f32, width: f32, height: f32) -> Self {
+        let bb = BoundingBox2D::from_center(cx, cy, width, height);
         Self {
-            x: cx - width / 2.0,
-            y: cy - height / 2.0,
-            width,
-            height,
+            x: bb.x,
+            y: bb.y,
+            width: bb.width,
+            height: bb.height,
         }
     }
 
@@ -68,19 +71,7 @@ impl PyBoundingBox2D {
 
     /// Calculate IoU with another box
     fn iou(&self, other: &PyBoundingBox2D) -> f32 {
-        let x1 = self.x.max(other.x);
-        let y1 = self.y.max(other.y);
-        let x2 = (self.x + self.width).min(other.x + other.width);
-        let y2 = (self.y + self.height).min(other.y + other.height);
-
-        let intersection = (x2 - x1).max(0.0) * (y2 - y1).max(0.0);
-        let union = self.area() + other.area() - intersection;
-
-        if union > 0.0 {
-            intersection / union
-        } else {
-            0.0
-        }
+        self.as_rust().iou(&other.as_rust())
     }
 
     #[getter]
@@ -118,6 +109,13 @@ impl PyBoundingBox2D {
             "BoundingBox2D(x={:.1}, y={:.1}, w={:.1}, h={:.1})",
             self.x, self.y, self.width, self.height
         )
+    }
+}
+
+impl PyBoundingBox2D {
+    /// Convert to the Rust BoundingBox2D type (for delegating to its methods).
+    fn as_rust(&self) -> BoundingBox2D {
+        BoundingBox2D::new(self.x, self.y, self.width, self.height)
     }
 }
 

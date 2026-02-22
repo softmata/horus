@@ -49,14 +49,7 @@ impl WrenchStamped {
         Self::new(Vector3::zero(), torque)
     }
 
-    /// Set the frame ID
-    pub fn with_frame_id(mut self, frame_id: &str) -> Self {
-        let frame_bytes = frame_id.as_bytes();
-        let len = frame_bytes.len().min(31);
-        self.frame_id[..len].copy_from_slice(&frame_bytes[..len]);
-        self.frame_id[len] = 0;
-        self
-    }
+    crate::messages::impl_with_frame_id!();
 
     /// Get the magnitude of the force
     pub fn force_magnitude(&self) -> f64 {
@@ -522,26 +515,7 @@ impl HapticFeedback {
 // POD (Plain Old Data) Message Support
 // =============================================================================
 
-unsafe impl horus_core::bytemuck::Pod for WrenchStamped {}
-unsafe impl horus_core::bytemuck::Zeroable for WrenchStamped {}
-unsafe impl horus_core::communication::PodMessage for WrenchStamped {}
-
-unsafe impl horus_core::bytemuck::Pod for TactileArray {}
-unsafe impl horus_core::bytemuck::Zeroable for TactileArray {}
-unsafe impl horus_core::communication::PodMessage for TactileArray {}
-
-unsafe impl horus_core::bytemuck::Pod for ImpedanceParameters {}
-unsafe impl horus_core::bytemuck::Zeroable for ImpedanceParameters {}
-unsafe impl horus_core::communication::PodMessage for ImpedanceParameters {}
-
-unsafe impl horus_core::bytemuck::Pod for ForceCommand {}
-unsafe impl horus_core::bytemuck::Zeroable for ForceCommand {}
-unsafe impl horus_core::communication::PodMessage for ForceCommand {}
-
-unsafe impl horus_core::bytemuck::Pod for ContactInfo {}
-unsafe impl horus_core::bytemuck::Zeroable for ContactInfo {}
-unsafe impl horus_core::communication::PodMessage for ContactInfo {}
-
-unsafe impl horus_core::bytemuck::Pod for HapticFeedback {}
-unsafe impl horus_core::bytemuck::Zeroable for HapticFeedback {}
-unsafe impl horus_core::communication::PodMessage for HapticFeedback {}
+crate::messages::impl_pod_message!(
+    WrenchStamped, TactileArray, ImpedanceParameters,
+    ForceCommand, ContactInfo, HapticFeedback,
+);

@@ -64,3 +64,20 @@ pub const TUI_REFRESH_INTERVAL_MS: u64 = 250;
 
 /// WebSocket broadcast interval in milliseconds.
 pub const WS_BROADCAST_INTERVAL_MS: u64 = 250;
+
+// === File Name Constants ===
+
+/// HORUS workspace manifest file name.
+pub const HORUS_YAML: &str = "horus.yaml";
+
+/// Cargo manifest file name.
+pub const CARGO_TOML: &str = "Cargo.toml";
+
+/// Environment freeze file name.
+pub const HORUS_FREEZE_YAML: &str = "horus-freeze.yaml";
+
+/// Shared memory path prefix on Linux.
+pub const SHM_PATH: &str = "/dev/shm";
+
+/// HORUS shared memory topic prefix.
+pub const SHM_HORUS_PREFIX: &str = "/dev/shm/horus_";

@@ -2,6 +2,7 @@
 //!
 //! This library provides the core functionality for the HORUS manager.
 
+pub mod cargo_utils;
 pub mod commands;
 pub mod config;
 pub mod dependency_resolver;
@@ -10,6 +11,7 @@ pub mod graph;
 pub mod monitor;
 pub mod monitor_tui;
 pub mod node_detector;
+pub mod paths;
 pub mod plugins;
 pub mod progress;
 pub mod registry;

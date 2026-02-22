@@ -10,7 +10,9 @@ use crate::error::HorusResult;
 use crate::horus_internal;
 use crate::terminal::print_line;
 
-use super::super::record_replay::{NodeReplayer, RecordingManager, ReplayNode, SchedulerRecording};
+use super::super::record_replay::{
+    NodeReplayer, Recording, RecordingManager, ReplayNode, SchedulerRecording,
+};
 use super::super::types::NodeTier;
 use super::super::types::RegisteredNode;
 use super::{ReplayState, Scheduler};
