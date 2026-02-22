@@ -40,6 +40,12 @@ pub struct RecordingConfig {
     pub include_nodes: Vec<String>,
     /// Nodes to exclude from recording
     pub exclude_nodes: Vec<String>,
+    /// Whether to record input values
+    pub record_inputs: bool,
+    /// Whether to record output values
+    pub record_outputs: bool,
+    /// Whether to record timing information
+    pub record_timing: bool,
 }
 
 impl Default for RecordingConfig {
@@ -62,6 +68,9 @@ impl Default for RecordingConfig {
             interval: 1,
             include_nodes: vec![],
             exclude_nodes: vec![],
+            record_inputs: true,
+            record_outputs: true,
+            record_timing: true,
         }
     }
 }
@@ -148,6 +157,9 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
             interval: yaml.interval as u64,
             include_nodes: yaml.include_nodes,
             exclude_nodes: yaml.exclude_nodes,
+            record_inputs: yaml.record_inputs,
+            record_outputs: yaml.record_outputs,
+            record_timing: yaml.record_timing,
         }
     }
 }
@@ -421,6 +433,9 @@ impl NodeRecorder {
 
     /// Record an input received
     pub fn record_input(&mut self, topic: &str, data: Vec<u8>) {
+        if !self.config.record_inputs {
+            return;
+        }
         if let Some(ref mut snapshot) = self.current_snapshot {
             snapshot.inputs.insert(topic.to_string(), data);
         }
@@ -428,6 +443,9 @@ impl NodeRecorder {
 
     /// Record an output produced
     pub fn record_output(&mut self, topic: &str, data: Vec<u8>) {
+        if !self.config.record_outputs {
+            return;
+        }
         if let Some(ref mut snapshot) = self.current_snapshot {
             snapshot.outputs.insert(topic.to_string(), data);
         }
@@ -443,7 +461,9 @@ impl NodeRecorder {
     /// Finish recording the current tick
     pub fn end_tick(&mut self, duration_ns: u64) {
         if let Some(mut snapshot) = self.current_snapshot.take() {
-            snapshot.duration_ns = duration_ns;
+            if self.config.record_timing {
+                snapshot.duration_ns = duration_ns;
+            }
             self.recording.add_snapshot(snapshot);
         }
     }

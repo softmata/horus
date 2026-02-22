@@ -27,18 +27,6 @@ pub struct PySchedulerConfig {
     /// Enable circuit breaker pattern
     pub circuit_breaker: bool,
 
-    #[pyo3(get, set)]
-    /// Max failures before circuit opens
-    pub max_failures: u32,
-
-    #[pyo3(get, set)]
-    /// Success count to close circuit
-    pub recovery_threshold: u32,
-
-    #[pyo3(get, set)]
-    /// Circuit timeout in milliseconds
-    pub circuit_timeout_ms: u64,
-
     // --- Real-time ---
     #[pyo3(get, set)]
     /// Enable WCET enforcement
@@ -342,9 +330,6 @@ impl PySchedulerConfig {
         config.timing.per_node_rates = self.per_node_rates;
 
         config.fault.circuit_breaker_enabled = self.circuit_breaker;
-        config.fault.max_failures = self.max_failures;
-        config.fault.recovery_threshold = self.recovery_threshold;
-        config.fault.circuit_timeout_ms = self.circuit_timeout_ms;
 
         config.realtime.wcet_enforcement = self.wcet_enforcement;
         config.realtime.deadline_monitoring = self.deadline_monitoring;
@@ -382,9 +367,6 @@ impl PySchedulerConfig {
             tick_rate: rust_config.timing.global_rate_hz,
             per_node_rates: rust_config.timing.per_node_rates,
             circuit_breaker: rust_config.fault.circuit_breaker_enabled,
-            max_failures: rust_config.fault.max_failures,
-            recovery_threshold: rust_config.fault.recovery_threshold,
-            circuit_timeout_ms: rust_config.fault.circuit_timeout_ms,
             wcet_enforcement: rust_config.realtime.wcet_enforcement,
             deadline_monitoring: rust_config.realtime.deadline_monitoring,
             watchdog_enabled: rust_config.realtime.watchdog_enabled,

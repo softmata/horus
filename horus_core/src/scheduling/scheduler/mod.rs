@@ -1140,6 +1140,14 @@ impl Scheduler {
                 recording_config.include_nodes = recording_yaml.include_nodes.clone();
                 recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
 
+                // Wire up recording control flags
+                if recording_yaml.max_size_mb > 0 {
+                    recording_config.max_size = recording_yaml.max_size_mb * 1024 * 1024;
+                }
+                recording_config.record_inputs = recording_yaml.record_inputs;
+                recording_config.record_outputs = recording_yaml.record_outputs;
+                recording_config.record_timing = recording_yaml.record_timing;
+
                 // Generate unique scheduler ID
                 let scheduler_id = format!(
                     "{:x}{:x}",

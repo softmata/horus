@@ -25,12 +25,6 @@ pub struct TimingConfig {
 pub struct FaultConfig {
     /// Enable circuit breaker pattern
     pub circuit_breaker_enabled: bool,
-    /// Max failures before circuit opens
-    pub max_failures: u32,
-    /// Success count to close circuit
-    pub recovery_threshold: u32,
-    /// Circuit timeout in milliseconds
-    pub circuit_timeout_ms: u64,
 }
 
 /// Real-time configuration
@@ -207,9 +201,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: false,
-                max_failures: 5,
-                recovery_threshold: 3,
-                circuit_timeout_ms: 5000,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -247,9 +238,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: true,
-                max_failures: 5,
-                recovery_threshold: 3,
-                circuit_timeout_ms: 5000,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -289,9 +277,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: true,
-                max_failures: 5,
-                recovery_threshold: 3,
-                circuit_timeout_ms: 5000,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -329,9 +314,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: false,
-                max_failures: 0,
-                recovery_threshold: 0,
-                circuit_timeout_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: false,
@@ -369,9 +351,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: false,
-                max_failures: 0,
-                recovery_threshold: 0,
-                circuit_timeout_ms: 0,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
@@ -409,9 +388,6 @@ impl SchedulerConfig {
             },
             fault: FaultConfig {
                 circuit_breaker_enabled: true,
-                max_failures: 3,
-                recovery_threshold: 1,
-                circuit_timeout_ms: 100,
             },
             realtime: RealTimeConfig {
                 wcet_enforcement: true,
@@ -445,7 +421,6 @@ impl SchedulerConfig {
         config.execution = ExecutionMode::Parallel;
         config.timing.global_rate_hz = 1000.0;
         config.fault.circuit_breaker_enabled = true;
-        config.fault.max_failures = 3;
         config.realtime.wcet_enforcement = true;
         config.realtime.deadline_monitoring = true;
         config.realtime.watchdog_enabled = true;

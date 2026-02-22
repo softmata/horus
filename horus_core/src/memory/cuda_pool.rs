@@ -930,7 +930,8 @@ impl P2PManager {
 
         // Check if already enabled
         {
-            let connections = self.enabled_connections.lock().unwrap();
+            let connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if connections.contains(&(device, peer_device)) {
                 return Ok(());
             }
@@ -953,7 +954,8 @@ impl P2PManager {
 
         // Record the enabled connection
         {
-            let mut connections = self.enabled_connections.lock().unwrap();
+            let mut connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             connections.push((device, peer_device));
         }
 
@@ -968,7 +970,8 @@ impl P2PManager {
 
         // Check if enabled
         {
-            let connections = self.enabled_connections.lock().unwrap();
+            let connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if !connections.contains(&(device, peer_device)) {
                 return Ok(()); // Already disabled
             }
@@ -983,7 +986,8 @@ impl P2PManager {
 
         // Remove the connection
         {
-            let mut connections = self.enabled_connections.lock().unwrap();
+            let mut connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             connections.retain(|&(d, p)| !(d == device && p == peer_device));
         }
 
@@ -1022,8 +1026,10 @@ impl P2PManager {
     }
 
     /// Get enabled P2P connections
-    pub fn enabled_connections(&self) -> Vec<(i32, i32)> {
-        self.enabled_connections.lock().unwrap().clone()
+    pub fn enabled_connections(&self) -> HorusResult<Vec<(i32, i32)>> {
+        Ok(self.enabled_connections.lock()
+            .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?
+            .clone())
     }
 
     /// Copy tensor between GPUs using P2P (requires P2P enabled)
@@ -1039,7 +1045,8 @@ impl P2PManager {
 
         // Check P2P is enabled
         {
-            let connections = self.enabled_connections.lock().unwrap();
+            let connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if src_device != dst_device && !connections.contains(&(dst_device, src_device)) {
                 return Err(HorusError::Config(format!(
                     "P2P access not enabled from device {} to device {}",
@@ -1089,7 +1096,8 @@ impl P2PManager {
 
         // Check P2P is enabled
         {
-            let connections = self.enabled_connections.lock().unwrap();
+            let connections = self.enabled_connections.lock()
+                .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if src_device != dst_device && !connections.contains(&(dst_device, src_device)) {
                 return Err(HorusError::Config(format!(
                     "P2P access not enabled from device {} to device {}",
@@ -1128,8 +1136,12 @@ impl Default for P2PManager {
 
 impl Drop for P2PManager {
     fn drop(&mut self) {
-        // Disable all P2P connections on cleanup
-        let connections = self.enabled_connections.lock().unwrap().clone();
+        // Disable all P2P connections on cleanup.
+        // Use .ok() since we can't propagate errors from Drop.
+        let connections = match self.enabled_connections.lock() {
+            Ok(c) => c.clone(),
+            Err(_) => return, // Lock poisoned during teardown — nothing to clean up safely
+        };
         for (device, peer_device) in connections {
             if cuda_ffi::set_device(device).is_ok() {
                 let _ = cuda_ffi::device_disable_peer_access(peer_device);
@@ -1492,13 +1504,13 @@ mod tests {
     #[test]
     fn test_p2p_manager_creation() {
         let manager = P2PManager::new();
-        assert!(manager.enabled_connections().is_empty());
+        assert!(manager.enabled_connections().unwrap().is_empty());
     }
 
     #[test]
     fn test_p2p_manager_default() {
         let manager = P2PManager::default();
-        assert!(manager.enabled_connections().is_empty());
+        assert!(manager.enabled_connections().unwrap().is_empty());
     }
 
     // ==========================================================================

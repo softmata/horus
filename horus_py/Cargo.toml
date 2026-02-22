@@ -19,6 +19,7 @@ rmp-serde = "1.1"  # MessagePack serialization (2-5x faster than JSON)
 chrono = "0.4"
 pythonize = "0.27"
 ctrlc = "3.4"
+tracing = { workspace = true }
 parking_lot = "0.12"  # Faster mutexes for buffer pool
 lazy_static = "1.4"  # For global pool registry
 

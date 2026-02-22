@@ -1,5 +1,4 @@
 use crate::params::RuntimeParams;
-use crate::scheduling::fault_tolerance::CircuitBreaker;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -233,26 +232,16 @@ impl NodeMetrics {
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub max_tick_duration_ms: Option<u64>,
-    pub restart_on_failure: bool,
-    pub max_restart_attempts: u32,
-    pub restart_delay_ms: u64,
     pub log_level: String,
     pub custom_params: HashMap<String, String>,
-    /// Optional per-node circuit breaker configuration
-    /// If set, overrides the scheduler-level circuit breaker settings for this node
-    pub circuit_breaker: Option<CircuitBreaker>,
 }
 
 impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
             max_tick_duration_ms: Some(1000), // 1 second timeout
-            restart_on_failure: true,
-            max_restart_attempts: 3,
-            restart_delay_ms: 1000,
             log_level: "INFO".to_string(), // Development default: includes info logging
             custom_params: HashMap::new(),
-            circuit_breaker: None,
         }
     }
 }
@@ -402,14 +391,7 @@ impl NodeInfo {
 
     pub fn restart(&mut self) -> crate::error::HorusResult<()> {
         self.restart_count += 1;
-        if self.restart_count > self.config.max_restart_attempts {
-            return Err(crate::error::HorusError::InvalidInput(
-                "Maximum restart attempts exceeded".to_string(),
-            ));
-        }
-
         self.shutdown()?;
-        std::thread::sleep(Duration::from_millis(self.config.restart_delay_ms));
         self.initialize()?;
         Ok(())
     }
@@ -907,9 +889,6 @@ mod tests {
     fn test_node_config_default() {
         let config = NodeConfig::default();
         assert_eq!(config.max_tick_duration_ms, Some(1000));
-        assert!(config.restart_on_failure);
-        assert_eq!(config.max_restart_attempts, 3);
-        assert_eq!(config.restart_delay_ms, 1000);
         assert_eq!(config.log_level, "INFO");
         assert!(config.custom_params.is_empty());
     }
@@ -1109,8 +1088,6 @@ mod tests {
     fn test_node_info_with_config() {
         let config = NodeConfig {
             max_tick_duration_ms: Some(500),
-            restart_on_failure: false,
-            max_restart_attempts: 5,
             ..Default::default()
         };
         let info = NodeInfo::new_with_config("test_node".to_string(), config);
