@@ -2716,7 +2716,7 @@ fn is_cargo_package(package_name: &str) -> bool {
 
     // Check crates.io API for less common packages
     let client = Client::new();
-    let url = format!("https://crates.io/api/v1/crates/{}", package_name);
+    let url = format!("{}/{}", crate::config::CRATES_IO_API_URL, package_name);
     if let Ok(response) = client
         .get(&url)
         .header("User-Agent", "horus-pkg-manager")

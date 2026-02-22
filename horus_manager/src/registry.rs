@@ -166,8 +166,7 @@ impl Default for RegistryClient {
 
 impl RegistryClient {
     pub fn new() -> Self {
-        let base_url = std::env::var("HORUS_REGISTRY_URL")
-            .unwrap_or_else(|_| "https://horus-marketplace-api.onrender.com".to_string());
+        let base_url = crate::config::registry_url();
 
         Self {
             client: Client::new(),
@@ -423,7 +422,7 @@ impl RegistryClient {
 
     fn check_pypi_exists(&self, package_name: &str) -> bool {
         // Check PyPI API
-        let pypi_url = format!("https://pypi.org/pypi/{}/json", package_name);
+        let pypi_url = format!("{}/{}/json", crate::config::PYPI_API_URL, package_name);
         if let Ok(response) = self.client.get(&pypi_url).send() {
             return response.status().is_success();
         }
@@ -432,7 +431,7 @@ impl RegistryClient {
 
     fn check_crates_exists(&self, package_name: &str) -> bool {
         // Check crates.io API
-        let crates_url = format!("https://crates.io/api/v1/crates/{}", package_name);
+        let crates_url = format!("{}/{}", crate::config::CRATES_IO_API_URL, package_name);
         if let Ok(response) = self
             .client
             .get(&crates_url)
@@ -1397,8 +1396,8 @@ impl RegistryClient {
                                 ));
                             }
                         }
-                        Err(_) => {
-                            // If parsing fails, continue (might be old format or no deps)
+                        Err(e) => {
+                            eprintln!("  {} Failed to parse horus.yaml dependencies: {}", "⚠".yellow(), e);
                         }
                     }
                 }

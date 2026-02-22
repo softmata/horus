@@ -104,7 +104,7 @@ impl PluginDiscovery {
     pub fn new() -> Self {
         Self {
             workspace_paths: vec![],
-            registry_url: "https://registry.softmata.com/api/v1".to_string(),
+            registry_url: crate::config::plugin_registry_url(),
             cache: HashMap::new(),
             cache_time: None,
         }

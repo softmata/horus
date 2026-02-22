@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use horus_types::{Device, PointCloudDescriptor, TensorDtype};
 
-use super::simd::fast_copy_to_shm;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -20,6 +19,9 @@ pub struct PointCloud {
     descriptor: PointCloudDescriptor,
     pool: Arc<TensorPool>,
 }
+
+// Shared methods: data access, lifecycle, metadata delegation
+crate::impl_tensor_backed!(PointCloud, PointCloudDescriptor, "point cloud");
 
 impl PointCloud {
     /// Create a new point cloud with the given number of points and fields.
@@ -51,68 +53,7 @@ impl PointCloud {
         Ok(Self { descriptor, pool })
     }
 
-    /// Create a PointCloud from a descriptor and pool.
-    pub fn from_owned(descriptor: PointCloudDescriptor, pool: Arc<TensorPool>) -> Self {
-        Self { descriptor, pool }
-    }
-
-    // === Point data access ===
-
-    /// Get raw point data as a byte slice (zero-copy).
-    #[inline]
-    pub fn data(&self) -> &[u8] {
-        self.pool.data_slice(self.descriptor.tensor())
-    }
-
-    /// Get raw point data as a mutable byte slice (zero-copy).
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub fn data_mut(&self) -> &mut [u8] {
-        self.pool.data_slice_mut(self.descriptor.tensor())
-    }
-
-    /// Copy point data from a buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `src` length doesn't match `nbytes()`.
-    pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
-        let data = self.data_mut();
-        assert_eq!(
-            src.len(),
-            data.len(),
-            "source buffer size ({}) doesn't match point cloud size ({})",
-            src.len(),
-            data.len()
-        );
-        fast_copy_to_shm(src, data);
-        self
-    }
-
-    /// Get point data as typed slice (e.g., `&[f32]` for F32 clouds).
-    ///
-    /// # Safety
-    /// Caller must ensure T matches the tensor dtype.
-    #[inline]
-    pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
-        let bytes = self.data();
-        let ptr = bytes.as_ptr() as *const T;
-        let len = bytes.len() / std::mem::size_of::<T>();
-        std::slice::from_raw_parts(ptr, len)
-    }
-
-    /// Get point data as mutable typed slice.
-    ///
-    /// # Safety
-    /// Caller must ensure T matches the tensor dtype.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
-        let bytes = self.data_mut();
-        let ptr = bytes.as_mut_ptr() as *mut T;
-        let len = bytes.len() / std::mem::size_of::<T>();
-        std::slice::from_raw_parts_mut(ptr, len)
-    }
+    // === Point-specific methods ===
 
     /// Get the i-th point as a byte slice.
     pub fn point_at(&self, idx: u64) -> Option<&[u8]> {
@@ -153,19 +94,7 @@ impl PointCloud {
         Some(points)
     }
 
-    /// Set the frame ID.
-    pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
-        self.descriptor.set_frame_id(id);
-        self
-    }
-
-    /// Set the timestamp in nanoseconds.
-    pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
-        self.descriptor.set_timestamp_ns(ts);
-        self
-    }
-
-    // === Metadata accessors ===
+    // === PointCloud-specific metadata accessors ===
 
     /// Number of points.
     #[inline]
@@ -177,12 +106,6 @@ impl PointCloud {
     #[inline]
     pub fn fields_per_point(&self) -> u32 {
         self.descriptor.fields_per_point()
-    }
-
-    /// Data type of point components.
-    #[inline]
-    pub fn dtype(&self) -> TensorDtype {
-        self.descriptor.dtype()
     }
 
     /// Whether this is a plain XYZ cloud.
@@ -202,66 +125,6 @@ impl PointCloud {
     pub fn has_color(&self) -> bool {
         self.descriptor.has_color()
     }
-
-    /// Total bytes of point data.
-    #[inline]
-    pub fn nbytes(&self) -> u64 {
-        self.descriptor.nbytes()
-    }
-
-    /// Whether data is on CPU.
-    #[inline]
-    pub fn is_cpu(&self) -> bool {
-        self.descriptor.is_cpu()
-    }
-
-    /// Whether data is on CUDA.
-    #[inline]
-    pub fn is_cuda(&self) -> bool {
-        self.descriptor.is_cuda()
-    }
-
-    /// Timestamp in nanoseconds.
-    #[inline]
-    pub fn timestamp_ns(&self) -> u64 {
-        self.descriptor.timestamp_ns()
-    }
-
-    /// Frame ID.
-    #[inline]
-    pub fn frame_id(&self) -> &str {
-        self.descriptor.frame_id()
-    }
-
-    // === Descriptor / pool accessors ===
-
-    /// Get the underlying descriptor.
-    #[inline]
-    pub fn descriptor(&self) -> &PointCloudDescriptor {
-        &self.descriptor
-    }
-
-    /// Get the pool reference.
-    #[inline]
-    pub fn pool(&self) -> &Arc<TensorPool> {
-        &self.pool
-    }
-}
-
-impl Clone for PointCloud {
-    fn clone(&self) -> Self {
-        self.pool.retain(self.descriptor.tensor());
-        Self {
-            descriptor: self.descriptor,
-            pool: Arc::clone(&self.pool),
-        }
-    }
-}
-
-impl Drop for PointCloud {
-    fn drop(&mut self) {
-        self.pool.release(self.descriptor.tensor());
-    }
 }
 
 impl std::fmt::Debug for PointCloud {
@@ -273,6 +136,3 @@ impl std::fmt::Debug for PointCloud {
             .finish()
     }
 }
-
-unsafe impl Send for PointCloud {}
-unsafe impl Sync for PointCloud {}

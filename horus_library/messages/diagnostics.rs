@@ -505,49 +505,8 @@ impl NodeState {
     }
 }
 
-/// Node health status
-///
-/// Indicates the operational health of a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
-#[repr(u8)]
-#[derive(Default)]
-pub enum HealthStatus {
-    /// Operating normally
-    Healthy = 0,
-    /// Degraded performance (slow ticks, missed deadlines)
-    Warning = 1,
-    /// Errors occurring but still running
-    Error = 2,
-    /// Fatal errors, about to crash or unresponsive
-    Critical = 3,
-    /// Status unknown (no heartbeat received)
-    #[default]
-    Unknown = 4,
-}
-
-impl HealthStatus {
-    /// Convert to string representation
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Healthy => "Healthy",
-            Self::Warning => "Warning",
-            Self::Error => "Error",
-            Self::Critical => "Critical",
-            Self::Unknown => "Unknown",
-        }
-    }
-
-    /// Get color code for monitor display
-    pub fn color(&self) -> &'static str {
-        match self {
-            Self::Healthy => "green",
-            Self::Warning => "yellow",
-            Self::Error => "orange",
-            Self::Critical => "red",
-            Self::Unknown => "gray",
-        }
-    }
-}
+/// Node health status — re-exported from horus_core (canonical definition).
+pub use horus_core::core::HealthStatus;
 
 /// Node status heartbeat with health information
 ///

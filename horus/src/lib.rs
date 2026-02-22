@@ -30,8 +30,55 @@
 //! - **Standard library of components**
 //! - **Comprehensive tooling**
 
-// Re-export core components (avoiding conflicts)
-pub use horus_core::{self, *};
+// Allow downstream crates to reach horus_core directly
+pub use horus_core;
+
+// Re-export horus_core modules so `horus::core::*`, `horus::communication::*` etc. still work
+pub use horus_core::actions;
+pub use horus_core::communication;
+pub use horus_core::core;
+pub use horus_core::dlpack;
+pub use horus_core::error;
+pub use horus_core::memory;
+pub use horus_core::params;
+pub use horus_core::scheduling;
+pub use horus_core::types;
+
+// === Core re-exports (user-facing convenience) ===
+pub use horus_core::communication::{PodMessage, Topic};
+pub use horus_core::core::{
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig,
+    NodeMetrics, NodePresence, NodeState, RtClass, RtConfig, RtConfigBuilder,
+    RtDegradation, RtNode, RtPriority, RtStats,
+};
+pub use horus_core::error::{HorusError, HorusResult, Result};
+pub use horus_core::params::RuntimeParams;
+pub use horus_core::scheduling::Scheduler;
+
+// Action types
+pub use horus_core::actions::{
+    Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
+    ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
+    GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
+};
+
+// DLPack interop
+pub use horus_core::dlpack::{to_dlpack, from_dlpack, DLManagedTensor, DLTensor, DLDevice, DLDataType};
+
+// Macro support (doc-hidden, not for direct user use)
+#[doc(hidden)]
+pub use horus_core::paste;
+#[doc(hidden)]
+pub use horus_core::serde_json;
+#[doc(hidden)]
+pub use horus_core::serde_yaml;
+#[doc(hidden)]
+pub use horus_core::bytemuck;
+#[doc(hidden)]
+pub use horus_core::types::FixedString;
+
+// hlog macro
+pub use horus_core::hlog;
 
 // Re-export macros
 #[cfg(feature = "macros")]

@@ -60,7 +60,8 @@ impl fmt::Display for NodeState {
 }
 
 /// Node health status for monitoring
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[repr(u8)]
 pub enum HealthStatus {
     /// Operating normally
     Healthy = 0,
@@ -71,6 +72,7 @@ pub enum HealthStatus {
     /// Fatal errors, about to crash or unresponsive
     Critical = 3,
     /// Status unknown (no heartbeat received)
+    #[default]
     Unknown = 4,
 }
 
@@ -95,6 +97,12 @@ impl HealthStatus {
             Self::Critical => "red",
             Self::Unknown => "gray",
         }
+    }
+}
+
+impl LogSummary for HealthStatus {
+    fn log_summary(&self) -> String {
+        format!("{:?}", self)
     }
 }
 

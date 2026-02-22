@@ -41,7 +41,10 @@ impl AuthService {
         Ok(Self {
             password_hash,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            rate_limiter: Arc::new(RwLock::new(RateLimiter::new(5, Duration::from_secs(60)))),
+            rate_limiter: Arc::new(RwLock::new(RateLimiter::new(
+                crate::config::AUTH_MAX_ATTEMPTS,
+                Duration::from_secs(crate::config::AUTH_RATE_LIMIT_WINDOW_SECS),
+            ))),
         })
     }
 
@@ -87,7 +90,7 @@ impl AuthService {
 
         if let Some(session) = sessions.get_mut(token) {
             // Check if session is expired (1 hour of inactivity)
-            if session.last_used.elapsed() > Duration::from_secs(3600) {
+            if session.last_used.elapsed() > Duration::from_secs(crate::config::SESSION_TIMEOUT_SECS) {
                 sessions.remove(token);
                 return false;
             }

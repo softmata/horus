@@ -5,6 +5,26 @@
 
 use bytemuck::{Pod, Zeroable};
 
+/// Generate `class_name()` and `set_class_name()` methods for types
+/// with a `class_name: [u8; 32]` field.
+macro_rules! impl_class_name_field {
+    () => {
+        /// Get the class name as a string.
+        pub fn class_name(&self) -> &str {
+            let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
+            std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
+        }
+
+        /// Set the class name (truncates to 31 chars).
+        pub fn set_class_name(&mut self, name: &str) {
+            let bytes = name.as_bytes();
+            let len = bytes.len().min(31);
+            self.class_name[..len].copy_from_slice(&bytes[..len]);
+            self.class_name[len..].fill(0);
+        }
+    };
+}
+
 /// 2D bounding box (x, y, width, height in pixels)///
 /// Size: 16 bytes
 #[repr(C)]
@@ -215,19 +235,7 @@ impl Detection {
         }
     }
 
-    /// Set the class name (truncates to 31 chars)
-    pub fn set_class_name(&mut self, name: &str) {
-        let bytes = name.as_bytes();
-        let len = bytes.len().min(31);
-        self.class_name[..len].copy_from_slice(&bytes[..len]);
-        self.class_name[len..].fill(0);
-    }
-
-    /// Get the class name as a string
-    pub fn class_name(&self) -> &str {
-        let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
-        std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
-    }
+    impl_class_name_field!();
 
     /// Check if detection passes confidence threshold
     pub fn is_confident(&self, threshold: f32) -> bool {
@@ -287,19 +295,7 @@ impl Detection3D {
         det
     }
 
-    /// Set the class name (truncates to 31 chars)
-    pub fn set_class_name(&mut self, name: &str) {
-        let bytes = name.as_bytes();
-        let len = bytes.len().min(31);
-        self.class_name[..len].copy_from_slice(&bytes[..len]);
-        self.class_name[len..].fill(0);
-    }
-
-    /// Get the class name as a string
-    pub fn class_name(&self) -> &str {
-        let end = self.class_name.iter().position(|&b| b == 0).unwrap_or(32);
-        std::str::from_utf8(&self.class_name[..end]).unwrap_or("")
-    }
+    impl_class_name_field!();
 
     /// Set velocity
     pub fn with_velocity(mut self, vx: f32, vy: f32, vz: f32) -> Self {

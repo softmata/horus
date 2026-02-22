@@ -33,12 +33,9 @@ thiserror = "1.0"
 toml = "0.8"
 toml_edit = "0.22"
 reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
-num_cpus = "1.16"
 tempfile = "3.8"
-lazy_static = "1.4"
 eframe = "0.24"
 egui = "0.24"
-egui_extras = "0.24"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 walkdir = "2.3"
 sha2 = "0.10"
@@ -52,9 +49,10 @@ open = "5.0"
 hostname = "0.4"
 semver = "1.0"
 libc = "0.2"
-syn = { version = "2.0", features = ["full", "visit"] }
+lazy_static = "1.4"
 rayon = "1.10"
-notify = "6.1"
+syn = { version = "2.0", features = ["full", "visit"] }
+num_cpus = "1.16"
 
 # TUI dependencies
 ratatui = "0.30"
@@ -63,9 +61,6 @@ rand = "0.8"
 
 # Web monitor dependencies
 axum = { version = "0.7", features = ["ws"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-hyper = "1"
-hyper-util = "0.1"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 webbrowser = "0.8"
@@ -73,8 +68,6 @@ futures = "0.3"
 qrcode = "0.14"
 
 # Security dependencies
-rustls = "0.21"
-tokio-rustls = "0.24"
 jsonwebtoken = "10.3"
 argon2 = "0.5"
 base64 = "0.21"

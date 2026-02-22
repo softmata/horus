@@ -20,7 +20,7 @@ struct AuthConfig {
 }
 
 fn default_cloud_url() -> String {
-    "https://cloud.horus.dev".to_string()
+    crate::config::DEFAULT_CLOUD_URL.to_string()
 }
 
 /// Get the path to the auth config file
@@ -305,7 +305,7 @@ pub fn get_registry_url() -> String {
     }
 
     // Default
-    "https://horus-marketplace-api.onrender.com".to_string()
+    crate::config::registry_url()
 }
 
 /// Get the cloud URL
@@ -327,7 +327,7 @@ pub fn get_cloud_url() -> String {
     }
 
     // Default
-    "https://cloud.horus.dev".to_string()
+    crate::config::cloud_url()
 }
 
 /// Show current organization info

@@ -32,16 +32,12 @@ pub mod tensor_pool;
 /// All three domain types (Image, PointCloud, DepthImage) share the same
 /// `descriptor: D` + `pool: Arc<TensorPool>` structure and identical
 /// data access, lifecycle, and metadata delegation code.
-///
-/// This macro generates: `from_owned`, `data`, `data_mut`, `copy_from`,
-/// `data_as`, `data_as_mut`, `set_frame_id`, `set_timestamp_ns`,
-/// `dtype`, `nbytes`, `is_cpu`, `is_cuda`, `timestamp_ns`, `frame_id`,
-/// `descriptor`, `pool`, plus `Clone`, `Drop`, `Send`, `Sync` impls.
+#[macro_export]
 macro_rules! impl_tensor_backed {
     ($type_name:ident, $desc_type:ty, $label:expr) => {
         impl $type_name {
             /// Create from a descriptor and pool (used by Topic recv and Python bindings).
-            pub fn from_owned(descriptor: $desc_type, pool: std::sync::Arc<super::tensor_pool::TensorPool>) -> Self {
+            pub fn from_owned(descriptor: $desc_type, pool: std::sync::Arc<$crate::memory::tensor_pool::TensorPool>) -> Self {
                 Self { descriptor, pool }
             }
 
@@ -75,7 +71,7 @@ macro_rules! impl_tensor_backed {
                     $label,
                     data.len()
                 );
-                super::simd::fast_copy_to_shm(src, data);
+                $crate::memory::simd::fast_copy_to_shm(src, data);
                 self
             }
 
@@ -105,16 +101,12 @@ macro_rules! impl_tensor_backed {
             }
 
             /// Set the frame ID.
-            ///
-            /// Returns `&mut Self` for method chaining.
             pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
                 self.descriptor.set_frame_id(id);
                 self
             }
 
             /// Set the timestamp in nanoseconds.
-            ///
-            /// Returns `&mut Self` for method chaining.
             pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
                 self.descriptor.set_timestamp_ns(ts);
                 self
@@ -122,51 +114,35 @@ macro_rules! impl_tensor_backed {
 
             /// Element data type.
             #[inline]
-            pub fn dtype(&self) -> horus_types::TensorDtype {
-                self.descriptor.dtype()
-            }
+            pub fn dtype(&self) -> horus_types::TensorDtype { self.descriptor.dtype() }
 
             /// Total bytes of data.
             #[inline]
-            pub fn nbytes(&self) -> u64 {
-                self.descriptor.nbytes()
-            }
+            pub fn nbytes(&self) -> u64 { self.descriptor.nbytes() }
 
             /// Whether tensor data is on CPU.
             #[inline]
-            pub fn is_cpu(&self) -> bool {
-                self.descriptor.is_cpu()
-            }
+            pub fn is_cpu(&self) -> bool { self.descriptor.is_cpu() }
 
             /// Whether tensor data is on CUDA.
             #[inline]
-            pub fn is_cuda(&self) -> bool {
-                self.descriptor.is_cuda()
-            }
+            pub fn is_cuda(&self) -> bool { self.descriptor.is_cuda() }
 
             /// Timestamp in nanoseconds.
             #[inline]
-            pub fn timestamp_ns(&self) -> u64 {
-                self.descriptor.timestamp_ns()
-            }
+            pub fn timestamp_ns(&self) -> u64 { self.descriptor.timestamp_ns() }
 
             /// Frame ID.
             #[inline]
-            pub fn frame_id(&self) -> &str {
-                self.descriptor.frame_id()
-            }
+            pub fn frame_id(&self) -> &str { self.descriptor.frame_id() }
 
             /// Get the underlying descriptor.
             #[inline]
-            pub fn descriptor(&self) -> &$desc_type {
-                &self.descriptor
-            }
+            pub fn descriptor(&self) -> &$desc_type { &self.descriptor }
 
             /// Get the pool reference.
             #[inline]
-            pub fn pool(&self) -> &std::sync::Arc<super::tensor_pool::TensorPool> {
-                &self.pool
-            }
+            pub fn pool(&self) -> &std::sync::Arc<$crate::memory::tensor_pool::TensorPool> { &self.pool }
         }
 
         impl Clone for $type_name {

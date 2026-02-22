@@ -141,14 +141,6 @@ impl ShmRegion {
         self.mmap.as_mut_ptr()
     }
 
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-
     /// Force cleanup of the shared memory file (for use when last consumer exits)
     /// This bypasses the owner check and removes the file unconditionally
     pub fn force_cleanup(&self) {
@@ -353,14 +345,6 @@ impl ShmRegion {
         self.ptr
     }
 
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-
     /// Force cleanup of the shared memory (for use when last consumer exits)
     /// This bypasses the owner check and removes the shm unconditionally
     pub fn force_cleanup(&self) {
@@ -547,14 +531,6 @@ impl ShmRegion {
         self.ptr
     }
 
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
-    pub fn is_owner(&self) -> bool {
-        self.owner
-    }
-
     /// Force cleanup of the shared memory (for use when last consumer exits)
     /// On Windows, cleanup is automatic when all handles are closed, so this is a no-op
     pub fn force_cleanup(&self) {
@@ -576,6 +552,19 @@ impl Drop for ShmRegion {
             CloseHandle(self.handle);
         }
         // Note: Windows automatically cleans up named file mappings when all handles are closed
+    }
+}
+
+// Common accessors — `size` and `owner` fields exist on all platform variants.
+impl ShmRegion {
+    /// Total size of the shared memory region in bytes.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Whether this handle is the original creator (responsible for cleanup on drop).
+    pub fn is_owner(&self) -> bool {
+        self.owner
     }
 }
 
@@ -860,12 +849,6 @@ impl ShmRegion {
     }
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.mmap.as_mut_ptr()
-    }
-    pub fn size(&self) -> usize {
-        self.size
-    }
-    pub fn is_owner(&self) -> bool {
-        self.owner
     }
 
     /// Force cleanup of the shared memory file (for use when last consumer exits)

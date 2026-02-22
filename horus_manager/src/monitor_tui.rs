@@ -356,7 +356,7 @@ impl TuiDashboard {
     {
         loop {
             // Update data if not paused (250ms refresh for real-time feel)
-            if !self.paused && self.last_update.elapsed() > Duration::from_millis(250) {
+            if !self.paused && self.last_update.elapsed() > Duration::from_millis(crate::config::TUI_REFRESH_INTERVAL_MS) {
                 self.update_data()?;
                 self.last_update = Instant::now();
             }
@@ -365,7 +365,7 @@ impl TuiDashboard {
             terminal.draw(|f| self.draw_ui(f))?;
 
             // Handle input
-            if event::poll(Duration::from_millis(100))? {
+            if event::poll(Duration::from_millis(crate::config::TUI_POLL_INTERVAL_MS))? {
                 if let Event::Key(key) = event::read()? {
                     if self.show_help {
                         self.show_help = false;

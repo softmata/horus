@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use horus_types::{DepthImageDescriptor, Device, TensorDtype};
 
-use super::simd::fast_copy_to_shm;
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
 use crate::error::HorusResult;
@@ -20,6 +19,9 @@ pub struct DepthImage {
     descriptor: DepthImageDescriptor,
     pool: Arc<TensorPool>,
 }
+
+// Shared methods: data access, lifecycle, metadata delegation
+crate::impl_tensor_backed!(DepthImage, DepthImageDescriptor, "depth image");
 
 impl DepthImage {
     /// Create a new depth image with the given dimensions.
@@ -40,45 +42,7 @@ impl DepthImage {
         Ok(Self { descriptor, pool })
     }
 
-    /// Create a DepthImage from a descriptor and pool.
-    pub fn from_owned(descriptor: DepthImageDescriptor, pool: Arc<TensorPool>) -> Self {
-        Self { descriptor, pool }
-    }
-
-    // === Depth data access ===
-
-    /// Get raw depth data as a byte slice (zero-copy).
-    #[inline]
-    pub fn data(&self) -> &[u8] {
-        self.pool.data_slice(self.descriptor.tensor())
-    }
-
-    /// Get raw depth data as a mutable byte slice (zero-copy).
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub fn data_mut(&self) -> &mut [u8] {
-        self.pool.data_slice_mut(self.descriptor.tensor())
-    }
-
-    /// Copy raw depth data from a buffer into this depth image.
-    ///
-    /// Returns `&mut Self` for method chaining.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `src` length doesn't match `nbytes()`.
-    pub fn copy_from(&mut self, src: &[u8]) -> &mut Self {
-        let data = self.data_mut();
-        assert_eq!(
-            src.len(),
-            data.len(),
-            "source buffer size ({}) doesn't match depth image size ({})",
-            src.len(),
-            data.len()
-        );
-        fast_copy_to_shm(src, data);
-        self
-    }
+    // === Depth-specific methods ===
 
     /// Get depth at pixel (x, y) as f32 meters.
     ///
@@ -197,19 +161,7 @@ impl DepthImage {
         (min, max, (sum / count as f64) as f32)
     }
 
-    /// Set the frame ID.
-    pub fn set_frame_id(&mut self, id: &str) -> &mut Self {
-        self.descriptor.set_frame_id(id);
-        self
-    }
-
-    /// Set the timestamp in nanoseconds.
-    pub fn set_timestamp_ns(&mut self, ts: u64) -> &mut Self {
-        self.descriptor.set_timestamp_ns(ts);
-        self
-    }
-
-    // === Metadata accessors ===
+    // === DepthImage-specific metadata accessors ===
 
     /// Image height in pixels.
     #[inline]
@@ -221,12 +173,6 @@ impl DepthImage {
     #[inline]
     pub fn width(&self) -> u32 {
         self.descriptor.width()
-    }
-
-    /// Data type of depth values.
-    #[inline]
-    pub fn dtype(&self) -> TensorDtype {
-        self.descriptor.dtype()
     }
 
     /// Whether depth values are in meters (F32).
@@ -246,66 +192,6 @@ impl DepthImage {
     pub fn depth_scale(&self) -> f32 {
         self.descriptor.depth_scale()
     }
-
-    /// Total bytes of depth data.
-    #[inline]
-    pub fn nbytes(&self) -> u64 {
-        self.descriptor.nbytes()
-    }
-
-    /// Whether data is on CPU.
-    #[inline]
-    pub fn is_cpu(&self) -> bool {
-        self.descriptor.is_cpu()
-    }
-
-    /// Whether data is on CUDA.
-    #[inline]
-    pub fn is_cuda(&self) -> bool {
-        self.descriptor.is_cuda()
-    }
-
-    /// Timestamp in nanoseconds.
-    #[inline]
-    pub fn timestamp_ns(&self) -> u64 {
-        self.descriptor.timestamp_ns()
-    }
-
-    /// Frame ID.
-    #[inline]
-    pub fn frame_id(&self) -> &str {
-        self.descriptor.frame_id()
-    }
-
-    // === Descriptor / pool accessors ===
-
-    /// Get the underlying descriptor.
-    #[inline]
-    pub fn descriptor(&self) -> &DepthImageDescriptor {
-        &self.descriptor
-    }
-
-    /// Get the pool reference.
-    #[inline]
-    pub fn pool(&self) -> &Arc<TensorPool> {
-        &self.pool
-    }
-}
-
-impl Clone for DepthImage {
-    fn clone(&self) -> Self {
-        self.pool.retain(self.descriptor.tensor());
-        Self {
-            descriptor: self.descriptor,
-            pool: Arc::clone(&self.pool),
-        }
-    }
-}
-
-impl Drop for DepthImage {
-    fn drop(&mut self) {
-        self.pool.release(self.descriptor.tensor());
-    }
 }
 
 impl std::fmt::Debug for DepthImage {
@@ -324,6 +210,3 @@ impl std::fmt::Debug for DepthImage {
             .finish()
     }
 }
-
-unsafe impl Send for DepthImage {}
-unsafe impl Sync for DepthImage {}

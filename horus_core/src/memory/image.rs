@@ -36,7 +36,7 @@ pub struct Image {
 }
 
 // Shared methods: data access, lifecycle, metadata delegation
-impl_tensor_backed!(Image, ImageDescriptor, "image");
+crate::impl_tensor_backed!(Image, ImageDescriptor, "image");
 
 impl Image {
     /// Create a new image with the given dimensions and encoding.

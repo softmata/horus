@@ -52,7 +52,7 @@ impl WorkspaceCache {
         &mut self,
         current: &Option<std::path::PathBuf>,
     ) -> Vec<crate::workspace::DiscoveredWorkspace> {
-        const TTL: Duration = Duration::from_secs(300); // 5 minutes
+        const TTL: Duration = Duration::from_secs(crate::config::WORKSPACE_CACHE_TTL_SECS);
 
         // Refresh if cache is stale or path changed
         let needs_refresh = self.last_scan.elapsed() > TTL || self.base_path != *current;
@@ -111,8 +111,8 @@ fn display_qr_code(url: &str) {
                 println!("   {}", line);
             }
         }
-        Err(_) => {
-            // Silently skip QR code if generation fails
+        Err(e) => {
+            eprintln!("  {} QR code generation failed: {}", "⚠".yellow(), e);
         }
     }
 }
@@ -2654,7 +2654,7 @@ async fn handle_websocket(socket: WebSocket) {
 
     // Stream updates every 250ms (4 FPS) for reasonable real-time monitoring
     // This reduces backend load and network traffic significantly
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(250));
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(crate::config::WS_BROADCAST_INTERVAL_MS));
 
     loop {
         interval.tick().await;

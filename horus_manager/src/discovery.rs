@@ -102,7 +102,7 @@ impl DiscoveryCache {
             shared_memory: Vec::new(),
             nodes_last_updated: initial_time,
             shared_memory_last_updated: initial_time,
-            cache_duration: Duration::from_millis(250), // Cache for 250ms (real-time updates)
+            cache_duration: Duration::from_millis(crate::config::DISCOVERY_CACHE_MS),
         }
     }
 

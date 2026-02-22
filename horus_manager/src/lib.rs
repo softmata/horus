@@ -3,6 +3,7 @@
 //! This library provides the core functionality for the HORUS manager.
 
 pub mod commands;
+pub mod config;
 pub mod dependency_resolver;
 pub mod discovery;
 pub mod graph;
