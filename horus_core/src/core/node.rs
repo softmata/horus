@@ -206,24 +206,6 @@ impl NodeMetrics {
     }
 }
 
-/// Configuration parameters for node behavior
-#[derive(Debug, Clone)]
-pub struct NodeConfig {
-    pub max_tick_duration_ms: Option<u64>,
-    pub log_level: String,
-    pub custom_params: HashMap<String, String>,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        NodeConfig {
-            max_tick_duration_ms: Some(1000), // 1 second timeout
-            log_level: "INFO".to_string(),    // Development default: includes info logging
-            custom_params: HashMap::new(),
-        }
-    }
-}
-
 /// Comprehensive context and information for Horus nodes
 pub struct NodeInfo {
     // Basic identification
@@ -235,8 +217,6 @@ pub struct NodeInfo {
     previous_state: NodeState,
     state_change_time: Instant,
 
-    // Configuration
-    config: NodeConfig,
     priority: u32,
 
     // Performance tracking
@@ -275,15 +255,12 @@ impl NodeInfo {
                 .as_millis()
         );
 
-        let config = NodeConfig::default();
-
         Self {
             name: node_name.clone(),
             node_id,
             state: NodeState::Uninitialized,
             previous_state: NodeState::Uninitialized,
             state_change_time: now,
-            config,
             priority: 50, // Normal priority (middle range)
             metrics: NodeMetrics::default(),
             creation_time: now,
@@ -296,13 +273,6 @@ impl NodeInfo {
             metrics_lock: Arc::new(Mutex::new(())),
             params: RuntimeParams::default(),
         }
-    }
-
-    /// Create NodeInfo with custom configuration
-    pub fn new_with_config(node_name: String, config: NodeConfig) -> Self {
-        let mut node_info = Self::new(node_name);
-        node_info.config = config;
-        node_info
     }
 
     // State Management Methods
@@ -478,9 +448,6 @@ impl NodeInfo {
     pub fn priority(&self) -> u32 {
         self.priority
     }
-    pub fn config(&self) -> &NodeConfig {
-        &self.config
-    }
     pub fn metrics(&self) -> &NodeMetrics {
         &self.metrics
     }
@@ -595,11 +562,6 @@ pub trait Node: Send {
     /// ```
     fn rate_hz(&self) -> Option<f64> {
         None
-    }
-
-    /// Get node configuration (optional override)
-    fn config(&self) -> NodeConfig {
-        NodeConfig::default()
     }
 
     /// Health check (optional override)
@@ -851,28 +813,6 @@ mod tests {
     }
 
     // =========================================================================
-    // NodeConfig Tests
-    // =========================================================================
-
-    #[test]
-    fn test_node_config_default() {
-        let config = NodeConfig::default();
-        assert_eq!(config.max_tick_duration_ms, Some(1000));
-        assert_eq!(config.log_level, "INFO");
-        assert!(config.custom_params.is_empty());
-    }
-
-    #[test]
-    fn test_node_config_clone() {
-        let mut config = NodeConfig::default();
-        config
-            .custom_params
-            .insert("key".to_string(), "value".to_string());
-        let cloned = config.clone();
-        assert_eq!(cloned.custom_params.get("key"), Some(&"value".to_string()));
-    }
-
-    // =========================================================================
     // Health Calculation Tests
     // =========================================================================
 
@@ -1051,16 +991,6 @@ mod tests {
 
         info.shutdown().unwrap();
         assert_eq!(info.state(), &NodeState::Stopped);
-    }
-
-    #[test]
-    fn test_node_info_with_config() {
-        let config = NodeConfig {
-            max_tick_duration_ms: Some(500),
-            ..Default::default()
-        };
-        let info = NodeInfo::new_with_config("test_node".to_string(), config);
-        assert_eq!(info.name(), "test_node");
     }
 
     // =========================================================================

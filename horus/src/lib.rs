@@ -33,7 +33,7 @@
 // === User-facing re-exports ===
 pub use horus_core::communication::{PodMessage, Topic};
 pub use horus_core::core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig, NodeMetrics, NodePresence,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence,
     NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats,
 };
 pub use horus_core::error::{HorusError, HorusResult, Result};
@@ -98,7 +98,6 @@ pub use serde;
 /// are available via qualified paths: `horus::RtNode`, `horus::scheduling::BlackBox`, etc.
 pub mod prelude {
     // === Node ===
-    pub use horus_core::core::node::NodeConfig;
     pub use horus_core::core::{LogSummary, Node, NodeState};
 
     // === Topic (IPC) ===

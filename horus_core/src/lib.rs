@@ -60,7 +60,7 @@ pub(crate) mod utils;
 // Re-export user-facing types for easy access
 pub use communication::{PodMessage, Topic};
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig, NodeMetrics, NodePresence,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence,
     NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats,
     TopicMetadata,
 };
