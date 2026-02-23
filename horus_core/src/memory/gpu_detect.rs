@@ -117,12 +117,10 @@ fn probe_gpu_hardware() -> GpuCapability {
                 .unwrap_or(false);
 
         if supports_managed {
-            let concurrent_access = cuda_ffi::device_get_attribute(
-                CudaDeviceAttr::ConcurrentManagedAccess,
-                device_id,
-            )
-            .map(|v| v != 0)
-            .unwrap_or(false);
+            let concurrent_access =
+                cuda_ffi::device_get_attribute(CudaDeviceAttr::ConcurrentManagedAccess, device_id)
+                    .map(|v| v != 0)
+                    .unwrap_or(false);
 
             return GpuCapability::UnifiedMemory {
                 device_id,
@@ -234,7 +232,10 @@ mod tests {
         }
 
         let cap = detect_gpu();
-        assert!(cap.has_gpu(), "CUDA available but gpu_capability() says no GPU");
+        assert!(
+            cap.has_gpu(),
+            "CUDA available but gpu_capability() says no GPU"
+        );
         assert!(cap.device_id().is_some(), "GPU detected but no device_id");
     }
 

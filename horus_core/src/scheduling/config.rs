@@ -137,17 +137,6 @@ impl RecordingConfigYaml {
         }
     }
 
-    /// Create a recording config optimized for debugging
-    pub fn debug() -> Self {
-        Self {
-            enabled: true,
-            session_name: Some("debug".to_string()),
-            compress: false,
-            max_size_mb: 100,
-            ..Default::default()
-        }
-    }
-
     /// Create a minimal recording config (outputs only)
     pub fn minimal() -> Self {
         Self {

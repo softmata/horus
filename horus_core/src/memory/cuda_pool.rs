@@ -1650,12 +1650,10 @@ mod tests {
             return;
         }
 
-        let pool = CudaTensorPool::new(500, 0, CudaTensorPoolConfig::default())
-            .expect("pool creation");
+        let pool =
+            CudaTensorPool::new(500, 0, CudaTensorPoolConfig::default()).expect("pool creation");
 
-        let tensor = pool
-            .alloc(&[1024, 1024], TensorDtype::F32)
-            .expect("alloc");
+        let tensor = pool.alloc(&[1024, 1024], TensorDtype::F32).expect("alloc");
 
         assert_eq!(tensor.pool_id, 500);
         assert_eq!(tensor.device_id, 0);
@@ -1664,7 +1662,10 @@ mod tests {
 
         let handle = tensor.ipc_handle_bytes();
         assert_eq!(handle.len(), 64);
-        assert!(handle.iter().any(|&b| b != 0), "IPC handle should not be all zeros");
+        assert!(
+            handle.iter().any(|&b| b != 0),
+            "IPC handle should not be all zeros"
+        );
 
         let stats = pool.stats();
         assert_eq!(stats.allocated_slots, 1);
@@ -1679,12 +1680,10 @@ mod tests {
             return;
         }
 
-        let pool = CudaTensorPool::new(501, 0, CudaTensorPoolConfig::default())
-            .expect("pool creation");
+        let pool =
+            CudaTensorPool::new(501, 0, CudaTensorPoolConfig::default()).expect("pool creation");
 
-        let tensor = pool
-            .alloc(&[256, 256, 3], TensorDtype::U8)
-            .expect("alloc");
+        let tensor = pool.alloc(&[256, 256, 3], TensorDtype::U8).expect("alloc");
 
         let ipc_handle = tensor.ipc_handle_bytes();
         assert_eq!(ipc_handle.len(), 64);
@@ -1704,8 +1703,8 @@ mod tests {
             return;
         }
 
-        let pool = CudaTensorPool::new(502, 0, CudaTensorPoolConfig::default())
-            .expect("pool creation");
+        let pool =
+            CudaTensorPool::new(502, 0, CudaTensorPoolConfig::default()).expect("pool creation");
 
         let tensors: Vec<_> = (0..10)
             .map(|i| {
@@ -1730,8 +1729,8 @@ mod tests {
             return;
         }
 
-        let pool = CudaTensorPool::new(503, 0, CudaTensorPoolConfig::default())
-            .expect("pool creation");
+        let pool =
+            CudaTensorPool::new(503, 0, CudaTensorPoolConfig::default()).expect("pool creation");
         let tensor = pool.alloc(&[16], TensorDtype::F32).expect("alloc");
 
         let gpu_ptr = pool.device_ptr(&tensor);
@@ -1770,8 +1769,8 @@ mod tests {
             return;
         }
 
-        let pool = CudaTensorPool::new(504, 0, CudaTensorPoolConfig::default())
-            .expect("pool creation");
+        let pool =
+            CudaTensorPool::new(504, 0, CudaTensorPoolConfig::default()).expect("pool creation");
         let tensor = pool.alloc(&[64, 64], TensorDtype::F32).expect("alloc");
 
         assert!(tensor.device().is_cuda());

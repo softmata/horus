@@ -151,6 +151,11 @@ pub(crate) mod blackbox {
             category: String,
             message: String,
         },
+        PodSnapshot {
+            data: Vec<u8>,
+            type_name: String,
+            context: String,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +187,17 @@ pub(crate) mod blackbox {
         pub fn load(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+        pub fn record_pod_snapshot<T: crate::communication::PodMessage>(
+            &mut self,
+            _msg: &T,
+            _context: &str,
+        ) {
+        }
+        pub fn read_pod_snapshot<T: crate::communication::PodMessage>(
+            _data: &[u8],
+        ) -> Option<T> {
+            None
+        }
         pub fn clear(&mut self) {}
         pub fn len(&self) -> usize {
             0
@@ -192,8 +208,8 @@ pub(crate) mod blackbox {
     }
 }
 
-// Record/Replay system
-pub mod record_replay;
+// Record/Replay system (internal plumbing; user-facing types re-exported below)
+pub(crate) mod record_replay;
 
 // Deterministic execution (internal)
 pub(crate) mod deterministic;
@@ -201,35 +217,41 @@ pub(crate) mod deterministic;
 // Node builder for fluent node configuration
 pub mod node_builder;
 
+// =========================================================================
+// Public re-exports — these form the user-facing scheduling API.
+// Everything else is pub(crate) or deeper.
+// =========================================================================
+
+// Core types
 pub use crate::core::rt_node::WCETViolation;
-pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
-pub use safety_monitor::{SafetyState, SafetyStats};
+pub use config::{ExecutionMode, SchedulerConfig};
 pub use scheduler::{RtDegradation, Scheduler};
-pub use types::SchedulerNodeMetrics;
+pub use types::{NodeTier, SchedulerNodeMetrics};
 
-// Re-export blackbox flight recorder
-pub use blackbox::BlackBox;
-pub use blackbox::BlackBoxEvent;
+// Safety monitoring (returned by Scheduler::safety_stats())
+pub use safety_monitor::{SafetyState, SafetyStats};
 
-// Re-export record/replay (public API)
+// Blackbox flight recorder (accessed via Scheduler::blackbox())
+pub use blackbox::{BlackBox, BlackBoxEvent};
+
+// Fault tolerance (FailurePolicy for NodeBuilder, CircuitState for introspection)
+pub use fault_tolerance::{CircuitState, FailureHandlerStats, FailurePolicy};
+
+// Node builder (returned by Scheduler::add())
+pub use node_builder::{NodeBuilder, NodeRegistration};
+
+// Record/replay — user-facing subset only
 pub use record_replay::{
     diff_recordings, Breakpoint, BreakpointCondition, DebugEvent, DebugSessionState, DebuggerState,
-    NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, Recording, RecordingDiff,
-    RecordingManager, ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
+    NodeRecording, NodeReplayer, Recording, RecordingDiff, RecordingManager, ReplayDebugger,
+    SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 
-// Re-export node tier from types
-pub use types::NodeTier;
-
-// Re-export telemetry (only user-facing endpoint type)
-pub use telemetry::TelemetryEndpoint;
-
-// Re-export fault tolerance
-// User-facing: FailurePolicy (NodeBuilder), CircuitState/FailureHandlerStats (introspection)
-// Power-user: FailureHandler/FailureAction (direct fault handling in tests/tools)
-pub use fault_tolerance::{
-    CircuitState, FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy,
-};
-
-// Re-export node builder
-pub use node_builder::{NodeBuilder, NodeRegistration};
+// Internal plumbing — hidden from docs but accessible for integration tests and horus_py.
+// Not part of the stable public API.
+#[doc(hidden)]
+pub use fault_tolerance::{FailureAction, FailureHandler};
+#[doc(hidden)]
+pub use record_replay::{NodeRecorder, NodeTickSnapshot, RecordingConfig};
+#[doc(hidden)]
+pub use config::RecordingConfigYaml;

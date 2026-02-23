@@ -280,7 +280,10 @@ impl TensorPool {
                         }
                     }
                 } else {
-                    eprintln!("horus: cudaSetDevice({}) failed, falling back to mmap", device_id);
+                    eprintln!(
+                        "horus: cudaSetDevice({}) failed, falling back to mmap",
+                        device_id
+                    );
                     (None, None, false)
                 }
             }
@@ -614,10 +617,7 @@ impl TensorPool {
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let region_size = self.data_region_size();
-        if offset
-            .checked_add(size)
-            .is_none_or(|end| end > region_size)
-        {
+        if offset.checked_add(size).is_none_or(|end| end > region_size) {
             return &[];
         }
 
@@ -638,10 +638,7 @@ impl TensorPool {
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let region_size = self.data_region_size();
-        if offset
-            .checked_add(size)
-            .is_none_or(|end| end > region_size)
-        {
+        if offset.checked_add(size).is_none_or(|end| end > region_size) {
             return &mut [];
         }
 

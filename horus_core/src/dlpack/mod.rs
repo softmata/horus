@@ -44,9 +44,6 @@ pub use export::to_dlpack;
 pub use ffi::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
 pub use import::from_dlpack;
 
-/// DLPack version supported by this implementation
-pub const DLPACK_VERSION: u32 = 0x80; // Version 0.8
-
 /// DLPack device type codes
 pub mod device_type {
     /// CPU device
@@ -55,12 +52,4 @@ pub mod device_type {
     pub const CUDA: i32 = 2;
     /// CUDA managed/unified memory
     pub const CUDA_MANAGED: i32 = 13;
-    /// ROCm GPU
-    pub const ROCM: i32 = 10;
-    /// Vulkan GPU
-    pub const VULKAN: i32 = 7;
-    /// Metal GPU
-    pub const METAL: i32 = 8;
-    /// OpenCL
-    pub const OPENCL: i32 = 4;
 }

@@ -21,7 +21,8 @@
 //!     .done();
 //! ```
 
-use crate::core::Node;
+use crate::core::{Node, RtNode};
+use super::types::NodeKind;
 use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
@@ -29,8 +30,8 @@ use std::time::Duration;
 /// Use `NodeRegistration::new()` to create, then configure with chainable methods.
 /// Pass to `Scheduler::add_configured()` to register the node.
 pub struct NodeRegistration {
-    /// The node to add
-    pub(crate) node: Box<dyn Node>,
+    /// The node to add (either regular or RT)
+    pub(crate) node: NodeKind,
     /// Execution order (lower = earlier, default: 100)
     pub(crate) order: u32,
     /// Node-specific tick rate in Hz (None = use scheduler global rate)
@@ -58,12 +59,31 @@ impl NodeRegistration {
     /// ```
     pub fn new(node: Box<dyn Node>) -> Self {
         Self {
-            node,
+            node: NodeKind::Regular(node),
             order: 100, // Default to medium priority
             rate_hz: None,
             is_rt: false,
             wcet_budget: None,
             deadline: None,
+            tier: None,
+            failure_policy: None,
+        }
+    }
+
+    /// Create a new node configuration from a full RtNode.
+    ///
+    /// Automatically populates WCET budget and deadline from the trait,
+    /// and marks the node as RT.
+    pub fn new_rt(node: Box<dyn RtNode>) -> Self {
+        let wcet_budget = node.wcet_budget();
+        let deadline = node.deadline();
+        Self {
+            node: NodeKind::Rt(node),
+            order: 100,
+            rate_hz: None,
+            is_rt: true,
+            wcet_budget: Some(wcet_budget),
+            deadline: Some(deadline),
             tier: None,
             failure_policy: None,
         }
@@ -241,11 +261,19 @@ pub struct NodeBuilder<'a> {
 }
 
 impl<'a> NodeBuilder<'a> {
-    /// Create a new NodeBuilder (called by Scheduler::node).
+    /// Create a new NodeBuilder (called by Scheduler::add).
     pub(crate) fn new(scheduler: &'a mut super::scheduler::Scheduler, node: Box<dyn Node>) -> Self {
         Self {
             scheduler,
             config: NodeRegistration::new(node),
+        }
+    }
+
+    /// Create a new NodeBuilder for an RtNode (called by Scheduler::add_rt).
+    pub(crate) fn new_rt(scheduler: &'a mut super::scheduler::Scheduler, node: Box<dyn RtNode>) -> Self {
+        Self {
+            scheduler,
+            config: NodeRegistration::new_rt(node),
         }
     }
 

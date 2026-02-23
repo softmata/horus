@@ -162,4 +162,3 @@ pub fn set_cpu_affinity(core: usize) -> Result<(), Box<dyn std::error::Error>> {
 pub fn set_cpu_affinity(_core: usize) -> Result<(), Box<dyn std::error::Error>> {
     Ok(()) // No-op on non-Linux
 }
-

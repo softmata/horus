@@ -1352,6 +1352,27 @@ impl Scheduler {
         super::node_builder::NodeBuilder::new(self, Box::new(node))
     }
 
+    /// Add a node that implements `RtNode` using the fluent builder API.
+    ///
+    /// Unlike `add(node).rt()`, this path stores the full RtNode trait object,
+    /// enabling the scheduler to call RtNode-specific callbacks (pre/post
+    /// conditions, on_wcet_violation, on_deadline_miss, enter_safe_state, etc.).
+    ///
+    /// WCET budget and deadline are auto-populated from the trait implementation.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// scheduler.add_rt(MotorController::new())
+    ///     .order(0)
+    ///     .done();
+    /// ```
+    pub fn add_rt<N: crate::core::RtNode + 'static>(
+        &mut self,
+        node: N,
+    ) -> super::node_builder::NodeBuilder<'_> {
+        super::node_builder::NodeBuilder::new_rt(self, Box::new(node))
+    }
+
     /// Add a node using a pre-built NodeRegistration.
     ///
     /// This is called internally by `NodeBuilder::done()`. You can also use it
@@ -1416,6 +1437,13 @@ impl Scheduler {
 
         let resolved_tier = tier.unwrap_or_default();
         let policy = failure_policy.unwrap_or_else(|| resolved_tier.default_failure_policy());
+        // Allocate RtStats for RT nodes
+        let rt_stats = if is_rt_node {
+            Some(crate::core::RtStats::default())
+        } else {
+            None
+        };
+
         self.nodes.push(RegisteredNode {
             node,
             name: node_name.clone(),
@@ -1435,6 +1463,7 @@ impl Scheduler {
             recorder,
             is_stopped: false,
             is_paused: false,
+            rt_stats,
         });
 
         if let Some(rate) = node_rate {
@@ -1777,6 +1806,30 @@ impl Scheduler {
                         reason: "Safety monitor triggered emergency stop".to_string(),
                     });
                 }
+
+                // Transition all RT nodes to safe state
+                for registered in self.nodes.iter_mut() {
+                    if let Some(rt_node) = registered.node.as_rt_mut() {
+                        if !rt_node.is_safe_state() {
+                            let name = registered.name.clone();
+                            print_line(&format!(
+                                " Entering safe state for RT node '{}'",
+                                name
+                            ));
+                            rt_node.enter_safe_state();
+                            if let Some(ref mut bb) = self.monitor.blackbox {
+                                bb.record(super::blackbox::BlackBoxEvent::Custom {
+                                    category: "safe_state".to_string(),
+                                    message: format!(
+                                        "Node '{}' transitioned to safe state",
+                                        name
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 return true;
             }
         }
@@ -2060,6 +2113,16 @@ impl Scheduler {
             .collect()
     }
 
+    /// Get real-time statistics for a specific node.
+    ///
+    /// Returns `None` if the node doesn't exist or is not an RT node.
+    pub fn rt_stats(&self, node_name: &str) -> Option<&crate::core::RtStats> {
+        self.nodes
+            .iter()
+            .find(|n| n.name == node_name)
+            .and_then(|n| n.rt_stats.as_ref())
+    }
+
     /// Get monitoring summary by creating temporary contexts for each node
     pub fn monitoring_summary(&self) -> Vec<(String, u32)> {
         self.nodes
@@ -2323,8 +2386,15 @@ impl Scheduler {
     /// Execute a single node: tick + profiling + WCET + deadline + failure handling.
     /// Returns true if the scheduler should stop (fatal failure).
     fn execute_single_node(&mut self, i: usize, node_filter: Option<&[&str]>) -> bool {
-        // Skip stopped or paused nodes
-        if self.nodes[i].is_stopped || self.nodes[i].is_paused {
+        // Skip stopped nodes
+        if self.nodes[i].is_stopped {
+            return false;
+        }
+
+        // Auto-unpause nodes that were paused by DeadlineMissPolicy::Skip
+        // (they skip exactly one tick, then resume)
+        if self.nodes[i].is_paused {
+            self.nodes[i].is_paused = false;
             return false;
         }
 
@@ -2379,6 +2449,37 @@ impl Scheduler {
                 }
             }
 
+            // RtNode pre-condition and invariant checks (before tick)
+            if let Some(rt_node) = self.nodes[i].node.as_rt() {
+                if !rt_node.pre_condition() {
+                    let name = self.nodes[i].name.as_str();
+                    print_line(&format!(
+                        " Pre-condition failed for RT node '{}' — skipping tick",
+                        name
+                    ));
+                    if let Some(ref mut bb) = self.monitor.blackbox {
+                        bb.record(super::blackbox::BlackBoxEvent::Custom {
+                            category: "rt_condition".to_string(),
+                            message: format!("Pre-condition failed for '{}'", name),
+                        });
+                    }
+                    return false;
+                }
+                if !rt_node.invariant() {
+                    let name = self.nodes[i].name.as_str();
+                    print_line(&format!(
+                        " Invariant violated before tick for RT node '{}'",
+                        name
+                    ));
+                    if let Some(ref mut bb) = self.monitor.blackbox {
+                        bb.record(super::blackbox::BlackBoxEvent::Custom {
+                            category: "rt_condition".to_string(),
+                            message: format!("Invariant violated before tick for '{}'", name),
+                        });
+                    }
+                }
+            }
+
             let tick_start = Instant::now();
             let tick_result = {
                 let registered = &mut self.nodes[i];
@@ -2402,6 +2503,38 @@ impl Scheduler {
             };
 
             let tick_duration = tick_start.elapsed();
+
+            // RtNode post-condition and invariant checks (after successful tick)
+            if tick_result.is_ok() {
+                if let Some(rt_node) = self.nodes[i].node.as_rt() {
+                    if !rt_node.post_condition() {
+                        let name = self.nodes[i].name.as_str();
+                        print_line(&format!(
+                            " Post-condition failed for RT node '{}'",
+                            name
+                        ));
+                        if let Some(ref mut bb) = self.monitor.blackbox {
+                            bb.record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!("Post-condition failed for '{}'", name),
+                            });
+                        }
+                    }
+                    if !rt_node.invariant() {
+                        let name = self.nodes[i].name.as_str();
+                        print_line(&format!(
+                            " Invariant violated after tick for RT node '{}'",
+                            name
+                        ));
+                        if let Some(ref mut bb) = self.monitor.blackbox {
+                            bb.record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!("Invariant violated after tick for '{}'", name),
+                            });
+                        }
+                    }
+                }
+            }
 
             return self.process_tick_result(i, tick_start, tick_duration, tick_result);
         }
@@ -2427,13 +2560,20 @@ impl Scheduler {
             self.monitor.profiler.record(node_name, tick_duration);
         }
 
+        // Update per-node RtStats
+        if let Some(ref mut stats) = self.nodes[i].rt_stats {
+            stats.record_execution(tick_duration);
+        }
+
         // End recording tick
         if let Some(ref mut recorder) = self.nodes[i].recorder {
             recorder.end_tick(tick_duration.as_nanos() as u64);
         }
 
         // Check timing violations for RT nodes
-        self.check_timing_violations(i, tick_start, tick_duration);
+        if self.check_timing_violations(i, tick_start, tick_duration) {
+            return true; // Emergency stop triggered by deadline policy
+        }
 
         // Handle tick result with policy-driven dispatch
         match tick_result {
@@ -2449,17 +2589,51 @@ impl Scheduler {
     }
 
     /// Check WCET budget and deadline violations for real-time nodes.
-    fn check_timing_violations(&self, i: usize, tick_start: Instant, tick_duration: Duration) {
-        let node_name = self.nodes[i].name.as_str();
+    ///
+    /// For nodes registered via `add_rt()` (NodeKind::Rt), this invokes:
+    /// - `on_wcet_violation()` when the WCET budget is exceeded
+    /// - `on_deadline_miss()` + `deadline_miss_policy()` dispatch when the deadline is missed
+    ///
+    /// Returns `true` if the scheduler should stop (EmergencyStop policy).
+    fn check_timing_violations(
+        &mut self,
+        i: usize,
+        tick_start: Instant,
+        tick_duration: Duration,
+    ) -> bool {
+        let node_name = self.nodes[i].name.clone();
 
         // Check WCET budget for RT nodes
         if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-            if let Some(ref monitor) = self.monitor.safety {
-                if let Err(violation) = monitor.check_wcet(node_name, tick_duration) {
-                    print_line(&format!(
-                        " WCET violation in {}: {:?} > {:?}",
-                        violation.node_name, violation.actual, violation.budget
-                    ));
+            let violation = if let Some(ref monitor) = self.monitor.safety {
+                monitor.check_wcet(&node_name, tick_duration).err()
+            } else {
+                None
+            };
+
+            if let Some(violation) = violation {
+                print_line(&format!(
+                    " WCET violation in {}: {:?} > {:?}",
+                    violation.node_name, violation.actual, violation.budget
+                ));
+
+                // Invoke RtNode callback
+                if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
+                    rt_node.on_wcet_violation(&violation);
+                }
+
+                // Update RtStats
+                if let Some(ref mut stats) = self.nodes[i].rt_stats {
+                    stats.wcet_violations += 1;
+                }
+
+                // Record in blackbox
+                if let Some(ref mut bb) = self.monitor.blackbox {
+                    bb.record(super::blackbox::BlackBoxEvent::WCETViolation {
+                        name: node_name.clone(),
+                        budget_us: violation.budget.as_micros() as u64,
+                        actual_us: violation.actual.as_micros() as u64,
+                    });
                 }
             }
         }
@@ -2470,15 +2644,97 @@ impl Scheduler {
                 let elapsed = tick_start.elapsed();
                 if elapsed > deadline {
                     if let Some(ref monitor) = self.monitor.safety {
-                        monitor.record_deadline_miss(node_name);
-                        print_line(&format!(
-                            " Deadline miss in {}: {:?} > {:?}",
-                            node_name, elapsed, deadline
-                        ));
+                        monitor.record_deadline_miss(&node_name);
+                    }
+                    print_line(&format!(
+                        " Deadline miss in {}: {:?} > {:?}",
+                        node_name, elapsed, deadline
+                    ));
+
+                    // Invoke RtNode callback and get policy
+                    let policy = if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
+                        rt_node.on_deadline_miss(elapsed, deadline);
+                        rt_node.deadline_miss_policy()
+                    } else {
+                        // Regular RT node (added via .rt()) — default to Warn
+                        crate::core::DeadlineMissPolicy::Warn
+                    };
+
+                    // Update RtStats
+                    if let Some(ref mut stats) = self.nodes[i].rt_stats {
+                        stats.record_deadline_miss();
+                    }
+
+                    // Record in blackbox
+                    if let Some(ref mut bb) = self.monitor.blackbox {
+                        bb.record(super::blackbox::BlackBoxEvent::DeadlineMiss {
+                            name: node_name.clone(),
+                            deadline_us: deadline.as_micros() as u64,
+                            actual_us: elapsed.as_micros() as u64,
+                        });
+                    }
+
+                    // Dispatch on DeadlineMissPolicy
+                    match policy {
+                        crate::core::DeadlineMissPolicy::Warn => {
+                            // Already logged above — no further action
+                        }
+                        crate::core::DeadlineMissPolicy::Skip => {
+                            // Pause node for one tick — it will be unpaused next tick
+                            self.nodes[i].is_paused = true;
+                            print_line(&format!(
+                                " Deadline policy: skipping '{}' for one tick",
+                                node_name
+                            ));
+                        }
+                        crate::core::DeadlineMissPolicy::EmergencyStop => {
+                            print_line(&format!(
+                                " Deadline policy: emergency stop triggered by '{}'",
+                                node_name
+                            ));
+                            if let Some(ref monitor) = self.monitor.safety {
+                                monitor.trigger_emergency_stop(format!(
+                                    "Deadline miss in '{}': {:?} > {:?}",
+                                    node_name, elapsed, deadline
+                                ));
+                            }
+                            return true;
+                        }
+                        crate::core::DeadlineMissPolicy::Degrade => {
+                            // Lower priority (increase priority number by 10)
+                            self.nodes[i].priority = self.nodes[i].priority.saturating_add(10);
+                            print_line(&format!(
+                                " Deadline policy: degraded '{}' priority to {}",
+                                node_name, self.nodes[i].priority
+                            ));
+                        }
+                        crate::core::DeadlineMissPolicy::Fallback => {
+                            // Try to swap in the fallback node
+                            let fallback = self.nodes[i]
+                                .node
+                                .as_rt_mut()
+                                .and_then(|rt| rt.fallback_node());
+                            if let Some(fallback_node) = fallback {
+                                let fallback_name = fallback_node.name().to_string();
+                                print_line(&format!(
+                                    " Deadline policy: switching '{}' to fallback '{}'",
+                                    node_name, fallback_name
+                                ));
+                                self.nodes[i].node =
+                                    super::types::NodeKind::Rt(fallback_node);
+                                self.nodes[i].name = fallback_name;
+                            } else {
+                                print_line(&format!(
+                                    " Deadline policy: no fallback for '{}', continuing",
+                                    node_name
+                                ));
+                            }
+                        }
                     }
                 }
             }
         }
+        false
     }
 
     /// Handle a node tick failure according to its failure policy.

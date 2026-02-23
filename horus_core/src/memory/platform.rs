@@ -96,21 +96,15 @@ pub fn shm_logs_path() -> PathBuf {
     }
 }
 
-/// Check if we're running on a platform with true RAM-backed shared memory
-///
-/// All major platforms now use optimal shared memory:
-/// - Linux: /dev/shm (tmpfs - RAM)
-/// - macOS: shm_open() (Mach shared memory - RAM)
-/// - Windows: CreateFileMapping (pagefile-backed - OS optimized)
+/// Returns true if the platform has native shared memory support (/dev/shm on Linux).
 pub fn has_native_shm() -> bool {
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "linux")]
     {
-        true
+        std::path::Path::new("/dev/shm").exists()
     }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "linux"))]
     {
-        false // BSD and others still use file-based fallback
+        false
     }
 }
 

@@ -431,9 +431,7 @@ impl PyTensorHandle {
                 let target_device = if gpu_cap.is_unified() {
                     // Jetson: managed pool, mark as CUDA so downstream consumers
                     // know this data is GPU-accessible without copies.
-                    horus_types::Device::cuda(
-                        gpu_cap.device_id().unwrap_or(0) as u32,
-                    )
+                    horus_types::Device::cuda(gpu_cap.device_id().unwrap_or(0) as u32)
                 } else {
                     // Discrete GPU: pinned pool, data is CPU-side (fast DMA staging)
                     horus_types::Device::cpu()

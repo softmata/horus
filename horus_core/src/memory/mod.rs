@@ -20,10 +20,13 @@
 //! The unified `Topic<T>` API (see `communication::Topic`) is the recommended
 //! interface for all IPC. It uses `ShmRegion` internally for cross-process paths.
 
-pub mod platform;
-pub mod shm_region;
-pub mod simd;
-pub mod tensor_descriptor;
+pub(crate) mod platform;
+pub(crate) mod shm_region;
+pub(crate) mod simd;
+pub(crate) mod tensor_descriptor;
+
+// Re-export platform functions needed by horus_manager
+pub use platform::{has_native_shm, shm_base_dir, shm_control_dir, shm_network_dir, shm_topics_dir};
 pub mod tensor_handle;
 pub mod tensor_pool;
 
@@ -200,7 +203,6 @@ pub(crate) mod cuda_pool;
 #[cfg(feature = "cuda")]
 pub(crate) mod gpu_detect;
 
-pub use platform::*;
 pub use tensor_handle::TensorHandle;
 pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};
 

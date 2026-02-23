@@ -170,8 +170,7 @@ impl IpcHandleCache {
 
         match cuda_ffi::ipc_open_mem_handle(handle) {
             Ok(dev_ptr) => {
-                let data_ptr =
-                    unsafe { (dev_ptr as *mut u8).add(tensor.offset as usize) };
+                let data_ptr = unsafe { (dev_ptr as *mut u8).add(tensor.offset as usize) };
                 self.entries.insert(key, IpcMapping { dev_ptr });
                 Some(data_ptr)
             }

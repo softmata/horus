@@ -1,6 +1,5 @@
 // Regression test: verify RecordingConfigYaml fields are wired through to the recording system
-use horus_core::scheduling::record_replay::{NodeRecorder, RecordingConfig};
-use horus_core::scheduling::RecordingConfigYaml;
+use horus_core::scheduling::{NodeRecorder, RecordingConfig, RecordingConfigYaml};
 
 mod common;
 

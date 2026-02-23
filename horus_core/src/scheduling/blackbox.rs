@@ -59,6 +59,15 @@ pub enum BlackBoxEvent {
     EmergencyStop { reason: String },
     /// Custom event
     Custom { category: String, message: String },
+    /// Raw PodMessage snapshot captured via write_to_ptr (for post-mortem analysis)
+    PodSnapshot {
+        /// Raw bytes captured from PodMessage::write_to_ptr
+        data: Vec<u8>,
+        /// Type name (e.g. "MotorCommand")
+        type_name: String,
+        /// Context describing when/why the snapshot was taken
+        context: String,
+    },
 }
 
 /// A recorded event with timestamp
@@ -213,6 +222,47 @@ impl BlackBox {
         Ok(())
     }
 
+    /// Record a raw PodMessage snapshot using `write_to_ptr`.
+    ///
+    /// Captures the raw byte representation of a PodMessage for post-mortem
+    /// analysis. This uses the PodMessage::write_to_ptr path to capture an
+    /// exact binary snapshot of the message at the time of the RT event.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// blackbox.record_pod_snapshot(&motor_cmd, "wcet_violation");
+    /// ```
+    pub fn record_pod_snapshot<T: crate::communication::PodMessage>(
+        &mut self,
+        msg: &T,
+        context: &str,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let mut buf = vec![0u8; T::SIZE];
+        // SAFETY: buf has exactly T::SIZE bytes, properly allocated
+        unsafe {
+            msg.write_to_ptr(buf.as_mut_ptr());
+        }
+        self.record(BlackBoxEvent::PodSnapshot {
+            data: buf,
+            type_name: std::any::type_name::<T>().to_string(),
+            context: context.to_string(),
+        });
+    }
+
+    /// Reconstruct a PodMessage from a previously recorded snapshot.
+    ///
+    /// Returns `None` if the data length doesn't match `T::SIZE`.
+    pub fn read_pod_snapshot<T: crate::communication::PodMessage>(data: &[u8]) -> Option<T> {
+        if data.len() != T::SIZE {
+            return None;
+        }
+        // SAFETY: data has exactly T::SIZE bytes
+        Some(unsafe { T::read_from_ptr(data.as_ptr()) })
+    }
+
     /// Clear the buffer
     pub fn clear(&mut self) {
         self.buffer.clear();
@@ -300,5 +350,64 @@ mod tests {
 
         let anomalies = bb.anomalies();
         assert_eq!(anomalies.len(), 2);
+    }
+
+    #[test]
+    fn test_pod_snapshot_roundtrip() {
+        use bytemuck::{Pod, Zeroable};
+        use crate::communication::PodMessage;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+        struct TestCmd {
+            velocity: f32,
+            torque: f32,
+        }
+        unsafe impl PodMessage for TestCmd {}
+
+        let mut bb = BlackBox::new(1);
+        let cmd = TestCmd {
+            velocity: 1.5,
+            torque: 0.75,
+        };
+
+        bb.record_pod_snapshot(&cmd, "test_wcet_violation");
+        assert_eq!(bb.len(), 1);
+
+        // Extract the snapshot data from the recorded event
+        let events = bb.events();
+        if let BlackBoxEvent::PodSnapshot {
+            ref data,
+            ref type_name,
+            ref context,
+        } = events[0].event
+        {
+            assert!(type_name.contains("TestCmd"));
+            assert_eq!(context, "test_wcet_violation");
+            assert_eq!(data.len(), TestCmd::SIZE);
+
+            // Reconstruct the message
+            let restored: TestCmd = BlackBox::read_pod_snapshot(data).unwrap();
+            assert_eq!(restored, cmd);
+        } else {
+            panic!("Expected PodSnapshot event");
+        }
+    }
+
+    #[test]
+    fn test_pod_snapshot_size_mismatch() {
+        use bytemuck::{Pod, Zeroable};
+        use crate::communication::PodMessage;
+
+        #[repr(C)]
+        #[derive(Clone, Copy, Pod, Zeroable)]
+        struct Small {
+            x: f32,
+        }
+        unsafe impl PodMessage for Small {}
+
+        // Wrong size data should return None
+        let bad_data = vec![0u8; 100];
+        assert!(BlackBox::read_pod_snapshot::<Small>(&bad_data).is_none());
     }
 }

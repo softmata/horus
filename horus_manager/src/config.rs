@@ -63,4 +63,3 @@ pub const HORUS_YAML: &str = "horus.yaml";
 
 /// Cargo manifest file name.
 pub const CARGO_TOML: &str = "Cargo.toml";
-

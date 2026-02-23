@@ -155,28 +155,6 @@ impl NetworkStatus {
         }
     }
 
-    /// Read all network statuses from the network directory
-    pub fn read_all() -> Vec<Self> {
-        use crate::memory::platform::shm_network_dir;
-
-        let dir = shm_network_dir();
-        if !dir.exists() {
-            return Vec::new();
-        }
-
-        let mut statuses = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(status) = serde_json::from_str::<NetworkStatus>(&content) {
-                        statuses.push(status);
-                    }
-                }
-            }
-        }
-        statuses
-    }
-
     /// Check if status is fresh (within last N seconds)
     pub fn is_fresh(&self, max_age_secs: u64) -> bool {
         let now = std::time::SystemTime::now()
@@ -251,7 +229,6 @@ pub struct NodeInfo {
     // Basic identification
     name: String,
     node_id: String,
-    instance_id: String,
 
     // State management
     state: NodeState,
@@ -303,7 +280,6 @@ impl NodeInfo {
         Self {
             name: node_name.clone(),
             node_id,
-            instance_id: uuid::Uuid::new_v4().to_string(),
             state: NodeState::Uninitialized,
             previous_state: NodeState::Uninitialized,
             state_change_time: now,
@@ -332,10 +308,6 @@ impl NodeInfo {
     // State Management Methods
     pub fn state(&self) -> &NodeState {
         &self.state
-    }
-
-    pub fn previous_state(&self) -> &NodeState {
-        &self.previous_state
     }
 
     pub fn set_state(&mut self, new_state: NodeState) {
@@ -502,9 +474,6 @@ impl NodeInfo {
     }
     pub fn node_id(&self) -> &str {
         &self.node_id
-    }
-    pub fn instance_id(&self) -> &str {
-        &self.instance_id
     }
     pub fn priority(&self) -> u32 {
         self.priority

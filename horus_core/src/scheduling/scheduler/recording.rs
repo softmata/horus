@@ -40,7 +40,7 @@ impl Scheduler {
             .map_err(|e| horus_internal!("Failed to load recording: {}", e))?;
 
         let node_name = replayer.recording().node_name.clone();
-        let node_id = replayer.recording().node_id.clone();
+        let _node_id = replayer.recording().node_id.clone();
 
         print_line(&format!(
             "[REPLAY] Loading '{}' from recording (ticks {}-{})",
@@ -49,7 +49,7 @@ impl Scheduler {
             replayer.recording().last_tick
         ));
 
-        let replay_node = ReplayNode::new(node_name.clone(), node_id.clone());
+        let replay_node = ReplayNode::new(node_name.clone());
 
         // Initialize replay state if not already present
         if self.replay.is_none() {
@@ -68,7 +68,7 @@ impl Scheduler {
 
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
-            node: Box::new(replay_node),
+            node: super::super::types::NodeKind::Regular(Box::new(replay_node)),
             name: node_name.clone(),
             priority,
             initialized: false,
@@ -84,6 +84,7 @@ impl Scheduler {
             recorder: None,
             is_stopped: false,
             is_paused: false,
+            rt_stats: None,
         });
 
         self.nodes.sort_by_key(|n| n.priority);

@@ -228,11 +228,6 @@ impl FailureHandler {
         }
     }
 
-    /// Get the underlying policy.
-    pub fn policy(&self) -> &FailurePolicy {
-        &self.policy
-    }
-
     /// Get statistics for monitoring/status output.
     pub fn stats(&self) -> FailureHandlerStats {
         match &self.state {

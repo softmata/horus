@@ -6,7 +6,7 @@ use crate::discovery::{discover_nodes, ProcessCategory};
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
-use horus_core::memory::platform::shm_control_dir;
+use horus_core::memory::shm_control_dir;
 use std::fs;
 use std::process::Command;
 

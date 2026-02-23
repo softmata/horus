@@ -248,7 +248,6 @@ impl DependencySpec {
             _ => Err(anyhow!("Invalid dependency format for '{}'", name)),
         }
     }
-
 }
 
 /// Package metadata provider

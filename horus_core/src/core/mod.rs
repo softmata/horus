@@ -34,5 +34,9 @@ pub use node::{
     TopicMetadata,
 };
 pub use presence::NodePresence;
-pub use rt_config::{RtConfig, RtConfigBuilder, RtDegradation};
+#[cfg(target_os = "linux")]
+pub use rt_config::{detect_isolated_cpus, pin_thread_to_core};
+pub use rt_config::{
+    get_rt_recommended_cpus, prefault_stack, RtConfig, RtConfigBuilder, RtDegradation, RtScheduler,
+};
 pub use rt_node::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats, WCETViolation};

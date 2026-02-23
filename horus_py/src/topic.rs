@@ -596,11 +596,7 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(
-                                    py,
-                                    "register_publisher",
-                                    (&self.name, "Image"),
-                                ),
+                                info.call_method1(py, "register_publisher", (&self.name, "Image")),
                                 "register_publisher",
                                 &self.name,
                             );
@@ -608,7 +604,11 @@ impl PyTopic {
                                 info.call_method1(
                                     py,
                                     "log_pub",
-                                    (&self.name, format!("Image({}x{})", img.height(), img.width()), ipc_ns),
+                                    (
+                                        &self.name,
+                                        format!("Image({}x{})", img.height(), img.width()),
+                                        ipc_ns,
+                                    ),
                                 ),
                                 "log_pub",
                                 &self.name,
@@ -645,7 +645,11 @@ impl PyTopic {
                                 info.call_method1(
                                     py,
                                     "log_pub",
-                                    (&self.name, format!("PointCloud({} pts)", pc.point_count()), ipc_ns),
+                                    (
+                                        &self.name,
+                                        format!("PointCloud({} pts)", pc.point_count()),
+                                        ipc_ns,
+                                    ),
                                 ),
                                 "log_pub",
                                 &self.name,
@@ -682,7 +686,11 @@ impl PyTopic {
                                 info.call_method1(
                                     py,
                                     "log_pub",
-                                    (&self.name, format!("DepthImage({}x{})", depth.height(), depth.width()), ipc_ns),
+                                    (
+                                        &self.name,
+                                        format!("DepthImage({}x{})", depth.height(), depth.width()),
+                                        ipc_ns,
+                                    ),
                                 ),
                                 "log_pub",
                                 &self.name,
@@ -980,7 +988,11 @@ impl PyTopic {
                                     info.call_method1(
                                         py,
                                         "log_sub",
-                                        (&self.name, format!("Image({}x{})", img.height(), img.width()), ipc_ns),
+                                        (
+                                            &self.name,
+                                            format!("Image({}x{})", img.height(), img.width()),
+                                            ipc_ns,
+                                        ),
                                     ),
                                     "log_sub",
                                     &self.name,
@@ -1018,7 +1030,11 @@ impl PyTopic {
                                     info.call_method1(
                                         py,
                                         "log_sub",
-                                        (&self.name, format!("PointCloud({} pts)", pc.point_count()), ipc_ns),
+                                        (
+                                            &self.name,
+                                            format!("PointCloud({} pts)", pc.point_count()),
+                                            ipc_ns,
+                                        ),
                                     ),
                                     "log_sub",
                                     &self.name,
@@ -1056,7 +1072,15 @@ impl PyTopic {
                                     info.call_method1(
                                         py,
                                         "log_sub",
-                                        (&self.name, format!("DepthImage({}x{})", depth.height(), depth.width()), ipc_ns),
+                                        (
+                                            &self.name,
+                                            format!(
+                                                "DepthImage({}x{})",
+                                                depth.height(),
+                                                depth.width()
+                                            ),
+                                            ipc_ns,
+                                        ),
                                     ),
                                     "log_sub",
                                     &self.name,
@@ -1223,9 +1247,8 @@ where
         endpoint
     };
 
-    Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
-        PyRuntimeError::new_err(format!("Failed to create Topic: {}", e))
-    })
+    Topic::with_capacity(topic_name, capacity as u32, None)
+        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create Topic: {}", e)))
 }
 
 fn create_topic<T>(endpoint: &str, capacity: usize, backend: Option<&str>) -> PyResult<Topic<T>>

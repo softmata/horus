@@ -6,7 +6,7 @@
 //! Structure: `/dev/shm/horus/nodes/{node_name}.json`
 
 use crate::core::node::TopicMetadata;
-use crate::memory::shm_nodes_dir;
+use crate::memory::platform::shm_nodes_dir;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

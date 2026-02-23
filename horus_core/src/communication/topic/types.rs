@@ -36,7 +36,6 @@ pub(crate) enum BackendMode {
     MpmcShm = 10,
 
     // --- GPU CUDA IPC variants (feature-gated at usage sites) ---
-
     /// CudaIpcSpsc - cross process CUDA IPC, 1P1C
     ///
     /// Tensor descriptor goes through SHM ring; actual GPU data is accessed

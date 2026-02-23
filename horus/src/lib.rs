@@ -90,124 +90,56 @@ pub use horus_core::serde_yaml;
 #[doc(hidden)]
 pub use serde;
 
-/// The HORUS prelude - everything you need to get started
+/// The HORUS prelude — the essentials for building robotics applications.
 ///
-/// This includes all core types, advanced features, and commonly used components.
-/// Just add `use horus::prelude::*;` to get started.
+/// `use horus::prelude::*;` gives you everything needed for typical use.
+///
+/// Advanced types (RT nodes, recording, blackbox, telemetry, tensor pools)
+/// are available via qualified paths: `horus::RtNode`, `horus::scheduling::BlackBox`, etc.
 pub mod prelude {
-    // ============================================
-    // Core Node Types
-    // ============================================
+    // === Node ===
     pub use horus_core::core::node::NodeConfig;
     pub use horus_core::core::{LogSummary, Node, NodeState};
 
-    // ============================================
-    // Communication (IPC) - Unified Topic API
-    // ============================================
-    pub use horus_core::communication::PodMessage;
+    // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
 
-    // ============================================
-    // Scheduling
-    // ============================================
-    pub use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
-
-    // Note: Infrastructure config sub-structs (TimingConfig, RealTimeConfig,
-    // MonitoringConfig, ResourceConfig, RecordingConfigYaml) are intentionally
-    // NOT in the prelude. Access them via horus::scheduling::* when customizing
-    // presets. Most users only need SchedulerConfig presets directly.
-
-    // ============================================
-    // Safety & Fault Tolerance
-    // ============================================
+    // === Scheduler ===
     pub use horus_core::scheduling::{
-        BlackBox, BlackBoxEvent, CircuitState, SafetyState, SafetyStats, WCETViolation,
+        ExecutionMode, FailurePolicy, NodeTier, Scheduler, SchedulerConfig,
     };
 
-    // ============================================
-    // Telemetry
-    // ============================================
-    pub use horus_core::scheduling::TelemetryEndpoint;
-
-    // ============================================
-    // Node Tier
-    // ============================================
-    pub use horus_core::scheduling::NodeTier;
-
-    // ============================================
-    // Record/Replay
-    // ============================================
-    pub use horus_core::scheduling::{
-        NodeRecorder, NodeRecording, NodeReplayer, NodeTickSnapshot, RecordingManager,
-        SchedulerRecording,
-    };
-
-    // ============================================
-    // Real-Time Nodes
-    // ============================================
-    pub use horus_core::core::{
-        DeadlineMissPolicy, RtClass, RtDegradation, RtNode, RtPriority, RtStats,
-    };
-
-    // Note: RtConfig and RtConfigBuilder are for thread-level RT setup.
-    // Access them via horus::RtConfig or horus::core::rt_config::* when needed.
-
-    // ============================================
-    // Memory (user-facing domain types only)
-    // ============================================
+    // === Memory (domain types) ===
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
-    // ============================================
-    // HFrame Transform System
-    // ============================================
+    // === HFrame (coordinate transforms) ===
     pub use horus_library::hframe::{timestamp_now, HFrame, HFrameConfig, Transform};
 
-    // ============================================
-    // Message Types (ALL from horus_library)
-    // ============================================
-    pub use horus_core::communication::TopicMessage;
+    // === Message types ===
     pub use horus_library::messages::*;
-    pub use horus_types::{
-        Device, HorusTensor, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype,
-    };
+    pub use horus_types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
 
-    // ============================================
-    // Error Types
-    // ============================================
-    pub use horus_core::error::{HorusError, HorusResult, Result};
-
-    // ============================================
-    // Common Std Types
-    // ============================================
-    pub use std::sync::{Arc, Mutex};
-    pub use std::time::{Duration, Instant};
-
-    // ============================================
-    // Runtime Parameters
-    // ============================================
-    pub use horus_core::params::{ParamMetadata, RuntimeParams};
-
-    // ============================================
-    // Macros
-    // ============================================
-    #[cfg(feature = "macros")]
-    pub use horus_macros::*;
-
-    pub use horus_core::hlog;
-
-    // ============================================
-    // Common Traits
-    // ============================================
-    pub use serde::{Deserialize, Serialize};
-
-    // ============================================
-    // Actions (Long-running tasks with feedback)
-    // ============================================
+    // === Actions ===
     pub use horus_core::actions::{
         Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
-        ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
-        GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
+        ActionServerNode, ClientGoalHandle, GoalId, GoalResponse, GoalStatus, ServerGoalHandle,
     };
+
+    // === Parameters ===
+    pub use horus_core::params::RuntimeParams;
+
+    // === Errors ===
+    pub use horus_core::error::{HorusError, HorusResult, Result};
+
+    // === Macros ===
+    pub use horus_core::hlog;
+    #[cfg(feature = "macros")]
+    pub use horus_macros::*;
+    pub use serde::{Deserialize, Serialize};
+
+    // === Std ===
+    pub use std::sync::{Arc, Mutex};
+    pub use std::time::{Duration, Instant};
 }
 
 /// Version information

@@ -84,27 +84,6 @@ impl RecordingConfig {
         }
     }
 
-    /// Create config with a named session
-    pub fn with_name(name: &str) -> Self {
-        Self::new(name.to_string())
-    }
-
-    /// Check if a node should be recorded based on include/exclude filters
-    pub fn should_record_node(&self, node_name: &str) -> bool {
-        // If exclude list is not empty and node is in it, don't record
-        if !self.exclude_nodes.is_empty() && self.exclude_nodes.contains(&node_name.to_string()) {
-            return false;
-        }
-
-        // If include list is not empty, only record nodes in it
-        if !self.include_nodes.is_empty() {
-            return self.include_nodes.contains(&node_name.to_string());
-        }
-
-        // Default: record all nodes
-        true
-    }
-
     /// Get the session directory
     pub fn session_dir(&self) -> PathBuf {
         self.base_dir.join(&self.session_name)
@@ -430,33 +409,6 @@ impl NodeRecorder {
         self.current_snapshot = Some(NodeTickSnapshot::new(tick));
     }
 
-    /// Record an input received
-    pub fn record_input(&mut self, topic: &str, data: Vec<u8>) {
-        if !self.config.record_inputs {
-            return;
-        }
-        if let Some(ref mut snapshot) = self.current_snapshot {
-            snapshot.inputs.insert(topic.to_string(), data);
-        }
-    }
-
-    /// Record an output produced
-    pub fn record_output(&mut self, topic: &str, data: Vec<u8>) {
-        if !self.config.record_outputs {
-            return;
-        }
-        if let Some(ref mut snapshot) = self.current_snapshot {
-            snapshot.outputs.insert(topic.to_string(), data);
-        }
-    }
-
-    /// Record internal state
-    pub fn record_state(&mut self, state: Vec<u8>) {
-        if let Some(ref mut snapshot) = self.current_snapshot {
-            snapshot.state = Some(state);
-        }
-    }
-
     /// Finish recording the current tick
     pub fn end_tick(&mut self, duration_ns: u64) {
         if let Some(mut snapshot) = self.current_snapshot.take() {
@@ -465,11 +417,6 @@ impl NodeRecorder {
             }
             self.recording.add_snapshot(snapshot);
         }
-    }
-
-    /// Check if we should stop (size limit reached)
-    pub fn should_stop(&self) -> bool {
-        self.recording.estimated_size() >= self.config.max_size
     }
 
     /// Finish and save the recording
@@ -485,15 +432,6 @@ impl NodeRecorder {
         Ok(path)
     }
 
-    /// Get the current recording (for inspection)
-    pub fn recording(&self) -> &NodeRecording {
-        &self.recording
-    }
-
-    /// Enable/disable recording
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
 }
 
 /// Replayer for a node recording
@@ -779,23 +717,16 @@ use crate::core::Node;
 /// This wrapper allows mixing live nodes with recorded data for debugging.
 pub struct ReplayNode {
     node_name: String,
-    node_id: String,
     tick_count: u64,
 }
 
 impl ReplayNode {
     /// Create a new replay node.
-    pub fn new(node_name: String, node_id: String) -> Self {
+    pub fn new(node_name: String) -> Self {
         Self {
             node_name,
-            node_id,
             tick_count: 0,
         }
-    }
-
-    /// Get the node ID
-    pub fn node_id(&self) -> &str {
-        &self.node_id
     }
 }
 
@@ -1629,16 +1560,10 @@ mod tests {
         let mut recorder = NodeRecorder::new("test_node", "abc123", config);
 
         recorder.begin_tick(0);
-        recorder.record_input("sensor", vec![1, 2, 3]);
-        recorder.record_output("motor", vec![4, 5, 6]);
         recorder.end_tick(1000);
 
         recorder.begin_tick(1);
-        recorder.record_input("sensor", vec![7, 8, 9]);
-        recorder.record_output("motor", vec![10, 11, 12]);
         recorder.end_tick(2000);
-
-        assert_eq!(recorder.recording().snapshot_count(), 2);
 
         let path = recorder.finish().unwrap();
         assert!(path.exists());
@@ -1694,9 +1619,10 @@ mod tests {
 
     #[test]
     fn test_recording_interval() {
+        let dir = tempdir().unwrap();
         let config = RecordingConfig {
             session_name: "test".to_string(),
-            base_dir: PathBuf::from("/tmp"),
+            base_dir: dir.path().to_path_buf(),
             interval: 2, // Record every 2 ticks
             ..Default::default()
         };
@@ -1704,17 +1630,17 @@ mod tests {
         let mut recorder = NodeRecorder::new("test_node", "abc123", config);
 
         recorder.begin_tick(0);
-        recorder.record_output("out", vec![1]);
         recorder.end_tick(100);
 
-        recorder.begin_tick(1); // Should be skipped
-        recorder.record_output("out", vec![2]);
+        recorder.begin_tick(1); // Should be skipped (not multiple of 2)
         recorder.end_tick(100);
 
         recorder.begin_tick(2);
-        recorder.record_output("out", vec![3]);
         recorder.end_tick(100);
 
-        assert_eq!(recorder.recording().snapshot_count(), 2); // Only ticks 0 and 2
+        // Finish and load to verify snapshot count
+        let path = recorder.finish().unwrap();
+        let loaded = NodeRecording::load(&path).unwrap();
+        assert_eq!(loaded.snapshot_count(), 2); // Only ticks 0 and 2
     }
 }

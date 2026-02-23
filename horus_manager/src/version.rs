@@ -125,7 +125,7 @@ fn find_horus_source() -> Option<PathBuf> {
 
 /// Extract version from package directory name (e.g., "horus@0.1.0" -> "0.1.0")
 #[cfg(test)]
-fn extract_version_from_path(path: &Path) -> Option<String> {
+fn extract_version_from_path(path: &std::path::Path) -> Option<String> {
     path.file_name()?
         .to_str()?
         .split('@')
@@ -136,6 +136,7 @@ fn extract_version_from_path(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     // ========================================================================
     // get_cli_version tests

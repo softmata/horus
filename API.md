@@ -1164,19 +1164,24 @@ Builder: `NodeTickSnapshot::new(tick).with_input(topic, data).with_output(topic,
 `use horus::prelude::*` imports:
 
 - **Node**: `Node`, `NodeConfig`, `NodeState`, `LogSummary`
-- **Communication**: `Topic`, `TopicMessage`, `PodMessage`
-- **Scheduling**: `Scheduler`, `SchedulerConfig`, `ExecutionMode`
-- **Safety**: `BlackBox`, `BlackBoxEvent`, `CircuitState`, `SafetyState`, `SafetyStats`, `WCETViolation`
-- **Telemetry**: `TelemetryEndpoint`
-- **Tiers**: `NodeTier`
-- **Record/Replay**: `NodeRecorder`, `NodeRecording`, `NodeReplayer`, `NodeTickSnapshot`, `RecordingManager`, `SchedulerRecording`
-- **Real-Time**: `RtNode`, `RtPriority`, `RtClass`, `RtDegradation`, `RtStats`, `DeadlineMissPolicy`
+- **Topic**: `Topic`
+- **Scheduler**: `Scheduler`, `SchedulerConfig`, `ExecutionMode`, `NodeTier`, `FailurePolicy`
 - **Memory**: `Image`, `PointCloud`, `DepthImage`
 - **HFrame**: `HFrame`, `HFrameConfig`, `Transform`, `timestamp_now`
-- **Types**: `HorusTensor`, `TensorDtype`, `Device`, `ImageEncoding`, `PointXYZ`, `PointXYZI`, `PointXYZRGB`
+- **Types**: `TensorDtype`, `Device`, `ImageEncoding`, `PointXYZ`, `PointXYZI`, `PointXYZRGB`
 - **Messages**: All from `horus_library::messages::*`
-- **Params**: `RuntimeParams`, `ParamMetadata`
+- **Actions**: `Action`, `ActionClientBuilder`, `ActionClientNode`, `ActionServerBuilder`, `ActionServerNode`, `ActionError`, `ClientGoalHandle`, `GoalId`, `GoalResponse`, `GoalStatus`, `ServerGoalHandle`
+- **Params**: `RuntimeParams`
 - **Error**: `HorusError`, `HorusResult`, `Result`
-- **Actions**: `Action`, `ActionClientBuilder`, `ActionClientNode`, `ActionServerBuilder`, `ActionServerNode`, `ActionError`, `CancelResponse`, `ClientGoalHandle`, `GoalId`, `GoalOutcome`, `GoalPriority`, `GoalResponse`, `GoalStatus`, `PreemptionPolicy`, `ServerGoalHandle`, `SyncActionClient`
 - **Macros**: `node!`, `hlog!`, `action!`, `#[derive(LogSummary)]`, `Serialize`, `Deserialize`
 - **Std**: `Arc`, `Mutex`, `Duration`, `Instant`
+
+Advanced types available via qualified paths:
+
+- **RT Nodes**: `horus::RtNode`, `horus::RtPriority`, `horus::RtClass`, `horus::RtConfig`, etc.
+- **Safety**: `horus::scheduling::BlackBox`, `horus::scheduling::SafetyStats`, etc.
+- **Recording**: `horus::scheduling::NodeRecorder`, `horus::scheduling::RecordingManager`, etc.
+- **Telemetry**: `horus::scheduling::TelemetryEndpoint`
+- **Transport**: `horus::PodMessage`, `horus::communication::TopicMessage`
+- **Tensor Pool**: `horus::memory::TensorPool`, `horus::memory::TensorHandle`
+- **Raw Tensor**: `horus_types::HorusTensor`
