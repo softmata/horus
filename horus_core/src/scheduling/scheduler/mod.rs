@@ -18,7 +18,8 @@ mod recording;
 use super::record_replay::{NodeRecorder, NodeReplayer, RecordingConfig, SchedulerRecording};
 
 // Import types from types module
-use super::types::{RegisteredNode, SchedulerNodeMetrics};
+use super::types::RegisteredNode;
+use crate::core::NodeMetrics;
 
 // Global flag for SIGTERM handling
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -174,35 +175,22 @@ impl Default for Scheduler {
 }
 
 impl Scheduler {
-    /// Create a new scheduler — **lightweight, no syscalls**.
+    /// Create a minimal scheduler — **lightweight, no syscalls**.
     ///
     /// Detects runtime capabilities (~30-100μs) but does NOT auto-apply
-    /// any OS-level features. Use builder methods to opt in:
+    /// any OS-level features. Use presets or builder methods to opt in:
     ///
     /// ```rust,ignore
     /// use horus_core::Scheduler;
     ///
-    /// // Minimal — just capability detection, no syscalls
+    /// // Minimal — just capability detection
     /// let scheduler = Scheduler::new();
     ///
-    /// // With RT features via config
-    /// let mut config = SchedulerConfig::standard();
-    /// config.realtime.rt_scheduling_class = true;
-    /// config.monitoring.black_box_enabled = true;
-    /// let scheduler = Scheduler::new().with_config(config);
+    /// // Production preset
+    /// let scheduler = Scheduler::deploy();
     ///
-    /// // Check detected capabilities
-    /// if let Some(caps) = scheduler.capabilities() {
-    ///     println!("RT support: {}", caps.has_rt_support());
-    /// }
-    /// ```
-    ///
-    /// # Presets
-    /// ```rust,ignore
-    /// Scheduler::new().with_config(SchedulerConfig::deploy())
-    /// Scheduler::new().with_config(SchedulerConfig::safety_critical())
-    /// Scheduler::new().with_config(SchedulerConfig::high_performance())
-    /// Scheduler::new().with_config(SchedulerConfig::hard_realtime())
+    /// // Preset + override
+    /// let scheduler = Scheduler::deploy().tick_hz(500.0);
     /// ```
     pub fn new() -> Self {
         let running = Arc::new(AtomicBool::new(true));
@@ -238,6 +226,51 @@ impl Scheduler {
             recording: None,
             deterministic: None,
         }
+    }
+
+    // ========================================================================
+    // PRESET CONSTRUCTORS
+    // ========================================================================
+
+    /// Production deployment: RT scheduling, memory locking, blackbox, profiling.
+    ///
+    /// ```rust,ignore
+    /// let mut scheduler = Scheduler::deploy();
+    /// scheduler.add(motor_ctrl).order(0).rt().done();
+    /// scheduler.run()?;
+    /// ```
+    pub fn deploy() -> Self {
+        let mut s = Self::new();
+        s.apply_config(super::config::SchedulerConfig::deploy());
+        s
+    }
+
+    /// Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor.
+    pub fn safety_critical() -> Self {
+        let mut s = Self::new();
+        s.apply_config(super::config::SchedulerConfig::safety_critical());
+        s
+    }
+
+    /// High-performance: parallel execution, 10kHz, WCET, NUMA-aware.
+    pub fn high_performance() -> Self {
+        let mut s = Self::new();
+        s.apply_config(super::config::SchedulerConfig::high_performance());
+        s
+    }
+
+    /// Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox.
+    pub fn hard_realtime() -> Self {
+        let mut s = Self::new();
+        s.apply_config(super::config::SchedulerConfig::hard_realtime());
+        s
+    }
+
+    /// Deterministic execution for simulation and replay.
+    pub fn deterministic() -> Self {
+        let mut s = Self::new();
+        s.apply_config(super::config::SchedulerConfig::deterministic());
+        s
     }
 
     // ========================================================================
@@ -319,6 +352,7 @@ impl Scheduler {
     ///     }
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn capabilities(&self) -> Option<&RuntimeCapabilities> {
         self.rt.capabilities.as_ref()
     }
@@ -340,11 +374,13 @@ impl Scheduler {
     ///     }
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn degradations(&self) -> &[RtDegradation] {
         &self.rt.degradations
     }
 
     /// Check if the scheduler has full RT capabilities (no high-severity degradations).
+    #[doc(hidden)]
     pub fn has_full_rt(&self) -> bool {
         !self
             .rt
@@ -376,6 +412,7 @@ impl Scheduler {
     ///     println!("Last 100 events: {:?}", events.len());
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn blackbox(&self) -> Option<&super::blackbox::BlackBox> {
         self.monitor.blackbox.as_ref()
     }
@@ -399,6 +436,7 @@ impl Scheduler {
     ///     });
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn blackbox_mut(&mut self) -> Option<&mut super::blackbox::BlackBox> {
         self.monitor.blackbox.as_mut()
     }
@@ -863,22 +901,9 @@ impl Scheduler {
         self.deterministic.as_ref().map(|d| d.clock.tick())
     }
 
-    /// Apply a configuration preset to this scheduler (builder pattern)
-    ///
-    /// # Example
-    /// ```no_run
-    /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::SchedulerConfig;
-    /// let mut scheduler = Scheduler::new()
-    ///     .with_config(SchedulerConfig::hard_realtime());
-    /// ```
-    pub fn with_config(mut self, config: super::config::SchedulerConfig) -> Self {
-        self.apply_config(config);
-        self
-    }
-
-    /// Internal method to apply configuration (used by with_config builder)
-    fn apply_config(&mut self, config: super::config::SchedulerConfig) {
+    /// Apply a full configuration struct. Used internally by presets and horus_py.
+    #[doc(hidden)]
+    pub fn apply_config(&mut self, config: super::config::SchedulerConfig) {
         use super::config::*;
 
         // Execution mode
@@ -1175,9 +1200,10 @@ impl Scheduler {
     /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
-    /// let mut config = SchedulerConfig::standard();
+    /// let mut config = SchedulerConfig::minimal();
     /// config.realtime.safety_monitor = true;
-    /// let mut scheduler = Scheduler::new().with_config(config);
+    /// let mut scheduler = Scheduler::new();
+    /// scheduler.apply_config(config);
     /// scheduler.add_critical_node("motor_controller", Duration::from_millis(100))?;
     /// # Ok::<(), horus_core::error::HorusError>(())
     /// ```
@@ -1211,9 +1237,10 @@ impl Scheduler {
     /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
-    /// let mut config = SchedulerConfig::standard();
+    /// let mut config = SchedulerConfig::minimal();
     /// config.realtime.safety_monitor = true;
-    /// let mut scheduler = Scheduler::new().with_config(config);
+    /// let mut scheduler = Scheduler::new();
+    /// scheduler.apply_config(config);
     /// scheduler.set_wcet_budget("motor_controller", Duration::from_micros(500))?;
     /// # Ok::<(), horus_core::error::HorusError>(())
     /// ```
@@ -2062,31 +2089,17 @@ impl Scheduler {
         None
     }
 
-    /// Get performance metrics for all nodes
-    ///
-    /// Returns a vector of `SchedulerNodeMetrics` containing performance data
-    /// for each registered node.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let metrics = scheduler.metrics();
-    /// for node_metrics in metrics {
-    ///     println!("Node: {}", node_metrics.name);
-    ///     println!("  Avg tick: {:.2}ms", node_metrics.avg_tick_duration_ms);
-    ///     println!("  Total ticks: {}", node_metrics.total_ticks);
-    /// }
-    /// ```
-    pub fn metrics(&self) -> Vec<SchedulerNodeMetrics> {
+    /// Get performance metrics for all nodes.
+    pub fn metrics(&self) -> Vec<NodeMetrics> {
         self.nodes
             .iter()
             .map(|registered| {
                 let name = registered.name.clone();
                 let priority = registered.priority;
 
-                // Get metrics from context if available
                 if let Some(ref ctx) = registered.context {
                     let m = ctx.metrics();
-                    SchedulerNodeMetrics {
+                    NodeMetrics {
                         name,
                         priority,
                         total_ticks: m.total_ticks,
@@ -2103,7 +2116,7 @@ impl Scheduler {
                         uptime_seconds: m.uptime_seconds,
                     }
                 } else {
-                    SchedulerNodeMetrics {
+                    NodeMetrics {
                         name,
                         priority,
                         ..Default::default()

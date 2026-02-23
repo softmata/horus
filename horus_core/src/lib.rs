@@ -12,80 +12,59 @@
 //! - **Monitoring**: Cross-process system monitoring and diagnostics
 //! - **Actions**: Long-running tasks with progress feedback and cancellation
 //!
-//! ## Quick Start
-//!
-//! ```rust,no_run
-//! use horus_core::{Node, Scheduler, Topic, hlog};
-//!
-//! struct ExampleNode {
-//!     output: Topic<String>,
-//! }
-//!
-//! impl Node for ExampleNode {
-//!     fn name(&self) -> &'static str { "example" }
-//!
-//!     fn tick(&mut self) {
-//!         self.output.send("Hello HORUS!".into());
-//!     }
-//! }
-//! ```
-//!
-//! ## Actions
-//!
-//! Actions provide a pattern for long-running tasks with feedback:
-//!
-//! ```rust,ignore
-//! use horus_core::action;
-//!
-//! action! {
-//!     NavigateToGoal {
-//!         goal { target_x: f64, target_y: f64 }
-//!         feedback { distance_remaining: f64 }
-//!         result { success: bool }
-//!     }
-//! }
-//! ```
+//! **Note:** This is an internal crate. Users should depend on `horus` and
+//! import from `horus::prelude::*`.
 
+// Public modules — accessible cross-crate but hidden from user docs.
+// Users should go through `horus::prelude`, not import from `horus_core` directly.
+#[doc(hidden)]
 pub mod actions;
+#[doc(hidden)]
 pub mod communication;
+#[doc(hidden)]
 pub mod core;
+#[doc(hidden)]
 pub mod dlpack;
+#[doc(hidden)]
 pub mod error;
+#[doc(hidden)]
 pub mod memory;
+#[doc(hidden)]
 pub mod params;
+#[doc(hidden)]
 pub mod scheduling;
 pub(crate) mod terminal;
 pub(crate) mod utils;
 
-// Re-export user-facing types for easy access
+// Crate-internal re-exports (used by `crate::HorusError` etc. within this crate,
+// and by horus_py / macro-generated code cross-crate).
+#[doc(hidden)]
 pub use communication::{PodMessage, Topic};
+#[doc(hidden)]
 pub use core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence,
     NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats,
     TopicMetadata,
 };
+#[doc(hidden)]
 pub use error::{HorusError, HorusResult, Result};
+#[doc(hidden)]
 pub use params::RuntimeParams;
+#[doc(hidden)]
 pub use scheduling::Scheduler;
-
-// Re-export action types for easy access
+#[doc(hidden)]
 pub use actions::{
     Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
     ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
 };
 
-// Re-export the paste crate for macro usage
+// Re-export dependencies used by macro-generated code and horus_py
+#[doc(hidden)]
 pub use paste;
-
-// hlog macro is available at crate root via #[macro_export]
-// No need to re-export - it's already at horus_core::hlog
-
-// Re-export serde_json for consistent type usage across crates
+#[doc(hidden)]
 pub use serde_json;
-
-// Re-export serde_yaml for consistent type usage across crates
+#[doc(hidden)]
 pub use serde_yaml;
-
-// Re-export bytemuck for consistent Pod/Zeroable trait usage
+#[doc(hidden)]
 pub use bytemuck;

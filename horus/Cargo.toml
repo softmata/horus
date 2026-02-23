@@ -46,13 +46,6 @@ blackbox = ["horus_core/blackbox"]
 # Zero-config peer discovery via mDNS/DNS-SD
 mdns = ["horus_core/mdns"]
 
-# ============================================================================
-# GPU
-# ============================================================================
-
-# CUDA IPC for cross-process GPU memory sharing
-cuda = ["horus_core/cuda"]
-
 [lib]
 name = "horus"
 path = "src/lib.rs"

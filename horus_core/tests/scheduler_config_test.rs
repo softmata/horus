@@ -31,16 +31,7 @@ fn test_preset_field_values() {
     assert!(m.recording.is_none());
     assert!(m.deterministic.is_none());
 
-    // --- standard = minimal + circuit_breaker + profiling ---
-    let s = SchedulerConfig::standard();
-    assert!(matches!(s.execution, ExecutionMode::Sequential));
-    assert_eq!(s.timing.global_rate_hz, 60.0);
-    assert!(s.circuit_breaker);
-    assert!(!s.realtime.wcet_enforcement);
-    assert!(s.monitoring.profiling_enabled);
-    assert!(s.recording.is_none());
-
-    // --- deploy = standard + RT flags + blackbox ---
+    // --- deploy = minimal + RT flags + blackbox ---
     let d = SchedulerConfig::deploy();
     assert!(d.circuit_breaker);
     assert!(d.realtime.deadline_monitoring);
@@ -165,8 +156,8 @@ impl Node for TestNode {
 #[test]
 fn test_standard_config() {
     cleanup_stale_shm();
-    // Apply standard robot configuration
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    // Apply default robot configuration
+    let mut scheduler = Scheduler::new();
 
     scheduler.add(TestNode::new("sensor1")).order(0).done();
     scheduler.add(TestNode::new("controller1")).order(1).done();
@@ -180,7 +171,7 @@ fn test_standard_config() {
 fn test_safety_critical_config() {
     cleanup_stale_shm();
     // Apply safety-critical robot configuration
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
+    let mut scheduler = Scheduler::safety_critical();
 
     scheduler
         .add(TestNode::new("safety_monitor"))
@@ -199,7 +190,7 @@ fn test_safety_critical_config() {
 fn test_high_performance_config() {
     cleanup_stale_shm();
     // Apply high-performance robot configuration
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+    let mut scheduler = Scheduler::high_performance();
 
     scheduler.add(TestNode::new("fast_sensor")).order(0).done();
     scheduler.add(TestNode::new("fast_control")).order(1).done();
@@ -211,8 +202,8 @@ fn test_high_performance_config() {
 #[test]
 fn test_space_robot_config() {
     cleanup_stale_shm();
-    // Apply space robot configuration using standard config
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    // Apply space robot configuration using default scheduler
+    let mut scheduler = Scheduler::new();
 
     scheduler.add(TestNode::new("navigation")).order(0).done();
     scheduler.add(TestNode::new("solar_panel")).order(5).done();
@@ -225,12 +216,13 @@ fn test_space_robot_config() {
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
     // Create custom configuration by mutating a preset's fields directly
-    let mut config = SchedulerConfig::standard();
+    let mut config = SchedulerConfig::minimal();
     config.timing.global_rate_hz = 500.0;
     config.realtime.wcet_enforcement = true;
     config.realtime.safety_monitor = true;
 
-    let mut scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
 
     scheduler.add(TestNode::new("bio_sensor")).order(0).done();
     scheduler
@@ -247,9 +239,10 @@ fn test_execution_modes() {
     cleanup_stale_shm();
     // Test Sequential mode
     {
-        let mut config = SchedulerConfig::standard();
+        let mut config = SchedulerConfig::minimal();
         config.execution = ExecutionMode::Sequential;
-        let mut scheduler = Scheduler::new().with_config(config);
+        let mut scheduler = Scheduler::new();
+        scheduler.apply_config(config);
 
         scheduler.add(TestNode::new("seq_node")).order(0).done();
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
@@ -258,9 +251,10 @@ fn test_execution_modes() {
 
     // Test Parallel mode
     {
-        let mut config = SchedulerConfig::standard();
+        let mut config = SchedulerConfig::minimal();
         config.execution = ExecutionMode::Parallel;
-        let mut scheduler = Scheduler::new().with_config(config);
+        let mut scheduler = Scheduler::new();
+        scheduler.apply_config(config);
 
         scheduler.add(TestNode::new("par_node1")).order(0).done();
         scheduler.add(TestNode::new("par_node2")).order(0).done();
@@ -272,8 +266,8 @@ fn test_execution_modes() {
 #[test]
 fn test_swarm_config() {
     cleanup_stale_shm();
-    // Apply swarm robotics configuration using standard config
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    // Apply swarm robotics configuration using default scheduler
+    let mut scheduler = Scheduler::new();
 
     scheduler.add(TestNode::new("swarm_comm")).order(0).done();
     scheduler
@@ -288,8 +282,8 @@ fn test_swarm_config() {
 #[test]
 fn test_soft_robotics_config() {
     cleanup_stale_shm();
-    // Apply soft robotics configuration using standard config
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    // Apply soft robotics configuration using default scheduler
+    let mut scheduler = Scheduler::new();
 
     scheduler
         .add(TestNode::new("pressure_sensor"))
@@ -308,7 +302,7 @@ fn test_soft_robotics_config() {
 fn test_high_performance_optimizer_nodes() {
     cleanup_stale_shm();
     // Test high-performance configuration with optimizer nodes
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+    let mut scheduler = Scheduler::high_performance();
 
     scheduler.add(TestNode::new("perf_sensor")).order(0).done();
     scheduler

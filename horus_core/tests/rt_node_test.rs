@@ -218,8 +218,8 @@ impl RtNode for LoggingNode {
 #[test]
 fn test_rt_node_basic() {
     cleanup_stale_shm();
-    // Use standard config (RT features disabled)
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    // Use default config (RT features disabled)
+    let mut scheduler = Scheduler::new();
 
     // Add RT nodes as regular nodes
     scheduler
@@ -268,7 +268,7 @@ fn test_rt_node_priority_ordering() {
 fn test_rt_node_with_safety_critical_config() {
     cleanup_stale_shm();
     // Use safety-critical configuration (all RT features enabled)
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
+    let mut scheduler = Scheduler::safety_critical();
 
     scheduler
         .add(MotorControlNode::new("critical_motor"))

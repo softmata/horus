@@ -77,57 +77,6 @@ fn backend_mode_from_integer() {
     assert_eq!(BackendMode::from(255), BackendMode::Unknown);
 }
 
-#[test]
-fn backend_mode_latency_ordering() {
-    // Each successive backend should be >= the previous in latency
-    let modes = [
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::MpmcIntra,
-        BackendMode::PodShm,
-    ];
-    for pair in modes.windows(2) {
-        assert!(
-            pair[0].expected_latency_ns() <= pair[1].expected_latency_ns(),
-            "{:?} ({}ns) should be <= {:?} ({}ns)",
-            pair[0],
-            pair[0].expected_latency_ns(),
-            pair[1],
-            pair[1].expected_latency_ns()
-        );
-    }
-}
-
-#[test]
-fn all_backend_modes_have_positive_latency() {
-    let modes = [
-        BackendMode::Unknown,
-        BackendMode::DirectChannel,
-        BackendMode::SpscIntra,
-        BackendMode::SpmcIntra,
-        BackendMode::MpscIntra,
-        BackendMode::MpmcIntra,
-        BackendMode::PodShm,
-        BackendMode::SpscShm,
-        BackendMode::SpmcShm,
-        BackendMode::MpscShm,
-        BackendMode::MpmcShm,
-        BackendMode::CudaIpcSpsc,
-        BackendMode::CudaIpcSpmc,
-        BackendMode::CudaIpcMpsc,
-        BackendMode::CudaIpcMpmc,
-    ];
-    for mode in modes {
-        assert!(
-            mode.expected_latency_ns() > 0,
-            "{:?} has zero latency",
-            mode
-        );
-    }
-}
-
 // ============================================================================
 // 3. TOPIC ROLE PERMISSIONS
 // ============================================================================

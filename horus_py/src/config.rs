@@ -110,7 +110,7 @@ impl PySchedulerConfig {
     /// Create standard configuration (default)
     #[staticmethod]
     pub fn standard() -> Self {
-        let rust_config = SchedulerConfig::standard();
+        let rust_config = SchedulerConfig::minimal();
         Self::from_rust_config(rust_config, "Standard")
     }
 

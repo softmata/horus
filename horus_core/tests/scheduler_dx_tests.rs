@@ -1,10 +1,10 @@
 //! Integration tests for Scheduler DX (Developer Experience) API
 //!
-//! Tests the preset constructors via SchedulerConfig:
-//! - `Scheduler::new().with_config(SchedulerConfig::safety_critical())`
-//! - `Scheduler::new().with_config(SchedulerConfig::high_performance())`
-//! - `Scheduler::new().with_config(SchedulerConfig::deterministic())`
-//! - `Scheduler::new().with_config(SchedulerConfig::hard_realtime())`
+//! Tests the preset constructors:
+//! - `Scheduler::safety_critical()`
+//! - `Scheduler::high_performance()`
+//! - `Scheduler::deterministic()`
+//! - `Scheduler::hard_realtime()`
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
@@ -120,7 +120,7 @@ fn test_new_with_capacity() {
 #[test]
 fn test_safety_critical_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
+    let mut scheduler = Scheduler::safety_critical();
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -135,7 +135,7 @@ fn test_safety_critical_creates_scheduler() {
 #[test]
 fn test_high_performance_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+    let mut scheduler = Scheduler::high_performance();
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -150,7 +150,7 @@ fn test_high_performance_creates_scheduler() {
 #[test]
 fn test_deterministic_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
+    let mut scheduler = Scheduler::deterministic();
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -165,7 +165,7 @@ fn test_deterministic_creates_scheduler() {
 #[test]
 fn test_hard_realtime_creates_scheduler() {
     cleanup_stale_shm();
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::hard_realtime());
+    let mut scheduler = Scheduler::hard_realtime();
     let counter = Arc::new(AtomicU32::new(0));
 
     scheduler
@@ -235,10 +235,11 @@ fn test_new_no_blackbox_by_default() {
 #[test]
 fn test_with_blackbox_creates_blackbox() {
     cleanup_stale_shm();
-    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    let mut config = horus_core::scheduling::SchedulerConfig::minimal();
     config.monitoring.black_box_enabled = true;
     config.monitoring.black_box_size_mb = 16;
-    let scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
 
     assert!(
         scheduler.blackbox().is_some(),
@@ -251,10 +252,11 @@ fn test_blackbox_mut_accessor() {
     cleanup_stale_shm();
     use horus_core::scheduling::BlackBoxEvent;
 
-    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    let mut config = horus_core::scheduling::SchedulerConfig::minimal();
     config.monitoring.black_box_enabled = true;
     config.monitoring.black_box_size_mb = 16;
-    let mut scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
 
     let bb = scheduler.blackbox_mut().expect("BlackBox should exist");
     bb.record(BlackBoxEvent::Custom {
@@ -266,10 +268,11 @@ fn test_blackbox_mut_accessor() {
 #[test]
 fn test_status_shows_blackbox() {
     cleanup_stale_shm();
-    let mut config = horus_core::scheduling::SchedulerConfig::standard();
+    let mut config = horus_core::scheduling::SchedulerConfig::minimal();
     config.monitoring.black_box_enabled = true;
     config.monitoring.black_box_size_mb = 16;
-    let scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
     let status = scheduler.status();
 
     assert!(

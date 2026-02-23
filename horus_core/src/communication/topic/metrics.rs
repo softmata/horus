@@ -15,8 +15,6 @@ pub(crate) struct MigrationMetrics {
     pub recv_failures: AtomicU64,
     /// Number of backend migrations performed
     pub migrations: AtomicU32,
-    /// Current backend latency estimate (ns)
-    pub estimated_latency_ns: AtomicU32,
 }
 
 /// Non-atomic snapshot of topic metrics (for external consumers)

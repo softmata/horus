@@ -1,12 +1,6 @@
 //! # HORUS Scheduling System
 //!
-//! Simple, unified scheduling system that orchestrates node execution:
-//!
-//! - **Scheduler**: Unified scheduler with built-in monitoring integration
-//! - **Simple Priorities**: Numeric priorities (0 = highest)
-//! - **Progressive Disclosure**: `new()` is lightweight; opt in to features via builders
-//!
-//! ## Usage
+//! Orchestrates node execution with preset configurations:
 //!
 //! ```rust,ignore
 //! use horus_core::Scheduler;
@@ -18,16 +12,13 @@
 //! scheduler.run()?;
 //!
 //! // Production — RT features + flight recorder
-//! let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
+//! let mut scheduler = Scheduler::deploy();
 //! scheduler.add(motor_ctrl).order(0).rt().done();
 //! scheduler.run()?;
+//!
+//! // Preset + override
+//! let mut scheduler = Scheduler::deploy().tick_hz(500.0);
 //! ```
-//!
-//! ## Priority Levels
-//!
-//! - **0-99**: High priority (real-time, sensors, control)
-//! - **100-199**: Normal priority (processing, algorithms)
-//! - **200+**: Background priority (logging, diagnostics)
 
 pub mod config;
 pub(crate) mod safety_monitor;
@@ -214,41 +205,37 @@ pub(crate) mod record_replay;
 // Deterministic execution (internal)
 pub(crate) mod deterministic;
 
-// Node builder for fluent node configuration
-pub mod node_builder;
+// Node builder for fluent node configuration (re-exported via #[doc(hidden)] below)
+pub(crate) mod node_builder;
 
 // =========================================================================
 // Public re-exports — these form the user-facing scheduling API.
 // Everything else is pub(crate) or deeper.
 // =========================================================================
 
-// Core types
-pub use crate::core::rt_node::WCETViolation;
-pub use config::{ExecutionMode, SchedulerConfig};
-pub use scheduler::{RtDegradation, Scheduler};
-pub use types::{NodeTier, SchedulerNodeMetrics};
+// The only user-facing type is Scheduler.
+pub use scheduler::Scheduler;
 
-// Safety monitoring (returned by Scheduler::safety_stats())
-pub use safety_monitor::{SafetyState, SafetyStats};
-
-// Blackbox flight recorder (accessed via Scheduler::blackbox())
+// Internal re-exports — accessible but hidden from rustdoc.
+#[doc(hidden)]
 pub use blackbox::{BlackBox, BlackBoxEvent};
-
-// Fault tolerance (FailurePolicy for NodeBuilder, CircuitState for introspection)
+#[doc(hidden)]
+pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
+#[doc(hidden)]
+pub use crate::core::rt_node::WCETViolation;
+#[doc(hidden)]
 pub use fault_tolerance::{CircuitState, FailureHandlerStats, FailurePolicy};
-
-// Node builder (returned by Scheduler::add())
+#[doc(hidden)]
 pub use node_builder::{NodeBuilder, NodeRegistration};
-
-// Record/replay — user-facing subset only
+#[doc(hidden)]
 pub use record_replay::{
     diff_recordings, Breakpoint, BreakpointCondition, DebugEvent, DebugSessionState, DebuggerState,
     NodeRecording, NodeReplayer, Recording, RecordingDiff, RecordingManager, ReplayDebugger,
     SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
-
-// Internal plumbing — used within horus_core submodules directly (not re-exported).
-
-// RecordingConfigYaml is a field type in SchedulerConfig, so it must be pub.
-// But it's an advanced config — most users use SchedulerConfig presets directly.
-pub use config::RecordingConfigYaml;
+#[doc(hidden)]
+pub use safety_monitor::{SafetyState, SafetyStats};
+#[doc(hidden)]
+pub use scheduler::RtDegradation;
+#[doc(hidden)]
+pub use types::NodeTier;

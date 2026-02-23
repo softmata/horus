@@ -1,6 +1,6 @@
 //! Unified Pod point cloud descriptor for zero-copy lidar/depth pipelines
 //!
-//! `PointCloud` is a fixed-size (336 byte) `repr(C)` descriptor that flows
+//! `PointCloud` is a fixed-size (272 byte) `repr(C)` descriptor that flows
 //! through `Topic<PointCloud>` via the ~50ns Pod path. Actual point data
 //! lives in a `TensorPool`.
 //!
@@ -12,15 +12,15 @@ use serde::{Deserialize, Serialize};
 use crate::tensor::HorusTensor;
 use crate::TensorDtype;
 
-/// Unified point cloud descriptor — Pod, 336 bytes.
+/// Unified point cloud descriptor — Pod, 272 bytes.
 ///
 /// Contains a `HorusTensor` (shape `[N, K]`) plus field metadata.
 /// The tensor holds N points with K fields each (3 for XYZ, 4 for XYZI, etc.).
 ///
-/// # Layout (336 bytes, repr(C))
+/// # Layout (272 bytes, repr(C))
 ///
 /// ```text
-/// inner:         HorusTensor  (232 bytes)
+/// inner:         HorusTensor  (168 bytes)
 /// timestamp_ns:  u64          (8 bytes)
 /// field_names:   [[u8; 4]; 8] (32 bytes)  — compact field names ("x\0\0\0", etc.)
 /// field_offsets:  [u16; 8]    (16 bytes)
@@ -30,7 +30,7 @@ use crate::TensorDtype;
 /// _pad:           [u8; 2]     (2 bytes)
 /// frame_id:       [u8; 32]    (32 bytes)
 /// _reserved:      [u8; 4]     (4 bytes)
-/// Total:                       336 bytes
+/// Total:                       272 bytes
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
@@ -58,7 +58,7 @@ pub struct PointCloudDescriptor {
 }
 
 // Safety: PointCloud is repr(C), all fields are Pod, no implicit padding.
-// 232 + 8 + 32 + 16 + 8 + 1 + 1 + 2 + 32 + 4 = 336, 336 % 8 = 0.
+// 168 + 8 + 32 + 16 + 8 + 1 + 1 + 2 + 32 + 4 = 272, 272 % 8 = 0.
 unsafe impl Zeroable for PointCloudDescriptor {}
 unsafe impl Pod for PointCloudDescriptor {}
 
@@ -169,8 +169,8 @@ mod tests {
     fn test_pointcloud_size() {
         assert_eq!(
             std::mem::size_of::<PointCloudDescriptor>(),
-            336,
-            "PointCloudDescriptor must be exactly 336 bytes"
+            272,
+            "PointCloudDescriptor must be exactly 272 bytes"
         );
     }
 
@@ -178,7 +178,7 @@ mod tests {
     fn test_pointcloud_pod() {
         let pc = PointCloudDescriptor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&pc);
-        assert_eq!(bytes.len(), 336);
+        assert_eq!(bytes.len(), 272);
         let _recovered: &PointCloudDescriptor = bytemuck::from_bytes(bytes);
     }
 

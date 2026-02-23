@@ -75,22 +75,13 @@ impl RingTopic<HorusTensor> {
     /// Send a tensor handle through this topic (zero-copy).
     ///
     /// Increments the tensor's refcount so it stays alive for the receiver,
-    /// then sends the 232-byte descriptor through the ring buffer. The actual
+    /// then sends the descriptor through the ring buffer. The actual
     /// tensor data remains in shared memory — no copy.
-    ///
-    /// For GPU-backed tensors: stamps the CUDA IPC handle so receivers in other
-    /// processes can map the GPU memory.
     pub fn send_handle(&self, handle: &TensorHandle) {
         // Bump refcount so the data survives until the receiver drops its handle
         handle.pool().retain(handle.tensor());
-        // Copy descriptor and stamp IPC handle if on GPU
-        let mut tensor = *handle.tensor();
-        if tensor.device().is_cuda() {
-            let data_ptr = handle.pool().data_ptr(&tensor);
-            super::cuda_ipc_transport::stamp_ipc_handle(&mut tensor, data_ptr);
-        }
         // Send the lightweight descriptor through the ring
-        self.send(tensor);
+        self.send(*handle.tensor());
     }
 
     /// Receive a tensor and wrap it in a `TensorHandle` for safe access.

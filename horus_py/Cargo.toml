@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py39", "num-bigint", "num-complex"] }
 horus = { path = "../horus" }
-horus_core = { path = "../horus_core" }  # Direct access for cuda features
+horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
 horus_types = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -28,4 +28,3 @@ pyo3-build-config = "0.27"
 
 [features]
 default = []
-cuda = ["horus_core/cuda"]  # Enable CUDA support for GPU tensor transfers

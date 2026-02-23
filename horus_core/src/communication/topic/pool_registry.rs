@@ -39,37 +39,9 @@ pub(crate) fn pool_id_from_name(name: &str) -> u32 {
     }
 }
 
-/// Build the optimal `TensorPoolConfig` based on detected GPU hardware.
-///
-/// - **No GPU**: standard mmap (default)
-/// - **Unified memory (Jetson)**: `cudaMallocManaged` — CPU+GPU share RAM
-/// - **Discrete GPU**: `cudaMallocHost` (pinned) — fast DMA staging
+/// Build the `TensorPoolConfig` — currently always mmap-backed.
 fn auto_pool_config() -> TensorPoolConfig {
-    #[cfg(feature = "cuda")]
-    {
-        use crate::memory::gpu_detect::{detect_gpu, GpuCapability};
-        use crate::memory::PoolAllocator;
-
-        let allocator = match detect_gpu() {
-            GpuCapability::None => PoolAllocator::Mmap,
-            GpuCapability::UnifiedMemory { device_id, .. } => {
-                PoolAllocator::ManagedMemory { device_id }
-            }
-            GpuCapability::DiscreteGpu { device_id, .. } => {
-                PoolAllocator::PinnedMemory { device_id }
-            }
-        };
-
-        TensorPoolConfig {
-            allocator,
-            ..TensorPoolConfig::default()
-        }
-    }
-
-    #[cfg(not(feature = "cuda"))]
-    {
-        TensorPoolConfig::default()
-    }
+    TensorPoolConfig::default()
 }
 
 /// Get or create the auto-managed tensor pool for a topic name.

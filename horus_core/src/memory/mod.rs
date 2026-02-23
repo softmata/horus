@@ -26,8 +26,11 @@ pub(crate) mod simd;
 pub(crate) mod tensor_descriptor;
 
 // Re-export platform functions needed by horus_manager
+#[doc(hidden)]
 pub use platform::{has_native_shm, shm_base_dir, shm_control_dir, shm_network_dir, shm_topics_dir};
+#[doc(hidden)]
 pub mod tensor_handle;
+#[doc(hidden)]
 pub mod tensor_pool;
 
 /// Generate shared methods and trait impls for tensor-backed RAII types.
@@ -194,180 +197,59 @@ pub mod depth_image;
 pub mod image;
 pub mod pointcloud;
 
-// CUDA IPC support (optional feature) — internal modules, use pub re-exports below
-#[cfg(feature = "cuda")]
-pub(crate) mod cuda_ffi;
-#[cfg(feature = "cuda")]
-pub(crate) mod cuda_pool;
-// GPU hardware detection (feature-gated)
-#[cfg(feature = "cuda")]
-pub(crate) mod gpu_detect;
-
+#[doc(hidden)]
 pub use tensor_handle::TensorHandle;
+#[doc(hidden)]
 pub use tensor_pool::{PoolAllocator, TensorPool, TensorPoolConfig};
 
 pub use depth_image::DepthImage;
 pub use image::Image;
 pub use pointcloud::PointCloud;
 
-// CUDA pool types — internal only. Users interact via Topic<HorusTensor>.
-#[cfg(feature = "cuda")]
-pub(crate) use cuda_pool::{
-    CudaPoolStats, CudaTensorPool, CudaTensorPoolConfig, P2PAccessInfo, P2PManager,
-};
-
-// CUDA FFI types — only CudaMemcpyKind is user-facing (for horus_py DLPack bridge).
-// Everything else stays crate-internal.
-#[cfg(feature = "cuda")]
-pub use cuda_ffi::CudaMemcpyKind;
-#[cfg(feature = "cuda")]
-pub(crate) use cuda_ffi::{
-    CudaError, CudaEvent, CudaIpcMemHandle, CudaResult, CudaStream, CUDA_IPC_HANDLE_SIZE,
-};
-
-// GPU capability detection — public types and query function
-#[cfg(feature = "cuda")]
-pub use gpu_detect::GpuCapability;
-
-/// GPU capability level detected at runtime (stub for non-CUDA builds).
+/// GPU capability level detected at runtime.
 ///
-/// Without CUDA support, no GPU is ever detected.
-#[cfg(not(feature = "cuda"))]
+/// Currently always returns `None` (CPU-only). GPU support will be added
+/// when a concrete perception pipeline requires it.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuCapability {
-    /// No CUDA-capable GPU detected — pure CPU allocation via mmap.
+    /// No GPU detected — pure CPU allocation via mmap.
     None,
 }
 
-#[cfg(not(feature = "cuda"))]
 impl GpuCapability {
-    /// Returns true if any GPU is available. Always false without CUDA.
+    /// Returns true if any GPU is available.
     pub fn has_gpu(&self) -> bool {
         false
     }
-    /// Returns true if this is a unified memory device. Always false without CUDA.
+    /// Returns true if this is a unified memory device.
     pub fn is_unified(&self) -> bool {
         false
     }
-    /// Returns true if explicit coherency sync is needed. Always false without CUDA.
+    /// Returns true if explicit coherency sync is needed.
     pub fn needs_coherency_sync(&self) -> bool {
         false
     }
-    /// Returns the primary device ID. Always None without CUDA.
+    /// Returns the primary device ID.
     pub fn device_id(&self) -> Option<i32> {
         None
     }
 }
 
-/// Query the GPU capability detected at startup.
-///
-/// First call probes hardware (CUDA runtime). All subsequent calls return the
-/// cached result with zero overhead (atomic load).
-///
-/// Returns [`GpuCapability::None`] if no GPU is found or CUDA is not available.
-#[cfg(feature = "cuda")]
-pub fn gpu_capability() -> GpuCapability {
-    gpu_detect::detect_gpu()
-}
-
-/// Query the GPU capability (stub for non-CUDA builds — always None).
-#[cfg(not(feature = "cuda"))]
+/// Query the GPU capability. Currently always returns `GpuCapability::None`.
+#[doc(hidden)]
 pub fn gpu_capability() -> GpuCapability {
     GpuCapability::None
 }
 
-// =============================================================================
-// CUDA operations — public surface is minimal (query + horus_py bridge ops)
-// =============================================================================
-
-/// Check if CUDA is available at runtime.
-#[cfg(feature = "cuda")]
-pub fn cuda_available() -> bool {
-    cuda_ffi::cuda_available()
-}
-
-/// Get number of CUDA devices (returns 0 if CUDA unavailable).
-#[cfg(feature = "cuda")]
-pub fn cuda_device_count() -> usize {
-    cuda_ffi::get_device_count().unwrap_or(0) as usize
-}
-
-/// Set the active CUDA device (used by horus_py for `.cuda()` transfers).
-#[cfg(feature = "cuda")]
-pub fn cuda_set_device(device: i32) -> cuda_ffi::CudaResult<()> {
-    cuda_ffi::set_device(device)
-}
-
-/// Allocate GPU device memory (used by horus_py for `.cuda()` transfers).
-#[cfg(feature = "cuda")]
-pub fn cuda_malloc(size: usize) -> cuda_ffi::CudaResult<*mut std::ffi::c_void> {
-    cuda_ffi::malloc(size)
-}
-
-/// Free GPU device memory (used by horus_py for cleanup).
-#[cfg(feature = "cuda")]
-pub fn cuda_free(ptr: *mut std::ffi::c_void) -> cuda_ffi::CudaResult<()> {
-    cuda_ffi::free(ptr)
-}
-
-/// Copy memory between host and device (used by horus_py DLPack bridge).
-#[cfg(feature = "cuda")]
-pub fn cuda_memcpy(
-    dst: *mut std::ffi::c_void,
-    src: *const std::ffi::c_void,
-    size: usize,
-    kind: cuda_ffi::CudaMemcpyKind,
-) -> cuda_ffi::CudaResult<()> {
-    cuda_ffi::memcpy(dst, src, size, kind)
-}
-
-/// Get an IPC memory handle for cross-process GPU memory sharing
-/// (used by horus_py `.cuda()` to stamp IPC handles on new GPU tensors).
-#[cfg(feature = "cuda")]
-pub fn cuda_ipc_get_mem_handle(
-    dev_ptr: *mut std::ffi::c_void,
-) -> cuda_ffi::CudaResult<cuda_ffi::CudaIpcMemHandle> {
-    cuda_ffi::ipc_get_mem_handle(dev_ptr)
-}
-
-// --- Internal CUDA operations (used by Topic dispatch, tensor pool, tests) ---
-
-/// Get the currently active CUDA device.
-#[cfg(feature = "cuda")]
-pub(crate) fn cuda_get_device() -> cuda_ffi::CudaResult<i32> {
-    cuda_ffi::get_device()
-}
-
-/// Synchronize the current CUDA device (wait for all pending work).
-#[cfg(feature = "cuda")]
-pub(crate) fn cuda_device_synchronize() -> cuda_ffi::CudaResult<()> {
-    cuda_ffi::device_synchronize()
-}
-
-/// Open an IPC memory handle from another process to access shared GPU memory.
-#[cfg(feature = "cuda")]
-pub(crate) fn cuda_ipc_open_mem_handle(
-    handle: cuda_ffi::CudaIpcMemHandle,
-) -> cuda_ffi::CudaResult<*mut std::ffi::c_void> {
-    cuda_ffi::ipc_open_mem_handle(handle)
-}
-
-/// Close a previously opened IPC memory handle.
-#[cfg(feature = "cuda")]
-pub(crate) fn cuda_ipc_close_mem_handle(
-    dev_ptr: *mut std::ffi::c_void,
-) -> cuda_ffi::CudaResult<()> {
-    cuda_ffi::ipc_close_mem_handle(dev_ptr)
-}
-
-// Stub functions when CUDA is not enabled
-#[cfg(not(feature = "cuda"))]
+/// Check if CUDA is available at runtime. Currently always returns false.
+#[doc(hidden)]
 pub fn cuda_available() -> bool {
     false
 }
-#[cfg(not(feature = "cuda"))]
+
+/// Get number of CUDA devices. Currently always returns 0.
+#[doc(hidden)]
 pub fn cuda_device_count() -> usize {
     0
 }
-
-// Tests are in the tests/ directory

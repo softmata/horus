@@ -3,9 +3,10 @@ use crate::node::PyNodeInfo;
 use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
 use horus_core::core::Node as CoreNode;
 use horus_core::error::HorusError;
+use horus_core::core::NodeMetrics;
 use horus_core::scheduling::{
     CircuitState, FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
-    SchedulerConfig, SchedulerNodeMetrics,
+    SchedulerConfig,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -399,10 +400,10 @@ impl PyScheduler {
         Ok(())
     }
 
-    /// Build a Python dict from a SchedulerNodeMetrics + optional failure stats.
+    /// Build a Python dict from a NodeMetrics + optional failure stats.
     fn metric_to_dict(
         py: Python,
-        metric: &SchedulerNodeMetrics,
+        metric: &NodeMetrics,
         failure: Option<&horus_core::scheduling::FailureHandlerStats>,
         tick_rate: f64,
     ) -> PyResult<Py<PyAny>> {
@@ -486,13 +487,12 @@ impl PyScheduler {
         let core_config = config
             .as_ref()
             .map(|c| c.to_core_config())
-            .unwrap_or_else(SchedulerConfig::standard);
+            .unwrap_or_else(SchedulerConfig::minimal);
 
         let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
 
-        let core_sched = CoreScheduler::new()
-            .with_name("PythonScheduler")
-            .with_config(core_config);
+        let mut core_sched = CoreScheduler::new().with_name("PythonScheduler");
+        core_sched.apply_config(core_config);
         let running_flag = core_sched.running_flag();
 
         Ok(PyScheduler {
@@ -516,12 +516,11 @@ impl PyScheduler {
     /// enables a 16MB BlackBox flight recorder.
     #[staticmethod]
     pub fn deploy() -> PyResult<Self> {
-        let core_sched =
-            CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::deploy());
+        let core_sched = CoreScheduler::deploy();
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 60.0, // deploy() uses default ~60Hz
+            tick_rate_hz: 60.0,
             scheduler_running: running_flag,
             stop_requested: Arc::new(AtomicBool::new(false)),
             removed_nodes: Mutex::new(HashSet::new()),
@@ -533,8 +532,7 @@ impl PyScheduler {
     /// Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
     #[staticmethod]
     pub fn preset_safety_critical() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new()
-            .with_config(horus_core::scheduling::SchedulerConfig::safety_critical());
+        let core_sched = CoreScheduler::safety_critical();
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -550,8 +548,7 @@ impl PyScheduler {
     /// Parallel execution, 10kHz, WCET enforcement, memory locking.
     #[staticmethod]
     pub fn preset_high_performance() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new()
-            .with_config(horus_core::scheduling::SchedulerConfig::high_performance());
+        let core_sched = CoreScheduler::high_performance();
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -567,8 +564,7 @@ impl PyScheduler {
     /// Sequential execution, strict topology validation, deterministic seed.
     #[staticmethod]
     pub fn preset_deterministic() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new()
-            .with_config(horus_core::scheduling::SchedulerConfig::deterministic());
+        let core_sched = CoreScheduler::deterministic();
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -584,8 +580,7 @@ impl PyScheduler {
     /// Parallel execution, 1kHz, <5us jitter target, 10ms watchdog, panic on deadline miss.
     #[staticmethod]
     pub fn preset_hard_realtime() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new()
-            .with_config(horus_core::scheduling::SchedulerConfig::hard_realtime());
+        let core_sched = CoreScheduler::hard_realtime();
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),

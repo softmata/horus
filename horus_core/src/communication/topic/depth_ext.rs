@@ -14,7 +14,7 @@ mod tests {
 
     #[test]
     fn test_depth_descriptor_size() {
-        assert_eq!(std::mem::size_of::<DepthImageDescriptor>(), 288);
+        assert_eq!(std::mem::size_of::<DepthImageDescriptor>(), 224);
     }
 
     #[test]

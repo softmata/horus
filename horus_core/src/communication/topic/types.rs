@@ -72,28 +72,6 @@ impl From<u8> for BackendMode {
 }
 
 impl BackendMode {
-    /// Get the expected latency for this backend mode in nanoseconds
-    pub fn expected_latency_ns(&self) -> u64 {
-        match self {
-            BackendMode::Unknown => 167, // Fallback to MPMC
-            BackendMode::DirectChannel => 3,
-            BackendMode::SpscIntra => 18,
-            BackendMode::SpmcIntra => 24,
-            BackendMode::MpscIntra => 26,
-            BackendMode::MpmcIntra => 36,
-            BackendMode::PodShm => 50,
-            BackendMode::MpscShm => 65,
-            BackendMode::SpmcShm => 70,
-            BackendMode::SpscShm => 85,
-            BackendMode::MpmcShm => 167,
-            // CUDA IPC: descriptor through SHM + IPC handle exchange (~120-200ns)
-            BackendMode::CudaIpcSpsc => 120,
-            BackendMode::CudaIpcSpmc => 150,
-            BackendMode::CudaIpcMpsc => 160,
-            BackendMode::CudaIpcMpmc => 200,
-        }
-    }
-
     /// Check if this is a cross-process backend
     pub fn is_cross_process(&self) -> bool {
         matches!(

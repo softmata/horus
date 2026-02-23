@@ -54,7 +54,7 @@ let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performan
 let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
 
 // Custom configuration via SchedulerConfig
-let mut config = SchedulerConfig::standard();
+let mut config = SchedulerConfig::minimal();
 config.realtime.rt_scheduling_class = true;
 config.monitoring.black_box_enabled = true;
 let mut scheduler = Scheduler::new()

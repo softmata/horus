@@ -1,8 +1,6 @@
-use crate::params::RuntimeParams;
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Trait for providing lightweight logging summaries of message types
 ///
@@ -169,6 +167,10 @@ impl NetworkStatus {
 /// Performance metrics for node execution
 #[derive(Debug, Clone, Default)]
 pub struct NodeMetrics {
+    /// Node name
+    pub name: String,
+    /// Node priority (lower = higher priority)
+    pub priority: u32,
     pub total_ticks: u64,
     pub successful_ticks: u64,
     pub failed_ticks: u64,
@@ -206,17 +208,15 @@ impl NodeMetrics {
     }
 }
 
-/// Comprehensive context and information for Horus nodes
+/// Internal scheduler context for tracking node state and metrics.
 pub struct NodeInfo {
-    // Basic identification
+    // Identity
     name: String,
 
     // State management
     state: NodeState,
     previous_state: NodeState,
     state_change_time: Instant,
-
-    priority: u32,
 
     // Performance tracking
     metrics: NodeMetrics,
@@ -231,27 +231,23 @@ pub struct NodeInfo {
     error_history: Vec<(Instant, String)>,
     warning_history: Vec<(Instant, String)>,
 
-    // Debugging
-    custom_data: HashMap<String, String>,
+    // Custom data store
+    custom_data: std::collections::HashMap<String, String>,
 
     // Thread safety for metrics updates
     metrics_lock: Arc<Mutex<()>>,
-
-    // Runtime parameters
-    pub params: RuntimeParams,
 }
 
 impl NodeInfo {
-    /// Create a new NodeInfo with comprehensive initialization
+    /// Create a new NodeInfo
     pub fn new(node_name: String) -> Self {
         let now = Instant::now();
 
         Self {
-            name: node_name.clone(),
+            name: node_name,
             state: NodeState::Uninitialized,
             previous_state: NodeState::Uninitialized,
             state_change_time: now,
-            priority: 50, // Normal priority (middle range)
             metrics: NodeMetrics::default(),
             creation_time: now,
             last_tick_time: None,
@@ -259,9 +255,8 @@ impl NodeInfo {
             restart_count: 0,
             error_history: Vec::new(),
             warning_history: Vec::new(),
-            custom_data: HashMap::new(),
+            custom_data: std::collections::HashMap::new(),
             metrics_lock: Arc::new(Mutex::new(())),
-            params: RuntimeParams::default(),
         }
     }
 
@@ -401,11 +396,9 @@ impl NodeInfo {
 
     /// Get elapsed time since tick started in microseconds
     pub fn tick_elapsed_us(&self) -> u64 {
-        if let Some(start_time) = self.tick_start_time {
-            start_time.elapsed().as_micros() as u64
-        } else {
-            0
-        }
+        self.tick_start_time
+            .map(|t| t.elapsed().as_micros() as u64)
+            .unwrap_or(0)
     }
 
     /// Track a warning for metrics (history + count). Use hlog!(warn, ...) for logging.
@@ -432,19 +425,13 @@ impl NodeInfo {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn priority(&self) -> u32 {
-        self.priority
-    }
     pub fn metrics(&self) -> &NodeMetrics {
         &self.metrics
     }
-    pub fn uptime(&self) -> Duration {
+    pub fn uptime(&self) -> std::time::Duration {
         self.creation_time.elapsed()
     }
-    // Setters
-    pub fn set_priority(&mut self, priority: u32) {
-        self.priority = priority;
-    }
+
     // Custom data management
     pub fn set_custom_data(&mut self, key: String, value: String) {
         self.custom_data.insert(key, value);
@@ -792,6 +779,7 @@ mod tests {
             errors_count: 2,
             warnings_count: 10,
             uptime_seconds: 3600.0,
+            ..Default::default()
         };
         let cloned = metrics.clone();
         assert_eq!(cloned.total_ticks, 100);
@@ -908,18 +896,6 @@ mod tests {
     }
 
     #[test]
-    fn test_node_info_priority() {
-        let mut info = NodeInfo::new("test_node".to_string());
-        assert_eq!(info.priority(), 50); // Default priority is 50 (middle range)
-
-        info.set_priority(0);
-        assert_eq!(info.priority(), 0);
-
-        info.set_priority(100);
-        assert_eq!(info.priority(), 100);
-    }
-
-    #[test]
     fn test_node_info_metrics_initial() {
         let info = NodeInfo::new("test_node".to_string());
         let metrics = info.metrics();
@@ -937,14 +913,6 @@ mod tests {
 
         let metrics = info.metrics();
         assert_eq!(metrics.errors_count, 2);
-    }
-
-    #[test]
-    fn test_node_info_uptime() {
-        let info = NodeInfo::new("test_node".to_string());
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        let uptime = info.uptime();
-        assert!(uptime.as_millis() >= 10);
     }
 
     #[test]

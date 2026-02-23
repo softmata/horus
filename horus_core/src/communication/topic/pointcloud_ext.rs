@@ -14,7 +14,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_descriptor_size() {
-        assert_eq!(std::mem::size_of::<PointCloudDescriptor>(), 336);
+        assert_eq!(std::mem::size_of::<PointCloudDescriptor>(), 272);
     }
 
     #[test]

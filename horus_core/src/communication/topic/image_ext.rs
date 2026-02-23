@@ -14,7 +14,7 @@ mod tests {
 
     #[test]
     fn test_image_descriptor_size() {
-        assert_eq!(std::mem::size_of::<ImageDescriptor>(), 288);
+        assert_eq!(std::mem::size_of::<ImageDescriptor>(), 224);
     }
 
     #[test]

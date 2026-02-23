@@ -245,9 +245,10 @@ fn test_scheduler_is_recording_default() {
 #[test]
 fn test_scheduler_enable_recording() {
     use crate::scheduling::config::RecordingConfigYaml;
-    let mut config = crate::scheduling::config::SchedulerConfig::standard();
+    let mut config = crate::scheduling::config::SchedulerConfig::minimal();
     config.recording = Some(RecordingConfigYaml::full());
-    let scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
     assert!(scheduler.is_recording());
 }
 
@@ -275,10 +276,11 @@ fn test_scheduler_start_at_tick() {
 
 #[test]
 fn test_scheduler_with_safety_monitor() {
-    let mut config = crate::scheduling::config::SchedulerConfig::standard();
+    let mut config = crate::scheduling::config::SchedulerConfig::minimal();
     config.realtime.safety_monitor = true;
     config.realtime.max_deadline_misses = 10;
-    let scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
     assert!(scheduler.is_running());
 }
 
@@ -456,7 +458,7 @@ fn test_rt_feature_display() {
 #[test]
 fn test_parallel_execution_all_nodes_tick() {
     // Create scheduler in parallel mode via high_performance preset
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+    let mut scheduler = Scheduler::high_performance();
 
     let c1 = Arc::new(AtomicUsize::new(0));
     let c2 = Arc::new(AtomicUsize::new(0));
@@ -488,7 +490,7 @@ fn test_parallel_execution_all_nodes_tick() {
 #[test]
 fn test_parallel_rt_nodes_run_sequentially() {
     // RT nodes must run sequentially even in parallel mode
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
+    let mut scheduler = Scheduler::high_performance();
 
     let rt_counter = Arc::new(AtomicUsize::new(0));
     let normal_counter = Arc::new(AtomicUsize::new(0));
@@ -603,7 +605,7 @@ fn test_rate_limiting_does_not_lower_tick_period() {
 
 #[test]
 fn test_deterministic_config_wires_clock() {
-    let scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
+    let scheduler = Scheduler::deterministic();
     assert!(scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_some());
     assert!(scheduler.execution_trace().is_some());
@@ -620,7 +622,8 @@ fn test_deterministic_config_virtual_time() {
         tick_duration_ns: 1_000_000,
         record_trace: false,
     });
-    let scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
 
     assert!(scheduler.is_simulation_mode());
     assert_eq!(scheduler.seed(), Some(123));
@@ -631,7 +634,7 @@ fn test_deterministic_config_virtual_time() {
 #[test]
 fn test_deterministic_advances_on_run() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
+    let mut scheduler = Scheduler::deterministic();
     scheduler
         .add(CounterNode::with_counter("test", counter.clone()))
         .order(0)
@@ -651,7 +654,7 @@ fn test_deterministic_advances_on_run() {
 
 #[test]
 fn test_standard_config_no_deterministic() {
-    let scheduler = Scheduler::new().with_config(SchedulerConfig::standard());
+    let scheduler = Scheduler::new();
     assert!(!scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_none());
     assert!(scheduler.virtual_tick().is_none());
@@ -664,9 +667,8 @@ fn test_standard_config_no_deterministic() {
 #[test]
 fn test_recording_hooks_wired() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let config = SchedulerConfig::deterministic();
     // Recording is already enabled by deterministic() preset
-    let mut scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::deterministic();
     scheduler
         .add(CounterNode::with_counter("rec_node", counter.clone()))
         .order(0)
@@ -719,7 +721,7 @@ fn test_blackbox_with_path() {
 
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
-    let scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
+    let scheduler = Scheduler::deploy();
     assert!(
         scheduler.blackbox().is_some(),
         "Deploy preset should create a blackbox"
@@ -1432,7 +1434,8 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
     config.realtime.safety_monitor = true;
     config.realtime.deadline_monitoring = true;
 
-    let mut scheduler = Scheduler::new().with_config(config);
+    let mut scheduler = Scheduler::new();
+    scheduler.apply_config(config);
 
     // Node with tight deadline that will be missed
     scheduler

@@ -126,8 +126,6 @@ pub(crate) mod pool_registry;
 // Auto-managed tensor pool extensions
 pub(crate) mod tensor_ext;
 
-// CUDA IPC transport for cross-process GPU tensor sharing
-pub(crate) mod cuda_ipc_transport;
 
 // TopicMessage trait — unified wire protocol for Topic<T>
 pub mod topic_message;
@@ -305,8 +303,8 @@ fn auto_capacity<T>() -> u32 {
 macro_rules! topics {
     ($($vis:vis $name:ident : $type:ty = $topic_name:expr),* $(,)?) => {
         $(
-            $vis const $name: $crate::communication::topic::TopicDescriptor<$type> =
-                $crate::communication::topic::TopicDescriptor::new($topic_name);
+            $vis const $name: $crate::communication::TopicDescriptor<$type> =
+                $crate::communication::TopicDescriptor::new($topic_name);
         )*
     };
 }
@@ -600,11 +598,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
         };
 
-        self.metrics.estimated_latency_ns.store(
-            local.cached_mode.expected_latency_ns() as u32,
-            Ordering::Relaxed,
-        );
-
         self.check_migration();
         self.initialize_backend();
 
@@ -620,10 +613,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if current_epoch != local.cached_epoch {
             local.cached_epoch = current_epoch;
             Self::sync_local(local, header, true);
-            self.metrics.estimated_latency_ns.store(
-                local.cached_mode.expected_latency_ns() as u32,
-                Ordering::Relaxed,
-            );
             // Re-initialize backend + dispatch fn ptrs to match the new mode.
             // Another participant already performed the migration; we just need
             // to update our local storage and fn ptrs to match.
@@ -639,10 +628,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         local.cached_epoch = new_epoch;
                         Self::sync_local(local, header, true);
                         self.metrics.migrations.fetch_add(1, Ordering::Relaxed);
-                        self.metrics.estimated_latency_ns.store(
-                            local.cached_mode.expected_latency_ns() as u32,
-                            Ordering::Relaxed,
-                        );
                         // Notify all same-process Topics of the epoch change
                         registry::notify_epoch_change(&self.name, new_epoch);
                         break;
@@ -664,10 +649,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         if new_epoch != local.cached_epoch {
                             local.cached_epoch = new_epoch;
                             Self::sync_local(local, header, true);
-                            self.metrics.estimated_latency_ns.store(
-                                local.cached_mode.expected_latency_ns() as u32,
-                                Ordering::Relaxed,
-                            );
                             registry::notify_epoch_change(&self.name, new_epoch);
                         }
                         if migrator.is_optimal() {
@@ -677,18 +658,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                     }
                     MigrationResult::NotNeeded => {
                         local.cached_mode = header.mode();
-                        self.metrics.estimated_latency_ns.store(
-                            local.cached_mode.expected_latency_ns() as u32,
-                            Ordering::Relaxed,
-                        );
                         break;
                     }
                     MigrationResult::Failed => {
                         local.cached_mode = header.mode();
-                        self.metrics.estimated_latency_ns.store(
-                            local.cached_mode.expected_latency_ns() as u32,
-                            Ordering::Relaxed,
-                        );
                         break;
                     }
                 }
@@ -2069,7 +2042,11 @@ where
         self.ring.try_send(msg)
     }
 
-    /// Try to receive a message.
+    /// Low-level receive without logging/recording hooks.
+    ///
+    /// Prefer `recv()` — it includes the DirectChannel fast path, logging,
+    /// and recording hooks. This exists for internal/test use only.
+    #[doc(hidden)]
     #[inline(always)]
     pub fn try_recv(&self) -> Option<T> {
         self.ring.try_recv()
@@ -2116,18 +2093,9 @@ impl Topic<Image> {
     /// Send an image (zero-copy).
     ///
     /// Retains the tensor so it stays alive for receivers, then sends the
-    /// 288-byte descriptor through the ring buffer.
-    ///
-    /// For GPU-backed images: stamps the CUDA IPC handle into the descriptor
-    /// so receivers in other processes can access the GPU memory directly.
+    /// descriptor through the ring buffer.
     pub fn send(&self, img: &Image) {
-        let mut wire = img.to_wire(&self.pool);
-        // Stamp CUDA IPC handle if tensor is on GPU
-        if wire.tensor().device().is_cuda() {
-            let pool = img.pool();
-            let data_ptr = pool.data_ptr(wire.tensor());
-            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
-        }
+        let wire = img.to_wire(&self.pool);
         self.ring.send(wire);
     }
 
@@ -2144,15 +2112,8 @@ impl Topic<Image> {
 
 impl Topic<PointCloud> {
     /// Send a point cloud (zero-copy).
-    ///
-    /// For GPU-backed point clouds: stamps CUDA IPC handle for cross-process GPU sharing.
     pub fn send(&self, pc: &PointCloud) {
-        let mut wire = pc.to_wire(&self.pool);
-        if wire.tensor().device().is_cuda() {
-            let pool = pc.pool();
-            let data_ptr = pool.data_ptr(wire.tensor());
-            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
-        }
+        let wire = pc.to_wire(&self.pool);
         self.ring.send(wire);
     }
 
@@ -2169,15 +2130,8 @@ impl Topic<PointCloud> {
 
 impl Topic<DepthImage> {
     /// Send a depth image (zero-copy).
-    ///
-    /// For GPU-backed depth images: stamps CUDA IPC handle for cross-process GPU sharing.
     pub fn send(&self, depth: &DepthImage) {
-        let mut wire = depth.to_wire(&self.pool);
-        if wire.tensor().device().is_cuda() {
-            let pool = depth.pool();
-            let data_ptr = pool.data_ptr(wire.tensor());
-            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
-        }
+        let wire = depth.to_wire(&self.pool);
         self.ring.send(wire);
     }
 
@@ -2210,17 +2164,9 @@ impl Topic<HorusTensor> {
     }
 
     /// Send a tensor handle through this topic (zero-copy).
-    ///
-    /// For GPU-backed tensors: stamps the CUDA IPC handle so receivers in other
-    /// processes can map the GPU memory via `cudaIpcOpenMemHandle`.
     pub fn send_handle(&self, handle: &crate::memory::TensorHandle) {
         handle.pool().retain(handle.tensor());
-        let mut tensor = *handle.tensor();
-        if tensor.device().is_cuda() {
-            let data_ptr = handle.pool().data_ptr(&tensor);
-            cuda_ipc_transport::stamp_ipc_handle(&mut tensor, data_ptr);
-        }
-        self.ring.send(tensor);
+        self.ring.send(*handle.tensor());
     }
 
     /// Receive a tensor and wrap it in a `TensorHandle`.

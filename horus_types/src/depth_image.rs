@@ -1,6 +1,6 @@
 //! Unified Pod depth image descriptor for zero-copy depth sensor pipelines
 //!
-//! `DepthImage` is a fixed-size (288 byte) `repr(C)` descriptor that flows
+//! `DepthImage` is a fixed-size (224 byte) `repr(C)` descriptor that flows
 //! through `Topic<DepthImage>` via the ~50ns Pod path. Actual depth data
 //! lives in a `TensorPool`.
 //!
@@ -13,22 +13,22 @@ use serde::{Deserialize, Serialize};
 use crate::tensor::HorusTensor;
 use crate::TensorDtype;
 
-/// Unified depth image descriptor — Pod, 288 bytes.
+/// Unified depth image descriptor — Pod, 224 bytes.
 ///
 /// Contains a `HorusTensor` (shape `[H, W]`) plus depth metadata.
 /// Dtype indicates units: F32 = meters, U16 = millimeters.
 ///
-/// # Layout (288 bytes, repr(C))
+/// # Layout (224 bytes, repr(C))
 ///
 /// ```text
-/// inner:        HorusTensor  (232 bytes)
+/// inner:        HorusTensor  (168 bytes)
 /// timestamp_ns: u64          (8 bytes)
 /// depth_scale:  f32          (4 bytes)
 /// min_depth:    u16          (2 bytes)
 /// max_depth:    u16          (2 bytes)
 /// frame_id:     [u8; 32]     (32 bytes)
 /// _reserved:    [u8; 8]      (8 bytes)
-/// Total:                      288 bytes
+/// Total:                      224 bytes
 /// ```
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ pub struct DepthImageDescriptor {
 }
 
 // Safety: DepthImage is repr(C), all fields are Pod, no implicit padding.
-// 232 + 8 + 4 + 2 + 2 + 32 + 8 = 288 bytes, 288 % 8 = 0.
+// 168 + 8 + 4 + 2 + 2 + 32 + 8 = 224 bytes, 224 % 8 = 0.
 unsafe impl Zeroable for DepthImageDescriptor {}
 unsafe impl Pod for DepthImageDescriptor {}
 
@@ -164,8 +164,8 @@ mod tests {
     fn test_depth_image_size() {
         assert_eq!(
             std::mem::size_of::<DepthImageDescriptor>(),
-            288,
-            "DepthImageDescriptor must be exactly 288 bytes"
+            224,
+            "DepthImageDescriptor must be exactly 224 bytes"
         );
     }
 
@@ -173,7 +173,7 @@ mod tests {
     fn test_depth_image_pod() {
         let di = DepthImageDescriptor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&di);
-        assert_eq!(bytes.len(), 288);
+        assert_eq!(bytes.len(), 224);
         let _recovered: &DepthImageDescriptor = bytemuck::from_bytes(bytes);
     }
 

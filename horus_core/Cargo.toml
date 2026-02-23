@@ -67,11 +67,6 @@ telemetry = []
 # Black box flight recorder for post-mortem crash analysis
 blackbox = []
 
-# CUDA IPC for cross-process GPU memory sharing.
-# No crate dependency — uses system CUDA Runtime API via FFI.
-# Requires: NVIDIA GPU + CUDA toolkit installed on the system.
-cuda = []
-
 # mDNS/DNS-SD for automatic peer discovery on local networks
 mdns = ["mdns-sd"]
 

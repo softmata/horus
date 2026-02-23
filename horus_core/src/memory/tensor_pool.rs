@@ -126,28 +126,6 @@ pub enum PoolAllocator {
     /// Works everywhere; data lives in a file-backed mmap.
     #[default]
     Mmap,
-
-    /// CUDA managed memory (`cudaMallocManaged`).
-    ///
-    /// On Jetson (integrated GPU), CPU and GPU share the same physical RAM,
-    /// so managed memory gives both sides direct access with zero copies.
-    /// On discrete GPUs, the CUDA runtime auto-migrates pages.
-    #[cfg(feature = "cuda")]
-    ManagedMemory {
-        /// CUDA device index (0, 1, 2, ...)
-        device_id: i32,
-    },
-
-    /// Pinned (page-locked) host memory (`cudaMallocHost`).
-    ///
-    /// For discrete GPUs: CPU-accessible memory that enables fast DMA transfers
-    /// to/from the GPU. The CPU reads/writes directly; the GPU accesses it
-    /// via high-throughput DMA instead of slow pageable copies.
-    #[cfg(feature = "cuda")]
-    PinnedMemory {
-        /// CUDA device index (0, 1, 2, ...)
-        device_id: i32,
-    },
 }
 
 /// Configuration for tensor pool
@@ -201,9 +179,7 @@ impl TensorPoolConfig {
 /// Manages a region of shared memory for tensor allocation with reference counting.
 /// Multiple processes can attach to the same pool and share tensors with zero-copy.
 ///
-/// The data region can be backed by either:
-/// - **Mmap** (default): file-backed shared memory
-/// - **ManagedMemory** (CUDA feature): `cudaMallocManaged` — CPU+GPU accessible
+/// Data is backed by mmap-based shared memory.
 pub struct TensorPool {
     config: TensorPoolConfig,
     pool_id: u32,
@@ -213,19 +189,6 @@ pub struct TensorPool {
     is_owner: bool,
     slots_offset: usize,
     data_offset: usize,
-    /// Optional GPU-allocated pointer for the data region.
-    /// When Some, data_ptr/data_slice use this instead of the mmap data region.
-    /// May point to managed memory (cudaMallocManaged) or pinned memory (cudaMallocHost).
-    #[cfg(feature = "cuda")]
-    managed_ptr: Option<*mut u8>,
-    /// The CUDA device ID used for managed memory (needed for descriptor tagging).
-    /// Set only for ManagedMemory allocator; None for PinnedMemory (stays CPU).
-    #[cfg(feature = "cuda")]
-    managed_device_id: Option<i32>,
-    /// True if managed_ptr was allocated with cudaMallocHost (pinned memory).
-    /// Controls cleanup path: free_host vs free.
-    #[cfg(feature = "cuda")]
-    is_pinned: bool,
 }
 
 impl TensorPool {
@@ -244,64 +207,7 @@ impl TensorPool {
         let metadata_size = header_size + slots_size;
         let data_offset = Self::align_up(metadata_size, config.slot_alignment);
 
-        // Attempt GPU allocation first (if requested), then size the mmap accordingly.
-        // PinnedMemory falls back to mmap on failure; ManagedMemory is hard-error.
-        #[cfg(feature = "cuda")]
-        let (managed_ptr, managed_device_id, is_pinned) = match &config.allocator {
-            PoolAllocator::ManagedMemory { device_id } => {
-                use super::cuda_ffi;
-                cuda_ffi::set_device(*device_id).map_err(|e| {
-                    HorusError::Config(format!("Failed to set CUDA device {}: {}", device_id, e))
-                })?;
-                let ptr = cuda_ffi::malloc_managed(config.pool_size).map_err(|e| {
-                    HorusError::Memory(format!(
-                        "cudaMallocManaged({}) failed: {}",
-                        config.pool_size, e
-                    ))
-                })?;
-                (Some(ptr as *mut u8), Some(*device_id), false)
-            }
-            PoolAllocator::PinnedMemory { device_id } => {
-                use super::cuda_ffi;
-                let set_ok = cuda_ffi::set_device(*device_id).is_ok();
-                if set_ok {
-                    match cuda_ffi::malloc_host(config.pool_size) {
-                        Ok(ptr) => {
-                            // Pinned memory is CPU-accessible; don't set managed_device_id
-                            // so descriptors keep Device::cpu().
-                            (Some(ptr as *mut u8), None, true)
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "horus: cudaMallocHost({}) failed ({}), falling back to mmap",
-                                config.pool_size, e
-                            );
-                            (None, None, false)
-                        }
-                    }
-                } else {
-                    eprintln!(
-                        "horus: cudaSetDevice({}) failed, falling back to mmap",
-                        device_id
-                    );
-                    (None, None, false)
-                }
-            }
-            PoolAllocator::Mmap => (None, None, false),
-        };
-
-        // GPU allocators: mmap only holds metadata (data lives in CUDA memory).
-        // Mmap (or fallback): mmap holds metadata + data.
-        #[cfg(feature = "cuda")]
-        let uses_gpu_data = managed_ptr.is_some();
-        #[cfg(not(feature = "cuda"))]
-        let uses_gpu_data = false;
-
-        let mmap_size = if uses_gpu_data {
-            data_offset // metadata only
-        } else {
-            data_offset + config.pool_size // metadata + data
-        };
+        let mmap_size = data_offset + config.pool_size;
 
         // Try to open existing or create new
         let (file, is_owner) = if shm_path.exists() {
@@ -334,12 +240,6 @@ impl TensorPool {
             is_owner,
             slots_offset: header_size,
             data_offset,
-            #[cfg(feature = "cuda")]
-            managed_ptr,
-            #[cfg(feature = "cuda")]
-            managed_device_id,
-            #[cfg(feature = "cuda")]
-            is_pinned,
         };
 
         if is_owner {
@@ -400,12 +300,6 @@ impl TensorPool {
             is_owner: false,
             slots_offset: header_size,
             data_offset,
-            #[cfg(feature = "cuda")]
-            managed_ptr: None,
-            #[cfg(feature = "cuda")]
-            managed_device_id: None,
-            #[cfg(feature = "cuda")]
-            is_pinned: false,
         })
     }
 
@@ -500,14 +394,6 @@ impl TensorPool {
         // Allocate from data region
         let offset = self.allocate_data(aligned_size)?;
 
-        // Override device when pool uses managed memory (data lives on GPU)
-        #[cfg(feature = "cuda")]
-        let effective_device = if let Some(dev_id) = self.managed_device_id {
-            Device::cuda(dev_id as u32)
-        } else {
-            device
-        };
-        #[cfg(not(feature = "cuda"))]
         let effective_device = device;
 
         // Initialize slot
@@ -576,13 +462,9 @@ impl TensorPool {
         }
     }
 
-    /// Get the base data pointer (managed memory or mmap, depending on allocator).
+    /// Get the base data pointer.
     #[inline]
     fn data_base_ptr(&self) -> *const u8 {
-        #[cfg(feature = "cuda")]
-        if let Some(ptr) = self.managed_ptr {
-            return ptr;
-        }
         // SAFETY: data_offset is within bounds of the mmap region.
         unsafe { self.mmap.as_ptr().add(self.data_offset) }
     }
@@ -590,10 +472,6 @@ impl TensorPool {
     /// Get the effective data region size for bounds checking.
     #[inline]
     fn data_region_size(&self) -> usize {
-        #[cfg(feature = "cuda")]
-        if self.managed_ptr.is_some() {
-            return self.config.pool_size;
-        }
         self.mmap.len().saturating_sub(self.data_offset)
     }
 
@@ -709,26 +587,12 @@ impl TensorPool {
 
     /// Check if this pool uses CUDA managed memory for its data region.
     pub fn uses_managed_memory(&self) -> bool {
-        #[cfg(feature = "cuda")]
-        {
-            self.managed_ptr.is_some() && !self.is_pinned
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            false
-        }
+        false
     }
 
     /// Check if this pool uses pinned (page-locked) host memory for its data region.
     pub fn uses_pinned_memory(&self) -> bool {
-        #[cfg(feature = "cuda")]
-        {
-            self.managed_ptr.is_some() && self.is_pinned
-        }
-        #[cfg(not(feature = "cuda"))]
-        {
-            false
-        }
+        false
     }
 
     // === Private helpers ===
@@ -876,19 +740,6 @@ impl TensorPool {
 
 impl Drop for TensorPool {
     fn drop(&mut self) {
-        // Free GPU-allocated data region if we own it
-        #[cfg(feature = "cuda")]
-        if self.is_owner {
-            if let Some(ptr) = self.managed_ptr.take() {
-                if self.is_pinned {
-                    // Pinned memory: allocated with cudaMallocHost
-                    let _ = super::cuda_ffi::free_host(ptr as *mut std::ffi::c_void);
-                } else {
-                    // Managed memory: allocated with cudaMallocManaged
-                    let _ = super::cuda_ffi::free(ptr as *mut std::ffi::c_void);
-                }
-            }
-        }
         // Don't delete the shm file - other processes may still be using it.
         // The file can be cleaned up manually or by a cleanup routine.
     }

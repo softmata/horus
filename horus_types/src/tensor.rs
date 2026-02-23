@@ -1,17 +1,16 @@
 //! Zero-copy tensor descriptor for shared memory communication
 //!
-//! [`HorusTensor`] is a lightweight 232-byte descriptor that flows through Topic
+//! [`HorusTensor`] is a lightweight 168-byte descriptor that flows through Topic
 //! like any other message, while the actual tensor data lives in a shared memory pool.
 //!
-//! # Memory Layout (232 bytes, repr(C), Pod-safe)
+//! # Memory Layout (168 bytes, repr(C), Pod-safe)
 //!
 //! ```text
 //! Pool identification:  pool_id(4) + slot_id(4) + generation(4) + _pad0(4) = 16 bytes
 //! Data location:        offset(8) + size(8)                                = 16 bytes
 //! Tensor metadata:      dtype(1) + ndim(1) + device_type(1) + _pad1(1) + device_id(4) = 8 bytes
 //! Shape + strides:      shape(64) + strides(64)                            = 128 bytes
-//! CUDA IPC:             cuda_ipc_handle(64)                                = 64 bytes
-//! Total:                                                                   = 232 bytes
+//! Total:                                                                   = 168 bytes
 //! ```
 
 use bytemuck::{Pod, Zeroable};
@@ -23,12 +22,9 @@ use crate::dtype::TensorDtype;
 /// Maximum number of dimensions supported by HorusTensor
 pub const MAX_TENSOR_DIMS: usize = 8;
 
-/// Size of CUDA IPC handle (cudaIpcMemHandle_t)
-pub const CUDA_IPC_HANDLE_SIZE: usize = 64;
-
 /// Zero-copy tensor descriptor for shared memory communication
 ///
-/// This is a lightweight message type (232 bytes) that describes a tensor
+/// This is a lightweight message type (168 bytes) that describes a tensor
 /// stored in a shared memory pool. It flows through Topic like any other
 /// message, but the actual tensor data lives in the pool.
 ///
@@ -74,10 +70,6 @@ pub struct HorusTensor {
     pub shape: [u64; MAX_TENSOR_DIMS],
     /// Byte strides for each dimension (enables views)
     pub strides: [u64; MAX_TENSOR_DIMS],
-
-    // === CUDA IPC (64 bytes) ===
-    /// CUDA IPC memory handle (only valid if device is CUDA)
-    pub cuda_ipc_handle: [u8; CUDA_IPC_HANDLE_SIZE],
 }
 
 // Safety: HorusTensor is repr(C) with explicit padding, no implicit padding exists.
@@ -101,7 +93,6 @@ impl Default for HorusTensor {
             device_id: 0,
             shape: [0; MAX_TENSOR_DIMS],
             strides: [0; MAX_TENSOR_DIMS],
-            cuda_ipc_handle: [0; CUDA_IPC_HANDLE_SIZE],
         }
     }
 }
@@ -154,7 +145,6 @@ impl HorusTensor {
             device_id: device.device_id,
             shape: shape_arr,
             strides,
-            cuda_ipc_handle: [0; CUDA_IPC_HANDLE_SIZE],
         }
     }
 
@@ -277,7 +267,7 @@ impl Serialize for HorusTensor {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("HorusTensor", 11)?;
+        let mut state = serializer.serialize_struct("HorusTensor", 10)?;
         state.serialize_field("pool_id", &self.pool_id)?;
         state.serialize_field("slot_id", &self.slot_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -288,7 +278,6 @@ impl Serialize for HorusTensor {
         state.serialize_field("device", &self.device())?;
         state.serialize_field("shape", &self.shape[..])?;
         state.serialize_field("strides", &self.strides[..])?;
-        state.serialize_field("cuda_ipc_handle", &self.cuda_ipc_handle[..])?;
         state.end()
     }
 }
@@ -341,12 +330,6 @@ impl<'de> Deserialize<'de> for HorusTensor {
                                 tensor.strides[i] = val;
                             }
                         }
-                        "cuda_ipc_handle" => {
-                            let v: Vec<u8> = map.next_value()?;
-                            for (i, &val) in v.iter().take(CUDA_IPC_HANDLE_SIZE).enumerate() {
-                                tensor.cuda_ipc_handle[i] = val;
-                            }
-                        }
                         _ => {
                             let _: de::IgnoredAny = map.next_value()?;
                         }
@@ -370,7 +353,6 @@ impl<'de> Deserialize<'de> for HorusTensor {
                 "device",
                 "shape",
                 "strides",
-                "cuda_ipc_handle",
             ],
             HorusTensorVisitor,
         )
@@ -385,8 +367,8 @@ mod tests {
     fn test_tensor_size() {
         assert_eq!(
             std::mem::size_of::<HorusTensor>(),
-            232,
-            "HorusTensor must be exactly 232 bytes"
+            168,
+            "HorusTensor must be exactly 168 bytes"
         );
     }
 
@@ -469,7 +451,7 @@ mod tests {
     fn test_tensor_pod_soundness() {
         let tensor = HorusTensor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&tensor);
-        assert_eq!(bytes.len(), 232);
+        assert_eq!(bytes.len(), 168);
 
         // Roundtrip through bytes
         let recovered: &HorusTensor = bytemuck::from_bytes(bytes);

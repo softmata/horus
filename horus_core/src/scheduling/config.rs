@@ -153,11 +153,11 @@ impl RecordingConfigYaml {
 
 /// Scheduler configuration
 ///
-/// Use preset factories (`standard()`, `safety_critical()`, etc.) then
+/// Use preset factories (`minimal()`, `safety_critical()`, etc.) then
 /// mutate fields directly for customization:
 ///
 /// ```rust,ignore
-/// let mut config = SchedulerConfig::standard();
+/// let mut config = SchedulerConfig::minimal();
 /// config.timing.global_rate_hz = 500.0;
 /// config.realtime.wcet_enforcement = true;
 /// ```
@@ -186,7 +186,7 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self::standard()
+        Self::minimal()
     }
 }
 
@@ -230,23 +230,18 @@ impl SchedulerConfig {
         }
     }
 
-    /// Standard configuration for most robots
-    pub fn standard() -> Self {
-        let mut config = Self::minimal();
-        config.circuit_breaker = true;
-        config.monitoring.profiling_enabled = true;
-        config
-    }
-
     /// Deploy configuration for production robots.
     ///
-    /// Standard rate (60 Hz) with RT features (best-effort) and a 16MB BlackBox flight recorder.
+    /// 60 Hz with circuit breaker, RT features (best-effort), profiling,
+    /// and a 16MB BlackBox flight recorder.
     pub fn deploy() -> Self {
-        let mut config = Self::standard();
+        let mut config = Self::minimal();
+        config.circuit_breaker = true;
         config.realtime.deadline_monitoring = true;
         config.realtime.watchdog_enabled = true;
         config.realtime.memory_locking = true;
         config.realtime.rt_scheduling_class = true;
+        config.monitoring.profiling_enabled = true;
         config.monitoring.black_box_enabled = true;
         config.monitoring.black_box_size_mb = 16;
         config
@@ -306,7 +301,8 @@ impl SchedulerConfig {
 
     /// Hard real-time configuration for surgical robots, CNC machines
     pub fn hard_realtime() -> Self {
-        let mut config = Self::standard();
+        let mut config = Self::minimal();
+        config.circuit_breaker = true;
         config.execution = ExecutionMode::Parallel;
         config.timing.global_rate_hz = 1000.0;
         config.realtime.wcet_enforcement = true;
