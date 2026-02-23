@@ -419,6 +419,29 @@ impl NodeRecorder {
         }
     }
 
+    /// Record an input received during the current tick.
+    pub fn record_input(&mut self, topic: &str, data: Vec<u8>) {
+        if self.config.record_inputs {
+            if let Some(ref mut snapshot) = self.current_snapshot {
+                snapshot.inputs.insert(topic.to_string(), data);
+            }
+        }
+    }
+
+    /// Record an output produced during the current tick.
+    pub fn record_output(&mut self, topic: &str, data: Vec<u8>) {
+        if self.config.record_outputs {
+            if let Some(ref mut snapshot) = self.current_snapshot {
+                snapshot.outputs.insert(topic.to_string(), data);
+            }
+        }
+    }
+
+    /// Get a reference to the underlying recording.
+    pub fn recording(&self) -> &NodeRecording {
+        &self.recording
+    }
+
     /// Finish and save the recording
     pub fn finish(&mut self) -> std::io::Result<PathBuf> {
         self.recording.finish();
