@@ -171,7 +171,8 @@ pub fn hash_password(password: &str) -> Result<String> {
 }
 
 /// Verify a password against a hash
-pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
+#[cfg(test)]
+fn verify_password(password: &str, hash: &str) -> Result<bool> {
     let parsed_hash =
         PasswordHash::new(hash).map_err(|e| anyhow!("Invalid password hash format: {}", e))?;
 
@@ -284,15 +285,6 @@ pub fn prompt_for_password_setup() -> Result<String> {
 
         return Ok(hash);
     }
-}
-
-/// Prompt user for password (for CLI login)
-pub fn prompt_for_password() -> Result<String> {
-    use std::io::{self, Write};
-
-    print!("Monitor password: ");
-    io::stdout().flush()?;
-    Ok(rpassword::read_password()?)
 }
 
 /// Prompt user to reset password

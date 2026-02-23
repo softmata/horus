@@ -281,6 +281,7 @@ mod tests {
             pool_size: 1024 * 1024,
             max_slots: 16,
             slot_alignment: 64,
+            allocator: Default::default(),
         };
         Arc::new(TensorPool::new(pool_id, config).expect("Failed to create pool"))
     }

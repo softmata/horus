@@ -126,6 +126,9 @@ pub(crate) mod pool_registry;
 // Auto-managed tensor pool extensions
 pub(crate) mod tensor_ext;
 
+// CUDA IPC transport for cross-process GPU tensor sharing
+pub(crate) mod cuda_ipc_transport;
+
 // TopicMessage trait — unified wire protocol for Topic<T>
 pub mod topic_message;
 pub use topic_message::TopicMessage;
@@ -651,6 +654,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         while migrator.is_migration_in_progress() {
                             std::hint::spin_loop();
                             if wait_start.elapsed() > std::time::Duration::from_millis(5) {
+                                // Stale lock from a crashed process — force-unlock
+                                header.migration_lock.store(0, Ordering::Release);
                                 break;
                             }
                         }
@@ -925,6 +930,27 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
+            // CUDA IPC: descriptors still go through SHM ring (POD path).
+            // The actual GPU data transfer (IPC handle open/close) is handled
+            // at the Topic<Image>/Topic<HorusTensor> layer, not here.
+            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc if colo => {
+                dispatch::send_shm_sp_pod_colo::<T>
+            }
+            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc if is_pod => {
+                dispatch::send_shm_sp_pod::<T>
+            }
+            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc => {
+                dispatch::send_shm_sp_serde::<T>
+            }
+            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc if colo => {
+                dispatch::send_shm_mp_pod_colo::<T>
+            }
+            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc if is_pod => {
+                dispatch::send_shm_mp_pod::<T>
+            }
+            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc => {
+                dispatch::send_shm_mp_serde::<T>
+            }
             // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
             // Must NOT return send_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
@@ -969,6 +995,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
             BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
+            // CUDA IPC: descriptors still go through SHM ring (same as CPU POD path).
+            BackendMode::CudaIpcSpsc if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
+            BackendMode::CudaIpcSpsc if is_pod => dispatch::recv_shm_spsc_pod::<T>,
+            BackendMode::CudaIpcSpsc => dispatch::recv_shm_spsc_serde::<T>,
+            BackendMode::CudaIpcSpmc if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
+            BackendMode::CudaIpcSpmc if is_pod => dispatch::recv_shm_spmc_pod::<T>,
+            BackendMode::CudaIpcSpmc => dispatch::recv_shm_spmc_serde::<T>,
+            BackendMode::CudaIpcMpsc if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
+            BackendMode::CudaIpcMpsc if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
+            BackendMode::CudaIpcMpsc => dispatch::recv_shm_mpsc_serde::<T>,
+            BackendMode::CudaIpcMpmc if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
+            BackendMode::CudaIpcMpmc if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
+            BackendMode::CudaIpcMpmc => dispatch::recv_shm_mpmc_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM (handles any topology).
             // Must NOT return recv_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
@@ -1286,10 +1325,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Periodic migration check — reads migration_epoch from SHM header.
+    /// Skipped for DirectChannel mode where cached_header_ptr is repurposed
+    /// as a pointer to DirectSlot.head (AtomicU64), not a real TopicHeader.
     #[cold]
     #[inline(never)]
     fn check_migration_periodic(&self) {
         let local = self.local();
+        // DirectChannel repurposes cached_header_ptr for head/tail AtomicU64 pointers,
+        // not a real TopicHeader. Dereferencing as TopicHeader would be UB (misaligned).
+        if matches!(local.cached_mode, BackendMode::DirectChannel) {
+            return;
+        }
         let header = unsafe { &*local.cached_header_ptr };
         let shm_epoch = header.migration_epoch.load(Ordering::Relaxed);
         if shm_epoch != local.cached_epoch {
@@ -1358,12 +1404,12 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.header().mode()
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn role(&self) -> TopicRole {
         self.local().role
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         &self.metrics
     }
@@ -1378,7 +1424,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn connection_state(&self) -> ConnectionState {
         ConnectionState::from_u8(self.state.load(Ordering::Relaxed))
     }
@@ -1560,7 +1606,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.check_migration();
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         let migrator = BackendMigrator::new(self.header());
         let result = migrator.try_migrate(mode);
@@ -1712,15 +1758,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpmcShm => "SpmcShm",
             BackendMode::MpscShm => "MpscShm",
             BackendMode::MpmcShm => "MpmcShm",
+            BackendMode::CudaIpcSpsc => "CudaIpcSpsc",
+            BackendMode::CudaIpcSpmc => "CudaIpcSpmc",
+            BackendMode::CudaIpcMpsc => "CudaIpcMpsc",
+            BackendMode::CudaIpcMpmc => "CudaIpcMpmc",
         }
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn is_same_process(&self) -> bool {
         self.header().is_same_process()
     }
 
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn is_same_thread(&self) -> bool {
         self.header().is_same_thread()
     }
@@ -1916,37 +1966,37 @@ impl<T: TopicMessage> Topic<T> {
     }
 
     /// Get the topic role.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn role(&self) -> TopicRole {
         self.ring.role()
     }
 
     /// Get migration metrics.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn migration_metrics(&self) -> &MigrationMetrics {
         self.ring.migration_metrics()
     }
 
     /// Get connection state.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn connection_state(&self) -> ConnectionState {
         self.ring.connection_state()
     }
 
     /// Check if topic is on the same thread.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_same_thread(&self) -> bool {
         self.ring.is_same_thread()
     }
 
     /// Check if topic is in the same process.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_same_process(&self) -> bool {
         self.ring.is_same_process()
     }
 
     /// Force migration to a different backend mode.
-    #[doc(hidden)]
+    #[cfg(test)]
     pub fn force_migrate(&self, mode: BackendMode) -> MigrationResult {
         self.ring.force_migrate(mode)
     }
@@ -2071,8 +2121,17 @@ impl Topic<Image> {
     ///
     /// Retains the tensor so it stays alive for receivers, then sends the
     /// 288-byte descriptor through the ring buffer.
+    ///
+    /// For GPU-backed images: stamps the CUDA IPC handle into the descriptor
+    /// so receivers in other processes can access the GPU memory directly.
     pub fn send(&self, img: &Image) {
-        let wire = img.to_wire(&self.pool);
+        let mut wire = img.to_wire(&self.pool);
+        // Stamp CUDA IPC handle if tensor is on GPU
+        if wire.tensor().device().is_cuda() {
+            let pool = img.pool();
+            let data_ptr = pool.data_ptr(wire.tensor());
+            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
+        }
         self.ring.send(wire);
     }
 
@@ -2089,8 +2148,15 @@ impl Topic<Image> {
 
 impl Topic<PointCloud> {
     /// Send a point cloud (zero-copy).
+    ///
+    /// For GPU-backed point clouds: stamps CUDA IPC handle for cross-process GPU sharing.
     pub fn send(&self, pc: &PointCloud) {
-        let wire = pc.to_wire(&self.pool);
+        let mut wire = pc.to_wire(&self.pool);
+        if wire.tensor().device().is_cuda() {
+            let pool = pc.pool();
+            let data_ptr = pool.data_ptr(wire.tensor());
+            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
+        }
         self.ring.send(wire);
     }
 
@@ -2107,8 +2173,15 @@ impl Topic<PointCloud> {
 
 impl Topic<DepthImage> {
     /// Send a depth image (zero-copy).
+    ///
+    /// For GPU-backed depth images: stamps CUDA IPC handle for cross-process GPU sharing.
     pub fn send(&self, depth: &DepthImage) {
-        let wire = depth.to_wire(&self.pool);
+        let mut wire = depth.to_wire(&self.pool);
+        if wire.tensor().device().is_cuda() {
+            let pool = depth.pool();
+            let data_ptr = pool.data_ptr(wire.tensor());
+            cuda_ipc_transport::stamp_ipc_handle(wire.tensor_mut(), data_ptr);
+        }
         self.ring.send(wire);
     }
 
@@ -2141,9 +2214,17 @@ impl Topic<HorusTensor> {
     }
 
     /// Send a tensor handle through this topic (zero-copy).
+    ///
+    /// For GPU-backed tensors: stamps the CUDA IPC handle so receivers in other
+    /// processes can map the GPU memory via `cudaIpcOpenMemHandle`.
     pub fn send_handle(&self, handle: &crate::memory::TensorHandle) {
         handle.pool().retain(handle.tensor());
-        self.ring.send(*handle.tensor());
+        let mut tensor = *handle.tensor();
+        if tensor.device().is_cuda() {
+            let data_ptr = handle.pool().data_ptr(&tensor);
+            cuda_ipc_transport::stamp_ipc_handle(&mut tensor, data_ptr);
+        }
+        self.ring.send(tensor);
     }
 
     /// Receive a tensor and wrap it in a `TensorHandle`.

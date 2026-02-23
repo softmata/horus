@@ -180,7 +180,6 @@ pub(super) fn get_local_workspaces(
                 Some(DependencyData {
                     name: dep_name.to_string(),
                     declared_version: dep_str.clone(),
-                    _status: DependencyStatus::Missing,
                 })
             })
             .collect();

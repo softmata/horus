@@ -45,7 +45,11 @@ let msg = topic.recv();
 | `read_latest(&self) -> Option<T>` | Peek without consuming (requires `T: Copy`) |
 | `with_logging(self) -> Self` | Enable debug logging |
 
-Specialized for `Topic<Image>`, `Topic<PointCloud>`, `Topic<DepthImage>` — same `send`/`recv` API, but internally uses pool-backed zero-copy transport.
+Specialized for `Topic<Image>`, `Topic<PointCloud>`, `Topic<DepthImage>` — same `send`/`recv` API, but internally uses pool-backed zero-copy transport. On GPU-equipped systems, the transport path is automatically selected based on detected hardware — no API changes needed:
+
+- **No GPU**: CPU mmap pools (default)
+- **Unified memory (Jetson)**: Shared managed memory, CUDA IPC handles skipped
+- **Discrete GPU**: CUDA IPC handles stamped for cross-process GPU memory sharing
 
 Specialized for `Topic<HorusTensor>`:
 
@@ -220,6 +224,8 @@ let mut sched = Scheduler::new().with_config(config);
 | `monitoring.black_box_enabled` | `bool` | Enable flight recorder |
 | `monitoring.black_box_size_mb` | `usize` | BlackBox buffer size |
 | `monitoring.telemetry_endpoint` | `Option<String>` | Telemetry export endpoint |
+| `resources.force_cpu_only` | `bool` | Skip GPU detection, CPU-only mode |
+| `resources.gpu_memory_budget_mb` | `Option<usize>` | Limit GPU memory for tensor pools |
 | `recording` | `Option<RecordingConfigYaml>` | Record/replay config |
 | `deterministic` | `Option<DeterministicConfig>` | Deterministic execution config |
 
@@ -502,6 +508,45 @@ CPU or CUDA device identifier.
 | `Device::CPU` / `Device::CUDA0` | Constants |
 | `is_cpu() / is_cuda()` | Device predicates |
 | `parse(s) -> Option<Self>` | Parse "cpu", "cuda:0", etc. |
+
+### `enum GpuCapability`
+
+GPU hardware capability detected at startup. Query with `gpu_capability()`.
+
+```rust
+use horus::memory::{gpu_capability, GpuCapability};
+
+match gpu_capability() {
+    GpuCapability::None => println!("CPU-only"),
+    GpuCapability::UnifiedMemory { device_id, concurrent_access } => {
+        println!("Jetson GPU {}, CMA={}", device_id, concurrent_access);
+    }
+    GpuCapability::DiscreteGpu { device_id, device_count } => {
+        println!("Discrete GPU {}, {} devices", device_id, device_count);
+    }
+}
+```
+
+| Variant | Description |
+|---------|-------------|
+| `None` | No CUDA GPU — CPU mmap allocation |
+| `UnifiedMemory { device_id, concurrent_access }` | Integrated GPU (Jetson) — `cudaMallocManaged` |
+| `DiscreteGpu { device_id, device_count }` | Dedicated VRAM — `cudaMalloc` + pinned host |
+
+| Method | Description |
+|--------|-------------|
+| `has_gpu() -> bool` | Any GPU available |
+| `is_unified() -> bool` | Unified memory (Jetson) |
+| `needs_coherency_sync() -> bool` | Needs explicit sync (pre-Xavier Jetson) |
+| `device_id() -> Option<i32>` | Primary GPU device ID |
+
+| Function | Description |
+|----------|-------------|
+| `gpu_capability() -> GpuCapability` | Query detected GPU (cached, zero-overhead after first call) |
+| `cuda_available() -> bool` | CUDA runtime available |
+| `cuda_device_count() -> usize` | Number of CUDA devices |
+
+GPU detection is automatic and transparent. Tensor pools, Topic transport, and DLPack exchange all adapt based on the detected capability. No user-facing API changes are needed — the same `Topic::send()`/`recv()` calls work on CPU, Jetson, and discrete GPU systems.
 
 ---
 

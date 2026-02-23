@@ -121,11 +121,11 @@ pub fn prepare_dlpack_args(
         .map(|&x| (x as i64) / elem_size)
         .collect();
 
-    let data_ptr = if tensor.device().is_cuda() {
-        u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
-    } else {
-        pool.data_ptr(tensor) as *mut c_void
-    };
+    // Use pool.data_ptr() for all backends — it returns the correct pointer for
+    // mmap (CPU), cudaMallocManaged (unified/Jetson), and cudaMallocHost (pinned).
+    // The previous CUDA path incorrectly extracted bytes from cuda_ipc_handle as
+    // a pointer, but IPC handles are opaque 64-byte tokens, not pointers.
+    let data_ptr = pool.data_ptr(tensor) as *mut c_void;
 
     (data_ptr, shape, strides, tensor.dtype, tensor.device())
 }

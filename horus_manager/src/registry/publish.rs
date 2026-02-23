@@ -31,34 +31,6 @@ impl RegistryClient {
         self.fetch_driver_metadata(package_name).ok()
     }
 
-    /// Fetch package type from registry (node, driver, plugin, tool, etc.)
-    pub fn fetch_package_type(&self, package_name: &str) -> Result<String> {
-        let encoded_name = url_encode_package_name(package_name);
-        let url = format!("{}/api/packages/{}", self.base_url, encoded_name);
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .map_err(|e| anyhow!("Failed to fetch package info: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("Package '{}' not found in registry", package_name));
-        }
-
-        let resp: serde_json::Value = response
-            .json()
-            .map_err(|e| anyhow!("failed to parse package info: {}", e))?;
-
-        let pkg_type = resp
-            .get("package_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("node")
-            .to_string();
-
-        Ok(pkg_type)
-    }
-
     /// Fetch driver metadata by querying the drivers list API
     pub fn query_driver_features(&self, driver_name: &str) -> Option<Vec<String>> {
         if let Some(meta) = self.fetch_driver_metadata_opt(driver_name) {
@@ -79,39 +51,6 @@ impl RegistryClient {
         }
 
         None
-    }
-
-    /// List all drivers from the registry, optionally filtered by category
-    pub fn list_drivers(&self, category: Option<&str>) -> Result<Vec<DriverListEntry>> {
-        let url = if let Some(cat) = category {
-            format!("{}/api/drivers?category={}", self.base_url, cat)
-        } else {
-            format!("{}/api/drivers", self.base_url)
-        };
-
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .map_err(|e| anyhow!("Failed to fetch drivers: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("Registry returned error: {}", response.status()));
-        }
-
-        let text = response
-            .text()
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
-
-        if let Ok(list) = serde_json::from_str::<DriverListResponse>(&text) {
-            return Ok(list.drivers);
-        }
-
-        if let Ok(drivers) = serde_json::from_str::<Vec<DriverListEntry>>(&text) {
-            return Ok(drivers);
-        }
-
-        Ok(vec![])
     }
 
     /// Search for drivers by query string and optional bus type
@@ -704,27 +643,6 @@ impl RegistryClient {
         Ok(packages)
     }
 
-    pub fn resolve_import(&self, import_name: &str, language: &str) -> Result<Option<String>> {
-        let url = format!(
-            "{}/api/imports/resolve?import={}&language={}",
-            self.base_url, import_name, language
-        );
-
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Ok(None);
-        }
-
-        #[derive(Deserialize)]
-        struct ResolveResult {
-            package_name: String,
-        }
-
-        let result: Option<ResolveResult> = response.json()?;
-        Ok(result.map(|r| r.package_name))
-    }
-
     pub fn freeze(&self) -> Result<EnvironmentManifest> {
         let packages_dir = PathBuf::from(".horus/packages");
         let mut locked_packages = Vec::new();
@@ -869,45 +787,6 @@ impl RegistryClient {
         };
 
         Ok(manifest)
-    }
-
-    pub fn save_environment(&self, manifest: &EnvironmentManifest) -> Result<()> {
-        let response = self
-            .client
-            .post(format!("{}/api/environments", self.base_url))
-            .json(manifest)
-            .send()?;
-
-        if !response.status().is_success() {
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Failed to save environment: {}", error_text));
-        }
-
-        println!(" Environment saved with ID: {}", manifest.horus_id);
-        Ok(())
-    }
-
-    pub fn restore_environment(&self, horus_id: &str) -> Result<()> {
-        println!(" Restoring environment {}...", horus_id);
-
-        let url = format!("{}/api/environments/{}", self.base_url, horus_id);
-        let response = self.client.get(&url).send()?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!("Environment not found: {}", horus_id));
-        }
-
-        let manifest: EnvironmentManifest = response.json()?;
-
-        for package in &manifest.packages {
-            println!("  Installing {} v{}...", package.name, package.version);
-            self.install(&package.name, Some(&package.version))?;
-        }
-
-        println!(" Environment {} restored successfully!", horus_id);
-        Ok(())
     }
 
     pub fn upload_environment(&self, manifest: &EnvironmentManifest) -> Result<()> {

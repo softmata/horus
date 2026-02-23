@@ -7,10 +7,6 @@
 /// Override with `HORUS_REGISTRY_URL` environment variable.
 pub const DEFAULT_REGISTRY_URL: &str = "https://horus-marketplace-api.onrender.com";
 
-/// Default HORUS cloud URL.
-/// Override with `HORUS_CLOUD_URL` environment variable.
-pub const DEFAULT_CLOUD_URL: &str = "https://cloud.horus.dev";
-
 /// Default plugin registry URL.
 /// Override with `HORUS_PLUGIN_REGISTRY_URL` environment variable.
 pub const DEFAULT_PLUGIN_REGISTRY_URL: &str = "https://registry.softmata.com/api/v1";
@@ -24,11 +20,6 @@ pub const CRATES_IO_API_URL: &str = "https://crates.io/api/v1/crates";
 /// Get the registry URL from env var or default.
 pub fn registry_url() -> String {
     std::env::var("HORUS_REGISTRY_URL").unwrap_or_else(|_| DEFAULT_REGISTRY_URL.to_string())
-}
-
-/// Get the cloud URL from env var or default.
-pub fn cloud_url() -> String {
-    std::env::var("HORUS_CLOUD_URL").unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string())
 }
 
 /// Get the plugin registry URL from env var or default.
@@ -73,11 +64,3 @@ pub const HORUS_YAML: &str = "horus.yaml";
 /// Cargo manifest file name.
 pub const CARGO_TOML: &str = "Cargo.toml";
 
-/// Environment freeze file name.
-pub const HORUS_FREEZE_YAML: &str = "horus-freeze.yaml";
-
-/// Shared memory path prefix on Linux.
-pub const SHM_PATH: &str = "/dev/shm";
-
-/// HORUS shared memory topic prefix.
-pub const SHM_HORUS_PREFIX: &str = "/dev/shm/horus_";

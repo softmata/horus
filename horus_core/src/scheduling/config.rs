@@ -53,6 +53,19 @@ pub struct ResourceConfig {
     pub cpu_cores: Option<Vec<usize>>,
     /// Enable NUMA awareness
     pub numa_aware: bool,
+    /// Force CPU-only mode — skip GPU detection entirely.
+    ///
+    /// When true, [`gpu_capability()`](crate::memory::gpu_capability) returns
+    /// `GpuCapability::None` and all tensor pools use mmap allocation.
+    /// Useful for testing, CI environments, or when GPU should be reserved
+    /// for other workloads.
+    pub force_cpu_only: bool,
+    /// GPU memory budget in MB for CUDA tensor pools.
+    ///
+    /// When set, limits the total GPU memory allocated by HORUS for tensor
+    /// pools. `None` means auto-detect (use available GPU memory).
+    /// Ignored when `force_cpu_only` is true or no GPU is detected.
+    pub gpu_memory_budget_mb: Option<usize>,
 }
 
 /// Monitoring and telemetry configuration
@@ -213,6 +226,8 @@ impl SchedulerConfig {
             resources: ResourceConfig {
                 cpu_cores: None,
                 numa_aware: false,
+                force_cpu_only: false,
+                gpu_memory_budget_mb: None,
             },
             monitoring: MonitoringConfig {
                 profiling_enabled: false,

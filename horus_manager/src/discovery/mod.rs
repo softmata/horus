@@ -49,26 +49,6 @@ pub enum TopicStatus {
     Stale,
 }
 
-impl TopicStatus {
-    /// Get a display symbol for the status
-    pub fn symbol(&self) -> &'static str {
-        match self {
-            TopicStatus::Active => "●",
-            TopicStatus::Idle => "◐",
-            TopicStatus::Stale => "○",
-        }
-    }
-
-    /// Get a description of the status
-    pub fn description(&self) -> &'static str {
-        match self {
-            TopicStatus::Active => "active",
-            TopicStatus::Idle => "idle",
-            TopicStatus::Stale => "stale",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SharedMemoryInfo {
     pub topic_name: String,

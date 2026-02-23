@@ -39,11 +39,48 @@ pub(crate) fn pool_id_from_name(name: &str) -> u32 {
     }
 }
 
+/// Build the optimal `TensorPoolConfig` based on detected GPU hardware.
+///
+/// - **No GPU**: standard mmap (default)
+/// - **Unified memory (Jetson)**: `cudaMallocManaged` — CPU+GPU share RAM
+/// - **Discrete GPU**: `cudaMallocHost` (pinned) — fast DMA staging
+fn auto_pool_config() -> TensorPoolConfig {
+    #[cfg(feature = "cuda")]
+    {
+        use crate::memory::gpu_detect::{detect_gpu, GpuCapability};
+        use crate::memory::PoolAllocator;
+
+        let allocator = match detect_gpu() {
+            GpuCapability::None => PoolAllocator::Mmap,
+            GpuCapability::UnifiedMemory { device_id, .. } => {
+                PoolAllocator::ManagedMemory { device_id }
+            }
+            GpuCapability::DiscreteGpu { device_id, .. } => {
+                PoolAllocator::PinnedMemory { device_id }
+            }
+        };
+
+        TensorPoolConfig {
+            allocator,
+            ..TensorPoolConfig::default()
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        TensorPoolConfig::default()
+    }
+}
+
 /// Get or create the auto-managed tensor pool for a topic name.
 ///
 /// On first call, opens an existing pool (if another process created it)
 /// or creates a new one backed by shared memory. Subsequent calls return
 /// the cached pool.
+///
+/// When creating a new pool, GPU hardware is auto-detected and the optimal
+/// allocator backend is selected (managed memory on Jetson, pinned memory
+/// on discrete GPU, mmap on CPU-only).
 pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
     let mut pools = TOPIC_POOLS.lock();
     if let Some(pool) = pools.get(topic_name) {
@@ -54,7 +91,7 @@ pub(crate) fn get_or_create_pool(topic_name: &str) -> Arc<TensorPool> {
 
     let pool = Arc::new(match TensorPool::open(pid) {
         Ok(p) => p,
-        Err(_) => TensorPool::new(pid, TensorPoolConfig::default())
+        Err(_) => TensorPool::new(pid, auto_pool_config())
             .expect("failed to create tensor pool for topic"),
     });
 

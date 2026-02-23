@@ -1,26 +1,7 @@
 use crate::config::HORUS_YAML;
 use anyhow::{anyhow, Context, Result};
-use serde::de::DeserializeOwned;
 use std::fs;
 use std::path::Path;
-
-/// Load and deserialize a JSON config file.
-pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    log::debug!("loading config from {:?}", path);
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse JSON from {}", path.display()))
-}
-
-/// Load and deserialize a YAML config file.
-pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    log::debug!("loading config from {:?}", path);
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_yaml::from_str(&content)
-        .with_context(|| format!("failed to parse YAML from {}", path.display()))
-}
 
 /// Add a dependency to horus.yaml
 pub fn add_dependency_to_horus_yaml(

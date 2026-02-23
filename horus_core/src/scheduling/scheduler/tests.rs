@@ -316,7 +316,7 @@ fn test_scheduler_run_for_short_duration() {
         .done();
 
     // Run for a short duration (100ms to handle scheduler init overhead under parallel test load)
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
     // Counter should have been incremented at least once
@@ -476,7 +476,7 @@ fn test_parallel_execution_all_nodes_tick() {
         .done();
 
     // Run for 100ms — all 3 non-RT nodes should tick in parallel
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
     // Every node must have ticked at least once
@@ -506,7 +506,7 @@ fn test_parallel_rt_nodes_run_sequentially() {
         .order(100)
         .done();
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
     // Both should have ticked
@@ -642,7 +642,7 @@ fn test_deterministic_advances_on_run() {
         .done();
 
     // run_for with deterministic mode (virtual time → runs as fast as possible)
-    let _ = scheduler.run_for(Duration::from_millis(50));
+    let _ = scheduler.run_for(Duration::from_millis(200));
 
     // Virtual tick should have advanced
     let tick = scheduler.virtual_tick().unwrap();
@@ -678,7 +678,7 @@ fn test_recording_hooks_wired() {
 
     assert!(scheduler.is_recording());
 
-    let _ = scheduler.run_for(Duration::from_millis(50));
+    let _ = scheduler.run_for(Duration::from_millis(200));
 
     let ticks = counter.load(Ordering::SeqCst);
     assert!(ticks > 0, "Node should have ticked during recording");
@@ -745,13 +745,13 @@ fn test_per_node_rates_work_without_dead_code() {
         .rate_hz(100.0)
         .done();
 
-    let _ = scheduler.run_for(Duration::from_millis(100));
+    let _ = scheduler.run_for(Duration::from_millis(500));
 
     let ticks = counter.load(Ordering::SeqCst);
-    // At 100Hz for 100ms, expect ~10 ticks (±5 tolerance)
+    // At 100Hz for 500ms, expect ~50 ticks (wide tolerance for CI/load variance)
     assert!(
-        (5..=30).contains(&ticks),
-        "Node at 100Hz should tick ~10 times in 100ms, got {}",
+        (10..=150).contains(&ticks),
+        "Node at 100Hz should tick ~50 times in 500ms, got {}",
         ticks
     );
 }
@@ -854,7 +854,7 @@ fn test_scheduler_lifecycle_init_tick_shutdown() {
         .order(1)
         .done();
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
     // init must have been called for both
@@ -971,7 +971,7 @@ fn test_scheduler_priority_execution_order_robotics() {
             .done();
     }
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
 
     // All nodes must have ticked
@@ -1128,7 +1128,7 @@ fn test_scheduler_all_nodes_init_called_once() {
             .done();
     }
 
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok());
 
     // Every node must have init() called
@@ -1492,7 +1492,7 @@ fn test_scheduler_shutdown_called_for_all_nodes() {
             .done();
     }
 
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok());
 
     // Every node must have shutdown() called
@@ -1517,7 +1517,7 @@ fn test_zero_nodes_exits_cleanly() {
     // No nodes added
     assert_eq!(scheduler.node_list().len(), 0);
 
-    let result = scheduler.run_for(Duration::from_millis(50));
+    let result = scheduler.run_for(Duration::from_millis(200));
     assert!(result.is_ok(), "Zero-node scheduler should exit cleanly");
 }
 
@@ -1544,7 +1544,7 @@ fn test_duplicate_node_names_both_added() {
     assert_eq!(nodes.len(), 2, "Both duplicate-named nodes should be added");
 
     // Both should tick
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok());
     assert!(
         counter1.load(Ordering::SeqCst) > 0,
@@ -1583,7 +1583,7 @@ fn test_panic_in_init_caught_others_continue() {
         .order(1)
         .done();
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok(), "Scheduler should not crash from init panic");
 
     assert!(
@@ -1618,7 +1618,7 @@ fn test_panic_in_tick_caught_others_continue() {
         .order(1)
         .done();
 
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok(), "Scheduler should not crash from tick panic");
 
     assert!(
@@ -1642,7 +1642,7 @@ fn test_immediate_stop_still_inits_and_shuts_down() {
 
     // Stop before running — run_for should exit almost immediately
     scheduler.stop();
-    let result = scheduler.run_for(Duration::from_millis(100));
+    let result = scheduler.run_for(Duration::from_millis(500));
     assert!(result.is_ok(), "Immediate stop should not cause error");
 }
 

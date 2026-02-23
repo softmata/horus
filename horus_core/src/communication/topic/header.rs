@@ -188,7 +188,7 @@ pub(crate) struct TopicHeader {
 const _: () = assert!(mem::size_of::<TopicHeader>() == 640);
 
 impl TopicHeader {
-    #[allow(dead_code)] // used by tests
+    #[cfg(test)]
     pub fn zeroed() -> Self {
         Self {
             magic: 0,
@@ -309,7 +309,7 @@ impl TopicHeader {
 
     /// Check if caller is on the same thread as creator
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_same_thread(&self) -> bool {
         self.is_same_process()
             && self.creator_thread_id_hash == hash_thread_id(std::thread::current().id())

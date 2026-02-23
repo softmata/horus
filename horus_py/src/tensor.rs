@@ -69,6 +69,7 @@ impl PyTensorPool {
             pool_size: size_mb * 1024 * 1024,
             max_slots,
             slot_alignment: 64,
+            allocator: Default::default(),
         };
         let pool = get_or_create_pool(pool_id, Some(config))?;
         Ok(Self { pool })
@@ -362,21 +363,51 @@ impl PyTensorHandle {
         }
         std::mem::forget(used_name);
 
-        // Allocate HORUS TensorHandle and copy data from source
+        // Allocate HORUS TensorHandle and copy data from source.
+        // Data always lands in the CPU mmap pool — GPU tensors are copied via
+        // cudaMemcpy(DeviceToHost) so the resulting handle is CPU-backed.
+        let is_cuda_source = descriptor.device.is_cuda();
         let pool = get_or_create_pool(1, None)?;
         let handle = TensorHandle::alloc(
             Arc::clone(&pool),
             &descriptor.shape,
             descriptor.dtype,
-            descriptor.device,
+            horus_types::Device::cpu(),
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 
         let src_ptr = descriptor.data_ptr as *const u8;
         let dst_ptr = handle.data_ptr();
         let copy_len = descriptor.size_bytes as usize;
-        unsafe {
-            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
+
+        if is_cuda_source {
+            // GPU tensor — use cudaMemcpy to safely transfer data to CPU pool
+            #[cfg(feature = "cuda")]
+            {
+                horus_core::memory::cuda_memcpy(
+                    dst_ptr as *mut c_void,
+                    src_ptr as *const c_void,
+                    copy_len,
+                    horus_core::memory::CudaMemcpyKind::DeviceToHost,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "cudaMemcpy(DeviceToHost) failed during DLPack import: {}",
+                        e
+                    ))
+                })?;
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                return Err(PyRuntimeError::new_err(
+                    "Cannot import CUDA DLPack tensor: HORUS was built without CUDA support",
+                ));
+            }
+        } else {
+            // CPU tensor — direct memory copy
+            unsafe {
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
+            }
         }
 
         // Call deleter on the original DLManagedTensor (we're done with the data)
@@ -564,7 +595,7 @@ impl PyTensorHandle {
     /// Note: Requires CUDA support to be enabled at compile time.
     #[cfg(feature = "cuda")]
     fn cpu(&self) -> PyResult<Self> {
-        use horus_core::memory::cuda_ffi::{memcpy, CudaMemcpyKind};
+        use horus_core::memory::{cuda_memcpy, CudaMemcpyKind};
 
         let handle = self
             .handle
@@ -593,7 +624,7 @@ impl PyTensorHandle {
         let cpu_ptr = cpu_handle.data_ptr() as *mut std::ffi::c_void;
 
         // Copy GPU -> CPU
-        memcpy(
+        cuda_memcpy(
             cpu_ptr,
             gpu_ptr,
             handle.nbytes() as usize,
@@ -636,8 +667,8 @@ impl PyTensorHandle {
     #[cfg(feature = "cuda")]
     #[pyo3(signature = (device="cuda:0"))]
     fn cuda(&self, device: &str) -> PyResult<Self> {
-        use horus_core::memory::cuda_ffi::{
-            ipc_get_mem_handle, malloc, memcpy, set_device, CudaMemcpyKind,
+        use horus_core::memory::{
+            cuda_ipc_get_mem_handle, cuda_malloc, cuda_memcpy, cuda_set_device, CudaMemcpyKind,
         };
 
         let handle = self
@@ -661,7 +692,7 @@ impl PyTensorHandle {
             as i32;
 
         // Set CUDA device
-        set_device(device_id)
+        cuda_set_device(device_id)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to set CUDA device: {}", e)))?;
 
         let tensor = handle.tensor();
@@ -670,25 +701,25 @@ impl PyTensorHandle {
         let nbytes = handle.nbytes() as usize;
 
         // Allocate GPU memory
-        let gpu_ptr = malloc(nbytes)
+        let gpu_ptr = cuda_malloc(nbytes)
             .map_err(|e| PyRuntimeError::new_err(format!("CUDA malloc failed: {}", e)))?;
 
         // Copy data to GPU
         if handle.is_cpu() {
             // CPU -> GPU
             let cpu_ptr = handle.data_ptr() as *const std::ffi::c_void;
-            memcpy(gpu_ptr, cpu_ptr, nbytes, CudaMemcpyKind::HostToDevice)
+            cuda_memcpy(gpu_ptr, cpu_ptr, nbytes, CudaMemcpyKind::HostToDevice)
                 .map_err(|e| PyRuntimeError::new_err(format!("CUDA memcpy failed: {}", e)))?;
         } else {
             // GPU -> GPU (different device)
             let src_gpu_ptr = u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap())
                 as *const std::ffi::c_void;
-            memcpy(gpu_ptr, src_gpu_ptr, nbytes, CudaMemcpyKind::DeviceToDevice)
+            cuda_memcpy(gpu_ptr, src_gpu_ptr, nbytes, CudaMemcpyKind::DeviceToDevice)
                 .map_err(|e| PyRuntimeError::new_err(format!("CUDA memcpy failed: {}", e)))?;
         }
 
         // Get IPC handle for the new GPU memory
-        let ipc_handle = ipc_get_mem_handle(gpu_ptr)
+        let ipc_handle = cuda_ipc_get_mem_handle(gpu_ptr)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to get IPC handle: {}", e)))?;
 
         // Allocate a tensor descriptor in the pool (for metadata tracking)

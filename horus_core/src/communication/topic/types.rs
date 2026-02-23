@@ -34,6 +34,20 @@ pub(crate) enum BackendMode {
     SpscShm = 9,
     /// MpmcShm - cross process, MPMC (~167ns)
     MpmcShm = 10,
+
+    // --- GPU CUDA IPC variants (feature-gated at usage sites) ---
+
+    /// CudaIpcSpsc - cross process CUDA IPC, 1P1C
+    ///
+    /// Tensor descriptor goes through SHM ring; actual GPU data is accessed
+    /// by the receiver via CUDA IPC handle (zero-copy across processes).
+    CudaIpcSpsc = 11,
+    /// CudaIpcSpmc - cross process CUDA IPC, 1P-MC
+    CudaIpcSpmc = 12,
+    /// CudaIpcMpsc - cross process CUDA IPC, MP-1C
+    CudaIpcMpsc = 13,
+    /// CudaIpcMpmc - cross process CUDA IPC, MPMC
+    CudaIpcMpmc = 14,
 }
 
 impl From<u8> for BackendMode {
@@ -49,6 +63,10 @@ impl From<u8> for BackendMode {
             8 => BackendMode::SpmcShm,
             9 => BackendMode::SpscShm,
             10 => BackendMode::MpmcShm,
+            11 => BackendMode::CudaIpcSpsc,
+            12 => BackendMode::CudaIpcSpmc,
+            13 => BackendMode::CudaIpcMpsc,
+            14 => BackendMode::CudaIpcMpmc,
             _ => BackendMode::Unknown,
         }
     }
@@ -69,6 +87,11 @@ impl BackendMode {
             BackendMode::SpmcShm => 70,
             BackendMode::SpscShm => 85,
             BackendMode::MpmcShm => 167,
+            // CUDA IPC: descriptor through SHM + IPC handle exchange (~120-200ns)
+            BackendMode::CudaIpcSpsc => 120,
+            BackendMode::CudaIpcSpmc => 150,
+            BackendMode::CudaIpcMpsc => 160,
+            BackendMode::CudaIpcMpmc => 200,
         }
     }
 
@@ -81,6 +104,10 @@ impl BackendMode {
                 | BackendMode::SpmcShm
                 | BackendMode::SpscShm
                 | BackendMode::MpmcShm
+                | BackendMode::CudaIpcSpsc
+                | BackendMode::CudaIpcSpmc
+                | BackendMode::CudaIpcMpsc
+                | BackendMode::CudaIpcMpmc
         )
     }
 
@@ -154,7 +181,7 @@ impl ConnectionState {
     }
 
     /// Convert from u8
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_u8(value: u8) -> Self {
         match value {
             2 => ConnectionState::Connected,

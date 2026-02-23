@@ -184,14 +184,6 @@ struct PackageData {
 struct DependencyData {
     name: String,
     declared_version: String, // Version string from horus.yaml (e.g., "package@1.0.0" or just "package")
-    _status: DependencyStatus,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-enum DependencyStatus {
-    Missing,
-    Installed,
 }
 
 #[derive(Debug, Clone)]

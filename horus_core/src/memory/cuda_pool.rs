@@ -1639,4 +1639,174 @@ mod tests {
         assert_eq!(stats.max_slots, 256);
         assert_eq!(stats.allocated_slots, 10);
     }
+
+    // ==========================================================================
+    // GPU Integration Tests (moved from integration tests for pub(crate) access)
+    // ==========================================================================
+
+    #[test]
+    fn test_cuda_pool_alloc_and_release() {
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        let pool = CudaTensorPool::new(500, 0, CudaTensorPoolConfig::default())
+            .expect("pool creation");
+
+        let tensor = pool
+            .alloc(&[1024, 1024], TensorDtype::F32)
+            .expect("alloc");
+
+        assert_eq!(tensor.pool_id, 500);
+        assert_eq!(tensor.device_id, 0);
+        assert_eq!(tensor.numel, 1024 * 1024);
+        assert_eq!(tensor.size, 1024 * 1024 * 4);
+
+        let handle = tensor.ipc_handle_bytes();
+        assert_eq!(handle.len(), 64);
+        assert!(handle.iter().any(|&b| b != 0), "IPC handle should not be all zeros");
+
+        let stats = pool.stats();
+        assert_eq!(stats.allocated_slots, 1);
+
+        pool.release(&tensor).expect("release");
+        assert_eq!(pool.stats().allocated_slots, 0);
+    }
+
+    #[test]
+    fn test_cuda_ipc_handle_generation() {
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        let pool = CudaTensorPool::new(501, 0, CudaTensorPoolConfig::default())
+            .expect("pool creation");
+
+        let tensor = pool
+            .alloc(&[256, 256, 3], TensorDtype::U8)
+            .expect("alloc");
+
+        let ipc_handle = tensor.ipc_handle_bytes();
+        assert_eq!(ipc_handle.len(), 64);
+        assert!(ipc_handle.iter().any(|&b| b != 0));
+        assert_eq!(tensor.numel, 256 * 256 * 3);
+        assert_eq!(tensor.ndim, 3);
+
+        let gpu_ptr = pool.device_ptr(&tensor);
+        assert!(!gpu_ptr.is_null());
+
+        pool.release(&tensor).expect("release");
+    }
+
+    #[test]
+    fn test_cuda_multiple_tensors() {
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        let pool = CudaTensorPool::new(502, 0, CudaTensorPoolConfig::default())
+            .expect("pool creation");
+
+        let tensors: Vec<_> = (0..10)
+            .map(|i| {
+                pool.alloc(&[100 + i as u64, 100], TensorDtype::F32)
+                    .expect("alloc")
+            })
+            .collect();
+
+        assert_eq!(pool.stats().allocated_slots, 10);
+
+        for tensor in &tensors {
+            pool.release(tensor).expect("release");
+        }
+        assert_eq!(pool.stats().allocated_slots, 0);
+    }
+
+    #[test]
+    fn test_cuda_pool_write_read_roundtrip() {
+        use super::super::{cuda_device_synchronize, cuda_memcpy, CudaMemcpyKind};
+
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        let pool = CudaTensorPool::new(503, 0, CudaTensorPoolConfig::default())
+            .expect("pool creation");
+        let tensor = pool.alloc(&[16], TensorDtype::F32).expect("alloc");
+
+        let gpu_ptr = pool.device_ptr(&tensor);
+        assert!(!gpu_ptr.is_null());
+
+        let src: Vec<f32> = (0..16).map(|i| i as f32 * 2.0).collect();
+        cuda_memcpy(
+            gpu_ptr,
+            src.as_ptr() as *const std::ffi::c_void,
+            16 * 4,
+            CudaMemcpyKind::HostToDevice,
+        )
+        .expect("H2D memcpy");
+
+        cuda_device_synchronize().expect("sync");
+
+        let mut dst = vec![0.0f32; 16];
+        cuda_memcpy(
+            dst.as_mut_ptr() as *mut std::ffi::c_void,
+            gpu_ptr as *const std::ffi::c_void,
+            16 * 4,
+            CudaMemcpyKind::DeviceToHost,
+        )
+        .expect("D2H memcpy");
+
+        for (i, v) in dst.iter().enumerate() {
+            assert_eq!(*v, i as f32 * 2.0, "GPU data mismatch at index {}", i);
+        }
+
+        pool.release(&tensor).unwrap();
+    }
+
+    #[test]
+    fn test_cuda_stamp_ipc_handle() {
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        let pool = CudaTensorPool::new(504, 0, CudaTensorPoolConfig::default())
+            .expect("pool creation");
+        let tensor = pool.alloc(&[64, 64], TensorDtype::F32).expect("alloc");
+
+        assert!(tensor.device().is_cuda());
+        assert_eq!(tensor.device_id, 0);
+
+        let handle = tensor.ipc_handle_bytes();
+        assert_eq!(handle.len(), 64);
+
+        let cap = super::super::gpu_capability();
+        if !cap.is_unified() {
+            assert!(
+                handle.iter().any(|&b| b != 0),
+                "Discrete GPU should stamp IPC handle"
+            );
+        }
+
+        pool.release(&tensor).unwrap();
+    }
+
+    #[test]
+    fn test_ipc_handle_size_constant() {
+        use super::super::CUDA_IPC_HANDLE_SIZE;
+        assert_eq!(CUDA_IPC_HANDLE_SIZE, 64);
+    }
+
+    #[test]
+    fn test_set_get_device() {
+        use super::super::{cuda_get_device, cuda_set_device};
+
+        if !super::super::cuda_available() {
+            return;
+        }
+
+        cuda_set_device(0).expect("set device 0");
+        let device = cuda_get_device().expect("get device");
+        assert_eq!(device, 0);
+    }
 }

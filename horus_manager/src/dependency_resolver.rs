@@ -249,9 +249,6 @@ impl DependencySpec {
         }
     }
 
-    pub fn matches(&self, version: &Version) -> bool {
-        self.requirement.matches(version)
-    }
 }
 
 /// Package metadata provider

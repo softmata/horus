@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use colored::*;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Get the CLI version from Cargo.toml at compile time
 pub fn get_cli_version() -> &'static str {
@@ -124,7 +124,8 @@ fn find_horus_source() -> Option<PathBuf> {
 }
 
 /// Extract version from package directory name (e.g., "horus@0.1.0" -> "0.1.0")
-pub fn extract_version_from_path(path: &Path) -> Option<String> {
+#[cfg(test)]
+fn extract_version_from_path(path: &Path) -> Option<String> {
     path.file_name()?
         .to_str()?
         .split('@')

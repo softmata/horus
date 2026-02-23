@@ -199,6 +199,9 @@ extern "C" {
     fn cudaDeviceCanAccessPeer(can_access: *mut i32, device: i32, peer_device: i32) -> i32;
     fn cudaDeviceEnablePeerAccess(peer_device: i32, flags: u32) -> i32;
     fn cudaDeviceDisablePeerAccess(peer_device: i32) -> i32;
+
+    fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> i32;
+    fn cudaMallocManaged(dev_ptr: *mut *mut c_void, size: usize, flags: u32) -> i32;
 }
 
 // =============================================================================
@@ -498,6 +501,53 @@ pub fn device_enable_peer_access(peer_device: i32) -> CudaResult<()> {
 /// Disable peer access from current device to peer device
 pub fn device_disable_peer_access(peer_device: i32) -> CudaResult<()> {
     unsafe { check(cudaDeviceDisablePeerAccess(peer_device)) }
+}
+
+// =============================================================================
+// Device Attributes
+// =============================================================================
+
+/// CUDA device attribute IDs (subset needed for GPU detection)
+#[repr(i32)]
+#[derive(Debug, Clone, Copy)]
+pub enum CudaDeviceAttr {
+    /// Device is integrated (shares memory with host) — Jetson, Intel iGPU
+    Integrated = 18,
+    /// Device supports managed memory (cudaMallocManaged)
+    ManagedMemory = 83,
+    /// Device supports concurrent managed access (no explicit sync needed)
+    ConcurrentManagedAccess = 89,
+}
+
+/// Query a device attribute
+pub fn device_get_attribute(attr: CudaDeviceAttr, device: i32) -> CudaResult<i32> {
+    let mut value = 0;
+    // SAFETY: value is a valid mutable i32 on the stack. attr is cast to the
+    // matching CUDA enum integer. device is a valid device ordinal (caller's
+    // responsibility, checked by the CUDA runtime).
+    unsafe { check(cudaDeviceGetAttribute(&mut value, attr as i32, device))? };
+    Ok(value)
+}
+
+// =============================================================================
+// Managed Memory (Unified Memory)
+// =============================================================================
+
+/// cudaMemAttachGlobal — memory accessible from any stream on any device
+pub const CUDA_MEM_ATTACH_GLOBAL: u32 = 0x01;
+
+/// Allocate unified (managed) memory accessible from both CPU and GPU.
+///
+/// On Jetson (integrated GPU), this is the optimal allocation path since
+/// CPU and GPU share physical memory — no copies needed.
+/// On discrete GPUs, the CUDA runtime migrates pages between host and device.
+pub fn malloc_managed(size: usize) -> CudaResult<*mut c_void> {
+    let mut ptr = ptr::null_mut();
+    // SAFETY: ptr is a valid mutable pointer on the stack. size is the
+    // requested byte count. CUDA_MEM_ATTACH_GLOBAL makes the allocation
+    // visible to all streams.
+    unsafe { check(cudaMallocManaged(&mut ptr, size, CUDA_MEM_ATTACH_GLOBAL))? };
+    Ok(ptr)
 }
 
 #[cfg(test)]

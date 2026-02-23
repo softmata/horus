@@ -25,12 +25,12 @@ use serde::{Deserialize, Serialize};
 
 // Re-exports for convenience
 pub use output::{write_csv_report, write_json_report, BenchmarkReport};
-pub use platform::{detect_cpu_frequency, detect_platform, CpuInfo, PlatformInfo};
+pub use platform::{detect_platform, CpuInfo, PlatformInfo};
 pub use stats::{
     bootstrap_ci, calculate_percentile, coefficient_of_variation, excess_kurtosis, filter_outliers,
     jarque_bera_test, median, skewness, std_dev, NormalityAnalysis, Statistics,
 };
-pub use timing::{calibrate_rdtsc, cycles_to_ns, rdtsc};
+pub use timing::{cycles_to_ns, rdtsc};
 
 /// Benchmark configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,13 +163,3 @@ pub fn set_cpu_affinity(_core: usize) -> Result<(), Box<dyn std::error::Error>> 
     Ok(()) // No-op on non-Linux
 }
 
-/// Warmup iterations to stabilize cache and branch prediction
-pub fn warmup<F>(iterations: usize, mut f: F)
-where
-    F: FnMut(),
-{
-    for _ in 0..iterations {
-        f();
-        std::hint::black_box(());
-    }
-}

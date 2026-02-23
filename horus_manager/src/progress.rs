@@ -26,9 +26,6 @@ pub const BRAILLE_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴",
 /// Success indicator
 pub const STATUS_SUCCESS: &str = "[+]";
 
-/// Warning indicator
-pub const STATUS_WARNING: &str = "[!]";
-
 /// Error indicator
 pub const STATUS_ERROR: &str = "[-]";
 

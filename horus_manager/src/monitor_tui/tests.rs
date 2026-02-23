@@ -402,7 +402,6 @@ fn test_workspace_data_creation() {
         dependencies: vec![DependencyData {
             name: "slam".to_string(),
             declared_version: "2.0.0".to_string(),
-            _status: DependencyStatus::Missing,
         }],
         is_current: true,
     };
@@ -411,18 +410,6 @@ fn test_workspace_data_creation() {
     assert!(workspace.is_current);
     assert_eq!(workspace.packages.len(), 1);
     assert_eq!(workspace.dependencies.len(), 1);
-}
-
-#[test]
-fn test_dependency_status() {
-    assert_ne!(DependencyStatus::Missing, DependencyStatus::Installed);
-
-    let dep = DependencyData {
-        name: "test_dep".to_string(),
-        declared_version: "1.0.0".to_string(),
-        _status: DependencyStatus::Missing,
-    };
-    assert_eq!(dep._status, DependencyStatus::Missing);
 }
 
 // ========================================================================

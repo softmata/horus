@@ -660,12 +660,6 @@ enum AuthCommands {
     Logout,
     /// Show current authenticated user
     Whoami,
-    /// Show organization info (HORUS Cloud)
-    Org,
-    /// Show current billing usage (HORUS Cloud)
-    Usage,
-    /// Show current plan details (HORUS Cloud)
-    Plan,
     /// Manage API keys
     Keys {
         #[command(subcommand)]
@@ -1486,9 +1480,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
             AuthCommands::Logout => commands::github_auth::logout(),
             AuthCommands::Whoami => commands::github_auth::whoami(),
-            AuthCommands::Org => commands::github_auth::org(),
-            AuthCommands::Usage => commands::github_auth::usage(),
-            AuthCommands::Plan => commands::github_auth::plan(),
             AuthCommands::Keys { command: keys_cmd } => match keys_cmd {
                 AuthKeysCommands::List => commands::github_auth::keys_list(),
                 AuthKeysCommands::Revoke { key_id } => commands::github_auth::keys_revoke(&key_id),

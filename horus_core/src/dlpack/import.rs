@@ -219,6 +219,31 @@ mod tests {
     }
 
     #[test]
+    fn test_dlpack_roundtrip_cuda_device() {
+        // Verify that CUDA device info survives the export→import roundtrip.
+        // Uses a CPU-hosted buffer but sets Device::cuda(2) to test device propagation.
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let shape = vec![4i64];
+        let strides = vec![1i64];
+
+        let managed = to_dlpack(
+            data.as_ptr() as *mut c_void,
+            &shape,
+            &strides,
+            TensorDtype::F32,
+            Device::cuda(2),
+        );
+
+        // SAFETY: managed was just created by to_dlpack with valid data, shape, and strides.
+        let descriptor = unsafe { from_dlpack(Box::into_raw(managed)).unwrap() };
+
+        assert_eq!(descriptor.device, Device::cuda(2));
+        assert_eq!(descriptor.dtype, TensorDtype::F32);
+        assert_eq!(descriptor.shape, vec![4]);
+        assert_eq!(descriptor.size_bytes, 16); // 4 * 4 bytes
+    }
+
+    #[test]
     fn test_contiguous_strides() {
         let shape = vec![2u64, 3, 4];
         let strides = compute_contiguous_strides(&shape, 4); // f32

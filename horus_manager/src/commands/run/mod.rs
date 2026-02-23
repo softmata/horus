@@ -7,12 +7,6 @@ mod run_rust;
 
 // Re-export public API
 pub use deps::parse_horus_yaml_dependencies_v2;
-pub use features::{
-    enable_to_features, get_active_drivers, get_active_enable, get_all_cargo_features,
-    get_cargo_features_arg, get_cargo_features_from_drivers, get_cargo_features_from_enable,
-    parse_horus_yaml_drivers, parse_horus_yaml_enable, parse_horus_yaml_ignore, DriverConfig,
-    EnableConfig, IgnorePatterns,
-};
 pub use hardware::check_hardware_requirements;
 pub use run_rust::execute_build_only;
 

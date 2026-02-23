@@ -291,18 +291,6 @@ pub fn get_cargo_features_from_drivers(config: &DriverConfig) -> Vec<String> {
     features
 }
 
-/// Get features string for cargo build command
-///
-/// Returns empty string if no features needed, or `--features "feat1,feat2"` format.
-pub fn get_cargo_features_arg(config: &DriverConfig) -> Option<String> {
-    let features = get_cargo_features_from_drivers(config);
-    if features.is_empty() {
-        None
-    } else {
-        Some(features.join(","))
-    }
-}
-
 // ============================================================================
 // Enable Capabilities Configuration
 // ============================================================================
