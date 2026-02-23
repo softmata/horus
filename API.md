@@ -76,16 +76,9 @@ impl Node for MyNode {
 | `subscribers() -> Vec<TopicMetadata>` | No | Declared subscribed topics |
 | `on_error(&mut self, error: &str)` | No | Error handler |
 | `rate_hz() -> Option<f64>` | No | Desired tick rate |
-| `config() -> NodeConfig` | No | Node configuration |
 | `is_healthy() -> bool` | No | Health check |
 
-### `struct NodeConfig`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `max_tick_duration_ms` | `Option<u64>` | Maximum tick duration before warning |
-| `log_level` | `String` | Node log level |
-| `custom_params` | `HashMap<String, String>` | Custom key-value parameters |
+Node configuration (rate, tier, failure policy, WCET) is done through `NodeBuilder` when adding nodes to the scheduler — not through the Node trait.
 
 ### `enum NodeState`
 
