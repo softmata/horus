@@ -128,6 +128,7 @@ sched.run()?;
 | Method | Description |
 |--------|-------------|
 | `add(node) -> NodeBuilder` | Add node with builder API |
+| `add_rt(node) -> NodeBuilder` | Add an `RtNode` with auto-populated WCET/deadline |
 | `set_node_rate(name, hz) -> &mut Self` | Change a node's tick rate |
 
 **Execution:**
@@ -147,6 +148,7 @@ sched.run()?;
 |--------|-------------|
 | `status() -> String` | Human-readable status |
 | `node_list() -> Vec<String>` | List node names |
+| `rt_stats(name) -> Option<&RtStats>` | Per-node real-time statistics |
 
 ### `struct NodeBuilder`
 
@@ -950,13 +952,7 @@ Flight recorder for post-mortem analysis. Stores events in a circular buffer.
 
 ### `enum BlackBoxEvent`
 
-`SchedulerStart`, `SchedulerStop`, `NodeAdded`, `NodeTick`, `NodeError`, `DeadlineMiss`, `WCETViolation`, `CircuitBreakerChange`, `LearningComplete`, `EmergencyStop`, `Custom`
-
-### `enum TelemetryEndpoint`
-
-Telemetry export target. Constructed from string: `TelemetryEndpoint::from_string("udp://localhost:9999")`.
-
-Variants: `Udp`, `File`, `StdOut`, `Local`.
+`SchedulerStart`, `SchedulerStop`, `NodeAdded`, `NodeTick`, `NodeError`, `DeadlineMiss`, `WCETViolation`, `CircuitBreakerChange`, `LearningComplete`, `EmergencyStop`, `Custom`, `PodSnapshot`
 
 ---
 
@@ -1143,11 +1139,12 @@ Builder: `NodeTickSnapshot::new(tick).with_input(topic, data).with_output(topic,
 
 | Type | Description |
 |------|-------------|
-| `NodeRecorder` | Records node tick inputs/outputs |
 | `NodeReplayer` | Replays recorded data |
 | `RecordingManager` | Manages recording sessions |
 | `ReplayDebugger` | Step-through replay debugger with breakpoints |
 | `diff_recordings(a, b) -> Vec<RecordingDiff>` | Compare two recordings |
+
+> **Internal** (`#[doc(hidden)]`): `NodeRecorder`, `NodeTickSnapshot`, `RecordingConfig`, `RecordingConfigYaml` are available for integration tests and `horus_py` but are not part of the stable public API.
 
 ### `enum RecordingDiff`
 
@@ -1180,8 +1177,7 @@ Advanced types available via qualified paths:
 
 - **RT Nodes**: `horus::RtNode`, `horus::RtPriority`, `horus::RtClass`, `horus::RtConfig`, etc.
 - **Safety**: `horus::scheduling::BlackBox`, `horus::scheduling::SafetyStats`, etc.
-- **Recording**: `horus::scheduling::NodeRecorder`, `horus::scheduling::RecordingManager`, etc.
-- **Telemetry**: `horus::scheduling::TelemetryEndpoint`
+- **Recording**: `horus::scheduling::RecordingManager`, `horus::scheduling::ReplayDebugger`, etc.
 - **Transport**: `horus::PodMessage`, `horus::communication::TopicMessage`
 - **Tensor Pool**: `horus::memory::TensorPool`, `horus::memory::TensorHandle`
 - **Raw Tensor**: `horus_types::HorusTensor`

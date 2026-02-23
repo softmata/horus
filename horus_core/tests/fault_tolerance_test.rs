@@ -1,15 +1,13 @@
-// Regression test: verify fault tolerance via FailurePolicy (single path)
+// Regression test: verify fault tolerance via FailurePolicy
 //
 // After removing NodeConfig restart fields and collapsing FaultConfig into
 // SchedulerConfig.circuit_breaker, this test verifies:
-// 1. FailureHandler correctly processes Restart/Skip/Fatal/Ignore policies
-// 2. circuit_breaker=false forces all nodes to Ignore policy
-// 3. Per-node failure_policy overrides work through the builder API
+// 1. circuit_breaker=false forces all nodes to Ignore policy
+// 2. Per-node failure_policy overrides work through the builder API
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
-use horus_core::scheduling::{FailureAction, FailureHandler, FailurePolicy};
-use horus_core::scheduling::{Scheduler, SchedulerConfig};
+use horus_core::scheduling::{FailurePolicy, Scheduler, SchedulerConfig};
 use std::time::Duration;
 
 mod common;
@@ -76,77 +74,6 @@ impl Node for GoodNode {
     fn tick(&mut self) {
         self.tick_count += 1;
     }
-}
-
-// ============================================================
-// Unit-level regression tests for FailureHandler (the single path)
-// ============================================================
-
-#[test]
-fn test_restart_policy_backoff_and_escalation() {
-    let mut handler = FailureHandler::new(FailurePolicy::restart(2, 10));
-
-    // First failure: restart
-    assert_eq!(handler.record_failure(), FailureAction::RestartNode);
-    assert!(!handler.should_allow()); // in backoff
-
-    // Wait for backoff
-    std::thread::sleep(Duration::from_millis(15));
-    assert!(handler.should_allow());
-
-    // Second failure: restart
-    assert_eq!(handler.record_failure(), FailureAction::RestartNode);
-
-    // Third failure: exceeds max_restarts=2, escalate
-    std::thread::sleep(Duration::from_millis(25));
-    assert_eq!(handler.record_failure(), FailureAction::FatalAfterRestarts);
-}
-
-#[test]
-fn test_skip_policy_circuit_breaker_transitions() {
-    let mut handler = FailureHandler::new(FailurePolicy::skip(3, 50));
-
-    // Failures below threshold: continue
-    assert_eq!(handler.record_failure(), FailureAction::Continue);
-    assert_eq!(handler.record_failure(), FailureAction::Continue);
-
-    // Third failure trips the breaker
-    assert_eq!(handler.record_failure(), FailureAction::SkipNode);
-    assert!(!handler.should_allow());
-
-    // After cooldown, breaker enters half-open state
-    std::thread::sleep(Duration::from_millis(60));
-    assert!(handler.should_allow()); // half-open allows probe requests
-
-    // Need success_threshold (3) successes in half-open to fully close
-    handler.record_success();
-    handler.record_success();
-    handler.record_success();
-    let stats = handler.stats();
-    assert!(
-        !stats.is_suppressed,
-        "breaker should close after enough successes"
-    );
-}
-
-#[test]
-fn test_ignore_policy_swallows_all_failures() {
-    let mut handler = FailureHandler::new(FailurePolicy::Ignore);
-
-    for _ in 0..50 {
-        assert_eq!(handler.record_failure(), FailureAction::Continue);
-        assert!(handler.should_allow());
-    }
-
-    let stats = handler.stats();
-    assert_eq!(stats.policy, "Ignore");
-    assert!(!stats.is_suppressed);
-}
-
-#[test]
-fn test_fatal_policy_stops_immediately() {
-    let mut handler = FailureHandler::new(FailurePolicy::Fatal);
-    assert_eq!(handler.record_failure(), FailureAction::StopScheduler);
 }
 
 // ============================================================

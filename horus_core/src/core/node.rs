@@ -185,7 +185,7 @@ pub struct NodeMetrics {
 
 impl NodeMetrics {
     /// Reset timing-related metrics for restart (preserves counts)
-    pub fn reset_timing(&mut self) {
+    pub(crate) fn reset_timing(&mut self) {
         self.avg_tick_duration_ms = 0.0;
         self.max_tick_duration_ms = 0.0;
         self.min_tick_duration_ms = 0.0;
@@ -193,7 +193,7 @@ impl NodeMetrics {
     }
 
     /// Calculate health status from metrics
-    pub fn calculate_health(&self) -> HealthStatus {
+    pub(crate) fn calculate_health(&self) -> HealthStatus {
         if self.errors_count > 10 {
             HealthStatus::Critical
         } else if self.errors_count > 3 {

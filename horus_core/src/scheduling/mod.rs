@@ -247,11 +247,10 @@ pub use record_replay::{
     SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 
-// Internal plumbing — hidden from docs but accessible for integration tests and horus_py.
-// Not part of the stable public API.
-#[doc(hidden)]
-pub use fault_tolerance::{FailureAction, FailureHandler};
-#[doc(hidden)]
-pub use record_replay::{NodeRecorder, NodeTickSnapshot, RecordingConfig};
-#[doc(hidden)]
+// Internal plumbing — used within horus_core only.
+pub(crate) use fault_tolerance::{FailureAction, FailureHandler};
+pub(crate) use record_replay::{NodeRecorder, NodeTickSnapshot, RecordingConfig};
+
+// RecordingConfigYaml is a field type in SchedulerConfig, so it must be pub.
+// But it's an advanced config — most users use SchedulerConfig presets directly.
 pub use config::RecordingConfigYaml;

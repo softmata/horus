@@ -5,4 +5,5 @@ pub mod circuit_breaker;
 pub mod failure_policy;
 
 pub use circuit_breaker::CircuitState;
-pub use failure_policy::{FailureAction, FailureHandler, FailureHandlerStats, FailurePolicy};
+pub(crate) use failure_policy::{FailureAction, FailureHandler};
+pub use failure_policy::{FailureHandlerStats, FailurePolicy};

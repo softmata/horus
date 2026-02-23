@@ -385,7 +385,7 @@ pub struct NodeRecorder {
 }
 
 impl NodeRecorder {
-    pub fn new(node_name: &str, node_id: &str, config: RecordingConfig) -> Self {
+    pub(crate) fn new(node_name: &str, node_id: &str, config: RecordingConfig) -> Self {
         Self {
             recording: NodeRecording::new(node_name, node_id, &config.session_name),
             config,
@@ -395,7 +395,7 @@ impl NodeRecorder {
     }
 
     /// Start recording a new tick
-    pub fn begin_tick(&mut self, tick: u64) {
+    pub(crate) fn begin_tick(&mut self, tick: u64) {
         if !self.enabled {
             return;
         }
@@ -410,7 +410,7 @@ impl NodeRecorder {
     }
 
     /// Finish recording the current tick
-    pub fn end_tick(&mut self, duration_ns: u64) {
+    pub(crate) fn end_tick(&mut self, duration_ns: u64) {
         if let Some(mut snapshot) = self.current_snapshot.take() {
             if self.config.record_timing {
                 snapshot.duration_ns = duration_ns;
@@ -420,7 +420,7 @@ impl NodeRecorder {
     }
 
     /// Record an input received during the current tick.
-    pub fn record_input(&mut self, topic: &str, data: Vec<u8>) {
+    pub(crate) fn record_input(&mut self, topic: &str, data: Vec<u8>) {
         if self.config.record_inputs {
             if let Some(ref mut snapshot) = self.current_snapshot {
                 snapshot.inputs.insert(topic.to_string(), data);
@@ -429,7 +429,7 @@ impl NodeRecorder {
     }
 
     /// Record an output produced during the current tick.
-    pub fn record_output(&mut self, topic: &str, data: Vec<u8>) {
+    pub(crate) fn record_output(&mut self, topic: &str, data: Vec<u8>) {
         if self.config.record_outputs {
             if let Some(ref mut snapshot) = self.current_snapshot {
                 snapshot.outputs.insert(topic.to_string(), data);
@@ -438,12 +438,12 @@ impl NodeRecorder {
     }
 
     /// Get a reference to the underlying recording.
-    pub fn recording(&self) -> &NodeRecording {
+    pub(crate) fn recording(&self) -> &NodeRecording {
         &self.recording
     }
 
     /// Finish and save the recording
-    pub fn finish(&mut self) -> std::io::Result<PathBuf> {
+    pub(crate) fn finish(&mut self) -> std::io::Result<PathBuf> {
         self.recording.finish();
         self.enabled = false;
 
@@ -1665,5 +1665,110 @@ mod tests {
         let path = recorder.finish().unwrap();
         let loaded = NodeRecording::load(&path).unwrap();
         assert_eq!(loaded.snapshot_count(), 2); // Only ticks 0 and 2
+    }
+
+    #[test]
+    fn test_record_inputs_disabled() {
+        let mut config = RecordingConfig::default();
+        config.record_inputs = false;
+
+        let mut recorder = NodeRecorder::new("test_node", "test-id-1", config);
+
+        recorder.begin_tick(0);
+        recorder.record_input("sensor.data", vec![1, 2, 3]);
+        recorder.record_output("motor.cmd", vec![4, 5, 6]);
+        recorder.end_tick(1000);
+
+        let recording = recorder.recording();
+        let snap = &recording.snapshots[0];
+        assert!(
+            snap.inputs.is_empty(),
+            "inputs should be empty when record_inputs=false"
+        );
+        assert!(!snap.outputs.is_empty(), "outputs should still be recorded");
+    }
+
+    #[test]
+    fn test_record_outputs_disabled() {
+        let mut config = RecordingConfig::default();
+        config.record_outputs = false;
+
+        let mut recorder = NodeRecorder::new("test_node", "test-id-2", config);
+
+        recorder.begin_tick(0);
+        recorder.record_input("sensor.data", vec![1, 2, 3]);
+        recorder.record_output("motor.cmd", vec![4, 5, 6]);
+        recorder.end_tick(1000);
+
+        let recording = recorder.recording();
+        let snap = &recording.snapshots[0];
+        assert!(!snap.inputs.is_empty(), "inputs should still be recorded");
+        assert!(
+            snap.outputs.is_empty(),
+            "outputs should be empty when record_outputs=false"
+        );
+    }
+
+    #[test]
+    fn test_record_timing_disabled() {
+        let mut config = RecordingConfig::default();
+        config.record_timing = false;
+
+        let mut recorder = NodeRecorder::new("test_node", "test-id-3", config);
+
+        recorder.begin_tick(0);
+        recorder.end_tick(99999);
+
+        let recording = recorder.recording();
+        let snap = &recording.snapshots[0];
+        assert_eq!(
+            snap.duration_ns, 0,
+            "duration_ns should be 0 when record_timing=false"
+        );
+    }
+
+    #[test]
+    fn test_all_recording_enabled() {
+        let config = RecordingConfig::default();
+        assert!(config.record_inputs);
+        assert!(config.record_outputs);
+        assert!(config.record_timing);
+
+        let mut recorder = NodeRecorder::new("test_node", "test-id-4", config);
+
+        recorder.begin_tick(0);
+        recorder.record_input("sensor.data", vec![1, 2, 3]);
+        recorder.record_output("motor.cmd", vec![4, 5, 6]);
+        recorder.end_tick(50000);
+
+        let recording = recorder.recording();
+        let snap = &recording.snapshots[0];
+        assert!(
+            !snap.inputs.is_empty(),
+            "inputs should be recorded by default"
+        );
+        assert!(
+            !snap.outputs.is_empty(),
+            "outputs should be recorded by default"
+        );
+        assert_eq!(
+            snap.duration_ns, 50000,
+            "duration should be recorded by default"
+        );
+    }
+
+    #[test]
+    fn test_from_yaml_transfers_flags() {
+        let mut yaml = super::super::config::RecordingConfigYaml::default();
+        yaml.record_inputs = false;
+        yaml.record_outputs = false;
+        yaml.record_timing = false;
+        yaml.max_size_mb = 42;
+
+        let config: RecordingConfig = yaml.into();
+        assert!(!config.record_inputs);
+        assert!(!config.record_outputs);
+        assert!(!config.record_timing);
+        assert_eq!(config.max_size, 42 * 1024 * 1024);
     }
 }

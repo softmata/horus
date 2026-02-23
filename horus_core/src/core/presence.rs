@@ -35,7 +35,7 @@ pub struct NodePresence {
 
 impl NodePresence {
     /// Create a new presence record
-    pub fn new(
+    pub(crate) fn new(
         name: &str,
         scheduler: Option<&str>,
         publishers: Vec<TopicMetadata>,
@@ -64,7 +64,7 @@ impl NodePresence {
     }
 
     /// Write presence file to shared memory (called at node start)
-    pub fn write(&self) -> std::io::Result<()> {
+    pub(crate) fn write(&self) -> std::io::Result<()> {
         let dir = shm_nodes_dir();
         fs::create_dir_all(&dir)?;
 
@@ -76,7 +76,7 @@ impl NodePresence {
     }
 
     /// Remove presence file from shared memory (called at node shutdown)
-    pub fn remove(node_name: &str) -> std::io::Result<()> {
+    pub(crate) fn remove(node_name: &str) -> std::io::Result<()> {
         let path = Self::presence_path(node_name);
         if path.exists() {
             fs::remove_file(path)?;

@@ -133,7 +133,7 @@ impl BlackBox {
     }
 
     /// Record an event
-    pub fn record(&mut self, event: BlackBoxEvent) {
+    pub(crate) fn record(&mut self, event: BlackBoxEvent) {
         if !self.enabled {
             return;
         }
@@ -163,7 +163,7 @@ impl BlackBox {
     }
 
     /// Increment tick counter (call once per scheduler tick)
-    pub fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         self.tick_counter += 1;
     }
 
@@ -232,7 +232,7 @@ impl BlackBox {
     /// ```rust,ignore
     /// blackbox.record_pod_snapshot(&motor_cmd, "wcet_violation");
     /// ```
-    pub fn record_pod_snapshot<T: crate::communication::PodMessage>(
+    pub(crate) fn record_pod_snapshot<T: crate::communication::PodMessage>(
         &mut self,
         msg: &T,
         context: &str,

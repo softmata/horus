@@ -103,50 +103,8 @@ impl ShmRegion {
         })
     }
 
-    /// Open existing shared memory region (no creation)
-    pub fn open(name: &str) -> HorusResult<Self> {
-        // Use flat namespace - all topics in same directory
-        let horus_shm_dir = shm_topics_dir();
-        // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
-        let path = horus_shm_dir.join(format!("horus_{}", name));
-
-        if !path.exists() {
-            return Err(HorusError::Memory(format!(
-                "Shared memory '{}' does not exist",
-                name
-            )));
-        }
-
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
-        let metadata = file.metadata()?;
-        let size = metadata.len() as usize;
-        // SAFETY: file is a valid open file; len(size) matches the actual file size from metadata
-        let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
-
-        Ok(Self {
-            mmap,
-            size,
-            path,
-            _file: file,
-
-            owner: false,
-        })
-    }
-
     pub fn as_ptr(&self) -> *const u8 {
         self.mmap.as_ptr()
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.mmap.as_mut_ptr()
-    }
-
-    /// Force cleanup of the shared memory file (for use when last consumer exits)
-    /// This bypasses the owner check and removes the file unconditionally
-    pub fn force_cleanup(&self) {
-        if self.path.exists() {
-            let _ = std::fs::remove_file(&self.path);
-        }
     }
 }
 
@@ -269,89 +227,8 @@ impl ShmRegion {
         })
     }
 
-    /// Open existing shared memory region
-    pub fn open(name: &str) -> HorusResult<Self> {
-        use std::ffi::CString;
-
-        // Use flat namespace - all topics share same prefix
-        let shm_name = format!("/horus_{}", name);
-        let c_name = CString::new(shm_name.clone()).map_err(|e| {
-            HorusError::Memory(format!(
-                "Invalid shm name '{}': topic names cannot contain null bytes: {}",
-                shm_name, e
-            ))
-        })?;
-
-        // SAFETY: c_name is a valid null-terminated CString; O_RDWR is a valid POSIX flag
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
-
-        if fd < 0 {
-            return Err(HorusError::Memory(format!(
-                "Shared memory '{}' does not exist",
-                name
-            )));
-        }
-
-        // Get size
-        // SAFETY: libc::stat is a C struct where all-zeros is a valid representation
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: fd is a valid open file descriptor; stat is a valid mutable reference
-        if unsafe { libc::fstat(fd, &mut stat) } != 0 {
-            // SAFETY: fd is a valid open file descriptor
-            unsafe { libc::close(fd) };
-            return Err(HorusError::Memory(format!(
-                "Failed to stat shm: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        let size = stat.st_size as usize;
-
-        // SAFETY: fd is valid from shm_open, size > 0 from fstat, flags are valid POSIX mmap constants
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-
-        if ptr == libc::MAP_FAILED {
-            // SAFETY: fd is a valid open file descriptor
-            unsafe { libc::close(fd) };
-            return Err(HorusError::Memory(format!(
-                "Failed to mmap shm: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-
-        Ok(Self {
-            ptr: ptr as *mut u8,
-            fd,
-            shm_name,
-            size,
-
-            owner: false,
-        })
-    }
-
     pub fn as_ptr(&self) -> *const u8 {
         self.ptr
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.ptr
-    }
-
-    /// Force cleanup of the shared memory (for use when last consumer exits)
-    /// This bypasses the owner check and removes the shm unconditionally
-    pub fn force_cleanup(&self) {
-        if let Ok(c_name) = std::ffi::CString::new(self.shm_name.clone()) {
-            // SAFETY: c_name is a valid null-terminated CString
-            unsafe { libc::shm_unlink(c_name.as_ptr()) };
-        }
     }
 }
 
@@ -457,85 +334,8 @@ impl ShmRegion {
         })
     }
 
-    /// Open existing shared memory region
-    pub fn open(name: &str) -> HorusResult<Self> {
-        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
-        use windows_sys::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_ALL_ACCESS,
-        };
-
-        // Use flat namespace - all topics share same prefix
-        let mapping_name = format!("Local\\horus_{}", name);
-        let wide_name: Vec<u16> = mapping_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // SAFETY: wide_name is a valid null-terminated wide string; FILE_MAP_ALL_ACCESS is a valid flag
-        let handle = unsafe {
-            OpenFileMappingW(
-                FILE_MAP_ALL_ACCESS,
-                0, // bInheritHandle = FALSE
-                wide_name.as_ptr(),
-            )
-        };
-
-        if handle == 0 {
-            return Err(HorusError::Memory(format!(
-                "Shared memory '{}' does not exist",
-                name
-            )));
-        }
-
-        // Map view - we don't know size, map entire region
-        // SAFETY: handle is a valid file mapping from OpenFileMappingW (non-zero checked above)
-        let ptr = unsafe {
-            MapViewOfFile(
-                handle,
-                FILE_MAP_ALL_ACCESS,
-                0,
-                0,
-                0, // Map entire file
-            )
-        };
-
-        if ptr.is_null() {
-            // SAFETY: handle is a valid file mapping handle from OpenFileMappingW
-            unsafe { CloseHandle(handle) };
-            return Err(HorusError::Memory(format!(
-                "MapViewOfFile failed: error {}",
-                // SAFETY: GetLastError is always safe to call after a Windows API failure
-                unsafe { GetLastError() }
-            )));
-        }
-
-        // Note: We can't easily get the size of an existing mapping on Windows
-        // without additional tracking. For now, use a reasonable default.
-        // In practice, the caller should know the expected size.
-        let size = 0; // Unknown - caller should track
-
-        Ok(Self {
-            ptr: ptr as *mut u8,
-            handle,
-            size,
-
-            owner: false,
-        })
-    }
-
     pub fn as_ptr(&self) -> *const u8 {
         self.ptr
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.ptr
-    }
-
-    /// Force cleanup of the shared memory (for use when last consumer exits)
-    /// On Windows, cleanup is automatic when all handles are closed, so this is a no-op
-    pub fn force_cleanup(&self) {
-        // Windows automatically cleans up named file mappings when all handles are closed
-        // No explicit cleanup needed
     }
 }
 
@@ -557,11 +357,6 @@ impl Drop for ShmRegion {
 
 // Common accessors — `size` and `owner` fields exist on all platform variants.
 impl ShmRegion {
-    /// Total size of the shared memory region in bytes.
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
     /// Whether this handle is the original creator (responsible for cleanup on drop).
     pub fn is_owner(&self) -> bool {
         self.owner
@@ -598,12 +393,11 @@ mod tests {
     fn shm_create_and_basic_rw() {
         let name = unique_name("test_basic");
         let size = 4096;
-        let mut region = ShmRegion::new(&name, size).expect("Failed to create SHM region");
+        let region = ShmRegion::new(&name, size).expect("Failed to create SHM region");
         assert!(region.is_owner());
-        assert_eq!(region.size(), size);
 
-        // Write pattern
-        let ptr = region.as_mut_ptr();
+        // Write pattern via as_ptr (the mmap is PROT_READ|PROT_WRITE)
+        let ptr = region.as_ptr() as *mut u8;
         unsafe {
             for i in 0..size {
                 *ptr.add(i) = (i % 256) as u8;
@@ -616,82 +410,6 @@ mod tests {
             let val = unsafe { *rptr.add(i) };
             assert_eq!(val, (i % 256) as u8, "Mismatch at byte {}", i);
         }
-    }
-
-    #[test]
-    fn shm_open_existing() {
-        let name = unique_name("test_open");
-        let size = 8192;
-
-        // Create region and write a marker
-        let mut owner = ShmRegion::new(&name, size).expect("Failed to create SHM");
-        unsafe {
-            let ptr = owner.as_mut_ptr();
-            // Write magic at offset 0
-            std::ptr::write(ptr as *mut u64, 0xDEAD_BEEF_CAFE_BABE);
-        }
-
-        // Open from another handle
-        let reader = ShmRegion::open(&name).expect("Failed to open existing SHM");
-        assert!(!reader.is_owner());
-
-        // Verify the marker is visible
-        let val = unsafe { std::ptr::read(reader.as_ptr() as *const u64) };
-        assert_eq!(
-            val, 0xDEAD_BEEF_CAFE_BABE,
-            "Marker not visible through second mapping"
-        );
-
-        drop(reader);
-        drop(owner);
-    }
-
-    #[test]
-    fn shm_open_nonexistent_fails() {
-        let name = unique_name("nonexistent_shm");
-        let result = ShmRegion::open(&name);
-        assert!(result.is_err(), "Opening nonexistent SHM should fail");
-    }
-
-    #[test]
-    fn shm_owner_cleanup_on_drop() {
-        let name = unique_name("test_cleanup");
-        let size = 4096;
-
-        {
-            let _region = ShmRegion::new(&name, size).expect("Failed to create SHM");
-            // Region dropped here — owner should clean up the backing file
-        }
-
-        // After owner drops, the SHM should be gone
-        let result = ShmRegion::open(&name);
-        assert!(
-            result.is_err(),
-            "SHM should be cleaned up after owner drops"
-        );
-    }
-
-    #[test]
-    fn shm_non_owner_does_not_cleanup() {
-        let name = unique_name("test_no_cleanup");
-        let size = 4096;
-
-        let owner = ShmRegion::new(&name, size).expect("Failed to create SHM");
-
-        {
-            let _reader = ShmRegion::open(&name).expect("Failed to open SHM");
-            // Reader dropped here — should NOT clean up
-        }
-
-        // Owner should still be able to read (SHM still exists)
-        assert_eq!(owner.size(), size);
-
-        // Still openable
-        let _reader2 =
-            ShmRegion::open(&name).expect("SHM should still exist after non-owner drops");
-
-        drop(_reader2);
-        drop(owner); // Now owner cleans up
     }
 
     #[test]
@@ -748,26 +466,6 @@ mod tests {
             "Concurrent atomic increments should sum correctly"
         );
     }
-
-    #[test]
-    fn shm_force_cleanup() {
-        let name = unique_name("test_force_cleanup");
-        let size = 4096;
-
-        let region = ShmRegion::new(&name, size).expect("Failed to create SHM");
-        // Open a second handle
-        let _reader = ShmRegion::open(&name).expect("Failed to open SHM");
-
-        // Force cleanup from non-owner
-        _reader.force_cleanup();
-
-        // After force cleanup, the backing file/segment should be removed
-        // (though existing mappings remain valid until unmapped)
-        let result = ShmRegion::open(&name);
-        assert!(result.is_err(), "SHM should be gone after force_cleanup");
-
-        drop(region);
-    }
 }
 
 // ============================================================================
@@ -821,41 +519,8 @@ impl ShmRegion {
         })
     }
 
-    pub fn open(name: &str) -> HorusResult<Self> {
-        // Topic names use dot notation - no conversion needed
-        let path = PathBuf::from("/tmp/horus/topics").join(format!("horus_{}", name));
-        if !path.exists() {
-            return Err(HorusError::Memory(format!(
-                "Shared memory '{}' does not exist",
-                name
-            )));
-        }
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
-        let size = file.metadata()?.len() as usize;
-        // SAFETY: file is a valid open file; len(size) matches the actual file size from metadata
-        let mmap = unsafe { MmapOptions::new().len(size).map_mut(&file)? };
-        Ok(Self {
-            mmap,
-            size,
-            path,
-            _file: file,
-
-            owner: false,
-        })
-    }
-
     pub fn as_ptr(&self) -> *const u8 {
         self.mmap.as_ptr()
-    }
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.mmap.as_mut_ptr()
-    }
-
-    /// Force cleanup of the shared memory file (for use when last consumer exits)
-    pub fn force_cleanup(&self) {
-        if self.path.exists() {
-            let _ = std::fs::remove_file(&self.path);
-        }
     }
 }
 
