@@ -7,8 +7,8 @@ use std::path::Path;
 /// Load and deserialize a JSON config file.
 pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     log::debug!("loading config from {:?}", path);
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&content)
         .with_context(|| format!("failed to parse JSON from {}", path.display()))
 }
@@ -16,8 +16,8 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 /// Load and deserialize a YAML config file.
 pub fn load_yaml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     log::debug!("loading config from {:?}", path);
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_yaml::from_str(&content)
         .with_context(|| format!("failed to parse YAML from {}", path.display()))
 }
@@ -350,11 +350,7 @@ mod tests {
     fn test_add_dep_to_existing_deps() {
         let dir = TempDir::new().unwrap();
         let yaml = dir.path().join(HORUS_YAML);
-        fs::write(
-            &yaml,
-            "name: test-pkg\ndependencies:\n  - existing@1.0\n",
-        )
-        .unwrap();
+        fs::write(&yaml, "name: test-pkg\ndependencies:\n  - existing@1.0\n").unwrap();
 
         add_dependency_to_horus_yaml(&yaml, "numpy", "1.24").unwrap();
 
@@ -394,11 +390,7 @@ mod tests {
     fn test_add_dep_duplicate_is_noop() {
         let dir = TempDir::new().unwrap();
         let yaml = dir.path().join(HORUS_YAML);
-        fs::write(
-            &yaml,
-            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
-        )
-        .unwrap();
+        fs::write(&yaml, "name: test-pkg\ndependencies:\n  - numpy@1.24\n").unwrap();
 
         add_dependency_to_horus_yaml(&yaml, "numpy", "1.24").unwrap();
 
@@ -411,11 +403,7 @@ mod tests {
     fn test_add_dep_same_name_different_version_is_duplicate() {
         let dir = TempDir::new().unwrap();
         let yaml = dir.path().join(HORUS_YAML);
-        fs::write(
-            &yaml,
-            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
-        )
-        .unwrap();
+        fs::write(&yaml, "name: test-pkg\ndependencies:\n  - numpy@1.24\n").unwrap();
 
         // Same package name with different version should be treated as duplicate
         add_dependency_to_horus_yaml(&yaml, "numpy", "2.0").unwrap();
@@ -450,11 +438,7 @@ mod tests {
     fn test_remove_last_dep_converts_to_empty_array() {
         let dir = TempDir::new().unwrap();
         let yaml = dir.path().join(HORUS_YAML);
-        fs::write(
-            &yaml,
-            "name: test-pkg\ndependencies:\n  - numpy@1.24\n",
-        )
-        .unwrap();
+        fs::write(&yaml, "name: test-pkg\ndependencies:\n  - numpy@1.24\n").unwrap();
 
         remove_dependency_from_horus_yaml(&yaml, "numpy").unwrap();
 
@@ -501,11 +485,7 @@ mod tests {
     fn test_add_path_dep() {
         let dir = TempDir::new().unwrap();
         let yaml = dir.path().join(HORUS_YAML);
-        fs::write(
-            &yaml,
-            "name: test-pkg\ndependencies:\n  - existing@1.0\n",
-        )
-        .unwrap();
+        fs::write(&yaml, "name: test-pkg\ndependencies:\n  - existing@1.0\n").unwrap();
 
         add_path_dependency_to_horus_yaml(&yaml, "my-lib", "../my-lib").unwrap();
 

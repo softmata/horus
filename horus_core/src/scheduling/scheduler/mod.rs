@@ -784,7 +784,6 @@ impl Scheduler {
         lines
     }
 
-
     // =========================================================================
     // Deterministic Execution Accessors (Simulation Mode)
     // =========================================================================
@@ -938,8 +937,7 @@ impl Scheduler {
                     let node_name = registered.name.clone();
 
                     if rt.watchdog_enabled {
-                        let watchdog_timeout =
-                            Duration::from_millis(rt.watchdog_timeout_ms);
+                        let watchdog_timeout = Duration::from_millis(rt.watchdog_timeout_ms);
                         monitor.add_critical_node(node_name.clone(), watchdog_timeout);
                     }
 
@@ -974,9 +972,8 @@ impl Scheduler {
     ) {
         use crate::core::rt_config::{RtApplyResult, RtConfig, RtScheduler};
 
-        let has_rt_features = rt.memory_locking
-            || rt.rt_scheduling_class
-            || resources.cpu_cores.is_some();
+        let has_rt_features =
+            rt.memory_locking || rt.rt_scheduling_class || resources.cpu_cores.is_some();
 
         if has_rt_features {
             let mut builder = RtConfig::new()
@@ -1047,12 +1044,15 @@ impl Scheduler {
         // Black box flight recorder
         if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-            let mut bb = super::blackbox::BlackBox::new(monitoring.black_box_size_mb)
-                .with_path(bb_dir);
+            let mut bb =
+                super::blackbox::BlackBox::new(monitoring.black_box_size_mb).with_path(bb_dir);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
-                config: format!("rate={}Hz", 1_000_000.0 / self.tick.period.as_micros() as f64),
+                config: format!(
+                    "rate={}Hz",
+                    1_000_000.0 / self.tick.period.as_micros() as f64
+                ),
             });
             self.monitor.blackbox = Some(bb);
             print_line(&format!(
@@ -1076,7 +1076,10 @@ impl Scheduler {
     }
 
     /// Apply deterministic execution configuration for simulation mode.
-    fn apply_deterministic_config(&mut self, det_config: &super::deterministic::DeterministicConfig) {
+    fn apply_deterministic_config(
+        &mut self,
+        det_config: &super::deterministic::DeterministicConfig,
+    ) {
         let clock = Arc::new(DeterministicClock::new(det_config));
         let trace = if det_config.record_trace {
             Some(Arc::new(ParkingMutex::new(ExecutionTrace::new(
@@ -1150,7 +1153,6 @@ impl Scheduler {
             session_name, recording_yaml.compress
         ));
     }
-
 
     /// Pre-allocate node capacity (prevents reallocations during runtime)
     ///
@@ -1722,26 +1724,34 @@ impl Scheduler {
                 if let Some(ref mut ctx) = registered.context {
                     // Set node context for hlog!() macro
                     set_node_context(node_name, 0);
-                    let init_result = registered.node.init();
+                    let init_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            registered.node.init()
+                        }));
                     clear_node_context();
+
+                    // Convert panic to error
+                    let init_result = match init_result {
+                        Ok(result) => result,
+                        Err(_) => Err(crate::HorusError::Node {
+                            node: node_name.to_string(),
+                            message: "panicked during re-init".to_string(),
+                        }),
+                    };
 
                     match init_result {
                         Ok(()) => {
                             registered.initialized = true;
-                            print_line(&format!(
-                                "[CONTROL] Node '{}' re-initialized",
-                                node_name
-                            ));
+                            print_line(&format!("[CONTROL] Node '{}' re-initialized", node_name));
                         }
                         Err(e) => {
+                            // Mark as stopped to prevent infinite re-init loops
+                            registered.is_stopped = true;
                             print_line(&format!(
-                                "[CONTROL] Failed to re-initialize node '{}': {}",
+                                "[CONTROL] Failed to re-initialize node '{}': {} — node stopped",
                                 node_name, e
                             ));
-                            ctx.transition_to_error(format!(
-                                "Re-initialization failed: {}",
-                                e
-                            ));
+                            ctx.transition_to_error(format!("Re-initialization failed: {}", e));
                         }
                     }
                 }
@@ -1846,16 +1856,8 @@ impl Scheduler {
                     if let Some(stats) = self.monitor.profiler.node_stats.get(node_name) {
                         let mut labels = std::collections::HashMap::new();
                         labels.insert("node".to_string(), node_name.to_string());
-                        tm.gauge_with_labels(
-                            "node_avg_duration_us",
-                            stats.avg_us,
-                            labels.clone(),
-                        );
-                        tm.counter_with_labels(
-                            "node_tick_count",
-                            stats.count as u64,
-                            labels,
-                        );
+                        tm.gauge_with_labels("node_avg_duration_us", stats.avg_us, labels.clone());
+                        tm.counter_with_labels("node_tick_count", stats.count as u64, labels);
                     }
                 }
 
@@ -1877,9 +1879,7 @@ impl Scheduler {
 
         let sleep_duration = if let Some(ref replay) = self.replay {
             if replay.speed != 1.0 {
-                Duration::from_nanos(
-                    (self.tick.period.as_nanos() as f64 / replay.speed) as u64,
-                )
+                Duration::from_nanos((self.tick.period.as_nanos() as f64 / replay.speed) as u64)
             } else {
                 self.tick.period
             }
@@ -1944,10 +1944,7 @@ impl Scheduler {
                         Err(e) => {
                             // Still try to remove presence file on error
                             let _ = NodePresence::remove(node_name);
-                            print_line(&format!(
-                                "Error shutting down node '{}': {}",
-                                node_name, e
-                            ));
+                            print_line(&format!("Error shutting down node '{}': {}", node_name, e));
                         }
                     }
                 }
@@ -2486,11 +2483,7 @@ impl Scheduler {
 
     /// Handle a node tick failure according to its failure policy.
     /// Returns `true` if the scheduler should stop (fatal failure).
-    fn handle_tick_failure(
-        &mut self,
-        i: usize,
-        panic_err: Box<dyn std::any::Any + Send>,
-    ) -> bool {
+    fn handle_tick_failure(&mut self, i: usize, panic_err: Box<dyn std::any::Any + Send>) -> bool {
         let action = self.nodes[i].failure_handler.record_failure();
         let error_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
             format!("Node panicked: {}", s)
@@ -2526,10 +2519,7 @@ impl Scheduler {
                         " FATAL: Node '{}' exhausted restart attempts — stopping scheduler",
                         node_name
                     ));
-                    context.transition_to_crashed(format!(
-                        "Max restarts exceeded: {}",
-                        error_msg
-                    ));
+                    context.transition_to_crashed(format!("Max restarts exceeded: {}", error_msg));
                     self.stop();
                     return true;
                 }
@@ -2544,10 +2534,7 @@ impl Scheduler {
                             registered.initialized = true;
                         }
                         Err(e) => {
-                            print_line(&format!(
-                                " Node '{}' restart failed: {}",
-                                node_name, e
-                            ));
+                            print_line(&format!(" Node '{}' restart failed: {}", node_name, e));
                             context.transition_to_crashed(format!("Restart failed: {}", e));
                             registered.initialized = false;
                         }
@@ -2570,7 +2557,6 @@ impl Scheduler {
         }
         false
     }
-
 
     /// Execute nodes in priority order with profiling and RT support.
     ///

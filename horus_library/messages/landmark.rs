@@ -124,6 +124,12 @@ impl Landmark3D {
     }
 }
 
+impl From<Landmark3D> for Landmark {
+    fn from(lm: Landmark3D) -> Self {
+        lm.to_2d()
+    }
+}
+
 /// Landmark array header for fixed-size landmark sets
 ///
 /// Common configurations:
@@ -290,5 +296,15 @@ mod tests {
 
         let arr3d = LandmarkArray::mediapipe_pose();
         assert_eq!(arr3d.data_size(), 33 * 20); // 33 landmarks * 20 bytes each (3D)
+    }
+
+    #[test]
+    fn test_landmark3d_from_into_landmark() {
+        let lm3d = Landmark3D::new(1.5, 2.5, 3.5, 0.85, 7);
+        let lm: Landmark = lm3d.into();
+        assert_eq!(lm.x, 1.5);
+        assert_eq!(lm.y, 2.5);
+        assert_eq!(lm.visibility, 0.85);
+        assert_eq!(lm.index, 7);
     }
 }

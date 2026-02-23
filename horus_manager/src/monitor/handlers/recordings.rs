@@ -1,9 +1,4 @@
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 
 use horus_core::scheduling::Recording;
 

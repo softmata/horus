@@ -382,11 +382,7 @@ impl TopicHeader {
     }
 
     /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
-    fn register_role(
-        &self,
-        role_bit: u8,
-        counter: &AtomicU32,
-    ) -> HorusResult<usize> {
+    fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<usize> {
         let now_ms = current_time_ms();
         let pid = std::process::id();
         let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
@@ -514,7 +510,6 @@ impl TopicHeader {
             _ => BackendMode::MpmcShm,
         }
     }
-
 }
 
 // ============================================================================

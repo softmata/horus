@@ -341,7 +341,7 @@ pub(super) fn recv_direct_channel_local<
 ) -> Option<T> {
     let local = topic.local();
     let tail = local.local_tail;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
             topic.check_migration_periodic();
@@ -429,7 +429,7 @@ pub(super) fn recv_direct_channel_cached<
 
     let tail = unsafe { (*tail_ptr).load(Ordering::Relaxed) };
     let head = unsafe { (*head_ptr).load(Ordering::Relaxed) };
-    if tail >= head {
+    if head.wrapping_sub(tail) == 0 {
         local.msg_counter = local.msg_counter.wrapping_add(1);
         if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
             topic.check_migration_periodic();
@@ -878,9 +878,9 @@ pub(super) fn recv_shm_spsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
     let tail = local.local_tail;
     let mask = local.cached_capacity_mask;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -921,9 +921,9 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
 
     let tail = local.local_tail;
     let mask = local.cached_capacity_mask;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -976,9 +976,9 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     // and let the caller retry on next poll (avoids unbounded spinning).
     for _attempt in 0..8 {
         let tail = header.tail.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-            if tail >= local.local_head {
+            if local.local_head.wrapping_sub(tail) == 0 {
                 local.msg_counter = local.msg_counter.wrapping_add(1);
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     topic.check_migration_periodic();
@@ -1025,9 +1025,9 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let mask = local.cached_capacity_mask;
 
     let tail = header.tail.load(Ordering::Acquire);
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1084,9 +1084,9 @@ pub(super) fn recv_shm_pod_broadcast<
     let mask = local.cached_capacity_mask;
 
     let mut tail = local.local_tail;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1097,7 +1097,7 @@ pub(super) fn recv_shm_pod_broadcast<
         tail = local.local_head;
         local.local_tail = tail;
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             return None;
         }
     }
@@ -1142,9 +1142,9 @@ pub(super) fn recv_shm_spsc_serde<
     let mask = local.cached_capacity_mask;
     let slot_size = local.slot_size;
 
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1184,9 +1184,9 @@ pub(super) fn recv_shm_mpsc_serde<
     let mask = local.cached_capacity_mask;
     let slot_size = local.slot_size;
 
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1236,9 +1236,9 @@ pub(super) fn recv_shm_spmc_serde<
     let slot_size = local.slot_size;
 
     let tail = header.tail.load(Ordering::Acquire);
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1295,9 +1295,9 @@ pub(super) fn recv_shm_mpmc_serde<
     let slot_size = local.slot_size;
 
     let tail = header.tail.load(Ordering::Acquire);
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1375,7 +1375,7 @@ pub(super) fn recv_shm_spsc_pod_colo<
     let tail = local.local_tail;
     let index = (tail & local.cached_capacity_mask) as usize;
 
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         // Caught up with cached head. Poll per-slot seq for new data.
         // colo_seq and colo_data share the SAME cache line, so detecting
         // readiness AND reading data costs ONE cache miss instead of polling
@@ -1428,9 +1428,9 @@ pub(super) fn recv_shm_mpsc_pod_colo<
 
     let tail = local.local_tail;
     let mask = local.cached_capacity_mask;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1519,9 +1519,9 @@ pub(super) fn recv_shm_mpmc_pod_colo<
     let mask = local.cached_capacity_mask;
 
     let tail = header.tail.load(Ordering::Acquire);
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1572,9 +1572,9 @@ pub(super) fn recv_shm_pod_broadcast_colo<
     let mask = local.cached_capacity_mask;
 
     let mut tail = local.local_tail;
-    if tail >= local.local_head {
+    if local.local_head.wrapping_sub(tail) == 0 {
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             housekeep_epoch!(local, topic);
             return None;
         }
@@ -1585,7 +1585,7 @@ pub(super) fn recv_shm_pod_broadcast_colo<
         tail = local.local_head;
         local.local_tail = tail;
         local.local_head = header.sequence_or_head.load(Ordering::Acquire);
-        if tail >= local.local_head {
+        if local.local_head.wrapping_sub(tail) == 0 {
             return None;
         }
     }

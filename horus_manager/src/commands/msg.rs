@@ -76,7 +76,9 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
 
         for module in modules {
             println!("  {}", format!("{}:", module).cyan().bold());
-            let Some(msgs) = by_module.get(&module) else { continue };
+            let Some(msgs) = by_module.get(&module) else {
+                continue;
+            };
             for msg in msgs {
                 println!("    {} {}", "".white(), msg.name.white().bold());
                 if !msg.doc.is_empty() {

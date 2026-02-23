@@ -61,13 +61,21 @@ pub fn download_spinner(message: &str) -> ProgressBar {
 
 /// Finish a spinner with success
 pub fn finish_success(pb: &ProgressBar, message: &str) {
-    pb.set_style(ProgressStyle::default_spinner().template("{msg}").expect("valid template"));
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{msg}")
+            .expect("valid template"),
+    );
     pb.finish_with_message(format!("{} {}", STATUS_SUCCESS, style(message).green()));
 }
 
 /// Finish a spinner with error
 pub fn finish_error(pb: &ProgressBar, message: &str) {
-    pb.set_style(ProgressStyle::default_spinner().template("{msg}").expect("valid template"));
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{msg}")
+            .expect("valid template"),
+    );
     pb.finish_with_message(format!("{} {}", STATUS_ERROR, style(message).red()));
 }
 

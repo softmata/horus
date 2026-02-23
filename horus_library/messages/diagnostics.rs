@@ -7,9 +7,14 @@ use horus_macros::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-/// System heartbeat message
+/// System heartbeat message sent via Topic IPC.
 ///
 /// Periodic signal indicating a node is alive and operational.
+/// Transported over shared-memory topics with nanosecond-precision timestamps.
+///
+/// **Not to be confused with [`NodeHeartbeat`]**, which is written to the
+/// filesystem heartbeats directory for external monitoring tools and uses
+/// epoch-second timestamps.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct Heartbeat {
@@ -508,10 +513,14 @@ impl NodeState {
 /// Node health status — re-exported from horus_core (canonical definition).
 pub use horus_core::core::HealthStatus;
 
-/// Node status heartbeat with health information
+/// Node status heartbeat written to the filesystem for external monitoring.
 ///
-/// Written to the shared memory heartbeats directory for monitoring.
-/// Path is platform-specific (Linux: /dev/shm/horus/heartbeats, macOS: /tmp/horus/heartbeats).
+/// Written to the shared memory heartbeats directory as a file
+/// (Linux: `/dev/shm/horus/heartbeats/`, macOS: `/tmp/horus/heartbeats/`).
+/// Uses epoch-second timestamps for file-based staleness checks.
+///
+/// **Not to be confused with [`Heartbeat`]**, which is sent over Topic IPC
+/// with nanosecond-precision timestamps for in-process liveness checks.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
 pub struct NodeHeartbeat {
@@ -665,6 +674,12 @@ impl SafetyStatus {
 // =============================================================================
 
 crate::messages::impl_pod_message!(
-    Heartbeat, Status, EmergencyStop, ResourceUsage,
-    DiagnosticValue, DiagnosticReport, NodeHeartbeat, SafetyStatus,
+    Heartbeat,
+    Status,
+    EmergencyStop,
+    ResourceUsage,
+    DiagnosticValue,
+    DiagnosticReport,
+    NodeHeartbeat,
+    SafetyStatus,
 );

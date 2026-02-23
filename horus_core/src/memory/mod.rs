@@ -37,7 +37,10 @@ macro_rules! impl_tensor_backed {
     ($type_name:ident, $desc_type:ty, $label:expr) => {
         impl $type_name {
             /// Create from a descriptor and pool (used by Topic recv and Python bindings).
-            pub fn from_owned(descriptor: $desc_type, pool: std::sync::Arc<$crate::memory::tensor_pool::TensorPool>) -> Self {
+            pub fn from_owned(
+                descriptor: $desc_type,
+                pool: std::sync::Arc<$crate::memory::tensor_pool::TensorPool>,
+            ) -> Self {
                 Self { descriptor, pool }
             }
 
@@ -114,35 +117,51 @@ macro_rules! impl_tensor_backed {
 
             /// Element data type.
             #[inline]
-            pub fn dtype(&self) -> horus_types::TensorDtype { self.descriptor.dtype() }
+            pub fn dtype(&self) -> horus_types::TensorDtype {
+                self.descriptor.dtype()
+            }
 
             /// Total bytes of data.
             #[inline]
-            pub fn nbytes(&self) -> u64 { self.descriptor.nbytes() }
+            pub fn nbytes(&self) -> u64 {
+                self.descriptor.nbytes()
+            }
 
             /// Whether tensor data is on CPU.
             #[inline]
-            pub fn is_cpu(&self) -> bool { self.descriptor.is_cpu() }
+            pub fn is_cpu(&self) -> bool {
+                self.descriptor.is_cpu()
+            }
 
             /// Whether tensor data is on CUDA.
             #[inline]
-            pub fn is_cuda(&self) -> bool { self.descriptor.is_cuda() }
+            pub fn is_cuda(&self) -> bool {
+                self.descriptor.is_cuda()
+            }
 
             /// Timestamp in nanoseconds.
             #[inline]
-            pub fn timestamp_ns(&self) -> u64 { self.descriptor.timestamp_ns() }
+            pub fn timestamp_ns(&self) -> u64 {
+                self.descriptor.timestamp_ns()
+            }
 
             /// Frame ID.
             #[inline]
-            pub fn frame_id(&self) -> &str { self.descriptor.frame_id() }
+            pub fn frame_id(&self) -> &str {
+                self.descriptor.frame_id()
+            }
 
             /// Get the underlying descriptor.
             #[inline]
-            pub fn descriptor(&self) -> &$desc_type { &self.descriptor }
+            pub fn descriptor(&self) -> &$desc_type {
+                &self.descriptor
+            }
 
             /// Get the pool reference.
             #[inline]
-            pub fn pool(&self) -> &std::sync::Arc<$crate::memory::tensor_pool::TensorPool> { &self.pool }
+            pub fn pool(&self) -> &std::sync::Arc<$crate::memory::tensor_pool::TensorPool> {
+                &self.pool
+            }
         }
 
         impl Clone for $type_name {

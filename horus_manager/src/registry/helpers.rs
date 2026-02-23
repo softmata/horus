@@ -982,7 +982,9 @@ pub(crate) fn get_api_key() -> Result<String> {
 }
 
 // Interactive prompts for package documentation, source URLs, categories, and package type
-pub(crate) fn prompt_package_metadata(dir: &Path) -> Result<(String, String, String, String, String)> {
+pub(crate) fn prompt_package_metadata(
+    dir: &Path,
+) -> Result<(String, String, String, String, String)> {
     use std::io::{self, Write};
 
     let mut docs_url = String::new();

@@ -113,6 +113,7 @@ pub use perception::PlaneDetection;
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
 pub use segmentation::SegmentationMask;
+#[allow(deprecated)]
 pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
 
 // ML types (serde-based)

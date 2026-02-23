@@ -84,7 +84,6 @@ impl NodeAnnouncement {
                 .as_millis() as u64,
         }
     }
-
 }
 
 /// Global discovery topic (lazy initialized)

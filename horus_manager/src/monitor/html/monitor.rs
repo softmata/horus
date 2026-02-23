@@ -3485,4 +3485,3 @@ pub fn generate_html(port: u16) -> String {
         port = port
     )
 }
-

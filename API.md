@@ -160,11 +160,11 @@ Configure real-time thread settings.
 
 | Method | Description |
 |--------|-------------|
-| `RtConfig::new()` | Default config |
+| `RtConfig::new()` | Start building a config |
 | `RtConfig::hard_realtime()` | Preset for hard RT |
 | `RtConfig::soft_realtime()` | Preset for soft RT |
 | `RtConfig::normal()` | No RT settings |
-| `apply(&self) -> RtApplyResult` | Apply RT settings to current thread |
+| `apply(&self)` | Apply RT settings to current thread |
 
 ### `struct RtConfigBuilder`
 
@@ -177,18 +177,51 @@ Configure real-time thread settings.
 | `prefault_stack(self, size)` | Pre-fault stack memory |
 | `build(self) -> RtConfig` | Build config |
 
-### RT Free Functions
-
-| Function | Description |
-|----------|-------------|
-| `pin_thread_to_core(core_id)` | Pin current thread to a CPU core |
-| `detect_isolated_cpus() -> Vec<usize>` | Detect kernel-isolated CPUs |
-| `get_rt_recommended_cpus() -> Vec<usize>` | Get CPUs recommended for RT |
-| `prefault_stack(size)` | Pre-fault stack to avoid page faults |
-
 ---
 
 ## Scheduler
+
+### `struct SchedulerConfig`
+
+Preset factories for common robot profiles. Start with a preset and mutate fields directly:
+
+```rust
+let mut config = SchedulerConfig::deploy();
+config.timing.global_rate_hz = 500.0;
+config.realtime.wcet_enforcement = true;
+let mut sched = Scheduler::new().with_config(config);
+```
+
+**Presets:**
+
+| Preset | Use Case | Key Settings |
+|--------|----------|--------------|
+| `minimal()` | Unit tests, bare minimum | 60 Hz, everything off |
+| `standard()` | Most robots (default) | 60 Hz, profiling, fault tolerance |
+| `deploy()` | Production deployment | Standard + RT features, 16MB BlackBox |
+| `deterministic()` | Safety certification, replay | 1 kHz, full recording, virtual time |
+| `safety_critical()` | Medical, surgical robots | 1 kHz, WCET + deadline + watchdog, safety monitor |
+| `high_performance()` | Racing, competition | 10 kHz, parallel execution, NUMA |
+| `hard_realtime()` | CNC, surgical, critical control | 1 kHz, parallel, safety monitor, 100MB BlackBox |
+
+**Config struct fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `execution` | `ExecutionMode` | `Sequential` or `Parallel` |
+| `timing.global_rate_hz` | `f64` | Global tick rate in Hz |
+| `circuit_breaker` | `bool` | Enable tier-based fault tolerance |
+| `realtime.wcet_enforcement` | `bool` | Enable WCET budget enforcement |
+| `realtime.deadline_monitoring` | `bool` | Enable deadline miss detection |
+| `realtime.watchdog_enabled` | `bool` | Enable watchdog timers |
+| `realtime.safety_monitor` | `bool` | Enable safety monitor |
+| `realtime.memory_locking` | `bool` | Lock memory (mlockall) |
+| `realtime.rt_scheduling_class` | `bool` | Use SCHED_FIFO/RR |
+| `monitoring.black_box_enabled` | `bool` | Enable flight recorder |
+| `monitoring.black_box_size_mb` | `usize` | BlackBox buffer size |
+| `monitoring.telemetry_endpoint` | `Option<String>` | Telemetry export endpoint |
+| `recording` | `Option<RecordingConfigYaml>` | Record/replay config |
+| `deterministic` | `Option<DeterministicConfig>` | Deterministic execution config |
 
 ### `struct Scheduler`
 
@@ -200,25 +233,17 @@ sched.add(MyNode::new()).rate_hz(50.0).done();
 sched.run()?;
 ```
 
-**Constructors:**
+**Constructors & Configuration:**
 
 | Method | Description |
 |--------|-------------|
-| `Scheduler::new()` | Default scheduler |
-| `Scheduler::new().with_config(SchedulerConfig::deploy())` | Production deployment |
-| `Scheduler::new().with_config(SchedulerConfig::safety_critical())` | Safety-critical |
-| `Scheduler::new().with_config(SchedulerConfig::high_performance())` | Performance-optimized |
-| `Scheduler::new().with_config(SchedulerConfig::deterministic())` | Deterministic execution |
-| `Scheduler::new().with_config(SchedulerConfig::hard_realtime())` | Hard real-time |
-
-**Configuration:**
-
-| Method | Description |
-|--------|-------------|
+| `Scheduler::new()` | Default scheduler (standard config) |
+| `with_config(self, config)` | Apply a `SchedulerConfig` preset |
 | `tick_hz(self, hz)` | Set tick rate |
-| `with_config(self, config)` | Apply full config |
 | `with_capacity(self, n)` | Pre-allocate node capacity |
 | `with_name(self, name)` | Name the scheduler |
+| `with_recording(self)` | Enable recording with defaults |
+| `with_telemetry(self, endpoint)` | Enable telemetry export |
 
 **Node Management:**
 
@@ -245,7 +270,7 @@ sched.run()?;
 | `set_os_priority(priority)` | Set OS thread priority |
 | `pin_to_cpu(cpu_id)` | Pin scheduler to CPU |
 | `lock_memory()` | Lock all memory (mlock) |
-| `prefault_stack(size)` | Pre-fault stack |
+| `prefault_stack(size)` | Pre-fault stack to avoid page faults |
 
 **Monitoring:**
 
@@ -256,14 +281,16 @@ sched.run()?;
 | `node_info(name)` | Get node info |
 | `metrics() -> Vec<SchedulerNodeMetrics>` | All node metrics |
 
-**Safety:**
+**Safety & Fault Tolerance:**
 
 | Method | Description |
 |--------|-------------|
 | `safety_stats()` | Safety monitoring stats |
-| `blackbox()` | Flight recorder access |
+| `blackbox()` | Flight recorder access (read-only) |
+| `blackbox_mut()` | Flight recorder access (mutable) |
 | `circuit_state(name)` | Circuit breaker state for a node |
 | `circuit_summary()` | (open, half-open, closed) counts |
+| `failure_stats(name)` | Failure handler stats for a node |
 
 ### `struct NodeBuilder`
 
@@ -271,7 +298,7 @@ Fluent API returned by `Scheduler::add()`.
 
 | Method | Description |
 |--------|-------------|
-| `order(self, u32)` | Execution order |
+| `order(self, u32)` | Execution order (lower = earlier) |
 | `rate_hz(self, f64)` | Tick rate |
 | `rt(self)` | Enable real-time |
 | `wcet_us(self, u64)` | WCET budget in microseconds |
@@ -281,6 +308,59 @@ Fluent API returned by `Scheduler::add()`.
 | `tier(self, NodeTier)` | Priority tier |
 | `failure_policy(self, FailurePolicy)` | Failure handling policy |
 | `done(self) -> &mut Scheduler` | Finalize registration |
+
+### `enum NodeTier`
+
+Declares a node's execution characteristics. Influences default failure policy.
+
+| Variant | Target Latency | Default Failure Policy |
+|---------|---------------|----------------------|
+| `UltraFast` | <1us | `Fatal` |
+| `Fast` (default) | <10us | `Fatal` |
+| `Normal` | <100us+ | `Restart(5, 100ms)` |
+
+### `enum FailurePolicy`
+
+How the scheduler responds when a node fails.
+
+| Variant | Description |
+|---------|-------------|
+| `Fatal` | Stop scheduler immediately |
+| `Restart { max_restarts, initial_backoff_ms }` | Re-initialize with exponential backoff |
+| `Skip { max_failures, cooldown_ms }` | Circuit breaker — skip after repeated failures |
+| `Ignore` | Swallow failures, keep ticking |
+
+Convenience constructors: `FailurePolicy::restart(max, backoff_ms)`, `FailurePolicy::skip(max, cooldown_ms)`.
+
+### `enum CircuitState`
+
+Circuit breaker states for node fault tolerance.
+
+`Closed` (normal), `Open` (rejecting), `HalfOpen` (testing recovery)
+
+### `struct BlackBox`
+
+Flight recorder for post-mortem analysis. Stores events in a circular buffer.
+
+| Method | Description |
+|--------|-------------|
+| `BlackBox::new(max_size_mb)` | Create with buffer size |
+| `record(event)` | Record a `BlackBoxEvent` |
+| `events() -> Vec<BlackBoxRecord>` | Get all recorded events |
+| `anomalies() -> Vec<BlackBoxRecord>` | Get errors and warnings only |
+| `save()` | Persist to disk |
+| `load()` | Load from disk |
+| `len()` / `is_empty()` | Buffer size queries |
+
+### `enum BlackBoxEvent`
+
+`SchedulerStart`, `SchedulerStop`, `NodeAdded`, `NodeTick`, `NodeError`, `DeadlineMiss`, `WCETViolation`, `CircuitBreakerChange`, `LearningComplete`, `EmergencyStop`, `Custom`
+
+### `enum TelemetryEndpoint`
+
+Telemetry export target. Constructed from string: `TelemetryEndpoint::from_string("udp://localhost:9999")`.
+
+Variants: `Udp`, `File`, `StdOut`, `Local`.
 
 ---
 
@@ -650,8 +730,8 @@ Define action types with Goal/Feedback/Result.
 | `Pose2D` | 2D position + heading | `new()`, `origin()` |
 | `Pose3D` | Full 6DOF pose (position + quaternion) | `new()`, `identity()`, `from_pose_2d()`, `distance_to()` |
 | `PoseStamped` | Pose3D with frame context | `new()`, `with_frame_id()` |
-| `PoseWithCovariance` | Pose3D + 6×6 covariance (EKF/AMCL output) | `new()`, `position_variance()`, `orientation_variance()` |
-| `TwistWithCovariance` | Twist + 6×6 covariance (sensor fusion) | `new()`, `linear_variance()`, `angular_variance()` |
+| `PoseWithCovariance` | Pose3D + 6x6 covariance (EKF/AMCL output) | `new()`, `position_variance()`, `orientation_variance()` |
+| `TwistWithCovariance` | Twist + 6x6 covariance (sensor fusion) | `new()`, `linear_variance()`, `angular_variance()` |
 | `Accel` | Linear + angular acceleration | `new()` |
 | `AccelStamped` | Accel with frame context | `new()`, `with_frame_id()` |
 | `Point3` | 3D point | `new()`, `origin()` |
@@ -670,8 +750,8 @@ Define action types with Goal/Feedback/Result.
 | `BatteryState` | Battery status | `new()`, `is_low()`, `is_critical()` |
 | `NavSatFix` | GPS/GNSS position | `new()`, `from_coordinates()`, `distance_to()` |
 | `JointState` | Joint feedback (up to 16 joints) | `add_joint()`, `joint_name()`, `position()`, `velocity()`, `effort()` |
-| `MagneticField` | 3-axis magnetometer (Tesla) + 3×3 covariance | `new()`, `with_frame_id()` |
-| `Temperature` | Temperature reading (°C) + variance | `new()`, `with_frame_id()` |
+| `MagneticField` | 3-axis magnetometer (Tesla) + 3x3 covariance | `new()`, `with_frame_id()` |
+| `Temperature` | Temperature reading (C) + variance | `new()`, `with_frame_id()` |
 | `FluidPressure` | Barometer/pressure (Pa) + variance | `new()`, `with_frame_id()` |
 | `Illuminance` | Light sensor (Lux) + variance | `new()`, `with_frame_id()` |
 

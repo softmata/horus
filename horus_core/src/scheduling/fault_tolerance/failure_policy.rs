@@ -433,4 +433,131 @@ mod tests {
         let stats = handler.stats();
         assert_eq!(stats.restart_count, 0);
     }
+
+    /// Exponential backoff increases with each restart: 10ms, 20ms, 40ms, 80ms...
+    /// Robotics: sensor driver restarts with increasing delays to avoid
+    /// hammering a disconnected device.
+    #[test]
+    fn restart_exponential_backoff_increases() {
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 10));
+
+        // Failure 1: 10ms backoff (10 * 2^0)
+        assert_eq!(handler.record_failure(), FailureAction::RestartNode);
+        assert!(!handler.should_allow());
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(
+            handler.should_allow(),
+            "Should be allowed after 10ms backoff"
+        );
+
+        // Failure 2: 20ms backoff (10 * 2^1)
+        assert_eq!(handler.record_failure(), FailureAction::RestartNode);
+        assert!(!handler.should_allow());
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(!handler.should_allow(), "Should still be in 20ms backoff");
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(
+            handler.should_allow(),
+            "Should be allowed after 20ms backoff"
+        );
+
+        // Failure 3: 40ms backoff (10 * 2^2)
+        assert_eq!(handler.record_failure(), FailureAction::RestartNode);
+        assert!(!handler.should_allow());
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!handler.should_allow(), "Should still be in 40ms backoff");
+        std::thread::sleep(Duration::from_millis(25));
+        assert!(
+            handler.should_allow(),
+            "Should be allowed after 40ms backoff"
+        );
+    }
+
+    /// Skip policy with full circuit breaker cycle: fail → skip → cooldown →
+    /// half-open probe → recover.
+    ///
+    /// Robotics: logging node fails to write to disk, gets skipped, disk
+    /// recovers, logging resumes.
+    #[test]
+    fn skip_policy_full_circuit_breaker_cycle() {
+        let mut handler = FailureHandler::new(FailurePolicy::skip(2, 50));
+
+        // Normal operation
+        assert!(handler.should_allow());
+
+        // Two failures → SkipNode
+        handler.record_failure();
+        let action = handler.record_failure();
+        assert_eq!(action, FailureAction::SkipNode);
+        assert!(!handler.should_allow());
+
+        // Wait for cooldown
+        std::thread::sleep(Duration::from_millis(60));
+
+        // should_allow transitions breaker to HalfOpen
+        assert!(handler.should_allow());
+
+        // Success → circuit closes
+        handler.record_success();
+        handler.record_success();
+        handler.record_success(); // CircuitBreaker success_threshold=3 (default in Skip)
+        assert!(handler.should_allow());
+
+        // Back to normal: record a failure doesn't immediately skip
+        let action = handler.record_failure();
+        assert_eq!(action, FailureAction::Continue);
+    }
+
+    /// Restart exhaustion → FatalAfterRestarts escalation.
+    /// After max_restarts failures, the policy escalates to fatal.
+    ///
+    /// Robotics: motor driver fails 3 times with increasing backoff,
+    /// on the 4th failure the scheduler stops to prevent damage.
+    #[test]
+    fn restart_exhaustion_escalates_to_fatal() {
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 5));
+
+        for i in 0..3 {
+            let action = handler.record_failure();
+            assert_eq!(
+                action,
+                FailureAction::RestartNode,
+                "Failure {} should be RestartNode",
+                i + 1
+            );
+            // Wait for backoff before next failure
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // 4th failure exceeds max_restarts → fatal
+        let action = handler.record_failure();
+        assert_eq!(action, FailureAction::FatalAfterRestarts);
+    }
+
+    /// Handler stats correctly report suppression state.
+    #[test]
+    fn stats_report_suppression_correctly() {
+        // Restart handler in backoff is suppressed
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100));
+        handler.record_failure();
+        let stats = handler.stats();
+        assert!(stats.is_suppressed, "Should be suppressed during backoff");
+
+        // Skip handler with open breaker is suppressed
+        let mut handler = FailureHandler::new(FailurePolicy::skip(1, 5000));
+        handler.record_failure(); // trips breaker (threshold=1)
+        let stats = handler.stats();
+        assert!(
+            stats.is_suppressed,
+            "Should be suppressed when breaker is open"
+        );
+
+        // Fatal handler is never suppressed
+        let handler = FailureHandler::new(FailurePolicy::Fatal);
+        assert!(!handler.stats().is_suppressed);
+
+        // Ignore handler is never suppressed
+        let handler = FailureHandler::new(FailurePolicy::Ignore);
+        assert!(!handler.stats().is_suppressed);
+    }
 }

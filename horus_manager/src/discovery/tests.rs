@@ -1,9 +1,9 @@
-use super::*;
 use super::nodes::{
     categorize_process, extract_process_name, format_duration, parse_memory_from_stat,
     process_exists, should_track_process,
 };
 use super::topics::discover_shared_memory_uncached;
+use super::*;
 
 // =====================
 // NodeStatus Tests

@@ -67,24 +67,37 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
     );
 
     // Prevent clickjacking
-    headers.insert("X-Frame-Options", "DENY".parse().expect("valid static header"));
+    headers.insert(
+        "X-Frame-Options",
+        "DENY".parse().expect("valid static header"),
+    );
 
     // Prevent MIME sniffing
-    headers.insert("X-Content-Type-Options", "nosniff".parse().expect("valid static header"));
+    headers.insert(
+        "X-Content-Type-Options",
+        "nosniff".parse().expect("valid static header"),
+    );
 
     // Enable XSS protection
-    headers.insert("X-XSS-Protection", "1; mode=block".parse().expect("valid static header"));
+    headers.insert(
+        "X-XSS-Protection",
+        "1; mode=block".parse().expect("valid static header"),
+    );
 
     // Referrer policy
     headers.insert(
         "Referrer-Policy",
-        "strict-origin-when-cross-origin".parse().expect("valid static header"),
+        "strict-origin-when-cross-origin"
+            .parse()
+            .expect("valid static header"),
     );
 
     // HSTS (only for HTTPS)
     headers.insert(
         "Strict-Transport-Security",
-        "max-age=31536000; includeSubDomains".parse().expect("valid static header"),
+        "max-age=31536000; includeSubDomains"
+            .parse()
+            .expect("valid static header"),
     );
 
     response

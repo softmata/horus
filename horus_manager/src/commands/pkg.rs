@@ -364,7 +364,6 @@ fn detect_version(package_dir: &Path) -> Option<String> {
     None
 }
 
-
 /// Register a plugin after package installation
 pub fn register_plugin_after_install(
     package_dir: &Path,

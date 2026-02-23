@@ -231,7 +231,9 @@ impl PluginResolver {
         if self.project_registry.is_none() {
             self.project_registry = Some(PluginRegistry::new_project(project_name));
         }
-        self.project_registry.as_mut().expect("project_registry initialized above")
+        self.project_registry
+            .as_mut()
+            .expect("project_registry initialized above")
     }
 
     /// Get project root path

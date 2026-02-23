@@ -39,7 +39,9 @@ pub(super) fn get_active_nodes() -> Result<Vec<NodeStatus>> {
     }
 }
 
-pub(super) fn get_local_workspaces(current_workspace_path: &Option<std::path::PathBuf>) -> Vec<WorkspaceData> {
+pub(super) fn get_local_workspaces(
+    current_workspace_path: &Option<std::path::PathBuf>,
+) -> Vec<WorkspaceData> {
     use std::collections::HashSet;
     use std::fs;
 

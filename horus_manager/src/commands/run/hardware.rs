@@ -1,12 +1,12 @@
 use crate::config::CARGO_TOML;
-use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::Result;
 use colored::*;
 use glob::glob;
+use horus_core::params::RuntimeParams;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use horus_core::params::RuntimeParams;
 
 /// Detect hardware nodes being used and check if hardware support is properly configured
 pub fn check_hardware_requirements(file_path: &Path, language: &str) -> Result<()> {

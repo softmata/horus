@@ -25,8 +25,8 @@ struct CiTestNode {
 
 impl CiTestNode {
     fn new() -> Self {
-        let topic_name = std::env::var("HORUS_CI_TOPIC_NAME")
-            .unwrap_or_else(|_| "ci_test_topic".to_string());
+        let topic_name =
+            std::env::var("HORUS_CI_TOPIC_NAME").unwrap_or_else(|_| "ci_test_topic".to_string());
         let ready_file = std::env::var("HORUS_CI_READY_FILE").ok();
 
         Self {
@@ -47,7 +47,10 @@ impl Node for CiTestNode {
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
         let topic = Topic::<u64>::new(&self.topic_name)?;
         self.publisher = Some(topic);
-        eprintln!("[ci_test_node] Initialized, publishing on '{}'", self.topic_name);
+        eprintln!(
+            "[ci_test_node] Initialized, publishing on '{}'",
+            self.topic_name
+        );
         Ok(())
     }
 
@@ -92,7 +95,8 @@ fn main() {
         .unwrap_or(5000);
 
     let mut scheduler = Scheduler::new();
-    scheduler.add(CiTestNode::new())
+    scheduler
+        .add(CiTestNode::new())
         .order(0)
         .rate_hz(10.0)
         .done();

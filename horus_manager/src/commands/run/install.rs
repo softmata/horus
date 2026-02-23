@@ -1,6 +1,6 @@
 use super::deps::{
-    split_dependencies_with_context, GitPackage, GitRef, PipPackage, CargoPackage,
-    parse_horus_yaml_dependencies_v2,
+    parse_horus_yaml_dependencies_v2, split_dependencies_with_context, CargoPackage, GitPackage,
+    GitRef, PipPackage,
 };
 use crate::cargo_utils::detect_system_cargo_binary;
 use crate::config::{CARGO_TOML, HORUS_YAML};
@@ -532,11 +532,13 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                 match parse_horus_yaml_dependencies_v2(HORUS_YAML) {
                     Ok(dep_specs) => {
                         // Create a map of package name -> DependencySpec
-                        let mut spec_map: std::collections::HashMap<String, crate::dependency_resolver::DependencySpec> =
-                            dep_specs
-                                .into_iter()
-                                .map(|spec| (spec.name.clone(), spec))
-                                .collect();
+                        let mut spec_map: std::collections::HashMap<
+                            String,
+                            crate::dependency_resolver::DependencySpec,
+                        > = dep_specs
+                            .into_iter()
+                            .map(|spec| (spec.name.clone(), spec))
+                            .collect();
 
                         for package in &missing_packages {
                             if let Some(spec) = spec_map.remove(package) {
@@ -756,7 +758,10 @@ pub(crate) fn prompt_system_cargo_choice_run(
     }
 }
 
-pub(crate) fn create_system_reference_cargo_run(package_name: &str, system_version: &str) -> Result<()> {
+pub(crate) fn create_system_reference_cargo_run(
+    package_name: &str,
+    system_version: &str,
+) -> Result<()> {
     println!("  {} Creating reference to system binary...", "".green());
 
     // Find actual system binary location
@@ -879,7 +884,155 @@ pub(crate) fn prompt_system_package_choice_run(
     }
 }
 
-pub(crate) fn create_system_reference_python_run(package_name: &str, system_version: &str) -> Result<()> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ─── find_cached_versions Tests ───
+
+    #[test]
+    fn find_cached_versions_empty_cache() {
+        let cache = TempDir::new().unwrap();
+        let result = find_cached_versions(cache.path(), "my_package").unwrap();
+        assert!(result.is_empty(), "Empty cache should return no versions");
+    }
+
+    #[test]
+    fn find_cached_versions_nonexistent_dir() {
+        let result =
+            find_cached_versions(Path::new("/tmp/nonexistent_horus_cache_xyz"), "pkg").unwrap();
+        assert!(
+            result.is_empty(),
+            "Non-existent cache dir should return empty"
+        );
+    }
+
+    #[test]
+    fn find_cached_versions_finds_unversioned() {
+        let cache = TempDir::new().unwrap();
+        // Create a package directory (just the name, no version)
+        fs::create_dir_all(cache.path().join("my_package")).unwrap();
+
+        let result = find_cached_versions(cache.path(), "my_package").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with("my_package"));
+    }
+
+    #[test]
+    fn find_cached_versions_finds_versioned() {
+        let cache = TempDir::new().unwrap();
+        fs::create_dir_all(cache.path().join("my_package@1.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("my_package@2.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("my_package@1.1.0")).unwrap();
+
+        let result = find_cached_versions(cache.path(), "my_package").unwrap();
+        assert_eq!(result.len(), 3, "Should find all 3 versioned directories");
+    }
+
+    #[test]
+    fn find_cached_versions_sorted_newest_first() {
+        let cache = TempDir::new().unwrap();
+        fs::create_dir_all(cache.path().join("pkg@1.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("pkg@2.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("pkg@1.5.0")).unwrap();
+
+        let result = find_cached_versions(cache.path(), "pkg").unwrap();
+        assert_eq!(result.len(), 3);
+        // Sorted by path descending — 2.0.0 > 1.5.0 > 1.0.0
+        let names: Vec<String> = result
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names[0], "pkg@2.0.0");
+        assert_eq!(names[1], "pkg@1.5.0");
+        assert_eq!(names[2], "pkg@1.0.0");
+    }
+
+    #[test]
+    fn find_cached_versions_exact_match_prioritized() {
+        let cache = TempDir::new().unwrap();
+        fs::create_dir_all(cache.path().join("pkg@1.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("pkg@2.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("pkg@3.0.0")).unwrap();
+
+        // Request exact version 1.0.0 — should be first despite being the oldest
+        let result = find_cached_versions(cache.path(), "pkg@1.0.0").unwrap();
+        assert!(!result.is_empty());
+        let first_name = result[0].file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(first_name, "pkg@1.0.0", "Exact match should be first");
+    }
+
+    #[test]
+    fn find_cached_versions_no_match_for_missing_version() {
+        let cache = TempDir::new().unwrap();
+        fs::create_dir_all(cache.path().join("pkg@1.0.0")).unwrap();
+
+        // Request version 3.0.0 which doesn't exist
+        let result = find_cached_versions(cache.path(), "pkg@3.0.0").unwrap();
+        // Still returns pkg@1.0.0 as a fallback (not empty — it found the base package)
+        // But exact match won't be first
+        for path in &result {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert_ne!(
+                name, "pkg@3.0.0",
+                "Should not fabricate non-existent version"
+            );
+        }
+    }
+
+    #[test]
+    fn find_cached_versions_ignores_unrelated_packages() {
+        let cache = TempDir::new().unwrap();
+        fs::create_dir_all(cache.path().join("my_pkg@1.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("other_pkg@2.0.0")).unwrap();
+        fs::create_dir_all(cache.path().join("my_pkg_extra@1.0.0")).unwrap();
+
+        let result = find_cached_versions(cache.path(), "my_pkg").unwrap();
+        // Should find my_pkg@1.0.0 but NOT other_pkg@2.0.0
+        // my_pkg_extra@1.0.0 should also be excluded (different base name)
+        for path in &result {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(
+                name == "my_pkg" || name.starts_with("my_pkg@"),
+                "Should only find my_pkg variants, got: {}",
+                name
+            );
+        }
+    }
+
+    // ─── home_dir Tests ───
+
+    #[test]
+    fn home_dir_returns_valid_path() {
+        let home = home_dir();
+        assert!(
+            home.exists(),
+            "home_dir should return an existing directory"
+        );
+        assert!(home.is_dir(), "home_dir should return a directory");
+    }
+
+    // ─── SystemPackageChoiceRun Tests ───
+
+    #[test]
+    fn system_package_choice_variants() {
+        let use_system = SystemPackageChoiceRun::UseSystem;
+        let install_horus = SystemPackageChoiceRun::InstallHORUS;
+        let cancel = SystemPackageChoiceRun::Cancel;
+
+        assert_eq!(use_system, SystemPackageChoiceRun::UseSystem);
+        assert_eq!(install_horus, SystemPackageChoiceRun::InstallHORUS);
+        assert_eq!(cancel, SystemPackageChoiceRun::Cancel);
+        assert_ne!(use_system, cancel);
+        assert_ne!(install_horus, cancel);
+    }
+}
+
+pub(crate) fn create_system_reference_python_run(
+    package_name: &str,
+    system_version: &str,
+) -> Result<()> {
     println!("  {} Creating reference to system package...", "".green());
 
     let packages_dir = PathBuf::from(".horus/packages");

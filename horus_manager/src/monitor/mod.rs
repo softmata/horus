@@ -266,17 +266,19 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
     // Display startup info
     use colored::Colorize;
-    println!("\n{}", "╔════════════════════════════════════════════╗".cyan());
+    println!(
+        "\n{}",
+        "╔════════════════════════════════════════════╗".cyan()
+    );
     println!(
         "{}",
         "║         HORUS Web Monitor                  ║".cyan()
     );
-    println!("{}", "╠════════════════════════════════════════════╣".cyan());
     println!(
-        "{}  http://localhost:{}",
-        "║  Local:".green(),
-        port
+        "{}",
+        "╠════════════════════════════════════════════╣".cyan()
     );
+    println!("{}  http://localhost:{}", "║  Local:".green(), port);
 
     if let Some(ip) = get_local_ip() {
         let network_url = format!("http://{}:{}", ip, port);
@@ -298,18 +300,14 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
     // Show workspace info
     if let Some(ref ws) = current_workspace {
-        println!(
-            "{}  {}",
-            "║  Workspace:".green(),
-            ws.display()
-        );
+        println!("{}  {}", "║  Workspace:".green(), ws.display());
     }
 
-    println!("{}", "╚════════════════════════════════════════════╝".cyan());
     println!(
         "{}",
-        "  Press Ctrl+C to stop the server\n".bright_black()
+        "╚════════════════════════════════════════════╝".cyan()
     );
+    println!("{}", "  Press Ctrl+C to stop the server\n".bright_black());
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     axum::serve(listener, app).await?;

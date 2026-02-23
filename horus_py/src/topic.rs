@@ -404,12 +404,18 @@ impl PyTopic {
                         if !info.is_none(py) {
                             log_py_callback(
                                 info.call_method1(py, "register_publisher", (&self.name, "CmdVel")),
-                                "register_publisher", &self.name,
+                                "register_publisher",
+                                &self.name,
                             );
                             use horus::core::LogSummary;
                             log_py_callback(
-                                info.call_method1(py, "log_pub", (&self.name, cmd.log_summary(), ipc_ns)),
-                                "log_pub", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, cmd.log_summary(), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -431,12 +437,18 @@ impl PyTopic {
                         if !info.is_none(py) {
                             log_py_callback(
                                 info.call_method1(py, "register_publisher", (&self.name, "Pose2D")),
-                                "register_publisher", &self.name,
+                                "register_publisher",
+                                &self.name,
                             );
                             use horus::core::LogSummary;
                             log_py_callback(
-                                info.call_method1(py, "log_pub", (&self.name, pose.log_summary(), ipc_ns)),
-                                "log_pub", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, pose.log_summary(), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -458,12 +470,18 @@ impl PyTopic {
                         if !info.is_none(py) {
                             log_py_callback(
                                 info.call_method1(py, "register_publisher", (&self.name, "Imu")),
-                                "register_publisher", &self.name,
+                                "register_publisher",
+                                &self.name,
                             );
                             use horus::core::LogSummary;
                             log_py_callback(
-                                info.call_method1(py, "log_pub", (&self.name, imu.log_summary(), ipc_ns)),
-                                "log_pub", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, imu.log_summary(), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -484,13 +502,23 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "Odometry")),
-                                "register_publisher", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "Odometry"),
+                                ),
+                                "register_publisher",
+                                &self.name,
                             );
                             use horus::core::LogSummary;
                             log_py_callback(
-                                info.call_method1(py, "log_pub", (&self.name, odom.log_summary(), ipc_ns)),
-                                "log_pub", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, odom.log_summary(), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -514,12 +542,18 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "LaserScan")),
-                                "register_publisher", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "LaserScan"),
+                                ),
+                                "register_publisher",
+                                &self.name,
                             );
                             log_py_callback(
                                 info.call_method1(py, "log_pub", (&self.name, log_summary, ipc_ns)),
-                                "log_pub", &self.name,
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -560,12 +594,18 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "GenericMessage")),
-                                "register_publisher", &self.name,
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "GenericMessage"),
+                                ),
+                                "register_publisher",
+                                &self.name,
                             );
                             log_py_callback(
                                 info.call_method1(py, "log_pub", (&self.name, log_summary, ipc_ns)),
-                                "log_pub", &self.name,
+                                "log_pub",
+                                &self.name,
                             );
                         }
                     }
@@ -606,13 +646,23 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "CmdVel")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "CmdVel"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 log_py_callback(
-                                    info.call_method1(py, "log_sub", (&self.name, cmd.log_summary(), ipc_ns)),
-                                    "log_sub", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, cmd.log_summary(), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }
@@ -634,13 +684,23 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "Pose2D")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "Pose2D"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 log_py_callback(
-                                    info.call_method1(py, "log_sub", (&self.name, pose.log_summary(), ipc_ns)),
-                                    "log_sub", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, pose.log_summary(), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }
@@ -662,13 +722,23 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "Imu")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "Imu"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 log_py_callback(
-                                    info.call_method1(py, "log_sub", (&self.name, imu.log_summary(), ipc_ns)),
-                                    "log_sub", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, imu.log_summary(), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }
@@ -690,13 +760,23 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "Odometry")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "Odometry"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 log_py_callback(
-                                    info.call_method1(py, "log_sub", (&self.name, odom.log_summary(), ipc_ns)),
-                                    "log_sub", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, odom.log_summary(), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }
@@ -718,13 +798,23 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "LaserScan")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "LaserScan"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 log_py_callback(
-                                    info.call_method1(py, "log_sub", (&self.name, scan.log_summary(), ipc_ns)),
-                                    "log_sub", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, scan.log_summary(), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }
@@ -747,14 +837,20 @@ impl PyTopic {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
                                 log_py_callback(
-                                    info.call_method1(py, "register_subscriber", (&self.name, "GenericMessage")),
-                                    "register_subscriber", &self.name,
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "GenericMessage"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
                                 );
                                 use horus::core::LogSummary;
                                 let log_msg = msg.log_summary();
                                 log_py_callback(
                                     info.call_method1(py, "log_sub", (&self.name, log_msg, ipc_ns)),
-                                    "log_sub", &self.name,
+                                    "log_sub",
+                                    &self.name,
                                 );
                             }
                         }

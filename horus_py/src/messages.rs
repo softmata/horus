@@ -423,7 +423,16 @@ impl PyPose3D {
     #[pyo3(signature = (x=0.0, y=0.0, z=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0, timestamp_ns=0))]
     #[allow(clippy::too_many_arguments)]
     fn new(x: f64, y: f64, z: f64, qx: f64, qy: f64, qz: f64, qw: f64, timestamp_ns: u64) -> Self {
-        Self { x, y, z, qx, qy, qz, qw, timestamp_ns }
+        Self {
+            x,
+            y,
+            z,
+            qx,
+            qy,
+            qz,
+            qw,
+            timestamp_ns,
+        }
     }
 
     /// Topic name for this message type
@@ -569,7 +578,14 @@ impl PyClock {
         source: u8,
         timestamp_ns: u64,
     ) -> Self {
-        Self { clock_ns, realtime_ns, sim_speed, paused, source, timestamp_ns }
+        Self {
+            clock_ns,
+            realtime_ns,
+            sim_speed,
+            paused,
+            source,
+            timestamp_ns,
+        }
     }
 
     /// Topic name for this message type

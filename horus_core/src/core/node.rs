@@ -240,7 +240,7 @@ impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
             max_tick_duration_ms: Some(1000), // 1 second timeout
-            log_level: "INFO".to_string(), // Development default: includes info logging
+            log_level: "INFO".to_string(),    // Development default: includes info logging
             custom_params: HashMap::new(),
         }
     }

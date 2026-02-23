@@ -33,9 +33,8 @@
 // === User-facing re-exports ===
 pub use horus_core::communication::{PodMessage, Topic};
 pub use horus_core::core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig,
-    NodeMetrics, NodePresence, NodeState, RtClass, RtConfig, RtConfigBuilder,
-    RtDegradation, RtNode, RtPriority, RtStats,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeConfig, NodeMetrics, NodePresence,
+    NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats,
 };
 pub use horus_core::error::{HorusError, HorusResult, Result};
 pub use horus_core::params::RuntimeParams;
@@ -67,9 +66,13 @@ pub use horus_core;
 #[doc(hidden)]
 pub use horus_core::actions;
 #[doc(hidden)]
+pub use horus_core::bytemuck;
+#[doc(hidden)]
 pub use horus_core::communication;
 #[doc(hidden)]
 pub use horus_core::core;
+#[doc(hidden)]
+pub use horus_core::dlpack;
 #[doc(hidden)]
 pub use horus_core::error;
 #[doc(hidden)]
@@ -77,17 +80,13 @@ pub use horus_core::memory;
 #[doc(hidden)]
 pub use horus_core::params;
 #[doc(hidden)]
-pub use horus_core::scheduling;
-#[doc(hidden)]
-pub use horus_core::dlpack;
-#[doc(hidden)]
 pub use horus_core::paste;
+#[doc(hidden)]
+pub use horus_core::scheduling;
 #[doc(hidden)]
 pub use horus_core::serde_json;
 #[doc(hidden)]
 pub use horus_core::serde_yaml;
-#[doc(hidden)]
-pub use horus_core::bytemuck;
 #[doc(hidden)]
 pub use serde;
 
@@ -122,8 +121,7 @@ pub mod prelude {
     // Safety & Fault Tolerance
     // ============================================
     pub use horus_core::scheduling::{
-        BlackBox, BlackBoxEvent, CircuitState, SafetyState, SafetyStats,
-        WCETViolation,
+        BlackBox, BlackBoxEvent, CircuitState, SafetyState, SafetyStats, WCETViolation,
     };
 
     // ============================================
@@ -155,23 +153,9 @@ pub mod prelude {
     // Access them via horus::RtConfig or horus::core::rt_config::* when needed.
 
     // ============================================
-    // Memory & Tensors
+    // Memory (user-facing domain types only)
     // ============================================
-    pub use horus_core::memory::{TensorHandle, TensorPool, TensorPoolConfig};
-
-    // Domain-specific types (RAII wrappers with rich API for data access)
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
-
-    // CUDA support (requires "cuda" feature)
-    #[cfg(feature = "cuda")]
-    pub use horus_core::memory::{cuda_available, cuda_device_count};
-
-    // CUDA Tensor Pool & IPC (requires "cuda" feature)
-    #[cfg(feature = "cuda")]
-    pub use horus_core::memory::{
-        cuda_ffi, CudaPoolStats, CudaTensor, CudaTensorPool, CudaTensorPoolConfig, P2PAccessInfo,
-        P2PManager,
-    };
 
     // ============================================
     // HFrame Transform System
@@ -181,9 +165,11 @@ pub mod prelude {
     // ============================================
     // Message Types (ALL from horus_library)
     // ============================================
-    pub use horus_library::messages::*;
-    pub use horus_types::{Device, HorusTensor, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
     pub use horus_core::communication::TopicMessage;
+    pub use horus_library::messages::*;
+    pub use horus_types::{
+        Device, HorusTensor, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype,
+    };
 
     // ============================================
     // Error Types

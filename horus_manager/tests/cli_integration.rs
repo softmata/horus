@@ -169,9 +169,7 @@ fn test_invalid_subcommand_fails() {
 #[test]
 fn test_no_args_fails() {
     // Running horus with no subcommand should fail (clap requires subcommand)
-    horus_cmd()
-        .assert()
-        .failure();
+    horus_cmd().assert().failure();
 }
 
 // ============================================================================
@@ -352,8 +350,5 @@ fn test_check_valid_horus_yaml() {
 #[test]
 fn test_msg_list() {
     // msg list shows built-in message types - should always succeed
-    horus_cmd()
-        .args(["msg", "list"])
-        .assert()
-        .success();
+    horus_cmd().args(["msg", "list"]).assert().success();
 }

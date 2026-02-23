@@ -761,6 +761,15 @@ impl Illuminance {
 // for real-time robotics sensor data. Topic automatically uses POD backend.
 
 crate::messages::impl_pod_message!(
-    LaserScan, Imu, Odometry, Range, BatteryState, NavSatFix,
-    JointState, MagneticField, Temperature, FluidPressure, Illuminance,
+    LaserScan,
+    Imu,
+    Odometry,
+    Range,
+    BatteryState,
+    NavSatFix,
+    JointState,
+    MagneticField,
+    Temperature,
+    FluidPressure,
+    Illuminance,
 );

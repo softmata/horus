@@ -123,7 +123,10 @@ fn test_skip_policy_circuit_breaker_transitions() {
     handler.record_success();
     handler.record_success();
     let stats = handler.stats();
-    assert!(!stats.is_suppressed, "breaker should close after enough successes");
+    assert!(
+        !stats.is_suppressed,
+        "breaker should close after enough successes"
+    );
 }
 
 #[test]
@@ -172,7 +175,10 @@ fn test_circuit_breaker_false_forces_ignore() {
     // With circuit_breaker=false, apply_config overrides Fatal → Ignore,
     // so the panic should be swallowed
     let result = scheduler.run_for(Duration::from_millis(200));
-    assert!(result.is_ok(), "scheduler should not stop when circuit_breaker=false");
+    assert!(
+        result.is_ok(),
+        "scheduler should not stop when circuit_breaker=false"
+    );
 }
 
 // ============================================================

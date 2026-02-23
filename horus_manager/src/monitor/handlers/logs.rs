@@ -1,9 +1,4 @@
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 
 pub async fn logs_all_handler() -> impl IntoResponse {
     use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;

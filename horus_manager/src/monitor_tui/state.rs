@@ -1,5 +1,5 @@
-use super::*;
 use super::data::get_installed_packages;
+use super::*;
 
 impl TuiDashboard {
     pub(super) fn next_tab(&mut self) {

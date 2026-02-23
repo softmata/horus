@@ -1,9 +1,4 @@
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use horus_core::scheduling::{
     BreakpointCondition, DebugSessionState, NodeRecording, Recording, ReplayDebugger,
     WatchExpression, WatchType,
@@ -617,62 +612,60 @@ pub async fn debug_snapshot_handler(Path(session_id): Path<String>) -> impl Into
     let sessions = DEBUG_SESSIONS.lock().expect("debug sessions lock poisoned");
 
     match sessions.get(&session_id) {
-        Some(data) => {
-            match data.debugger.current_snapshot() {
-                Some(snapshot) => {
-                    let inputs: serde_json::Map<String, serde_json::Value> = snapshot
-                        .inputs
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                serde_json::json!({
-                                    "size": v.len(),
-                                    "hex": format!("{:02x?}", &v[..v.len().min(64)]),
-                                    "truncated": v.len() > 64
-                                }),
-                            )
-                        })
-                        .collect();
+        Some(data) => match data.debugger.current_snapshot() {
+            Some(snapshot) => {
+                let inputs: serde_json::Map<String, serde_json::Value> = snapshot
+                    .inputs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            serde_json::json!({
+                                "size": v.len(),
+                                "hex": format!("{:02x?}", &v[..v.len().min(64)]),
+                                "truncated": v.len() > 64
+                            }),
+                        )
+                    })
+                    .collect();
 
-                    let outputs: serde_json::Map<String, serde_json::Value> = snapshot
-                        .outputs
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                serde_json::json!({
-                                    "size": v.len(),
-                                    "hex": format!("{:02x?}", &v[..v.len().min(64)]),
-                                    "truncated": v.len() > 64
-                                }),
-                            )
-                        })
-                        .collect();
+                let outputs: serde_json::Map<String, serde_json::Value> = snapshot
+                    .outputs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            serde_json::json!({
+                                "size": v.len(),
+                                "hex": format!("{:02x?}", &v[..v.len().min(64)]),
+                                "truncated": v.len() > 64
+                            }),
+                        )
+                    })
+                    .collect();
 
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "tick": snapshot.tick,
-                            "timestamp_us": snapshot.timestamp_us,
-                            "duration_ns": snapshot.duration_ns,
-                            "duration_human": format!("{:.3} ms", snapshot.duration_ns as f64 / 1_000_000.0),
-                            "inputs": inputs,
-                            "outputs": outputs,
-                            "has_state": snapshot.state.is_some(),
-                            "state_size": snapshot.state.as_ref().map(|s| s.len()).unwrap_or(0)
-                        })),
-                    )
-                }
-                None => (
+                (
                     StatusCode::OK,
                     Json(serde_json::json!({
-                        "snapshot": null,
-                        "message": "No snapshot at current position"
+                        "tick": snapshot.tick,
+                        "timestamp_us": snapshot.timestamp_us,
+                        "duration_ns": snapshot.duration_ns,
+                        "duration_human": format!("{:.3} ms", snapshot.duration_ns as f64 / 1_000_000.0),
+                        "inputs": inputs,
+                        "outputs": outputs,
+                        "has_state": snapshot.state.is_some(),
+                        "state_size": snapshot.state.as_ref().map(|s| s.len()).unwrap_or(0)
                     })),
-                ),
+                )
             }
-        }
+            None => (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "snapshot": null,
+                    "message": "No snapshot at current position"
+                })),
+            ),
+        },
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({

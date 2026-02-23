@@ -199,6 +199,11 @@ impl ServoCommand {
     pub fn from_degrees(servo_id: u8, degrees: f32) -> Self {
         Self::new(servo_id, degrees.to_radians())
     }
+
+    /// Check if values are valid
+    pub fn is_valid(&self) -> bool {
+        self.position.is_finite() && self.speed >= 0.0 && self.speed <= 1.0
+    }
 }
 
 /// PID gains configuration message
@@ -388,6 +393,17 @@ impl JointCommand {
         self.joint_count += 1;
 
         Ok(())
+    }
+
+    /// Check if values are valid
+    pub fn is_valid(&self) -> bool {
+        let count = self.joint_count as usize;
+        if count > 16 {
+            return false;
+        }
+        self.positions[..count].iter().all(|v| v.is_finite())
+            && self.velocities[..count].iter().all(|v| v.is_finite())
+            && self.efforts[..count].iter().all(|v| v.is_finite())
     }
 
     /// Add a joint velocity command
@@ -677,6 +693,149 @@ impl LogSummary for StepperCommand {
 // =============================================================================
 
 crate::messages::impl_pod_message!(
-    MotorCommand, DifferentialDriveCommand, ServoCommand, PidConfig,
-    TrajectoryPoint, JointCommand, PwmCommand, StepperCommand,
+    MotorCommand,
+    DifferentialDriveCommand,
+    ServoCommand,
+    PidConfig,
+    TrajectoryPoint,
+    JointCommand,
+    PwmCommand,
+    StepperCommand,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================================
+    // is_valid() tests for all 6 motor command types
+    // ============================================================================
+
+    #[test]
+    fn test_motor_command_is_valid() {
+        // Construct with all-finite values
+        let valid = MotorCommand {
+            motor_id: 0,
+            mode: MotorCommand::MODE_VELOCITY,
+            target: 1.0,
+            max_velocity: 10.0,
+            max_acceleration: 5.0,
+            feed_forward: 0.0,
+            enable: 1,
+            timestamp_ns: 0,
+        };
+        assert!(valid.is_valid());
+
+        let mut invalid = valid;
+        invalid.target = f64::NAN;
+        assert!(!invalid.is_valid());
+
+        // velocity() sets max_velocity/max_acceleration to INFINITY which is not finite
+        let inf_cmd = MotorCommand::velocity(0, 1.0);
+        assert!(!inf_cmd.is_valid());
+    }
+
+    #[test]
+    fn test_differential_drive_is_valid() {
+        let valid = DifferentialDriveCommand::new(1.0, 1.0);
+        assert!(valid.is_valid());
+
+        let mut invalid = DifferentialDriveCommand::new(1.0, 1.0);
+        invalid.left_velocity = f64::NAN;
+        assert!(!invalid.is_valid());
+    }
+
+    #[test]
+    fn test_servo_command_is_valid() {
+        let valid = ServoCommand::new(0, 1.0);
+        assert!(valid.is_valid());
+
+        let valid_with_speed = ServoCommand::with_speed(0, 0.5, 0.75);
+        assert!(valid_with_speed.is_valid());
+
+        // Invalid: NaN position
+        let mut invalid = ServoCommand::new(0, 1.0);
+        invalid.position = f32::NAN;
+        assert!(!invalid.is_valid());
+
+        // Invalid: speed out of range
+        let mut bad_speed = ServoCommand::new(0, 1.0);
+        bad_speed.speed = 1.5;
+        assert!(!bad_speed.is_valid());
+
+        // Invalid: negative speed
+        let mut neg_speed = ServoCommand::new(0, 1.0);
+        neg_speed.speed = -0.1;
+        assert!(!neg_speed.is_valid());
+    }
+
+    #[test]
+    fn test_pid_config_is_valid() {
+        let valid = PidConfig::new(1.0, 0.1, 0.01).with_limits(10.0, 100.0);
+        assert!(valid.is_valid());
+
+        let mut invalid = PidConfig::new(1.0, 0.1, 0.01).with_limits(10.0, 100.0);
+        invalid.kp = f64::NAN;
+        assert!(!invalid.is_valid());
+
+        // Negative gains are invalid
+        let neg = PidConfig::new(-1.0, 0.1, 0.01).with_limits(10.0, 100.0);
+        assert!(!neg.is_valid());
+
+        // new() sets INFINITY limits which is not finite
+        let inf_limits = PidConfig::new(1.0, 0.1, 0.01);
+        assert!(!inf_limits.is_valid());
+    }
+
+    #[test]
+    fn test_pwm_command_is_valid() {
+        let valid = PwmCommand::new(0, 0.5);
+        assert!(valid.is_valid());
+
+        let mut invalid = PwmCommand::new(0, 0.5);
+        invalid.duty_cycle = 1.5;
+        assert!(!invalid.is_valid());
+
+        let mut bad_freq = PwmCommand::new(0, 0.5);
+        bad_freq.frequency = 0;
+        assert!(!bad_freq.is_valid());
+    }
+
+    #[test]
+    fn test_stepper_command_is_valid() {
+        let valid = StepperCommand::steps(0, 100);
+        assert!(valid.is_valid());
+
+        let mut invalid = StepperCommand::steps(0, 100);
+        invalid.target = f64::NAN;
+        assert!(!invalid.is_valid());
+
+        // Invalid microstep value
+        let mut bad_ustep = StepperCommand::steps(0, 100);
+        bad_ustep.microsteps = 3;
+        assert!(!bad_ustep.is_valid());
+    }
+
+    #[test]
+    fn test_joint_command_is_valid() {
+        let mut cmd = JointCommand::new();
+        cmd.add_position("shoulder", 1.0).unwrap();
+        cmd.add_position("elbow", 0.5).unwrap();
+        assert!(cmd.is_valid());
+
+        // Invalid: NaN position
+        let mut invalid = JointCommand::new();
+        invalid.add_position("shoulder", 1.0).unwrap();
+        invalid.positions[0] = f64::NAN;
+        assert!(!invalid.is_valid());
+
+        // Invalid: joint_count > 16
+        let mut over = JointCommand::new();
+        over.joint_count = 17;
+        assert!(!over.is_valid());
+
+        // Empty command is valid
+        let empty = JointCommand::new();
+        assert!(empty.is_valid());
+    }
+}

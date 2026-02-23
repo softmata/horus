@@ -19,7 +19,10 @@ fn test_record_inputs_disabled() {
 
     let recording = recorder.recording();
     let snap = &recording.snapshots[0];
-    assert!(snap.inputs.is_empty(), "inputs should be empty when record_inputs=false");
+    assert!(
+        snap.inputs.is_empty(),
+        "inputs should be empty when record_inputs=false"
+    );
     assert!(!snap.outputs.is_empty(), "outputs should still be recorded");
 }
 
@@ -39,7 +42,10 @@ fn test_record_outputs_disabled() {
     let recording = recorder.recording();
     let snap = &recording.snapshots[0];
     assert!(!snap.inputs.is_empty(), "inputs should still be recorded");
-    assert!(snap.outputs.is_empty(), "outputs should be empty when record_outputs=false");
+    assert!(
+        snap.outputs.is_empty(),
+        "outputs should be empty when record_outputs=false"
+    );
 }
 
 /// Test that record_timing=false produces snapshots with zero duration
@@ -55,7 +61,10 @@ fn test_record_timing_disabled() {
 
     let recording = recorder.recording();
     let snap = &recording.snapshots[0];
-    assert_eq!(snap.duration_ns, 0, "duration_ns should be 0 when record_timing=false");
+    assert_eq!(
+        snap.duration_ns, 0,
+        "duration_ns should be 0 when record_timing=false"
+    );
 }
 
 /// Test that all three flags enabled (default) produces full recordings
@@ -75,9 +84,18 @@ fn test_all_recording_enabled() {
 
     let recording = recorder.recording();
     let snap = &recording.snapshots[0];
-    assert!(!snap.inputs.is_empty(), "inputs should be recorded by default");
-    assert!(!snap.outputs.is_empty(), "outputs should be recorded by default");
-    assert_eq!(snap.duration_ns, 50000, "duration should be recorded by default");
+    assert!(
+        !snap.inputs.is_empty(),
+        "inputs should be recorded by default"
+    );
+    assert!(
+        !snap.outputs.is_empty(),
+        "outputs should be recorded by default"
+    );
+    assert_eq!(
+        snap.duration_ns, 50000,
+        "duration should be recorded by default"
+    );
 }
 
 /// Test From<RecordingConfigYaml> correctly transfers recording flags

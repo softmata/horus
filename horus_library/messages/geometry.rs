@@ -247,6 +247,26 @@ impl Vector3 {
     }
 }
 
+impl From<Vector3> for Point3 {
+    fn from(v: Vector3) -> Self {
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+impl From<Point3> for Vector3 {
+    fn from(p: Point3) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+
 /// Quaternion for 3D rotation representation
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
@@ -447,7 +467,11 @@ impl PoseWithCovariance {
 
     /// Get orientation variance [var_roll, var_pitch, var_yaw] from diagonal
     pub fn orientation_variance(&self) -> [f64; 3] {
-        [self.covariance[21], self.covariance[28], self.covariance[35]]
+        [
+            self.covariance[21],
+            self.covariance[28],
+            self.covariance[35],
+        ]
     }
 }
 
@@ -504,7 +528,11 @@ impl TwistWithCovariance {
 
     /// Get angular velocity variance [var_wx, var_wy, var_wz] from diagonal
     pub fn angular_variance(&self) -> [f64; 3] {
-        [self.covariance[21], self.covariance[28], self.covariance[35]]
+        [
+            self.covariance[21],
+            self.covariance[28],
+            self.covariance[35],
+        ]
     }
 }
 
@@ -576,9 +604,18 @@ impl AccelStamped {
 // for real-time robotics control loops. Topic automatically uses POD backend.
 
 crate::messages::impl_pod_message!(
-    Twist, Pose2D, TransformStamped, Point3, Vector3, Quaternion,
-    Pose3D, PoseStamped, PoseWithCovariance, TwistWithCovariance,
-    Accel, AccelStamped,
+    Twist,
+    Pose2D,
+    TransformStamped,
+    Point3,
+    Vector3,
+    Quaternion,
+    Pose3D,
+    PoseStamped,
+    PoseWithCovariance,
+    TwistWithCovariance,
+    Accel,
+    AccelStamped,
 );
 
 #[cfg(test)]
@@ -982,5 +1019,27 @@ mod tests {
         assert_eq!(v.x, reconstructed.x);
         assert_eq!(v.y, reconstructed.y);
         assert_eq!(v.z, reconstructed.z);
+    }
+
+    // ============================================================================
+    // Point3 <-> Vector3 Conversion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_to_point3() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let p: Point3 = v.into();
+        assert_eq!(p.x, 1.0);
+        assert_eq!(p.y, 2.0);
+        assert_eq!(p.z, 3.0);
+    }
+
+    #[test]
+    fn test_point3_to_vector3() {
+        let p = Point3::new(4.0, 5.0, 6.0);
+        let v: Vector3 = p.into();
+        assert_eq!(v.x, 4.0);
+        assert_eq!(v.y, 5.0);
+        assert_eq!(v.z, 6.0);
     }
 }

@@ -480,6 +480,9 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
             }
         }
     } else {
+        errors.push(
+            "Empty horus.yaml file — must contain at least 'name' and 'version' fields".to_string(),
+        );
         None
     };
 
@@ -1348,6 +1351,395 @@ pub enum MissingSystemChoice {
     InstallGlobal,
     InstallLocal,
     Skip,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: write a horus.yaml with given content into a temp dir and return the path
+    fn write_yaml(dir: &TempDir, content: &str) -> PathBuf {
+        let yaml_path = dir.path().join("horus.yaml");
+        fs::write(&yaml_path, content).unwrap();
+        yaml_path
+    }
+
+    // ─── YAML Syntax Tests ───
+
+    #[test]
+    fn valid_yaml_passes_check() {
+        let dir = TempDir::new().unwrap();
+        // Create a valid horus.yaml with all required fields
+        // Don't create Cargo.toml — code validation step simply skips
+        write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\n");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(
+            result.is_ok(),
+            "Valid horus.yaml should pass: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn malformed_yaml_returns_error() {
+        let dir = TempDir::new().unwrap();
+        // Deliberately malformed YAML (tabs in wrong place, invalid mapping)
+        write_yaml(&dir, "name: [\ninvalid: yaml: content:\n  - broken");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Malformed YAML should fail validation");
+    }
+
+    #[test]
+    fn empty_yaml_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(&dir, "");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        // Empty file has no required fields
+        assert!(result.is_err(), "Empty YAML should fail");
+    }
+
+    // ─── Required Fields Tests ───
+
+    #[test]
+    fn missing_name_field_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(&dir, "version: \"0.1.0\"\nlanguage: rust\n");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Missing 'name' should fail");
+    }
+
+    #[test]
+    fn missing_version_field_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(&dir, "name: my-robot\nlanguage: rust\n");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Missing 'version' should fail");
+    }
+
+    #[test]
+    fn missing_language_field_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\n");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Missing 'language' should fail");
+    }
+
+    // ─── Version Format Tests ───
+
+    #[test]
+    fn invalid_version_format_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            &dir,
+            "name: my-robot\nversion: not_a_version\nlanguage: rust\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Invalid semver version should fail");
+    }
+
+    #[test]
+    fn valid_semver_version_passes() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(&dir, "name: my-robot\nversion: \"1.2.3\"\nlanguage: rust\n");
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(
+            result.is_ok(),
+            "Valid semver should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // ─── Language Validation Tests ───
+
+    #[test]
+    fn invalid_language_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            &dir,
+            "name: my-robot\nversion: \"0.1.0\"\nlanguage: javascript\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Invalid language 'javascript' should fail");
+    }
+
+    // ─── Project Name Validation Tests ───
+
+    #[test]
+    fn name_with_spaces_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            &dir,
+            "name: \"my robot\"\nversion: \"0.1.0\"\nlanguage: rust\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Name with spaces should fail");
+    }
+
+    #[test]
+    fn name_with_special_chars_returns_error() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            &dir,
+            "name: \"my@robot!\"\nversion: \"0.1.0\"\nlanguage: rust\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(result.is_err(), "Name with special chars should fail");
+    }
+
+    #[test]
+    fn name_with_hyphens_and_underscores_passes() {
+        let dir = TempDir::new().unwrap();
+        write_yaml(
+            &dir,
+            "name: my-robot_v2\nversion: \"0.1.0\"\nlanguage: rust\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(
+            result.is_ok(),
+            "Hyphens and underscores in name should pass: {:?}",
+            result.err()
+        );
+    }
+
+    // ─── Path Not Found Tests ───
+
+    #[test]
+    fn nonexistent_path_returns_error() {
+        let result = run_check(
+            Some(PathBuf::from("/tmp/nonexistent_horus_path_12345")),
+            true,
+        );
+        assert!(result.is_err(), "Non-existent path should fail");
+    }
+
+    // ─── Circular Dependency Detection ───
+
+    #[test]
+    fn circular_dependency_detected() {
+        let dir = TempDir::new().unwrap();
+
+        // Create package A that depends on B
+        let pkg_a = dir.path().join("pkg_a");
+        let pkg_b = dir.path().join("pkg_b");
+        fs::create_dir_all(&pkg_a).unwrap();
+        fs::create_dir_all(&pkg_b).unwrap();
+
+        // A depends on B via path (map format: dependencies: { pkg-b: { path: ... } })
+        fs::write(
+            pkg_a.join("horus.yaml"),
+            format!(
+                "name: pkg-a\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  pkg-b:\n    path: \"{}\"\n",
+                pkg_b.display()
+            ),
+        )
+        .unwrap();
+
+        // B depends on A via path (circular!)
+        fs::write(
+            pkg_b.join("horus.yaml"),
+            format!(
+                "name: pkg-b\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  pkg-a:\n    path: \"{}\"\n",
+                pkg_a.display()
+            ),
+        )
+        .unwrap();
+
+        // Check package A — should detect the circular dependency
+        let result = run_check(Some(pkg_a.join("horus.yaml")), true);
+        assert!(result.is_err(), "Circular dependency A→B→A should fail");
+    }
+
+    // ─── Path Dependency to Non-existent Directory ───
+
+    #[test]
+    fn path_dependency_nonexistent_returns_error() {
+        let dir = TempDir::new().unwrap();
+        // Use map format: dependencies: { missing-dep: { path: ./nonexistent_dir } }
+        write_yaml(
+            &dir,
+            "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  missing-dep:\n    path: ./nonexistent_dir\n",
+        );
+        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        assert!(
+            result.is_err(),
+            "Path dependency to non-existent dir should fail"
+        );
+    }
+
+    // ─── parse_python_imports Tests ───
+
+    #[test]
+    fn parse_python_imports_basic() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "import numpy\nimport pandas\nfrom torch import nn\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        assert!(imports.contains(&"numpy".to_string()));
+        assert!(imports.contains(&"pandas".to_string()));
+        assert!(imports.contains(&"torch".to_string()));
+    }
+
+    #[test]
+    fn parse_python_imports_filters_stdlib() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "import os\nimport sys\nimport json\nimport numpy\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        // os, sys, json are stdlib — should be filtered
+        assert!(!imports.contains(&"os".to_string()));
+        assert!(!imports.contains(&"sys".to_string()));
+        assert!(!imports.contains(&"json".to_string()));
+        // numpy is NOT stdlib — should be included
+        assert!(imports.contains(&"numpy".to_string()));
+    }
+
+    #[test]
+    fn parse_python_imports_handles_comments_and_empty() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "# This is a comment\n\nimport numpy\n# import pandas\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        assert!(imports.contains(&"numpy".to_string()));
+        assert!(
+            !imports.contains(&"pandas".to_string()),
+            "Commented imports should be ignored"
+        );
+    }
+
+    #[test]
+    fn parse_python_imports_from_submodule() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(&py_file, "from scipy.spatial import KDTree\n").unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        assert!(
+            imports.contains(&"scipy".to_string()),
+            "Should extract base module from 'from' imports"
+        );
+    }
+
+    #[test]
+    fn parse_python_imports_no_duplicates() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "import numpy\nimport numpy\nfrom numpy import array\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        let numpy_count = imports.iter().filter(|i| *i == "numpy").count();
+        assert_eq!(numpy_count, 1, "Should not have duplicate imports");
+    }
+
+    #[test]
+    fn parse_python_imports_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(&py_file, "").unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        assert!(imports.is_empty(), "Empty file should have no imports");
+    }
+
+    #[test]
+    fn parse_python_imports_mixed_stdlib_and_external() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "import os\nimport numpy\nimport sys\nimport custom_pkg\nfrom json import loads\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        // stdlib filtered
+        assert!(!imports.contains(&"os".to_string()));
+        assert!(!imports.contains(&"sys".to_string()));
+        assert!(!imports.contains(&"json".to_string()));
+        // external kept
+        assert!(imports.contains(&"numpy".to_string()));
+        assert!(imports.contains(&"custom_pkg".to_string()));
+        assert_eq!(imports.len(), 2);
+    }
+
+    #[test]
+    fn parse_python_imports_horus_filtered() {
+        let dir = TempDir::new().unwrap();
+        let py_file = dir.path().join("test.py");
+        fs::write(
+            &py_file,
+            "import horus\nfrom horus import Scheduler\nimport numpy\n",
+        )
+        .unwrap();
+
+        let imports = parse_python_imports(&py_file).unwrap();
+        // horus is explicitly filtered
+        assert!(!imports.contains(&"horus".to_string()));
+        assert!(imports.contains(&"numpy".to_string()));
+    }
+
+    // ─── System Package Existence Tests ───
+
+    #[test]
+    fn check_nonexistent_package_returns_false() {
+        assert!(
+            !check_system_package_exists("nonexistent_pkg_xyz_12345"),
+            "Non-existent package should return false"
+        );
+    }
+
+    // ─── SHM Availability Tests ───
+
+    #[test]
+    fn shm_is_available_on_linux() {
+        // HORUS requires /dev/shm on Linux for zero-copy IPC
+        assert!(
+            horus_core::memory::has_native_shm(),
+            "HORUS requires native SHM support"
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            let dev_shm = std::path::Path::new("/dev/shm");
+            assert!(dev_shm.exists(), "/dev/shm must exist for HORUS IPC");
+            assert!(dev_shm.is_dir(), "/dev/shm must be a directory");
+        }
+    }
+
+    // ─── MissingSystemChoice Tests ───
+
+    #[test]
+    fn missing_system_choice_variants() {
+        // Verify the enum variants exist and are distinguishable
+        let install_global = MissingSystemChoice::InstallGlobal;
+        let install_local = MissingSystemChoice::InstallLocal;
+        let skip = MissingSystemChoice::Skip;
+
+        assert_eq!(install_global, MissingSystemChoice::InstallGlobal);
+        assert_eq!(install_local, MissingSystemChoice::InstallLocal);
+        assert_eq!(skip, MissingSystemChoice::Skip);
+        assert_ne!(install_global, skip);
+    }
 }
 
 pub fn prompt_missing_system_package(

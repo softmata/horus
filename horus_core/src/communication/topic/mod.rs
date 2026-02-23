@@ -288,7 +288,9 @@ fn auto_capacity<T>() -> u32 {
         return MIN_CAPACITY;
     }
     let calculated = (PAGE_SIZE / type_size) as u32;
-    calculated.clamp(MIN_CAPACITY, MAX_CAPACITY)
+    calculated
+        .clamp(MIN_CAPACITY, MAX_CAPACITY)
+        .next_power_of_two()
 }
 
 // ============================================================================
@@ -404,7 +406,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         let storage = Arc::new(ShmRegion::new(name, total_size)?);
         let final_slot_size = Self::negotiate_shm_header(
-            name, &storage, type_size, type_align, is_pod, capacity, actual_slot_size,
+            name,
+            &storage,
+            type_size,
+            type_align,
+            is_pod,
+            capacity,
+            actual_slot_size,
         )?;
 
         Ok(Self {
@@ -447,7 +455,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             if storage.is_owner() {
                 // Fresh SHM — clear stale registry entries from a previous topic lifetime.
                 registry::remove_topic(name);
-                header.init(type_size, type_align, is_pod, capacity, actual_slot_size as u32);
+                header.init(
+                    type_size,
+                    type_align,
+                    is_pod,
+                    capacity,
+                    actual_slot_size as u32,
+                );
                 return Ok(actual_slot_size);
             }
             // Joiner: wait for owner to initialize the header.
@@ -570,9 +584,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         Self::sync_local(local, header, false);
         // Set role LAST — this gates the fast path via can_send()/can_recv()
         local.role = if is_producer {
-            if local.role == TopicRole::Consumer { TopicRole::Both } else { TopicRole::Producer }
+            if local.role == TopicRole::Consumer {
+                TopicRole::Both
+            } else {
+                TopicRole::Producer
+            }
         } else {
-            if local.role == TopicRole::Producer { TopicRole::Both } else { TopicRole::Consumer }
+            if local.role == TopicRole::Producer {
+                TopicRole::Both
+            } else {
+                TopicRole::Consumer
+            }
         };
 
         self.metrics.estimated_latency_ns.store(
@@ -820,8 +842,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let local = self.local();
         let cap = local.cached_capacity as usize;
         // SAFETY: HEADER_SIZE and data_region_offset are within storage bounds
-        local.cached_seq_ptr =
-            unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
+        local.cached_seq_ptr = unsafe { self.storage.as_ptr().add(Self::HEADER_SIZE) as *mut u8 };
         local.cached_data_ptr =
             unsafe { self.storage.as_ptr().add(Self::data_region_offset(cap)) as *mut u8 };
     }
@@ -895,20 +916,20 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpscShm | BackendMode::SpmcShm if colo => {
                 dispatch::send_shm_sp_pod_colo::<T>
             }
-            BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => {
-                dispatch::send_shm_sp_pod::<T>
-            }
+            BackendMode::SpscShm | BackendMode::SpmcShm if is_pod => dispatch::send_shm_sp_pod::<T>,
             BackendMode::SpscShm | BackendMode::SpmcShm => dispatch::send_shm_sp_serde::<T>,
             BackendMode::PodShm if colo => dispatch::send_shm_pod_broadcast_colo::<T>,
             BackendMode::PodShm => dispatch::send_shm_pod_broadcast::<T>,
             BackendMode::MpscShm | BackendMode::MpmcShm if colo => {
                 dispatch::send_shm_mp_pod_colo::<T>
             }
-            BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => {
-                dispatch::send_shm_mp_pod::<T>
-            }
+            BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
-            BackendMode::Unknown => dispatch::send_uninitialized::<T>,
+            // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
+            // Must NOT return send_uninitialized here — that causes infinite recursion
+            // when the role is already registered but stale SHM left mode as Unknown.
+            BackendMode::Unknown if is_pod => dispatch::send_shm_mp_pod::<T>,
+            BackendMode::Unknown => dispatch::send_shm_mp_serde::<T>,
         }
     }
 
@@ -948,7 +969,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
             BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
-            BackendMode::Unknown => dispatch::recv_uninitialized::<T>,
+            // Fallback for Unknown mode: use MPMC SHM (handles any topology).
+            // Must NOT return recv_uninitialized here — that causes infinite recursion
+            // when the role is already registered but stale SHM left mode as Unknown.
+            BackendMode::Unknown if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
+            BackendMode::Unknown => dispatch::recv_shm_mpmc_serde::<T>,
         }
     }
 
@@ -1472,7 +1497,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let local = self.local();
         if local.role == TopicRole::Both {
             let tail = local.local_tail;
-            if tail < local.local_head {
+            if local.local_head.wrapping_sub(tail) > 0 {
                 let msg = unsafe {
                     let base = local.cached_data_ptr as *const T;
                     std::ptr::read(base.add((tail & local.cached_capacity_mask) as usize))
@@ -1571,18 +1596,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return None;
         }
 
-        let header = self.header();
-        let head = header.sequence_or_head.load(Ordering::Acquire);
-
-        // No messages published yet
-        if head == 0 {
-            return None;
-        }
-
-        let mask = header.capacity_mask as u64;
-        let latest_index = ((head.wrapping_sub(1)) & mask) as usize;
-
-        // Try heap backends first
+        // Check heap backends first — DirectChannel and intra-process rings track
+        // head/tail independently from the SHM header, so we must query them directly
+        // rather than relying on header.sequence_or_head as a gatekeeper.
         // SAFETY: backend UnsafeCell accessed through &self; only this thread mutates it
         match unsafe { &*self.backend.get() } {
             BackendStorage::DirectChannel(slot) => {
@@ -1627,7 +1643,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
         }
 
-        // SHM path: read directly from the data region
+        // SHM path: read from header sequence counter and data region
+        let header = self.header();
+        let head = header.sequence_or_head.load(Ordering::Acquire);
+
+        // No messages published yet
+        if head == 0 {
+            return None;
+        }
+
+        let mask = header.capacity_mask as u64;
+        let latest_index = ((head.wrapping_sub(1)) & mask) as usize;
+
         let local = self.local();
         // SAFETY: data_ptr set from valid storage pointer; latest_index within ring bounds
         let msg = unsafe {
@@ -1958,7 +1985,6 @@ where
         };
         Ok(Self { ring, pool })
     }
-
 }
 
 // ============================================================================

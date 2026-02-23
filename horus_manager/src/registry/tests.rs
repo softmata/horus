@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::*;
+use super::*;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
@@ -305,7 +305,10 @@ fn test_detect_package_info_horus_yaml() {
     assert_eq!(manifest.license, Some("MIT".to_string()));
     assert_eq!(manifest.package_type, Some("driver".to_string()));
     assert_eq!(manifest.categories, Some("Perception".to_string()));
-    assert!(matches!(manifest.manifest_format, ManifestFormat::HorusYaml));
+    assert!(matches!(
+        manifest.manifest_format,
+        ManifestFormat::HorusYaml
+    ));
 }
 
 #[test]
@@ -331,9 +334,15 @@ categories = "Control"
     assert_eq!(manifest.version, "0.2.0");
     assert_eq!(manifest.description, Some("A Rust crate".to_string()));
     assert_eq!(manifest.license, Some("Apache-2.0".to_string()));
-    assert_eq!(manifest.source_url, Some("https://github.com/user/repo".to_string()));
+    assert_eq!(
+        manifest.source_url,
+        Some("https://github.com/user/repo".to_string())
+    );
     assert_eq!(manifest.package_type, Some("node".to_string()));
-    assert!(matches!(manifest.manifest_format, ManifestFormat::CargoToml));
+    assert!(matches!(
+        manifest.manifest_format,
+        ManifestFormat::CargoToml
+    ));
 }
 
 #[test]
@@ -359,7 +368,10 @@ fn test_detect_package_info_package_json() {
     assert_eq!(manifest.version, "3.0.0");
     assert_eq!(manifest.description, Some("A JS package".to_string()));
     assert_eq!(manifest.package_type, Some("tool".to_string()));
-    assert!(matches!(manifest.manifest_format, ManifestFormat::PackageJson));
+    assert!(matches!(
+        manifest.manifest_format,
+        ManifestFormat::PackageJson
+    ));
 }
 
 #[test]
@@ -389,7 +401,10 @@ fn test_copy_dir_all_basic() {
     copy_dir_all(src.path(), &dst_path).unwrap();
 
     assert!(dst_path.join("file1.txt").exists());
-    assert_eq!(fs::read_to_string(dst_path.join("file1.txt")).unwrap(), "hello");
+    assert_eq!(
+        fs::read_to_string(dst_path.join("file1.txt")).unwrap(),
+        "hello"
+    );
     assert!(dst_path.join("subdir/file2.txt").exists());
     assert_eq!(
         fs::read_to_string(dst_path.join("subdir/file2.txt")).unwrap(),
@@ -467,7 +482,10 @@ fn test_add_cargo_deps_no_cargo_toml() {
     let tmp = TempDir::new().unwrap();
     let result = add_cargo_deps_to_cargo_toml(tmp.path(), &["serde@1.0".to_string()]);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Cargo.toml not found"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Cargo.toml not found"));
 }
 
 // ============================================================================
@@ -542,7 +560,10 @@ fn test_package_serde_roundtrip() {
     let roundtripped: Package = serde_json::from_str(&json).unwrap();
     assert_eq!(roundtripped.name, "nav-stack");
     assert_eq!(roundtripped.version, "1.0.0");
-    assert_eq!(roundtripped.description, Some("Navigation stack".to_string()));
+    assert_eq!(
+        roundtripped.description,
+        Some("Navigation stack".to_string())
+    );
 }
 
 #[test]
@@ -650,5 +671,353 @@ fn test_add_features_no_dependencies_section() {
     // No [dependencies] section at all
     let result = add_features_to_cargo_toml(tmp.path(), &["some-feature".to_string()]);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No [dependencies] section"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("No [dependencies] section"));
+}
+
+// ============================================================================
+// SHA256 checksum verification tests
+// ============================================================================
+
+#[test]
+fn test_sha256_checksum_known_value() {
+    // SHA256 of empty byte slice is a well-known constant
+    let mut hasher = Sha256::new();
+    hasher.update(b"");
+    let checksum = format!("{:x}", hasher.finalize());
+    assert_eq!(
+        checksum,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+
+#[test]
+fn test_sha256_checksum_deterministic() {
+    // Same input must always produce the same checksum
+    let data = b"horus robotics package v1.0.0";
+    let mut h1 = Sha256::new();
+    h1.update(data);
+    let c1 = format!("{:x}", h1.finalize());
+
+    let mut h2 = Sha256::new();
+    h2.update(data);
+    let c2 = format!("{:x}", h2.finalize());
+
+    assert_eq!(c1, c2);
+    assert_eq!(c1.len(), 64); // SHA256 hex is always 64 chars
+}
+
+#[test]
+fn test_sha256_checksum_differs_on_corruption() {
+    let original = b"horus-nav-stack-1.0.0.tar.gz contents here";
+    let mut corrupted = original.to_vec();
+    corrupted[10] ^= 0xFF; // flip one byte
+
+    let mut h1 = Sha256::new();
+    h1.update(original);
+    let original_checksum = format!("{:x}", h1.finalize());
+
+    let mut h2 = Sha256::new();
+    h2.update(&corrupted);
+    let corrupted_checksum = format!("{:x}", h2.finalize());
+
+    assert_ne!(original_checksum, corrupted_checksum);
+}
+
+#[test]
+fn test_sha256_incremental_update_matches_single() {
+    // Incremental updates should produce the same result as a single update
+    // This is how install_from_registry computes checksums on streamed bytes
+    let chunk1 = b"first chunk of package data";
+    let chunk2 = b"second chunk of package data";
+
+    let mut incremental = Sha256::new();
+    incremental.update(chunk1);
+    incremental.update(chunk2);
+    let incremental_sum = format!("{:x}", incremental.finalize());
+
+    let mut combined = Sha256::new();
+    let mut all_data = Vec::new();
+    all_data.extend_from_slice(chunk1);
+    all_data.extend_from_slice(chunk2);
+    combined.update(&all_data);
+    let combined_sum = format!("{:x}", combined.finalize());
+
+    assert_eq!(incremental_sum, combined_sum);
+}
+
+// ============================================================================
+// Platform filtering tests (DependencySpec target field)
+// ============================================================================
+
+#[test]
+fn test_platform_filter_no_target_passes_all() {
+    use crate::dependency_resolver::{DependencySource, DependencySpec};
+    use semver::VersionReq;
+
+    let dep = DependencySpec {
+        name: "horus_core".to_string(),
+        requirement: VersionReq::STAR,
+        source: DependencySource::Registry,
+        target: None, // No target = all platforms
+    };
+
+    let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let passes = match &dep.target {
+        Some(t) => t == &current_platform || t == std::env::consts::OS,
+        None => true,
+    };
+    assert!(passes);
+}
+
+#[test]
+fn test_platform_filter_matching_os_arch() {
+    use crate::dependency_resolver::{DependencySource, DependencySpec};
+    use semver::VersionReq;
+
+    let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    let dep = DependencySpec {
+        name: "platform-specific-pkg".to_string(),
+        requirement: VersionReq::STAR,
+        source: DependencySource::Registry,
+        target: Some(current_platform.clone()),
+    };
+
+    let passes = match &dep.target {
+        Some(t) => t == &current_platform || t == std::env::consts::OS,
+        None => true,
+    };
+    assert!(passes);
+}
+
+#[test]
+fn test_platform_filter_matching_os_only() {
+    use crate::dependency_resolver::{DependencySource, DependencySpec};
+    use semver::VersionReq;
+
+    let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    let dep = DependencySpec {
+        name: "os-specific-pkg".to_string(),
+        requirement: VersionReq::STAR,
+        source: DependencySource::Registry,
+        target: Some(std::env::consts::OS.to_string()),
+    };
+
+    let passes = match &dep.target {
+        Some(t) => t == &current_platform || t == std::env::consts::OS,
+        None => true,
+    };
+    assert!(passes);
+}
+
+#[test]
+fn test_platform_filter_non_matching_target_excluded() {
+    use crate::dependency_resolver::{DependencySource, DependencySpec};
+    use semver::VersionReq;
+
+    let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    let dep = DependencySpec {
+        name: "windows-only-pkg".to_string(),
+        requirement: VersionReq::STAR,
+        source: DependencySource::Registry,
+        target: Some("windows-x86_64".to_string()),
+    };
+
+    let passes = match &dep.target {
+        Some(t) => t == &current_platform || t == std::env::consts::OS,
+        None => true,
+    };
+    // On Linux, a windows-only dep should be excluded
+    if std::env::consts::OS != "windows" {
+        assert!(!passes);
+    }
+}
+
+#[test]
+fn test_platform_filter_mixed_deps() {
+    use crate::dependency_resolver::{DependencySource, DependencySpec};
+    use semver::VersionReq;
+
+    let current_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+
+    let deps = vec![
+        DependencySpec {
+            name: "universal-pkg".to_string(),
+            requirement: VersionReq::STAR,
+            source: DependencySource::Registry,
+            target: None,
+        },
+        DependencySpec {
+            name: "current-platform-pkg".to_string(),
+            requirement: VersionReq::STAR,
+            source: DependencySource::Registry,
+            target: Some(current_platform.clone()),
+        },
+        DependencySpec {
+            name: "other-platform-pkg".to_string(),
+            requirement: VersionReq::STAR,
+            source: DependencySource::Registry,
+            target: Some("mips-unknown".to_string()),
+        },
+    ];
+
+    let filtered: Vec<&DependencySpec> = deps
+        .iter()
+        .filter(|dep| match &dep.target {
+            Some(t) => t == &current_platform || t == std::env::consts::OS,
+            None => true,
+        })
+        .collect();
+
+    // universal + current-platform pass; mips excluded
+    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered[0].name, "universal-pkg");
+    assert_eq!(filtered[1].name, "current-platform-pkg");
+}
+
+// ============================================================================
+// EnvironmentManifest serde tests
+// ============================================================================
+
+#[test]
+fn test_environment_manifest_serde_roundtrip() {
+    let manifest = EnvironmentManifest {
+        horus_id: "abc123".to_string(),
+        name: Some("my-robot-env".to_string()),
+        description: Some("Robot navigation environment".to_string()),
+        packages: vec![
+            LockedPackage {
+                name: "horus_core".to_string(),
+                version: "0.2.0".to_string(),
+                checksum: "deadbeef".to_string(),
+                source: PackageSource::Registry,
+            },
+            LockedPackage {
+                name: "numpy".to_string(),
+                version: "1.24.0".to_string(),
+                checksum: "cafebabe".to_string(),
+                source: PackageSource::PyPI,
+            },
+        ],
+        system: SystemInfo {
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            python_version: Some("3.12.0".to_string()),
+            rust_version: Some("1.75.0".to_string()),
+            gcc_version: None,
+            cuda_version: Some("12.3".to_string()),
+        },
+        created_at: chrono::Utc::now(),
+        horus_version: "0.3.0".to_string(),
+    };
+
+    let json = serde_json::to_string(&manifest).unwrap();
+    let roundtripped: EnvironmentManifest = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(roundtripped.horus_id, "abc123");
+    assert_eq!(roundtripped.name, Some("my-robot-env".to_string()));
+    assert_eq!(roundtripped.packages.len(), 2);
+    assert_eq!(roundtripped.packages[0].name, "horus_core");
+    assert_eq!(roundtripped.packages[1].source, PackageSource::PyPI);
+    assert_eq!(roundtripped.system.os, "linux");
+    assert_eq!(roundtripped.system.cuda_version, Some("12.3".to_string()));
+    assert_eq!(roundtripped.horus_version, "0.3.0");
+}
+
+#[test]
+fn test_environment_manifest_empty_packages() {
+    let manifest = EnvironmentManifest {
+        horus_id: "empty-env".to_string(),
+        name: None,
+        description: None,
+        packages: vec![],
+        system: SystemInfo {
+            os: "macos".to_string(),
+            arch: "aarch64".to_string(),
+            python_version: None,
+            rust_version: None,
+            gcc_version: None,
+            cuda_version: None,
+        },
+        created_at: chrono::Utc::now(),
+        horus_version: "0.1.0".to_string(),
+    };
+
+    let json = serde_json::to_string(&manifest).unwrap();
+    let roundtripped: EnvironmentManifest = serde_json::from_str(&json).unwrap();
+    assert!(roundtripped.packages.is_empty());
+    assert!(roundtripped.name.is_none());
+}
+
+// ============================================================================
+// DriverListEntry serde tests
+// ============================================================================
+
+#[test]
+fn test_driver_list_entry_deserialize() {
+    let json = r#"{
+        "name": "rplidar-driver",
+        "description": "RPLidar A1/A2/A3 driver",
+        "bus_type": "serial",
+        "category": "sensor"
+    }"#;
+    let entry: DriverListEntry = serde_json::from_str(json).unwrap();
+    assert_eq!(entry.name, "rplidar-driver");
+    assert_eq!(
+        entry.description,
+        Some("RPLidar A1/A2/A3 driver".to_string())
+    );
+    assert_eq!(entry.bus_type, Some("serial".to_string()));
+    assert_eq!(entry.category, Some("sensor".to_string()));
+}
+
+#[test]
+fn test_driver_list_entry_minimal() {
+    let json = r#"{"name": "basic-driver"}"#;
+    let entry: DriverListEntry = serde_json::from_str(json).unwrap();
+    assert_eq!(entry.name, "basic-driver");
+    assert!(entry.description.is_none());
+    assert!(entry.bus_type.is_none());
+    assert!(entry.category.is_none());
+}
+
+// ============================================================================
+// copy_dir_all deep nesting test
+// ============================================================================
+
+#[test]
+fn test_copy_dir_all_nested_structure() {
+    let src = TempDir::new().unwrap();
+    let dst = TempDir::new().unwrap();
+    let dst_path = dst.path().join("deep_copy");
+
+    // Create nested source structure mimicking a real package
+    fs::create_dir_all(src.path().join("src/nodes")).unwrap();
+    fs::create_dir_all(src.path().join("config")).unwrap();
+    fs::write(
+        src.path().join("horus.yaml"),
+        "name: test\nversion: 0.1.0\n",
+    )
+    .unwrap();
+    fs::write(
+        src.path().join("src/nodes/lidar.rs"),
+        "pub struct LidarNode;",
+    )
+    .unwrap();
+    fs::write(src.path().join("config/params.yaml"), "rate: 10.0\n").unwrap();
+
+    copy_dir_all(src.path(), &dst_path).unwrap();
+
+    assert!(dst_path.join("horus.yaml").exists());
+    assert!(dst_path.join("src/nodes/lidar.rs").exists());
+    assert!(dst_path.join("config/params.yaml").exists());
+    assert_eq!(
+        fs::read_to_string(dst_path.join("src/nodes/lidar.rs")).unwrap(),
+        "pub struct LidarNode;"
+    );
 }

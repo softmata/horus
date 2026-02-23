@@ -228,8 +228,14 @@ mod tests {
 
     #[test]
     fn test_clock_elapsed() {
-        let c1 = Clock { clock_ns: 100, ..Default::default() };
-        let c2 = Clock { clock_ns: 350, ..Default::default() };
+        let c1 = Clock {
+            clock_ns: 100,
+            ..Default::default()
+        };
+        let c2 = Clock {
+            clock_ns: 350,
+            ..Default::default()
+        };
         assert_eq!(c2.elapsed_since(&c1), 250);
     }
 
@@ -262,25 +268,40 @@ mod tests {
 
     #[test]
     fn test_sizeof_all_new_types() {
-        use std::mem::size_of;
         use crate::messages::geometry::*;
         use crate::messages::sensor::*;
+        use std::mem::size_of;
 
         // Print sizes for audit (visible with --nocapture)
         eprintln!("=== New Message Type Sizes ===");
         eprintln!("  Pose3D:              {} bytes", size_of::<Pose3D>());
         eprintln!("  PoseStamped:         {} bytes", size_of::<PoseStamped>());
-        eprintln!("  PoseWithCovariance:  {} bytes", size_of::<PoseWithCovariance>());
-        eprintln!("  TwistWithCovariance: {} bytes", size_of::<TwistWithCovariance>());
+        eprintln!(
+            "  PoseWithCovariance:  {} bytes",
+            size_of::<PoseWithCovariance>()
+        );
+        eprintln!(
+            "  TwistWithCovariance: {} bytes",
+            size_of::<TwistWithCovariance>()
+        );
         eprintln!("  Accel:               {} bytes", size_of::<Accel>());
         eprintln!("  AccelStamped:        {} bytes", size_of::<AccelStamped>());
         eprintln!("  JointState:          {} bytes", size_of::<JointState>());
-        eprintln!("  MagneticField:       {} bytes", size_of::<MagneticField>());
+        eprintln!(
+            "  MagneticField:       {} bytes",
+            size_of::<MagneticField>()
+        );
         eprintln!("  Temperature:         {} bytes", size_of::<Temperature>());
-        eprintln!("  FluidPressure:       {} bytes", size_of::<FluidPressure>());
+        eprintln!(
+            "  FluidPressure:       {} bytes",
+            size_of::<FluidPressure>()
+        );
         eprintln!("  Illuminance:         {} bytes", size_of::<Illuminance>());
         eprintln!("  Clock:               {} bytes", size_of::<Clock>());
-        eprintln!("  TimeReference:       {} bytes", size_of::<TimeReference>());
+        eprintln!(
+            "  TimeReference:       {} bytes",
+            size_of::<TimeReference>()
+        );
 
         // Verify all types have sensible sizes (not accidentally huge)
         assert!(size_of::<Pose3D>() <= 128);

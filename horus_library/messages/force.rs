@@ -516,6 +516,10 @@ impl HapticFeedback {
 // =============================================================================
 
 crate::messages::impl_pod_message!(
-    WrenchStamped, TactileArray, ImpedanceParameters,
-    ForceCommand, ContactInfo, HapticFeedback,
+    WrenchStamped,
+    TactileArray,
+    ImpedanceParameters,
+    ForceCommand,
+    ContactInfo,
+    HapticFeedback,
 );

@@ -5,48 +5,14 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// 2D bounding box (x, y, width, height in pixels) for tracking
-///
-/// Size: 16 bytes
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
-pub struct TrackingBBox {
-    /// X coordinate of top-left corner (pixels)
-    pub x: f32,
-    /// Y coordinate of top-left corner (pixels)
-    pub y: f32,
-    /// Width of bounding box (pixels)
-    pub width: f32,
-    /// Height of bounding box (pixels)
-    pub height: f32,
-}
+use crate::messages::detection::BoundingBox2D;
 
-impl TrackingBBox {
-    /// Create a new bounding box
-    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    /// Get center x coordinate
-    pub fn center_x(&self) -> f32 {
-        self.x + self.width / 2.0
-    }
-
-    /// Get center y coordinate
-    pub fn center_y(&self) -> f32 {
-        self.y + self.height / 2.0
-    }
-
-    /// Get area
-    pub fn area(&self) -> f32 {
-        self.width * self.height
-    }
-}
+/// Deprecated: Use [`BoundingBox2D`] instead. This type alias exists for backward compatibility.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use BoundingBox2D from detection module instead"
+)]
+pub type TrackingBBox = BoundingBox2D;
 
 /// Tracked object state
 ///
@@ -57,9 +23,9 @@ impl TrackingBBox {
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct TrackedObject {
     /// Bounding box (x, y, width, height)
-    pub bbox: TrackingBBox,
+    pub bbox: BoundingBox2D,
     /// Predicted bounding box (Kalman filter output)
-    pub predicted_bbox: TrackingBBox,
+    pub predicted_bbox: BoundingBox2D,
     /// Unique tracking ID (persistent across frames)
     pub track_id: u64,
     /// Detection confidence (0.0 - 1.0)
@@ -89,8 +55,8 @@ pub struct TrackedObject {
 impl Default for TrackedObject {
     fn default() -> Self {
         Self {
-            bbox: TrackingBBox::default(),
-            predicted_bbox: TrackingBBox::default(),
+            bbox: BoundingBox2D::default(),
+            predicted_bbox: BoundingBox2D::default(),
             track_id: 0,
             confidence: 0.0,
             class_id: 0,
@@ -109,7 +75,7 @@ impl Default for TrackedObject {
 
 impl TrackedObject {
     /// Create a new tracked object from a detection
-    pub fn new(track_id: u64, bbox: TrackingBBox, class_id: u32, confidence: f32) -> Self {
+    pub fn new(track_id: u64, bbox: BoundingBox2D, class_id: u32, confidence: f32) -> Self {
         Self {
             bbox,
             predicted_bbox: bbox,
@@ -162,7 +128,7 @@ impl TrackedObject {
     }
 
     /// Update with new detection
-    pub fn update(&mut self, bbox: TrackingBBox, confidence: f32) {
+    pub fn update(&mut self, bbox: BoundingBox2D, confidence: f32) {
         // Calculate velocity from bbox movement
         self.velocity_x = bbox.center_x() - self.bbox.center_x();
         self.velocity_y = bbox.center_y() - self.bbox.center_y();
@@ -180,7 +146,7 @@ impl TrackedObject {
         self.age += 1;
 
         // Predict next position based on velocity
-        self.predicted_bbox = TrackingBBox {
+        self.predicted_bbox = BoundingBox2D {
             x: self.bbox.x + self.velocity_x,
             y: self.bbox.y + self.velocity_y,
             width: self.bbox.width,
@@ -265,13 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn test_tracking_bbox_size() {
-        assert_eq!(std::mem::size_of::<TrackingBBox>(), 16);
+    fn test_bounding_box2d_size() {
+        assert_eq!(std::mem::size_of::<BoundingBox2D>(), 16);
     }
 
     #[test]
     fn test_track_lifecycle() {
-        let mut track = TrackedObject::new(1, TrackingBBox::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
+        let mut track =
+            TrackedObject::new(1, BoundingBox2D::new(100.0, 100.0, 50.0, 50.0), 0, 0.95);
 
         assert!(track.is_tentative());
 
@@ -279,7 +246,7 @@ mod tests {
         assert!(track.is_confirmed());
 
         // Update with new detection
-        track.update(TrackingBBox::new(110.0, 105.0, 50.0, 50.0), 0.93);
+        track.update(BoundingBox2D::new(110.0, 105.0, 50.0, 50.0), 0.93);
         assert_eq!(track.hits, 2);
         assert!((track.velocity_x - 10.0).abs() < 0.01);
 

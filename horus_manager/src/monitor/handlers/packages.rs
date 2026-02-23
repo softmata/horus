@@ -1,9 +1,4 @@
-use axum::{
-    extract::Query,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Query, http::StatusCode, response::IntoResponse, Json};
 
 use crate::monitor::{is_safe_path_component, workspace_cache};
 

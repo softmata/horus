@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::*;
+use super::*;
 
 impl RegistryClient {
     /// Fetch driver metadata for a package from the registry

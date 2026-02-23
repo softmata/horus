@@ -255,7 +255,6 @@ pub struct PluginInfo {
     pub description: String,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

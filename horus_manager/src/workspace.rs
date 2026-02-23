@@ -32,8 +32,8 @@ impl WorkspaceRegistry {
             });
         }
 
-        let content = fs::read_to_string(&registry_path)
-            .context("failed to read workspace registry")?;
+        let content =
+            fs::read_to_string(&registry_path).context("failed to read workspace registry")?;
         let registry: Self =
             serde_json::from_str(&content).context("failed to parse workspace registry")?;
 
@@ -42,10 +42,9 @@ impl WorkspaceRegistry {
 
     pub fn save(&self) -> Result<()> {
         let registry_path = Self::registry_path()?;
-        let content = serde_json::to_string_pretty(self)
-            .context("failed to serialize workspace registry")?;
-        fs::write(&registry_path, content)
-            .context("failed to write workspace registry")?;
+        let content =
+            serde_json::to_string_pretty(self).context("failed to serialize workspace registry")?;
+        fs::write(&registry_path, content).context("failed to write workspace registry")?;
         Ok(())
     }
 

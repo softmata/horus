@@ -930,7 +930,9 @@ impl P2PManager {
 
         // Check if already enabled
         {
-            let connections = self.enabled_connections.lock()
+            let connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if connections.contains(&(device, peer_device)) {
                 return Ok(());
@@ -954,7 +956,9 @@ impl P2PManager {
 
         // Record the enabled connection
         {
-            let mut connections = self.enabled_connections.lock()
+            let mut connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             connections.push((device, peer_device));
         }
@@ -970,7 +974,9 @@ impl P2PManager {
 
         // Check if enabled
         {
-            let connections = self.enabled_connections.lock()
+            let connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if !connections.contains(&(device, peer_device)) {
                 return Ok(()); // Already disabled
@@ -986,7 +992,9 @@ impl P2PManager {
 
         // Remove the connection
         {
-            let mut connections = self.enabled_connections.lock()
+            let mut connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             connections.retain(|&(d, p)| !(d == device && p == peer_device));
         }
@@ -1027,7 +1035,9 @@ impl P2PManager {
 
     /// Get enabled P2P connections
     pub fn enabled_connections(&self) -> HorusResult<Vec<(i32, i32)>> {
-        Ok(self.enabled_connections.lock()
+        Ok(self
+            .enabled_connections
+            .lock()
             .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?
             .clone())
     }
@@ -1045,7 +1055,9 @@ impl P2PManager {
 
         // Check P2P is enabled
         {
-            let connections = self.enabled_connections.lock()
+            let connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if src_device != dst_device && !connections.contains(&(dst_device, src_device)) {
                 return Err(HorusError::Config(format!(
@@ -1096,7 +1108,9 @@ impl P2PManager {
 
         // Check P2P is enabled
         {
-            let connections = self.enabled_connections.lock()
+            let connections = self
+                .enabled_connections
+                .lock()
                 .map_err(|_| HorusError::memory("P2P connections lock poisoned"))?;
             if src_device != dst_device && !connections.contains(&(dst_device, src_device)) {
                 return Err(HorusError::Config(format!(

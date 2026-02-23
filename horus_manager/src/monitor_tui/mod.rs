@@ -9,8 +9,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use horus_core::core::LogType;
 use horus_core::core::log_buffer::GLOBAL_LOG_BUFFER;
+use horus_core::core::LogType;
 use horus_core::memory::shm_topics_dir;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
@@ -350,7 +350,10 @@ impl TuiDashboard {
     {
         loop {
             // Update data if not paused (250ms refresh for real-time feel)
-            if !self.paused && self.last_update.elapsed() > Duration::from_millis(crate::config::TUI_REFRESH_INTERVAL_MS) {
+            if !self.paused
+                && self.last_update.elapsed()
+                    > Duration::from_millis(crate::config::TUI_REFRESH_INTERVAL_MS)
+            {
                 self.update_data()?;
                 self.last_update = Instant::now();
             }

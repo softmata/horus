@@ -330,4 +330,3 @@ pub fn generate_login_html() -> String {
 </body>
 </html>"#.to_string()
 }
-

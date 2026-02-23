@@ -24,8 +24,7 @@ fn test_pod_type_size_mismatch_detected() {
     let name = unique_topic("mismatch");
 
     // First open as u32 (4 bytes) — should succeed
-    let _topic_u32 = Topic::<u32>::new(&name)
-        .expect("First open as u32 should succeed");
+    let _topic_u32 = Topic::<u32>::new(&name).expect("First open as u32 should succeed");
 
     // Second open as u64 (8 bytes) — should fail with type size mismatch
     let result = Topic::<u64>::new(&name);
@@ -50,14 +49,12 @@ fn test_same_pod_type_reopens() {
 
     let name = unique_topic("same_type");
 
-    let pub_topic = Topic::<u32>::new(&name)
-        .expect("First open as u32 should succeed");
+    let pub_topic = Topic::<u32>::new(&name).expect("First open as u32 should succeed");
 
     pub_topic.send(42u32);
 
     // Reopen with same type — should succeed
-    let sub_topic = Topic::<u32>::new(&name)
-        .expect("Second open as u32 should succeed");
+    let sub_topic = Topic::<u32>::new(&name).expect("Second open as u32 should succeed");
 
     let msg = sub_topic.recv();
     assert_eq!(msg, Some(42u32), "Should receive the sent message");
@@ -74,13 +71,15 @@ fn test_non_pod_skips_size_check() {
 
     let name = unique_topic("non_pod");
 
-    let _topic_string = Topic::<String>::new(&name)
-        .expect("First open as String should succeed");
+    let _topic_string = Topic::<String>::new(&name).expect("First open as String should succeed");
 
     // Open with a different non-POD type — should NOT error because is_pod=false
     let result = Topic::<Vec<u8>>::new(&name);
     match result {
         Ok(_) => {} // expected
-        Err(e) => panic!("Non-POD type mismatch should not produce an error, got: {}", e),
+        Err(e) => panic!(
+            "Non-POD type mismatch should not produce an error, got: {}",
+            e
+        ),
     }
 }

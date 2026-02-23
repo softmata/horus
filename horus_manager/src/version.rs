@@ -203,10 +203,7 @@ mod tests {
     #[test]
     fn test_extract_version_simple() {
         let path = Path::new("/packages/horus@0.1.0");
-        assert_eq!(
-            extract_version_from_path(path),
-            Some("0.1.0".to_string())
-        );
+        assert_eq!(extract_version_from_path(path), Some("0.1.0".to_string()));
     }
 
     #[test]
@@ -228,29 +225,20 @@ mod tests {
     fn test_extract_version_empty_version() {
         let path = Path::new("/packages/horus@");
         // split('@').nth(1) returns Some("") for "horus@"
-        assert_eq!(
-            extract_version_from_path(path),
-            Some("".to_string())
-        );
+        assert_eq!(extract_version_from_path(path), Some("".to_string()));
     }
 
     #[test]
     fn test_extract_version_multiple_at_symbols() {
         // Only the first @ matters for the split
         let path = Path::new("/packages/name@1.0@extra");
-        assert_eq!(
-            extract_version_from_path(path),
-            Some("1.0".to_string())
-        );
+        assert_eq!(extract_version_from_path(path), Some("1.0".to_string()));
     }
 
     #[test]
     fn test_extract_version_nested_path() {
         let path = Path::new("/home/user/.horus/packages/lidar-driver@2.0.0");
-        assert_eq!(
-            extract_version_from_path(path),
-            Some("2.0.0".to_string())
-        );
+        assert_eq!(extract_version_from_path(path), Some("2.0.0".to_string()));
     }
 
     // ========================================================================
@@ -264,7 +252,10 @@ mod tests {
         // This is hard to test in isolation without mocking the filesystem
         // but we can at least verify it doesn't panic
         let result = get_installed_version();
-        assert!(result.is_ok(), "Should not error even if file doesn't exist");
+        assert!(
+            result.is_ok(),
+            "Should not error even if file doesn't exist"
+        );
     }
 
     // ========================================================================

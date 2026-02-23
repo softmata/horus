@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::*;
+use super::*;
 
 impl RegistryClient {
     // Install a package to a specific target (used by install_to_target)
@@ -20,7 +20,11 @@ impl RegistryClient {
         version: Option<&str>,
         target: crate::workspace::InstallTarget,
     ) -> Result<String> {
-        log::debug!("installing package: {} to target: {:?}", package_name, target);
+        log::debug!(
+            "installing package: {} to target: {:?}",
+            package_name,
+            target
+        );
         // Detect package source
         let source = self.detect_package_source(package_name)?;
         log::debug!("resolved package source for {}: {:?}", package_name, source);
@@ -204,7 +208,11 @@ impl RegistryClient {
         version: Option<&str>,
         target: crate::workspace::InstallTarget,
     ) -> Result<String> {
-        log::debug!("installing {} from HORUS registry (version: {:?})", package_name, version);
+        log::debug!(
+            "installing {} from HORUS registry (version: {:?})",
+            package_name,
+            version
+        );
         let spinner = progress::robot_download_spinner(&format!(
             "Downloading {} from HORUS registry...",
             package_name
@@ -1302,7 +1310,9 @@ impl RegistryClient {
         println!("  {} Creating reference to system binary...", "".green());
 
         // Find actual system binary location
-        let cargo_bin = crate::paths::home_dir()?.join(".cargo/bin").join(package_name);
+        let cargo_bin = crate::paths::home_dir()?
+            .join(".cargo/bin")
+            .join(package_name);
 
         if !cargo_bin.exists() {
             return Err(anyhow!("System binary not found at expected location"));

@@ -740,6 +740,11 @@ impl PathPlan {
 // =============================================================================
 
 crate::messages::impl_pod_message!(
-    Goal, GoalResult, Waypoint, Path,
-    VelocityObstacle, VelocityObstacles, PathPlan,
+    Goal,
+    GoalResult,
+    Waypoint,
+    Path,
+    VelocityObstacle,
+    VelocityObstacles,
+    PathPlan,
 );

@@ -1,5 +1,5 @@
-use super::*;
 use super::nodes::{discover_registry_files, process_exists};
+use super::*;
 
 use std::collections::HashMap as StdHashMap;
 

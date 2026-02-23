@@ -389,7 +389,6 @@ impl SchedulerRecording {
         self.execution_order.push(order);
         self.total_ticks += 1;
     }
-
 }
 
 impl Recording for SchedulerRecording {

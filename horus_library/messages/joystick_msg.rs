@@ -110,7 +110,11 @@ impl JoystickInput {
             joystick_id,
             b"connection",
             0,
-            if connected { "Connected" } else { "Disconnected" },
+            if connected {
+                "Connected"
+            } else {
+                "Disconnected"
+            },
             if connected { 1.0 } else { 0.0 },
             0,
         )

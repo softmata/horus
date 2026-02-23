@@ -52,7 +52,12 @@ impl AuthService {
     pub fn login(&self, password: &str, ip_address: Option<String>) -> Result<Option<String>> {
         // Check rate limiting
         if let Some(ip) = &ip_address {
-            if !self.rate_limiter.write().expect("rate_limiter lock poisoned").check_attempt(ip) {
+            if !self
+                .rate_limiter
+                .write()
+                .expect("rate_limiter lock poisoned")
+                .check_attempt(ip)
+            {
                 anyhow::bail!("Too many login attempts. Please wait a minute.");
             }
         }
@@ -69,14 +74,17 @@ impl AuthService {
             let session_token = generate_session_token();
 
             // Store session
-            self.sessions.write().expect("sessions lock poisoned").insert(
-                session_token.clone(),
-                SessionInfo {
-                    _created_at: Instant::now(),
-                    last_used: Instant::now(),
-                    _ip_address: ip_address,
-                },
-            );
+            self.sessions
+                .write()
+                .expect("sessions lock poisoned")
+                .insert(
+                    session_token.clone(),
+                    SessionInfo {
+                        _created_at: Instant::now(),
+                        last_used: Instant::now(),
+                        _ip_address: ip_address,
+                    },
+                );
 
             Ok(Some(session_token))
         } else {
@@ -90,7 +98,9 @@ impl AuthService {
 
         if let Some(session) = sessions.get_mut(token) {
             // Check if session is expired (1 hour of inactivity)
-            if session.last_used.elapsed() > Duration::from_secs(crate::config::SESSION_TIMEOUT_SECS) {
+            if session.last_used.elapsed()
+                > Duration::from_secs(crate::config::SESSION_TIMEOUT_SECS)
+            {
                 sessions.remove(token);
                 return false;
             }
@@ -105,7 +115,10 @@ impl AuthService {
 
     /// Logout - invalidate session token
     pub fn logout(&self, token: &str) {
-        self.sessions.write().expect("sessions lock poisoned").remove(token);
+        self.sessions
+            .write()
+            .expect("sessions lock poisoned")
+            .remove(token);
     }
 }
 
@@ -159,8 +172,8 @@ pub fn hash_password(password: &str) -> Result<String> {
 
 /// Verify a password against a hash
 pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
-    let parsed_hash = PasswordHash::new(hash)
-        .map_err(|e| anyhow!("Invalid password hash format: {}", e))?;
+    let parsed_hash =
+        PasswordHash::new(hash).map_err(|e| anyhow!("Invalid password hash format: {}", e))?;
 
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed_hash)

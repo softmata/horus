@@ -516,7 +516,8 @@ impl PyScheduler {
     /// enables a 16MB BlackBox flight recorder.
     #[staticmethod]
     pub fn deploy() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::deploy());
+        let core_sched =
+            CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::deploy());
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -532,7 +533,8 @@ impl PyScheduler {
     /// Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
     #[staticmethod]
     pub fn preset_safety_critical() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::safety_critical());
+        let core_sched = CoreScheduler::new()
+            .with_config(horus_core::scheduling::SchedulerConfig::safety_critical());
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -548,7 +550,8 @@ impl PyScheduler {
     /// Parallel execution, 10kHz, WCET enforcement, memory locking.
     #[staticmethod]
     pub fn preset_high_performance() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::high_performance());
+        let core_sched = CoreScheduler::new()
+            .with_config(horus_core::scheduling::SchedulerConfig::high_performance());
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -564,7 +567,8 @@ impl PyScheduler {
     /// Sequential execution, strict topology validation, deterministic seed.
     #[staticmethod]
     pub fn preset_deterministic() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::deterministic());
+        let core_sched = CoreScheduler::new()
+            .with_config(horus_core::scheduling::SchedulerConfig::deterministic());
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),
@@ -580,7 +584,8 @@ impl PyScheduler {
     /// Parallel execution, 1kHz, <5us jitter target, 10ms watchdog, panic on deadline miss.
     #[staticmethod]
     pub fn preset_hard_realtime() -> PyResult<Self> {
-        let core_sched = CoreScheduler::new().with_config(horus_core::scheduling::SchedulerConfig::hard_realtime());
+        let core_sched = CoreScheduler::new()
+            .with_config(horus_core::scheduling::SchedulerConfig::hard_realtime());
         let running_flag = core_sched.running_flag();
         Ok(PyScheduler {
             inner: Mutex::new(Some(core_sched)),

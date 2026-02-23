@@ -193,4 +193,3 @@ impl<T> TopicDescriptor<T> {
         self.name
     }
 }
-

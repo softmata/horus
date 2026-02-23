@@ -676,3 +676,52 @@ fn to_snake_case(s: &str) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::to_snake_case;
+
+    #[test]
+    fn test_snake_case_simple() {
+        assert_eq!(to_snake_case("CameraNode"), "camera_node");
+    }
+
+    #[test]
+    fn test_snake_case_single_word() {
+        assert_eq!(to_snake_case("Camera"), "camera");
+    }
+
+    #[test]
+    fn test_snake_case_already_lowercase() {
+        assert_eq!(to_snake_case("camera"), "camera");
+    }
+
+    #[test]
+    fn test_snake_case_multi_word() {
+        assert_eq!(
+            to_snake_case("MyRobotArmController"),
+            "my_robot_arm_controller"
+        );
+    }
+
+    #[test]
+    fn test_snake_case_consecutive_uppercase() {
+        // "IMU" stays as "imu" (consecutive uppercase doesn't insert underscores between them)
+        assert_eq!(to_snake_case("IMUNode"), "imunode");
+    }
+
+    #[test]
+    fn test_snake_case_two_words() {
+        assert_eq!(to_snake_case("MotorDriver"), "motor_driver");
+    }
+
+    #[test]
+    fn test_snake_case_with_numbers() {
+        assert_eq!(to_snake_case("Sim2dNode"), "sim2d_node");
+    }
+
+    #[test]
+    fn test_snake_case_empty() {
+        assert_eq!(to_snake_case(""), "");
+    }
+}

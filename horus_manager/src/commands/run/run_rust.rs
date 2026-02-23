@@ -313,7 +313,8 @@ path = "{}"
                             for item in list {
                                 if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
                                     // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name = dep_str.split('=').next().unwrap_or(&dep_str).trim();
+                                    let dep_name =
+                                        dep_str.split('=').next().unwrap_or(&dep_str).trim();
 
                                     // Skip if already added from cargo_packages
                                     if !added_cargo_deps.contains(dep_name) {
@@ -1064,7 +1065,8 @@ path = "{}"
                             for item in list {
                                 if let Some(dep_str) = deps::parse_yaml_cargo_dependency(item) {
                                     // Extract dependency name from the generated string (e.g., "serde = ..." -> "serde")
-                                    let dep_name = dep_str.split('=').next().unwrap_or(&dep_str).trim();
+                                    let dep_name =
+                                        dep_str.split('=').next().unwrap_or(&dep_str).trim();
 
                                     // Skip if already added from cargo_packages
                                     if !added_cargo_deps.contains(dep_name) {
@@ -1238,7 +1240,8 @@ pub(super) fn find_horus_source_dir() -> Result<PathBuf> {
     }
 
     // Fallback: Check for installed packages in cache
-    let cache_dir = crate::paths::cache_dir().unwrap_or_else(|_| install::home_dir().join(".horus/cache"));
+    let cache_dir =
+        crate::paths::cache_dir().unwrap_or_else(|_| install::home_dir().join(".horus/cache"));
     if cache_dir.join("horus@0.1.0").exists() {
         log::debug!("found HORUS source in cache: {:?}", cache_dir);
         return Ok(cache_dir);
