@@ -1557,21 +1557,6 @@ __all__ = [
     "preprocess_image_yolo",
     "nms",
     "calculate_iou",
-    # Hardware nodes
-    "SerialNode",
-    "JoystickNode",
-    "KeyboardNode",
-    "ImuNode",
-    "GpsNode",
-    "CameraNode",
-    "LidarNode",
-    # Hardware node data types
-    "SerialData",
-    "JoystickState",
-    "KeyboardState",
-    "ImuData",
-    "GpsData",
-    "ImageData",
 ]
 
 # Export typed message classes (only if Rust bindings available)
@@ -1583,7 +1568,6 @@ try:
 except NameError:
     # Rust bindings not available, leave undefined (library fallback will handle)
     pass
-# LaserScan handled below (after nodes import to avoid override)
 
 # Import simple async API
 from .async_node import AsyncNode, AsyncTopic, sleep, gather, wait_for
@@ -1601,33 +1585,6 @@ from .ml_utils import (
     calculate_iou,
 )
 
-# Import hardware nodes
-from .nodes import (
-    # Nodes
-    SerialNode,
-    JoystickNode,
-    KeyboardNode,
-    ImuNode,
-    GpsNode,
-    CameraNode,
-    LidarNode,
-    # Data types
-    SerialData,
-    JoystickState,
-    KeyboardState,
-    ImuData,
-    GpsData,
-    ImageData,
-)
-
-# Only import LaserScan from nodes if we don't have the Rust version
-# (The Rust version has __topic_name__ attribute for Hub support)
-try:
-    if not hasattr(LaserScan, '__topic_name__'):
-        from .nodes import LaserScan
-except NameError:
-    # LaserScan not defined yet, import from nodes
-    from .nodes import LaserScan
 
 # NOTE: Topic is the unified communication API (replaces deprecated Hub/Link)
 
@@ -1637,11 +1594,10 @@ from . import msggen
 # Import AI/ML submodule (horus.ai)
 from . import ai
 
-# Ensure LaserScan from Rust is exported (not overwritten by nodes)
+# Ensure LaserScan from Rust is exported
 try:
     LaserScan = _RustLaserScan
 except NameError:
-    # Rust bindings not available, keep nodes import or leave undefined
     pass
 
 # Add message types to __all__ if available
