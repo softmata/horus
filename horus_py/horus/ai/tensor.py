@@ -13,30 +13,6 @@ if TYPE_CHECKING:
     import jax.numpy as jnp
     import tensorflow as tf
 
-# Import backend
-try:
-    from horus._horus import TensorPool, TensorHandle
-    _HAS_BACKEND = True
-except ImportError:
-    _HAS_BACKEND = False
-    TensorPool = None
-    TensorHandle = None
-
-
-# Global tensor pool (lazily initialized)
-_global_pool: Optional['TensorPool'] = None
-
-
-def _get_pool() -> 'TensorPool':
-    """Get or create the global tensor pool."""
-    global _global_pool
-    if _global_pool is None:
-        if not _HAS_BACKEND:
-            raise RuntimeError("HORUS Rust backend not available")
-        _global_pool = TensorPool(pool_id=1, size_mb=1024, max_slots=4096)
-    return _global_pool
-
-
 # Dtype mapping
 DTYPE_MAP = {
     "float32": np.float32,

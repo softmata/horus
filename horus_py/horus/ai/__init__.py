@@ -30,17 +30,13 @@ from .registry import ModelRegistry, ModelEntry
 from .node import mlnode, MLNodeConfig
 from . import transforms
 
-# Re-export from Rust backend
+# Re-export GPU utility functions from Rust backend
 try:
     from horus._horus import (
-        TensorPool,
-        TensorHandle,
         cuda_is_available,
         cuda_device_count,
     )
 except ImportError:
-    # Mock for testing
-    from horus import TensorPool, TensorHandle
     cuda_is_available = lambda: False
     cuda_device_count = lambda: 0
 
@@ -59,9 +55,7 @@ __all__ = [
     "set_default_device",
     # Transforms
     "transforms",
-    # Rust backend
-    "TensorPool",
-    "TensorHandle",
+    # GPU utilities
     "cuda_is_available",
     "cuda_device_count",
 ]

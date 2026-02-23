@@ -16,15 +16,21 @@
 //   topic = Topic(CmdVel, backend="mpmc_shm")  # MPMC shared memory (~167ns)
 
 use horus::communication::Topic;
+use horus_core::memory::{DepthImage, Image, PointCloud};
 use horus_library::messages::cmd_vel::CmdVel;
 use horus_library::messages::geometry::Pose2D;
 use horus_library::messages::sensor::{Imu, LaserScan, Odometry};
 use horus_library::messages::GenericMessage;
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyType};
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::{Arc, RwLock};
+
+use crate::depth_image::PyDepthImage;
+use crate::image::PyImage;
+use crate::pointcloud::PyPointCloud;
 
 /// Log a failed Python node callback at debug level instead of silently dropping it.
 /// Used for non-critical observability calls (register_publisher/subscriber, log_pub/sub)
@@ -235,6 +241,9 @@ enum TopicType {
     Imu(Arc<RwLock<Topic<Imu>>>),
     Odometry(Arc<RwLock<Topic<Odometry>>>),
     LaserScan(Arc<RwLock<Topic<LaserScan>>>),
+    Image(Arc<RwLock<Topic<Image>>>),
+    PointCloud(Arc<RwLock<Topic<PointCloud>>>),
+    DepthImage(Arc<RwLock<Topic<DepthImage>>>),
     Generic(Arc<RwLock<Topic<GenericMessage>>>),
 }
 
@@ -355,6 +364,18 @@ impl PyTopic {
                 let topic =
                     create_topic::<LaserScan>(&effective_endpoint, cap, backend.as_deref())?;
                 TopicType::LaserScan(Arc::new(RwLock::new(topic)))
+            }
+            "Image" => {
+                let topic = create_pool_topic::<Image>(&effective_endpoint, cap)?;
+                TopicType::Image(Arc::new(RwLock::new(topic)))
+            }
+            "PointCloud" => {
+                let topic = create_pool_topic::<PointCloud>(&effective_endpoint, cap)?;
+                TopicType::PointCloud(Arc::new(RwLock::new(topic)))
+            }
+            "DepthImage" => {
+                let topic = create_pool_topic::<DepthImage>(&effective_endpoint, cap)?;
+                TopicType::DepthImage(Arc::new(RwLock::new(topic)))
             }
             _ => {
                 let topic =
@@ -552,6 +573,117 @@ impl PyTopic {
                             );
                             log_py_callback(
                                 info.call_method1(py, "log_pub", (&self.name, log_summary, ipc_ns)),
+                                "log_pub",
+                                &self.name,
+                            );
+                        }
+                    }
+                }
+                success
+            }
+            TopicType::Image(topic) => {
+                let py_img: PyRef<PyImage> = message.extract(py)?;
+                let img = py_img.inner().clone();
+                let topic_ref = topic.clone();
+                let success = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.send(&img);
+                    true
+                });
+
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "Image"),
+                                ),
+                                "register_publisher",
+                                &self.name,
+                            );
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, format!("Image({}x{})", img.height(), img.width()), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
+                            );
+                        }
+                    }
+                }
+                success
+            }
+            TopicType::PointCloud(topic) => {
+                let py_pc: PyRef<PyPointCloud> = message.extract(py)?;
+                let pc = py_pc.inner().clone();
+                let topic_ref = topic.clone();
+                let success = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.send(&pc);
+                    true
+                });
+
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "PointCloud"),
+                                ),
+                                "register_publisher",
+                                &self.name,
+                            );
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, format!("PointCloud({} pts)", pc.point_count()), ipc_ns),
+                                ),
+                                "log_pub",
+                                &self.name,
+                            );
+                        }
+                    }
+                }
+                success
+            }
+            TopicType::DepthImage(topic) => {
+                let py_depth: PyRef<PyDepthImage> = message.extract(py)?;
+                let depth = py_depth.inner().clone();
+                let topic_ref = topic.clone();
+                let success = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.send(&depth);
+                    true
+                });
+
+                if let Some(node_obj) = &node {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Ok(info) = node_obj.getattr(py, "info") {
+                        if !info.is_none(py) {
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "register_publisher",
+                                    (&self.name, "DepthImage"),
+                                ),
+                                "register_publisher",
+                                &self.name,
+                            );
+                            log_py_callback(
+                                info.call_method1(
+                                    py,
+                                    "log_pub",
+                                    (&self.name, format!("DepthImage({}x{})", depth.height(), depth.width()), ipc_ns),
+                                ),
                                 "log_pub",
                                 &self.name,
                             );
@@ -824,6 +956,120 @@ impl PyTopic {
                     Ok(None)
                 }
             }
+            TopicType::Image(topic) => {
+                let topic_ref = topic.clone();
+                let msg_opt = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.recv()
+                });
+                if let Some(img) = msg_opt {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "Image"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
+                                );
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, format!("Image({}x{})", img.height(), img.width()), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
+                                );
+                            }
+                        }
+                    }
+                    let py_img = PyImage::from_inner(img);
+                    Ok(Some(py_img.into_pyobject(py)?.into_any().unbind()))
+                } else {
+                    Ok(None)
+                }
+            }
+            TopicType::PointCloud(topic) => {
+                let topic_ref = topic.clone();
+                let msg_opt = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.recv()
+                });
+                if let Some(pc) = msg_opt {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "PointCloud"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
+                                );
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, format!("PointCloud({} pts)", pc.point_count()), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
+                                );
+                            }
+                        }
+                    }
+                    let py_pc = PyPointCloud::from_inner(pc);
+                    Ok(Some(py_pc.into_pyobject(py)?.into_any().unbind()))
+                } else {
+                    Ok(None)
+                }
+            }
+            TopicType::DepthImage(topic) => {
+                let topic_ref = topic.clone();
+                let msg_opt = py.detach(|| {
+                    let topic = topic_ref.read().unwrap();
+                    topic.recv()
+                });
+                if let Some(depth) = msg_opt {
+                    let ipc_ns = start.elapsed().as_nanos() as u64;
+                    if let Some(node_obj) = &node {
+                        if let Ok(info) = node_obj.getattr(py, "info") {
+                            if !info.is_none(py) {
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "register_subscriber",
+                                        (&self.name, "DepthImage"),
+                                    ),
+                                    "register_subscriber",
+                                    &self.name,
+                                );
+                                log_py_callback(
+                                    info.call_method1(
+                                        py,
+                                        "log_sub",
+                                        (&self.name, format!("DepthImage({}x{})", depth.height(), depth.width()), ipc_ns),
+                                    ),
+                                    "log_sub",
+                                    &self.name,
+                                );
+                            }
+                        }
+                    }
+                    let py_depth = PyDepthImage::from_inner(depth);
+                    Ok(Some(py_depth.into_pyobject(py)?.into_any().unbind()))
+                } else {
+                    Ok(None)
+                }
+            }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
                 let msg_opt = py.detach(|| {
@@ -899,6 +1145,9 @@ impl PyTopic {
             TopicType::Imu(t) => t.read().unwrap().backend_name().to_string(),
             TopicType::Odometry(t) => t.read().unwrap().backend_name().to_string(),
             TopicType::LaserScan(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::Image(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::PointCloud(t) => t.read().unwrap().backend_name().to_string(),
+            TopicType::DepthImage(t) => t.read().unwrap().backend_name().to_string(),
             TopicType::Generic(t) => t.read().unwrap().backend_name().to_string(),
         }
     }
@@ -917,6 +1166,9 @@ impl PyTopic {
                 TopicType::Imu(t) => t.read().unwrap().metrics(),
                 TopicType::Odometry(t) => t.read().unwrap().metrics(),
                 TopicType::LaserScan(t) => t.read().unwrap().metrics(),
+                TopicType::Image(t) => t.read().unwrap().metrics(),
+                TopicType::PointCloud(t) => t.read().unwrap().metrics(),
+                TopicType::DepthImage(t) => t.read().unwrap().metrics(),
                 TopicType::Generic(t) => t.read().unwrap().metrics(),
             };
 
@@ -955,6 +1207,26 @@ impl PyTopic {
 // ============================================================================
 // Helper functions
 // ============================================================================
+
+/// Create a Topic for pool-backed types (Image, PointCloud, DepthImage).
+///
+/// These types use `TopicMessage` with `Wire` = descriptor (not Serialize on Self),
+/// so they need different trait bounds than `create_topic`.
+fn create_pool_topic<T>(endpoint: &str, capacity: usize) -> PyResult<Topic<T>>
+where
+    T: horus::communication::TopicMessage + Send + 'static,
+    T::Wire: Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    let topic_name = if endpoint.contains('@') {
+        endpoint.split('@').next().unwrap_or(endpoint)
+    } else {
+        endpoint
+    };
+
+    Topic::with_capacity(topic_name, capacity as u32, None).map_err(|e| {
+        PyRuntimeError::new_err(format!("Failed to create Topic: {}", e))
+    })
+}
 
 fn create_topic<T>(endpoint: &str, capacity: usize, backend: Option<&str>) -> PyResult<Topic<T>>
 where

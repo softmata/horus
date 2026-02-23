@@ -30,9 +30,7 @@ try:
         PyNodeState as NodeState,
         PySchedulerConfig as SchedulerConfig,
         get_version,
-        # Tensor system for zero-copy ML/AI
-        TensorPool,
-        TensorHandle,
+        # GPU utility functions
         cuda_is_available,
         cuda_device_count,
         # Domain types — clean API hiding DLPack/TensorPool internals
@@ -84,17 +82,8 @@ except ImportError:
 
     def get_version(): return "0.1.0-mock"
 
-    # Mock TensorPool and TensorHandle for testing
-    class TensorPool:
-        def __init__(self, pool_id=1, size_mb=1024, max_slots=1024):
-            self.pool_id = pool_id
-        def alloc(self, shape, dtype="float32", device="cpu"):
-            return TensorHandle()
-        def stats(self):
-            return {}
-
-    class TensorHandle:
-        pass
+    cuda_is_available = lambda: False
+    cuda_device_count = lambda: 0
 
     class Image:
         pass
@@ -1549,9 +1538,9 @@ __all__ = [
     "Image",
     "PointCloud",
     "DepthImage",
-    # Tensor system for zero-copy ML/AI (advanced)
-    "TensorPool",
-    "TensorHandle",
+    # GPU utility functions
+    "cuda_is_available",
+    "cuda_device_count",
     # Simple async API
     "AsyncNode",
     "AsyncTopic",

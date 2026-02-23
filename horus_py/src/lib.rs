@@ -51,10 +51,11 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHFrameConfig>()?;
     m.add_function(wrap_pyfunction!(hframe::get_timestamp_ns, m)?)?;
 
-    // Tensor system - zero-copy shared memory tensors
-    tensor::register_tensor_classes(m)?;
+    // GPU utility functions (tensor pool/handle internals are not exposed)
+    m.add_function(wrap_pyfunction!(tensor::cuda_is_available, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor::cuda_device_count, m)?)?;
 
-    // Domain types — hide DLPack/TensorPool internals behind clean API
+    // Domain types — clean API hiding DLPack/TensorPool internals
     m.add_class::<image::PyImage>()?;
     m.add_class::<pointcloud::PyPointCloud>()?;
     m.add_class::<depth_image::PyDepthImage>()?;

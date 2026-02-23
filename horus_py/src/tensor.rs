@@ -20,7 +20,35 @@ lazy_static::lazy_static! {
     static ref POOL_REGISTRY: RwLock<HashMap<u32, Arc<TensorPool>>> = RwLock::new(HashMap::new());
 }
 
-/// Get or create a tensor pool by ID
+/// Auto-detect the optimal pool allocator based on GPU hardware.
+///
+/// - Jetson (unified memory): `ManagedMemory` — CPU+GPU share RAM, zero-copy
+/// - Discrete GPU: `PinnedMemory` — page-locked host memory, fast DMA
+/// - No GPU: `Mmap` — standard memory-mapped shared memory
+fn auto_allocator() -> horus::memory::PoolAllocator {
+    #[cfg(feature = "cuda")]
+    {
+        use horus_core::memory::{GpuCapability, PoolAllocator};
+        match horus_core::memory::gpu_capability() {
+            GpuCapability::None => PoolAllocator::Mmap,
+            GpuCapability::UnifiedMemory { device_id, .. } => {
+                PoolAllocator::ManagedMemory { device_id }
+            }
+            GpuCapability::DiscreteGpu { device_id, .. } => {
+                PoolAllocator::PinnedMemory { device_id }
+            }
+        }
+    }
+    #[cfg(not(feature = "cuda"))]
+    {
+        horus::memory::PoolAllocator::Mmap
+    }
+}
+
+/// Get or create a tensor pool by ID.
+///
+/// When `config` is `None`, auto-detects the optimal allocator based on GPU
+/// hardware — users get the best backend without opt-in.
 fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResult<Arc<TensorPool>> {
     // Check if pool already exists
     {
@@ -30,8 +58,11 @@ fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResul
         }
     }
 
-    // Create new pool
-    let config = config.unwrap_or_default();
+    // Create new pool with auto-detected allocator when no config specified
+    let config = config.unwrap_or_else(|| TensorPoolConfig {
+        allocator: auto_allocator(),
+        ..TensorPoolConfig::default()
+    });
     let pool = TensorPool::new(pool_id, config)
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to create pool: {}", e)))?;
     let pool = Arc::new(pool);
@@ -45,6 +76,17 @@ fn get_or_create_pool(pool_id: u32, config: Option<TensorPoolConfig>) -> PyResul
     Ok(pool)
 }
 
+/// Get or create a pool configured for the detected GPU capability.
+///
+/// Delegates to `get_or_create_pool` which auto-detects the allocator.
+/// Uses pool ID 2 (separate from the default pool ID 1).
+#[cfg(feature = "cuda")]
+fn get_or_create_pool_for_gpu(
+    _gpu_cap: &horus_core::memory::GpuCapability,
+) -> PyResult<Arc<TensorPool>> {
+    get_or_create_pool(2, None)
+}
+
 /// Python wrapper for TensorPool
 #[pyclass(name = "TensorPool")]
 pub struct PyTensorPool {
@@ -54,6 +96,12 @@ pub struct PyTensorPool {
 #[pymethods]
 impl PyTensorPool {
     /// Create or open a tensor pool
+    ///
+    /// The pool automatically selects the optimal memory backend based on
+    /// detected GPU hardware:
+    ///   - Jetson: cudaMallocManaged (unified CPU+GPU memory)
+    ///   - Discrete GPU: cudaMallocHost (pinned, fast DMA)
+    ///   - No GPU: mmap (standard shared memory)
     ///
     /// Args:
     ///     pool_id: Unique identifier for the pool (default: 1)
@@ -69,7 +117,7 @@ impl PyTensorPool {
             pool_size: size_mb * 1024 * 1024,
             max_slots,
             slot_alignment: 64,
-            allocator: Default::default(),
+            allocator: auto_allocator(),
         };
         let pool = get_or_create_pool(pool_id, Some(config))?;
         Ok(Self { pool })
@@ -216,8 +264,9 @@ impl PyTensorHandle {
 
     /// CUDA array interface for GPU tensor access
     ///
-    /// This enables: torch.as_tensor(tensor_handle) for GPU tensors
-    /// The GPU pointer is extracted from the cuda_ipc_handle field.
+    /// This enables: torch.as_tensor(tensor_handle) for GPU tensors.
+    /// Only valid for tensors in unified memory (Jetson) where `data_ptr()` returns
+    /// a GPU-accessible pointer. CPU/pinned tensors cannot expose __cuda_array_interface__.
     #[getter]
     fn __cuda_array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let handle = self
@@ -242,10 +291,13 @@ impl PyTensorHandle {
         let typestr = dtype_numpy_typestr(tensor.dtype);
         dict.set_item("typestr", typestr)?;
 
-        // Data pointer (GPU address from IPC handle)
-        // The cuda_ipc_handle stores the GPU pointer in the first 8 bytes (little-endian)
-        let gpu_ptr = u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap());
-        dict.set_item("data", (gpu_ptr as usize, false))?;
+        // Use handle.data_ptr() which goes through pool.data_ptr().
+        // For unified memory (Jetson), this returns the cudaMallocManaged pointer
+        // which IS a valid GPU pointer. For CPU/pinned tensors that somehow have
+        // device=cuda set, we still return pool.data_ptr() — the caller marked it
+        // as CUDA, so the pointer should be GPU-accessible.
+        let gpu_ptr = handle.data_ptr() as usize;
+        dict.set_item("data", (gpu_ptr, false))?;
 
         // Strides
         let strides: Vec<i64> = handle.strides().iter().map(|&x| x as i64).collect();
@@ -290,11 +342,10 @@ impl PyTensorHandle {
             .map(|&x| (x as i64) / elem_size)
             .collect();
 
-        let data_ptr = if handle.is_cuda() {
-            u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap()) as *mut c_void
-        } else {
-            handle.data_ptr() as *mut c_void
-        };
+        // Use handle.data_ptr() for all backends — pool.data_ptr() returns the
+        // correct pointer for mmap (CPU), cudaMallocManaged (unified/Jetson),
+        // and cudaMallocHost (pinned). No special CUDA branch needed.
+        let data_ptr = handle.data_ptr() as *mut c_void;
 
         dlpack_utils::make_dlpack_capsule(
             py,
@@ -364,9 +415,81 @@ impl PyTensorHandle {
         std::mem::forget(used_name);
 
         // Allocate HORUS TensorHandle and copy data from source.
-        // Data always lands in the CPU mmap pool — GPU tensors are copied via
-        // cudaMemcpy(DeviceToHost) so the resulting handle is CPU-backed.
+        // GPU sources are handled based on hardware capability:
+        //   - Jetson (unified): allocate with Device::cuda — managed memory is CPU+GPU accessible
+        //   - Discrete GPU: allocate with Device::cpu in pinned pool — fast DMA staging
+        //   - No GPU: allocate with Device::cpu in mmap pool
         let is_cuda_source = descriptor.device.is_cuda();
+        let src_ptr = descriptor.data_ptr as *const u8;
+        let copy_len = descriptor.size_bytes as usize;
+
+        if is_cuda_source {
+            #[cfg(feature = "cuda")]
+            {
+                let gpu_cap = horus_core::memory::gpu_capability();
+                let pool = get_or_create_pool_for_gpu(&gpu_cap)?;
+                let target_device = if gpu_cap.is_unified() {
+                    // Jetson: managed pool, mark as CUDA so downstream consumers
+                    // know this data is GPU-accessible without copies.
+                    horus_types::Device::cuda(
+                        gpu_cap.device_id().unwrap_or(0) as u32,
+                    )
+                } else {
+                    // Discrete GPU: pinned pool, data is CPU-side (fast DMA staging)
+                    horus_types::Device::cpu()
+                };
+
+                let handle = TensorHandle::alloc(
+                    Arc::clone(&pool),
+                    &descriptor.shape,
+                    descriptor.dtype,
+                    target_device,
+                )
+                .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
+
+                let dst_ptr = handle.data_ptr();
+                let memcpy_kind = if gpu_cap.is_unified() {
+                    // D2D: source is GPU, dest is managed memory (also GPU-accessible)
+                    horus_core::memory::CudaMemcpyKind::DeviceToDevice
+                } else {
+                    // D2H: source is GPU, dest is pinned host memory
+                    horus_core::memory::CudaMemcpyKind::DeviceToHost
+                };
+
+                horus_core::memory::cuda_memcpy(
+                    dst_ptr as *mut c_void,
+                    src_ptr as *const c_void,
+                    copy_len,
+                    memcpy_kind,
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "cudaMemcpy failed during DLPack import: {}",
+                        e
+                    ))
+                })?;
+
+                // Call deleter on the original DLManagedTensor (we're done with the data)
+                unsafe {
+                    let managed = managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
+                    if let Some(deleter) = (*managed).deleter {
+                        deleter(managed);
+                    }
+                }
+
+                return Ok(Self {
+                    handle: Some(handle),
+                });
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                return Err(PyRuntimeError::new_err(
+                    "Cannot import CUDA DLPack tensor: HORUS was built without CUDA support",
+                ));
+            }
+        }
+
+        // CPU source — direct memory copy into default pool
         let pool = get_or_create_pool(1, None)?;
         let handle = TensorHandle::alloc(
             Arc::clone(&pool),
@@ -376,38 +499,9 @@ impl PyTensorHandle {
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 
-        let src_ptr = descriptor.data_ptr as *const u8;
         let dst_ptr = handle.data_ptr();
-        let copy_len = descriptor.size_bytes as usize;
-
-        if is_cuda_source {
-            // GPU tensor — use cudaMemcpy to safely transfer data to CPU pool
-            #[cfg(feature = "cuda")]
-            {
-                horus_core::memory::cuda_memcpy(
-                    dst_ptr as *mut c_void,
-                    src_ptr as *const c_void,
-                    copy_len,
-                    horus_core::memory::CudaMemcpyKind::DeviceToHost,
-                )
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "cudaMemcpy(DeviceToHost) failed during DLPack import: {}",
-                        e
-                    ))
-                })?;
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                return Err(PyRuntimeError::new_err(
-                    "Cannot import CUDA DLPack tensor: HORUS was built without CUDA support",
-                ));
-            }
-        } else {
-            // CPU tensor — direct memory copy
-            unsafe {
-                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
-            }
+        unsafe {
+            std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
         }
 
         // Call deleter on the original DLManagedTensor (we're done with the data)
@@ -590,7 +684,9 @@ impl PyTensorHandle {
     /// Copy tensor to CPU (returns new tensor)
     ///
     /// If already on CPU, returns a reference to self (no copy).
-    /// If on CUDA, copies data to CPU memory.
+    /// If on CUDA with unified memory (Jetson), returns clone — managed memory
+    /// is already CPU-accessible.
+    /// If on CUDA with discrete GPU, copies data to CPU via cudaMemcpy(D2H).
     ///
     /// Note: Requires CUDA support to be enabled at compile time.
     #[cfg(feature = "cuda")]
@@ -609,24 +705,35 @@ impl PyTensorHandle {
             });
         }
 
-        // CUDA -> CPU transfer
+        // Check GPU capability
+        let gpu_cap = horus_core::memory::gpu_capability();
+
+        if gpu_cap.is_unified() {
+            // Jetson (unified memory): managed memory is already CPU-accessible.
+            // No copy needed — return clone with same pool backing.
+            return Ok(Self {
+                handle: Some(handle.clone()),
+            });
+        }
+
+        // Discrete GPU -> CPU transfer
         let tensor = handle.tensor();
         let shape: Vec<u64> = handle.shape().to_vec();
-        let pool = handle.pool();
 
-        // Allocate CPU tensor
-        let cpu_handle = TensorHandle::alloc(pool.clone(), &shape, tensor.dtype, Device::cpu())
-            .map_err(|e| PyRuntimeError::new_err(format!("CPU allocation failed: {}", e)))?;
+        // Allocate CPU tensor in default pool
+        let cpu_pool = get_or_create_pool(1, None)?;
+        let cpu_handle =
+            TensorHandle::alloc(cpu_pool, &shape, tensor.dtype, horus_types::Device::cpu())
+                .map_err(|e| PyRuntimeError::new_err(format!("CPU allocation failed: {}", e)))?;
 
-        // Get GPU pointer from IPC handle (first 8 bytes store the pointer)
-        let gpu_ptr = u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap())
-            as *const std::ffi::c_void;
-        let cpu_ptr = cpu_handle.data_ptr() as *mut std::ffi::c_void;
+        // Use handle.data_ptr() for the source — goes through pool.data_ptr()
+        // which returns the correct pointer for any allocator backend.
+        let src_ptr = handle.data_ptr() as *const std::ffi::c_void;
+        let dst_ptr = cpu_handle.data_ptr() as *mut std::ffi::c_void;
 
-        // Copy GPU -> CPU
         cuda_memcpy(
-            cpu_ptr,
-            gpu_ptr,
+            dst_ptr,
+            src_ptr,
             handle.nbytes() as usize,
             CudaMemcpyKind::DeviceToHost,
         )
@@ -658,7 +765,10 @@ impl PyTensorHandle {
     /// Copy tensor to CUDA device (returns new tensor)
     ///
     /// If already on CUDA, returns a reference to self (no copy).
-    /// If on CPU, copies data to GPU memory.
+    /// If on CPU with unified memory (Jetson), managed memory is already
+    /// GPU-accessible — returns clone.
+    /// If on CPU with discrete GPU, allocates in a managed-memory pool and
+    /// copies via cudaMemcpy(H2D), stamping the IPC handle properly.
     ///
     /// Args:
     ///     device: Target device string (default: "cuda:0")
@@ -668,7 +778,7 @@ impl PyTensorHandle {
     #[pyo3(signature = (device="cuda:0"))]
     fn cuda(&self, device: &str) -> PyResult<Self> {
         use horus_core::memory::{
-            cuda_ipc_get_mem_handle, cuda_malloc, cuda_memcpy, cuda_set_device, CudaMemcpyKind,
+            cuda_ipc_get_mem_handle, cuda_memcpy, cuda_set_device, CudaMemcpyKind,
         };
 
         let handle = self
@@ -685,56 +795,60 @@ impl PyTensorHandle {
             });
         }
 
-        // Get device ID from target
+        let gpu_cap = horus_core::memory::gpu_capability();
+
+        if gpu_cap.is_unified() && handle.is_cpu() {
+            // Jetson (unified memory): managed memory is already GPU-accessible.
+            // No copy needed — return clone. The data pointer is valid for both
+            // CPU and GPU access on unified memory architectures.
+            return Ok(Self {
+                handle: Some(handle.clone()),
+            });
+        }
+
+        // Discrete GPU path: need actual data transfer
         let device_id = target_device
             .cuda_index()
             .ok_or_else(|| PyValueError::new_err("Invalid CUDA device"))?
             as i32;
 
-        // Set CUDA device
         cuda_set_device(device_id)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to set CUDA device: {}", e)))?;
 
         let tensor = handle.tensor();
         let shape: Vec<u64> = handle.shape().to_vec();
-        let pool = handle.pool();
         let nbytes = handle.nbytes() as usize;
 
-        // Allocate GPU memory
-        let gpu_ptr = cuda_malloc(nbytes)
-            .map_err(|e| PyRuntimeError::new_err(format!("CUDA malloc failed: {}", e)))?;
+        // Allocate GPU tensor in a managed-memory pool (auto-configured by gpu_capability)
+        let gpu_pool = get_or_create_pool_for_gpu(&gpu_cap)?;
+        let mut gpu_handle =
+            TensorHandle::alloc(Arc::clone(&gpu_pool), &shape, tensor.dtype, target_device)
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("GPU tensor allocation failed: {}", e))
+                })?;
 
-        // Copy data to GPU
-        if handle.is_cpu() {
-            // CPU -> GPU
-            let cpu_ptr = handle.data_ptr() as *const std::ffi::c_void;
-            cuda_memcpy(gpu_ptr, cpu_ptr, nbytes, CudaMemcpyKind::HostToDevice)
-                .map_err(|e| PyRuntimeError::new_err(format!("CUDA memcpy failed: {}", e)))?;
+        // Copy data: use handle.data_ptr() for source (correct for all backends)
+        let src_ptr = handle.data_ptr() as *const std::ffi::c_void;
+        let dst_ptr = gpu_handle.data_ptr() as *mut std::ffi::c_void;
+
+        let memcpy_kind = if handle.is_cpu() {
+            CudaMemcpyKind::HostToDevice
         } else {
             // GPU -> GPU (different device)
-            let src_gpu_ptr = u64::from_le_bytes(tensor.cuda_ipc_handle[..8].try_into().unwrap())
-                as *const std::ffi::c_void;
-            cuda_memcpy(gpu_ptr, src_gpu_ptr, nbytes, CudaMemcpyKind::DeviceToDevice)
-                .map_err(|e| PyRuntimeError::new_err(format!("CUDA memcpy failed: {}", e)))?;
-        }
+            CudaMemcpyKind::DeviceToDevice
+        };
 
-        // Get IPC handle for the new GPU memory
-        let ipc_handle = cuda_ipc_get_mem_handle(gpu_ptr)
+        cuda_memcpy(dst_ptr, src_ptr, nbytes, memcpy_kind)
+            .map_err(|e| PyRuntimeError::new_err(format!("CUDA memcpy failed: {}", e)))?;
+
+        // Stamp IPC handle for cross-process GPU memory sharing
+        let ipc_handle = cuda_ipc_get_mem_handle(dst_ptr)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to get IPC handle: {}", e)))?;
-
-        // Allocate a tensor descriptor in the pool (for metadata tracking)
-        let mut gpu_handle = TensorHandle::alloc(pool.clone(), &shape, tensor.dtype, target_device)
-            .map_err(|e| PyRuntimeError::new_err(format!("Tensor allocation failed: {}", e)))?;
-
-        // Store the IPC handle and GPU pointer in the tensor
-        // Note: This modifies the tensor's cuda_ipc_handle field
         {
             let gpu_tensor = gpu_handle.tensor_mut();
             gpu_tensor
                 .cuda_ipc_handle
                 .copy_from_slice(&ipc_handle.reserved);
-            // Store GPU pointer in first 8 bytes for quick access
-            gpu_tensor.cuda_ipc_handle[..8].copy_from_slice(&(gpu_ptr as u64).to_le_bytes());
         }
 
         Ok(Self {
