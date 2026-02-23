@@ -83,12 +83,9 @@ impl Node for MyNode {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `auto_restart` | `bool` | Auto-restart on crash |
-| `max_restarts` | `u32` | Max restart attempts |
-| `restart_delay` | `Duration` | Delay between restarts |
-| `health_check_interval` | `Duration` | Health check interval |
-| `watchdog_timeout` | `Duration` | Watchdog timeout |
-| `enable_circuit_breaker` | `bool` | Enable circuit breaker |
+| `max_tick_duration_ms` | `Option<u64>` | Maximum tick duration before warning |
+| `log_level` | `String` | Node log level |
+| `custom_params` | `HashMap<String, String>` | Custom key-value parameters |
 
 ### `enum NodeState`
 
@@ -340,8 +337,8 @@ let t = tf.tf("camera", "world")?;
 | `HFrame::new()` | Default config |
 | `HFrame::with_config(config)` | Custom config |
 | `HFrame::small() / medium() / large() / massive()` | Size presets |
-| `register_frame(name, parent)` | Register dynamic frame |
-| `register_static_frame(name, parent, transform)` | Register static frame |
+| `register_frame(name, parent: Option<&str>)` | Register dynamic frame (None = root) |
+| `register_static_frame(name, parent: Option<&str>, transform)` | Register static frame |
 | `unregister_frame(name)` | Remove a frame |
 | `update_transform(name, transform, timestamp)` | Update frame transform |
 | `set_static_transform(name, transform)` | Update static transform |
@@ -520,14 +517,17 @@ let speed: f64 = params.get_or("max_speed", 1.0);
 | `Io(io::Error)` | I/O error |
 | `Config(String)` | Configuration error |
 | `Communication(String)` | IPC/topic error |
-| `Node(String)` | Node lifecycle error |
+| `Node { node, message }` | Node lifecycle error (node name + message) |
 | `Memory(String)` | Memory allocation error |
 | `Serialization(String)` | Ser/de error |
 | `NotFound(String)` | Resource not found |
 | `InvalidInput(String)` | Invalid argument |
 | `AlreadyExists(String)` | Duplicate resource |
+| `PermissionDenied(String)` | Permission denied |
 | `Unsupported(String)` | Unsupported operation |
-| `Internal(String)` | Internal error |
+| `Parse(String)` | Parse error |
+| `Internal { message, file, line }` | Internal error with source location |
+| `Contextual { message, source }` | Wraps another error with context |
 
 ### `type HorusResult<T> = Result<T, HorusError>`
 
@@ -716,7 +716,7 @@ Everything below is for power users, framework contributors, and specialized use
 
 | Method | Description |
 |--------|-------------|
-| `Topic::with_capacity(name, cap, slot_size)` | Create with custom ring buffer size and optional slot size |
+| `Topic::with_capacity(name, cap, slot_size: Option<usize>)` | Create with custom ring buffer size and optional slot size |
 | `try_send(&self, msg) -> Result<(), T>` | Send, returning the message on failure |
 | `pending_count(&self) -> u64` | Number of pending messages |
 | `metrics(&self) -> TopicMetrics` | Send/recv counters |
@@ -783,7 +783,9 @@ Extends Node for hard/soft real-time guarantees.
 | `RtPriority` | `Critical`, `High`, `Medium`, `Low`, `Custom(u32)` |
 | `RtClass` | `Hard`, `Firm`, `Soft` |
 | `DeadlineMissPolicy` | `Warn`, `Skip`, `EmergencyStop`, `Degrade`, `Fallback` |
-| `RtDegradation` | `MemoryLockUnavailable(String)`, `PriorityClamped { requested, actual }`, `SchedulerDegraded(String)`, `AffinityUnavailable(String)`, `NoPreemptRt` |
+| `RtDegradation` | Struct: `{ feature: RtFeature, reason: String, severity: DegradationSeverity }` |
+| `RtFeature` | `RtPriority`, `MemoryLocking`, `CpuAffinity`, `NumaPinning`, `Watchdog`, `SafetyMonitor` |
+| `DegradationSeverity` | `High`, `Medium`, `Low` |
 
 ### `struct WCETViolation`
 
@@ -836,7 +838,7 @@ Builder methods: `memory_locked()`, `priority()`, `scheduler()`, `cpu_affinity()
 | `realtime.watchdog_enabled` | `bool` | Enable watchdog timers |
 | `realtime.watchdog_timeout_ms` | `u64` | Watchdog timeout in ms |
 | `realtime.safety_monitor` | `bool` | Enable safety monitor |
-| `realtime.max_deadline_misses` | `u32` | Max misses before action |
+| `realtime.max_deadline_misses` | `u64` | Max misses before action |
 | `realtime.memory_locking` | `bool` | Lock memory (mlockall) |
 | `realtime.rt_scheduling_class` | `bool` | Use SCHED_FIFO/RR |
 | `monitoring.profiling_enabled` | `bool` | Enable profiling |
@@ -858,8 +860,8 @@ Builder methods: `memory_locked()`, `priority()`, `scheduler()`, `cpu_affinity()
 | Method | Description |
 |--------|-------------|
 | `add_configured(config) -> &mut Self` | Add node with pre-built config |
-| `add_critical_node(name, wcet_us)` | Add node with critical WCET budget |
-| `set_wcet_budget(name, wcet_us)` | Set WCET budget for existing node |
+| `add_critical_node(name, watchdog_timeout: Duration)` | Add node with critical watchdog timeout |
+| `set_wcet_budget(name, budget: Duration)` | Set WCET budget for existing node |
 | `with_capacity(self, n)` | Pre-allocate node capacity |
 | `running_flag() -> Arc<AtomicBool>` | Get the running flag for external control |
 
@@ -985,11 +987,10 @@ Node presence information published to shared memory for discovery.
 
 | Method | Description |
 |--------|-------------|
-| `NodePresence::new(name, scheduler, publishers, subscribers, priority, rate_hz)` | Create |
-| `write()` | Publish to shared memory |
-| `remove(name)` | Remove presence file |
 | `read(name) -> Option<Self>` | Read a node's presence |
 | `read_all() -> Vec<Self>` | Read all node presences |
+
+> **Internal** (`pub(crate)`): `new()`, `write()`, `remove()` are used by the scheduler internally.
 
 ### Node `checkpoint_state` / `restore_state`
 
@@ -1011,7 +1012,7 @@ For direct pool management (bypassing Image/PointCloud/DepthImage wrappers).
 |--------|-------------|
 | `TensorPool::new(config)` | Create new pool |
 | `TensorPool::open(pool_id)` | Open existing pool |
-| `alloc(size, dtype, shape) -> Option<HorusTensor>` | Allocate tensor |
+| `alloc(shape, dtype, device) -> HorusResult<HorusTensor>` | Allocate tensor |
 | `retain(&self, tensor)` | Increment refcount |
 | `release(&self, tensor)` | Decrement refcount |
 | `data_slice(&self, tensor) -> &[u8]` | Get tensor data |
@@ -1026,8 +1027,8 @@ RAII wrapper — automatically retains/releases pool slot on clone/drop.
 |--------|-------------|
 | `TensorHandle::alloc(pool, shape, dtype, device)` | Allocate with RAII |
 | `data_slice() -> &[u8]` | Raw data |
-| `data_as::<T>() -> &[T]` | Typed data view |
-| `data_as_mut::<T>() -> &mut [T]` | Mutable typed view |
+| `unsafe data_as::<T>() -> &[T]` | Typed data view |
+| `unsafe data_as_mut::<T>() -> &mut [T]` | Mutable typed view |
 | `shape() -> &[u64]` | Tensor shape |
 | `strides() -> &[u64]` | Tensor strides |
 | `dtype() -> TensorDtype` | Data type |
