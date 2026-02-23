@@ -50,6 +50,4 @@ pub mod device_type {
     pub const CPU: i32 = 1;
     /// CUDA GPU
     pub const CUDA: i32 = 2;
-    /// CUDA managed/unified memory
-    pub const CUDA_MANAGED: i32 = 13;
 }

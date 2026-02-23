@@ -198,7 +198,7 @@ impl From<anyhow::Error> for HorusError {
 // NOTE: From<String> and From<&str> intentionally removed.
 // Use specific error variants instead:
 //   HorusError::config("msg")       — for config errors
-//   HorusError::internal("msg")     — for internal errors (or horus_internal! macro)
+//   horus_internal!("msg")          — for internal errors (captures file/line)
 //   HorusError::InvalidInput("msg") — for input errors
 // This prevents accidental untyped errors via "string".into()
 
@@ -227,14 +227,6 @@ impl HorusError {
         HorusError::Memory(msg.into())
     }
 
-    /// Create an internal error (without file/line — prefer horus_internal! macro)
-    pub fn internal<S: Into<String>>(msg: S) -> Self {
-        HorusError::Internal {
-            message: msg.into(),
-            file: "unknown",
-            line: 0,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -666,24 +658,6 @@ mod tests {
     fn helper_memory() {
         let err = HorusError::memory("mmap failed");
         assert!(matches!(err, HorusError::Memory(ref s) if s == "mmap failed"));
-    }
-
-    /// HorusError::internal() without macro uses "unknown" file and line 0.
-    #[test]
-    fn helper_internal_unknown_location() {
-        let err = HorusError::internal("something broke");
-        match &err {
-            HorusError::Internal {
-                message,
-                file,
-                line,
-            } => {
-                assert_eq!(message, "something broke");
-                assert_eq!(*file, "unknown");
-                assert_eq!(*line, 0);
-            }
-            _ => panic!("Expected Internal variant"),
-        }
     }
 
     // =========================================================================

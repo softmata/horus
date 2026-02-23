@@ -41,15 +41,6 @@ pub enum NodeTier {
 }
 
 impl NodeTier {
-    /// Get human-readable description
-    pub fn description(&self) -> &'static str {
-        match self {
-            NodeTier::UltraFast => "Ultra-fast inline (<1us)",
-            NodeTier::Fast => "Inline execution (<10us)",
-            NodeTier::Normal => "Standard scheduling (<100us+)",
-        }
-    }
-
     /// Get the default failure policy for this tier.
     ///
     /// Each tier has a sensible default that matches its criticality:
@@ -71,13 +62,6 @@ mod node_tier_tests {
     #[test]
     fn test_node_tier_default() {
         assert_eq!(NodeTier::default(), NodeTier::Fast);
-    }
-
-    #[test]
-    fn test_node_tier_descriptions() {
-        assert!(!NodeTier::UltraFast.description().is_empty());
-        assert!(!NodeTier::Fast.description().is_empty());
-        assert!(!NodeTier::Normal.description().is_empty());
     }
 }
 

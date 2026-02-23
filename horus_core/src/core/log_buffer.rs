@@ -203,10 +203,6 @@ impl SharedLogBuffer {
             .collect()
     }
 
-    pub fn clear(&self) {
-        let mut mmap = self.mmap.lock().unwrap();
-        mmap[0..8].fill(0); // Reset write index
-    }
 }
 
 // Global shared memory log buffer

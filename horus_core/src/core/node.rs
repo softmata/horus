@@ -210,7 +210,6 @@ impl NodeMetrics {
 pub struct NodeInfo {
     // Basic identification
     name: String,
-    node_id: String,
 
     // State management
     state: NodeState,
@@ -246,18 +245,9 @@ impl NodeInfo {
     /// Create a new NodeInfo with comprehensive initialization
     pub fn new(node_name: String) -> Self {
         let now = Instant::now();
-        let node_id = format!(
-            "{}_{}",
-            node_name,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        );
 
         Self {
             name: node_name.clone(),
-            node_id,
             state: NodeState::Uninitialized,
             previous_state: NodeState::Uninitialized,
             state_change_time: now,
@@ -441,9 +431,6 @@ impl NodeInfo {
     // Getters
     pub fn name(&self) -> &str {
         &self.name
-    }
-    pub fn node_id(&self) -> &str {
-        &self.node_id
     }
     pub fn priority(&self) -> u32 {
         self.priority
@@ -899,13 +886,6 @@ mod tests {
         let info = NodeInfo::new("test_node".to_string());
         assert_eq!(info.name(), "test_node");
         assert_eq!(info.state(), &NodeState::Uninitialized);
-    }
-
-    #[test]
-    fn test_node_info_node_id_format() {
-        let info = NodeInfo::new("test_node".to_string());
-        // node_id should contain the node name
-        assert!(info.node_id().starts_with("test_node_"));
     }
 
     #[test]

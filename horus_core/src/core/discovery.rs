@@ -37,8 +37,6 @@ pub enum NodeEvent {
     Started,
     /// Node stopped gracefully
     Stopped,
-    /// Node crashed/errored
-    Crashed,
 }
 
 impl LogSummary for NodeAnnouncement {
