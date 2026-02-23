@@ -133,7 +133,7 @@ impl BlackBox {
     }
 
     /// Record an event
-    pub(crate) fn record(&mut self, event: BlackBoxEvent) {
+    pub fn record(&mut self, event: BlackBoxEvent) {
         if !self.enabled {
             return;
         }
@@ -232,6 +232,7 @@ impl BlackBox {
     /// ```rust,ignore
     /// blackbox.record_pod_snapshot(&motor_cmd, "wcet_violation");
     /// ```
+    #[allow(dead_code)] // wired in when WCET violation snapshots are enabled
     pub(crate) fn record_pod_snapshot<T: crate::communication::PodMessage>(
         &mut self,
         msg: &T,

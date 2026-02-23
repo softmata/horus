@@ -1427,7 +1427,12 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
 fn test_deadline_miss_detected_for_slow_rt_node() {
     let slow_counter = Arc::new(AtomicUsize::new(0));
 
-    let mut scheduler = Scheduler::new();
+    // Enable safety monitor with deadline monitoring BEFORE adding nodes
+    let mut config = SchedulerConfig::minimal();
+    config.realtime.safety_monitor = true;
+    config.realtime.deadline_monitoring = true;
+
+    let mut scheduler = Scheduler::new().with_config(config);
 
     // Node with tight deadline that will be missed
     scheduler
@@ -1441,13 +1446,7 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
         .deadline_ms(5) // 5ms deadline — will be missed by 20ms sleep
         .done();
 
-    // Enable safety monitor with deadline monitoring
-    let mut config = SchedulerConfig::minimal();
-    config.realtime.safety_monitor = true;
-    config.realtime.deadline_monitoring = true;
-    scheduler.apply_config(config);
-
-    let _result = scheduler.run_for(Duration::from_secs(1));
+    let _result = scheduler.run_for(Duration::from_secs(2));
 
     assert!(
         slow_counter.load(Ordering::SeqCst) > 0,

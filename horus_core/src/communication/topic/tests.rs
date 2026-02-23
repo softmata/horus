@@ -691,14 +691,13 @@ fn topic_cross_thread_1p1c_spsc() {
     pub_t.send(0);
     let _ = sub_t.recv();
 
-    let producer = thread::spawn(move || {
-        for i in 1..=n {
-            pub_t.send(i);
-        }
-    });
+    // Use a barrier so consumer is ready before producer starts sending
+    let barrier = Arc::new(Barrier::new(2));
 
+    let b = barrier.clone();
     let consumer = thread::spawn(move || {
         let mut received = Vec::with_capacity(n as usize);
+        b.wait(); // signal ready
         let deadline = Instant::now() + Duration::from_secs(10);
         while received.len() < n as usize && Instant::now() < deadline {
             if let Some(v) = sub_t.recv() {
@@ -708,6 +707,14 @@ fn topic_cross_thread_1p1c_spsc() {
             }
         }
         received
+    });
+
+    let b = barrier.clone();
+    let producer = thread::spawn(move || {
+        b.wait(); // wait for consumer to be ready
+        for i in 1..=n {
+            pub_t.send(i);
+        }
     });
 
     producer.join().unwrap();

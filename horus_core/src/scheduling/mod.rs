@@ -247,9 +247,7 @@ pub use record_replay::{
     SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 
-// Internal plumbing — used within horus_core only.
-pub(crate) use fault_tolerance::{FailureAction, FailureHandler};
-pub(crate) use record_replay::{NodeRecorder, NodeTickSnapshot, RecordingConfig};
+// Internal plumbing — used within horus_core submodules directly (not re-exported).
 
 // RecordingConfigYaml is a field type in SchedulerConfig, so it must be pub.
 // But it's an advanced config — most users use SchedulerConfig presets directly.

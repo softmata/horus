@@ -420,6 +420,7 @@ impl NodeRecorder {
     }
 
     /// Record an input received during the current tick.
+    #[allow(dead_code)] // wired in when Topic I/O recording is enabled
     pub(crate) fn record_input(&mut self, topic: &str, data: Vec<u8>) {
         if self.config.record_inputs {
             if let Some(ref mut snapshot) = self.current_snapshot {
@@ -429,6 +430,7 @@ impl NodeRecorder {
     }
 
     /// Record an output produced during the current tick.
+    #[allow(dead_code)] // wired in when Topic I/O recording is enabled
     pub(crate) fn record_output(&mut self, topic: &str, data: Vec<u8>) {
         if self.config.record_outputs {
             if let Some(ref mut snapshot) = self.current_snapshot {
@@ -438,6 +440,7 @@ impl NodeRecorder {
     }
 
     /// Get a reference to the underlying recording.
+    #[allow(dead_code)] // used by RecordingManager for mid-session inspection
     pub(crate) fn recording(&self) -> &NodeRecording {
         &self.recording
     }

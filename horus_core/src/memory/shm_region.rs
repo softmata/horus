@@ -5,7 +5,9 @@
 // - macOS: shm_open() + mmap (POSIX shared memory, RAM-backed via Mach)
 // - Windows: CreateFileMappingW with INVALID_HANDLE_VALUE (pagefile-backed, optimized for IPC)
 
-use crate::error::{HorusError, HorusResult};
+use crate::error::HorusResult;
+#[cfg(not(target_os = "linux"))]
+use crate::error::HorusError;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
@@ -42,6 +44,7 @@ pub struct ShmRegion {
     #[cfg(target_os = "windows")]
     handle: isize, // HANDLE
 
+    #[allow(dead_code)] // used on macOS/Windows for Drop; stored on Linux for future use
     size: usize,
     owner: bool,
 }
