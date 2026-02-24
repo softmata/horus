@@ -165,13 +165,6 @@ impl TrackedObject {
     }
 }
 
-/// Track state constants
-pub mod track_state {
-    pub const TENTATIVE: u32 = 0;
-    pub const CONFIRMED: u32 = 1;
-    pub const DELETED: u32 = 2;
-}
-
 /// Tracking array header
 ///
 /// Header for an array of tracked objects.

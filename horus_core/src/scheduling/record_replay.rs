@@ -419,32 +419,6 @@ impl NodeRecorder {
         }
     }
 
-    /// Record an input received during the current tick.
-    #[allow(dead_code)] // wired in when Topic I/O recording is enabled
-    pub(crate) fn record_input(&mut self, topic: &str, data: Vec<u8>) {
-        if self.config.record_inputs {
-            if let Some(ref mut snapshot) = self.current_snapshot {
-                snapshot.inputs.insert(topic.to_string(), data);
-            }
-        }
-    }
-
-    /// Record an output produced during the current tick.
-    #[allow(dead_code)] // wired in when Topic I/O recording is enabled
-    pub(crate) fn record_output(&mut self, topic: &str, data: Vec<u8>) {
-        if self.config.record_outputs {
-            if let Some(ref mut snapshot) = self.current_snapshot {
-                snapshot.outputs.insert(topic.to_string(), data);
-            }
-        }
-    }
-
-    /// Get a reference to the underlying recording.
-    #[allow(dead_code)] // used by RecordingManager for mid-session inspection
-    pub(crate) fn recording(&self) -> &NodeRecording {
-        &self.recording
-    }
-
     /// Finish and save the recording
     pub(crate) fn finish(&mut self) -> std::io::Result<PathBuf> {
         self.recording.finish();
@@ -458,6 +432,32 @@ impl NodeRecorder {
         Ok(path)
     }
 
+}
+
+#[cfg(test)]
+impl NodeRecorder {
+    /// Get a reference to the underlying recording (test-only).
+    pub(crate) fn recording(&self) -> &NodeRecording {
+        &self.recording
+    }
+
+    /// Record an input received during the current tick (test-only).
+    pub(crate) fn record_input(&mut self, topic: &str, data: Vec<u8>) {
+        if self.config.record_inputs {
+            if let Some(ref mut snapshot) = self.current_snapshot {
+                snapshot.inputs.insert(topic.to_string(), data);
+            }
+        }
+    }
+
+    /// Record an output produced during the current tick (test-only).
+    pub(crate) fn record_output(&mut self, topic: &str, data: Vec<u8>) {
+        if self.config.record_outputs {
+            if let Some(ref mut snapshot) = self.current_snapshot {
+                snapshot.outputs.insert(topic.to_string(), data);
+            }
+        }
+    }
 }
 
 /// Replayer for a node recording

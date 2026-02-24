@@ -20,21 +20,12 @@ pub struct LogEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LogType {
-    // Node/IPC operations
     Publish,
     Subscribe,
     Info,
     Warning,
     Error,
     Debug,
-    RemoteDeploy,
-    RemoteCompile,
-    RemoteExecute,
-    // Topic/Shared memory operations
-    TopicRead,
-    TopicWrite,
-    TopicMap,
-    TopicUnmap,
 }
 
 const MAX_LOG_ENTRIES: usize = 5000;

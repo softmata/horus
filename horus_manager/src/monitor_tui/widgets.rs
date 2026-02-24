@@ -1987,13 +1987,6 @@ impl TuiDashboard {
                         LogType::Warning => ("WARN", Color::Yellow),
                         LogType::Error => ("ERR", Color::Red),
                         LogType::Debug => ("DBG", Color::Magenta),
-                        LogType::TopicRead => ("READ", Color::Blue),
-                        LogType::TopicWrite => ("WRITE", Color::Green),
-                        LogType::TopicMap => ("MAP", Color::Cyan),
-                        LogType::TopicUnmap => ("UNMAP", Color::DarkGray),
-                        LogType::RemoteDeploy => ("DEPLOY", Color::Magenta),
-                        LogType::RemoteCompile => ("COMPILE", Color::Magenta),
-                        LogType::RemoteExecute => ("EXEC", Color::Magenta),
                     };
 
                     // Format: [TIME] TYPE topic: message

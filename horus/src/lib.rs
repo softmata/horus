@@ -129,10 +129,3 @@ pub mod prelude {
     pub use std::time::{Duration, Instant};
 }
 
-/// Version information
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Get HORUS version
-pub fn version() -> &'static str {
-    VERSION
-}

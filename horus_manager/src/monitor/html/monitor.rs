@@ -2328,10 +2328,6 @@ pub fn generate_html(port: u16) -> String {
                                 operation = 'Write';
                             }} else if (log.log_type === 'Subscribe') {{
                                 operation = 'Read';
-                            }} else if (log.log_type === 'TopicMap') {{
-                                operation = 'Map';
-                            }} else if (log.log_type === 'TopicUnmap') {{
-                                operation = 'Unmap';
                             }}
 
                             return `

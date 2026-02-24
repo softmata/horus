@@ -574,7 +574,11 @@ impl RtConfig {
         }
     }
 
-    /// Get the current thread's scheduler and priority.
+}
+
+#[cfg(test)]
+impl RtConfig {
+    /// Get the current thread's scheduler and priority (test-only).
     #[cfg(target_os = "linux")]
     pub fn get_current_scheduler() -> Result<(RtScheduler, i32), io::Error> {
         // SAFETY: sched_getscheduler and sched_getparam are safe libc calls
@@ -604,7 +608,7 @@ impl RtConfig {
         Ok((RtScheduler::Normal, 0))
     }
 
-    /// Get the current thread's CPU affinity.
+    /// Get the current thread's CPU affinity (test-only).
     #[cfg(target_os = "linux")]
     pub fn get_current_affinity() -> Result<Vec<usize>, io::Error> {
         // SAFETY: sched_getaffinity and CPU_ISSET are safe libc calls
@@ -635,7 +639,6 @@ impl RtConfig {
 
     #[cfg(not(target_os = "linux"))]
     pub fn get_current_affinity() -> Result<Vec<usize>, io::Error> {
-        // Return all CPUs on non-Linux
         let cpu_count = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(1);
