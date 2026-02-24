@@ -14,7 +14,7 @@ on:
       - 'benchmarks/src/bin/zenoh*.rs'
       - '.github/workflows/zenoh.yml'
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'horus_core/src/communication/network/zenoh*.rs'
       - 'horus_core/src/communication/network/hybrid*.rs'
