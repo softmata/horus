@@ -70,10 +70,7 @@ fn backend_mode_from_integer() {
     assert_eq!(BackendMode::from(5), BackendMode::MpmcIntra);
     assert_eq!(BackendMode::from(6), BackendMode::PodShm);
     assert_eq!(BackendMode::from(10), BackendMode::MpmcShm);
-    assert_eq!(BackendMode::from(11), BackendMode::CudaIpcSpsc);
-    assert_eq!(BackendMode::from(12), BackendMode::CudaIpcSpmc);
-    assert_eq!(BackendMode::from(13), BackendMode::CudaIpcMpsc);
-    assert_eq!(BackendMode::from(14), BackendMode::CudaIpcMpmc);
+    assert_eq!(BackendMode::from(11), BackendMode::Unknown);
     assert_eq!(BackendMode::from(255), BackendMode::Unknown);
 }
 

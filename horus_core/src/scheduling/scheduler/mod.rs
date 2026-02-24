@@ -482,6 +482,7 @@ impl Scheduler {
     ///     println!("Policy: {}, State: {}", stats.policy, stats.state);
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn failure_stats(
         &self,
         node_name: &str,
@@ -498,6 +499,7 @@ impl Scheduler {
     /// For other policies, maps to the closest circuit breaker equivalent:
     /// - Healthy/allowed → `Closed`
     /// - Suppressed/in-backoff → `Open`
+    #[doc(hidden)]
     pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
         self.nodes.iter().find(|n| n.name == node_name).map(|n| {
             let stats = n.failure_handler.stats();
@@ -517,6 +519,7 @@ impl Scheduler {
     /// - `recovering` - Node had failures but is currently allowed
     ///
     /// For backward compatibility, the tuple maps to (healthy, suppressed, recovering).
+    #[doc(hidden)]
     pub fn circuit_summary(&self) -> (usize, usize, usize) {
         let mut healthy = 0;
         let mut suppressed = 0;
@@ -556,6 +559,7 @@ impl Scheduler {
     ///     println!("Deadline misses: {}", stats.deadline_misses);
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn safety_stats(&self) -> Option<super::safety_monitor::SafetyStats> {
         self.monitor.safety.as_ref().map(|m| m.get_stats())
     }
@@ -571,6 +575,7 @@ impl Scheduler {
     ///     .build()?;
     /// assert_eq!(scheduler.scheduler_name(), "MyScheduler");
     /// ```
+    #[doc(hidden)]
     pub fn scheduler_name(&self) -> &str {
         &self.scheduler_name
     }
@@ -831,6 +836,7 @@ impl Scheduler {
     /// Returns `true` if the scheduler was created with `Scheduler::simulation()` or
     /// `Scheduler::simulation_with_seed()`, which enables virtual time, seeded RNG,
     /// and execution tracing.
+    #[doc(hidden)]
     pub fn is_simulation_mode(&self) -> bool {
         self.deterministic.is_some()
     }
@@ -853,6 +859,7 @@ impl Scheduler {
     ///     println!("Random u64: {}", clock.random_u64());
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn deterministic_clock(&self) -> Option<Arc<DeterministicClock>> {
         self.deterministic.as_ref().map(|d| d.clock.clone())
     }
@@ -876,6 +883,7 @@ impl Scheduler {
     ///     trace.save(Path::new("execution_trace.json")).unwrap();
     /// }
     /// ```
+    #[doc(hidden)]
     pub fn execution_trace(&self) -> Option<Arc<ParkingMutex<ExecutionTrace>>> {
         self.deterministic.as_ref().and_then(|d| d.trace.clone())
     }
@@ -883,6 +891,7 @@ impl Scheduler {
     /// Get the seed used for deterministic RNG (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
+    #[doc(hidden)]
     pub fn seed(&self) -> Option<u64> {
         self.deterministic.as_ref().map(|d| d.config.seed)
     }
@@ -890,6 +899,7 @@ impl Scheduler {
     /// Get the current virtual time (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
+    #[doc(hidden)]
     pub fn virtual_time(&self) -> Option<Duration> {
         self.deterministic.as_ref().map(|d| d.clock.now())
     }
@@ -897,6 +907,7 @@ impl Scheduler {
     /// Get the current virtual tick number (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
+    #[doc(hidden)]
     pub fn virtual_tick(&self) -> Option<u64> {
         self.deterministic.as_ref().map(|d| d.clock.tick())
     }
@@ -1182,6 +1193,7 @@ impl Scheduler {
     /// Pre-allocate node capacity (prevents reallocations during runtime)
     ///
     /// Call this before adding nodes for deterministic memory behavior.
+    #[doc(hidden)]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.nodes.reserve(capacity);
         self
@@ -1210,6 +1222,7 @@ impl Scheduler {
     ///
     /// # Errors
     /// Returns an error if the safety monitor is not enabled.
+    #[doc(hidden)]
     pub fn add_critical_node(
         &mut self,
         node_name: &str,
@@ -1247,6 +1260,7 @@ impl Scheduler {
     ///
     /// # Errors
     /// Returns an error if the safety monitor is not enabled.
+    #[doc(hidden)]
     pub fn set_wcet_budget(
         &mut self,
         node_name: &str,
@@ -1283,6 +1297,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.set_os_priority(99)?;  // Highest priority
     /// ```
+    #[doc(hidden)]
     pub fn set_os_priority(&self, priority: i32) -> crate::error::HorusResult<()> {
         if !(1..=99).contains(&priority) {
             return Err(crate::error::HorusError::config(
@@ -1305,6 +1320,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.pin_to_cpu(7)?;
     /// ```
+    #[doc(hidden)]
     pub fn pin_to_cpu(&self, cpu_id: usize) -> crate::error::HorusResult<()> {
         super::rt::set_thread_affinity(&[cpu_id])?;
         print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
@@ -1319,6 +1335,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.lock_memory()?;
     /// ```
+    #[doc(hidden)]
     pub fn lock_memory(&self) -> crate::error::HorusResult<()> {
         super::rt::lock_all_memory()?;
         print_line("[OK] Memory locked (no page faults)");
@@ -1333,6 +1350,7 @@ impl Scheduler {
     /// ```ignore
     /// scheduler.prefault_stack(8 * 1024 * 1024)?;  // 8MB stack
     /// ```
+    #[doc(hidden)]
     pub fn prefault_stack(&self, stack_size: usize) -> crate::error::HorusResult<()> {
         super::rt::prefault_stack(stack_size)?;
         print_line(&format!(
@@ -1415,6 +1433,7 @@ impl Scheduler {
     ///
     /// scheduler.add_configured(config);
     /// ```
+    #[doc(hidden)]
     pub fn add_configured(&mut self, config: super::node_builder::NodeRegistration) -> &mut Self {
         self.add_configured_internal(config)
     }
@@ -1516,6 +1535,7 @@ impl Scheduler {
     }
 
     /// Tick specific nodes by name (runs continuously with the specified nodes)
+    #[doc(hidden)]
     pub fn tick(&mut self, node_names: &[&str]) -> HorusResult<()> {
         // Use the same pattern as run() but with node filtering
         self.run_with_filter(Some(node_names), None)
@@ -1535,6 +1555,7 @@ impl Scheduler {
     ///
     /// This allows external code (e.g., Python bindings) to stop the scheduler
     /// by setting the flag to `false` from outside the run loop.
+    #[doc(hidden)]
     pub fn running_flag(&self) -> Arc<AtomicBool> {
         self.running.clone()
     }
@@ -1553,6 +1574,7 @@ impl Scheduler {
     /// scheduler.add(sensor, 0)
     ///     .set_node_rate("sensor", 100.0);  // Run sensor at 100Hz
     /// ```
+    #[doc(hidden)]
     pub fn set_node_rate(&mut self, name: &str, rate_hz: f64) -> &mut Self {
         if !rate_hz.is_finite() || rate_hz <= 0.0 {
             print_line(&format!(
@@ -1605,6 +1627,7 @@ impl Scheduler {
     }
 
     /// Run specific nodes for a specified duration, then shutdown gracefully.
+    #[doc(hidden)]
     pub fn tick_for(&mut self, node_names: &[&str], duration: Duration) -> HorusResult<()> {
         self.run_with_filter(Some(node_names), Some(duration))
     }
@@ -2069,6 +2092,7 @@ impl Scheduler {
     }
 
     /// Get information about all registered nodes
+    #[doc(hidden)]
     pub fn node_list(&self) -> Vec<String> {
         self.nodes
             .iter()
@@ -2077,6 +2101,7 @@ impl Scheduler {
     }
 
     /// Get detailed information about a specific node
+    #[doc(hidden)]
     pub fn node_info(&self, name: &str) -> Option<HashMap<String, String>> {
         for registered in &self.nodes {
             if registered.name == name {
@@ -2129,6 +2154,7 @@ impl Scheduler {
     /// Get real-time statistics for a specific node.
     ///
     /// Returns `None` if the node doesn't exist or is not an RT node.
+    #[doc(hidden)]
     pub fn rt_stats(&self, node_name: &str) -> Option<&crate::core::RtStats> {
         self.nodes
             .iter()
@@ -2137,6 +2163,7 @@ impl Scheduler {
     }
 
     /// Get monitoring summary by creating temporary contexts for each node
+    #[doc(hidden)]
     pub fn monitoring_summary(&self) -> Vec<(String, u32)> {
         self.nodes
             .iter()

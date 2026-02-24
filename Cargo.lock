@@ -2347,7 +2347,6 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "paste",
- "rand",
  "regex",
  "serde",
  "serde_json",
@@ -2369,12 +2368,10 @@ dependencies = [
  "horus_core",
  "horus_macros",
  "horus_types",
- "rand",
  "rmp-serde",
  "serde",
  "serde_arrays",
  "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]

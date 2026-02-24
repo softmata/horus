@@ -72,7 +72,6 @@ const POOL_VERSION: u32 = 1;
 /// Slot flags
 const SLOT_FREE: u32 = 0;
 const SLOT_ALLOCATED: u32 = 1;
-const SLOT_CUDA: u32 = 2;
 
 /// Invalid slot index (sentinel for free list)
 const INVALID_SLOT: u32 = u32::MAX;
@@ -394,21 +393,12 @@ impl TensorPool {
         // Allocate from data region
         let offset = self.allocate_data(aligned_size)?;
 
-        let effective_device = device;
-
         // Initialize slot
         let generation = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
         slot.offset = offset as u64;
         slot.size = size;
         slot.refcount.store(1, Ordering::Release);
-        slot.flags.store(
-            if effective_device.is_cuda() {
-                SLOT_CUDA
-            } else {
-                SLOT_ALLOCATED
-            },
-            Ordering::Release,
-        );
+        slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
 
         // Create tensor descriptor
         Ok(HorusTensor::new(
@@ -418,7 +408,7 @@ impl TensorPool {
             offset as u64,
             shape,
             dtype,
-            effective_device,
+            device,
         ))
     }
 
@@ -583,16 +573,6 @@ impl TensorPool {
     /// Check if this instance created the pool
     pub fn is_owner(&self) -> bool {
         self.is_owner
-    }
-
-    /// Check if this pool uses CUDA managed memory for its data region.
-    pub fn uses_managed_memory(&self) -> bool {
-        false
-    }
-
-    /// Check if this pool uses pinned (page-locked) host memory for its data region.
-    pub fn uses_pinned_memory(&self) -> bool {
-        false
     }
 
     // === Private helpers ===

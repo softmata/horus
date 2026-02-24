@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn variant_unsupported() {
         let err =
-            HorusError::Unsupported("CUDA tensors not available on this platform".to_string());
+            HorusError::Unsupported("Feature not available on this platform".to_string());
         let msg = format!("{}", err);
         assert!(msg.contains("Unsupported"), "Display: {}", msg);
     }

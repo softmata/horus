@@ -82,7 +82,6 @@ impl TensorHandle {
     /// Get mutable reference to the underlying tensor descriptor
     ///
     /// Use with care - modifying the tensor descriptor can break invariants.
-    /// Primarily used for setting CUDA IPC handles after GPU allocation.
     #[inline]
     pub fn tensor_mut(&mut self) -> &mut HorusTensor {
         &mut self.tensor

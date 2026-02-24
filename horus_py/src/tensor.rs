@@ -693,11 +693,3 @@ pub fn cuda_device_count() -> usize {
     horus::memory::cuda_device_count()
 }
 
-/// Register tensor classes with the Python module
-pub fn register_tensor_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyTensorPool>()?;
-    m.add_class::<PyTensorHandle>()?;
-    m.add_function(wrap_pyfunction!(cuda_is_available, m)?)?;
-    m.add_function(wrap_pyfunction!(cuda_device_count, m)?)?;
-    Ok(())
-}

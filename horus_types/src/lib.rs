@@ -1,16 +1,7 @@
 //! # HORUS Types - Core types with zero HORUS dependencies
 //!
-//! This is a leaf crate providing the canonical definitions of:
-//! - [`TensorDtype`] - Element data types (f32, f16, u8, etc.)
-//! - [`Device`] - Device location (CPU or CUDA with unlimited GPU index)
-//! - [`HorusTensor`] - Zero-copy tensor descriptor (168 bytes, Pod-safe)
-//! - [`ImageEncoding`] - Pixel format (mono8, rgb8, rgba8, etc.)
-//! - [`ImageDescriptor`] - Pod image descriptor (224 bytes)
-//! - [`PointCloudDescriptor`] - Pod point cloud descriptor (272 bytes)
-//! - [`DepthImageDescriptor`] - Pod depth image descriptor (224 bytes)
-//!
-//! All other HORUS crates depend on this crate for these types,
-//! eliminating duplication across horus_core, horus_library, and horus_ai.
+//! **Note:** This is an internal leaf crate. Users should depend on `horus` and
+//! import from `horus::prelude::*`.
 
 pub mod device;
 pub mod dtype;
@@ -18,9 +9,6 @@ pub mod tensor;
 
 /// Generate `frame_id()` and `set_frame_id()` inherent methods for types
 /// with a `frame_id: [u8; 32]` field.
-///
-/// Eliminates duplication across ImageDescriptor, PointCloudDescriptor,
-/// DepthImageDescriptor, and horus_library message types.
 #[macro_export]
 macro_rules! impl_frame_id_field {
     () => {
@@ -111,13 +99,20 @@ pub mod pointcloud;
 // Point element types (Pod, zero-copy)
 pub mod point;
 
+// User-facing types (re-exported via horus::prelude)
 pub use device::Device;
-pub use dtype::{dlpack_codes, TensorDtype};
-pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};
-
-pub use depth_image::DepthImageDescriptor;
-pub use image::ImageDescriptor;
 pub use image_encoding::ImageEncoding;
-pub use pointcloud::PointCloudDescriptor;
-
 pub use point::{PointXYZ, PointXYZI, PointXYZRGB};
+pub use dtype::TensorDtype;
+
+// Internal types (used by horus_core, not by end users)
+#[doc(hidden)]
+pub use dtype::dlpack_codes;
+#[doc(hidden)]
+pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};
+#[doc(hidden)]
+pub use depth_image::DepthImageDescriptor;
+#[doc(hidden)]
+pub use image::ImageDescriptor;
+#[doc(hidden)]
+pub use pointcloud::PointCloudDescriptor;

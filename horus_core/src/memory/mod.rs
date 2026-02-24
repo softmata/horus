@@ -206,49 +206,17 @@ pub use depth_image::DepthImage;
 pub use image::Image;
 pub use pointcloud::PointCloud;
 
-/// GPU capability level detected at runtime.
-///
-/// Currently always returns `None` (CPU-only). GPU support will be added
-/// when a concrete perception pipeline requires it.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuCapability {
-    /// No GPU detected — pure CPU allocation via mmap.
-    None,
-}
-
-impl GpuCapability {
-    /// Returns true if any GPU is available.
-    pub fn has_gpu(&self) -> bool {
-        false
-    }
-    /// Returns true if this is a unified memory device.
-    pub fn is_unified(&self) -> bool {
-        false
-    }
-    /// Returns true if explicit coherency sync is needed.
-    pub fn needs_coherency_sync(&self) -> bool {
-        false
-    }
-    /// Returns the primary device ID.
-    pub fn device_id(&self) -> Option<i32> {
-        None
-    }
-}
-
-/// Query the GPU capability. Currently always returns `GpuCapability::None`.
-#[doc(hidden)]
-pub fn gpu_capability() -> GpuCapability {
-    GpuCapability::None
-}
-
 /// Check if CUDA is available at runtime. Currently always returns false.
+///
+/// Exposed for Python bindings (`horus.cuda_is_available()`).
 #[doc(hidden)]
 pub fn cuda_available() -> bool {
     false
 }
 
 /// Get number of CUDA devices. Currently always returns 0.
+///
+/// Exposed for Python bindings (`horus.cuda_device_count()`).
 #[doc(hidden)]
 pub fn cuda_device_count() -> usize {
     0

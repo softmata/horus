@@ -903,23 +903,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             BackendMode::MpscShm | BackendMode::MpmcShm if is_pod => dispatch::send_shm_mp_pod::<T>,
             BackendMode::MpscShm | BackendMode::MpmcShm => dispatch::send_shm_mp_serde::<T>,
-            // CUDA IPC: descriptors still go through SHM ring (POD path).
-            // The actual GPU data transfer (IPC handle open/close) is handled
-            // at the Topic<Image>/Topic<HorusTensor> layer, not here.
-            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc if colo => {
-                dispatch::send_shm_sp_pod_colo::<T>
-            }
-            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc if is_pod => {
-                dispatch::send_shm_sp_pod::<T>
-            }
-            BackendMode::CudaIpcSpsc | BackendMode::CudaIpcSpmc => dispatch::send_shm_sp_serde::<T>,
-            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc if colo => {
-                dispatch::send_shm_mp_pod_colo::<T>
-            }
-            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc if is_pod => {
-                dispatch::send_shm_mp_pod::<T>
-            }
-            BackendMode::CudaIpcMpsc | BackendMode::CudaIpcMpmc => dispatch::send_shm_mp_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM serde (handles any topology/type).
             // Must NOT return send_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
@@ -964,19 +947,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::MpscShm => dispatch::recv_shm_mpsc_serde::<T>,
             BackendMode::SpmcShm => dispatch::recv_shm_spmc_serde::<T>,
             BackendMode::MpmcShm => dispatch::recv_shm_mpmc_serde::<T>,
-            // CUDA IPC: descriptors still go through SHM ring (same as CPU POD path).
-            BackendMode::CudaIpcSpsc if colo => dispatch::recv_shm_spsc_pod_colo::<T>,
-            BackendMode::CudaIpcSpsc if is_pod => dispatch::recv_shm_spsc_pod::<T>,
-            BackendMode::CudaIpcSpsc => dispatch::recv_shm_spsc_serde::<T>,
-            BackendMode::CudaIpcSpmc if colo => dispatch::recv_shm_spmc_pod_colo::<T>,
-            BackendMode::CudaIpcSpmc if is_pod => dispatch::recv_shm_spmc_pod::<T>,
-            BackendMode::CudaIpcSpmc => dispatch::recv_shm_spmc_serde::<T>,
-            BackendMode::CudaIpcMpsc if colo => dispatch::recv_shm_mpsc_pod_colo::<T>,
-            BackendMode::CudaIpcMpsc if is_pod => dispatch::recv_shm_mpsc_pod::<T>,
-            BackendMode::CudaIpcMpsc => dispatch::recv_shm_mpsc_serde::<T>,
-            BackendMode::CudaIpcMpmc if colo => dispatch::recv_shm_mpmc_pod_colo::<T>,
-            BackendMode::CudaIpcMpmc if is_pod => dispatch::recv_shm_mpmc_pod::<T>,
-            BackendMode::CudaIpcMpmc => dispatch::recv_shm_mpmc_serde::<T>,
             // Fallback for Unknown mode: use MPMC SHM (handles any topology).
             // Must NOT return recv_uninitialized here — that causes infinite recursion
             // when the role is already registered but stale SHM left mode as Unknown.
@@ -1727,10 +1697,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             BackendMode::SpmcShm => "SpmcShm",
             BackendMode::MpscShm => "MpscShm",
             BackendMode::MpmcShm => "MpmcShm",
-            BackendMode::CudaIpcSpsc => "CudaIpcSpsc",
-            BackendMode::CudaIpcSpmc => "CudaIpcSpmc",
-            BackendMode::CudaIpcMpsc => "CudaIpcMpsc",
-            BackendMode::CudaIpcMpmc => "CudaIpcMpmc",
         }
     }
 
