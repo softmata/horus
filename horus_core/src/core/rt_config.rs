@@ -717,101 +717,16 @@ fn prefault_stack_recursive(remaining_pages: usize, depth: usize) {
 }
 
 // ============================================================================
-// STANDALONE HELPER FUNCTIONS FOR CPU AFFINITY AND ISOLATION
+// STANDALONE HELPER FUNCTIONS FOR CPU ISOLATION DETECTION
 // ============================================================================
-
-/// Pin the current thread to a specific CPU core.
-///
-/// This is a convenience wrapper around RtConfig that provides a simple
-/// one-call interface for pinning threads to cores for real-time performance.
-///
-/// # Arguments
-/// * `cpu` - The CPU core index to pin to (0-indexed)
-///
-/// # Returns
-/// * `Ok(())` - Thread was successfully pinned to the specified core
-/// * `Err(io::Error)` - Failed to pin (invalid CPU, permission denied, etc.)
-///
-/// # Example
-/// ```rust,no_run
-/// use horus_core::core::pin_thread_to_core;
-///
-/// // Pin current thread to CPU core 2
-/// pin_thread_to_core(2).expect("Failed to pin thread");
-/// ```
-///
-/// # Performance Notes
-/// - Pinning to a dedicated core (especially isolcpus) eliminates scheduler migration
-/// - Reduces cache pollution from other processes
-/// - Critical for achieving sub-100ns IPC latency
-#[cfg(target_os = "linux")]
-pub fn pin_thread_to_core(cpu: usize) -> Result<(), io::Error> {
-    let cpu_count = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(1);
-
-    if cpu >= cpu_count {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("CPU {} does not exist (max: {})", cpu, cpu_count - 1),
-        ));
-    }
-
-    // SAFETY: CPU_SET manipulation and sched_setaffinity are safe libc calls
-    unsafe {
-        let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
-        libc::CPU_ZERO(&mut cpuset);
-        libc::CPU_SET(cpu, &mut cpuset);
-
-        let result = libc::sched_setaffinity(
-            0, // 0 = current thread
-            std::mem::size_of::<libc::cpu_set_t>(),
-            &cpuset,
-        );
-
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn pin_thread_to_core(_cpu: usize) -> Result<(), io::Error> {
-    // CPU pinning not supported on non-Linux platforms
-    // Silently succeed to avoid breaking cross-platform code
-    Ok(())
-}
 
 /// Detect CPUs isolated via the `isolcpus` kernel boot parameter.
 ///
 /// Isolated CPUs are excluded from the general scheduler and are ideal for
 /// real-time tasks because they won't be interrupted by other processes.
-///
-/// # Returns
-/// * `Vec<usize>` - List of isolated CPU core indices (empty if none)
-///
-/// # Example
-/// ```rust,no_run
-/// use horus_core::core::detect_isolated_cpus;
-///
-/// let isolated = detect_isolated_cpus();
-/// if !isolated.is_empty() {
-///     println!("Isolated CPUs available for RT: {:?}", isolated);
-/// }
-/// ```
-///
-/// # Kernel Configuration
-/// To isolate CPUs, add to kernel boot parameters:
-/// ```text
-/// isolcpus=2,3          # Isolate cores 2 and 3
-/// isolcpus=2-5          # Isolate cores 2, 3, 4, 5
-/// nohz_full=2,3         # Also disable timer ticks (recommended)
-/// rcu_nocbs=2,3         # Move RCU callbacks off these cores
-/// ```
+/// Used internally by `get_rt_recommended_cpus()`.
 #[cfg(target_os = "linux")]
-pub fn detect_isolated_cpus() -> Vec<usize> {
+pub(crate) fn detect_isolated_cpus() -> Vec<usize> {
     // Read from /sys/devices/system/cpu/isolated
     match std::fs::read_to_string("/sys/devices/system/cpu/isolated") {
         Ok(content) => parse_cpu_list(content.trim()),
@@ -820,7 +735,7 @@ pub fn detect_isolated_cpus() -> Vec<usize> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn detect_isolated_cpus() -> Vec<usize> {
+pub(crate) fn detect_isolated_cpus() -> Vec<usize> {
     Vec::new() // No isolcpus on non-Linux platforms
 }
 
@@ -832,7 +747,7 @@ pub fn detect_isolated_cpus() -> Vec<usize> {
 /// # Returns
 /// * `Vec<usize>` - List of nohz_full CPU core indices (empty if none)
 #[cfg(target_os = "linux")]
-pub fn detect_nohz_full_cpus() -> Vec<usize> {
+pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
     match std::fs::read_to_string("/sys/devices/system/cpu/nohz_full") {
         Ok(content) => parse_cpu_list(content.trim()),
         Err(_) => Vec::new(),
@@ -840,7 +755,7 @@ pub fn detect_nohz_full_cpus() -> Vec<usize> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn detect_nohz_full_cpus() -> Vec<usize> {
+pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
     Vec::new()
 }
 

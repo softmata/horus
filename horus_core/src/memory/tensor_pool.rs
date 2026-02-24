@@ -151,28 +151,6 @@ impl Default for TensorPoolConfig {
     }
 }
 
-impl TensorPoolConfig {
-    /// Create a smaller pool for testing
-    pub fn small() -> Self {
-        Self {
-            pool_size: 64 * 1024 * 1024, // 64MB
-            max_slots: 256,
-            slot_alignment: 64,
-            allocator: PoolAllocator::default(),
-        }
-    }
-
-    /// Create a larger pool for production ML workloads
-    pub fn large() -> Self {
-        Self {
-            pool_size: 4 * 1024 * 1024 * 1024, // 4GB
-            max_slots: 4096,
-            slot_alignment: 64,
-            allocator: PoolAllocator::default(),
-        }
-    }
-}
-
 /// Shared memory tensor pool
 ///
 /// Manages a region of shared memory for tensor allocation with reference counting.
