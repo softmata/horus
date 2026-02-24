@@ -99,7 +99,7 @@ fn bench_native_latency(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark comparison between native and Zenoh (placeholder for when Zenoh is available)
+/// Benchmark latency comparison across message sizes
 fn bench_latency_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("latency_comparison");
     group.measurement_time(Duration::from_secs(3));

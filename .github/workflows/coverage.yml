@@ -63,7 +63,7 @@ jobs:
             --exclude horus_library \
             --exclude horus_py \
             --lcov --output-path lcov.info \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_direct_channel_latency_estimation --skip test_custom_exotic_robot_config
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
         env:
           RUST_BACKTRACE: 1
 
@@ -75,7 +75,7 @@ jobs:
             --exclude horus_library \
             --exclude horus_py \
             --html --output-dir coverage-html \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_direct_channel_latency_estimation --skip test_custom_exotic_robot_config
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config
 
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -101,7 +101,7 @@ jobs:
             --exclude horus_library \
             --exclude horus_py \
             --text \
-            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_direct_channel_latency_estimation --skip test_custom_exotic_robot_config | tee coverage-summary.txt
+            -- --skip test_robot_performance_metrics --skip test_enhanced_scheduler --skip test_custom_exotic_robot_config | tee coverage-summary.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat coverage-summary.txt >> $GITHUB_STEP_SUMMARY

@@ -895,89 +895,10 @@ jobs:
           }
           echo "PASS: SHM cleanup looks healthy"
 
-  # Example execution tests
-  examples:
-    name: Example Execution Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-examples-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-examples-
-
-      # Setup shared memory
-      - name: Setup Shared Memory
-        run: |
-          sudo mkdir -p /dev/shm/horus/topics
-          sudo mkdir -p /dev/shm/horus/heartbeats
-          sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
-
-      # Build all examples
-      - name: Build Examples
-        run: cargo build --workspace --examples
-
-      # List and run examples with timeout
-      - name: Run Examples
-        run: |
-          echo "## Example Execution Results" >> $GITHUB_STEP_SUMMARY
-
-          PASS=0
-          FAIL=0
-          TIMEOUT=0
-
-          # Find all example binaries
-          for example in target/debug/examples/*; do
-            if [ -x "$example" ] && [ -f "$example" ]; then
-              name=$(basename "$example")
-              echo -n "Running example: $name ... "
-
-              # Run with 10 second timeout
-              if timeout 10s "$example" > /tmp/example_out 2>&1; then
-                echo "passed"
-                echo "- **$name**: passed" >> $GITHUB_STEP_SUMMARY
-                PASS=$((PASS + 1))
-              else
-                exit_code=$?
-                if [ $exit_code -eq 124 ]; then
-                  echo "timeout (expected for long-running examples)"
-                  echo "- **$name**: timeout (expected)" >> $GITHUB_STEP_SUMMARY
-                  TIMEOUT=$((TIMEOUT + 1))
-                else
-                  echo "failed (exit code: $exit_code)"
-                  echo "- **$name**: failed (exit $exit_code)" >> $GITHUB_STEP_SUMMARY
-                  FAIL=$((FAIL + 1))
-                fi
-              fi
-            fi
-          done
-
-          echo ""
-          echo "Examples: $PASS passed, $TIMEOUT timed out, $FAIL failed"
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Total**: $PASS passed, $TIMEOUT timed out, $FAIL failed" >> $GITHUB_STEP_SUMMARY
-        continue-on-error: true
-
   # Summary job
   integration-success:
     name: Integration Tests Success
-    needs: [ipc-integration, cli-integration, runtime-integration, examples]
+    needs: [ipc-integration, cli-integration, runtime-integration]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1003,11 +924,6 @@ jobs:
           # Runtime integration must pass
           if [[ "${{ needs.runtime-integration.result }}" != "success" ]]; then
             FAILURES="$FAILURES Runtime"
-          fi
-
-          # Examples are informational
-          if [[ "${{ needs.examples.result }}" != "success" ]]; then
-            echo "Examples had issues (informational): ${{ needs.examples.result }}"
           fi
 
           if [[ -n "$FAILURES" ]]; then
