@@ -608,7 +608,6 @@ fn test_deterministic_config_wires_clock() {
     let scheduler = Scheduler::deterministic();
     assert!(scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_some());
-    assert!(scheduler.execution_trace().is_some());
     assert_eq!(scheduler.virtual_tick(), Some(0));
     assert_eq!(scheduler.seed(), Some(42));
 }
@@ -620,15 +619,12 @@ fn test_deterministic_config_virtual_time() {
         seed: 123,
         virtual_time: true,
         tick_duration_ns: 1_000_000,
-        record_trace: false,
     });
     let mut scheduler = Scheduler::new();
     scheduler.apply_config(config);
 
     assert!(scheduler.is_simulation_mode());
     assert_eq!(scheduler.seed(), Some(123));
-    // No trace when record_trace=false
-    assert!(scheduler.execution_trace().is_none());
 }
 
 #[test]

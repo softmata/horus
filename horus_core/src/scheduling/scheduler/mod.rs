@@ -43,9 +43,7 @@ use super::safety_monitor::SafetyMonitor;
 use super::rt::RuntimeCapabilities;
 
 // Deterministic execution (for simulation mode)
-use super::deterministic::{DeterministicClock, DeterministicConfig, ExecutionTrace};
-
-use parking_lot::Mutex as ParkingMutex;
+use super::deterministic::{DeterministicClock, DeterministicConfig};
 
 /// Degradation that occurred during auto-optimization.
 ///
@@ -148,7 +146,6 @@ pub(crate) struct RecordingState {
 /// Deterministic execution state — only present in simulation mode.
 pub(crate) struct DeterministicState {
     pub clock: Arc<DeterministicClock>,
-    pub trace: Option<Arc<ParkingMutex<ExecutionTrace>>>,
     pub config: DeterministicConfig,
 }
 
@@ -864,30 +861,6 @@ impl Scheduler {
         self.deterministic.as_ref().map(|d| d.clock.clone())
     }
 
-    /// Get the execution trace (simulation mode only).
-    ///
-    /// The execution trace records all node executions with timing data for:
-    /// - Reproducibility verification (compare two runs)
-    /// - Debugging (replay execution to find bugs)
-    /// - Performance analysis (identify slow nodes)
-    ///
-    /// Returns `None` if not in simulation mode.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let scheduler = Scheduler::simulation();
-    /// // ... run scheduler ...
-    /// if let Some(trace_lock) = scheduler.execution_trace() {
-    ///     let trace = trace_lock.lock();
-    ///     println!("Total ticks: {}", trace.total_ticks);
-    ///     trace.save(Path::new("execution_trace.json")).unwrap();
-    /// }
-    /// ```
-    #[doc(hidden)]
-    pub fn execution_trace(&self) -> Option<Arc<ParkingMutex<ExecutionTrace>>> {
-        self.deterministic.as_ref().and_then(|d| d.trace.clone())
-    }
-
     /// Get the seed used for deterministic RNG (simulation mode only).
     ///
     /// Returns `None` if not in simulation mode.
@@ -1117,16 +1090,8 @@ impl Scheduler {
         det_config: &super::deterministic::DeterministicConfig,
     ) {
         let clock = Arc::new(DeterministicClock::new(det_config));
-        let trace = if det_config.record_trace {
-            Some(Arc::new(ParkingMutex::new(ExecutionTrace::new(
-                det_config.clone(),
-            ))))
-        } else {
-            None
-        };
         self.deterministic = Some(DeterministicState {
             clock,
-            trace,
             config: det_config.clone(),
         });
         print_line(&format!(
@@ -1999,9 +1964,6 @@ impl Scheduler {
 
         if let Some(ref det) = self.deterministic {
             det.clock.advance_tick();
-            if let Some(ref trace) = det.trace {
-                trace.lock().finalize_tick(self.tick.current - 1);
-            }
         }
     }
 

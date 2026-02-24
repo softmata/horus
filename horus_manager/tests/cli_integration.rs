@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serde_json::json;
 use std::fs;
+use std::io::Write;
 use tempfile::TempDir;
 
 /// Helper to get the CLI command
@@ -351,4 +353,637 @@ fn test_check_valid_horus_yaml() {
 fn test_msg_list() {
     // msg list shows built-in message types - should always succeed
     horus_cmd().args(["msg", "list"]).assert().success();
+}
+
+// ============================================================================
+// BlackBox command integration tests
+// ============================================================================
+
+/// Helper: create a WAL file with sample BlackBoxRecord JSONL entries.
+fn write_sample_wal(dir: &std::path::Path) {
+    let bb_dir = dir.join(".horus/blackbox");
+    fs::create_dir_all(&bb_dir).unwrap();
+    let mut f = fs::File::create(bb_dir.join("blackbox.wal")).unwrap();
+
+    let records = vec![
+        json!({"timestamp_us": 1700000000_000000u64, "tick": 0, "event": {"SchedulerStart": {"name": "main", "node_count": 3, "config": "default"}}}),
+        json!({"timestamp_us": 1700000001_000000u64, "tick": 1, "event": {"NodeAdded": {"name": "sensor_node", "priority": 0}}}),
+        json!({"timestamp_us": 1700000002_000000u64, "tick": 2, "event": {"NodeTick": {"name": "sensor_node", "duration_us": 150, "success": true}}}),
+        json!({"timestamp_us": 1700000003_000000u64, "tick": 3, "event": {"NodeTick": {"name": "motor_ctrl", "duration_us": 4200, "success": true}}}),
+        json!({"timestamp_us": 1700000004_000000u64, "tick": 4, "event": {"DeadlineMiss": {"name": "motor_ctrl", "deadline_us": 1000, "actual_us": 4200}}}),
+        json!({"timestamp_us": 1700000005_000000u64, "tick": 5, "event": {"NodeError": {"name": "camera_node", "error": "device disconnected"}}}),
+        json!({"timestamp_us": 1700000006_000000u64, "tick": 6, "event": {"WCETViolation": {"name": "motor_ctrl", "budget_us": 2000, "actual_us": 4200}}}),
+        json!({"timestamp_us": 1700000007_000000u64, "tick": 7, "event": {"EmergencyStop": {"reason": "safety limit exceeded"}}}),
+        json!({"timestamp_us": 1700000008_000000u64, "tick": 8, "event": {"SchedulerStop": {"reason": "clean shutdown", "total_ticks": 8}}}),
+    ];
+
+    for record in &records {
+        writeln!(f, "{}", serde_json::to_string(record).unwrap()).unwrap();
+    }
+}
+
+/// Helper: create a JSON snapshot (fallback format).
+fn write_sample_json_snapshot(dir: &std::path::Path) {
+    let bb_dir = dir.join(".horus/blackbox");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    let records = vec![
+        json!({"timestamp_us": 1700000000_000000u64, "tick": 0, "event": {"SchedulerStart": {"name": "main", "node_count": 2, "config": "deploy"}}}),
+        json!({"timestamp_us": 1700000001_000000u64, "tick": 1, "event": {"NodeError": {"name": "lidar", "error": "timeout"}}}),
+    ];
+
+    let content = serde_json::to_string_pretty(&records).unwrap();
+    fs::write(bb_dir.join("blackbox.json"), content).unwrap();
+}
+
+#[test]
+fn test_blackbox_help() {
+    horus_cmd()
+        .args(["blackbox", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BlackBox"))
+        .stdout(predicate::str::contains("--anomalies"))
+        .stdout(predicate::str::contains("--tail"))
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--node"))
+        .stdout(predicate::str::contains("--event"))
+        .stdout(predicate::str::contains("--tick"))
+        .stdout(predicate::str::contains("--last"))
+        .stdout(predicate::str::contains("--path"))
+        .stdout(predicate::str::contains("--clear"));
+}
+
+#[test]
+fn test_bb_alias_help() {
+    horus_cmd()
+        .args(["bb", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BlackBox"));
+}
+
+#[test]
+fn test_blackbox_empty_dir() {
+    let tmp = TempDir::new().unwrap();
+    let bb_dir = tmp.path().join("empty_bb");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    horus_cmd()
+        .args(["blackbox", "--path", &bb_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blackbox events"));
+}
+
+#[test]
+fn test_blackbox_empty_dir_json() {
+    let tmp = TempDir::new().unwrap();
+    let bb_dir = tmp.path().join("empty_bb");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}
+
+#[test]
+fn test_blackbox_reads_wal() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    horus_cmd()
+        .args(["blackbox", "--path", &bb_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9 events"))
+        .stdout(predicate::str::contains("BLACKBOX"));
+}
+
+#[test]
+fn test_blackbox_reads_json_snapshot_fallback() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_json_snapshot(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 events"));
+}
+
+#[test]
+fn test_blackbox_anomalies_filter() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // WAL has 4 anomalies: DeadlineMiss, NodeError, WCETViolation, EmergencyStop
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--anomalies"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("4 events"));
+}
+
+#[test]
+fn test_blackbox_anomalies_json() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--anomalies",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 4);
+}
+
+#[test]
+fn test_blackbox_node_filter() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // "motor_ctrl" appears in: NodeTick(tick 3), DeadlineMiss(tick 4), WCETViolation(tick 6)
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--node",
+            "motor_ctrl",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 3, "motor_ctrl appears in 3 events");
+}
+
+#[test]
+fn test_blackbox_node_filter_case_insensitive() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--node",
+            "MOTOR_CTRL",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 3, "case-insensitive node match should find 3 events");
+}
+
+#[test]
+fn test_blackbox_node_filter_partial_match() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // "sensor" partial matches "sensor_node"
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--node",
+            "sensor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 2, "'sensor' matches sensor_node: NodeAdded + NodeTick");
+}
+
+#[test]
+fn test_blackbox_event_type_filter() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--event",
+            "DeadlineMiss",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 1);
+}
+
+#[test]
+fn test_blackbox_event_type_filter_case_insensitive() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--event",
+            "deadlinemiss",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 1);
+}
+
+#[test]
+fn test_blackbox_tick_range_filter() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // Ticks 3-5 should give 3 events
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--tick",
+            "3-5",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 3, "ticks 3,4,5 should match 3 events");
+}
+
+#[test]
+fn test_blackbox_single_tick_filter() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--tick",
+            "4",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 1, "single tick 4 should match DeadlineMiss");
+}
+
+#[test]
+fn test_blackbox_last_n() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--last",
+            "3",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 3, "--last 3 should return exactly 3 events");
+    // Should be the last 3 (ticks 6, 7, 8)
+    assert_eq!(parsed[0]["tick"], 6);
+    assert_eq!(parsed[1]["tick"], 7);
+    assert_eq!(parsed[2]["tick"], 8);
+}
+
+#[test]
+fn test_blackbox_combined_filters() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // Anomalies + node=motor_ctrl → DeadlineMiss(tick 4) + WCETViolation(tick 6)
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--anomalies",
+            "--node",
+            "motor_ctrl",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 2, "anomalies for motor_ctrl: DeadlineMiss + WCETViolation");
+}
+
+#[test]
+fn test_blackbox_no_match_returns_empty() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--node",
+            "nonexistent_node",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}
+
+#[test]
+fn test_blackbox_json_output_is_valid_json() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .expect("JSON output should be valid JSON");
+    assert!(parsed.is_array());
+}
+
+#[test]
+fn test_blackbox_json_records_have_expected_fields() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    let output = horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--last",
+            "1",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert!(parsed[0].get("timestamp_us").is_some(), "record should have timestamp_us");
+    assert!(parsed[0].get("tick").is_some(), "record should have tick");
+    assert!(parsed[0].get("event").is_some(), "record should have event");
+}
+
+#[test]
+fn test_blackbox_clear_no_data() {
+    let tmp = TempDir::new().unwrap();
+    let bb_dir = tmp.path().join("empty_bb");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--clear"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No blackbox data to clear"));
+}
+
+#[test]
+fn test_blackbox_clear_aborted() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // Pipe "n" to stdin → should cancel
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--clear"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cancelled"));
+
+    // Files should still exist
+    assert!(bb_dir.join("blackbox.wal").exists());
+}
+
+#[test]
+fn test_blackbox_clear_confirmed() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+    assert!(bb_dir.join("blackbox.wal").exists());
+
+    // Pipe "y" to stdin → should delete
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--clear"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Blackbox data cleared"));
+
+    assert!(!bb_dir.join("blackbox.wal").exists());
+}
+
+#[test]
+fn test_blackbox_corrupt_wal_lines_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let bb_dir = tmp.path().join(".horus/blackbox");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    let mut f = fs::File::create(bb_dir.join("blackbox.wal")).unwrap();
+    // Valid record
+    writeln!(f, "{}", serde_json::to_string(&json!({"timestamp_us": 100u64, "tick": 0, "event": {"Custom": {"category": "test", "message": "ok"}}})).unwrap()).unwrap();
+    // Corrupt line
+    writeln!(f, "{{this is not valid json}}").unwrap();
+    // Another valid record
+    writeln!(f, "{}", serde_json::to_string(&json!({"timestamp_us": 200u64, "tick": 1, "event": {"Custom": {"category": "test", "message": "still ok"}}})).unwrap()).unwrap();
+    // Empty line
+    writeln!(f).unwrap();
+
+    let output = horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 2, "corrupt lines should be skipped, 2 valid remain");
+}
+
+#[test]
+fn test_blackbox_wal_preferred_over_json() {
+    let tmp = TempDir::new().unwrap();
+    let bb_dir = tmp.path().join(".horus/blackbox");
+    fs::create_dir_all(&bb_dir).unwrap();
+
+    // Write JSON snapshot with 1 record
+    let json_records = vec![
+        json!({"timestamp_us": 100u64, "tick": 0, "event": {"Custom": {"category": "json", "message": "from snapshot"}}}),
+    ];
+    fs::write(
+        bb_dir.join("blackbox.json"),
+        serde_json::to_string_pretty(&json_records).unwrap(),
+    )
+    .unwrap();
+
+    // Write WAL with 2 records
+    let mut f = fs::File::create(bb_dir.join("blackbox.wal")).unwrap();
+    writeln!(f, "{}", serde_json::to_string(&json!({"timestamp_us": 200u64, "tick": 0, "event": {"Custom": {"category": "wal", "message": "line 1"}}})).unwrap()).unwrap();
+    writeln!(f, "{}", serde_json::to_string(&json!({"timestamp_us": 300u64, "tick": 1, "event": {"Custom": {"category": "wal", "message": "line 2"}}})).unwrap()).unwrap();
+
+    let output = horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy(), "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed.len(), 2, "WAL (2 records) should be preferred over JSON snapshot (1 record)");
+}
+
+#[test]
+fn test_blackbox_colored_output_contains_event_types() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    horus_cmd()
+        .args(["bb", "--path", &bb_dir.to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SchedulerStart"))
+        .stdout(predicate::str::contains("DeadlineMiss"))
+        .stdout(predicate::str::contains("NodeError"))
+        .stdout(predicate::str::contains("EmergencyStop"))
+        .stdout(predicate::str::contains("SchedulerStop"));
+}
+
+#[test]
+fn test_blackbox_tick_range_out_of_bounds() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    // Tick range 100-200 — no events in that range
+    horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--tick",
+            "100-200",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+}
+
+#[test]
+fn test_blackbox_invalid_tick_range() {
+    let tmp = TempDir::new().unwrap();
+    write_sample_wal(tmp.path());
+
+    let bb_dir = tmp.path().join(".horus/blackbox");
+
+    horus_cmd()
+        .args([
+            "bb",
+            "--path",
+            &bb_dir.to_string_lossy(),
+            "--tick",
+            "not-a-number",
+        ])
+        .assert()
+        .failure();
 }

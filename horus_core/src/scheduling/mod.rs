@@ -218,7 +218,7 @@ pub use scheduler::Scheduler;
 
 // Internal re-exports — accessible but hidden from rustdoc.
 #[doc(hidden)]
-pub use blackbox::{BlackBox, BlackBoxEvent};
+pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]
 pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
 #[doc(hidden)]

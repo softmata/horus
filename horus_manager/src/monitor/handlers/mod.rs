@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod blackbox;
 pub mod debug;
 pub mod logs;
 pub mod monitor;
@@ -8,6 +9,7 @@ pub mod recordings;
 pub mod websocket;
 
 pub use auth::*;
+pub use blackbox::*;
 pub use debug::*;
 pub use logs::*;
 pub use monitor::*;

@@ -28,6 +28,15 @@ pub fn recordings_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".horus/recordings"))
 }
 
+/// Get the blackbox directory — tries `.horus/blackbox/` in CWD first, falls back to home dir.
+pub fn blackbox_dir() -> Result<PathBuf> {
+    let local = std::path::Path::new(".horus/blackbox");
+    if local.is_dir() {
+        return Ok(local.to_path_buf());
+    }
+    Ok(home_dir()?.join(".horus/blackbox"))
+}
+
 /// Get `~/.horus/keys` — the signing keys directory.
 pub fn keys_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".horus/keys"))

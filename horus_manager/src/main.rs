@@ -427,6 +427,46 @@ enum Commands {
         command: RecordCommands,
     },
 
+    /// Inspect the BlackBox flight recorder (post-mortem crash analysis)
+    #[command(visible_alias = "bb")]
+    Blackbox {
+        /// Show only anomalies (errors, deadline misses, WCET violations, e-stops)
+        #[arg(short = 'a', long = "anomalies")]
+        anomalies: bool,
+
+        /// Follow mode — stream new events as they arrive (like tail -f)
+        #[arg(short = 'f', long = "tail")]
+        tail: bool,
+
+        /// Filter by tick range (e.g. "4500-4510" or single tick "4500")
+        #[arg(short = 't', long = "tick")]
+        tick: Option<String>,
+
+        /// Filter by node name (partial, case-insensitive match)
+        #[arg(short = 'n', long = "node")]
+        node: Option<String>,
+
+        /// Filter by event type (e.g. "DeadlineMiss", "NodeError")
+        #[arg(short = 'e', long = "event")]
+        event: Option<String>,
+
+        /// Output as machine-readable JSON
+        #[arg(long = "json")]
+        json: bool,
+
+        /// Show only the last N events
+        #[arg(short = 'l', long = "last")]
+        last: Option<usize>,
+
+        /// Custom blackbox directory (default: .horus/blackbox/)
+        #[arg(short = 'p', long = "path")]
+        path: Option<PathBuf>,
+
+        /// Clear all blackbox data (with confirmation)
+        #[arg(long = "clear")]
+        clear: bool,
+    },
+
     /// Generate shell completion scripts
     #[command(hide = true)]
     Completion {
@@ -1099,6 +1139,8 @@ fn main() {
                 | "remove"
                 | "plugin"
                 | "record"
+                | "blackbox"
+                | "bb"
                 | "completion"
                 | "help"
                 | "--help"
@@ -1602,6 +1644,18 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 loop_playback,
             ),
         },
+
+        Commands::Blackbox {
+            anomalies,
+            tail,
+            tick,
+            node,
+            event,
+            json,
+            last,
+            path,
+            clear,
+        } => commands::blackbox::run_blackbox(anomalies, tail, tick, node, event, json, last, path, clear),
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

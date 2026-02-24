@@ -167,7 +167,7 @@ pub struct SchedulerConfig {
     pub monitoring: MonitoringConfig,
     /// Recording configuration for record/replay system
     pub recording: Option<RecordingConfigYaml>,
-    /// Deterministic execution configuration (virtual time, seeded RNG, trace)
+    /// Deterministic execution configuration (virtual time, seeded RNG)
     pub deterministic: Option<DeterministicConfig>,
 }
 
