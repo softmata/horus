@@ -2970,6 +2970,7 @@ if [ "$COMPLETION_INSTALLED" = true ]; then
 fi
 
 # Step 12: Real-Time Setup (Optional, Linux only)
+# This is embedded directly so it works with `curl | sh` (no git clone needed).
 if [ "$OS_TYPE" = "linux" ] || [ "$OS_TYPE" = "wsl" ]; then
     echo ""
     echo -e "${CYAN}${STATUS_INFO}${NC} Real-Time Scheduling (Optional)"
@@ -2977,36 +2978,116 @@ if [ "$OS_TYPE" = "linux" ] || [ "$OS_TYPE" = "wsl" ]; then
     echo "  HORUS supports real-time scheduling for deterministic robot control."
     echo "  RT scheduling requires system configuration (needs sudo)."
     echo ""
-    echo "  Benefits of RT scheduling:"
-    echo "    - Deterministic timing (<500ns IPC latency)"
-    echo "    - SCHED_FIFO/SCHED_RR priorities up to 99"
-    echo "    - Memory locking to prevent page faults"
+    echo "  What it configures:"
+    echo "    - CPU governor → 'performance' (prevents frequency scaling latency)"
+    echo "    - RT scheduling limits (SCHED_FIFO/RR up to priority 99)"
+    echo "    - Memory lock limits (mlockall to prevent page faults)"
+    echo "    - Kernel parameters for low-latency IPC"
+    echo ""
+    echo "  Recommended for: Raspberry Pi, Jetson, any real robot hardware"
+    echo "  Not needed for: Development on laptop/desktop"
     echo ""
 
-    RT_SCRIPT="$SCRIPT_DIR/scripts/setup-realtime.sh"
-    if [ -f "$RT_SCRIPT" ]; then
-        read -p "$(echo -e ${CYAN}?${NC}) Configure real-time scheduling now? [y/N]: " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo ""
-            echo -e "${CYAN}${STATUS_INFO}${NC} Running real-time setup (requires sudo)..."
-            echo ""
-            if sudo bash "$RT_SCRIPT"; then
-                echo ""
-                echo -e "${GREEN}${STATUS_OK}${NC} Real-time configuration applied"
-                echo -e "${YELLOW}${STATUS_WARN}${NC} You must LOG OUT and LOG BACK IN for changes to take effect"
-            else
-                echo ""
-                echo -e "${YELLOW}${STATUS_WARN}${NC} Real-time setup had issues - check output above"
-            fi
+    read -p "$(echo -e ${CYAN}?${NC}) Configure real-time scheduling now? [y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        echo ""
+        echo -e "${CYAN}${STATUS_INFO}${NC} Applying real-time configuration (requires sudo)..."
+        echo ""
+
+        # --- CPU Governor ---
+        echo -e "${CYAN}${STATUS_INFO}${NC} CPU Governor"
+        current_gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
+        if [ "$current_gov" = "performance" ]; then
+            echo -e "  ${GREEN}${STATUS_OK}${NC} Already set to 'performance'"
         else
-            echo ""
-            echo -e "${CYAN}${STATUS_INFO}${NC} Skipped. You can run it later:"
-            echo -e "     ${CYAN}sudo ./scripts/setup-realtime.sh${NC}"
+            echo "  Current: $current_gov → setting to 'performance'"
+            sudo bash -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g" 2>/dev/null; done' || true
+
+            # Systemd service for persistence across reboots
+            if [ -d /etc/systemd/system ]; then
+                sudo bash -c 'cat > /etc/systemd/system/horus-performance-governor.service << GOVEOF
+[Unit]
+Description=HORUS - Set CPU governor to performance
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c "for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > \"\$g\" 2>/dev/null; done"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+GOVEOF
+systemctl daemon-reload && systemctl enable horus-performance-governor.service 2>/dev/null' && \
+                echo -e "  ${GREEN}${STATUS_OK}${NC} Set to 'performance' (persists across reboots)" || \
+                echo -e "  ${YELLOW}${STATUS_WARN}${NC} Set governor but could not create systemd service"
+            fi
         fi
+
+        # --- RT Scheduling Limits ---
+        echo ""
+        echo -e "${CYAN}${STATUS_INFO}${NC} RT Scheduling Limits"
+        sudo bash -c 'cat > /etc/security/limits.d/99-horus-realtime.conf << LIMEOF
+# HORUS Real-Time Scheduling Limits
+*    soft    rtprio     99
+*    hard    rtprio     99
+*    soft    memlock    unlimited
+*    hard    memlock    unlimited
+*    soft    nice       -20
+*    hard    nice       -20
+LIMEOF' && \
+            echo -e "  ${GREEN}${STATUS_OK}${NC} Created /etc/security/limits.d/99-horus-realtime.conf" || \
+            echo -e "  ${YELLOW}${STATUS_WARN}${NC} Could not write limits file"
+
+        # --- Kernel Parameters ---
+        echo ""
+        echo -e "${CYAN}${STATUS_INFO}${NC} Kernel Parameters"
+        sudo bash -c 'cat > /etc/sysctl.d/99-horus-realtime.conf << SYSEOF
+# HORUS Real-Time Kernel Parameters
+kernel.shmmax = 268435456
+kernel.shmall = 65536
+kernel.timer_migration = 0
+vm.swappiness = 10
+SYSEOF
+sysctl -p /etc/sysctl.d/99-horus-realtime.conf 2>/dev/null' && \
+            echo -e "  ${GREEN}${STATUS_OK}${NC} Applied kernel parameters" || \
+            echo -e "  ${YELLOW}${STATUS_WARN}${NC} Could not apply kernel parameters"
+
+        # --- Platform-Specific Tuning ---
+        if [ -f /etc/nv_tegra_release ] || [ -d /usr/src/jetson_multimedia_api ]; then
+            echo ""
+            echo -e "${CYAN}${STATUS_INFO}${NC} NVIDIA Jetson Tuning"
+            if command -v nvpmodel &>/dev/null; then
+                sudo nvpmodel -m 0 2>/dev/null && echo -e "  ${GREEN}${STATUS_OK}${NC} Set MAXN power mode" || true
+            fi
+            if command -v jetson_clocks &>/dev/null; then
+                sudo jetson_clocks 2>/dev/null && echo -e "  ${GREEN}${STATUS_OK}${NC} Locked clocks to max frequency" || true
+            fi
+        fi
+
+        if grep -q "Raspberry Pi" /proc/cpuinfo 2>/dev/null; then
+            echo ""
+            echo -e "${CYAN}${STATUS_INFO}${NC} Raspberry Pi Tuning"
+            CONFIG_TXT="/boot/config.txt"
+            [ -f "/boot/firmware/config.txt" ] && CONFIG_TXT="/boot/firmware/config.txt"
+            if [ -f "$CONFIG_TXT" ] && ! grep -q "^force_turbo=1" "$CONFIG_TXT" 2>/dev/null; then
+                sudo bash -c "echo '# HORUS: Lock CPU to max frequency' >> $CONFIG_TXT && echo 'force_turbo=1' >> $CONFIG_TXT" && \
+                    echo -e "  ${GREEN}${STATUS_OK}${NC} Added force_turbo=1 (reboot required)" || true
+            fi
+        fi
+
+        echo ""
+        echo -e "${GREEN}${STATUS_OK}${NC} Real-time configuration applied"
+        echo -e "${YELLOW}${STATUS_WARN}${NC} LOG OUT and LOG BACK IN for all changes to take effect"
+        echo ""
+        echo "  Verify with:"
+        echo -e "    ${CYAN}ulimit -r${NC}    # Should show 99"
+        echo -e "    ${CYAN}ulimit -l${NC}    # Should show 'unlimited'"
     else
-        echo -e "${YELLOW}${STATUS_WARN}${NC} RT setup script not found: $RT_SCRIPT"
-        echo "  Download from: https://github.com/softmata/horus/blob/main/scripts/setup-realtime.sh"
+        echo ""
+        echo -e "${CYAN}${STATUS_INFO}${NC} Skipped. You can configure RT later with:"
+        echo -e "     ${CYAN}curl -sSf https://raw.githubusercontent.com/softmata/horus/main/scripts/setup-realtime.sh | sudo bash${NC}"
     fi
 fi
 
