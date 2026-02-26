@@ -17,7 +17,7 @@
 //!
 //! ```rust,ignore
 //! use horus_core::communication::Topic;
-//! use horus_types::{HorusTensor, TensorDtype, Device};
+//! use crate::types::{HorusTensor, TensorDtype, Device};
 //!
 //! let topic: RingTopic<HorusTensor> = RingTopic::new("camera/rgb")?;
 //!
@@ -44,7 +44,7 @@ use crate::error::HorusResult;
 #[cfg(test)]
 use crate::memory::{TensorHandle, TensorPool};
 #[cfg(test)]
-use horus_types::{Device, HorusTensor, TensorDtype};
+use crate::types::{Device, HorusTensor, TensorDtype};
 
 #[cfg(test)]
 impl RingTopic<HorusTensor> {

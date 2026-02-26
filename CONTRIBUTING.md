@@ -227,10 +227,9 @@ Fixes #123
 ```
 horus/
 ├── horus/              # Unified entry crate (use horus::prelude::*)
-├── horus_core/         # Core framework (Node, Topic, Scheduler)
+├── horus_core/         # Core framework (Node, Topic, Scheduler, types, memory)
 ├── horus_macros/       # Procedural macros (node!, message!)
 ├── horus_library/      # Standard message types and HFrame transforms
-├── horus_types/        # Core type definitions (descriptors, encodings, tensors)
 ├── horus_manager/      # CLI tool (horus command)
 ├── horus_py/           # Python bindings
 ├── benchmarks/         # Performance benchmarks

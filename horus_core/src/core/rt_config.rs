@@ -353,6 +353,22 @@ impl RtConfig {
             }
         }
 
+        // Check CPU governor when RT features are requested
+        let has_rt_features = self.scheduler != RtScheduler::Normal
+            || self.memory_locked
+            || self.cpu_affinity.is_some();
+        if has_rt_features {
+            if let Some(gov) = detect_cpu_governor() {
+                if gov != "performance" && self.warn_on_degradation {
+                    eprintln!(
+                        "Warning: CPU governor is '{}' (want 'performance'). \
+                         Run: sudo ./scripts/setup-realtime.sh",
+                        gov
+                    );
+                }
+            }
+        }
+
         // Apply memory locking
         if self.memory_locked {
             match self.apply_memory_lock() {
@@ -551,6 +567,28 @@ impl RtConfig {
         }
     }
 
+}
+
+// ============================================================================
+// CPU Governor Detection
+// ============================================================================
+
+/// Detect the current CPU governor (Linux only).
+///
+/// Returns `Some("performance")`, `Some("powersave")`, etc. on Linux,
+/// or `None` on non-Linux platforms or if cpufreq is not available.
+/// This is read-only — it never writes to sysfs. System tuning should
+/// be done via `sudo ./scripts/setup-realtime.sh` at install time.
+#[cfg(target_os = "linux")]
+fn detect_cpu_governor() -> Option<String> {
+    std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_cpu_governor() -> Option<String> {
+    None
 }
 
 #[cfg(test)]

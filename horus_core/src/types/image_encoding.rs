@@ -1,6 +1,6 @@
 //! Image encoding formats for HORUS vision types
 //!
-//! Defines the pixel format of image data. Lives in `horus_types` (leaf crate)
+//! Defines the pixel format of image data. Lives in `horus_core::types`
 //! so both `horus_core` (for `Topic<Image>`) and `horus_library` (for
 //! `CompressedImage`, `CameraInfo`) can reference it.
 

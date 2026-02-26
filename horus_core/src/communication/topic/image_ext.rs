@@ -5,7 +5,7 @@ mod tests {
     use crate::communication::pod::is_pod;
     use crate::communication::topic::Topic;
     use crate::memory::image::Image;
-    use horus_types::{ImageDescriptor, ImageEncoding};
+    use crate::types::{ImageDescriptor, ImageEncoding};
 
     #[test]
     fn test_image_descriptor_is_pod() {

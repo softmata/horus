@@ -30,6 +30,8 @@ pub mod error;
 #[doc(hidden)]
 pub mod memory;
 #[doc(hidden)]
+pub mod types;
+#[doc(hidden)]
 pub mod params;
 #[doc(hidden)]
 pub mod scheduling;

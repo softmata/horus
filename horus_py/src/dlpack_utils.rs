@@ -5,7 +5,7 @@
 
 use std::ffi::{c_void, CStr, CString};
 
-use horus_types::{Device, TensorDtype};
+use horus_core::types::{Device, TensorDtype};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -110,7 +110,7 @@ pub fn torch_to_numpy<'py>(tensor: &Bound<'py, PyAny>) -> PyResult<Bound<'py, Py
 /// Returns (data_ptr, shape, strides_in_elements, dtype, device) — everything
 /// needed by `make_dlpack_capsule`.
 pub fn prepare_dlpack_args(
-    tensor: &horus_types::HorusTensor,
+    tensor: &horus_core::types::HorusTensor,
     pool: &horus_core::memory::TensorPool,
 ) -> (*mut c_void, Vec<i64>, Vec<i64>, TensorDtype, Device) {
     let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
@@ -127,7 +127,7 @@ pub fn prepare_dlpack_args(
 }
 
 /// Shared `__dlpack_device__` implementation for types wrapping a HorusTensor.
-pub fn dlpack_device_tuple(tensor: &horus_types::HorusTensor) -> (i32, i32) {
+pub fn dlpack_device_tuple(tensor: &horus_core::types::HorusTensor) -> (i32, i32) {
     let device = tensor.device();
     (device.to_dlpack_device_type(), device.to_dlpack_device_id())
 }

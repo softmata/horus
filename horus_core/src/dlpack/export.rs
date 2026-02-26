@@ -6,7 +6,7 @@
 use std::ffi::c_void;
 
 use super::ffi::{DLDataType, DLDevice, DLManagedTensor, DLTensor};
-use horus_types::{Device, TensorDtype};
+use crate::types::{Device, TensorDtype};
 
 /// Context stored in DLManagedTensor::manager_ctx
 ///

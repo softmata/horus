@@ -1,7 +1,7 @@
 //! Python bindings for HORUS PointCloud type
 
 use horus_core::memory::PointCloud;
-use horus_types::TensorDtype;
+use horus_core::types::TensorDtype;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};

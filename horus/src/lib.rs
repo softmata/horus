@@ -66,7 +66,7 @@ pub use horus_core::hlog;
 #[doc(hidden)]
 pub use horus_library as library;
 #[doc(hidden)]
-pub use horus_types;
+pub use horus_core::types;
 
 /// The HORUS prelude — everything you need for building robotics applications.
 ///
@@ -97,7 +97,7 @@ pub mod prelude {
 
     // === Message types (all standard robotics messages) ===
     pub use horus_library::messages::*;
-    pub use horus_types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
+    pub use horus_core::types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
 
     // === Actions ===
     pub use horus_core::actions::{

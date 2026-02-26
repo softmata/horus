@@ -4,6 +4,8 @@ use horus_macros::LogSummary;
 // This module provides fundamental geometric primitives used throughout
 // robotics applications for representing position, orientation, and motion.
 
+use std::ops;
+
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
@@ -238,6 +240,15 @@ impl Vector3 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 
+    pub fn normalized(&self) -> Vector3 {
+        let mag = self.magnitude();
+        if mag > 0.0 {
+            Vector3::new(self.x / mag, self.y / mag, self.z / mag)
+        } else {
+            Vector3::zero()
+        }
+    }
+
     pub fn cross(&self, other: &Vector3) -> Vector3 {
         Vector3::new(
             self.y * other.z - self.z * other.y,
@@ -264,6 +275,70 @@ impl From<Point3> for Vector3 {
             y: p.y,
             z: p.z,
         }
+    }
+}
+
+// Point3 - Point3 = Vector3 (displacement between two points)
+impl ops::Sub for Point3 {
+    type Output = Vector3;
+    fn sub(self, rhs: Point3) -> Vector3 {
+        Vector3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Point3 + Vector3 = Point3 (translate point by vector)
+impl ops::Add<Vector3> for Point3 {
+    type Output = Point3;
+    fn add(self, rhs: Vector3) -> Point3 {
+        Point3::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+
+// Point3 - Vector3 = Point3 (translate point by negative vector)
+impl ops::Sub<Vector3> for Point3 {
+    type Output = Point3;
+    fn sub(self, rhs: Vector3) -> Point3 {
+        Point3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Vector3 + Vector3 = Vector3
+impl ops::Add for Vector3 {
+    type Output = Vector3;
+    fn add(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+}
+
+// Vector3 - Vector3 = Vector3
+impl ops::Sub for Vector3 {
+    type Output = Vector3;
+    fn sub(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+}
+
+// Vector3 * f64 = Vector3 (scalar multiply)
+impl ops::Mul<f64> for Vector3 {
+    type Output = Vector3;
+    fn mul(self, rhs: f64) -> Vector3 {
+        Vector3::new(self.x * rhs, self.y * rhs, self.z * rhs)
+    }
+}
+
+// f64 * Vector3 = Vector3 (scalar multiply, commutative)
+impl ops::Mul<Vector3> for f64 {
+    type Output = Vector3;
+    fn mul(self, rhs: Vector3) -> Vector3 {
+        Vector3::new(self * rhs.x, self * rhs.y, self * rhs.z)
+    }
+}
+
+// -Vector3 (negate)
+impl ops::Neg for Vector3 {
+    type Output = Vector3;
+    fn neg(self) -> Vector3 {
+        Vector3::new(-self.x, -self.y, -self.z)
     }
 }
 
@@ -887,6 +962,26 @@ mod tests {
     }
 
     #[test]
+    fn test_vector3_normalized() {
+        let v = Vector3::new(3.0, 4.0, 0.0);
+        let n = v.normalized();
+        assert!((n.magnitude() - 1.0).abs() < 1e-10);
+        assert!((n.x - 0.6).abs() < 1e-10);
+        assert!((n.y - 0.8).abs() < 1e-10);
+        // Original unchanged
+        assert!((v.magnitude() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_normalized_zero() {
+        let v = Vector3::zero();
+        let n = v.normalized();
+        assert_eq!(n.x, 0.0);
+        assert_eq!(n.y, 0.0);
+        assert_eq!(n.z, 0.0);
+    }
+
+    #[test]
     fn test_vector3_serialization() {
         let v = Vector3::new(1.0, 2.0, 3.0);
         let serialized = serde_json::to_string(&v).unwrap();
@@ -894,6 +989,90 @@ mod tests {
         assert_eq!(v.x, deserialized.x);
         assert_eq!(v.y, deserialized.y);
         assert_eq!(v.z, deserialized.z);
+    }
+
+    // ============================================================================
+    // Point3 / Vector3 Operator Tests
+    // ============================================================================
+
+    #[test]
+    fn test_point3_sub_point3() {
+        let a = Point3::new(3.0, 5.0, 7.0);
+        let b = Point3::new(1.0, 2.0, 3.0);
+        let v: Vector3 = a - b;
+        assert!((v.x - 2.0).abs() < 1e-10);
+        assert!((v.y - 3.0).abs() < 1e-10);
+        assert!((v.z - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_add_vector3() {
+        let p = Point3::new(1.0, 2.0, 3.0);
+        let v = Vector3::new(10.0, 20.0, 30.0);
+        let result = p + v;
+        assert!((result.x - 11.0).abs() < 1e-10);
+        assert!((result.y - 22.0).abs() < 1e-10);
+        assert!((result.z - 33.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_sub_vector3() {
+        let p = Point3::new(10.0, 20.0, 30.0);
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let result = p - v;
+        assert!((result.x - 9.0).abs() < 1e-10);
+        assert!((result.y - 18.0).abs() < 1e-10);
+        assert!((result.z - 27.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_add() {
+        let a = Vector3::new(1.0, 2.0, 3.0);
+        let b = Vector3::new(4.0, 5.0, 6.0);
+        let c = a + b;
+        assert!((c.x - 5.0).abs() < 1e-10);
+        assert!((c.y - 7.0).abs() < 1e-10);
+        assert!((c.z - 9.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_sub() {
+        let a = Vector3::new(4.0, 5.0, 6.0);
+        let b = Vector3::new(1.0, 2.0, 3.0);
+        let c = a - b;
+        assert!((c.x - 3.0).abs() < 1e-10);
+        assert!((c.y - 3.0).abs() < 1e-10);
+        assert!((c.z - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_scalar_mul() {
+        let v = Vector3::new(1.0, 2.0, 3.0);
+        let scaled = v * 2.0;
+        assert!((scaled.x - 2.0).abs() < 1e-10);
+        assert!((scaled.y - 4.0).abs() < 1e-10);
+        assert!((scaled.z - 6.0).abs() < 1e-10);
+        // Commutative
+        let scaled2 = 2.0 * v;
+        assert!((scaled2.x - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vector3_neg() {
+        let v = Vector3::new(1.0, -2.0, 3.0);
+        let neg = -v;
+        assert!((neg.x - (-1.0)).abs() < 1e-10);
+        assert!((neg.y - 2.0).abs() < 1e-10);
+        assert!((neg.z - (-3.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_point3_distance_via_ops() {
+        let a = Point3::new(1.0, 2.0, 3.0);
+        let b = Point3::new(4.0, 6.0, 3.0);
+        let displacement = b - a;
+        assert!((displacement.magnitude() - 5.0).abs() < 1e-10);
+        assert!((a.distance_to(&b) - displacement.magnitude()).abs() < 1e-10);
     }
 
     // ============================================================================

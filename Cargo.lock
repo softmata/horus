@@ -2295,7 +2295,6 @@ dependencies = [
  "horus_core",
  "horus_library",
  "horus_macros",
- "horus_types",
  "serde",
 ]
 
@@ -2336,7 +2335,6 @@ dependencies = [
  "ctrlc",
  "dirs",
  "horus_macros",
- "horus_types",
  "lazy_static",
  "libc",
  "log",
@@ -2367,7 +2365,6 @@ dependencies = [
  "bytemuck",
  "horus_core",
  "horus_macros",
- "horus_types",
  "rmp-serde",
  "serde",
  "serde_arrays",
@@ -2457,7 +2454,6 @@ dependencies = [
  "horus",
  "horus_core",
  "horus_library",
- "horus_types",
  "lazy_static",
  "parking_lot",
  "pyo3",
@@ -2467,15 +2463,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
-]
-
-[[package]]
-name = "horus_types"
-version = "0.1.9"
-dependencies = [
- "bytemuck",
- "serde",
- "serde_json",
 ]
 
 [[package]]

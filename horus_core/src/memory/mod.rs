@@ -123,7 +123,7 @@ macro_rules! impl_tensor_backed {
 
             /// Element data type.
             #[inline]
-            pub fn dtype(&self) -> horus_types::TensorDtype {
+            pub fn dtype(&self) -> crate::types::TensorDtype {
                 self.descriptor.dtype()
             }
 

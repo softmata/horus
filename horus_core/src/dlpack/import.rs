@@ -5,7 +5,7 @@
 
 use super::ffi::{DLDevice, DLManagedTensor};
 use crate::memory::tensor_descriptor::TensorDescriptor;
-use horus_types::{Device, TensorDtype};
+use crate::types::{Device, TensorDtype};
 use thiserror::Error;
 
 /// Errors that can occur when importing DLPack tensors

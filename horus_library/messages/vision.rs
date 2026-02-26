@@ -5,7 +5,7 @@
 //
 // ## Unified Image Type
 //
-// The primary `Image` type is a zero-copy Pod descriptor from `horus_types`.
+// The primary `Image` type is a zero-copy Pod descriptor from `horus_core::types`.
 // Use `Topic<Image>` with `create()` / `publish()` / `next()`
 // for high-performance image pipelines.
 
@@ -13,7 +13,7 @@ use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-// Re-export ImageEncoding from horus_types (canonical location)
+// Re-export ImageEncoding from horus_core::types (canonical location)
 pub use horus_core::types::ImageEncoding;
 
 /// Compressed image data (JPEG, PNG, etc.)

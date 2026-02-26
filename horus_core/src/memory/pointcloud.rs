@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use horus_types::{Device, PointCloudDescriptor, TensorDtype};
+use crate::types::{Device, PointCloudDescriptor, TensorDtype};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;

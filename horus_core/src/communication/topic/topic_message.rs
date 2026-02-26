@@ -21,7 +21,7 @@ use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
 use crate::memory::TensorPool;
-use horus_types::{DepthImageDescriptor, ImageDescriptor, PointCloudDescriptor};
+use crate::types::{DepthImageDescriptor, ImageDescriptor, PointCloudDescriptor};
 
 use super::pool_registry::global_pool;
 

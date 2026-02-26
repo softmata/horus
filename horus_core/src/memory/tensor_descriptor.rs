@@ -2,10 +2,10 @@
 //!
 //! This module provides tensor data types and descriptors.
 
-// Re-export TensorDtype from horus_types (replaces old dtype submodule)
-pub use horus_types::TensorDtype;
+// Re-export TensorDtype from types module
+pub use crate::types::TensorDtype;
 
-use horus_types::Device;
+use crate::types::Device;
 
 /// Tensor descriptor containing metadata about a tensor
 ///

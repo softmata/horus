@@ -5,7 +5,7 @@ mod tests {
     use crate::communication::pod::is_pod;
     use crate::communication::topic::Topic;
     use crate::memory::depth_image::DepthImage;
-    use horus_types::{DepthImageDescriptor, TensorDtype};
+    use crate::types::{DepthImageDescriptor, TensorDtype};
 
     #[test]
     fn test_depth_descriptor_is_pod() {

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use horus_types::{Device, ImageDescriptor, ImageEncoding};
+use crate::types::{Device, ImageDescriptor, ImageEncoding};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;

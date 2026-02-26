@@ -9,7 +9,7 @@
 //! ```
 
 use horus_core::memory::Image;
-use horus_types::ImageEncoding;
+use horus_core::types::ImageEncoding;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};

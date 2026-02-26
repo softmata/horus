@@ -1784,7 +1784,7 @@ use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
 use crate::memory::TensorPool;
-use horus_types::HorusTensor;
+use crate::types::HorusTensor;
 
 /// Topic — Universal IPC with automatic backend detection.
 ///
@@ -2122,8 +2122,8 @@ impl Topic<HorusTensor> {
     pub fn alloc_tensor(
         &self,
         shape: &[u64],
-        dtype: horus_types::TensorDtype,
-        device: horus_types::Device,
+        dtype: crate::types::TensorDtype,
+        device: crate::types::Device,
     ) -> HorusResult<crate::memory::TensorHandle> {
         let pool = self.pool();
         crate::memory::TensorHandle::alloc(pool, shape, dtype, device)

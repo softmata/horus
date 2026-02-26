@@ -7,7 +7,7 @@
 // of vision/perception data, see the Pod types in detection.rs, segmentation.rs, etc.
 
 use horus_core::core::LogSummary;
-use horus_types::TensorDtype;
+use horus_core::types::TensorDtype;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 /// # Example
 /// ```rust,ignore
 /// use horus_library::messages::ml::TensorData;
-/// use horus_types::TensorDtype;
+/// use horus_core::types::TensorDtype;
 ///
 /// // Create a 3x3 tensor
 /// let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];

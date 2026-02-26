@@ -719,8 +719,8 @@ pub struct TensorPoolStats {
     pub free_bytes: usize,
 }
 
-// Re-export tensor types from horus_types (canonical source)
-pub use horus_types::{Device, HorusTensor, TensorDtype, MAX_TENSOR_DIMS};
+// Re-export tensor types from types module
+pub use crate::types::{Device, HorusTensor, TensorDtype, MAX_TENSOR_DIMS};
 
 #[cfg(test)]
 mod tests {

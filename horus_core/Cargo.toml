@@ -37,9 +37,6 @@ lazy_static = "1.4"
 thiserror = "1.0"
 anyhow = "1.0"
 
-# Core types (leaf crate)
-horus_types = { workspace = true }
-
 # Macros (optional)
 horus_macros = { path = "../horus_macros", optional = true }
 

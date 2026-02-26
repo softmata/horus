@@ -2,7 +2,7 @@
 //!
 //! Fixed-size point types (`PointXYZ`, `PointXYZRGB`, `PointXYZI`) suitable for
 //! shared memory transport. These are the elements stored in a `PointCloud`'s
-//! tensor data — they live in `horus_types` because they have zero HORUS
+//! tensor data — they live in `horus_core::types` as leaf types with no HORUS
 //! dependencies beyond `bytemuck`.
 
 use bytemuck::{Pod, Zeroable};

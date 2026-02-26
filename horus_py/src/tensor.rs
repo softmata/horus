@@ -4,7 +4,7 @@
 //! and the buffer protocol.
 
 use horus::memory::{TensorHandle, TensorPool, TensorPoolConfig};
-use horus_types::{HorusTensor, TensorDtype};
+use horus_core::types::{HorusTensor, TensorDtype};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -406,7 +406,7 @@ impl PyTensorHandle {
             Arc::clone(&pool),
             &descriptor.shape,
             descriptor.dtype,
-            horus_types::Device::cpu(),
+            horus_core::types::Device::cpu(),
         )
         .map_err(|e| PyRuntimeError::new_err(format!("Allocation failed: {}", e)))?;
 

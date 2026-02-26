@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use horus_types::{DepthImageDescriptor, Device, TensorDtype};
+use crate::types::{DepthImageDescriptor, Device, TensorDtype};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;

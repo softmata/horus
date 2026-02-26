@@ -6,12 +6,12 @@
 // ## Unified Types
 //
 // The primary `PointCloud` and `DepthImage` types are zero-copy Pod
-// descriptors from `horus_types`. Use `Topic<PointCloud>` with
+// descriptors from `horus_core::types`. Use `Topic<PointCloud>` with
 // `create()` / `publish()` / `next()`.
 
 use crate::messages::geometry::{Point3, Vector3};
 use horus_core::core::LogSummary;
-use horus_types::TensorDtype;
+use horus_core::types::TensorDtype;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
@@ -22,7 +22,7 @@ pub struct PointField {
     pub name: [u8; 16],
     /// Byte offset in point data structure
     pub offset: u32,
-    /// Data type of this field (uses canonical TensorDtype from horus_types)
+    /// Data type of this field (uses canonical TensorDtype from horus_core::types)
     pub datatype: TensorDtype,
     /// Number of elements (1 for scalar, >1 for vector/array)
     pub count: u32,

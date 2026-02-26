@@ -57,7 +57,7 @@
 //! This provides additional methods like `as_bytes()`, `from_bytes()`, etc.
 
 use bytemuck::{Pod, Zeroable};
-use horus_types::HorusTensor;
+use crate::types::HorusTensor;
 use std::mem;
 
 use crate::core::LogSummary;
@@ -168,21 +168,21 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
 unsafe impl PodMessage for HorusTensor {}
 
 // Unified vision/perception types — repr(C), Pod, zero-copy IPC
-unsafe impl PodMessage for horus_types::ImageDescriptor {}
-unsafe impl PodMessage for horus_types::PointCloudDescriptor {}
-unsafe impl PodMessage for horus_types::DepthImageDescriptor {}
+unsafe impl PodMessage for crate::types::ImageDescriptor {}
+unsafe impl PodMessage for crate::types::PointCloudDescriptor {}
+unsafe impl PodMessage for crate::types::DepthImageDescriptor {}
 
 // ============================================================================
 // LogSummary for unified types (orphan rule: LogSummary defined here in horus_core)
 // ============================================================================
 
-impl LogSummary for horus_types::ImageEncoding {
+impl LogSummary for crate::types::ImageEncoding {
     fn log_summary(&self) -> String {
         format!("{:?}", self)
     }
 }
 
-impl LogSummary for horus_types::ImageDescriptor {
+impl LogSummary for crate::types::ImageDescriptor {
     fn log_summary(&self) -> String {
         format!(
             "Image({}x{}, {:?}, {}, {})",
@@ -195,7 +195,7 @@ impl LogSummary for horus_types::ImageDescriptor {
     }
 }
 
-impl LogSummary for horus_types::PointCloudDescriptor {
+impl LogSummary for crate::types::PointCloudDescriptor {
     fn log_summary(&self) -> String {
         let kind = match self.fields_per_point() {
             3 => "XYZ",
@@ -212,7 +212,7 @@ impl LogSummary for horus_types::PointCloudDescriptor {
     }
 }
 
-impl LogSummary for horus_types::DepthImageDescriptor {
+impl LogSummary for crate::types::DepthImageDescriptor {
     fn log_summary(&self) -> String {
         let unit = if self.is_meters() {
             "m"

@@ -5,7 +5,7 @@ mod tests {
     use crate::communication::pod::is_pod;
     use crate::communication::topic::Topic;
     use crate::memory::pointcloud::PointCloud;
-    use horus_types::{PointCloudDescriptor, TensorDtype};
+    use crate::types::{PointCloudDescriptor, TensorDtype};
 
     #[test]
     fn test_pointcloud_descriptor_is_pod() {
