@@ -70,7 +70,6 @@ impl From<&CoreNodeState> for PyNodeState {
             CoreNodeState::Uninitialized => "uninitialized",
             CoreNodeState::Initializing => "initializing",
             CoreNodeState::Running => "running",
-            CoreNodeState::Paused => "paused",
             CoreNodeState::Stopping => "stopping",
             CoreNodeState::Stopped => "stopped",
             CoreNodeState::Error(_) => "error",

@@ -1,11 +1,14 @@
-//! # HORUS Types - Core types with zero HORUS dependencies
-//!
-//! **Note:** This is an internal leaf crate. Users should depend on `horus` and
-//! import from `horus::prelude::*`.
+//! Core tensor types for HORUS - zero-copy descriptors and element types.
 
 pub mod device;
 pub mod dtype;
 pub mod tensor;
+
+pub mod image_descriptor;
+pub mod image_encoding;
+pub mod depth_image_descriptor;
+pub mod pointcloud_descriptor;
+pub mod point;
 
 /// Generate `frame_id()` and `set_frame_id()` inherent methods for types
 /// with a `frame_id: [u8; 32]` field.
@@ -54,7 +57,7 @@ macro_rules! impl_tensor_accessors {
     () => {
         /// Element data type.
         #[inline]
-        pub fn dtype(&self) -> $crate::TensorDtype {
+        pub fn dtype(&self) -> $crate::types::TensorDtype {
             self.inner.dtype
         }
 
@@ -78,26 +81,17 @@ macro_rules! impl_tensor_accessors {
 
         /// Get the inner tensor descriptor.
         #[inline]
-        pub fn tensor(&self) -> &$crate::HorusTensor {
+        pub fn tensor(&self) -> &$crate::types::HorusTensor {
             &self.inner
         }
 
         /// Get a mutable reference to the inner tensor descriptor.
         #[inline]
-        pub fn tensor_mut(&mut self) -> &mut $crate::HorusTensor {
+        pub fn tensor_mut(&mut self) -> &mut $crate::types::HorusTensor {
             &mut self.inner
         }
     };
 }
-
-// Vision/perception domain types
-pub mod depth_image;
-pub mod image;
-pub mod image_encoding;
-pub mod pointcloud;
-
-// Point element types (Pod, zero-copy)
-pub mod point;
 
 // User-facing types (re-exported via horus::prelude)
 pub use device::Device;
@@ -105,14 +99,14 @@ pub use image_encoding::ImageEncoding;
 pub use point::{PointXYZ, PointXYZI, PointXYZRGB};
 pub use dtype::TensorDtype;
 
-// Internal types (used by horus_core, not by end users)
+// Internal types
 #[doc(hidden)]
 pub use dtype::dlpack_codes;
 #[doc(hidden)]
 pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};
 #[doc(hidden)]
-pub use depth_image::DepthImageDescriptor;
+pub use depth_image_descriptor::DepthImageDescriptor;
 #[doc(hidden)]
-pub use image::ImageDescriptor;
+pub use image_descriptor::ImageDescriptor;
 #[doc(hidden)]
-pub use pointcloud::PointCloudDescriptor;
+pub use pointcloud_descriptor::PointCloudDescriptor;

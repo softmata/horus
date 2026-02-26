@@ -9,8 +9,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use crate::tensor::HorusTensor;
-use crate::TensorDtype;
+use super::tensor::HorusTensor;
+use super::dtype::TensorDtype;
 
 /// Unified point cloud descriptor — Pod, 272 bytes.
 ///
@@ -125,12 +125,6 @@ impl PointCloudDescriptor {
         }
     }
 
-    /// Number of defined field descriptors.
-    #[inline]
-    pub fn field_count(&self) -> u8 {
-        self.field_count
-    }
-
     /// Whether this is a plain XYZ cloud (3 fields).
     #[inline]
     pub fn is_xyz(&self) -> bool {
@@ -149,12 +143,6 @@ impl PointCloudDescriptor {
         self.fields_per_point() >= 6
     }
 
-    /// Whether the cloud is dense (no invalid points).
-    #[inline]
-    pub fn is_dense(&self) -> bool {
-        self.is_dense != 0
-    }
-
     crate::impl_tensor_accessors!();
     crate::impl_timestamp_field!();
     crate::impl_frame_id_field!();
@@ -163,7 +151,7 @@ impl PointCloudDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use crate::types::Device;
 
     #[test]
     fn test_pointcloud_size() {
@@ -190,7 +178,6 @@ mod tests {
         assert_eq!(pc.fields_per_point(), 3);
         assert!(pc.is_xyz());
         assert!(!pc.has_intensity());
-        assert!(pc.is_dense());
     }
 
     #[test]
@@ -199,7 +186,6 @@ mod tests {
         let pc = PointCloudDescriptor::xyzi(tensor);
         assert_eq!(pc.point_count(), 5000);
         assert!(pc.has_intensity());
-        assert_eq!(pc.field_count(), 4);
     }
 
     #[test]

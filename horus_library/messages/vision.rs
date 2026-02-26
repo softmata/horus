@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_arrays;
 
 // Re-export ImageEncoding from horus_types (canonical location)
-pub use horus_types::ImageEncoding;
+pub use horus_core::types::ImageEncoding;
 
 /// Compressed image data (JPEG, PNG, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -262,8 +262,6 @@ mod tests {
     fn test_encoding_properties() {
         assert_eq!(ImageEncoding::Rgb8.bytes_per_pixel(), 3);
         assert_eq!(ImageEncoding::Mono16.bytes_per_pixel(), 2);
-        assert!(ImageEncoding::Rgb8.is_color());
-        assert!(!ImageEncoding::Mono8.is_color());
     }
 
     #[test]

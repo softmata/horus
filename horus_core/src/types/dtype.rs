@@ -15,12 +15,8 @@ pub mod dlpack_codes {
     pub const DLPACK_UINT: u8 = 1;
     /// Float type
     pub const DLPACK_FLOAT: u8 = 2;
-    /// Opaque handle type
-    pub const DLPACK_OPAQUE_HANDLE: u8 = 3;
     /// BFloat type
     pub const DLPACK_BFLOAT: u8 = 4;
-    /// Complex type
-    pub const DLPACK_COMPLEX: u8 = 5;
     /// Boolean type
     pub const DLPACK_BOOL: u8 = 6;
 }
@@ -168,32 +164,6 @@ impl TensorDtype {
         }
     }
 
-    /// Check if this is a floating point type
-    #[inline]
-    pub const fn is_float(&self) -> bool {
-        matches!(
-            self,
-            TensorDtype::F16 | TensorDtype::F32 | TensorDtype::F64 | TensorDtype::BF16
-        )
-    }
-
-    /// Check if this is a signed integer type
-    #[inline]
-    pub const fn is_signed_int(&self) -> bool {
-        matches!(
-            self,
-            TensorDtype::I8 | TensorDtype::I16 | TensorDtype::I32 | TensorDtype::I64
-        )
-    }
-
-    /// Check if this is an unsigned integer type
-    #[inline]
-    pub const fn is_unsigned_int(&self) -> bool {
-        matches!(
-            self,
-            TensorDtype::U8 | TensorDtype::U16 | TensorDtype::U32 | TensorDtype::U64
-        )
-    }
 }
 
 impl fmt::Display for TensorDtype {
@@ -265,26 +235,6 @@ mod tests {
         assert_eq!(TensorDtype::parse("bf16"), Some(TensorDtype::BF16));
         assert_eq!(TensorDtype::parse("bool"), Some(TensorDtype::Bool));
         assert_eq!(TensorDtype::parse("invalid"), None);
-    }
-
-    #[test]
-    fn test_dtype_categories() {
-        assert!(TensorDtype::F32.is_float());
-        assert!(TensorDtype::F16.is_float());
-        assert!(TensorDtype::BF16.is_float());
-        assert!(!TensorDtype::I32.is_float());
-
-        assert!(TensorDtype::I8.is_signed_int());
-        assert!(TensorDtype::I64.is_signed_int());
-        assert!(!TensorDtype::U8.is_signed_int());
-
-        assert!(TensorDtype::U8.is_unsigned_int());
-        assert!(TensorDtype::U64.is_unsigned_int());
-        assert!(!TensorDtype::I8.is_unsigned_int());
-
-        assert!(!TensorDtype::Bool.is_float());
-        assert!(!TensorDtype::Bool.is_signed_int());
-        assert!(!TensorDtype::Bool.is_unsigned_int());
     }
 
     #[test]

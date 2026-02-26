@@ -42,9 +42,6 @@ pub enum RtScheduler {
     /// Round-Robin RT scheduler - SCHED_RR
     /// Time-sliced among same-priority threads
     RoundRobin,
-    /// Deadline scheduler - SCHED_DEADLINE (Linux 3.14+)
-    /// For periodic tasks with explicit deadlines
-    Deadline,
 }
 
 /// Result of applying RT configuration.
@@ -224,7 +221,6 @@ impl RtConfigBuilder {
     /// - [`RtScheduler::Normal`]: Standard Linux scheduler (SCHED_OTHER)
     /// - [`RtScheduler::Fifo`]: Real-time FIFO (SCHED_FIFO)
     /// - [`RtScheduler::RoundRobin`]: Real-time round-robin (SCHED_RR)
-    /// - [`RtScheduler::Deadline`]: Deadline scheduler (SCHED_DEADLINE)
     pub fn scheduler(mut self, scheduler: RtScheduler) -> Self {
         self.scheduler = scheduler;
         self
@@ -330,18 +326,6 @@ impl RtConfig {
         }
 
         builder.build()
-    }
-
-    /// Create a configuration for soft real-time tasks.
-    ///
-    /// Uses round-robin scheduler with moderate priority, suitable
-    /// for tasks that should be responsive but can tolerate occasional
-    /// delays.
-    pub fn soft_realtime() -> Self {
-        Self::new()
-            .scheduler(RtScheduler::RoundRobin)
-            .priority(50)
-            .build()
     }
 
     /// Create a default non-RT configuration.
@@ -503,13 +487,6 @@ impl RtConfig {
             RtScheduler::Normal => libc::SCHED_OTHER,
             RtScheduler::Fifo => libc::SCHED_FIFO,
             RtScheduler::RoundRobin => libc::SCHED_RR,
-            RtScheduler::Deadline => {
-                // SCHED_DEADLINE requires special handling
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "SCHED_DEADLINE requires sched_setattr, not yet implemented",
-                ));
-            }
         };
 
         // Clamp priority to valid range
@@ -973,14 +950,6 @@ mod tests {
         assert_eq!(config.scheduler, RtScheduler::Fifo);
         assert_eq!(config.priority, Some(80));
         assert_eq!(config.cpu_affinity, Some(vec![2, 3]));
-    }
-
-    #[test]
-    fn test_soft_realtime_preset() {
-        let config = RtConfig::soft_realtime();
-        assert!(!config.memory_locked);
-        assert_eq!(config.scheduler, RtScheduler::RoundRobin);
-        assert_eq!(config.priority, Some(50));
     }
 
     #[test]

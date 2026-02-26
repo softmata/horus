@@ -608,7 +608,7 @@ impl PyScheduler {
 
     /// Add a node to the scheduler.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, logging=true, tier=None, failure_policy=None))]
+    #[pyo3(signature = (node, order=100, rate_hz=None, rt=false, deadline_ms=None, tier=None, failure_policy=None))]
     fn add(
         &self,
         py: Python,
@@ -617,7 +617,6 @@ impl PyScheduler {
         rate_hz: Option<f64>,
         rt: bool,
         deadline_ms: Option<f64>,
-        #[allow(unused_variables)] logging: bool,
         tier: Option<String>,
         failure_policy: Option<String>,
     ) -> PyResult<()> {

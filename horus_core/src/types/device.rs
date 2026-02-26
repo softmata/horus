@@ -83,16 +83,6 @@ impl Device {
         self.device_type == DEVICE_TYPE_CUDA
     }
 
-    /// Get CUDA device index, or None for CPU
-    #[inline]
-    pub const fn cuda_index(&self) -> Option<u32> {
-        if self.is_cuda() {
-            Some(self.device_id)
-        } else {
-            None
-        }
-    }
-
     /// Parse device from string (e.g., "cpu", "cuda", "cuda:0", "cuda:1")
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.to_lowercase();
@@ -188,16 +178,13 @@ mod tests {
         let cpu = Device::cpu();
         assert!(cpu.is_cpu());
         assert!(!cpu.is_cuda());
-        assert_eq!(cpu.cuda_index(), None);
 
         let cuda0 = Device::cuda(0);
         assert!(!cuda0.is_cpu());
         assert!(cuda0.is_cuda());
-        assert_eq!(cuda0.cuda_index(), Some(0));
 
         let cuda7 = Device::cuda(7);
         assert!(cuda7.is_cuda());
-        assert_eq!(cuda7.cuda_index(), Some(7));
     }
 
     #[test]

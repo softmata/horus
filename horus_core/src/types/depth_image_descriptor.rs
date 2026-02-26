@@ -10,8 +10,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use crate::tensor::HorusTensor;
-use crate::TensorDtype;
+use super::tensor::HorusTensor;
+use super::dtype::TensorDtype;
 
 /// Unified depth image descriptor — Pod, 224 bytes.
 ///
@@ -86,12 +86,6 @@ impl DepthImageDescriptor {
         self
     }
 
-    /// Create with explicit depth scale.
-    pub fn with_scale(mut self, scale: f32) -> Self {
-        self.depth_scale = scale;
-        self
-    }
-
     // === Accessors ===
 
     /// Image height in pixels (tensor dimension 0).
@@ -126,12 +120,6 @@ impl DepthImageDescriptor {
         self.inner.dtype == TensorDtype::U16
     }
 
-    /// Total number of pixels (height * width).
-    #[inline]
-    pub fn pixel_count(&self) -> u64 {
-        self.height() as u64 * self.width() as u64
-    }
-
     /// Depth scale (mm per unit).
     #[inline]
     pub fn depth_scale(&self) -> f32 {
@@ -158,7 +146,7 @@ impl DepthImageDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use crate::types::Device;
 
     #[test]
     fn test_depth_image_size() {

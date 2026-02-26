@@ -14,7 +14,7 @@ pub trait LogSummary {
     fn log_summary(&self) -> String;
 }
 
-impl LogSummary for horus_types::HorusTensor {
+impl LogSummary for crate::types::HorusTensor {
     fn log_summary(&self) -> String {
         let shape_str: Vec<String> = self.shape().iter().map(|d| d.to_string()).collect();
         format!(
@@ -34,7 +34,6 @@ pub enum NodeState {
     Uninitialized,
     Initializing,
     Running,
-    Paused,
     Stopping,
     Stopped,
     Error(String),
@@ -47,7 +46,6 @@ impl fmt::Display for NodeState {
             NodeState::Uninitialized => write!(f, "Uninitialized"),
             NodeState::Initializing => write!(f, "Initializing"),
             NodeState::Running => write!(f, "Running"),
-            NodeState::Paused => write!(f, "Paused"),
             NodeState::Stopping => write!(f, "Stopping"),
             NodeState::Stopped => write!(f, "Stopped"),
             NodeState::Error(msg) => write!(f, "Error: {}", msg),
@@ -679,7 +677,6 @@ mod tests {
         assert_eq!(NodeState::Uninitialized.to_string(), "Uninitialized");
         assert_eq!(NodeState::Initializing.to_string(), "Initializing");
         assert_eq!(NodeState::Running.to_string(), "Running");
-        assert_eq!(NodeState::Paused.to_string(), "Paused");
         assert_eq!(NodeState::Stopping.to_string(), "Stopping");
         assert_eq!(NodeState::Stopped.to_string(), "Stopped");
         assert_eq!(
@@ -695,7 +692,7 @@ mod tests {
     #[test]
     fn test_node_state_equality() {
         assert_eq!(NodeState::Running, NodeState::Running);
-        assert_ne!(NodeState::Running, NodeState::Paused);
+        assert_ne!(NodeState::Running, NodeState::Stopping);
         assert_eq!(
             NodeState::Error("msg".to_string()),
             NodeState::Error("msg".to_string())

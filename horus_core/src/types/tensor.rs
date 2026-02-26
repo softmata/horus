@@ -16,8 +16,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use crate::device::{Device, DEVICE_TYPE_CPU, DEVICE_TYPE_CUDA};
-use crate::dtype::TensorDtype;
+use super::device::{Device, DEVICE_TYPE_CPU, DEVICE_TYPE_CUDA};
+use super::dtype::TensorDtype;
 
 /// Maximum number of dimensions supported by HorusTensor
 pub const MAX_TENSOR_DIMS: usize = 8;
@@ -156,13 +156,6 @@ impl HorusTensor {
             _pad: [0; 3],
             device_id: self.device_id,
         }
-    }
-
-    /// Set the device for this tensor
-    #[inline]
-    pub fn set_device(&mut self, device: Device) {
-        self.device_type = device.device_type;
-        self.device_id = device.device_id;
     }
 
     /// Get the shape as a slice
@@ -401,7 +394,6 @@ mod tests {
         assert!(tensor.is_cuda());
         assert!(!tensor.is_cpu());
         assert_eq!(tensor.device(), Device::cuda(3));
-        assert_eq!(tensor.device().cuda_index(), Some(3));
     }
 
     #[test]
@@ -411,7 +403,6 @@ mod tests {
             let tensor =
                 HorusTensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
             assert_eq!(tensor.device(), Device::cuda(gpu_id));
-            assert_eq!(tensor.device().cuda_index(), Some(gpu_id));
         }
     }
 
@@ -485,19 +476,6 @@ mod tests {
         assert_eq!(recovered.device(), tensor.device());
         assert_eq!(recovered.shape(), tensor.shape());
         assert_eq!(recovered.strides(), tensor.strides());
-    }
-
-    #[test]
-    fn test_tensor_set_device() {
-        let mut tensor = HorusTensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cpu());
-        assert!(tensor.is_cpu());
-
-        tensor.set_device(Device::cuda(5));
-        assert!(tensor.is_cuda());
-        assert_eq!(tensor.device(), Device::cuda(5));
-
-        tensor.set_device(Device::cpu());
-        assert!(tensor.is_cpu());
     }
 
     #[test]

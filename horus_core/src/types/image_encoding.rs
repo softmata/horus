@@ -8,7 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::TensorDtype;
+use super::dtype::TensorDtype;
 
 /// Image encoding formats
 ///
@@ -57,21 +57,6 @@ impl ImageEncoding {
             ImageEncoding::Rgba8 | ImageEncoding::Bgra8 | ImageEncoding::Mono32F => 4,
             ImageEncoding::Rgb32F => 12,
         }
-    }
-
-    /// Whether this encoding carries color information
-    #[inline]
-    pub const fn is_color(&self) -> bool {
-        matches!(
-            self,
-            ImageEncoding::Rgb8
-                | ImageEncoding::Bgr8
-                | ImageEncoding::Rgba8
-                | ImageEncoding::Bgra8
-                | ImageEncoding::Yuv422
-                | ImageEncoding::Rgb32F
-                | ImageEncoding::BayerRggb8
-        )
     }
 
     /// Number of channels for this encoding
@@ -166,14 +151,6 @@ mod tests {
         assert_eq!(ImageEncoding::Mono16.tensor_dtype(), TensorDtype::U16);
         assert_eq!(ImageEncoding::Mono32F.tensor_dtype(), TensorDtype::F32);
         assert_eq!(ImageEncoding::Depth16.tensor_dtype(), TensorDtype::U16);
-    }
-
-    #[test]
-    fn test_encoding_is_color() {
-        assert!(ImageEncoding::Rgb8.is_color());
-        assert!(ImageEncoding::Bgra8.is_color());
-        assert!(!ImageEncoding::Mono8.is_color());
-        assert!(!ImageEncoding::Depth16.is_color());
     }
 
     #[test]

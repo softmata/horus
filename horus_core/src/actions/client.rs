@@ -110,11 +110,6 @@ impl<A: Action> ClientGoalHandle<A> {
         self.state.read().status.is_success()
     }
 
-    /// Get the number of feedback messages received.
-    pub fn feedback_count(&self) -> u64 {
-        self.state.read().feedback_count
-    }
-
     /// Get the time since the goal was sent.
     pub fn elapsed(&self) -> Duration {
         self.sent_at.elapsed()
@@ -598,14 +593,6 @@ where
         self.cancels_sent.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Cancel all active goals.
-    pub fn cancel_all(&self) {
-        let goal_ids: Vec<GoalId> = self.inner.goals.read().keys().copied().collect();
-        for goal_id in goal_ids {
-            self.cancel_goal(goal_id);
-        }
-    }
-
     /// Get the status of a specific goal.
     pub fn goal_status(&self, goal_id: GoalId) -> Option<GoalStatus> {
         self.inner
@@ -634,35 +621,6 @@ where
             .values()
             .filter(|state| state.read().status.is_active())
             .count()
-    }
-
-    /// Remove completed goals from tracking.
-    ///
-    /// Call this periodically to prevent memory growth from old goal handles.
-    pub fn cleanup_completed(&self) {
-        let mut goals = self.inner.goals.write();
-        goals.retain(|_, state| state.read().status.is_active());
-    }
-
-    /// Wait for the server to be available.
-    ///
-    /// Blocks until the server is detected or timeout.
-    pub fn wait_for_server(&self, timeout: Duration) -> bool {
-        // For now, just check if initialized
-        // In a real implementation, we'd check for server presence
-        let start = Instant::now();
-        while start.elapsed() < timeout {
-            if self.inner.initialized.load(Ordering::Acquire) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        false
-    }
-
-    /// Check if the client is ready to send goals.
-    pub fn is_ready(&self) -> bool {
-        self.inner.initialized.load(Ordering::Acquire)
     }
 
     /// Get client metrics.

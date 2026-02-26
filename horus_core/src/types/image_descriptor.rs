@@ -9,8 +9,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use crate::image_encoding::ImageEncoding;
-use crate::tensor::HorusTensor;
+use super::image_encoding::ImageEncoding;
+use super::tensor::HorusTensor;
 
 /// Unified image descriptor — Pod, 224 bytes.
 ///
@@ -138,12 +138,6 @@ impl ImageDescriptor {
         self.encoding
     }
 
-    /// Total pixel count (height * width).
-    #[inline]
-    pub fn pixel_count(&self) -> u64 {
-        self.height() as u64 * self.width() as u64
-    }
-
     /// Bytes per row.
     #[inline]
     pub fn step(&self) -> u32 {
@@ -158,7 +152,7 @@ impl ImageDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Device, TensorDtype};
+    use crate::types::{Device, TensorDtype};
 
     #[test]
     fn test_image_size() {

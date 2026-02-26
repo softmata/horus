@@ -222,11 +222,6 @@ impl HorusError {
         HorusError::Communication(msg.into())
     }
 
-    /// Create a memory error
-    pub fn memory<S: Into<String>>(msg: S) -> Self {
-        HorusError::Memory(msg.into())
-    }
-
 }
 
 #[cfg(test)]
@@ -651,13 +646,6 @@ mod tests {
     fn helper_communication() {
         let err = HorusError::communication("topic full");
         assert!(matches!(err, HorusError::Communication(ref s) if s == "topic full"));
-    }
-
-    /// HorusError::memory() helper.
-    #[test]
-    fn helper_memory() {
-        let err = HorusError::memory("mmap failed");
-        assert!(matches!(err, HorusError::Memory(ref s) if s == "mmap failed"));
     }
 
     // =========================================================================
