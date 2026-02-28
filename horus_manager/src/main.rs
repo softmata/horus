@@ -13,6 +13,67 @@ use horus_manager::{commands, monitor, monitor_tui, security};
 #[command(about = "HORUS - Hybrid Optimized Robotics Unified System")]
 #[command(version = "0.1.9")]
 #[command(propagate_version = true)]
+#[command(disable_help_subcommand = true)]
+#[command(help_template = "\
+{before-help}{name} {version} — {about}
+
+{usage-heading} {usage}
+
+Project:
+  init              Initialize HORUS workspace in current directory
+  new               Create a new HORUS project
+  run               Run a HORUS project or file(s)
+  build             Build the HORUS project without running
+  test              Run tests for the HORUS project
+  check             Validate horus.yaml, source files, or workspace
+  clean             Clean build artifacts and shared memory
+  launch, l         Launch multiple nodes from a YAML file
+
+Introspection:
+  topic, t          Topic interaction (list, echo, publish)
+  node, n           Node management (list, info, kill)
+  param, p          Parameter management (get, set, list, delete)
+  frame, frames     Coordinate frame operations (list, echo, tree)
+  msg               Message type introspection
+  log               View and filter logs
+  blackbox, bb      Inspect the BlackBox flight recorder
+  monitor, mon      Monitor nodes, topics, and system health
+  discover          Discover HORUS nodes on the local network
+
+Packages:
+  install, i        Install a package or plugin (name@version supported)
+  remove            Remove a package, driver, or plugin
+  search, s         Search available packages from registry
+  list              List installed packages and plugins
+  update            Update installed packages to latest versions
+  info              Show detailed info about a package or plugin
+
+Plugins:
+  enable            Enable a disabled plugin
+  disable           Disable a plugin (keep installed but don't execute)
+  verify            Verify integrity of installed plugins
+
+Publishing & Deploy:
+  publish           Publish package to registry
+  unpublish         Unpublish a package (name@version syntax)
+  keygen            Generate signing key pair for package signing
+  deploy            Deploy project to a remote robot
+  env               Environment management (freeze/restore)
+  auth              Authentication commands
+  cache             Cache management (info, clean, purge)
+  record, rec       Record/replay management for debugging
+
+{options}
+{after-help}")]
+#[command(after_help = "\
+Examples:
+  horus new my_robot --rust       Create a Rust project
+  horus run                       Build and run current project
+  horus topic list                List active topics
+  horus install rplidar@1.2.0     Install a specific version
+  horus bb --anomalies            Show crash anomalies
+
+Docs: https://docs.horus-registry.dev")]
 struct Cli {
     /// Increase output verbosity (show debug messages)
     #[arg(short = 'v', long = "verbose", global = true)]
@@ -28,6 +89,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    // ── Project ──────────────────────────────────────────────────────────
+
     /// Initialize HORUS workspace in current directory
     Init {
         /// Workspace name (optional, defaults to directory name)
@@ -91,15 +154,32 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Validate horus.yaml, source files, or entire workspace
-    Check {
-        /// Path to file, directory, or workspace (default: current directory)
-        #[arg(value_name = "PATH")]
-        path: Option<PathBuf>,
+    /// Build the HORUS project without running
+    Build {
+        /// File(s) to build (optional, auto-detects if not specified)
+        files: Vec<PathBuf>,
 
-        /// Only show errors, suppress warnings
+        /// Build in release mode
+        #[arg(short = 'r', long = "release")]
+        release: bool,
+
+        /// Clean build (remove cache)
+        #[arg(short = 'c', long = "clean")]
+        clean: bool,
+
+        /// Suppress progress indicators
         #[arg(short = 'q', long = "quiet")]
         quiet: bool,
+
+        /// Override detected drivers (comma-separated list)
+        /// Example: --drivers camera,lidar,imu
+        #[arg(short = 'd', long = "drivers", value_delimiter = ',')]
+        drivers: Option<Vec<String>>,
+
+        /// Enable capabilities (comma-separated list)
+        /// Example: --enable cuda,editor,python
+        #[arg(short = 'e', long = "enable", value_delimiter = ',')]
+        enable: Option<Vec<String>>,
     },
 
     /// Run tests for the HORUS project
@@ -155,95 +235,19 @@ enum Commands {
         enable: Option<Vec<String>>,
     },
 
-    /// Build the HORUS project without running
-    Build {
-        /// File(s) to build (optional, auto-detects if not specified)
-        files: Vec<PathBuf>,
+    /// Validate horus.yaml, source files, or entire workspace
+    Check {
+        /// Path to file, directory, or workspace (default: current directory)
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
 
-        /// Build in release mode
-        #[arg(short = 'r', long = "release")]
-        release: bool,
-
-        /// Clean build (remove cache)
-        #[arg(short = 'c', long = "clean")]
-        clean: bool,
-
-        /// Suppress progress indicators
+        /// Only show errors, suppress warnings
         #[arg(short = 'q', long = "quiet")]
         quiet: bool,
 
-        /// Override detected drivers (comma-separated list)
-        /// Example: --drivers camera,lidar,imu
-        #[arg(short = 'd', long = "drivers", value_delimiter = ',')]
-        drivers: Option<Vec<String>>,
-
-        /// Enable capabilities (comma-separated list)
-        /// Example: --enable cuda,editor,python
-        #[arg(short = 'e', long = "enable", value_delimiter = ',')]
-        enable: Option<Vec<String>>,
-    },
-
-    /// Monitor running HORUS nodes, topics, and system health
-    Monitor {
-        /// Port for web interface (default: 3000)
-        #[arg(value_name = "PORT", default_value = "3000")]
-        port: u16,
-
-        /// Use Terminal UI mode instead of web
-        #[arg(short = 't', long = "tui")]
-        tui: bool,
-
-        /// Reset password before starting
-        #[arg(short = 'r', long = "reset-password")]
-        reset_password: bool,
-    },
-
-    /// Topic interaction (list, echo, publish)
-    Topic {
-        #[command(subcommand)]
-        command: TopicCommands,
-    },
-
-    /// Node management (list, info, kill)
-    Node {
-        #[command(subcommand)]
-        command: NodeCommands,
-    },
-
-    /// Parameter management (get, set, list, delete)
-    Param {
-        #[command(subcommand)]
-        command: ParamCommands,
-    },
-
-    /// HFrame operations (list, echo, tree) - coordinate transform frames
-    Hf {
-        #[command(subcommand)]
-        command: HfCommands,
-    },
-
-    /// Discover HORUS nodes on the local network via mDNS
-    #[cfg(feature = "mdns")]
-    Discover {
-        /// Scan duration in seconds (default: 2)
-        #[arg(short = 't', long = "timeout", default_value = "2")]
-        timeout: u64,
-
-        /// Filter by topic name
-        #[arg(long = "topic")]
-        topic: Option<String>,
-
-        /// Filter by node name (partial match)
-        #[arg(long = "name")]
-        name: Option<String>,
-
-        /// Watch for nodes joining/leaving (continuous mode)
-        #[arg(short = 'w', long = "watch")]
-        watch: bool,
-
-        /// Output format: table, json, or simple
-        #[arg(short = 'f', long = "format", default_value = "table")]
-        format: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Clean build artifacts and shared memory
@@ -259,9 +263,14 @@ enum Commands {
         /// Show what would be cleaned without removing anything
         #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Launch multiple nodes from a YAML file
+    #[command(visible_alias = "l")]
     Launch {
         /// Path to launch file (YAML)
         file: std::path::PathBuf,
@@ -277,6 +286,36 @@ enum Commands {
         /// List nodes in the launch file without launching
         #[arg(long = "list")]
         list: bool,
+    },
+
+    // ── Introspection ────────────────────────────────────────────────────
+
+    /// Topic interaction (list, echo, publish)
+    #[command(visible_alias = "t")]
+    Topic {
+        #[command(subcommand)]
+        command: TopicCommands,
+    },
+
+    /// Node management (list, info, kill)
+    #[command(visible_alias = "n")]
+    Node {
+        #[command(subcommand)]
+        command: NodeCommands,
+    },
+
+    /// Parameter management (get, set, list, delete)
+    #[command(visible_alias = "p")]
+    Param {
+        #[command(subcommand)]
+        command: ParamCommands,
+    },
+
+    /// Coordinate frame operations (list, echo, tree)
+    #[command(name = "frame", visible_alias = "frames", alias = "hf")]
+    Frame {
+        #[command(subcommand)]
+        command: HfCommands,
     },
 
     /// Message type introspection
@@ -314,188 +353,6 @@ enum Commands {
         /// Clear all logs (including file-based logs)
         #[arg(long = "clear-all")]
         clear_all: bool,
-    },
-
-    /// Environment management (freeze/restore)
-    Env {
-        #[command(subcommand)]
-        command: EnvCommands,
-    },
-
-    /// Authentication commands
-    Auth {
-        #[command(subcommand)]
-        command: AuthCommands,
-    },
-
-    /// Deploy project to a remote robot
-    Deploy {
-        /// Target host (user@host or configured target name)
-        #[arg(required_unless_present = "list")]
-        target: Option<String>,
-
-        /// Remote directory to deploy to (default: ~/horus_deploy)
-        #[arg(short = 'd', long = "dir")]
-        remote_dir: Option<String>,
-
-        /// Target architecture (aarch64, armv7, x86_64, native)
-        #[arg(short = 'a', long = "arch")]
-        arch: Option<String>,
-
-        /// Run the project after deploying
-        #[arg(short = 'r', long = "run")]
-        run_after: bool,
-
-        /// Build in debug mode instead of release
-        #[arg(long = "debug")]
-        debug: bool,
-
-        /// SSH port (default: 22)
-        #[arg(short = 'p', long = "port", default_value = "22")]
-        port: u16,
-
-        /// SSH identity file
-        #[arg(short = 'i', long = "identity")]
-        identity: Option<PathBuf>,
-
-        /// Show what would be done without actually doing it
-        #[arg(short = 'n', long = "dry-run")]
-        dry_run: bool,
-
-        /// List configured deployment targets
-        #[arg(long = "list")]
-        list: bool,
-    },
-
-    /// Remove a package, driver, or plugin
-    Remove {
-        /// Package/driver/plugin name to remove
-        name: String,
-        /// Remove from global scope (~/.horus/cache/)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Also clean unused packages from cache after removal
-        #[arg(long = "purge")]
-        purge: bool,
-    },
-
-    /// Install a package or plugin
-    Install {
-        /// Package name to install
-        name: String,
-        /// Specific version (optional)
-        #[arg(long = "ver")]
-        ver: Option<String>,
-        /// Install to global scope (~/.horus/cache/)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Target workspace/project name
-        #[arg(short = 't', long = "target")]
-        target: Option<String>,
-        /// Install as driver (adds to horus.yaml drivers section)
-        #[arg(long = "driver", conflicts_with = "plugin")]
-        driver: bool,
-        /// Install as CLI plugin (defaults to global scope)
-        #[arg(long = "plugin", conflicts_with = "driver")]
-        plugin: bool,
-    },
-
-    /// List installed packages and plugins in your workspace or global cache
-    List {
-        /// Filter by name (optional, searches registry marketplace if provided)
-        query: Option<String>,
-        /// List global scope packages only
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// List all (local + global)
-        #[arg(short = 'a', long = "all")]
-        all: bool,
-    },
-
-    /// Search available packages and plugins from registry and local workspace
-    Search {
-        /// Search query (e.g., "camera", "lidar", "motor")
-        query: String,
-        /// Filter by category (camera, lidar, imu, motor, servo, bus, gps, simulation, cli)
-        #[arg(short = 'c', long = "category")]
-        category: Option<String>,
-    },
-
-    /// Update installed packages to latest versions
-    Update {
-        /// Specific package to update (updates all if omitted)
-        package: Option<String>,
-        /// Update global scope packages
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Show what would be updated without making changes
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-    },
-
-    /// Publish package to registry
-    Publish {
-        /// Also generate freeze file
-        #[arg(long)]
-        freeze: bool,
-        /// Validate package without actually publishing
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-    },
-
-    /// Unpublish a package from the registry
-    Unpublish {
-        /// Package name to unpublish
-        package: String,
-        /// Package version to unpublish
-        #[arg(value_name = "VERSION")]
-        ver: String,
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
-    },
-
-    /// Generate signing key pair for package signing
-    #[command(name = "keygen")]
-    KeyGen,
-
-    /// Show detailed info about a package or plugin
-    Info {
-        /// Package or plugin name
-        name: String,
-    },
-
-    /// Enable a disabled plugin
-    Enable {
-        /// Plugin command name to enable
-        command: String,
-    },
-
-    /// Disable a plugin (keep installed but don't execute)
-    Disable {
-        /// Plugin command name to disable
-        command: String,
-        /// Reason for disabling
-        #[arg(short = 'r', long = "reason")]
-        reason: Option<String>,
-    },
-
-    /// Verify integrity of installed plugins
-    Verify {
-        /// Specific plugin to verify (optional, verifies all if not specified)
-        plugin: Option<String>,
-    },
-
-    /// Cache management (info, clean, purge)
-    Cache {
-        #[command(subcommand)]
-        command: CacheCommands,
-    },
-
-    /// Record/replay management for debugging and testing
-    Record {
-        #[command(subcommand)]
-        command: RecordCommands,
     },
 
     /// Inspect the BlackBox flight recorder (post-mortem crash analysis)
@@ -538,6 +395,251 @@ enum Commands {
         clear: bool,
     },
 
+    /// Monitor running HORUS nodes, topics, and system health
+    #[command(visible_alias = "mon")]
+    Monitor {
+        /// Port for web interface (default: 3000)
+        #[arg(value_name = "PORT", default_value = "3000")]
+        port: u16,
+
+        /// Use Terminal UI mode instead of web
+        #[arg(short = 't', long = "tui")]
+        tui: bool,
+
+        /// Reset password before starting
+        #[arg(short = 'r', long = "reset-password")]
+        reset_password: bool,
+    },
+
+    /// Discover HORUS nodes on the local network via mDNS
+    #[cfg(feature = "mdns")]
+    Discover {
+        /// Scan duration in seconds (default: 2)
+        #[arg(short = 't', long = "timeout", default_value = "2")]
+        timeout: u64,
+
+        /// Filter by topic name
+        #[arg(long = "topic")]
+        topic: Option<String>,
+
+        /// Filter by node name (partial match)
+        #[arg(long = "name")]
+        name: Option<String>,
+
+        /// Watch for nodes joining/leaving (continuous mode)
+        #[arg(short = 'w', long = "watch")]
+        watch: bool,
+
+        /// Output format: table, json, or simple
+        #[arg(short = 'f', long = "format", default_value = "table")]
+        format: String,
+    },
+
+    /// Discover HORUS nodes on the local network (requires 'mdns' feature)
+    #[cfg(not(feature = "mdns"))]
+    Discover,
+
+    // ── Packages ─────────────────────────────────────────────────────────
+
+    /// Install a package or plugin (use name@version for specific version)
+    #[command(visible_alias = "i")]
+    Install {
+        /// Package name (supports name@version syntax, e.g. rplidar@1.2.0)
+        name: String,
+        /// Specific version (prefer name@version syntax instead)
+        #[arg(long = "ver", hide = true)]
+        ver: Option<String>,
+        /// Install to global scope (~/.horus/cache/)
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Target workspace/project name
+        #[arg(short = 't', long = "target")]
+        target: Option<String>,
+        /// Install as driver (adds to horus.yaml drivers section)
+        #[arg(long = "driver", conflicts_with = "plugin")]
+        driver: bool,
+        /// Install as CLI plugin (defaults to global scope)
+        #[arg(long = "plugin", conflicts_with = "driver")]
+        plugin: bool,
+    },
+
+    /// Remove a package, driver, or plugin
+    Remove {
+        /// Package/driver/plugin name to remove
+        name: String,
+        /// Remove from global scope (~/.horus/cache/)
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Also clean unused packages from cache after removal
+        #[arg(long = "purge")]
+        purge: bool,
+    },
+
+    /// Search available packages and plugins from registry
+    #[command(visible_alias = "s")]
+    Search {
+        /// Search query (e.g., "camera", "lidar", "motor")
+        query: String,
+        /// Filter by category (camera, lidar, imu, motor, servo, bus, gps, simulation, cli)
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// List installed packages and plugins
+    List {
+        /// List global scope packages only
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// List all (local + global)
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Update installed packages to latest versions
+    Update {
+        /// Specific package to update (updates all if omitted)
+        package: Option<String>,
+        /// Update global scope packages
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Show what would be updated without making changes
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Show detailed info about a package or plugin
+    Info {
+        /// Package or plugin name
+        name: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    // ── Plugins ──────────────────────────────────────────────────────────
+
+    /// Enable a disabled plugin
+    Enable {
+        /// Plugin command name to enable
+        command: String,
+    },
+
+    /// Disable a plugin (keep installed but don't execute)
+    Disable {
+        /// Plugin command name to disable
+        command: String,
+        /// Reason for disabling
+        #[arg(short = 'r', long = "reason")]
+        reason: Option<String>,
+    },
+
+    /// Verify integrity of installed plugins
+    Verify {
+        /// Specific plugin to verify (optional, verifies all if not specified)
+        plugin: Option<String>,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    // ── Publishing & Deploy ──────────────────────────────────────────────
+
+    /// Publish package to registry
+    Publish {
+        /// Also generate freeze file
+        #[arg(long)]
+        freeze: bool,
+        /// Validate package without actually publishing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Unpublish a package from the registry (use name@version syntax)
+    Unpublish {
+        /// Package name (supports name@version syntax)
+        package: String,
+        /// Package version to unpublish (prefer name@version syntax instead)
+        #[arg(value_name = "VERSION", hide = true)]
+        ver: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Generate signing key pair for package signing
+    #[command(name = "keygen")]
+    KeyGen,
+
+    /// Deploy project to a remote robot
+    Deploy {
+        /// Target host (user@host or configured target name)
+        #[arg(required_unless_present = "list")]
+        target: Option<String>,
+
+        /// Remote directory to deploy to (default: ~/horus_deploy)
+        #[arg(short = 'd', long = "dir")]
+        remote_dir: Option<String>,
+
+        /// Target architecture (aarch64, armv7, x86_64, native)
+        #[arg(short = 'a', long = "arch")]
+        arch: Option<String>,
+
+        /// Run the project after deploying
+        #[arg(short = 'r', long = "run")]
+        run_after: bool,
+
+        /// Build in debug mode instead of release
+        #[arg(long = "debug")]
+        debug: bool,
+
+        /// SSH port (default: 22)
+        #[arg(short = 'p', long = "port", default_value = "22")]
+        port: u16,
+
+        /// SSH identity file
+        #[arg(short = 'i', long = "identity")]
+        identity: Option<PathBuf>,
+
+        /// Show what would be done without actually doing it
+        #[arg(short = 'n', long = "dry-run")]
+        dry_run: bool,
+
+        /// List configured deployment targets
+        #[arg(long = "list")]
+        list: bool,
+    },
+
+    /// Environment management (freeze/restore)
+    Env {
+        #[command(subcommand)]
+        command: EnvCommands,
+    },
+
+    /// Authentication commands
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
+
+    /// Cache management (info, clean, purge)
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommands,
+    },
+
+    /// Record/replay management for debugging and testing
+    #[command(visible_alias = "rec")]
+    Record {
+        #[command(subcommand)]
+        command: RecordCommands,
+    },
+
     /// Generate shell completion scripts
     #[command(hide = true)]
     Completion {
@@ -550,7 +652,11 @@ enum Commands {
 #[derive(Subcommand)]
 enum CacheCommands {
     /// Show cache information (size, packages, disk usage)
-    Info,
+    Info {
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 
     /// Remove unused packages from cache
     Clean {
@@ -567,18 +673,29 @@ enum CacheCommands {
     },
 
     /// List all cached packages
-    List,
+    List {
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum EnvCommands {
     /// List all published environments
-    List,
+    List {
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
 
     /// Show details of an environment
     Show {
         /// Environment ID (e.g., horus-env-abc123)
         id: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Freeze current environment to a manifest file
@@ -641,12 +758,18 @@ enum RecordCommands {
         /// Show detailed info (file sizes, tick counts)
         #[arg(short = 'l', long = "long")]
         long: bool,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Show details of a specific recording session
     Info {
         /// Session name
         session: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Delete a recording session
@@ -996,12 +1119,18 @@ enum MsgCommands {
     Show {
         /// Message type name
         name: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Show message type MD5 hash
     Md5 {
         /// Message type name
         name: String,
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 }
 
@@ -1147,7 +1276,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 std::env::set_var("HORUS_RECORD_SESSION", session_name);
                 println!(
                     "{} Recording enabled: session '{}'",
-                    "[RECORD]".yellow().bold(),
+                    horus_manager::cli_output::ICON_INFO.yellow().bold(),
                     session_name
                 );
             }
@@ -1183,7 +1312,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 .map_err(|e| HorusError::Config(e.to_string()))
         }
 
-        Commands::Check { path, quiet } => commands::check::run_check(path, quiet),
+        Commands::Check { path, quiet, json } => commands::check::run_check(path, quiet, json),
 
         Commands::Test {
             filter,
@@ -1312,7 +1441,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             ParamCommands::Dump => commands::param::dump_params(),
         },
 
-        Commands::Hf { command } => match command {
+        Commands::Frame { command } => match command {
             HfCommands::List { verbose, json } => commands::hf::list_frames(verbose, json),
             HfCommands::Echo {
                 source,
@@ -1335,7 +1464,20 @@ fn run_command(command: Commands) -> HorusResult<()> {
             format,
         } => commands::discover::run_discover(timeout, topic, name, watch, &format),
 
-        Commands::Clean { shm, all, dry_run } => commands::clean::run_clean(shm, all, dry_run),
+        #[cfg(not(feature = "mdns"))]
+        Commands::Discover => {
+            eprintln!(
+                "{} The 'discover' command requires the 'mdns' feature.",
+                "Note:".yellow().bold()
+            );
+            eprintln!(
+                "  Reinstall with: {}",
+                "cargo install horus_manager --features mdns".cyan()
+            );
+            Ok(())
+        }
+
+        Commands::Clean { shm, all, dry_run, json } => commands::clean::run_clean(shm, all, dry_run, json),
 
         Commands::Launch {
             file,
@@ -1354,8 +1496,8 @@ fn run_command(command: Commands) -> HorusResult<()> {
             MsgCommands::List { verbose, filter } => {
                 commands::msg::list_messages(verbose, filter.as_deref())
             }
-            MsgCommands::Show { name } => commands::msg::show_message(&name),
-            MsgCommands::Md5 { name } => commands::msg::message_hash(&name),
+            MsgCommands::Show { name, json } => commands::msg::show_message(&name, json),
+            MsgCommands::Md5 { name, json } => commands::msg::message_hash(&name, json),
         },
 
         Commands::Log {
@@ -1390,19 +1532,28 @@ fn run_command(command: Commands) -> HorusResult<()> {
             driver,
             plugin,
         } => {
+            // Parse name@version syntax (takes precedence over --ver)
+            let (pkg_name, pkg_ver) = match name.find('@') {
+                Some(idx) => (
+                    name[..idx].to_string(),
+                    Some(name[idx + 1..].to_string()),
+                ),
+                None => (name, ver),
+            };
+
             if plugin {
-                commands::plugin::run_install(name, ver, !global)
+                commands::plugin::run_install(pkg_name, pkg_ver, !global)
             } else if driver {
-                commands::pkg::run_add(name, ver, true, false)
+                commands::pkg::run_add(pkg_name, pkg_ver, true, false)
             } else {
-                commands::pkg::run_install(name, ver, global, target)
+                commands::pkg::run_install(pkg_name, pkg_ver, global, target)
             }
         }
 
-        Commands::List { query, global, all } => commands::pkg::run_list(query, global, all),
+        Commands::List { global, all, json } => commands::pkg::run_list(None, global, all, json),
 
-        Commands::Search { query, category } => {
-            commands::plugin::run_search_with_category(query, category)
+        Commands::Search { query, category, json } => {
+            commands::plugin::run_search_with_category(query, category, json)
         }
 
         Commands::Update {
@@ -1417,11 +1568,30 @@ fn run_command(command: Commands) -> HorusResult<()> {
             package,
             ver,
             yes,
-        } => commands::pkg::run_unpublish(package, ver, yes),
+        } => {
+            // Parse name@version syntax (takes precedence over positional version)
+            let (pkg_name, pkg_ver) = match package.find('@') {
+                Some(idx) => (
+                    package[..idx].to_string(),
+                    package[idx + 1..].to_string(),
+                ),
+                None => match ver {
+                    Some(v) => (package, v),
+                    None => {
+                        eprintln!(
+                            "{} Version required. Use: horus unpublish name@version",
+                            "Error:".red().bold()
+                        );
+                        std::process::exit(1);
+                    }
+                },
+            };
+            commands::pkg::run_unpublish(pkg_name, pkg_ver, yes)
+        }
 
         Commands::KeyGen => commands::pkg::run_keygen(),
 
-        Commands::Info { name } => commands::plugin::run_info_unified(name),
+        Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
         Commands::Enable { command } => commands::pkg::enable_plugin(&command)
             .map_err(|e| HorusError::Config(e.to_string())),
@@ -1431,14 +1601,14 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 .map_err(|e| HorusError::Config(e.to_string()))
         }
 
-        Commands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
+        Commands::Verify { plugin, json } => commands::pkg::verify_plugins(plugin.as_deref(), json)
             .map_err(|e| HorusError::Config(e.to_string())),
 
         Commands::Env { command } => match command {
             EnvCommands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
             EnvCommands::Restore { source } => commands::env::run_restore(source),
-            EnvCommands::List => commands::env::run_list(),
-            EnvCommands::Show { id } => commands::env::run_show(id),
+            EnvCommands::List { json } => commands::env::run_list(json),
+            EnvCommands::Show { id, json } => commands::env::run_show(id, json),
         },
 
         Commands::Auth { command } => match command {
@@ -1502,15 +1672,15 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         Commands::Cache { command } => match command {
-            CacheCommands::Info => commands::cache::run_info(),
-            CacheCommands::List => commands::cache::run_list(),
+            CacheCommands::Info { json } => commands::cache::run_info(json),
+            CacheCommands::List { json } => commands::cache::run_list(json),
             CacheCommands::Clean { dry_run } => commands::cache::run_clean(dry_run),
             CacheCommands::Purge { yes } => commands::cache::run_purge(yes),
         },
 
         Commands::Record { command } => match command {
-            RecordCommands::List { long } => commands::record::run_list(long),
-            RecordCommands::Info { session } => commands::record::run_info(session),
+            RecordCommands::List { long, json } => commands::record::run_list(long, json),
+            RecordCommands::Info { session, json } => commands::record::run_info(session, json),
             RecordCommands::Delete { session, force } => {
                 commands::record::run_delete(session, force)
             }

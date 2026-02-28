@@ -2,6 +2,7 @@
 //!
 //! Lists and inspects HORUS message types defined in horus_library.
 
+use crate::cli_output;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use std::collections::HashMap;
@@ -88,7 +89,7 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
                 }
                 if !msg.fields.is_empty() {
                     let field_count = msg.fields.len();
-                    println!("      {} fields: {}", "".dimmed(), field_count);
+                    println!("      {} fields: {}", cli_output::ICON_HINT.dimmed(), field_count);
                 }
             }
             println!();
@@ -120,7 +121,7 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
 }
 
 /// Show detailed info about a message type
-pub fn show_message(name: &str) -> HorusResult<()> {
+pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
 
     // Find matching message
@@ -135,6 +136,27 @@ pub fn show_message(name: &str) -> HorusResult<()> {
             name
         )));
     };
+
+    if json {
+        let fields: Vec<_> = msg.fields.iter().map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "type": f.field_type,
+                "doc": f.doc,
+            })
+        }).collect();
+        let md5 = compute_message_hash(msg);
+        let output = serde_json::json!({
+            "name": msg.name,
+            "module": msg.module,
+            "source_file": msg.source_file,
+            "doc": msg.doc,
+            "fields": fields,
+            "md5": md5,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
 
     println!("{}", "Message Type Definition".green().bold());
     println!();
@@ -177,7 +199,7 @@ pub fn show_message(name: &str) -> HorusResult<()> {
 }
 
 /// Show message hash (MD5)
-pub fn message_hash(name: &str) -> HorusResult<()> {
+pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
 
     let msg = messages.iter().find(|m| {
@@ -192,7 +214,17 @@ pub fn message_hash(name: &str) -> HorusResult<()> {
         )));
     };
     let md5 = compute_message_hash(msg);
-    println!("{}", md5);
+
+    if json {
+        let output = serde_json::json!({
+            "name": msg.name,
+            "module": msg.module,
+            "md5": md5,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("{}", md5);
+    }
 
     Ok(())
 }

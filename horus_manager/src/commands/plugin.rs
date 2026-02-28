@@ -1,12 +1,12 @@
 //! Plugin command - search, discover, inspect, install, and remove HORUS plugins
 
-use crate::{registry, workspace, yaml_utils};
+use crate::{cli_output, registry, workspace, yaml_utils};
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use std::path::PathBuf;
 
 /// Search for plugins by query with optional category filter
-pub fn run_search_with_category(query: String, category: Option<String>) -> HorusResult<()> {
+pub fn run_search_with_category(query: String, category: Option<String>, json: bool) -> HorusResult<()> {
     use crate::plugins::PluginDiscovery;
 
     let mut discovery = PluginDiscovery::new();
@@ -35,13 +35,31 @@ pub fn run_search_with_category(query: String, category: Option<String>) -> Horu
         })
         .collect();
 
+    if json {
+        let items: Vec<_> = results.iter().map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "description": p.description,
+                "category": format!("{:?}", p.category),
+                "features": p.features,
+            })
+        }).collect();
+        let output = serde_json::json!({
+            "query": query,
+            "category": category,
+            "results": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
     print_search_results(&results, &query, category.as_deref());
     Ok(())
 }
 
 /// Search for plugins by query (no category filter)
 pub fn run_search(query: String) -> HorusResult<()> {
-    run_search_with_category(query, None)
+    run_search_with_category(query, None, false)
 }
 
 /// Parse a category string into PluginCategory
@@ -272,14 +290,25 @@ pub fn run_info(name: String) -> HorusResult<()> {
 }
 
 /// Unified info command — checks both plugin discovery and installed packages
-pub fn run_info_unified(name: String) -> HorusResult<()> {
+pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
     use crate::plugins::PluginDiscovery;
 
     let mut discovery = PluginDiscovery::new();
     add_local_workspace(&mut discovery);
 
     // Try plugin discovery first
-    if let Ok(Some(_)) = discovery.get_plugin(&name) {
+    if let Ok(Some(plugin)) = discovery.get_plugin(&name) {
+        if json {
+            let output = serde_json::json!({
+                "name": plugin.name,
+                "description": plugin.description,
+                "source": "plugin",
+                "category": format!("{:?}", plugin.category),
+                "features": plugin.features,
+            });
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            return Ok(());
+        }
         return run_info(name);
     }
 
@@ -289,6 +318,16 @@ pub fn run_info_unified(name: String) -> HorusResult<()> {
         Ok(results) => {
             // Look for exact match
             if let Some(pkg) = results.iter().find(|p| p.name == name) {
+                if json {
+                    let output = serde_json::json!({
+                        "name": pkg.name,
+                        "version": pkg.version,
+                        "description": pkg.description,
+                        "source": "registry",
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    return Ok(());
+                }
                 println!("{}", pkg.name.cyan().bold());
                 println!("{}", "=".repeat(pkg.name.len()).dimmed());
                 println!();
@@ -337,6 +376,31 @@ pub fn run_info_unified(name: String) -> HorusResult<()> {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
+
+            if json {
+                let mut info = serde_json::json!({
+                    "name": display_name,
+                    "location": dir.display().to_string(),
+                    "source": "local",
+                    "status": "installed",
+                });
+                let yaml_path = dir.join("horus.yaml");
+                if yaml_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                        if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                            if let Some(desc) = yaml.get("description").and_then(|v| v.as_str()) {
+                                info["description"] = serde_json::Value::String(desc.to_string());
+                            }
+                            if let Some(ver) = yaml.get("version").and_then(|v| v.as_str()) {
+                                info["version"] = serde_json::Value::String(ver.to_string());
+                            }
+                        }
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                return Ok(());
+            }
+
             println!("{}", display_name.cyan().bold());
             println!("{}", "=".repeat(display_name.len()).dimmed());
             println!();
@@ -362,6 +426,14 @@ pub fn run_info_unified(name: String) -> HorusResult<()> {
     }
 
     // Nothing found
+    if json {
+        let output = serde_json::json!({
+            "name": name,
+            "found": false,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
     println!("{}", format!("'{}' not found", name).red());
     println!(
         "{}",
@@ -404,7 +476,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
 
     println!(
         "{} Installing plugin: {}{}",
-        "[PLUGIN]".magenta().bold(),
+        cli_output::ICON_INFO.magenta().bold(),
         plugin.yellow(),
         ver.as_ref().map(|v| format!("@{}", v)).unwrap_or_default()
     );
@@ -446,18 +518,18 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
             Ok(Some(cmd)) => {
                 println!(
                     "\n  {} Registered CLI command: {}",
-                    "✓".green(),
+                    cli_output::ICON_SUCCESS.green(),
                     format!("horus {}", cmd).green()
                 );
             }
             Ok(None) => {
                 println!(
                     "\n  {} Package installed but no CLI plugin detected",
-                    "ℹ".cyan()
+                    cli_output::ICON_INFO.cyan()
                 );
             }
             Err(e) => {
-                println!("\n  {} Failed to register plugin: {}", "⚠".yellow(), e);
+                println!("\n  {} Failed to register plugin: {}", cli_output::ICON_WARN.yellow(), e);
             }
         }
     }
@@ -471,9 +543,9 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
             if let Err(e) =
                 yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version)
             {
-                println!("  {} Failed to update horus.yaml: {}", "⚠".yellow(), e);
+                println!("  {} Failed to update horus.yaml: {}", cli_output::ICON_WARN.yellow(), e);
             } else {
-                println!("  {} Updated horus.yaml", "✓".green());
+                println!("  {} Updated horus.yaml", cli_output::ICON_SUCCESS.green());
             }
         }
     }
@@ -481,7 +553,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
     println!();
     println!(
         "{} Plugin {} v{} installed successfully!",
-        "✓".green().bold(),
+        cli_output::ICON_SUCCESS.green().bold(),
         plugin.green(),
         installed_version
     );
@@ -514,7 +586,7 @@ pub fn run_remove(plugin: String, global: bool) -> HorusResult<()> {
 
     println!(
         "{} Removing plugin: {}",
-        "[PLUGIN]".magenta().bold(),
+        cli_output::ICON_INFO.magenta().bold(),
         plugin.yellow()
     );
 
@@ -534,7 +606,7 @@ pub fn run_remove(plugin: String, global: bool) -> HorusResult<()> {
         // Not fatal - plugin might not have had a CLI extension
         println!(
             "  {} Plugin CLI cleanup: {}",
-            "ℹ".dimmed(),
+            cli_output::ICON_HINT.dimmed(),
             e.to_string().dimmed()
         );
     }

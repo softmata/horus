@@ -3,6 +3,7 @@
 //! This library provides the core functionality for the HORUS manager.
 
 pub mod cargo_utils;
+pub mod cli_output;
 pub mod commands;
 pub mod config;
 pub mod dependency_resolver;

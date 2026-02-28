@@ -1138,3 +1138,320 @@ fn test_removed_add_command_fails() {
         .assert()
         .failure();
 }
+
+// ============================================================================
+// Phase 6: DX Regression Tests
+// ============================================================================
+
+// -- Help Headings --
+
+#[test]
+fn test_help_has_project_heading() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Project:"));
+}
+
+#[test]
+fn test_help_has_introspection_heading() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Introspection:"));
+}
+
+#[test]
+fn test_help_has_packages_heading() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Packages:"));
+}
+
+#[test]
+fn test_help_has_plugins_heading() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plugins:"));
+}
+
+#[test]
+fn test_help_has_publishing_heading() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Publishing & Deploy:"));
+}
+
+#[test]
+fn test_help_has_examples() {
+    horus_cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Examples:"))
+        .stdout(predicate::str::contains("horus new my_robot --rust"));
+}
+
+// -- Aliases --
+
+#[test]
+fn test_alias_t_for_topic() {
+    horus_cmd()
+        .args(["t", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Topic"));
+}
+
+#[test]
+fn test_alias_n_for_node() {
+    horus_cmd()
+        .args(["n", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Node"));
+}
+
+#[test]
+fn test_alias_p_for_param() {
+    horus_cmd()
+        .args(["p", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Parameter"));
+}
+
+#[test]
+fn test_alias_i_for_install() {
+    horus_cmd()
+        .args(["i", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Install"));
+}
+
+#[test]
+fn test_alias_s_for_search() {
+    horus_cmd()
+        .args(["s", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Search"));
+}
+
+#[test]
+fn test_alias_l_for_launch() {
+    horus_cmd()
+        .args(["l", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Launch"));
+}
+
+#[test]
+fn test_alias_mon_for_monitor() {
+    horus_cmd()
+        .args(["mon", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Monitor"));
+}
+
+#[test]
+fn test_alias_rec_for_record() {
+    horus_cmd()
+        .args(["rec", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Record"));
+}
+
+#[test]
+fn test_alias_bb_for_blackbox() {
+    horus_cmd()
+        .args(["bb", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BlackBox"));
+}
+
+// -- Frame rename with backward compat --
+
+#[test]
+fn test_frame_command_works() {
+    horus_cmd()
+        .args(["frame", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Coordinate frame"));
+}
+
+#[test]
+fn test_frames_alias_works() {
+    horus_cmd()
+        .args(["frames", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Coordinate frame"));
+}
+
+#[test]
+fn test_hf_backward_compat() {
+    horus_cmd()
+        .args(["hf", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Coordinate frame"));
+}
+
+// -- Semantic fixes --
+
+#[test]
+fn test_list_rejects_positional_args() {
+    // `horus list camera` should fail since we removed the positional query arg
+    horus_cmd()
+        .args(["list", "camera"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_install_help_shows_at_version_syntax() {
+    horus_cmd()
+        .args(["install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name@version"));
+}
+
+#[test]
+fn test_ver_flag_hidden_from_help() {
+    let output = horus_cmd()
+        .args(["install", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // --ver should be hidden from help output (but --verbose and --version are expected)
+    // Check that "--ver " (with trailing space, the actual flag) doesn't appear
+    assert!(
+        !stdout.contains("--ver ") && !stdout.contains("--ver\n"),
+        "--ver should be hidden from install help output"
+    );
+}
+
+// -- JSON output --
+
+#[test]
+fn test_clean_json_flag_accepted() {
+    // --json flag should be accepted (even if clean has nothing to do)
+    horus_cmd()
+        .args(["clean", "--json", "--dry-run"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_clean_json_output_is_valid_json() {
+    let output = horus_cmd()
+        .args(["clean", "--json", "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "clean --json should produce valid JSON, got: {}", stdout);
+}
+
+#[test]
+fn test_clean_json_has_no_ansi_codes() {
+    let output = horus_cmd()
+        .args(["clean", "--json", "--dry-run"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // ANSI escape codes start with \x1b[
+    assert!(
+        !stdout.contains("\x1b["),
+        "JSON output should not contain ANSI escape codes"
+    );
+}
+
+#[test]
+fn test_check_json_flag_accepted() {
+    horus_cmd()
+        .args(["check", "--json"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_check_json_output_contains_json() {
+    let output = horus_cmd()
+        .args(["check", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // check --json includes a JSON object at the end (may have non-JSON text before it)
+    assert!(stdout.contains("\"valid\""), "check --json should contain valid field in JSON output");
+    assert!(stdout.contains("\"path\""), "check --json should contain path field in JSON output");
+}
+
+#[test]
+fn test_cache_info_json_flag() {
+    let output = horus_cmd()
+        .args(["cache", "info", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "cache info --json should produce valid JSON, got: {}", stdout);
+}
+
+#[test]
+fn test_cache_list_json_flag() {
+    let output = horus_cmd()
+        .args(["cache", "list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "cache list --json should produce valid JSON, got: {}", stdout);
+}
+
+#[test]
+fn test_list_json_flag() {
+    let output = horus_cmd()
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
+    assert!(parsed.is_ok(), "list --json should produce valid JSON, got: {}", stdout);
+}
+
+#[test]
+fn test_verify_json_flag_accepted() {
+    // verify --json should at least be a valid flag
+    horus_cmd()
+        .args(["verify", "--json", "--help"])
+        .assert()
+        .success();
+}
+
+// -- Discover stub when mdns is off --
+
+#[test]
+fn test_discover_command_exists() {
+    // discover should work (either mdns or stub)
+    horus_cmd()
+        .args(["discover", "--help"])
+        .assert()
+        .success();
+}

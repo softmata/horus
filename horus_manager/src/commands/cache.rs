@@ -1,5 +1,6 @@
 //! Cache command - manage the HORUS package cache
 
+use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
@@ -31,8 +32,37 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 /// Show cache information (directory, size, package count)
-pub fn run_info() -> HorusResult<()> {
+pub fn run_info(json: bool) -> HorusResult<()> {
     let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+
+    // Count packages and calculate size
+    let mut total_size: u64 = 0;
+    let mut package_count = 0;
+
+    if cache_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    package_count += 1;
+                    if let Ok(size) = dir_size(&entry.path()) {
+                        total_size += size;
+                    }
+                }
+            }
+        }
+    }
+
+    if json {
+        let output = serde_json::json!({
+            "cache_directory": cache_dir.display().to_string(),
+            "exists": cache_dir.exists(),
+            "total_size_bytes": total_size,
+            "total_size": format_size(total_size),
+            "package_count": package_count,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
 
     println!("{}", "HORUS Cache Information".cyan().bold());
     println!("{}", "═".repeat(40));
@@ -45,23 +75,6 @@ pub fn run_info() -> HorusResult<()> {
     }
 
     println!("Cache directory: {}", cache_dir.display());
-
-    // Count packages and calculate size
-    let mut total_size: u64 = 0;
-    let mut package_count = 0;
-
-    if let Ok(entries) = fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                package_count += 1;
-                // Calculate directory size
-                if let Ok(size) = dir_size(&entry.path()) {
-                    total_size += size;
-                }
-            }
-        }
-    }
-
     println!("Total size: {}", format_size(total_size));
     println!("Packages: {}", package_count);
 
@@ -69,14 +82,17 @@ pub fn run_info() -> HorusResult<()> {
 }
 
 /// List all cached packages
-pub fn run_list() -> HorusResult<()> {
+pub fn run_list(json: bool) -> HorusResult<()> {
     let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
-    println!("{}", "Cached Packages".cyan().bold());
-    println!("{}", "─".repeat(60));
-
     if !cache_dir.exists() {
-        println!("  (cache is empty)");
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "packages": [] })).unwrap());
+        } else {
+            println!("{}", "Cached Packages".cyan().bold());
+            println!("{}", "─".repeat(60));
+            println!("  (cache is empty)");
+        }
         return Ok(());
     }
 
@@ -87,6 +103,24 @@ pub fn run_list() -> HorusResult<()> {
         .collect();
 
     packages.sort_by_key(|e| e.file_name());
+
+    if json {
+        let pkg_list: Vec<_> = packages.iter().map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let size = dir_size(&entry.path()).unwrap_or(0);
+            serde_json::json!({
+                "name": name,
+                "size_bytes": size,
+                "size": format_size(size),
+            })
+        }).collect();
+        let output = serde_json::json!({ "packages": pkg_list });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
+    println!("{}", "Cached Packages".cyan().bold());
+    println!("{}", "─".repeat(60));
 
     if packages.is_empty() {
         println!("  (cache is empty)");
@@ -105,7 +139,7 @@ pub fn run_list() -> HorusResult<()> {
 pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
-    println!("{} Scanning for unused packages...", "[CACHE]".cyan());
+    println!("{} Scanning for unused packages...", cli_output::ICON_INFO.cyan());
 
     if !cache_dir.exists() {
         println!("Cache is empty, nothing to clean.");
@@ -152,18 +186,18 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     }
 
     if to_remove.is_empty() {
-        println!("{} All cached packages are in use.", "✓".green());
+        println!("{} All cached packages are in use.", cli_output::ICON_SUCCESS.green());
         return Ok(());
     }
 
     println!("\nUnused packages:");
     for (_, name, size) in &to_remove {
-        println!("  {} {} ({})", "×".red(), name, format_size(*size));
+        println!("  {} {} ({})", cli_output::ICON_ERROR.red(), name, format_size(*size));
     }
     println!("\nTotal to free: {}", format_size(freed_size).green());
 
     if dry_run {
-        println!("\n{} Dry run - no files removed.", "[DRY]".yellow());
+        println!("\n{} Dry run - no files removed.", cli_output::ICON_WARN.yellow());
     } else {
         for (path, name, _) in &to_remove {
             if let Err(e) = fs::remove_dir_all(path) {
@@ -172,7 +206,7 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
         }
         println!(
             "\n{} Removed {} packages, freed {}.",
-            "✓".green(),
+            cli_output::ICON_SUCCESS.green(),
             to_remove.len(),
             format_size(freed_size)
         );
@@ -195,7 +229,7 @@ pub fn run_purge(yes: bool) -> HorusResult<()> {
 
     println!(
         "{} This will remove ALL cached packages:",
-        "[WARN]".yellow().bold()
+        cli_output::ICON_WARN.yellow().bold()
     );
     println!("  Packages: {}", count);
     println!("  Size: {}", format_size(total_size));
@@ -220,7 +254,7 @@ pub fn run_purge(yes: bool) -> HorusResult<()> {
 
     println!(
         "{} Cache purged. Freed {}.",
-        "✓".green(),
+        cli_output::ICON_SUCCESS.green(),
         format_size(total_size)
     );
     Ok(())

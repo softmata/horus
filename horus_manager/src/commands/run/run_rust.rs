@@ -1,6 +1,7 @@
 use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
+use crate::cli_output;
 use colored::*;
 use std::collections::HashSet;
 use std::env;
@@ -39,14 +40,14 @@ pub(super) fn get_color_for_index(index: usize) -> &'static str {
 pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Result<()> {
     // Handle clean build
     if clean {
-        println!("{} Cleaning build cache...", "[CLEAN]".cyan());
+        println!("{} Cleaning build cache...", cli_output::ICON_INFO.cyan());
         clean_build_cache()?;
     }
 
     let mode = if release { "release" } else { "debug" };
     println!(
         "{} Building project in {} mode (no execution)...",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         mode.yellow()
     );
 
@@ -67,7 +68,7 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
     let language = deps::detect_language(target_file)?;
     println!(
         "{} Detected: {} ({})",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         target_file.display().to_string().green(),
         language.yellow()
     );
@@ -81,13 +82,13 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
             println!("{} Python is interpreted, no build needed", "[i]".blue());
             println!(
                 "  {} File is ready to run: {}",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 target_file.display()
             );
         }
         "rust" => {
             // Setup Rust build using Cargo in .horus workspace
-            println!("{} Setting up Cargo workspace...", "".cyan());
+            println!("{} Setting up Cargo workspace...", cli_output::ICON_INFO.cyan());
 
             // Parse horus.yaml to get dependencies
             let dependencies = if Path::new(HORUS_YAML).exists() {
@@ -131,7 +132,7 @@ path = "{}"
             if !auto_features.is_empty() {
                 eprintln!(
                     "  {} Auto-detected hardware nodes (features: {})",
-                    "".cyan(),
+                    cli_output::ICON_INFO.cyan(),
                     auto_features.join(", ").yellow()
                 );
 
@@ -148,7 +149,7 @@ path = "{}"
             let horus_source = find_horus_source_dir()?;
             println!(
                 "  {} Using HORUS source: {}",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 horus_source.display()
             );
 
@@ -180,7 +181,7 @@ path = "{}"
                         ));
                         println!(
                             "  {} Added dependency: {} -> {} (auto-features: {})",
-                            "".cyan(),
+                            cli_output::ICON_INFO.cyan(),
                             dep,
                             dep_path.display(),
                             auto_features.join(", ").yellow()
@@ -193,7 +194,7 @@ path = "{}"
                         ));
                         println!(
                             "  {} Added dependency: {} -> {}",
-                            "".cyan(),
+                            cli_output::ICON_INFO.cyan(),
                             dep,
                             dep_path.display()
                         );
@@ -201,7 +202,7 @@ path = "{}"
                 } else {
                     eprintln!(
                         "  {} Warning: dependency {} not found at {}",
-                        "".yellow(),
+                        cli_output::ICON_WARN.yellow(),
                         dep,
                         dep_path.display()
                     );
@@ -235,13 +236,13 @@ path = "{}"
                         ));
                         eprintln!(
                             "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                            "".yellow(),
+                            cli_output::ICON_WARN.yellow(),
                             pkg.name
                         );
                     }
                     println!(
                         "  {} Added crates.io dependency: {} (features: {})",
-                        "".cyan(),
+                        cli_output::ICON_INFO.cyan(),
                         pkg.name,
                         pkg.features.join(", ")
                     );
@@ -249,7 +250,7 @@ path = "{}"
                     cargo_toml.push_str(&format!("{} = \"{}\"\n", pkg.name, version));
                     println!(
                         "  {} Added crates.io dependency: {}@{}",
-                        "".cyan(),
+                        cli_output::ICON_INFO.cyan(),
                         pkg.name,
                         version
                     );
@@ -257,11 +258,11 @@ path = "{}"
                     cargo_toml.push_str(&format!("{} = \"*\"\n", pkg.name));
                     eprintln!(
                         "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                        "".yellow(),
+                        cli_output::ICON_WARN.yellow(),
                         pkg.name
                     );
                     eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
-                    println!("  {} Added crates.io dependency: {}", "".cyan(), pkg.name);
+                    println!("  {} Added crates.io dependency: {}", cli_output::ICON_INFO.cyan(), pkg.name);
                 }
             }
 
@@ -330,7 +331,7 @@ path = "{}"
             fs::write(&cargo_toml_path, cargo_toml)?;
             println!(
                 "  {} Generated Cargo.toml (no source copying needed)",
-                "".green()
+                cli_output::ICON_SUCCESS.green()
             );
 
             // Run cargo build in .horus directory
@@ -397,13 +398,13 @@ pub(super) fn execute_from_cargo_toml(
         super::ensure_horus_directory()?;
 
         // Parse Cargo.toml for HORUS dependencies
-        println!("{} Scanning Cargo.toml dependencies...", "".cyan());
+        println!("{} Scanning Cargo.toml dependencies...", cli_output::ICON_INFO.cyan());
         let horus_deps = deps::parse_cargo_dependencies(CARGO_TOML)?;
 
         if !horus_deps.is_empty() {
             println!(
                 "{} Found {} HORUS dependencies",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 horus_deps.len()
             );
             install::resolve_dependencies(horus_deps)?;
@@ -443,7 +444,7 @@ pub(super) fn execute_from_cargo_toml(
         }
 
         // Run the binary with environment
-        println!("{} Executing Cargo project...\n", "".cyan());
+        println!("{} Executing Cargo project...\n", cli_output::ICON_INFO.cyan());
         let mut cmd = Command::new(binary);
         cmd.args(args);
         let status = cmd.status()?;
@@ -834,7 +835,7 @@ pub(super) fn execute_with_scheduler(
     match language.as_str() {
         "rust" => {
             // Use Cargo-based compilation (same as horus.yaml path)
-            println!("{} Setting up Cargo workspace...", "".cyan());
+            println!("{} Setting up Cargo workspace...", cli_output::ICON_INFO.cyan());
 
             // Parse horus.yaml to get dependencies
             let (horus_deps, cargo_packages, path_deps, git_deps) =
@@ -851,7 +852,7 @@ pub(super) fn execute_with_scheduler(
             let horus_source = find_horus_source_dir()?;
             println!(
                 "  {} Using HORUS source: {}",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 horus_source.display()
             );
 
@@ -885,7 +886,7 @@ path = "{}"
             if !auto_features.is_empty() {
                 eprintln!(
                     "  {} Auto-detected hardware nodes (features: {})",
-                    "".cyan(),
+                    cli_output::ICON_INFO.cyan(),
                     auto_features.join(", ").yellow()
                 );
 
@@ -932,7 +933,7 @@ path = "{}"
                         ));
                         println!(
                             "  {} Added dependency: {} -> {} (auto-features: {})",
-                            "".cyan(),
+                            cli_output::ICON_INFO.cyan(),
                             dep,
                             dep_path.display(),
                             auto_features.join(", ").yellow()
@@ -945,7 +946,7 @@ path = "{}"
                         ));
                         println!(
                             "  {} Added dependency: {} -> {}",
-                            "".cyan(),
+                            cli_output::ICON_INFO.cyan(),
                             dep,
                             dep_path.display()
                         );
@@ -953,7 +954,7 @@ path = "{}"
                 } else {
                     eprintln!(
                         "  {} Warning: dependency {} not found at {}",
-                        "".yellow(),
+                        cli_output::ICON_WARN.yellow(),
                         dep,
                         dep_path.display()
                     );
@@ -987,13 +988,13 @@ path = "{}"
                         ));
                         eprintln!(
                             "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                            "".yellow(),
+                            cli_output::ICON_WARN.yellow(),
                             pkg.name
                         );
                     }
                     println!(
                         "  {} Added crates.io dependency: {} (features: {})",
-                        "".cyan(),
+                        cli_output::ICON_INFO.cyan(),
                         pkg.name,
                         pkg.features.join(", ")
                     );
@@ -1001,7 +1002,7 @@ path = "{}"
                     cargo_toml.push_str(&format!("{} = \"{}\"\n", pkg.name, version));
                     println!(
                         "  {} Added crates.io dependency: {}@{}",
-                        "".cyan(),
+                        cli_output::ICON_INFO.cyan(),
                         pkg.name,
                         version
                     );
@@ -1009,11 +1010,11 @@ path = "{}"
                     cargo_toml.push_str(&format!("{} = \"*\"\n", pkg.name));
                     eprintln!(
                         "  {} Warning: Using wildcard version for '{}' - specify a version for reproducibility",
-                        "".yellow(),
+                        cli_output::ICON_WARN.yellow(),
                         pkg.name
                     );
                     eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
-                    println!("  {} Added crates.io dependency: {}", "".cyan(), pkg.name);
+                    println!("  {} Added crates.io dependency: {}", cli_output::ICON_INFO.cyan(), pkg.name);
                 }
             }
 
@@ -1080,11 +1081,11 @@ path = "{}"
             }
 
             fs::write(&cargo_toml_path, cargo_toml)?;
-            println!("  {} Generated Cargo.toml", "".green());
+            println!("  {} Generated Cargo.toml", cli_output::ICON_SUCCESS.green());
 
             // Run cargo clean if requested
             if clean {
-                println!("{} Cleaning build artifacts...", "".cyan());
+                println!("{} Cleaning build artifacts...", cli_output::ICON_INFO.cyan());
                 let mut clean_cmd = Command::new("cargo");
                 clean_cmd.arg("clean");
                 clean_cmd.current_dir(".horus");
@@ -1095,7 +1096,7 @@ path = "{}"
             }
 
             // Run cargo build in .horus directory
-            println!("{} Building with Cargo...", "".cyan());
+            println!("{} Building with Cargo...", cli_output::ICON_INFO.cyan());
             let mut cmd = Command::new("cargo");
             cmd.arg("build");
             cmd.current_dir(".horus");
@@ -1128,7 +1129,7 @@ path = "{}"
             };
 
             // Execute the binary
-            println!("{} Executing...\n", "".cyan());
+            println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
             let mut cmd = Command::new(binary_path);
             cmd.args(args);
 
@@ -1180,7 +1181,7 @@ pub(super) fn clean_build_cache() -> Result<()> {
             let entry = entry?;
             fs::remove_file(entry.path()).ok();
         }
-        println!("  {} Cleaned .horus/cache/", "".green());
+        println!("  {} Cleaned .horus/cache/", cli_output::ICON_SUCCESS.green());
     }
 
     // Clean .horus/bin directory
@@ -1190,21 +1191,21 @@ pub(super) fn clean_build_cache() -> Result<()> {
             let entry = entry?;
             fs::remove_file(entry.path()).ok();
         }
-        println!("  {} Cleaned .horus/bin/", "".green());
+        println!("  {} Cleaned .horus/bin/", cli_output::ICON_SUCCESS.green());
     }
 
     // Clean Rust target directory if exists
     let target_dir = PathBuf::from("target");
     if target_dir.exists() {
         fs::remove_dir_all(&target_dir)?;
-        println!("  {} Cleaned target/", "".green());
+        println!("  {} Cleaned target/", cli_output::ICON_SUCCESS.green());
     }
 
     // Clean Python __pycache__ in current directory
     let pycache = PathBuf::from("__pycache__");
     if pycache.exists() {
         fs::remove_dir_all(&pycache)?;
-        println!("  {} Cleaned __pycache__/", "".green());
+        println!("  {} Cleaned __pycache__/", cli_output::ICON_SUCCESS.green());
     }
 
     Ok(())

@@ -6,6 +6,7 @@ use crate::cargo_utils::detect_system_cargo_binary;
 use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::version;
 use anyhow::{anyhow, bail, Context, Result};
+use crate::cli_output;
 use colored::*;
 use std::collections::HashSet;
 use std::fs;
@@ -24,7 +25,7 @@ pub(crate) fn clone_git_dependency(git_pkg: &GitPackage) -> Result<(String, Path
     if cache_path.exists() && cache_path.join(CARGO_TOML).exists() {
         println!(
             "  {} Git dependency '{}' cached at: {}",
-            "✓".green(),
+            cli_output::ICON_SUCCESS.green(),
             git_pkg.name,
             cache_path.display()
         );
@@ -97,7 +98,7 @@ pub(crate) fn clone_git_dependency(git_pkg: &GitPackage) -> Result<(String, Path
         ));
     }
 
-    println!("  {} Cloned git dependency: {}", "✓".green(), git_pkg.name);
+    println!("  {} Cloned git dependency: {}", cli_output::ICON_SUCCESS.green(), git_pkg.name);
 
     Ok((git_pkg.name.clone(), cache_path))
 }
@@ -112,7 +113,7 @@ pub(crate) fn resolve_git_dependencies(git_deps: &[GitPackage]) -> Result<Vec<(S
             Err(e) => {
                 eprintln!(
                     "  {} Failed to clone git dependency '{}': {}",
-                    "✗".red(),
+                    cli_output::ICON_ERROR.red(),
                     git_pkg.name,
                     e
                 );
@@ -195,13 +196,13 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
 
         // If already symlinked, skip
         if local_link.exists() || local_link.read_link().is_ok() {
-            println!("  {} {} (already linked)", "".green(), pkg.name);
+            println!("  {} {} (already linked)", cli_output::ICON_SUCCESS.green(), pkg.name);
             continue;
         }
 
         // If not cached, install to global cache
         if !pkg_cache_dir.exists() {
-            println!("  {} Installing {} to global cache...", "".cyan(), pkg.name);
+            println!("  {} Installing {} to global cache...", cli_output::ICON_INFO.cyan(), pkg.name);
 
             fs::create_dir_all(&pkg_cache_dir)?;
 
@@ -232,7 +233,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
             let metadata_path = pkg_cache_dir.join("metadata.json");
             fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
-            println!("  {} Cached {}", "".green(), pkg.name);
+            println!("  {} Cached {}", cli_output::ICON_SUCCESS.green(), pkg.name);
         } else {
             println!("  {} {} -> global cache", "↗".cyan(), pkg.name);
         }
@@ -240,7 +241,7 @@ pub(crate) fn install_pip_packages(packages: Vec<PipPackage>) -> Result<()> {
         // Symlink from local packages to global cache
         symlink(&pkg_cache_dir, &local_link)
             .context(format!("Failed to symlink {} from global cache", pkg.name))?;
-        println!("  {} Linked {}", "".green(), pkg.name);
+        println!("  {} Linked {}", cli_output::ICON_SUCCESS.green(), pkg.name);
     }
 
     Ok(())
@@ -303,13 +304,13 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
 
         // If already linked, skip
         if local_link.exists() || local_link.read_link().is_ok() {
-            println!("  {} {} (already linked)", "".green(), pkg.name);
+            println!("  {} {} (already linked)", cli_output::ICON_SUCCESS.green(), pkg.name);
             continue;
         }
 
         // If not cached, install to global cache
         if !pkg_cache_dir.exists() {
-            println!("  {} Installing {} to global cache...", "".cyan(), pkg.name);
+            println!("  {} Installing {} to global cache...", cli_output::ICON_INFO.cyan(), pkg.name);
 
             fs::create_dir_all(&pkg_cache_dir)?;
 
@@ -341,7 +342,7 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
             let metadata_path = pkg_cache_dir.join("metadata.json");
             fs::write(&metadata_path, serde_json::to_string_pretty(&metadata)?)?;
 
-            println!("  {} Cached {}", "".green(), pkg.name);
+            println!("  {} Cached {}", cli_output::ICON_SUCCESS.green(), pkg.name);
         } else {
             println!("  {} {} -> global cache", "↗".cyan(), pkg.name);
         }
@@ -351,7 +352,7 @@ pub(crate) fn install_cargo_packages(packages: Vec<CargoPackage>) -> Result<()> 
         if cached_bin.exists() {
             symlink(&cached_bin, &local_link)
                 .context(format!("Failed to symlink {} from global cache", pkg.name))?;
-            println!("  {} Linked {}", "".green(), pkg.name);
+            println!("  {} Linked {}", cli_output::ICON_SUCCESS.green(), pkg.name);
         } else {
             println!(
                 "  {} Warning: Binary {} not found in cache",
@@ -418,7 +419,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
 
         // Skip if already linked
         if local_link.exists() {
-            println!("  {} {} (already linked)", "".green(), package);
+            println!("  {} {} (already linked)", cli_output::ICON_SUCCESS.green(), package);
             continue;
         }
 
@@ -440,7 +441,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
 
                     // Check if symlink already exists
                     if horus_link.exists() {
-                        println!("  {} {} (already linked)", "".green(), package);
+                        println!("  {} {} (already linked)", cli_output::ICON_SUCCESS.green(), package);
                         continue;
                     }
 
@@ -493,7 +494,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
     if !missing_packages.is_empty() {
         println!(
             "\n{} Missing {} package(s):",
-            "".yellow(),
+            cli_output::ICON_WARN.yellow(),
             missing_packages.len()
         );
         for pkg in &missing_packages {
@@ -512,7 +513,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
 
         if input.is_empty() || input == "y" || input == "yes" {
             // User wants to install
-            println!("\n{} Installing packages...", "".cyan());
+            println!("\n{} Installing packages...", cli_output::ICON_INFO.cyan());
 
             // Import registry client
             use crate::registry::RegistryClient;
@@ -542,7 +543,7 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
 
                         for package in &missing_packages {
                             if let Some(spec) = spec_map.remove(package) {
-                                print!("  {} Installing {}... ", "".cyan(), package.yellow());
+                                print!("  {} Installing {}... ", cli_output::ICON_INFO.cyan(), package.yellow());
                                 io::stdout().flush()?;
 
                                 match client.install_dependency_spec(
@@ -551,13 +552,13 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                                     base_dir,
                                 ) {
                                     Ok(_) => {
-                                        println!("{}", "".green());
+                                        println!("{}", cli_output::ICON_SUCCESS.green());
                                     }
                                     Err(e) => {
-                                        println!("{}", "".red());
+                                        println!("{}", cli_output::ICON_ERROR.red());
                                         eprintln!(
                                             "    {} Failed to install {}: {}",
-                                            "".red(),
+                                            cli_output::ICON_ERROR.red(),
                                             package,
                                             e
                                         );
@@ -568,14 +569,14 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                                 // Fallback to registry install if spec not found
                                 print!(
                                     "  {} Installing {} (from registry)... ",
-                                    "".cyan(),
+                                    cli_output::ICON_INFO.cyan(),
                                     package.yellow()
                                 );
                                 io::stdout().flush()?;
                                 match client.install(package, None) {
-                                    Ok(_) => println!("{}", "".green()),
+                                    Ok(_) => println!("{}", cli_output::ICON_SUCCESS.green()),
                                     Err(e) => {
-                                        println!("{}", "".red());
+                                        println!("{}", cli_output::ICON_ERROR.red());
                                         bail!("Failed to install {}: {}", package, e);
                                     }
                                 }
@@ -585,18 +586,18 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
                     Err(_) => {
                         // Fallback to old parser
                         for package in &missing_packages {
-                            print!("  {} Installing {}... ", "".cyan(), package.yellow());
+                            print!("  {} Installing {}... ", cli_output::ICON_INFO.cyan(), package.yellow());
                             io::stdout().flush()?;
 
                             match client.install(package, None) {
                                 Ok(_) => {
-                                    println!("{}", "".green());
+                                    println!("{}", cli_output::ICON_SUCCESS.green());
                                 }
                                 Err(e) => {
-                                    println!("{}", "".red());
+                                    println!("{}", cli_output::ICON_ERROR.red());
                                     eprintln!(
                                         "    {} Failed to install {}: {}",
-                                        "".red(),
+                                        cli_output::ICON_ERROR.red(),
                                         package,
                                         e
                                     );
@@ -609,28 +610,28 @@ pub(crate) fn resolve_horus_packages(dependencies: HashSet<String>) -> Result<()
             } else {
                 // No horus.yaml, use old behavior
                 for package in &missing_packages {
-                    print!("  {} Installing {}... ", "".cyan(), package.yellow());
+                    print!("  {} Installing {}... ", cli_output::ICON_INFO.cyan(), package.yellow());
                     io::stdout().flush()?;
 
                     match client.install(package, None) {
                         Ok(_) => {
-                            println!("{}", "".green());
+                            println!("{}", cli_output::ICON_SUCCESS.green());
                         }
                         Err(e) => {
-                            println!("{}", "".red());
-                            eprintln!("    {} Failed to install {}: {}", "".red(), package, e);
+                            println!("{}", cli_output::ICON_ERROR.red());
+                            eprintln!("    {} Failed to install {}: {}", cli_output::ICON_ERROR.red(), package, e);
                             bail!("Failed to install required dependency: {}", package);
                         }
                     }
                 }
             }
 
-            println!("\n{} All dependencies installed successfully!", "".green());
+            println!("\n{} All dependencies installed successfully!", cli_output::ICON_SUCCESS.green());
         } else {
             // User declined
             println!(
                 "\n{} Installation cancelled. Cannot proceed without dependencies.",
-                "".red()
+                cli_output::ICON_ERROR.red()
             );
             bail!(
                 "Missing required dependencies: {}",
@@ -734,7 +735,7 @@ pub(crate) fn prompt_system_cargo_choice_run(
         system_version.cyan()
     );
     println!("\nWhat would you like to do?");
-    println!("  [1] {} Use system binary (create reference)", "".green());
+    println!("  [1] {} Use system binary (create reference)", cli_output::ICON_SUCCESS.green());
     println!(
         "  [2] {} Install to HORUS (isolated environment)",
         "".blue()
@@ -762,7 +763,7 @@ pub(crate) fn create_system_reference_cargo_run(
     package_name: &str,
     system_version: &str,
 ) -> Result<()> {
-    println!("  {} Creating reference to system binary...", "".green());
+    println!("  {} Creating reference to system binary...", cli_output::ICON_SUCCESS.green());
 
     // Find actual system binary location
     let home = dirs::home_dir().ok_or_else(|| anyhow!("could not find home directory"))?;
@@ -808,15 +809,15 @@ pub(crate) fn create_system_reference_cargo_run(
 
     println!(
         "  {} Using system binary at {}",
-        "".green(),
+        cli_output::ICON_SUCCESS.green(),
         cargo_bin.display()
     );
     println!(
         "  {} Reference created: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         metadata_file.display()
     );
-    println!("  {} Binary linked: {}", "".cyan(), bin_link.display());
+    println!("  {} Binary linked: {}", cli_output::ICON_INFO.cyan(), bin_link.display());
 
     Ok(())
 }
@@ -860,7 +861,7 @@ pub(crate) fn prompt_system_package_choice_run(
         system_version.cyan()
     );
     println!("\nWhat would you like to do?");
-    println!("  [1] {} Use system package (create reference)", "".green());
+    println!("  [1] {} Use system package (create reference)", cli_output::ICON_SUCCESS.green());
     println!(
         "  [2] {} Install to HORUS (isolated environment)",
         "".blue()
@@ -1033,7 +1034,7 @@ pub(crate) fn create_system_reference_python_run(
     package_name: &str,
     system_version: &str,
 ) -> Result<()> {
-    println!("  {} Creating reference to system package...", "".green());
+    println!("  {} Creating reference to system package...", cli_output::ICON_SUCCESS.green());
 
     let packages_dir = PathBuf::from(".horus/packages");
     fs::create_dir_all(&packages_dir)?;
@@ -1048,10 +1049,10 @@ pub(crate) fn create_system_reference_python_run(
 
     fs::write(&metadata_file, serde_json::to_string_pretty(&metadata)?)?;
 
-    println!("  {} Using system package", "".green());
+    println!("  {} Using system package", cli_output::ICON_SUCCESS.green());
     println!(
         "  {} Reference created: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         metadata_file.display()
     );
 

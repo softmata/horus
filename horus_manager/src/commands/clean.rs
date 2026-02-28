@@ -2,14 +2,69 @@
 //!
 //! Removes build caches, shared memory, and other temporary files.
 
+use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use std::path::Path;
 
 /// Run the clean command
-pub fn run_clean(shm: bool, all: bool, dry_run: bool) -> HorusResult<()> {
-    println!("{}", "Cleaning HORUS artifacts...".cyan().bold());
+pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult<()> {
+    if json {
+        let mut items = Vec::new();
+        if !shm || all {
+            let target_dir = std::path::Path::new("target");
+            if target_dir.exists() {
+                items.push(serde_json::json!({
+                    "type": "build_cache",
+                    "path": "target/",
+                    "size": get_dir_size(target_dir),
+                    "exists": true,
+                }));
+            }
+        }
+        if shm || all {
+            let shm_base = if cfg!(target_os = "macos") { "/tmp/horus" } else { "/dev/shm/horus" };
+            let shm_path = std::path::Path::new(shm_base);
+            if shm_path.exists() {
+                items.push(serde_json::json!({
+                    "type": "shared_memory",
+                    "path": shm_base,
+                    "size": get_dir_size(shm_path),
+                    "files": count_files(shm_path),
+                    "exists": true,
+                }));
+            }
+        }
+        if all {
+            if let Ok(home) = dirs::home_dir().ok_or(()) {
+                let cache_dir = home.join(".horus").join("cache");
+                if cache_dir.exists() {
+                    items.push(serde_json::json!({
+                        "type": "horus_cache",
+                        "path": "~/.horus/cache/",
+                        "size": get_dir_size(&cache_dir),
+                        "files": count_files(&cache_dir),
+                        "exists": true,
+                    }));
+                }
+            }
+        }
+        let output = serde_json::json!({
+            "dry_run": dry_run,
+            "items": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        if !dry_run {
+            // Actually perform the cleaning
+            if !shm || all { clean_build_cache(false)?; }
+            if shm || all { clean_shared_memory(false)?; }
+            if all { clean_horus_cache(false)?; }
+        }
+        return Ok(());
+    }
+
+    cli_output::header("Cleaning HORUS artifacts...");
     println!();
 
     let mut cleaned_anything = false;
@@ -32,15 +87,12 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool) -> HorusResult<()> {
     println!();
     if cleaned_anything {
         if dry_run {
-            println!(
-                "{} Would clean the above items. Run without --dry-run to apply.",
-                "".yellow()
-            );
+            cli_output::warn("Would clean the above items. Run without --dry-run to apply.");
         } else {
-            println!("{} Clean complete!", "".green());
+            cli_output::success("Clean complete!");
         }
     } else {
-        println!("{} Nothing to clean.", "".dimmed());
+        println!("{} Nothing to clean.", cli_output::ICON_SUCCESS.dimmed());
     }
 
     Ok(())
@@ -56,14 +108,14 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
         if dry_run {
             println!(
                 "  {} Would remove {} ({})",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 "target/".white(),
                 format_size(size)
             );
         } else {
             println!(
                 "  {} Removing {} ({})",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 "target/".white(),
                 format_size(size)
             );
@@ -71,7 +123,7 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No target/ directory found", "".dimmed());
+        println!("  {} No target/ directory found", cli_output::ICON_SUCCESS.dimmed());
     }
 
     Ok(false)
@@ -94,7 +146,7 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
         if dry_run {
             println!(
                 "  {} Would remove {} ({}, {} files)",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 shm_base.white(),
                 format_size(size),
                 file_count
@@ -102,7 +154,7 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
         } else {
             println!(
                 "  {} Removing {} ({}, {} files)",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 shm_base.white(),
                 format_size(size),
                 file_count
@@ -111,7 +163,7 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No shared memory at {}", "".dimmed(), shm_base);
+        println!("  {} No shared memory at {}", cli_output::ICON_SUCCESS.dimmed(), shm_base);
     }
 
     Ok(false)
@@ -131,14 +183,14 @@ fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
         if dry_run {
             println!(
                 "  {} Would remove ~/.horus/cache/ ({}, {} files)",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 format_size(size),
                 file_count
             );
         } else {
             println!(
                 "  {} Removing ~/.horus/cache/ ({}, {} files)",
-                "".cyan(),
+                cli_output::ICON_INFO.cyan(),
                 format_size(size),
                 file_count
             );
@@ -146,7 +198,7 @@ fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No cache at ~/.horus/cache/", "".dimmed());
+        println!("  {} No cache at ~/.horus/cache/", cli_output::ICON_SUCCESS.dimmed());
     }
 
     Ok(false)

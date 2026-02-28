@@ -1,5 +1,6 @@
 //! Env command - freeze, restore, list, and show environments
 
+use crate::cli_output;
 use crate::commands::check::{
     check_system_package_exists, prompt_missing_system_package, MissingSystemChoice,
 };
@@ -11,7 +12,7 @@ use std::path::PathBuf;
 
 /// Freeze the current environment to a file and optionally publish
 pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
-    println!("{} Freezing current environment...", "▶".cyan());
+    println!("{} Freezing current environment...", cli_output::ICON_INFO.cyan());
 
     let client = registry::RegistryClient::new();
     let manifest = client
@@ -75,7 +76,7 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
 
 /// Restore an environment from a file or registry ID
 pub fn run_restore(source: String) -> HorusResult<()> {
-    println!("{} Restoring environment from {}...", "▶".cyan(), source);
+    println!("{} Restoring environment from {}...", cli_output::ICON_INFO.cyan(), source);
 
     let client = registry::RegistryClient::new();
 
@@ -152,7 +153,7 @@ fn restore_packages(
                 if exists {
                     println!(
                         "  {} {} v{} (system package - verified)",
-                        "✓".green(),
+                        cli_output::ICON_SUCCESS.green(),
                         pkg.name,
                         pkg.version
                     );
@@ -160,7 +161,7 @@ fn restore_packages(
                 } else {
                     println!(
                         "\n  {} {} v{} (system package NOT found)",
-                        "[WARNING]".yellow(),
+                        cli_output::ICON_WARN.yellow(),
                         pkg.name,
                         pkg.version
                     );
@@ -168,7 +169,7 @@ fn restore_packages(
                     // Prompt user for what to do
                     match prompt_missing_system_package(&pkg.name)? {
                         MissingSystemChoice::InstallGlobal => {
-                            println!("  {} Installing to HORUS global cache...", "▶".cyan());
+                            println!("  {} Installing to HORUS global cache...", cli_output::ICON_INFO.cyan());
                             client
                                 .install_to_target(
                                     &pkg.name,
@@ -178,20 +179,20 @@ fn restore_packages(
                                 .map_err(|e| HorusError::Config(e.to_string()))?;
                         }
                         MissingSystemChoice::InstallLocal => {
-                            println!("  {} Installing to HORUS local...", "▶".cyan());
+                            println!("  {} Installing to HORUS local...", cli_output::ICON_INFO.cyan());
                             client
                                 .install(&pkg.name, Some(&pkg.version))
                                 .map_err(|e| HorusError::Config(e.to_string()))?;
                         }
                         MissingSystemChoice::Skip => {
-                            println!("  {} Skipped {}", "⊘".yellow(), pkg.name);
+                            println!("  {} Skipped {}", cli_output::ICON_WARN.yellow(), pkg.name);
                             continue;
                         }
                     }
                 }
             }
             registry::PackageSource::Path { path } => {
-                println!("  {} {} (path dependency)", "[WARNING]".yellow(), pkg.name);
+                println!("  {} {} (path dependency)", cli_output::ICON_WARN.yellow(), pkg.name);
                 println!("    Path: {}", path);
                 println!(
                     "    {} Path dependencies are not portable across machines.",
@@ -229,13 +230,35 @@ fn restore_packages(
 }
 
 /// List published environments from the registry
-pub fn run_list() -> HorusResult<()> {
-    println!("{} Fetching published environments...", "▶".cyan());
+pub fn run_list(json: bool) -> HorusResult<()> {
+    if !json {
+        println!("{} Fetching published environments...", cli_output::ICON_INFO.cyan());
+    }
 
     let client = registry::RegistryClient::new();
     let environments = client
         .list_environments()
         .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    if json {
+        let env_list: Vec<_> = environments.iter().map(|env| {
+            serde_json::json!({
+                "id": env.horus_id,
+                "name": env.name,
+                "description": env.description,
+                "packages": env.manifest.packages.len(),
+                "created_at": env.created_at.to_string(),
+                "system": {
+                    "os": env.manifest.system.os,
+                    "arch": env.manifest.system.arch,
+                },
+                "horus_version": env.manifest.horus_version,
+            })
+        }).collect();
+        let output = serde_json::json!({ "environments": env_list });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
 
     if environments.is_empty() {
         println!("\n{}", "No published environments found.".dimmed());
@@ -244,10 +267,10 @@ pub fn run_list() -> HorusResult<()> {
             "Publish one with: horus env freeze --publish".dimmed()
         );
     } else {
-        println!("\n{} Published Environments:\n", "✓".green());
+        println!("\n{} Published Environments:\n", cli_output::ICON_SUCCESS.green());
         for env in &environments {
             let name = env.name.as_deref().unwrap_or("(unnamed)");
-            println!("  {} {}", "•".cyan(), env.horus_id.bold());
+            println!("  {} {}", cli_output::ICON_HINT.cyan(), env.horus_id.bold());
             println!("    Name: {}", name);
             if let Some(desc) = &env.description {
                 println!("    Description: {}", desc.dimmed());
@@ -272,16 +295,53 @@ pub fn run_list() -> HorusResult<()> {
 }
 
 /// Show details of a specific environment
-pub fn run_show(id: String) -> HorusResult<()> {
-    println!("{} Fetching environment {}...", "▶".cyan(), id);
+pub fn run_show(id: String, json: bool) -> HorusResult<()> {
+    if !json {
+        println!("{} Fetching environment {}...", cli_output::ICON_INFO.cyan(), id);
+    }
 
     let client = registry::RegistryClient::new();
     let manifest = client
         .get_environment(&id)
         .map_err(|e| HorusError::Config(e.to_string()))?;
 
+    if json {
+        let pkgs: Vec<_> = manifest.packages.iter().map(|pkg| {
+            let source_str = match &pkg.source {
+                registry::PackageSource::Registry => "registry",
+                registry::PackageSource::PyPI => "pypi",
+                registry::PackageSource::CratesIO => "crates.io",
+                registry::PackageSource::System => "system",
+                registry::PackageSource::Path { .. } => "path",
+            };
+            serde_json::json!({
+                "name": pkg.name,
+                "version": pkg.version,
+                "source": source_str,
+            })
+        }).collect();
+        let output = serde_json::json!({
+            "id": manifest.horus_id,
+            "name": manifest.name,
+            "description": manifest.description,
+            "created_at": manifest.created_at.to_string(),
+            "horus_version": manifest.horus_version,
+            "system": {
+                "os": manifest.system.os,
+                "arch": manifest.system.arch,
+                "python_version": manifest.system.python_version,
+                "rust_version": manifest.system.rust_version,
+                "gcc_version": manifest.system.gcc_version,
+                "cuda_version": manifest.system.cuda_version,
+            },
+            "packages": pkgs,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
     // Display environment details
-    println!("\n{} Environment Details\n", "✓".green());
+    println!("\n{} Environment Details\n", cli_output::ICON_SUCCESS.green());
     println!("  ID:          {}", manifest.horus_id.bold());
     println!(
         "  Name:        {}",
@@ -297,7 +357,7 @@ pub fn run_show(id: String) -> HorusResult<()> {
     println!("  HORUS:       v{}", manifest.horus_version);
 
     // System info
-    println!("\n{} System\n", "▸".cyan());
+    println!("\n{} System\n", cli_output::ICON_INFO.cyan());
     println!("  OS:          {}", manifest.system.os);
     println!("  Arch:        {}", manifest.system.arch);
     if let Some(py) = &manifest.system.python_version {
@@ -314,7 +374,7 @@ pub fn run_show(id: String) -> HorusResult<()> {
     }
 
     // Packages
-    println!("\n{} Packages ({})\n", "▸".cyan(), manifest.packages.len());
+    println!("\n{} Packages ({})\n", cli_output::ICON_INFO.cyan(), manifest.packages.len());
     for pkg in &manifest.packages {
         let source_str = match &pkg.source {
             registry::PackageSource::Registry => "registry".to_string(),
@@ -325,7 +385,7 @@ pub fn run_show(id: String) -> HorusResult<()> {
         };
         println!(
             "  {} {} v{} ({})",
-            "•".cyan(),
+            cli_output::ICON_HINT.cyan(),
             pkg.name.bold(),
             pkg.version,
             source_str.dimmed()

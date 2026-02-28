@@ -2,6 +2,7 @@
 //!
 //! Provides commands for listing, echoing, and publishing to topics.
 
+use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use crate::progress::format_bytes;
 use colored::*;
@@ -138,7 +139,7 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
 
     println!(
         "{} Echoing topic: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         topic.topic_name.white().bold()
     );
     if let Some(ref msg_type) = topic.message_type {
@@ -180,7 +181,7 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     }
 
     println!();
-    println!("{} Received {} message(s)", "".green(), messages_received);
+    println!("{} Received {} message(s)", cli_output::ICON_SUCCESS.green(), messages_received);
 
     Ok(())
 }
@@ -341,7 +342,7 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
 
     println!(
         "{} Measuring rate for: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         topic.topic_name.white().bold()
     );
     println!("  {} Press Ctrl+C to stop", "".dimmed());
@@ -404,7 +405,7 @@ pub fn publish_topic(
     let sleep_duration = rate.map(|r| Duration::from_secs_f64(1.0 / r));
     let publish_count = count.unwrap_or(1);
 
-    println!("{} Publishing to: {}", "".cyan(), name.white().bold());
+    println!("{} Publishing to: {}", cli_output::ICON_INFO.cyan(), name.white().bold());
 
     for i in 0..publish_count {
         // Write message to topic file
@@ -425,7 +426,7 @@ pub fn publish_topic(
     }
 
     println!();
-    println!("{} Published {} message(s)", "".green(), publish_count);
+    println!("{} Published {} message(s)", cli_output::ICON_SUCCESS.green(), publish_count);
 
     Ok(())
 }

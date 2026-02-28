@@ -4,17 +4,18 @@
 
 use anyhow::Result;
 use colored::*;
+use crate::cli_output;
 
 /// Run the init command - initialize a HORUS workspace
 pub fn run_init(workspace_name: Option<String>) -> Result<()> {
-    println!("{}", "Initializing HORUS workspace".cyan().bold());
+    cli_output::header("Initializing HORUS workspace");
     println!();
 
     // Register workspace using existing workspace module
     crate::workspace::register_current_workspace(workspace_name)?;
 
     println!();
-    println!("{}", "Workspace initialized successfully!".green().bold());
+    cli_output::success("Workspace initialized successfully!");
     println!();
     println!("Next steps:");
     println!(

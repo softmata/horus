@@ -17,6 +17,7 @@ pub(crate) use run_python::detect_python_interpreter;
 use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::progress;
 use anyhow::{anyhow, bail, Context, Result};
+use crate::cli_output;
 use colored::*;
 use glob::glob;
 use std::collections::HashSet;
@@ -44,7 +45,7 @@ pub fn execute_run(
 
     // Handle clean build
     if clean {
-        eprintln!("{} Cleaning build cache...", "[CLEAN]".cyan());
+        eprintln!("{} Cleaning build cache...", cli_output::ICON_INFO.cyan());
         run_rust::clean_build_cache()?;
     }
 
@@ -62,7 +63,7 @@ pub fn execute_run(
     let mode = if release { "release" } else { "debug" };
     eprintln!(
         "{} Starting HORUS runtime in {} mode...",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         mode.yellow()
     );
 
@@ -107,7 +108,7 @@ fn execute_single_file(
 
     eprintln!(
         "{} Detected: {} ({})",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         file_path.display().to_string().green(),
         language.yellow()
     );
@@ -124,7 +125,7 @@ fn execute_single_file(
 
     // Scan imports and resolve dependencies
     log::info!("Scanning imports for {}", file_path.display());
-    eprintln!("{} Scanning imports...", "".cyan());
+    eprintln!("{} Scanning imports...", cli_output::ICON_INFO.cyan());
     let dependencies = deps::scan_imports(&file_path, &language, &ignore)?;
 
     // Check hardware requirements
@@ -135,7 +136,7 @@ fn execute_single_file(
 
     if !dependencies.is_empty() {
         log::debug!("Found {} dependencies", dependencies.len());
-        eprintln!("{} Found {} dependencies", "".cyan(), dependencies.len());
+        eprintln!("{} Found {} dependencies", cli_output::ICON_INFO.cyan(), dependencies.len());
 
         // For Rust, filter out core HORUS crates - they're handled as path dependencies
         // and are NOT in the package registry. Including them causes install loops.
@@ -165,7 +166,7 @@ fn execute_single_file(
     setup_environment()?;
 
     // Execute
-    eprintln!("{} Executing...\n", "".cyan());
+    eprintln!("{} Executing...\n", cli_output::ICON_INFO.cyan());
     run_rust::execute_with_scheduler(file_path, language, args, release, clean)?;
 
     Ok(())
@@ -179,7 +180,7 @@ fn execute_directory(
 ) -> Result<()> {
     println!(
         "{} Executing from directory: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         dir_path.display().to_string().green()
     );
 
@@ -218,7 +219,7 @@ fn execute_from_manifest(
 ) -> Result<()> {
     println!(
         "{} Executing from manifest: {}",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         manifest_path.display().to_string().green()
     );
 
@@ -266,7 +267,7 @@ fn execute_multiple_files(
 
     println!(
         "{} Executing {} files concurrently:",
-        "".cyan(),
+        cli_output::ICON_INFO.cyan(),
         file_paths.len()
     );
 
@@ -281,7 +282,7 @@ fn execute_multiple_files(
     }
 
     // Phase 1: Build all files (batch Rust files for performance)
-    println!("\n{} Phase 1: Building all files...", "".cyan());
+    println!("\n{} Phase 1: Building all files...", cli_output::ICON_INFO.cyan());
     let mut executables = Vec::new();
 
     // Group files by language for optimized building
@@ -330,7 +331,7 @@ fn execute_multiple_files(
     );
 
     // Phase 2: Execute all binaries concurrently
-    println!("{} Phase 2: Starting all processes...", "".cyan());
+    println!("{} Phase 2: Starting all processes...", cli_output::ICON_INFO.cyan());
 
     let running = Arc::new(AtomicBool::new(true));
     let children: Arc<Mutex<Vec<(String, std::process::Child)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -339,13 +340,13 @@ fn execute_multiple_files(
     let r = running.clone();
     let c = children.clone();
     ctrlc::set_handler(move || {
-        println!("\n{} Shutting down all processes...", "".yellow());
+        println!("\n{} Shutting down all processes...", cli_output::ICON_WARN.yellow());
         r.store(false, Ordering::SeqCst);
 
         // Kill all child processes
         if let Ok(mut children_lock) = c.lock() {
             for (name, child) in children_lock.iter_mut() {
-                println!("  {} Terminating [{}]...", "".yellow(), name);
+                println!("  {} Terminating [{}]...", cli_output::ICON_WARN.yellow(), name);
                 let _ = child.kill();
             }
         }
@@ -388,21 +389,21 @@ fn execute_multiple_files(
                     handles.push(handle);
                 }
 
-                println!("  {} Started [{}]", "".green(), node_name.color(color));
+                println!("  {} Started [{}]", cli_output::ICON_SUCCESS.green(), node_name.color(color));
                 children
                     .lock()
                     .expect("children lock poisoned")
                     .push((node_name, child));
             }
             Err(e) => {
-                eprintln!("  {} Failed to start [{}]: {}", "".red(), node_name, e);
+                eprintln!("  {} Failed to start [{}]: {}", cli_output::ICON_ERROR.red(), node_name, e);
             }
         }
     }
 
     println!(
         "\n{} All processes running. Press Ctrl+C to stop.\n",
-        "".green()
+        cli_output::ICON_SUCCESS.green()
     );
 
     // Wait for all processes to complete (concurrent, checks running flag)
@@ -418,7 +419,7 @@ fn execute_multiple_files(
                     if !status.success() {
                         eprintln!(
                             "\n{} Process [{}] exited with code: {}",
-                            "".yellow(),
+                            cli_output::ICON_WARN.yellow(),
                             name,
                             status.code().unwrap_or(-1)
                         );
@@ -431,7 +432,7 @@ fn execute_multiple_files(
                     true // Keep in list
                 }
                 Err(e) => {
-                    eprintln!("\n{} Error checking [{}]: {}", "".red(), name, e);
+                    eprintln!("\n{} Error checking [{}]: {}", cli_output::ICON_ERROR.red(), name, e);
                     false // Remove from list
                 }
             }
@@ -455,9 +456,9 @@ fn execute_multiple_files(
     }
 
     if !running.load(Ordering::SeqCst) {
-        println!("\n{} All processes stopped.", "".green());
+        println!("\n{} All processes stopped.", cli_output::ICON_SUCCESS.green());
     } else {
-        println!("\n{} All processes completed.", "".green());
+        println!("\n{} All processes completed.", cli_output::ICON_SUCCESS.green());
     }
 
     Ok(())
@@ -602,7 +603,7 @@ fn ensure_horus_directory() -> Result<()> {
 
     // Create .horus/ if it doesn't exist
     if !horus_dir.exists() {
-        println!("{} Creating .horus/ environment...", "".cyan());
+        println!("{} Creating .horus/ environment...", cli_output::ICON_INFO.cyan());
         fs::create_dir_all(&horus_dir)?;
     }
 

@@ -1,4 +1,4 @@
-use crate::version;
+use crate::{cli_output, version};
 use anyhow::{Context, Result};
 use colored::*;
 use std::fs;
@@ -14,11 +14,7 @@ pub fn create_new_project(
     // Check version compatibility before creating project
     version::check_and_prompt_update()?;
 
-    println!(
-        "{} Creating new HORUS project '{}'",
-        "[*]".cyan(),
-        name.green().bold()
-    );
+    cli_output::info(&format!("Creating new HORUS project '{}'", name.green().bold()));
 
     // Determine project path
     let project_path = if let Some(p) = path {
@@ -80,12 +76,13 @@ pub fn create_new_project(
     if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
         if let Ok(canonical_path) = project_path.canonicalize() {
             if registry.add(name.clone(), canonical_path).is_ok() {
-                println!("  {} Registered workspace in registry", "✓".green());
+                println!("  {} Registered workspace in registry", cli_output::ICON_SUCCESS.green());
             }
         }
     }
 
-    println!("\n{}", "✓ Project created successfully!".green().bold());
+    println!();
+    cli_output::success("Project created successfully!");
     println!("\nTo get started:");
     println!("  {} {}", "cd".cyan(), name);
     println!("  {} (auto-installs dependencies)", "horus run".cyan());

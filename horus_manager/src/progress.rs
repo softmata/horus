@@ -24,10 +24,10 @@ pub fn is_quiet() -> bool {
 pub const BRAILLE_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Success indicator
-pub const STATUS_SUCCESS: &str = "[+]";
+pub const STATUS_SUCCESS: &str = crate::cli_output::ICON_SUCCESS;
 
 /// Error indicator
-pub const STATUS_ERROR: &str = "[-]";
+pub const STATUS_ERROR: &str = crate::cli_output::ICON_ERROR;
 
 /// Create a spinner for indefinite operations
 pub fn spinner(message: &str) -> ProgressBar {

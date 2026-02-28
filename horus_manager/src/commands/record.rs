@@ -1,5 +1,6 @@
 //! Record command - manage, replay, diff, export, and inject recording sessions
 
+use crate::cli_output;
 use colored::*;
 use horus_core::error::HorusResult;
 use horus_core::horus_internal;
@@ -7,19 +8,38 @@ use horus_core::scheduling::{diff_recordings, Recording, RecordingManager};
 use std::path::PathBuf;
 
 /// List recording sessions
-pub fn run_list(long: bool) -> HorusResult<()> {
+pub fn run_list(long: bool, json: bool) -> HorusResult<()> {
     let manager = RecordingManager::new();
     let sessions = manager
         .list_sessions()
         .map_err(|e| horus_internal!("Failed to list recordings: {}", e))?;
 
+    if json {
+        let session_list: Vec<_> = sessions.iter().map(|session| {
+            let recordings = manager.session_recordings(session).unwrap_or_default();
+            let total_size: u64 = recordings
+                .iter()
+                .filter_map(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .sum();
+            serde_json::json!({
+                "name": session,
+                "files": recordings.len(),
+                "size_bytes": total_size,
+            })
+        }).collect();
+        let output = serde_json::json!({ "sessions": session_list });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        return Ok(());
+    }
+
     if sessions.is_empty() {
-        println!("{} No recording sessions found.", "[INFO]".cyan());
+        println!("{} No recording sessions found.", cli_output::ICON_INFO.cyan());
         println!("       Use 'horus run --record <session>' to create one.");
     } else {
         println!(
             "{} Found {} recording session(s):\n",
-            "✓".green(),
+            cli_output::ICON_SUCCESS.green(),
             sessions.len()
         );
 
@@ -35,13 +55,13 @@ pub fn run_list(long: bool) -> HorusResult<()> {
 
                 println!(
                     "  {} {} ({} files, {:.1} MB)",
-                    "▸".green(),
+                    cli_output::ICON_INFO.green(),
                     session.yellow(),
                     recordings.len(),
                     total_size as f64 / 1_048_576.0
                 );
             } else {
-                println!("  {} {}", "▸".green(), session.yellow());
+                println!("  {} {}", cli_output::ICON_INFO.green(), session.yellow());
             }
         }
     }
@@ -49,18 +69,43 @@ pub fn run_list(long: bool) -> HorusResult<()> {
 }
 
 /// Show info about a recording session
-pub fn run_info(session: String) -> HorusResult<()> {
+pub fn run_info(session: String, json: bool) -> HorusResult<()> {
     let manager = RecordingManager::new();
     let recordings = manager
         .session_recordings(&session)
         .map_err(|e| horus_internal!("Failed to get session info: {}", e))?;
 
-    if recordings.is_empty() {
-        println!("{} Session '{}' not found.", "[WARN]".yellow(), session);
+    if json {
+        let files: Vec<_> = recordings.iter().map(|path| {
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let (first_tick, last_tick) = if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path) {
+                (Some(recording.first_tick), Some(recording.last_tick))
+            } else {
+                (None, None)
+            };
+            serde_json::json!({
+                "filename": filename,
+                "size_bytes": size,
+                "first_tick": first_tick,
+                "last_tick": last_tick,
+            })
+        }).collect();
+        let output = serde_json::json!({
+            "session": session,
+            "found": !recordings.is_empty(),
+            "files": files,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
         return Ok(());
     }
 
-    println!("{} Session: {}\n", "✓".green(), session.yellow().bold());
+    if recordings.is_empty() {
+        println!("{} Session '{}' not found.", cli_output::ICON_WARN.yellow(), session);
+        return Ok(());
+    }
+
+    println!("{} Session: {}\n", cli_output::ICON_SUCCESS.green(), session.yellow().bold());
 
     for path in recordings {
         let filename = path
@@ -78,7 +123,7 @@ pub fn run_info(session: String) -> HorusResult<()> {
 
         println!(
             "  {} {} ({:.1} KB, {})",
-            "▸".cyan(),
+            cli_output::ICON_INFO.cyan(),
             filename,
             size as f64 / 1024.0,
             tick_info
@@ -94,7 +139,7 @@ pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
     if !force {
         println!(
             "{} Delete session '{}'? (y/N)",
-            "[CONFIRM]".yellow(),
+            cli_output::ICON_WARN.yellow(),
             session
         );
         let mut input = String::new();
@@ -109,7 +154,7 @@ pub fn run_delete(session: String, force: bool) -> HorusResult<()> {
         .delete_session(&session)
         .map_err(|e| horus_internal!("Failed to delete session: {}", e))?;
 
-    println!("{} Deleted session '{}'", "✓".green(), session);
+    println!("{} Deleted session '{}'", cli_output::ICON_SUCCESS.green(), session);
     Ok(())
 }
 
@@ -159,7 +204,7 @@ pub fn run_replay(
 
     println!(
         "{} Loading recording from: {}",
-        "[REPLAY]".cyan(),
+        cli_output::ICON_INFO.cyan(),
         scheduler_path.display()
     );
 
@@ -174,13 +219,13 @@ pub fn run_replay(
     // Apply stop tick if specified
     if let Some(stop) = stop_tick {
         scheduler = scheduler.stop_at_tick(stop);
-        println!("{} Will stop at tick {}", "[REPLAY]".cyan(), stop);
+        println!("{} Will stop at tick {}", cli_output::ICON_INFO.cyan(), stop);
     }
 
     // Apply speed multiplier
     if (speed - 1.0).abs() > f64::EPSILON {
         scheduler = scheduler.with_replay_speed(speed);
-        println!("{} Playback speed: {}x", "[REPLAY]".cyan(), speed);
+        println!("{} Playback speed: {}x", cli_output::ICON_INFO.cyan(), speed);
     }
 
     // Apply overrides
@@ -203,12 +248,12 @@ pub fn run_replay(
         scheduler = scheduler.with_override(node, output, value_bytes);
     }
 
-    println!("{} Starting replay...\n", "[REPLAY]".green());
+    println!("{} Starting replay...\n", cli_output::ICON_INFO.green());
 
     // Run the replay
     scheduler.run()?;
 
-    println!("\n{} Replay completed", "[DONE]".green());
+    println!("\n{} Replay completed", cli_output::ICON_SUCCESS.green());
     Ok(())
 }
 
@@ -230,7 +275,7 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
 
     println!(
         "{} Comparing '{}' vs '{}'...\n",
-        "[DIFF]".cyan(),
+        cli_output::ICON_INFO.cyan(),
         session1,
         session2
     );
@@ -276,7 +321,7 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
                     if !diffs.is_empty() {
                         println!(
                             "  {} Node '{}': {} differences",
-                            "⚠".yellow(),
+                            cli_output::ICON_WARN.yellow(),
                             name1,
                             diffs.len()
                         );
@@ -312,7 +357,7 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
                             total_diffs += 1;
                         }
                     } else {
-                        println!("  {} Node '{}': identical", "✓".green(), name1);
+                        println!("  {} Node '{}': identical", cli_output::ICON_SUCCESS.green(), name1);
                     }
                 }
             }
@@ -320,9 +365,9 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
     }
 
     if total_diffs == 0 {
-        println!("\n{} No differences found!", "✓".green());
+        println!("\n{} No differences found!", cli_output::ICON_SUCCESS.green());
     } else {
-        println!("\n{} Total: {} difference(s)", "⚠".yellow(), total_diffs);
+        println!("\n{} Total: {} difference(s)", cli_output::ICON_WARN.yellow(), total_diffs);
     }
     Ok(())
 }
@@ -333,7 +378,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
 
     println!(
         "{} Exporting session '{}' to {:?} (format: {})",
-        "[EXPORT]".cyan(),
+        cli_output::ICON_INFO.cyan(),
         session,
         output,
         format
@@ -372,7 +417,7 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
         writeln!(file, "  ]")?;
         writeln!(file, "}}")?;
 
-        println!("{} Exported to {:?}", "✓".green(), output);
+        println!("{} Exported to {:?}", cli_output::ICON_SUCCESS.green(), output);
     } else if format == "csv" {
         use std::io::Write;
         let mut file = std::fs::File::create(&output)
@@ -418,11 +463,11 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
             }
         }
 
-        println!("{} Exported to {:?} (CSV format)", "✓".green(), output);
+        println!("{} Exported to {:?} (CSV format)", cli_output::ICON_SUCCESS.green(), output);
     } else {
         println!(
             "{} Format '{}' not supported. Use 'json' or 'csv'.",
-            "[WARN]".yellow(),
+            cli_output::ICON_WARN.yellow(),
             format
         );
     }
@@ -447,7 +492,7 @@ pub fn run_inject(
 
     println!(
         "{} Injecting recorded nodes from session '{}'",
-        "[INJECT]".cyan(),
+        cli_output::ICON_INFO.cyan(),
         session
     );
 
@@ -485,12 +530,12 @@ pub fn run_inject(
         if should_inject {
             match scheduler.add_replay(path.clone(), 0) {
                 Ok(_) => {
-                    println!("  {} Injected '{}'", "✓".green(), node_name);
+                    println!("  {} Injected '{}'", cli_output::ICON_SUCCESS.green(), node_name);
                     injected_count += 1;
                 }
                 Err(e) => {
                     log::error!("Failed to inject '{}': {}", node_name, e);
-                    eprintln!("  {} Failed to inject '{}': {}", "✗".red(), node_name, e);
+                    eprintln!("  {} Failed to inject '{}': {}", cli_output::ICON_ERROR.red(), node_name, e);
                 }
             }
         }
@@ -515,7 +560,7 @@ pub fn run_inject(
     // Apply speed multiplier
     if (speed - 1.0).abs() > f64::EPSILON {
         scheduler = scheduler.with_replay_speed(speed);
-        println!("{} Playback speed: {}x", "[INJECT]".cyan(), speed);
+        println!("{} Playback speed: {}x", cli_output::ICON_INFO.cyan(), speed);
     }
 
     // If a script is provided, compile and run it with the injected nodes
@@ -529,7 +574,7 @@ pub fn run_inject(
 
         println!(
             "\n{} Compiling script: {}",
-            "[INJECT]".cyan(),
+            cli_output::ICON_INFO.cyan(),
             script_path.display()
         );
 
@@ -549,7 +594,7 @@ pub fn run_inject(
         // Full integration would require modifying the `horus run` command
         println!(
             "\n{} To run a script with injected recordings, use:",
-            "[INFO]".cyan()
+            cli_output::ICON_INFO.cyan()
         );
         let inject_arg = if all {
             "--inject-all".to_string()
@@ -564,12 +609,12 @@ pub fn run_inject(
         );
         println!(
             "\n{} Running injected nodes only for now...\n",
-            "[INJECT]".yellow()
+            cli_output::ICON_WARN.yellow()
         );
     } else {
         println!(
             "\n{} Running {} injected node(s)...\n",
-            "[INJECT]".green(),
+            cli_output::ICON_INFO.green(),
             injected_count
         );
     }
@@ -578,7 +623,7 @@ pub fn run_inject(
     if loop_playback {
         println!(
             "{} Loop mode: Recording will restart when finished",
-            "[INJECT]".cyan()
+            cli_output::ICON_INFO.cyan()
         );
 
         // Run in a loop until interrupted
@@ -588,7 +633,7 @@ pub fn run_inject(
 
             match scheduler.run() {
                 Ok(()) => {
-                    println!("\n{} Recording finished, restarting...\n", "[LOOP]".cyan());
+                    println!("\n{} Recording finished, restarting...\n", cli_output::ICON_INFO.cyan());
 
                     // Recreate scheduler for next iteration
                     scheduler = Scheduler::new().with_name(&format!("Inject({})", session));
@@ -619,7 +664,7 @@ pub fn run_inject(
                 }
                 Err(e) => {
                     // If interrupted (Ctrl+C), exit loop
-                    println!("\n{} Loop interrupted: {}", "[DONE]".yellow(), e);
+                    println!("\n{} Loop interrupted: {}", cli_output::ICON_WARN.yellow(), e);
                     break;
                 }
             }
@@ -627,7 +672,7 @@ pub fn run_inject(
     } else {
         // Single run
         scheduler.run()?;
-        println!("\n{} Injection replay completed", "[DONE]".green());
+        println!("\n{} Injection replay completed", cli_output::ICON_SUCCESS.green());
     }
 
     Ok(())

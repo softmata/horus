@@ -2,6 +2,7 @@
 //!
 //! Handles cross-compilation, file transfer, and remote execution.
 
+use crate::cli_output;
 use crate::config::CARGO_TOML;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
@@ -254,7 +255,7 @@ pub fn run_deploy(
     }
 
     println!();
-    println!("{} Deployment complete!", "".green());
+    println!("{} Deployment complete!", cli_output::ICON_SUCCESS.green());
     println!();
     println!(
         "  {} ssh {}:{} to access your robot",
@@ -324,7 +325,7 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
 
     // Check if cross-compilation target is installed
     if !target.is_empty() {
-        print!("  {} Checking target {}... ", "".cyan(), target);
+        print!("  {} Checking target {}... ", cli_output::ICON_INFO.cyan(), target);
         let check = Command::new("rustup")
             .args(["target", "list", "--installed"])
             .output();
@@ -334,7 +335,7 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
                 let installed = String::from_utf8_lossy(&output.stdout);
                 if !installed.contains(target) {
                     println!("{}", "not installed".yellow());
-                    println!("  {} Installing target...", "".cyan());
+                    println!("  {} Installing target...", cli_output::ICON_INFO.cyan());
 
                     let install = Command::new("rustup")
                         .args(["target", "add", target])
@@ -346,7 +347,7 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
                             target, target
                         )));
                     }
-                    println!("  {} Target installed", "".green());
+                    println!("  {} Target installed", cli_output::ICON_SUCCESS.green());
                 } else {
                     println!("{}", "OK".green());
                 }
@@ -369,7 +370,7 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
         cmd.args(["--target", target]);
     }
 
-    print!("  {} Building", "".cyan());
+    print!("  {} Building", cli_output::ICON_INFO.cyan());
     if !target.is_empty() {
         print!(" for {}", config.arch.display_name());
     }
@@ -386,7 +387,7 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
         return Err(HorusError::Config("Build failed".to_string()));
     }
 
-    println!("  {} Build complete", "".green());
+    println!("  {} Build complete", cli_output::ICON_SUCCESS.green());
     Ok(())
 }
 
@@ -420,7 +421,7 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
     cmd.arg("./");
     cmd.arg(format!("{}:{}/", config.target, config.remote_dir));
 
-    println!("  {} Syncing files...", "".cyan());
+    println!("  {} Syncing files...", cli_output::ICON_INFO.cyan());
 
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
@@ -433,7 +434,7 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
         return Err(HorusError::Config("rsync failed".to_string()));
     }
 
-    println!("  {} Files synced", "".green());
+    println!("  {} Files synced", cli_output::ICON_SUCCESS.green());
     Ok(())
 }
 
@@ -467,8 +468,8 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     cmd.arg(&config.target);
     cmd.arg(&remote_cmd);
 
-    println!("  {} Running: {}", "".cyan(), binary_path);
-    println!("  {} Press Ctrl+C to stop", "".dimmed());
+    println!("  {} Running: {}", cli_output::ICON_INFO.cyan(), binary_path);
+    println!("  {} Press Ctrl+C to stop", cli_output::ICON_HINT.dimmed());
     println!();
 
     cmd.stdout(Stdio::inherit());
@@ -549,7 +550,7 @@ pub fn list_targets() -> HorusResult<()> {
         if yaml.targets.is_empty() {
             println!(
                 "  {} .horus/deploy.yaml exists but has no targets.",
-                "".yellow()
+                cli_output::ICON_WARN.yellow()
             );
         } else {
             // Collect and sort target names for stable output

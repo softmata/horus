@@ -2,6 +2,7 @@
 //!
 //! Provides real-time log viewing from shared memory and log files.
 
+use crate::cli_output;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::memory::shm_base_dir;
@@ -202,7 +203,7 @@ fn view_shm_logs(
         println!("{}", "No log entries found matching filters.".dimmed());
     } else {
         println!();
-        println!("  {} {} entries shown", "".dimmed(), entries.len());
+        println!("  {} {} entries shown", cli_output::ICON_HINT.dimmed(), entries.len());
     }
 
     // Follow mode
@@ -269,7 +270,7 @@ fn view_file_logs(
         println!("{}", "No log entries found matching filters.".dimmed());
     } else {
         println!();
-        println!("  {} {} entries shown", "".dimmed(), entries.len());
+        println!("  {} {} entries shown", cli_output::ICON_HINT.dimmed(), entries.len());
     }
 
     if follow && !log_dirs.is_empty() {
@@ -530,7 +531,7 @@ pub fn clear_logs(all: bool) -> HorusResult<()> {
     if log_path.exists() {
         println!(
             "{} Clearing shared memory logs at {}...",
-            "".cyan(),
+            cli_output::ICON_INFO.cyan(),
             log_path.display()
         );
         fs::remove_dir_all(&log_path).map_err(HorusError::Io)?;
@@ -543,7 +544,7 @@ pub fn clear_logs(all: bool) -> HorusResult<()> {
         let log_dirs = find_log_directories()?;
         for dir in log_dirs {
             if dir.exists() {
-                println!("{} Clearing logs at {}...", "".cyan(), dir.display());
+                println!("{} Clearing logs at {}...", cli_output::ICON_INFO.cyan(), dir.display());
                 if let Ok(entries) = fs::read_dir(&dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
@@ -558,7 +559,7 @@ pub fn clear_logs(all: bool) -> HorusResult<()> {
     }
 
     if cleared {
-        println!("{} Logs cleared.", "".green());
+        println!("{} Logs cleared.", cli_output::ICON_SUCCESS.green());
     } else {
         println!("{}", "No logs found to clear.".dimmed());
     }
