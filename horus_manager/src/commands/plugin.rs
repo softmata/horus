@@ -5,15 +5,67 @@ use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use std::path::PathBuf;
 
-/// Search for plugins by query
-pub fn run_search(query: String) -> HorusResult<()> {
+/// Search for plugins by query with optional category filter
+pub fn run_search_with_category(query: String, category: Option<String>) -> HorusResult<()> {
     use crate::plugins::PluginDiscovery;
 
     let mut discovery = PluginDiscovery::new();
+    add_local_workspace(&mut discovery);
 
-    // Add softmata workspace for local plugins
+    let all = discovery
+        .discover_all()
+        .map_err(|e| HorusError::Config(e.to_string()))?;
+
+    let query_lower = query.to_lowercase();
+    let category_filter = category.as_ref().and_then(|c| parse_category(c));
+
+    let results: Vec<_> = all
+        .into_iter()
+        .filter(|p| {
+            let matches_query = p.name.to_lowercase().contains(&query_lower)
+                || p.description.to_lowercase().contains(&query_lower)
+                || p.features
+                    .iter()
+                    .any(|f| f.to_lowercase().contains(&query_lower));
+            let matches_category = category_filter
+                .as_ref()
+                .map(|cat| p.category == *cat)
+                .unwrap_or(true);
+            matches_query && matches_category
+        })
+        .collect();
+
+    print_search_results(&results, &query, category.as_deref());
+    Ok(())
+}
+
+/// Search for plugins by query (no category filter)
+pub fn run_search(query: String) -> HorusResult<()> {
+    run_search_with_category(query, None)
+}
+
+/// Parse a category string into PluginCategory
+fn parse_category(s: &str) -> Option<crate::plugins::PluginCategory> {
+    use crate::plugins::PluginCategory;
+    match s.to_lowercase().as_str() {
+        "camera" => Some(PluginCategory::Camera),
+        "lidar" => Some(PluginCategory::Lidar),
+        "imu" => Some(PluginCategory::Imu),
+        "motor" => Some(PluginCategory::Motor),
+        "servo" => Some(PluginCategory::Servo),
+        "bus" => Some(PluginCategory::Bus),
+        "gps" => Some(PluginCategory::Gps),
+        "force_torque" | "forcetorque" | "force-torque" => Some(PluginCategory::ForceTorque),
+        "simulation" | "sim" => Some(PluginCategory::Simulation),
+        "cli" => Some(PluginCategory::Cli),
+        "other" => Some(PluginCategory::Other),
+        _ => None,
+    }
+}
+
+/// Add local workspace paths to discovery
+fn add_local_workspace(discovery: &mut crate::plugins::PluginDiscovery) {
     if let Ok(cwd) = std::env::current_dir() {
-        // Check if we're in softmata workspace
         if cwd.join("horus").exists() {
             discovery.add_workspace_path(cwd);
         } else if let Some(parent) = cwd.parent() {
@@ -22,20 +74,39 @@ pub fn run_search(query: String) -> HorusResult<()> {
             }
         }
     }
+}
 
-    let results = discovery
-        .search(&query)
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+/// Print search results
+fn print_search_results(
+    results: &[crate::plugins::AvailablePlugin],
+    query: &str,
+    category: Option<&str>,
+) {
+    let label = if let Some(cat) = category {
+        format!("'{}' in category '{}'", query, cat)
+    } else {
+        format!("'{}'", query)
+    };
 
     if results.is_empty() {
         println!(
             "{}",
-            format!("No plugins found matching '{}'", query).yellow()
+            format!("No plugins found matching {}", label).yellow()
         );
+        if category.is_some() {
+            println!(
+                "{}",
+                "Try without --category or use a different category".dimmed()
+            );
+            println!(
+                "{}",
+                "Categories: camera, lidar, imu, motor, servo, bus, gps, simulation, cli".dimmed()
+            );
+        }
     } else {
         println!(
             "{}",
-            format!("Found {} plugins matching '{}':", results.len(), query)
+            format!("Found {} plugins matching {}:", results.len(), label)
                 .cyan()
                 .bold()
         );
@@ -65,7 +136,6 @@ pub fn run_search(query: String) -> HorusResult<()> {
             println!();
         }
     }
-    Ok(())
 }
 
 /// List all available plugins grouped by category
@@ -198,6 +268,105 @@ pub fn run_info(name: String) -> HorusResult<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// Unified info command — checks both plugin discovery and installed packages
+pub fn run_info_unified(name: String) -> HorusResult<()> {
+    use crate::plugins::PluginDiscovery;
+
+    let mut discovery = PluginDiscovery::new();
+    add_local_workspace(&mut discovery);
+
+    // Try plugin discovery first
+    if let Ok(Some(_)) = discovery.get_plugin(&name) {
+        return run_info(name);
+    }
+
+    // Fall back to registry search for installed packages
+    let client = registry::RegistryClient::new();
+    match client.search(&name, None, None) {
+        Ok(results) => {
+            // Look for exact match
+            if let Some(pkg) = results.iter().find(|p| p.name == name) {
+                println!("{}", pkg.name.cyan().bold());
+                println!("{}", "=".repeat(pkg.name.len()).dimmed());
+                println!();
+                println!("  Version:     {}", pkg.version.white());
+                println!(
+                    "  Description: {}",
+                    pkg.description.as_deref().unwrap_or("No description")
+                );
+                println!("  Source:      {}", "registry".green());
+                println!();
+                println!("  {}", "Installation".yellow());
+                println!("    horus install {}", pkg.name);
+                return Ok(());
+            }
+        }
+        Err(_) => {
+            // Registry unreachable, skip
+        }
+    }
+
+    // Check local installed packages
+    let check_dirs: Vec<std::path::PathBuf> = {
+        let mut dirs = Vec::new();
+        if let Some(root) = workspace::find_workspace_root() {
+            dirs.push(root.join(".horus/packages").join(&name));
+        }
+        if let Ok(cache) = crate::paths::cache_dir() {
+            dirs.push(cache.join(&name));
+            // Also check versioned directories
+            if let Ok(entries) = std::fs::read_dir(&cache) {
+                for entry in entries.flatten() {
+                    let entry_name = entry.file_name().to_string_lossy().to_string();
+                    if entry_name.starts_with(&format!("{}@", name)) {
+                        dirs.push(entry.path());
+                    }
+                }
+            }
+        }
+        dirs
+    };
+
+    for dir in &check_dirs {
+        if dir.exists() {
+            let display_name = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            println!("{}", display_name.cyan().bold());
+            println!("{}", "=".repeat(display_name.len()).dimmed());
+            println!();
+            println!("  Location:  {}", dir.display());
+            println!("  Status:    {}", "installed".green());
+
+            // Try to read horus.yaml or package.json for more info
+            let yaml_path = dir.join("horus.yaml");
+            if yaml_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&yaml_path) {
+                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                        if let Some(desc) = yaml.get("description").and_then(|v| v.as_str()) {
+                            println!("  Description: {}", desc);
+                        }
+                        if let Some(ver) = yaml.get("version").and_then(|v| v.as_str()) {
+                            println!("  Version:     {}", ver.white());
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    // Nothing found
+    println!("{}", format!("'{}' not found", name).red());
+    println!(
+        "{}",
+        "Use 'horus search <query>' to find available packages and plugins".dimmed()
+    );
     Ok(())
 }
 

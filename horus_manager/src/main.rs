@@ -371,10 +371,10 @@ enum Commands {
     Remove {
         /// Package/driver/plugin name to remove
         name: String,
-        /// Remove from global scope
+        /// Remove from global scope (~/.horus/cache/)
         #[arg(short = 'g', long = "global")]
         global: bool,
-        /// Also remove unused dependencies
+        /// Also clean unused packages from cache after removal
         #[arg(long = "purge")]
         purge: bool,
     },
@@ -386,28 +386,25 @@ enum Commands {
         /// Specific version (optional)
         #[arg(long = "ver")]
         ver: Option<String>,
-        /// Install to global scope
+        /// Install to global scope (~/.horus/cache/)
         #[arg(short = 'g', long = "global")]
         global: bool,
         /// Target workspace/project name
         #[arg(short = 't', long = "target")]
         target: Option<String>,
-        /// Install as driver
+        /// Install as driver (adds to horus.yaml drivers section)
         #[arg(long = "driver", conflicts_with = "plugin")]
         driver: bool,
-        /// Install as plugin
+        /// Install as CLI plugin (defaults to global scope)
         #[arg(long = "plugin", conflicts_with = "driver")]
         plugin: bool,
-        /// Skip installing system dependencies
-        #[arg(long = "no-system")]
-        no_system: bool,
     },
 
-    /// List installed packages and plugins
+    /// List installed packages and plugins in your workspace or global cache
     List {
-        /// Search query (optional)
+        /// Filter by name (optional, searches registry marketplace if provided)
         query: Option<String>,
-        /// List global scope packages
+        /// List global scope packages only
         #[arg(short = 'g', long = "global")]
         global: bool,
         /// List all (local + global)
@@ -415,11 +412,11 @@ enum Commands {
         all: bool,
     },
 
-    /// Search for available packages and plugins
+    /// Search available packages and plugins from registry and local workspace
     Search {
         /// Search query (e.g., "camera", "lidar", "motor")
         query: String,
-        /// Filter by category
+        /// Filter by category (camera, lidar, imu, motor, servo, bus, gps, simulation, cli)
         #[arg(short = 'c', long = "category")]
         category: Option<String>,
     },
@@ -1392,7 +1389,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             target,
             driver,
             plugin,
-            no_system: _,
         } => {
             if plugin {
                 commands::plugin::run_install(name, ver, !global)
@@ -1405,7 +1401,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::List { query, global, all } => commands::pkg::run_list(query, global, all),
 
-        Commands::Search { query, category: _ } => commands::plugin::run_search(query),
+        Commands::Search { query, category } => {
+            commands::plugin::run_search_with_category(query, category)
+        }
 
         Commands::Update {
             package,
@@ -1423,7 +1421,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::KeyGen => commands::pkg::run_keygen(),
 
-        Commands::Info { name } => commands::plugin::run_info(name),
+        Commands::Info { name } => commands::plugin::run_info_unified(name),
 
         Commands::Enable { command } => commands::pkg::enable_plugin(&command)
             .map_err(|e| HorusError::Config(e.to_string())),
@@ -1483,9 +1481,25 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Remove {
             name,
-            global: _,
-            purge: _,
-        } => commands::pkg::run_remove_dep(name),
+            global,
+            purge,
+        } => {
+            if global {
+                // Remove from global scope (files + plugin unregistration)
+                commands::plugin::run_remove(name.clone(), true)?;
+                if purge {
+                    commands::cache::run_clean(false)?;
+                }
+                Ok(())
+            } else {
+                // Remove from local horus.yaml + optionally clean cache
+                commands::pkg::run_remove_dep(name)?;
+                if purge {
+                    commands::cache::run_clean(false)?;
+                }
+                Ok(())
+            }
+        }
 
         Commands::Cache { command } => match command {
             CacheCommands::Info => commands::cache::run_info(),
