@@ -184,9 +184,7 @@ pub(crate) mod blackbox {
             _context: &str,
         ) {
         }
-        pub fn read_pod_snapshot<T: crate::communication::PodMessage>(
-            _data: &[u8],
-        ) -> Option<T> {
+        pub fn read_pod_snapshot<T: crate::communication::PodMessage>(_data: &[u8]) -> Option<T> {
             None
         }
         pub fn clear(&mut self) {}
@@ -218,11 +216,11 @@ pub use scheduler::Scheduler;
 
 // Internal re-exports — accessible but hidden from rustdoc.
 #[doc(hidden)]
+pub use crate::core::rt_node::WCETViolation;
+#[doc(hidden)]
 pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]
 pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
-#[doc(hidden)]
-pub use crate::core::rt_node::WCETViolation;
 #[doc(hidden)]
 pub use fault_tolerance::{CircuitState, FailureHandlerStats, FailurePolicy};
 #[doc(hidden)]

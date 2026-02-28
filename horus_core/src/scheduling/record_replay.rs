@@ -431,7 +431,6 @@ impl NodeRecorder {
 
         Ok(path)
     }
-
 }
 
 #[cfg(test)]

@@ -21,8 +21,8 @@
 //!     .done();
 //! ```
 
-use crate::core::{Node, RtNode};
 use super::types::NodeKind;
+use crate::core::{Node, RtNode};
 use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
@@ -270,7 +270,10 @@ impl<'a> NodeBuilder<'a> {
     }
 
     /// Create a new NodeBuilder for an RtNode (called by Scheduler::add_rt).
-    pub(crate) fn new_rt(scheduler: &'a mut super::scheduler::Scheduler, node: Box<dyn RtNode>) -> Self {
+    pub(crate) fn new_rt(
+        scheduler: &'a mut super::scheduler::Scheduler,
+        node: Box<dyn RtNode>,
+    ) -> Self {
         Self {
             scheduler,
             config: NodeRegistration::new_rt(node),

@@ -301,5 +301,4 @@ mod tests {
         let anomalies = bb.anomalies();
         assert_eq!(anomalies.len(), 2);
     }
-
 }

@@ -1827,18 +1827,12 @@ impl Scheduler {
                     if let Some(rt_node) = registered.node.as_rt_mut() {
                         if !rt_node.is_safe_state() {
                             let name = registered.name.clone();
-                            print_line(&format!(
-                                " Entering safe state for RT node '{}'",
-                                name
-                            ));
+                            print_line(&format!(" Entering safe state for RT node '{}'", name));
                             rt_node.enter_safe_state();
                             if let Some(ref mut bb) = self.monitor.blackbox {
                                 bb.record(super::blackbox::BlackBoxEvent::Custom {
                                     category: "safe_state".to_string(),
-                                    message: format!(
-                                        "Node '{}' transitioned to safe state",
-                                        name
-                                    ),
+                                    message: format!("Node '{}' transitioned to safe state", name),
                                 });
                             }
                         }
@@ -2511,10 +2505,7 @@ impl Scheduler {
                 if let Some(rt_node) = self.nodes[i].node.as_rt() {
                     if !rt_node.post_condition() {
                         let name = self.nodes[i].name.as_str();
-                        print_line(&format!(
-                            " Post-condition failed for RT node '{}'",
-                            name
-                        ));
+                        print_line(&format!(" Post-condition failed for RT node '{}'", name));
                         if let Some(ref mut bb) = self.monitor.blackbox {
                             bb.record(super::blackbox::BlackBoxEvent::Custom {
                                 category: "rt_condition".to_string(),
@@ -2722,8 +2713,7 @@ impl Scheduler {
                                     " Deadline policy: switching '{}' to fallback '{}'",
                                     node_name, fallback_name
                                 ));
-                                self.nodes[i].node =
-                                    super::types::NodeKind::Rt(fallback_node);
+                                self.nodes[i].node = super::types::NodeKind::Rt(fallback_node);
                                 self.nodes[i].name = fallback_name;
                             } else {
                                 print_line(&format!(

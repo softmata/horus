@@ -1211,7 +1211,7 @@ pub(super) fn clean_build_cache() -> Result<()> {
 }
 
 /// Find the HORUS source directory by checking common locations
-pub(super) fn find_horus_source_dir() -> Result<PathBuf> {
+pub(crate) fn find_horus_source_dir() -> Result<PathBuf> {
     log::debug!("searching for HORUS source directory");
 
     // Check environment variable first

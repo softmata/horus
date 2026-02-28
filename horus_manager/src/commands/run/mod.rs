@@ -9,6 +9,7 @@ mod run_rust;
 pub use deps::parse_horus_yaml_dependencies_v2;
 pub use hardware::check_hardware_requirements;
 pub use run_rust::execute_build_only;
+pub(crate) use run_rust::find_horus_source_dir;
 
 // Re-export for sibling modules (install.rs uses detect_python_interpreter via super::)
 pub(crate) use run_python::detect_python_interpreter;

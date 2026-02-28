@@ -30,8 +30,7 @@ pub(crate) use discovery::{announce_started, announce_stopped};
 pub use log_buffer::LogType;
 
 pub use node::{
-    HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodeState,
-    TopicMetadata,
+    HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodeState, TopicMetadata,
 };
 pub use presence::NodePresence;
 pub use rt_config::{

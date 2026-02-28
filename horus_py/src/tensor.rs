@@ -692,4 +692,3 @@ pub fn cuda_is_available() -> bool {
 pub fn cuda_device_count() -> usize {
     horus::memory::cuda_device_count()
 }
-

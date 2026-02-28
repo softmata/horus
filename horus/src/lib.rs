@@ -48,6 +48,8 @@ pub use horus_core::dlpack;
 #[doc(hidden)]
 pub use horus_core::error;
 #[doc(hidden)]
+pub use horus_core::hlog;
+#[doc(hidden)]
 pub use horus_core::memory;
 #[doc(hidden)]
 pub use horus_core::params;
@@ -60,13 +62,11 @@ pub use horus_core::serde_json;
 #[doc(hidden)]
 pub use horus_core::serde_yaml;
 #[doc(hidden)]
-pub use serde;
-#[doc(hidden)]
-pub use horus_core::hlog;
+pub use horus_core::types;
 #[doc(hidden)]
 pub use horus_library as library;
 #[doc(hidden)]
-pub use horus_core::types;
+pub use serde;
 
 /// The HORUS prelude — everything you need for building robotics applications.
 ///
@@ -96,8 +96,10 @@ pub mod prelude {
     pub use horus_library::hframe::{timestamp_now, HFrame, HFrameConfig, Transform};
 
     // === Message types (all standard robotics messages) ===
+    pub use horus_core::types::{
+        Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype,
+    };
     pub use horus_library::messages::*;
-    pub use horus_core::types::{Device, ImageEncoding, PointXYZ, PointXYZI, PointXYZRGB, TensorDtype};
 
     // === Actions ===
     pub use horus_core::actions::{
@@ -128,4 +130,3 @@ pub mod prelude {
     pub use std::sync::{Arc, Mutex};
     pub use std::time::{Duration, Instant};
 }
-

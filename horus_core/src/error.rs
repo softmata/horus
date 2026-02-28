@@ -221,7 +221,6 @@ impl HorusError {
     pub fn communication<S: Into<String>>(msg: S) -> Self {
         HorusError::Communication(msg.into())
     }
-
 }
 
 #[cfg(test)]
@@ -366,8 +365,7 @@ mod tests {
     /// Unsupported variant.
     #[test]
     fn variant_unsupported() {
-        let err =
-            HorusError::Unsupported("Feature not available on this platform".to_string());
+        let err = HorusError::Unsupported("Feature not available on this platform".to_string());
         let msg = format!("{}", err);
         assert!(msg.contains("Unsupported"), "Display: {}", msg);
     }

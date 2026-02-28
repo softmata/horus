@@ -10,8 +10,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use super::tensor::HorusTensor;
 use super::dtype::TensorDtype;
+use super::tensor::HorusTensor;
 
 /// Unified depth image descriptor — Pod, 224 bytes.
 ///

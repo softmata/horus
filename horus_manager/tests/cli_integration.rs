@@ -565,7 +565,11 @@ fn test_blackbox_node_filter_case_insensitive() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.len(), 3, "case-insensitive node match should find 3 events");
+    assert_eq!(
+        parsed.len(),
+        3,
+        "case-insensitive node match should find 3 events"
+    );
 }
 
 #[test]
@@ -591,7 +595,11 @@ fn test_blackbox_node_filter_partial_match() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.len(), 2, "'sensor' matches sensor_node: NodeAdded + NodeTick");
+    assert_eq!(
+        parsed.len(),
+        2,
+        "'sensor' matches sensor_node: NodeAdded + NodeTick"
+    );
 }
 
 #[test]
@@ -748,7 +756,11 @@ fn test_blackbox_combined_filters() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.len(), 2, "anomalies for motor_ctrl: DeadlineMiss + WCETViolation");
+    assert_eq!(
+        parsed.len(),
+        2,
+        "anomalies for motor_ctrl: DeadlineMiss + WCETViolation"
+    );
 }
 
 #[test]
@@ -786,8 +798,8 @@ fn test_blackbox_json_output_is_valid_json() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("JSON output should be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("JSON output should be valid JSON");
     assert!(parsed.is_array());
 }
 
@@ -814,7 +826,10 @@ fn test_blackbox_json_records_have_expected_fields() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
     assert_eq!(parsed.len(), 1);
-    assert!(parsed[0].get("timestamp_us").is_some(), "record should have timestamp_us");
+    assert!(
+        parsed[0].get("timestamp_us").is_some(),
+        "record should have timestamp_us"
+    );
     assert!(parsed[0].get("tick").is_some(), "record should have tick");
     assert!(parsed[0].get("event").is_some(), "record should have event");
 }
@@ -894,7 +909,11 @@ fn test_blackbox_corrupt_wal_lines_skipped() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.len(), 2, "corrupt lines should be skipped, 2 valid remain");
+    assert_eq!(
+        parsed.len(),
+        2,
+        "corrupt lines should be skipped, 2 valid remain"
+    );
 }
 
 #[test]
@@ -926,7 +945,11 @@ fn test_blackbox_wal_preferred_over_json() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(parsed.len(), 2, "WAL (2 records) should be preferred over JSON snapshot (1 record)");
+    assert_eq!(
+        parsed.len(),
+        2,
+        "WAL (2 records) should be preferred over JSON snapshot (1 record)"
+    );
 }
 
 #[test]

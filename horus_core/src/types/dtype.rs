@@ -163,7 +163,6 @@ impl TensorDtype {
             _ => None,
         }
     }
-
 }
 
 impl fmt::Display for TensorDtype {

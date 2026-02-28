@@ -27,7 +27,9 @@ pub(crate) mod tensor_descriptor;
 
 // Re-export platform functions needed by horus_manager
 #[doc(hidden)]
-pub use platform::{has_native_shm, shm_base_dir, shm_control_dir, shm_network_dir, shm_topics_dir};
+pub use platform::{
+    has_native_shm, shm_base_dir, shm_control_dir, shm_network_dir, shm_topics_dir,
+};
 #[doc(hidden)]
 pub mod tensor_handle;
 #[doc(hidden)]

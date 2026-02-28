@@ -193,7 +193,6 @@ impl SharedLogBuffer {
             .filter(|e| e.topic.as_ref().is_some_and(|t| t == topic))
             .collect()
     }
-
 }
 
 // Global shared memory log buffer

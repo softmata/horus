@@ -1655,7 +1655,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
             last,
             path,
             clear,
-        } => commands::blackbox::run_blackbox(anomalies, tail, tick, node, event, json, last, path, clear),
+        } => commands::blackbox::run_blackbox(
+            anomalies, tail, tick, node, event, json, last, path, clear,
+        ),
 
         Commands::Completion { shell } => {
             // Hidden command used by install.sh for automatic completion setup

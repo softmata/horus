@@ -126,7 +126,6 @@ pub(crate) mod pool_registry;
 // Auto-managed tensor pool extensions
 pub(crate) mod tensor_ext;
 
-
 // TopicMessage trait — unified wire protocol for Topic<T>
 pub mod topic_message;
 pub use topic_message::TopicMessage;

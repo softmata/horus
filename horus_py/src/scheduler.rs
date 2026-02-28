@@ -2,8 +2,8 @@ use crate::config::PySchedulerConfig;
 use crate::node::PyNodeInfo;
 use horus::core::{NodeInfo as CoreNodeInfo, TopicMetadata};
 use horus_core::core::Node as CoreNode;
-use horus_core::error::HorusError;
 use horus_core::core::NodeMetrics;
+use horus_core::error::HorusError;
 use horus_core::scheduling::{
     CircuitState, FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
     SchedulerConfig,

@@ -56,8 +56,8 @@
 //!
 //! This provides additional methods like `as_bytes()`, `from_bytes()`, etc.
 
-use bytemuck::{Pod, Zeroable};
 use crate::types::HorusTensor;
+use bytemuck::{Pod, Zeroable};
 use std::mem;
 
 use crate::core::LogSummary;

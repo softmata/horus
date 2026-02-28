@@ -30,7 +30,13 @@ pub fn run_blackbox(
     }
 
     if tail {
-        return blackbox_tail(&bb_dir, anomalies_only, node_filter, event_filter, json_output);
+        return blackbox_tail(
+            &bb_dir,
+            anomalies_only,
+            node_filter,
+            event_filter,
+            json_output,
+        );
     }
 
     let tick = tick_range.map(|s| TickRange::parse(&s)).transpose()?;
@@ -80,9 +86,7 @@ pub fn run_blackbox(
 }
 
 /// Resolve the blackbox directory from a custom path or the default location.
-fn resolve_blackbox_dir(
-    custom_path: Option<PathBuf>,
-) -> horus_core::error::HorusResult<PathBuf> {
+fn resolve_blackbox_dir(custom_path: Option<PathBuf>) -> horus_core::error::HorusResult<PathBuf> {
     if let Some(p) = custom_path {
         return Ok(p);
     }
@@ -113,8 +117,7 @@ fn load_blackbox_records(dir: &Path) -> Result<Vec<BlackBoxRecord>> {
 
 /// Parse a JSONL WAL file into records, skipping corrupt lines.
 fn load_wal(path: &Path) -> Result<Vec<BlackBoxRecord>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let reader = BufReader::new(file);
     let mut records = Vec::new();
 
@@ -315,13 +318,9 @@ fn blackbox_tail(
                     continue;
                 }
                 if let Ok(record) = serde_json::from_str::<BlackBoxRecord>(trimmed) {
-                    if record_matches(&record, anomalies_only, &None, &node_filter, &event_filter)
-                    {
+                    if record_matches(&record, anomalies_only, &None, &node_filter, &event_filter) {
                         if json_output {
-                            println!(
-                                "{}",
-                                serde_json::to_string(&record).unwrap_or_default()
-                            );
+                            println!("{}", serde_json::to_string(&record).unwrap_or_default());
                         } else {
                             format_record(&record);
                         }

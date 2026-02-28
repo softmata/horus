@@ -175,4 +175,3 @@ pub(crate) struct RegisteredNode {
     /// Per-node real-time statistics (populated for RT nodes)
     pub(crate) rt_stats: Option<RtStats>,
 }
-

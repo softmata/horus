@@ -4,11 +4,11 @@ pub mod device;
 pub mod dtype;
 pub mod tensor;
 
+pub mod depth_image_descriptor;
 pub mod image_descriptor;
 pub mod image_encoding;
-pub mod depth_image_descriptor;
-pub mod pointcloud_descriptor;
 pub mod point;
+pub mod pointcloud_descriptor;
 
 /// Generate `frame_id()` and `set_frame_id()` inherent methods for types
 /// with a `frame_id: [u8; 32]` field.
@@ -95,18 +95,18 @@ macro_rules! impl_tensor_accessors {
 
 // User-facing types (re-exported via horus::prelude)
 pub use device::Device;
+pub use dtype::TensorDtype;
 pub use image_encoding::ImageEncoding;
 pub use point::{PointXYZ, PointXYZI, PointXYZRGB};
-pub use dtype::TensorDtype;
 
 // Internal types
 #[doc(hidden)]
-pub use dtype::dlpack_codes;
-#[doc(hidden)]
-pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};
-#[doc(hidden)]
 pub use depth_image_descriptor::DepthImageDescriptor;
+#[doc(hidden)]
+pub use dtype::dlpack_codes;
 #[doc(hidden)]
 pub use image_descriptor::ImageDescriptor;
 #[doc(hidden)]
 pub use pointcloud_descriptor::PointCloudDescriptor;
+#[doc(hidden)]
+pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};

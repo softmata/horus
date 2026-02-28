@@ -9,8 +9,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use super::tensor::HorusTensor;
 use super::dtype::TensorDtype;
+use super::tensor::HorusTensor;
 
 /// Unified point cloud descriptor — Pod, 272 bytes.
 ///

@@ -30,23 +30,28 @@ pub mod error;
 #[doc(hidden)]
 pub mod memory;
 #[doc(hidden)]
-pub mod types;
-#[doc(hidden)]
 pub mod params;
 #[doc(hidden)]
 pub mod scheduling;
 pub(crate) mod terminal;
+#[doc(hidden)]
+pub mod types;
 pub(crate) mod utils;
 
 // Crate-internal re-exports (used by `crate::HorusError` etc. within this crate,
 // and by horus_py / macro-generated code cross-crate).
 #[doc(hidden)]
+pub use actions::{
+    Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
+    ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
+    GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
+};
+#[doc(hidden)]
 pub use communication::{PodMessage, Topic};
 #[doc(hidden)]
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence,
-    NodeState, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats,
-    TopicMetadata,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState,
+    RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats, TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{HorusError, HorusResult, Result};
@@ -54,19 +59,13 @@ pub use error::{HorusError, HorusResult, Result};
 pub use params::RuntimeParams;
 #[doc(hidden)]
 pub use scheduling::Scheduler;
-#[doc(hidden)]
-pub use actions::{
-    Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
-    ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
-    GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
-};
 
 // Re-export dependencies used by macro-generated code and horus_py
+#[doc(hidden)]
+pub use bytemuck;
 #[doc(hidden)]
 pub use paste;
 #[doc(hidden)]
 pub use serde_json;
 #[doc(hidden)]
 pub use serde_yaml;
-#[doc(hidden)]
-pub use bytemuck;

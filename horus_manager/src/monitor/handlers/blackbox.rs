@@ -18,9 +18,7 @@ pub struct BlackboxQuery {
 }
 
 /// `GET /api/blackbox?node=X&event=Y&tick=A-B&limit=N`
-pub async fn blackbox_list_handler(
-    Query(params): Query<BlackboxQuery>,
-) -> impl IntoResponse {
+pub async fn blackbox_list_handler(Query(params): Query<BlackboxQuery>) -> impl IntoResponse {
     match load_records() {
         Ok(records) => {
             let filtered = filter_records(records, &params, false);

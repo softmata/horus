@@ -5,9 +5,9 @@
 // - macOS: shm_open() + mmap (POSIX shared memory, RAM-backed via Mach)
 // - Windows: CreateFileMappingW with INVALID_HANDLE_VALUE (pagefile-backed, optimized for IPC)
 
-use crate::error::HorusResult;
 #[cfg(not(target_os = "linux"))]
 use crate::error::HorusError;
+use crate::error::HorusResult;
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]

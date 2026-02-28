@@ -186,7 +186,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         // BlackBox flight recorder API endpoints
         .route("/api/blackbox", get(blackbox_list_handler))
         .route("/api/blackbox/anomalies", get(blackbox_anomalies_handler))
-        .route("/api/blackbox", axum::routing::delete(blackbox_clear_handler))
+        .route(
+            "/api/blackbox",
+            axum::routing::delete(blackbox_clear_handler),
+        )
         // Debugging API endpoints
         .route("/api/debug/sessions", get(debug_sessions_list_handler))
         .route("/api/debug/sessions", post(debug_session_create_handler))
