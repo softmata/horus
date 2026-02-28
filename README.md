@@ -207,7 +207,7 @@ horus test                  # Run tests
 horus monitor               # Real-time system monitor (Web UI + TUI)
 horus topic list            # See active topics
 horus node list             # See running nodes
-horus pkg install <name>    # Install packages
+horus install <name>        # Install packages
 horus deploy <target>       # Deploy to robot
 ```
 

@@ -33,12 +33,20 @@ horus msg list|show|fields      # Message type inspection
 horus log [node]                # View logs (-f follow, -l level)
 ```
 
-### Packages & Deployment
+### Packages & Plugins
 
 ```bash
-horus pkg install|remove|list   # Package management
-horus add <name>                # Smart add (auto-detects type)
-horus remove <name>             # Smart remove
+horus install <name>            # Install a package or plugin
+horus remove <name>             # Remove a package or plugin
+horus list [query]              # List installed packages and plugins
+horus search <query>            # Search available packages/plugins
+horus update [pkg]              # Update installed packages
+horus info <name>               # Show package/plugin details
+horus enable <cmd>              # Enable a disabled plugin
+horus disable <cmd>             # Disable a plugin
+horus verify [plugin]           # Verify plugin integrity
+horus publish                   # Publish to registry
+horus keygen                    # Generate signing keys
 horus deploy <target>           # Deploy to remote robot (--run, --arch)
 horus launch <file>             # Launch nodes from YAML
 ```
@@ -46,7 +54,6 @@ horus launch <file>             # Launch nodes from YAML
 ### Other
 
 ```bash
-horus plugin list|enable|disable # Plugin management
 horus env freeze|restore        # Environment reproducibility
 horus record list|play|info     # Recording/replay
 horus cache info|clean          # Cache management
@@ -67,8 +74,8 @@ horus monitor          # Web UI
 horus monitor -t       # Terminal UI
 
 # Install packages
-horus add lidar-driver
-horus pkg install vision-toolkit
+horus install lidar-driver
+horus install vision-toolkit
 
 # Deploy to robot
 horus deploy pi@192.168.1.50 --run --arch aarch64
