@@ -316,12 +316,6 @@ enum Commands {
         clear_all: bool,
     },
 
-    /// Package management
-    Pkg {
-        #[command(subcommand)]
-        command: PkgCommands,
-    },
-
     /// Environment management (freeze/restore)
     Env {
         #[command(subcommand)]
@@ -373,30 +367,6 @@ enum Commands {
         list: bool,
     },
 
-    /// Add a package, driver, or plugin (smart auto-detection)
-    Add {
-        /// Package/driver/plugin name to add
-        name: String,
-        /// Specific version (optional)
-        #[arg(short = 'v', long = "ver")]
-        ver: Option<String>,
-        /// Force install as driver
-        #[arg(long = "driver", conflicts_with = "plugin")]
-        driver: bool,
-        /// Force install as plugin
-        #[arg(long = "plugin", conflicts_with = "driver")]
-        plugin: bool,
-        /// Force local installation (default for drivers/packages)
-        #[arg(long = "local", conflicts_with = "global")]
-        local: bool,
-        /// Force global installation (default for plugins)
-        #[arg(short = 'g', long = "global", conflicts_with = "local")]
-        global: bool,
-        /// Skip installing system dependencies
-        #[arg(long = "no-system")]
-        no_system: bool,
-    },
-
     /// Remove a package, driver, or plugin
     Remove {
         /// Package/driver/plugin name to remove
@@ -409,10 +379,114 @@ enum Commands {
         purge: bool,
     },
 
-    /// Plugin management (list, enable, disable)
-    Plugin {
-        #[command(subcommand)]
-        command: PluginCommands,
+    /// Install a package or plugin
+    Install {
+        /// Package name to install
+        name: String,
+        /// Specific version (optional)
+        #[arg(long = "ver")]
+        ver: Option<String>,
+        /// Install to global scope
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Target workspace/project name
+        #[arg(short = 't', long = "target")]
+        target: Option<String>,
+        /// Install as driver
+        #[arg(long = "driver", conflicts_with = "plugin")]
+        driver: bool,
+        /// Install as plugin
+        #[arg(long = "plugin", conflicts_with = "driver")]
+        plugin: bool,
+        /// Skip installing system dependencies
+        #[arg(long = "no-system")]
+        no_system: bool,
+    },
+
+    /// List installed packages and plugins
+    List {
+        /// Search query (optional)
+        query: Option<String>,
+        /// List global scope packages
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// List all (local + global)
+        #[arg(short = 'a', long = "all")]
+        all: bool,
+    },
+
+    /// Search for available packages and plugins
+    Search {
+        /// Search query (e.g., "camera", "lidar", "motor")
+        query: String,
+        /// Filter by category
+        #[arg(short = 'c', long = "category")]
+        category: Option<String>,
+    },
+
+    /// Update installed packages to latest versions
+    Update {
+        /// Specific package to update (updates all if omitted)
+        package: Option<String>,
+        /// Update global scope packages
+        #[arg(short = 'g', long = "global")]
+        global: bool,
+        /// Show what would be updated without making changes
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Publish package to registry
+    Publish {
+        /// Also generate freeze file
+        #[arg(long)]
+        freeze: bool,
+        /// Validate package without actually publishing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Unpublish a package from the registry
+    Unpublish {
+        /// Package name to unpublish
+        package: String,
+        /// Package version to unpublish
+        #[arg(value_name = "VERSION")]
+        ver: String,
+        /// Skip confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Generate signing key pair for package signing
+    #[command(name = "keygen")]
+    KeyGen,
+
+    /// Show detailed info about a package or plugin
+    Info {
+        /// Package or plugin name
+        name: String,
+    },
+
+    /// Enable a disabled plugin
+    Enable {
+        /// Plugin command name to enable
+        command: String,
+    },
+
+    /// Disable a plugin (keep installed but don't execute)
+    Disable {
+        /// Plugin command name to disable
+        command: String,
+        /// Reason for disabling
+        #[arg(short = 'r', long = "reason")]
+        reason: Option<String>,
+    },
+
+    /// Verify integrity of installed plugins
+    Verify {
+        /// Specific plugin to verify (optional, verifies all if not specified)
+        plugin: Option<String>,
     },
 
     /// Cache management (info, clean, purge)
@@ -473,161 +547,6 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
-    },
-}
-
-#[derive(Subcommand)]
-enum PkgCommands {
-    /// Install a package from registry
-    Install {
-        /// Package name to install
-        package: String,
-        /// Specific package version (optional)
-        #[arg(short = 'v', long = "ver")]
-        ver: Option<String>,
-        /// Install to global cache (shared across projects)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Target workspace/project name (if not in workspace)
-        #[arg(short = 't', long = "target")]
-        target: Option<String>,
-    },
-
-    /// Remove an installed package
-    Remove {
-        /// Package name to remove
-        package: String,
-        /// Remove from global cache
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Target workspace/project name
-        #[arg(short = 't', long = "target")]
-        target: Option<String>,
-    },
-
-    /// List installed packages or search registry
-    List {
-        /// Search query (optional)
-        query: Option<String>,
-        /// List global cache packages
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// List all (local + global)
-        #[arg(short = 'a', long = "all")]
-        all: bool,
-    },
-
-    /// Publish package to registry
-    Publish {
-        /// Also generate freeze file
-        #[arg(long)]
-        freeze: bool,
-        /// Validate package without actually publishing
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-    },
-
-    /// Update installed packages to latest versions
-    Update {
-        /// Specific package to update (updates all if omitted)
-        package: Option<String>,
-        /// Update global cache packages
-        #[arg(short = 'g', long = "global")]
-        global: bool,
-        /// Show what would be updated without making changes
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-    },
-
-    /// Generate signing key pair for package signing
-    KeyGen,
-
-    /// Unpublish a package from the registry
-    Unpublish {
-        /// Package name to unpublish
-        package: String,
-        /// Package version to unpublish
-        version: String,
-        /// Skip confirmation prompt
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum PluginCommands {
-    /// List installed plugins
-    List {
-        /// Show all plugins including disabled
-        #[arg(short = 'a', long = "all")]
-        all: bool,
-    },
-
-    /// Search for available plugins
-    Search {
-        /// Search query (e.g., "camera", "lidar", "motor")
-        query: String,
-        /// Filter by category
-        #[arg(short = 'c', long = "category")]
-        category: Option<String>,
-    },
-
-    /// Show all available plugins from registry
-    Available {
-        /// Filter by category (camera, lidar, motor, servo, bus, gps, simulation)
-        #[arg(short = 'c', long = "category")]
-        category: Option<String>,
-        /// Include local development plugins
-        #[arg(short = 'l', long = "local")]
-        include_local: bool,
-    },
-
-    /// Show detailed info about a plugin
-    Info {
-        /// Plugin name (e.g., "horus-rplidar")
-        name: String,
-    },
-
-    /// Enable a disabled plugin
-    Enable {
-        /// Plugin command name to enable
-        command: String,
-    },
-
-    /// Disable a plugin (keep installed but don't execute)
-    Disable {
-        /// Plugin command name to disable
-        command: String,
-        /// Reason for disabling
-        #[arg(short = 'r', long = "reason")]
-        reason: Option<String>,
-    },
-
-    /// Verify integrity of installed plugins
-    Verify {
-        /// Specific plugin to verify (optional, verifies all if not specified)
-        plugin: Option<String>,
-    },
-
-    /// Install a plugin package from registry
-    Install {
-        /// Plugin package name (e.g., horus-visualizer, horus-rosbag)
-        plugin: String,
-        /// Specific version (optional, defaults to latest)
-        #[arg(short = 'v', long = "ver")]
-        ver: Option<String>,
-        /// Install locally to current project (default is global for plugins)
-        #[arg(short = 'l', long = "local")]
-        local: bool,
-    },
-
-    /// Remove an installed plugin package
-    Remove {
-        /// Plugin package name to remove
-        plugin: String,
-        /// Remove from global scope (default for plugins)
-        #[arg(short = 'g', long = "global")]
-        global: bool,
     },
 }
 
@@ -1118,36 +1037,19 @@ fn main() {
         let potential_command = &args[1];
 
         // Skip if it's a built-in command, help flag, or version flag
-        let is_builtin = matches!(
-            potential_command.as_str(),
-            "init"
-                | "new"
-                | "run"
-                | "check"
-                | "monitor"
-                | "topic"
-                | "node"
-                | "clean"
-                | "launch"
-                | "msg"
-                | "log"
-                | "pkg"
-                | "env"
-                | "auth"
-                | "deploy"
-                | "add"
-                | "remove"
-                | "plugin"
-                | "record"
-                | "blackbox"
-                | "bb"
-                | "completion"
-                | "help"
-                | "--help"
-                | "-h"
-                | "--version"
-                | "-V"
-        );
+        // Dynamically derived from clap so new commands are automatically included
+        let cmd = Cli::command();
+        let builtin_names: std::collections::HashSet<&str> = cmd
+            .get_subcommands()
+            .flat_map(|sc| {
+                let mut names = vec![sc.get_name()];
+                names.extend(sc.get_all_aliases());
+                names
+            })
+            .collect();
+
+        let is_builtin = builtin_names.contains(potential_command.as_str())
+            || potential_command.starts_with('-');
 
         if !is_builtin && !potential_command.starts_with('-') {
             // Try to execute as plugin
@@ -1481,32 +1383,58 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
-        Commands::Pkg { command } => match command {
-            PkgCommands::Install {
-                package,
-                ver,
-                global,
-                target,
-            } => commands::pkg::run_install(package, ver, global, target),
-            PkgCommands::Remove {
-                package,
-                global,
-                target,
-            } => commands::pkg::run_remove(package, global, target),
-            PkgCommands::List { query, global, all } => commands::pkg::run_list(query, global, all),
-            PkgCommands::Publish { freeze, dry_run } => commands::pkg::run_publish(freeze, dry_run),
-            PkgCommands::Update {
-                package,
-                global,
-                dry_run,
-            } => commands::pkg::run_update(package, global, dry_run),
-            PkgCommands::KeyGen => commands::pkg::run_keygen(),
-            PkgCommands::Unpublish {
-                package,
-                version,
-                yes,
-            } => commands::pkg::run_unpublish(package, version, yes),
-        },
+        // ── New top-level commands (replace horus pkg / horus plugin) ──
+
+        Commands::Install {
+            name,
+            ver,
+            global,
+            target,
+            driver,
+            plugin,
+            no_system: _,
+        } => {
+            if plugin {
+                commands::plugin::run_install(name, ver, !global)
+            } else if driver {
+                commands::pkg::run_add(name, ver, true, false)
+            } else {
+                commands::pkg::run_install(name, ver, global, target)
+            }
+        }
+
+        Commands::List { query, global, all } => commands::pkg::run_list(query, global, all),
+
+        Commands::Search { query, category: _ } => commands::plugin::run_search(query),
+
+        Commands::Update {
+            package,
+            global,
+            dry_run,
+        } => commands::pkg::run_update(package, global, dry_run),
+
+        Commands::Publish { freeze, dry_run } => commands::pkg::run_publish(freeze, dry_run),
+
+        Commands::Unpublish {
+            package,
+            ver,
+            yes,
+        } => commands::pkg::run_unpublish(package, ver, yes),
+
+        Commands::KeyGen => commands::pkg::run_keygen(),
+
+        Commands::Info { name } => commands::plugin::run_info(name),
+
+        Commands::Enable { command } => commands::pkg::enable_plugin(&command)
+            .map_err(|e| HorusError::Config(e.to_string())),
+
+        Commands::Disable { command, reason } => {
+            commands::pkg::disable_plugin(&command, reason.as_deref())
+                .map_err(|e| HorusError::Config(e.to_string()))
+        }
+
+        Commands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
+            .map_err(|e| HorusError::Config(e.to_string())),
 
         Commands::Env { command } => match command {
             EnvCommands::Freeze { output, publish } => commands::env::run_freeze(output, publish),
@@ -1553,46 +1481,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
         }
 
-        Commands::Add {
-            name,
-            ver,
-            driver,
-            plugin,
-            local: _,
-            global: _,
-            no_system: _,
-        } => commands::pkg::run_add(name, ver, driver, plugin),
-
         Commands::Remove {
             name,
             global: _,
             purge: _,
         } => commands::pkg::run_remove_dep(name),
-
-        Commands::Plugin { command } => match command {
-            PluginCommands::List { all } => commands::pkg::list_plugins(true, all)
-                .map_err(|e| HorusError::Config(e.to_string())),
-            PluginCommands::Search { query, category: _ } => commands::plugin::run_search(query),
-            PluginCommands::Available {
-                category: _,
-                include_local,
-            } => commands::plugin::run_available(include_local),
-            PluginCommands::Info { name } => commands::plugin::run_info(name),
-            PluginCommands::Enable { command } => commands::pkg::enable_plugin(&command)
-                .map_err(|e| HorusError::Config(e.to_string())),
-            PluginCommands::Disable { command, reason } => {
-                commands::pkg::disable_plugin(&command, reason.as_deref())
-                    .map_err(|e| HorusError::Config(e.to_string()))
-            }
-            PluginCommands::Verify { plugin } => commands::pkg::verify_plugins(plugin.as_deref())
-                .map_err(|e| HorusError::Config(e.to_string())),
-            PluginCommands::Install { plugin, ver, local } => {
-                commands::plugin::run_install(plugin, ver, local)
-            }
-            PluginCommands::Remove { plugin, global } => {
-                commands::plugin::run_remove(plugin, global)
-            }
-        },
 
         Commands::Cache { command } => match command {
             CacheCommands::Info => commands::cache::run_info(),

@@ -46,7 +46,7 @@ fn test_help_shows_subcommands() {
         .stdout(predicate::str::contains("monitor"))
         .stdout(predicate::str::contains("topic"))
         .stdout(predicate::str::contains("node"))
-        .stdout(predicate::str::contains("pkg"))
+        .stdout(predicate::str::contains("install"))
         .stdout(predicate::str::contains("clean"));
 }
 
@@ -108,15 +108,6 @@ fn test_node_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Node"));
-}
-
-#[test]
-fn test_pkg_help() {
-    horus_cmd()
-        .args(["pkg", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Package"));
 }
 
 #[test]
@@ -1007,6 +998,143 @@ fn test_blackbox_invalid_tick_range() {
             "--tick",
             "not-a-number",
         ])
+        .assert()
+        .failure();
+}
+
+// ============================================================================
+// New top-level command help tests
+// ============================================================================
+
+#[test]
+fn test_install_help() {
+    horus_cmd()
+        .args(["install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Install"))
+        .stdout(predicate::str::contains("--plugin"))
+        .stdout(predicate::str::contains("--driver"));
+}
+
+#[test]
+fn test_list_help() {
+    horus_cmd()
+        .args(["list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("List"))
+        .stdout(predicate::str::contains("--global"));
+}
+
+#[test]
+fn test_search_help() {
+    horus_cmd()
+        .args(["search", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Search"));
+}
+
+#[test]
+fn test_update_help() {
+    horus_cmd()
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Update"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn test_publish_help() {
+    horus_cmd()
+        .args(["publish", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Publish"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn test_unpublish_help() {
+    horus_cmd()
+        .args(["unpublish", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unpublish"));
+}
+
+#[test]
+fn test_keygen_help() {
+    horus_cmd()
+        .args(["keygen", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generate"));
+}
+
+#[test]
+fn test_info_help() {
+    horus_cmd()
+        .args(["info", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("info"));
+}
+
+#[test]
+fn test_enable_help() {
+    horus_cmd()
+        .args(["enable", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Enable"));
+}
+
+#[test]
+fn test_disable_help() {
+    horus_cmd()
+        .args(["disable", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Disable"))
+        .stdout(predicate::str::contains("--reason"));
+}
+
+#[test]
+fn test_verify_help() {
+    horus_cmd()
+        .args(["verify", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Verify"));
+}
+
+// ============================================================================
+// Removed commands tests
+// ============================================================================
+
+#[test]
+fn test_removed_pkg_command_fails() {
+    horus_cmd()
+        .args(["pkg", "list"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_removed_plugin_command_fails() {
+    horus_cmd()
+        .args(["plugin", "search", "camera"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_removed_add_command_fails() {
+    horus_cmd()
+        .args(["add", "some-package"])
         .assert()
         .failure();
 }

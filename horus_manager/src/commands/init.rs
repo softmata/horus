@@ -23,7 +23,7 @@ pub fn run_init(workspace_name: Option<String>) -> Result<()> {
     );
     println!(
         "  2. Install packages:     {}",
-        "horus pkg install <package>".yellow()
+        "horus install <package>".yellow()
     );
     println!("  3. Start monitor:        {}", "horus monitor".yellow());
     println!();

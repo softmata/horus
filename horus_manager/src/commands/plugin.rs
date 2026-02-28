@@ -127,7 +127,7 @@ pub fn run_available(include_local: bool) -> HorusResult<()> {
         println!();
     }
 
-    println!("{}", "Use 'horus plugins info <name>' for details".dimmed());
+    println!("{}", "Use 'horus info <name>' for details".dimmed());
     Ok(())
 }
 
@@ -194,7 +194,7 @@ pub fn run_info(name: String) -> HorusResult<()> {
             println!("{}", format!("Plugin '{}' not found", name).red());
             println!(
                 "{}",
-                "Use 'horus plugins search <query>' to find plugins".dimmed()
+                "Use 'horus search <query>' to find plugins".dimmed()
             );
         }
     }

@@ -378,7 +378,7 @@ impl PluginDiscovery {
                 )
             }
             PluginSourceType::Registry => {
-                let mut instructions = format!("horus plugins install {}", plugin.name);
+                let mut instructions = format!("horus install {}", plugin.name);
                 if !plugin.system_deps.is_empty() {
                     instructions.push_str(&format!(
                         "\n\n# System dependencies required:\nsudo apt install {}",
@@ -390,7 +390,7 @@ impl PluginDiscovery {
             PluginSourceType::CratesIo => {
                 format!("cargo install {}", plugin.name)
             }
-            PluginSourceType::Git => "horus plugins install --git <repository-url>".to_string(),
+            PluginSourceType::Git => "horus install <name> # from git repository".to_string(),
         }
     }
 }

@@ -364,6 +364,30 @@ fn detect_version(package_dir: &Path) -> Option<String> {
     None
 }
 
+/// Resolve the installed package directory after installation
+fn resolve_installed_package_dir(name: &str, version: &str, global: bool) -> Option<PathBuf> {
+    if global {
+        let home = dirs::home_dir()?;
+        let cache = home.join(".horus/cache");
+        let versioned = cache.join(format!("{}@{}", name, version));
+        if versioned.exists() {
+            return Some(versioned);
+        }
+        let plain = cache.join(name);
+        if plain.exists() {
+            return Some(plain);
+        }
+    } else {
+        let workspace_root =
+            workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+        let local = workspace_root.join(".horus/packages").join(name);
+        if local.exists() {
+            return Some(local);
+        }
+    }
+    None
+}
+
 /// Register a plugin after package installation
 pub fn register_plugin_after_install(
     package_dir: &Path,
@@ -634,7 +658,7 @@ pub fn verify_plugins(plugin_name: Option<&str>) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!(
-            "Some plugins failed verification. Run 'horus pkg install <package>' to reinstall."
+            "Some plugins failed verification. Run 'horus install <package>' to reinstall."
         ))
     }
 }
@@ -746,7 +770,7 @@ pub fn list_plugins(show_global: bool, show_project: bool) -> Result<()> {
         println!("{} No plugins installed", "ℹ".cyan());
         println!(
             "\n  Install plugins with: {}",
-            "horus pkg install <package>".cyan()
+            "horus install <package>".cyan()
         );
     }
 
@@ -873,9 +897,38 @@ pub fn run_install(
         };
 
         let client = registry::RegistryClient::new();
-        client
+        let installed_version = client
             .install_to_target(&package, ver.as_deref(), install_target.clone())
             .map_err(|e| HorusError::Config(e.to_string()))?;
+
+        // Auto-detect and register plugins
+        let is_global = matches!(install_target, workspace::InstallTarget::Global);
+        let project_root = match &install_target {
+            workspace::InstallTarget::Local(p) => Some(p.clone()),
+            workspace::InstallTarget::Global => None,
+        };
+        if let Some(pkg_dir) =
+            resolve_installed_package_dir(&package, &installed_version, is_global)
+        {
+            match register_plugin_after_install(
+                &pkg_dir,
+                PluginSource::Registry,
+                is_global,
+                project_root.as_deref(),
+            ) {
+                Ok(Some(cmd)) => {
+                    println!(
+                        "  {} Registered plugin command: {}",
+                        "✓".green(),
+                        format!("horus {}", cmd).green()
+                    );
+                }
+                Ok(None) => {} // Not a plugin, that's fine
+                Err(e) => {
+                    println!("  {} Plugin registration failed: {}", "⚠".yellow(), e);
+                }
+            }
+        }
 
         // Update horus.yaml if installing locally
         if let workspace::InstallTarget::Local(workspace_path) = install_target {

@@ -53,7 +53,7 @@ impl PluginExecutor {
         // Check if disabled
         if self.resolver.is_disabled(command) {
             return Err(anyhow!(
-                "Plugin '{}' is disabled. Run 'horus pkg enable {}' to re-enable.",
+                "Plugin '{}' is disabled. Run 'horus enable {}' to re-enable.",
                 command,
                 command
             ));
@@ -104,7 +104,7 @@ impl PluginExecutor {
         // Check binary exists
         if !entry.binary.exists() {
             return Err(anyhow!(
-                "Plugin binary not found: {}\nRun 'horus pkg install {}' to reinstall.",
+                "Plugin binary not found: {}\nRun 'horus install {}' to reinstall.",
                 entry.binary.display(),
                 entry.package
             ));
@@ -114,7 +114,7 @@ impl PluginExecutor {
         let checksum = PluginRegistry::calculate_checksum(&entry.binary)?;
         if checksum != entry.checksum {
             return Err(anyhow!(
-                "Plugin '{}' checksum mismatch!\nExpected: {}\nActual: {}\n\nThe binary may have been modified. Run 'horus pkg verify {}' for details.",
+                "Plugin '{}' checksum mismatch!\nExpected: {}\nActual: {}\n\nThe binary may have been modified. Run 'horus verify {}' for details.",
                 entry.package,
                 entry.checksum,
                 checksum,
