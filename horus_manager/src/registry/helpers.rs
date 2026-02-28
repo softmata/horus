@@ -324,7 +324,7 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
         .collect();
 
     if missing.is_empty() {
-        println!("  {} All system packages already installed", "[OK]".green());
+        println!("  {} All system packages already installed", crate::cli_output::ICON_SUCCESS.green());
         return Ok(());
     }
 
@@ -335,7 +335,7 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
     );
     for dep in deps {
         let status = if is_system_package_installed(dep, pkg_manager) {
-            format!("{}", "[OK]".green())
+            format!("{}", crate::cli_output::ICON_SUCCESS.green())
         } else {
             format!("{}", "missing".yellow())
         };
@@ -393,17 +393,17 @@ pub(crate) fn handle_system_dependencies(deps: &[String]) -> Result<()> {
 
             match status {
                 Ok(s) if s.success() => {
-                    println!("  {} System packages installed", "[OK]".green());
+                    println!("  {} System packages installed", crate::cli_output::ICON_SUCCESS.green());
                 }
                 Ok(_) => {
                     println!(
                         "  {} Installation failed. Run manually: {}",
-                        "[WARN]".yellow(),
+                        crate::cli_output::ICON_WARN.yellow(),
                         full_cmd
                     );
                 }
                 Err(e) => {
-                    println!("  {} Could not run installer: {}", "[WARN]".yellow(), e);
+                    println!("  {} Could not run installer: {}", crate::cli_output::ICON_WARN.yellow(), e);
                     println!("    Run manually: {}", full_cmd);
                 }
             }

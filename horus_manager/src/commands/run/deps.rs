@@ -1146,7 +1146,7 @@ pub(crate) fn split_dependencies_with_path_context(
             } else {
                 eprintln!(
                     "  {} Failed to parse git dependency '{}'",
-                    "⚠".yellow(),
+                    crate::cli_output::ICON_WARN.yellow(),
                     dep
                 );
             }

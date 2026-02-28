@@ -245,7 +245,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
             );
             println!(
                 "{} You can add a password later with: {}",
-                "[TIP]".cyan(),
+                crate::cli_output::ICON_HINT.cyan(),
                 "horus monitor -r".bright_blue()
             );
             println!();
@@ -258,9 +258,9 @@ pub fn prompt_for_password_setup() -> Result<String> {
         if password.len() < 8 {
             println!(
                 "{} Password must be at least 8 characters. Please try again.",
-                "[ERROR]".red().bold()
+                crate::cli_output::ICON_ERROR.red().bold()
             );
-            println!("{} Or press Enter for no password", "[TIP]".cyan());
+            println!("{} Or press Enter for no password", crate::cli_output::ICON_HINT.cyan());
             continue;
         }
 
@@ -271,7 +271,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
         if password != confirm {
             println!(
                 "{} Passwords don't match. Please try again.",
-                "[ERROR]".red().bold()
+                crate::cli_output::ICON_ERROR.red().bold()
             );
             continue;
         }
@@ -280,7 +280,7 @@ pub fn prompt_for_password_setup() -> Result<String> {
         let hash = hash_password(&password)?;
         save_password_hash(&hash)?;
 
-        println!("{} Password set successfully!", "[SUCCESS]".green().bold());
+        println!("{} Password set successfully!", crate::cli_output::ICON_SUCCESS.green().bold());
         println!();
 
         return Ok(hash);
@@ -324,9 +324,9 @@ pub fn reset_password() -> Result<String> {
         if password.len() < 8 {
             println!(
                 "{} Password must be at least 8 characters. Please try again.",
-                "[ERROR]".red().bold()
+                crate::cli_output::ICON_ERROR.red().bold()
             );
-            println!("{} Or press Enter to disable password", "[TIP]".cyan());
+            println!("{} Or press Enter to disable password", crate::cli_output::ICON_HINT.cyan());
             continue;
         }
 
@@ -337,7 +337,7 @@ pub fn reset_password() -> Result<String> {
         if password != confirm {
             println!(
                 "{} Passwords don't match. Please try again.",
-                "[ERROR]".red().bold()
+                crate::cli_output::ICON_ERROR.red().bold()
             );
             continue;
         }
@@ -348,7 +348,7 @@ pub fn reset_password() -> Result<String> {
 
         println!(
             "{} Password reset successfully!",
-            "[SUCCESS]".green().bold()
+            crate::cli_output::ICON_SUCCESS.green().bold()
         );
         println!();
 

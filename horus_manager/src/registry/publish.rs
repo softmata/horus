@@ -269,7 +269,7 @@ impl RegistryClient {
             form = form.text("dry_run", "true");
             println!(
                 " {} Running in dry-run mode (no changes will be made)",
-                "ℹ".cyan()
+                crate::cli_output::ICON_INFO.cyan()
             );
         }
 
@@ -277,7 +277,7 @@ impl RegistryClient {
             form = form.text("organization", org_name.to_string());
             println!(
                 " {} Publishing to organization: {}",
-                "ℹ".cyan(),
+                crate::cli_output::ICON_INFO.cyan(),
                 org_name.cyan()
             );
         }
@@ -297,12 +297,12 @@ impl RegistryClient {
                 let signature = signing_key.sign(&package_data);
                 let sig_hex = hex::encode(signature.to_bytes());
                 form = form.text("signature", sig_hex);
-                println!(" {} Package signed with Ed25519 key", "✓".green());
+                println!(" {} Package signed with Ed25519 key", crate::cli_output::ICON_SUCCESS.green());
             } else {
                 log::warn!("Signing key has invalid length, skipping signature");
                 eprintln!(
                     " {} Signing key has invalid length, skipping signature",
-                    "⚠".yellow()
+                    crate::cli_output::ICON_WARN.yellow()
                 );
             }
         }
@@ -376,7 +376,7 @@ impl RegistryClient {
             if response_json.get("dry_run") == Some(&serde_json::json!(true)) {
                 println!(
                     " {} Dry run passed! Package {} v{} is valid and ready to publish.",
-                    "✓".green(),
+                    crate::cli_output::ICON_SUCCESS.green(),
                     name,
                     version
                 );
@@ -398,7 +398,7 @@ impl RegistryClient {
 
             match status {
                 "pending" => {
-                    println!("\n{} Build verification in progress...", "ℹ".cyan());
+                    println!("\n{} Build verification in progress...", crate::cli_output::ICON_INFO.cyan());
                     if let Some(id) = job_id {
                         println!(
                             "   Track status: horus pkg status {} v{} --verification",
@@ -412,10 +412,10 @@ impl RegistryClient {
                     );
                 }
                 "passed" => {
-                    println!("\n{} Build verification passed!", "✓".green());
+                    println!("\n{} Build verification passed!", crate::cli_output::ICON_SUCCESS.green());
                 }
                 "failed" => {
-                    println!("\n{} Build verification failed!", "✗".red());
+                    println!("\n{} Build verification failed!", crate::cli_output::ICON_ERROR.red());
                     if let Some(msg) = verification.get("message").and_then(|v| v.as_str()) {
                         println!("   {}", msg);
                     }
@@ -436,7 +436,7 @@ impl RegistryClient {
         {
             println!(
                 "\n{} Auto-detected metadata from {}:",
-                "ℹ".green(),
+                crate::cli_output::ICON_INFO.green(),
                 format!("{}", manifest.manifest_format).cyan()
             );
             if !manifest_source_url.is_empty() {
@@ -477,7 +477,7 @@ impl RegistryClient {
             || !final_categories.is_empty()
             || !final_package_type.is_empty()
         {
-            println!("\n{} Updating package metadata...", "ℹ".cyan());
+            println!("\n{} Updating package metadata...", crate::cli_output::ICON_INFO.cyan());
             self.update_package_metadata(
                 &name,
                 &version,

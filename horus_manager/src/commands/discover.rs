@@ -44,7 +44,7 @@ fn scan_nodes(
     if format != "json" {
         println!(
             "{} Scanning for HORUS nodes ({} seconds)...",
-            "🔍".cyan(),
+            crate::cli_output::ICON_INFO.cyan(),
             timeout
         );
         if let Some(ref t) = topic {

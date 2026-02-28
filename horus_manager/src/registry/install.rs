@@ -115,7 +115,7 @@ impl RegistryClient {
         println!("\nWhich package source do you want to use?");
         println!("  [1] {} PyPI (Python package)", "[PYTHON]".cyan());
         println!("  [2] {} crates.io (Rust binary)", "[RUST]".cyan());
-        println!("  [3] {} Cancel installation", "[FAIL]".red());
+        println!("  [3] {} Cancel installation", crate::cli_output::ICON_ERROR.red());
 
         print!("\nChoice [1-3]: ");
         io::stdout().flush()?;
@@ -176,7 +176,7 @@ impl RegistryClient {
                 // They are cloned to ~/.horus/cache/git_* and used as path deps
                 eprintln!(
                     "  {} Git dependency '{}' from {} - use 'horus run' to clone automatically",
-                    "ℹ".cyan(),
+                    crate::cli_output::ICON_INFO.cyan(),
                     spec.name,
                     url
                 );
@@ -459,7 +459,7 @@ impl RegistryClient {
                     if let Err(e) = add_features_to_cargo_toml(ws_path, features) {
                         println!(
                             "  {} Could not auto-add features to Cargo.toml: {}",
-                            "[WARN]".yellow(),
+                            crate::cli_output::ICON_WARN.yellow(),
                             e
                         );
                         println!(
@@ -467,7 +467,7 @@ impl RegistryClient {
                             features
                         );
                     } else {
-                        println!("  {} Added features to Cargo.toml", "[OK]".green());
+                        println!("  {} Added features to Cargo.toml", crate::cli_output::ICON_SUCCESS.green());
                     }
                 }
             }
@@ -486,12 +486,12 @@ impl RegistryClient {
                     if let Err(e) = add_cargo_deps_to_cargo_toml(ws_path, cargo_deps) {
                         println!(
                             "  {} Could not auto-add dependencies to Cargo.toml: {}",
-                            "[WARN]".yellow(),
+                            crate::cli_output::ICON_WARN.yellow(),
                             e
                         );
                         println!("    Add manually to [dependencies]");
                     } else {
-                        println!("  {} Added dependencies to Cargo.toml", "[OK]".green());
+                        println!("  {} Added dependencies to Cargo.toml", crate::cli_output::ICON_SUCCESS.green());
                     }
                 }
             }
@@ -510,7 +510,7 @@ impl RegistryClient {
                         .args(["install", "--quiet", dep])
                         .status();
                     if status.is_ok() {
-                        println!("  {} Installed {} via pip", "[OK]".green(), dep);
+                        println!("  {} Installed {} via pip", crate::cli_output::ICON_SUCCESS.green(), dep);
                     }
                 }
             }
@@ -1120,7 +1120,7 @@ impl RegistryClient {
         );
         println!(
             "   {} Path dependencies are live-linked - changes take effect immediately",
-            "ℹ".cyan()
+            crate::cli_output::ICON_INFO.cyan()
         );
 
         Ok(version)
@@ -1210,7 +1210,7 @@ impl RegistryClient {
             "  [2] {} Install to HORUS (isolated environment)",
             "".blue()
         );
-        println!("  [3] {} Cancel installation", "[FAIL]".red());
+        println!("  [3] {} Cancel installation", crate::cli_output::ICON_ERROR.red());
 
         print!("\nChoice [1-3]: ");
         io::stdout().flush()?;

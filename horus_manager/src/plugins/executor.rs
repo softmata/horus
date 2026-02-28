@@ -134,7 +134,7 @@ impl PluginExecutor {
             );
             eprintln!(
                 "{} Plugin '{}' v{} may not be compatible with HORUS v{}",
-                "[WARN]".yellow(),
+                crate::cli_output::ICON_WARN.yellow(),
                 entry.package,
                 entry.version,
                 HORUS_VERSION

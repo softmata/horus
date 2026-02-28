@@ -466,7 +466,7 @@ pub fn register_plugin_after_install(
 
     println!(
         "   {} Registered CLI plugin: {}",
-        "🔌".cyan(),
+        cli_output::ICON_INFO.cyan(),
         format!("horus {}", metadata.command).green()
     );
 
@@ -518,7 +518,7 @@ pub fn unregister_plugin(
 
     println!(
         "   {} Unregistered plugin: {}",
-        "🔌".dimmed(),
+        cli_output::ICON_HINT.dimmed(),
         command.yellow()
     );
 
@@ -631,7 +631,7 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
     }
 
     if results.is_empty() {
-        println!("{} No plugins installed", "ℹ".cyan());
+        println!("{} No plugins installed", cli_output::ICON_INFO.cyan());
         return Ok(());
     }
 
@@ -799,7 +799,7 @@ pub fn list_plugins(show_global: bool, show_project: bool) -> Result<()> {
     }
 
     if !has_output {
-        println!("{} No plugins installed", "ℹ".cyan());
+        println!("{} No plugins installed", cli_output::ICON_INFO.cyan());
         println!(
             "\n  Install plugins with: {}",
             "horus install <package>".cyan()
@@ -1233,7 +1233,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
         }
 
         // Show global packages
-        println!("\n{} Global cache packages:\n", "🌐".cyan());
+        println!("\n{} Global cache packages:\n", cli_output::ICON_INFO.cyan());
         if global_cache.exists() {
             let mut has_global = false;
             for entry in
@@ -1258,7 +1258,7 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
         }
     } else if global {
         // List global cache packages
-        println!("{} Global cache packages:\n", "🌐".cyan());
+        println!("{} Global cache packages:\n", cli_output::ICON_INFO.cyan());
         let global_cache =
             crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
