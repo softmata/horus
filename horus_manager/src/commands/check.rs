@@ -1404,7 +1404,7 @@ mod tests {
         // Create a valid horus.yaml with all required fields
         // Don't create Cargo.toml — code validation step simply skips
         write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(
             result.is_ok(),
             "Valid horus.yaml should pass: {:?}",
@@ -1417,7 +1417,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // Deliberately malformed YAML (tabs in wrong place, invalid mapping)
         write_yaml(&dir, "name: [\ninvalid: yaml: content:\n  - broken");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Malformed YAML should fail validation");
     }
 
@@ -1425,7 +1425,7 @@ mod tests {
     fn empty_yaml_returns_error() {
         let dir = TempDir::new().unwrap();
         write_yaml(&dir, "");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         // Empty file has no required fields
         assert!(result.is_err(), "Empty YAML should fail");
     }
@@ -1436,7 +1436,7 @@ mod tests {
     fn missing_name_field_returns_error() {
         let dir = TempDir::new().unwrap();
         write_yaml(&dir, "version: \"0.1.0\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Missing 'name' should fail");
     }
 
@@ -1444,7 +1444,7 @@ mod tests {
     fn missing_version_field_returns_error() {
         let dir = TempDir::new().unwrap();
         write_yaml(&dir, "name: my-robot\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Missing 'version' should fail");
     }
 
@@ -1452,7 +1452,7 @@ mod tests {
     fn missing_language_field_returns_error() {
         let dir = TempDir::new().unwrap();
         write_yaml(&dir, "name: my-robot\nversion: \"0.1.0\"\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Missing 'language' should fail");
     }
 
@@ -1465,7 +1465,7 @@ mod tests {
             &dir,
             "name: my-robot\nversion: not_a_version\nlanguage: rust\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Invalid semver version should fail");
     }
 
@@ -1473,7 +1473,7 @@ mod tests {
     fn valid_semver_version_passes() {
         let dir = TempDir::new().unwrap();
         write_yaml(&dir, "name: my-robot\nversion: \"1.2.3\"\nlanguage: rust\n");
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(
             result.is_ok(),
             "Valid semver should pass: {:?}",
@@ -1490,7 +1490,7 @@ mod tests {
             &dir,
             "name: my-robot\nversion: \"0.1.0\"\nlanguage: javascript\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Invalid language 'javascript' should fail");
     }
 
@@ -1503,7 +1503,7 @@ mod tests {
             &dir,
             "name: \"my robot\"\nversion: \"0.1.0\"\nlanguage: rust\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Name with spaces should fail");
     }
 
@@ -1514,7 +1514,7 @@ mod tests {
             &dir,
             "name: \"my@robot!\"\nversion: \"0.1.0\"\nlanguage: rust\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(result.is_err(), "Name with special chars should fail");
     }
 
@@ -1525,7 +1525,7 @@ mod tests {
             &dir,
             "name: my-robot_v2\nversion: \"0.1.0\"\nlanguage: rust\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(
             result.is_ok(),
             "Hyphens and underscores in name should pass: {:?}",
@@ -1540,6 +1540,7 @@ mod tests {
         let result = run_check(
             Some(PathBuf::from("/tmp/nonexistent_horus_path_12345")),
             true,
+            false,
         );
         assert!(result.is_err(), "Non-existent path should fail");
     }
@@ -1577,7 +1578,7 @@ mod tests {
         .unwrap();
 
         // Check package A — should detect the circular dependency
-        let result = run_check(Some(pkg_a.join("horus.yaml")), true);
+        let result = run_check(Some(pkg_a.join("horus.yaml")), true, false);
         assert!(result.is_err(), "Circular dependency A→B→A should fail");
     }
 
@@ -1591,7 +1592,7 @@ mod tests {
             &dir,
             "name: my-robot\nversion: \"0.1.0\"\nlanguage: rust\ndependencies:\n  missing-dep:\n    path: ./nonexistent_dir\n",
         );
-        let result = run_check(Some(dir.path().join("horus.yaml")), true);
+        let result = run_check(Some(dir.path().join("horus.yaml")), true, false);
         assert!(
             result.is_err(),
             "Path dependency to non-existent dir should fail"
