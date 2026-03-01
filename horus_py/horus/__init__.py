@@ -28,7 +28,7 @@ try:
         router_endpoint,  # Helper: "topic@host:port"
         PyScheduler as _PyScheduler,
         PyNodeState as NodeState,
-        PySchedulerConfig as SchedulerConfig,
+        PySchedulerConfig as _SchedulerConfig,
         get_version,
         # GPU utility functions
         cuda_is_available,
@@ -67,12 +67,31 @@ except ImportError:
         ERROR = "error"
         CRASHED = "crashed"
 
-    # Mock SchedulerConfig for testing
-    class SchedulerConfig:
+    # Mock _SchedulerConfig for testing
+    class _SchedulerConfig:
         def __init__(self):
             self.tick_rate = 60.0
+            self.circuit_breaker = False
+            self.execution_mode = "sequential"
+            self.memory_locking = False
+            self.rt_scheduling_class = False
+            self.profiling = False
+            self.black_box_enabled = False
+            self.black_box_size_mb = 0
+            self.wcet_enforcement = False
+            self.deadline_monitoring = False
+            self.watchdog_enabled = False
+            self.watchdog_timeout_ms = 0
+            self.safety_monitor = False
+            self.max_deadline_misses = 0
+            self.numa_aware = False
+            self.cpu_cores = None
+            self.metrics_interval_ms = 1000
+            self.telemetry_endpoint = None
+            self.deterministic_enabled = False
+            self.recording_enabled = False
         @staticmethod
-        def minimal(): return SchedulerConfig()
+        def minimal(): return _SchedulerConfig()
 
     def get_version(): return "0.1.0-mock"
 
@@ -747,37 +766,70 @@ class Scheduler:
     """
     Scheduler for running HORUS nodes.
 
-    Example (simple):
-        scheduler = Scheduler()
-        scheduler.add(sensor_node, order=0)
-        scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
-        scheduler.run()
+    Example (presets):
+        scheduler = Scheduler.deploy()
+        scheduler = Scheduler.safety_critical()
 
-    Example (fluent builder):
+    Example (kwargs):
+        scheduler = Scheduler(tick_rate=500.0, circuit_breaker=True, rt=True)
+
+    Example (adding nodes):
         scheduler = Scheduler()
-        scheduler.node(sensor_node).order(0).rate_hz(1000.0).done()
-        scheduler.node(motor_node).order(1).rt().deadline_ms(5.0).done()
+        scheduler.add(sensor_node, order=0, rate_hz=100.0)
+        scheduler.add(motor_node, order=1, rt=True, deadline_ms=5.0)
         scheduler.run()
     """
 
-    def __init__(self, config: Optional['SchedulerConfig'] = None, _inner=None):
+    def __init__(self, *,
+                 tick_rate: float = 1000.0,
+                 circuit_breaker: bool = False,
+                 parallel: bool = False,
+                 rt: bool = False,
+                 profiling: bool = False,
+                 blackbox_mb: int = 0,
+                 watchdog_ms: int = 0,
+                 safety_monitor: bool = False,
+                 recording: bool = False,
+                 deterministic: bool = False,
+                 _inner=None):
         """
         Create a scheduler.
 
         Args:
-            config: Optional SchedulerConfig to configure the scheduler
+            tick_rate: Global tick rate in Hz (default: 1000.0)
+            circuit_breaker: Enable circuit breaker pattern (default: False)
+            parallel: Use parallel execution mode (default: False)
+            rt: Enable real-time features (memory locking + RT scheduling class)
+            profiling: Enable runtime profiling (default: False)
+            blackbox_mb: Black box buffer size in MB (0 = disabled)
+            watchdog_ms: Watchdog timeout in ms (0 = disabled)
+            safety_monitor: Enable safety monitor (default: False)
+            recording: Enable recording (default: False)
+            deterministic: Enable deterministic execution (default: False)
+            _inner: Internal — used by preset constructors
         """
         if _inner is not None:
-            # Used by preset constructors to wrap a pre-built PyScheduler
             self._scheduler = _inner
         elif _PyScheduler:
-            if config is None:
-                # Default to 1000Hz global rate to support fine-grained per-node rate control
-                default_config = SchedulerConfig.minimal()
-                default_config.tick_rate = 1000.0
-                self._scheduler = _PyScheduler(default_config)
-            else:
-                self._scheduler = _PyScheduler(config)
+            cfg = _SchedulerConfig.minimal()
+            cfg.tick_rate = tick_rate
+            cfg.circuit_breaker = circuit_breaker
+            if parallel:
+                cfg.execution_mode = "parallel"
+            if rt:
+                cfg.memory_locking = True
+                cfg.rt_scheduling_class = True
+            cfg.profiling = profiling
+            if blackbox_mb > 0:
+                cfg.black_box_enabled = True
+                cfg.black_box_size_mb = blackbox_mb
+            if watchdog_ms > 0:
+                cfg.watchdog_enabled = True
+                cfg.watchdog_timeout_ms = watchdog_ms
+            cfg.safety_monitor = safety_monitor
+            cfg.recording_enabled = recording
+            cfg.deterministic_enabled = deterministic
+            self._scheduler = _PyScheduler(cfg)
         else:
             self._scheduler = None
         self._nodes = []
@@ -816,24 +868,6 @@ class Scheduler:
         if _PyScheduler:
             return Scheduler(_inner=_PyScheduler.hard_realtime())
         return Scheduler()
-
-    def node(self, node: 'Node'):
-        """
-        Start building a node configuration (fluent API).
-
-        Returns a NodeBuilder for chaining configuration.
-
-        Example:
-            scheduler.node(sensor).order(0).rate_hz(1000.0).done()
-            scheduler.node(motor).order(1).rt().deadline_ms(5.0).done()
-            scheduler.node(logger).order(100).no_logging().done()
-        """
-        if self._scheduler:
-            return self._scheduler.node(node)
-        else:
-            # Mock mode - just add the node
-            self._nodes.append(node)
-            return self
 
     def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
             rt: bool = False, deadline_ms: Optional[float] = None,
