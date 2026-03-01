@@ -4,7 +4,7 @@ Type stubs for horus._horus module
 This file provides type hints for IDE autocomplete and static type checking.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 class PyNodeInfo:
     """
@@ -276,20 +276,24 @@ class PyScheduler:
     def add(
         self,
         node: Any,
-        priority: int = 100,
+        order: int = 100,
         rate_hz: Optional[float] = None,
         rt: bool = False,
-        deadline_ms: Optional[float] = None
+        deadline_ms: Optional[float] = None,
+        tier: Optional[str] = None,
+        failure_policy: Optional[str] = None,
     ) -> None:
         """
         Add a node to the scheduler.
 
         Args:
             node: Node instance (must have tick/init/shutdown methods)
-            priority: Priority level (lower = higher priority, 0 = highest)
+            order: Execution order (lower = earlier, 0 = highest priority)
             rate_hz: Optional per-node rate in Hz (uses global rate if None)
             rt: Mark as real-time node (default: False)
             deadline_ms: Soft deadline in milliseconds (default: None)
+            tier: Execution tier - "ultra_fast", "fast", "normal" (default: None)
+            failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
         """
         ...
 
@@ -336,15 +340,15 @@ class PyScheduler:
         """
         ...
 
-    def get_node_info(self, node_name: str) -> Optional[PyNodeInfo]:
+    def get_node_info(self, node_name: str) -> Optional[int]:
         """
-        Get NodeInfo for a specific node.
+        Get node order (priority) for a specific node.
 
         Args:
             node_name: Name of the node
 
         Returns:
-            PyNodeInfo instance if node exists, None otherwise
+            Order value (u32) if node exists, None otherwise
         """
         ...
 
@@ -369,15 +373,21 @@ class PyScheduler:
         """
         ...
 
-    def tick(self) -> None:
-        """Execute one scheduler tick (internal use)."""
-        ...
-
-    def tick_for(self, duration: float) -> None:
+    def tick(self, node_names: List[str]) -> None:
         """
-        Execute ticks for a specific duration (internal use).
+        Run specific nodes continuously until stop() is called.
 
         Args:
+            node_names: Names of nodes to run
+        """
+        ...
+
+    def tick_for(self, node_names: List[str], duration: float) -> None:
+        """
+        Run specific nodes for a duration.
+
+        Args:
+            node_names: Names of nodes to run
             duration: Duration in seconds
         """
         ...

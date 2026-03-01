@@ -23,7 +23,7 @@ pub enum BlackBoxEvent {
     /// Scheduler stopped
     SchedulerStop { reason: String, total_ticks: u64 },
     /// Node added
-    NodeAdded { name: String, priority: u32 },
+    NodeAdded { name: String, order: u32 },
     /// Node tick completed
     NodeTick {
         name: String,

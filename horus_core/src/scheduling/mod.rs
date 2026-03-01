@@ -105,7 +105,7 @@ pub(crate) mod blackbox {
         },
         NodeAdded {
             name: String,
-            priority: u32,
+            order: u32,
         },
         NodeTick {
             name: String,
@@ -234,6 +234,6 @@ pub use record_replay::{
 #[doc(hidden)]
 pub use safety_monitor::{SafetyState, SafetyStats};
 #[doc(hidden)]
-pub use scheduler::RtDegradation;
+pub use scheduler::RtFeatureDegradation;
 #[doc(hidden)]
 pub use types::NodeTier;

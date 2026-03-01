@@ -415,7 +415,7 @@ impl PyScheduler {
     ) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         dict.set_item("name", &metric.name)?;
-        dict.set_item("order", metric.priority)?;
+        dict.set_item("order", metric.order)?;
         dict.set_item("rate_hz", tick_rate)?;
         dict.set_item("total_ticks", metric.total_ticks)?;
         dict.set_item("successful_ticks", metric.successful_ticks)?;
@@ -771,7 +771,7 @@ impl PyScheduler {
         }
     }
 
-    /// Get node priority.
+    /// Get node order (execution priority).
     fn get_node_info(&self, name: String) -> PyResult<Option<u32>> {
         let guard = self
             .inner
@@ -781,7 +781,7 @@ impl PyScheduler {
             Some(sched) => {
                 for metric in sched.metrics() {
                     if metric.name == name {
-                        return Ok(Some(metric.priority));
+                        return Ok(Some(metric.order));
                     }
                 }
                 Ok(None)

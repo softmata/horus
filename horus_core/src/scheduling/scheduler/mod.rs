@@ -52,7 +52,7 @@ use super::deterministic::{DeterministicClock, DeterministicConfig};
 /// rather than errors, allowing the scheduler to still function with
 /// reduced capabilities.
 #[derive(Debug, Clone)]
-pub struct RtDegradation {
+pub struct RtFeatureDegradation {
     /// What feature was attempted
     pub feature: RtFeature,
     /// What went wrong
@@ -109,7 +109,7 @@ pub enum DegradationSeverity {
 /// Runtime capability detection and degradation tracking.
 pub(crate) struct RtState {
     pub capabilities: Option<RuntimeCapabilities>,
-    pub degradations: Vec<RtDegradation>,
+    pub degradations: Vec<RtFeatureDegradation>,
 }
 
 /// Tick-loop timing state.
@@ -446,7 +446,7 @@ impl Scheduler {
     /// }
     /// ```
     #[doc(hidden)]
-    pub fn degradations(&self) -> &[RtDegradation] {
+    pub fn degradations(&self) -> &[RtFeatureDegradation] {
         &self.rt.degradations
     }
 
@@ -2107,13 +2107,13 @@ impl Scheduler {
             .iter()
             .map(|registered| {
                 let name = registered.name.clone();
-                let priority = registered.priority;
+                let order = registered.priority;
 
                 if let Some(ref ctx) = registered.context {
                     let m = ctx.metrics();
                     NodeMetrics {
                         name,
-                        priority,
+                        order,
                         total_ticks: m.total_ticks,
                         successful_ticks: m.successful_ticks,
                         failed_ticks: m.failed_ticks,
@@ -2130,7 +2130,7 @@ impl Scheduler {
                 } else {
                     NodeMetrics {
                         name,
-                        priority,
+                        order,
                         ..Default::default()
                     }
                 }

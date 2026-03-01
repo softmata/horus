@@ -167,8 +167,8 @@ impl NetworkStatus {
 pub struct NodeMetrics {
     /// Node name
     pub name: String,
-    /// Node priority (lower = higher priority)
-    pub priority: u32,
+    /// Execution order (lower = earlier in tick sequence)
+    pub order: u32,
     pub total_ticks: u64,
     pub successful_ticks: u64,
     pub failed_ticks: u64,

@@ -273,11 +273,11 @@ class Node:
 
         # Create underlying HORUS components if available
         if _PyNode:
-            self._node = _PyNode(name)
+            self._rust_available = True
             self._setup_hubs()
         else:
             # Mock mode for testing
-            self._node = None
+            self._rust_available = False
             self._hubs = {}
 
     def _setup_hubs(self):
@@ -459,7 +459,7 @@ class Node:
         # Auto-detect topics: add topic if not already declared
         if topic not in self.pub_topics:
             self.pub_topics.append(topic)
-            if self._node:
+            if self._rust_available:
                 config = self._topic_configs.get(topic, {})
                 capacity = config.get('capacity', self.default_capacity)
                 msg_type = config.get('type', None)
@@ -480,7 +480,7 @@ class Node:
                 else:
                     self._hubs[topic] = Topic(topic, capacity)
 
-        if self._node and topic in self._hubs:
+        if self._rust_available and topic in self._hubs:
             hub = self._hubs[topic]
 
             # Measure IPC timing
@@ -530,7 +530,7 @@ class Node:
         # Auto-detect topics: add topic if not already declared
         if topic not in self.sub_topics:
             self.sub_topics.append(topic)
-            if self._node:
+            if self._rust_available:
                 config = self._topic_configs.get(topic, {})
                 capacity = config.get('capacity', self.default_capacity)
                 msg_type = config.get('type', None)
@@ -551,7 +551,7 @@ class Node:
                 else:
                     self._hubs[topic] = Topic(topic, capacity)
 
-        if self._node and topic in self._hubs:
+        if self._rust_available and topic in self._hubs:
             hub = self._hubs[topic]
             import time
 
@@ -605,6 +605,30 @@ class Node:
                 self._msg_queues[topic].append(msg)
                 self._msg_timestamps[topic].append(timestamp)
 
+    def _run_tick_with_error_handling(self, info: Optional[Any] = None) -> None:
+        """Run tick_fn with error handling and info context management."""
+        old_info = self.info
+        self.info = info
+        try:
+            if self.tick_fn:
+                self.tick_fn(self)
+        except Exception as e:
+            self.error_count += 1
+            if self.info:
+                self.info.log_error(f"Tick failed: {e}")
+                if self.error_count > 10:
+                    self.info.transition_to_error(f"Too many errors ({self.error_count})")
+            if self.on_error_fn:
+                try:
+                    self.on_error_fn(self, e)
+                except Exception as handler_error:
+                    if self.info:
+                        self.info.log_error(f"Error handler failed: {handler_error}")
+            else:
+                raise
+        finally:
+            self.info = old_info
+
     def _internal_tick(self, info: Optional[Any] = None) -> None:
         """Internal tick called by scheduler with per-node rate control."""
         import time
@@ -614,42 +638,10 @@ class Node:
         if self._tick_period > 0:
             time_since_last_tick = current_time - self._last_tick_time
             if time_since_last_tick < self._tick_period:
-                # Not time to tick yet - skip this call
                 return
 
-        # Update last tick time
         self._last_tick_time = current_time
-
-        # DON'T store info - use a context manager approach
-        old_info = self.info
-        self.info = info
-        try:
-            if self.tick_fn:
-                self.tick_fn(self)
-        except Exception as e:
-            # Increment error count
-            self.error_count += 1
-
-            # Log error if info available
-            if self.info:
-                self.info.log_error(f"Tick failed: {e}")
-                # Transition to error state if too many errors
-                if self.error_count > 10:
-                    self.info.transition_to_error(f"Too many errors ({self.error_count})")
-
-            # Call user's error handler if provided
-            if self.on_error_fn:
-                try:
-                    self.on_error_fn(self, e)
-                except Exception as handler_error:
-                    # Error handler itself failed - just log it
-                    if self.info:
-                        self.info.log_error(f"Error handler failed: {handler_error}")
-            else:
-                # No error handler - re-raise
-                raise
-        finally:
-            self.info = old_info
+        self._run_tick_with_error_handling(info)
 
     def _internal_init(self, info: Optional[Any] = None) -> None:
         """Internal init called by scheduler."""
@@ -672,27 +664,7 @@ class Node:
         """Called by Rust scheduler on each tick.
         Bypasses _internal_tick rate control since horus_core handles rate limiting.
         """
-        old_info = self.info
-        self.info = info
-        try:
-            if self.tick_fn:
-                self.tick_fn(self)
-        except Exception as e:
-            self.error_count += 1
-            if self.info:
-                self.info.log_error(f"Tick failed: {e}")
-                if self.error_count > 10:
-                    self.info.transition_to_error(f"Too many errors ({self.error_count})")
-            if self.on_error_fn:
-                try:
-                    self.on_error_fn(self, e)
-                except Exception as handler_error:
-                    if self.info:
-                        self.info.log_error(f"Error handler failed: {handler_error}")
-            else:
-                raise
-        finally:
-            self.info = old_info
+        self._run_tick_with_error_handling(info)
 
     def shutdown(self, info: Optional[Any] = None) -> None:
         """Called by Rust scheduler during shutdown."""
@@ -871,10 +843,10 @@ class Scheduler:
 
     def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
             rt: bool = False, deadline_ms: Optional[float] = None,
-            logging: bool = True, tier: Optional[str] = None,
+            tier: Optional[str] = None,
             failure_policy: Optional[str] = None) -> 'Scheduler':
         """
-        Add a node to the scheduler (simplified API with kwargs).
+        Add a node to the scheduler.
 
         Args:
             node: Node instance to add
@@ -882,7 +854,6 @@ class Scheduler:
             rate_hz: Node-specific tick rate in Hz (default: uses node.rate)
             rt: Mark as real-time node (default: False)
             deadline_ms: Soft deadline in milliseconds (default: None)
-            logging: Enable logging for this node (default: True)
             tier: Execution tier - "ultra_fast", "fast", "normal" (default: None)
             failure_policy: Failure policy - "fatal", "restart", "skip", "ignore"
                   (default: None, uses tier default)
@@ -900,7 +871,7 @@ class Scheduler:
         if self._scheduler:
             # Use node.rate if rate_hz not specified
             actual_rate = rate_hz if rate_hz is not None else node.rate
-            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, logging, tier, failure_policy)
+            self._scheduler.add(node, order, actual_rate, rt, deadline_ms, tier, failure_policy)
 
         return self
 
@@ -1317,21 +1288,17 @@ class Scheduler:
 
 # Convenience functions
 
-def run(*nodes: Node, duration: Optional[float] = None, logging: bool = True) -> None:
+def run(*nodes: Node, duration: Optional[float] = None) -> None:
     """
     Quick run helper - create scheduler and run nodes.
 
     Args:
         *nodes: Node instances to run
         duration: Optional duration in seconds
-        logging: Enable logging for all nodes (default: True)
 
     Example:
         node = Node(subs="in", pubs="out", tick=lambda n: n.send("out", n.get("in")))
         run(node, duration=5)
-
-        # Disable logging
-        run(node1, node2, duration=10, logging=False)
     """
     scheduler = Scheduler()
 
@@ -1358,13 +1325,13 @@ def run(*nodes: Node, duration: Optional[float] = None, logging: bool = True) ->
     # Assign order: subscribers (0..N), both (N+1..M), publishers (M+1..P)
     order = 0
     for node in subscribers:
-        scheduler.add(node, order=order, logging=logging)
+        scheduler.add(node, order=order)
         order += 1
     for node in both:
-        scheduler.add(node, order=order, logging=logging)
+        scheduler.add(node, order=order)
         order += 1
     for node in publishers:
-        scheduler.add(node, order=order, logging=logging)
+        scheduler.add(node, order=order)
         order += 1
 
     scheduler.run(duration)
@@ -1469,14 +1436,15 @@ __all__ = [
     "calculate_iou",
 ]
 
-# Export typed message classes (only if Rust bindings available)
+# Override with Rust native message classes (zero-copy IPC) when available
 try:
     CmdVel = _RustCmdVel
     Pose2D = _RustPose2D
     Imu = _RustImu
     Odometry = _RustOdometry
+    LaserScan = _RustLaserScan
 except NameError:
-    # Rust bindings not available, leave undefined (library fallback will handle)
+    # Rust bindings not available, library fallback already assigned above
     pass
 
 # Import simple async API
@@ -1503,12 +1471,6 @@ from . import msggen
 
 # Import AI/ML submodule (horus.ai)
 from . import ai
-
-# Ensure LaserScan from Rust is exported
-try:
-    LaserScan = _RustLaserScan
-except NameError:
-    pass
 
 # Add message types to __all__ if available
 if _has_messages:
