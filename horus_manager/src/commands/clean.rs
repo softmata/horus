@@ -24,7 +24,11 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
             }
         }
         if shm || all {
-            let shm_base = if cfg!(target_os = "macos") { "/tmp/horus" } else { "/dev/shm/horus" };
+            let shm_base = if cfg!(target_os = "macos") {
+                "/tmp/horus"
+            } else {
+                "/dev/shm/horus"
+            };
             let shm_path = std::path::Path::new(shm_base);
             if shm_path.exists() {
                 items.push(serde_json::json!({
@@ -57,9 +61,15 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
         if !dry_run {
             // Actually perform the cleaning
-            if !shm || all { clean_build_cache(false)?; }
-            if shm || all { clean_shared_memory(false)?; }
-            if all { clean_horus_cache(false)?; }
+            if !shm || all {
+                clean_build_cache(false)?;
+            }
+            if shm || all {
+                clean_shared_memory(false)?;
+            }
+            if all {
+                clean_horus_cache(false)?;
+            }
         }
         return Ok(());
     }
@@ -123,7 +133,10 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No target/ directory found", cli_output::ICON_SUCCESS.dimmed());
+        println!(
+            "  {} No target/ directory found",
+            cli_output::ICON_SUCCESS.dimmed()
+        );
     }
 
     Ok(false)
@@ -163,7 +176,11 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No shared memory at {}", cli_output::ICON_SUCCESS.dimmed(), shm_base);
+        println!(
+            "  {} No shared memory at {}",
+            cli_output::ICON_SUCCESS.dimmed(),
+            shm_base
+        );
     }
 
     Ok(false)
@@ -198,7 +215,10 @@ fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
         }
         return Ok(true);
     } else {
-        println!("  {} No cache at ~/.horus/cache/", cli_output::ICON_SUCCESS.dimmed());
+        println!(
+            "  {} No cache at ~/.horus/cache/",
+            cli_output::ICON_SUCCESS.dimmed()
+        );
     }
 
     Ok(false)

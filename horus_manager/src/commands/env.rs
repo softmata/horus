@@ -12,7 +12,10 @@ use std::path::PathBuf;
 
 /// Freeze the current environment to a file and optionally publish
 pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
-    println!("{} Freezing current environment...", cli_output::ICON_INFO.cyan());
+    println!(
+        "{} Freezing current environment...",
+        cli_output::ICON_INFO.cyan()
+    );
 
     let client = registry::RegistryClient::new();
     let manifest = client
@@ -76,7 +79,11 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
 
 /// Restore an environment from a file or registry ID
 pub fn run_restore(source: String) -> HorusResult<()> {
-    println!("{} Restoring environment from {}...", cli_output::ICON_INFO.cyan(), source);
+    println!(
+        "{} Restoring environment from {}...",
+        cli_output::ICON_INFO.cyan(),
+        source
+    );
 
     let client = registry::RegistryClient::new();
 
@@ -169,7 +176,10 @@ fn restore_packages(
                     // Prompt user for what to do
                     match prompt_missing_system_package(&pkg.name)? {
                         MissingSystemChoice::InstallGlobal => {
-                            println!("  {} Installing to HORUS global cache...", cli_output::ICON_INFO.cyan());
+                            println!(
+                                "  {} Installing to HORUS global cache...",
+                                cli_output::ICON_INFO.cyan()
+                            );
                             client
                                 .install_to_target(
                                     &pkg.name,
@@ -179,7 +189,10 @@ fn restore_packages(
                                 .map_err(|e| HorusError::Config(e.to_string()))?;
                         }
                         MissingSystemChoice::InstallLocal => {
-                            println!("  {} Installing to HORUS local...", cli_output::ICON_INFO.cyan());
+                            println!(
+                                "  {} Installing to HORUS local...",
+                                cli_output::ICON_INFO.cyan()
+                            );
                             client
                                 .install(&pkg.name, Some(&pkg.version))
                                 .map_err(|e| HorusError::Config(e.to_string()))?;
@@ -192,7 +205,11 @@ fn restore_packages(
                 }
             }
             registry::PackageSource::Path { path } => {
-                println!("  {} {} (path dependency)", cli_output::ICON_WARN.yellow(), pkg.name);
+                println!(
+                    "  {} {} (path dependency)",
+                    cli_output::ICON_WARN.yellow(),
+                    pkg.name
+                );
                 println!("    Path: {}", path);
                 println!(
                     "    {} Path dependencies are not portable across machines.",
@@ -232,7 +249,10 @@ fn restore_packages(
 /// List published environments from the registry
 pub fn run_list(json: bool) -> HorusResult<()> {
     if !json {
-        println!("{} Fetching published environments...", cli_output::ICON_INFO.cyan());
+        println!(
+            "{} Fetching published environments...",
+            cli_output::ICON_INFO.cyan()
+        );
     }
 
     let client = registry::RegistryClient::new();
@@ -241,20 +261,23 @@ pub fn run_list(json: bool) -> HorusResult<()> {
         .map_err(|e| HorusError::Config(e.to_string()))?;
 
     if json {
-        let env_list: Vec<_> = environments.iter().map(|env| {
-            serde_json::json!({
-                "id": env.horus_id,
-                "name": env.name,
-                "description": env.description,
-                "packages": env.manifest.packages.len(),
-                "created_at": env.created_at.to_string(),
-                "system": {
-                    "os": env.manifest.system.os,
-                    "arch": env.manifest.system.arch,
-                },
-                "horus_version": env.manifest.horus_version,
+        let env_list: Vec<_> = environments
+            .iter()
+            .map(|env| {
+                serde_json::json!({
+                    "id": env.horus_id,
+                    "name": env.name,
+                    "description": env.description,
+                    "packages": env.manifest.packages.len(),
+                    "created_at": env.created_at.to_string(),
+                    "system": {
+                        "os": env.manifest.system.os,
+                        "arch": env.manifest.system.arch,
+                    },
+                    "horus_version": env.manifest.horus_version,
+                })
             })
-        }).collect();
+            .collect();
         let output = serde_json::json!({ "environments": env_list });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
         return Ok(());
@@ -267,7 +290,10 @@ pub fn run_list(json: bool) -> HorusResult<()> {
             "Publish one with: horus env freeze --publish".dimmed()
         );
     } else {
-        println!("\n{} Published Environments:\n", cli_output::ICON_SUCCESS.green());
+        println!(
+            "\n{} Published Environments:\n",
+            cli_output::ICON_SUCCESS.green()
+        );
         for env in &environments {
             let name = env.name.as_deref().unwrap_or("(unnamed)");
             println!("  {} {}", cli_output::ICON_HINT.cyan(), env.horus_id.bold());
@@ -297,7 +323,11 @@ pub fn run_list(json: bool) -> HorusResult<()> {
 /// Show details of a specific environment
 pub fn run_show(id: String, json: bool) -> HorusResult<()> {
     if !json {
-        println!("{} Fetching environment {}...", cli_output::ICON_INFO.cyan(), id);
+        println!(
+            "{} Fetching environment {}...",
+            cli_output::ICON_INFO.cyan(),
+            id
+        );
     }
 
     let client = registry::RegistryClient::new();
@@ -306,20 +336,24 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
         .map_err(|e| HorusError::Config(e.to_string()))?;
 
     if json {
-        let pkgs: Vec<_> = manifest.packages.iter().map(|pkg| {
-            let source_str = match &pkg.source {
-                registry::PackageSource::Registry => "registry",
-                registry::PackageSource::PyPI => "pypi",
-                registry::PackageSource::CratesIO => "crates.io",
-                registry::PackageSource::System => "system",
-                registry::PackageSource::Path { .. } => "path",
-            };
-            serde_json::json!({
-                "name": pkg.name,
-                "version": pkg.version,
-                "source": source_str,
+        let pkgs: Vec<_> = manifest
+            .packages
+            .iter()
+            .map(|pkg| {
+                let source_str = match &pkg.source {
+                    registry::PackageSource::Registry => "registry",
+                    registry::PackageSource::PyPI => "pypi",
+                    registry::PackageSource::CratesIO => "crates.io",
+                    registry::PackageSource::System => "system",
+                    registry::PackageSource::Path { .. } => "path",
+                };
+                serde_json::json!({
+                    "name": pkg.name,
+                    "version": pkg.version,
+                    "source": source_str,
+                })
             })
-        }).collect();
+            .collect();
         let output = serde_json::json!({
             "id": manifest.horus_id,
             "name": manifest.name,
@@ -341,7 +375,10 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
     }
 
     // Display environment details
-    println!("\n{} Environment Details\n", cli_output::ICON_SUCCESS.green());
+    println!(
+        "\n{} Environment Details\n",
+        cli_output::ICON_SUCCESS.green()
+    );
     println!("  ID:          {}", manifest.horus_id.bold());
     println!(
         "  Name:        {}",
@@ -374,7 +411,11 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
     }
 
     // Packages
-    println!("\n{} Packages ({})\n", cli_output::ICON_INFO.cyan(), manifest.packages.len());
+    println!(
+        "\n{} Packages ({})\n",
+        cli_output::ICON_INFO.cyan(),
+        manifest.packages.len()
+    );
     for pkg in &manifest.packages {
         let source_str = match &pkg.source {
             registry::PackageSource::Registry => "registry".to_string(),

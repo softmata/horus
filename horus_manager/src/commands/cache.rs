@@ -87,7 +87,10 @@ pub fn run_list(json: bool) -> HorusResult<()> {
 
     if !cache_dir.exists() {
         if json {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "packages": [] })).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "packages": [] })).unwrap()
+            );
         } else {
             println!("{}", "Cached Packages".cyan().bold());
             println!("{}", "─".repeat(60));
@@ -105,15 +108,18 @@ pub fn run_list(json: bool) -> HorusResult<()> {
     packages.sort_by_key(|e| e.file_name());
 
     if json {
-        let pkg_list: Vec<_> = packages.iter().map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let size = dir_size(&entry.path()).unwrap_or(0);
-            serde_json::json!({
-                "name": name,
-                "size_bytes": size,
-                "size": format_size(size),
+        let pkg_list: Vec<_> = packages
+            .iter()
+            .map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let size = dir_size(&entry.path()).unwrap_or(0);
+                serde_json::json!({
+                    "name": name,
+                    "size_bytes": size,
+                    "size": format_size(size),
+                })
             })
-        }).collect();
+            .collect();
         let output = serde_json::json!({ "packages": pkg_list });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
         return Ok(());
@@ -139,7 +145,10 @@ pub fn run_list(json: bool) -> HorusResult<()> {
 pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
-    println!("{} Scanning for unused packages...", cli_output::ICON_INFO.cyan());
+    println!(
+        "{} Scanning for unused packages...",
+        cli_output::ICON_INFO.cyan()
+    );
 
     if !cache_dir.exists() {
         println!("Cache is empty, nothing to clean.");
@@ -186,18 +195,29 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
     }
 
     if to_remove.is_empty() {
-        println!("{} All cached packages are in use.", cli_output::ICON_SUCCESS.green());
+        println!(
+            "{} All cached packages are in use.",
+            cli_output::ICON_SUCCESS.green()
+        );
         return Ok(());
     }
 
     println!("\nUnused packages:");
     for (_, name, size) in &to_remove {
-        println!("  {} {} ({})", cli_output::ICON_ERROR.red(), name, format_size(*size));
+        println!(
+            "  {} {} ({})",
+            cli_output::ICON_ERROR.red(),
+            name,
+            format_size(*size)
+        );
     }
     println!("\nTotal to free: {}", format_size(freed_size).green());
 
     if dry_run {
-        println!("\n{} Dry run - no files removed.", cli_output::ICON_WARN.yellow());
+        println!(
+            "\n{} Dry run - no files removed.",
+            cli_output::ICON_WARN.yellow()
+        );
     } else {
         for (path, name, _) in &to_remove {
             if let Err(e) = fs::remove_dir_all(path) {

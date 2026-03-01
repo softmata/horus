@@ -325,7 +325,11 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
 
     // Check if cross-compilation target is installed
     if !target.is_empty() {
-        print!("  {} Checking target {}... ", cli_output::ICON_INFO.cyan(), target);
+        print!(
+            "  {} Checking target {}... ",
+            cli_output::ICON_INFO.cyan(),
+            target
+        );
         let check = Command::new("rustup")
             .args(["target", "list", "--installed"])
             .output();
@@ -468,7 +472,11 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
     cmd.arg(&config.target);
     cmd.arg(&remote_cmd);
 
-    println!("  {} Running: {}", cli_output::ICON_INFO.cyan(), binary_path);
+    println!(
+        "  {} Running: {}",
+        cli_output::ICON_INFO.cyan(),
+        binary_path
+    );
     println!("  {} Press Ctrl+C to stop", cli_output::ICON_HINT.dimmed());
     println!();
 

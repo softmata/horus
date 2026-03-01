@@ -379,8 +379,7 @@ fn resolve_installed_package_dir(name: &str, version: &str, global: bool) -> Opt
             return Some(plain);
         }
     } else {
-        let workspace_root =
-            workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
+        let workspace_root = workspace::find_workspace_root().unwrap_or_else(|| PathBuf::from("."));
         let local = workspace_root.join(".horus/packages").join(name);
         if local.exists() {
             return Some(local);
@@ -540,7 +539,11 @@ pub fn enable_plugin(command: &str) -> Result<()> {
                 let path = PluginRegistry::project_path(root);
                 project.save_to(&path)?;
             }
-            println!("{} Plugin '{}' enabled", cli_output::ICON_SUCCESS.green(), command.green());
+            println!(
+                "{} Plugin '{}' enabled",
+                cli_output::ICON_SUCCESS.green(),
+                command.green()
+            );
             return Ok(());
         }
     }
@@ -548,7 +551,11 @@ pub fn enable_plugin(command: &str) -> Result<()> {
     if resolver.global().is_disabled(command) {
         resolver.global_mut().enable_plugin(command)?;
         resolver.save_global()?;
-        println!("{} Plugin '{}' enabled", cli_output::ICON_SUCCESS.green(), command.green());
+        println!(
+            "{} Plugin '{}' enabled",
+            cli_output::ICON_SUCCESS.green(),
+            command.green()
+        );
         return Ok(());
     }
 
@@ -600,7 +607,8 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
     let results = resolver.verify_all();
 
     if json {
-        let plugin_results: Vec<_> = results.iter()
+        let plugin_results: Vec<_> = results
+            .iter()
             .filter(|r| plugin_name.map(|n| r.command == n).unwrap_or(true))
             .map(|r| {
                 let status_str = match r.status {
@@ -618,14 +626,17 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
                     "status": status_str,
                     "error": r.error,
                 })
-            }).collect();
+            })
+            .collect();
         let all_valid = plugin_results.iter().all(|r| r["status"] == "valid");
         let output = serde_json::json!({
             "plugins": plugin_results,
             "all_valid": all_valid,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return if all_valid { Ok(()) } else {
+        return if all_valid {
+            Ok(())
+        } else {
             Err(anyhow!("Some plugins failed verification."))
         };
     }
@@ -686,7 +697,10 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
     println!();
 
     if all_valid {
-        println!("{} All plugins verified successfully", cli_output::ICON_SUCCESS.green().bold());
+        println!(
+            "{} All plugins verified successfully",
+            cli_output::ICON_SUCCESS.green().bold()
+        );
         Ok(())
     } else {
         Err(anyhow!(
@@ -904,13 +918,20 @@ pub fn run_install(
                 &package_name,
                 &package, // Use original path as provided by user
             ) {
-                println!("  {} Failed to update horus.yaml: {}", cli_output::ICON_WARN.yellow(), e);
+                println!(
+                    "  {} Failed to update horus.yaml: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e
+                );
             } else {
                 println!("  {} Updated horus.yaml", cli_output::ICON_SUCCESS.green());
             }
         }
 
-        println!("{} Path dependency installed successfully!", cli_output::ICON_SUCCESS.green());
+        println!(
+            "{} Path dependency installed successfully!",
+            cli_output::ICON_SUCCESS.green()
+        );
         Ok(())
     } else {
         // Registry dependency installation
@@ -957,7 +978,11 @@ pub fn run_install(
                 }
                 Ok(None) => {} // Not a plugin, that's fine
                 Err(e) => {
-                    println!("  {} Plugin registration failed: {}", cli_output::ICON_WARN.yellow(), e);
+                    println!(
+                        "  {} Plugin registration failed: {}",
+                        cli_output::ICON_WARN.yellow(),
+                        e
+                    );
                 }
             }
         }
@@ -970,7 +995,11 @@ pub fn run_install(
                 if let Err(e) =
                     yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &package, version)
                 {
-                    println!("  {} Failed to update horus.yaml: {}", cli_output::ICON_WARN.yellow(), e);
+                    println!(
+                        "  {} Failed to update horus.yaml: {}",
+                        cli_output::ICON_WARN.yellow(),
+                        e
+                    );
                 }
             }
         }
@@ -981,7 +1010,11 @@ pub fn run_install(
 
 /// Remove a package
 pub fn run_remove(package: String, global: bool, target: Option<String>) -> HorusResult<()> {
-    println!("{} Removing {}...", cli_output::ICON_INFO.cyan(), package.yellow());
+    println!(
+        "{} Removing {}...",
+        cli_output::ICON_INFO.cyan(),
+        package.yellow()
+    );
 
     // Track workspace path for horus.yaml update
     let workspace_path = if global {
@@ -1140,7 +1173,11 @@ pub fn run_remove(package: String, global: bool, target: Option<String>) -> Horu
             if let Err(e) =
                 yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &package)
             {
-                println!("  {} Failed to update horus.yaml: {}", cli_output::ICON_WARN.yellow(), e);
+                println!(
+                    "  {} Failed to update horus.yaml: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e
+                );
             }
         }
     }
@@ -1233,7 +1270,10 @@ pub fn run_list(query: Option<String>, global: bool, all: bool, json: bool) -> H
         }
 
         // Show global packages
-        println!("\n{} Global cache packages:\n", cli_output::ICON_INFO.cyan());
+        println!(
+            "\n{} Global cache packages:\n",
+            cli_output::ICON_INFO.cyan()
+        );
         if global_cache.exists() {
             let mut has_global = false;
             for entry in
@@ -1355,7 +1395,8 @@ fn run_list_json(_query: Option<String>, global: bool, all: bool) -> HorusResult
 
     // Collect global packages
     if global || all {
-        let global_cache = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+        let global_cache =
+            crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
         if global_cache.exists() {
             if let Ok(entries) = fs::read_dir(&global_cache) {
                 for entry in entries.flatten() {
@@ -1446,7 +1487,10 @@ pub fn run_publish(freeze: bool, dry_run: bool) -> HorusResult<()> {
 
     // If --freeze flag is set, also generate freeze file
     if freeze {
-        println!("\n{} Generating freeze file...", cli_output::ICON_INFO.cyan());
+        println!(
+            "\n{} Generating freeze file...",
+            cli_output::ICON_INFO.cyan()
+        );
         let manifest = client
             .freeze()
             .map_err(|e| HorusError::Config(e.to_string()))?;
@@ -1568,7 +1612,11 @@ pub fn run_add(name: String, ver: Option<String>, driver: bool, plugin: bool) ->
     // Add to horus.yaml
     match yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version) {
         Ok(_) => {
-            println!("{} Added '{}' to horus.yaml", cli_output::ICON_SUCCESS.green(), name.cyan());
+            println!(
+                "{} Added '{}' to horus.yaml",
+                cli_output::ICON_SUCCESS.green(),
+                name.cyan()
+            );
             println!("  Type: {}", pkg_type.dimmed());
             if version != "latest" {
                 println!("  Version: {}", version.dimmed());
@@ -1603,7 +1651,11 @@ pub fn run_remove_dep(name: String) -> HorusResult<()> {
     // Remove from horus.yaml
     match yaml_utils::remove_dependency_from_horus_yaml(&horus_yaml_path, &name) {
         Ok(_) => {
-            println!("{} Removed '{}' from horus.yaml", cli_output::ICON_SUCCESS.green(), name.cyan());
+            println!(
+                "{} Removed '{}' from horus.yaml",
+                cli_output::ICON_SUCCESS.green(),
+                name.cyan()
+            );
             println!();
             println!("Note: Package remains in cache (~/.horus/cache/).");
             println!(

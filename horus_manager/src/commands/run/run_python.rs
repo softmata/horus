@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
 use crate::cli_output;
+use anyhow::{bail, Result};
 use colored::*;
 use std::env;
 use std::fs;
@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bool) -> Result<()> {
-    eprintln!("{} Setting up Python environment...", cli_output::ICON_INFO.cyan());
+    eprintln!(
+        "{} Setting up Python environment...",
+        cli_output::ICON_INFO.cyan()
+    );
 
     // Check for Python interpreter
     let python_cmd = detect_python_interpreter()?;
@@ -64,7 +67,10 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         }
     } else {
         // Direct execution for plain Python scripts
-        eprintln!("{} Executing Python script directly...", cli_output::ICON_INFO.cyan());
+        eprintln!(
+            "{} Executing Python script directly...",
+            cli_output::ICON_INFO.cyan()
+        );
 
         let mut cmd = Command::new(python_cmd);
         cmd.arg(&file);

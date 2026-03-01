@@ -115,7 +115,10 @@ impl RegistryClient {
         println!("\nWhich package source do you want to use?");
         println!("  [1] {} PyPI (Python package)", "[PYTHON]".cyan());
         println!("  [2] {} crates.io (Rust binary)", "[RUST]".cyan());
-        println!("  [3] {} Cancel installation", crate::cli_output::ICON_ERROR.red());
+        println!(
+            "  [3] {} Cancel installation",
+            crate::cli_output::ICON_ERROR.red()
+        );
 
         print!("\nChoice [1-3]: ");
         io::stdout().flush()?;
@@ -467,7 +470,10 @@ impl RegistryClient {
                             features
                         );
                     } else {
-                        println!("  {} Added features to Cargo.toml", crate::cli_output::ICON_SUCCESS.green());
+                        println!(
+                            "  {} Added features to Cargo.toml",
+                            crate::cli_output::ICON_SUCCESS.green()
+                        );
                     }
                 }
             }
@@ -491,7 +497,10 @@ impl RegistryClient {
                         );
                         println!("    Add manually to [dependencies]");
                     } else {
-                        println!("  {} Added dependencies to Cargo.toml", crate::cli_output::ICON_SUCCESS.green());
+                        println!(
+                            "  {} Added dependencies to Cargo.toml",
+                            crate::cli_output::ICON_SUCCESS.green()
+                        );
                     }
                 }
             }
@@ -510,7 +519,11 @@ impl RegistryClient {
                         .args(["install", "--quiet", dep])
                         .status();
                     if status.is_ok() {
-                        println!("  {} Installed {} via pip", crate::cli_output::ICON_SUCCESS.green(), dep);
+                        println!(
+                            "  {} Installed {} via pip",
+                            crate::cli_output::ICON_SUCCESS.green(),
+                            dep
+                        );
                     }
                 }
             }
@@ -1210,7 +1223,10 @@ impl RegistryClient {
             "  [2] {} Install to HORUS (isolated environment)",
             "".blue()
         );
-        println!("  [3] {} Cancel installation", crate::cli_output::ICON_ERROR.red());
+        println!(
+            "  [3] {} Cancel installation",
+            crate::cli_output::ICON_ERROR.red()
+        );
 
         print!("\nChoice [1-3]: ");
         io::stdout().flush()?;

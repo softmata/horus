@@ -89,7 +89,11 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
                 }
                 if !msg.fields.is_empty() {
                     let field_count = msg.fields.len();
-                    println!("      {} fields: {}", cli_output::ICON_HINT.dimmed(), field_count);
+                    println!(
+                        "      {} fields: {}",
+                        cli_output::ICON_HINT.dimmed(),
+                        field_count
+                    );
                 }
             }
             println!();
@@ -138,13 +142,17 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
     };
 
     if json {
-        let fields: Vec<_> = msg.fields.iter().map(|f| {
-            serde_json::json!({
-                "name": f.name,
-                "type": f.field_type,
-                "doc": f.doc,
+        let fields: Vec<_> = msg
+            .fields
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "name": f.name,
+                    "type": f.field_type,
+                    "doc": f.doc,
+                })
             })
-        }).collect();
+            .collect();
         let md5 = compute_message_hash(msg);
         let output = serde_json::json!({
             "name": msg.name,

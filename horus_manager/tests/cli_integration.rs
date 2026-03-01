@@ -1117,10 +1117,7 @@ fn test_verify_help() {
 
 #[test]
 fn test_removed_pkg_command_fails() {
-    horus_cmd()
-        .args(["pkg", "list"])
-        .assert()
-        .failure();
+    horus_cmd().args(["pkg", "list"]).assert().failure();
 }
 
 #[test]
@@ -1133,10 +1130,7 @@ fn test_removed_plugin_command_fails() {
 
 #[test]
 fn test_removed_add_command_fails() {
-    horus_cmd()
-        .args(["add", "some-package"])
-        .assert()
-        .failure();
+    horus_cmd().args(["add", "some-package"]).assert().failure();
 }
 
 // ============================================================================
@@ -1317,10 +1311,7 @@ fn test_hf_backward_compat() {
 #[test]
 fn test_list_rejects_positional_args() {
     // `horus list camera` should fail since we removed the positional query arg
-    horus_cmd()
-        .args(["list", "camera"])
-        .assert()
-        .failure();
+    horus_cmd().args(["list", "camera"]).assert().failure();
 }
 
 #[test]
@@ -1334,10 +1325,7 @@ fn test_install_help_shows_at_version_syntax() {
 
 #[test]
 fn test_ver_flag_hidden_from_help() {
-    let output = horus_cmd()
-        .args(["install", "--help"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["install", "--help"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     // --ver should be hidden from help output (but --verbose and --version are expected)
     // Check that "--ver " (with trailing space, the actual flag) doesn't appear
@@ -1366,7 +1354,11 @@ fn test_clean_json_output_is_valid_json() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-    assert!(parsed.is_ok(), "clean --json should produce valid JSON, got: {}", stdout);
+    assert!(
+        parsed.is_ok(),
+        "clean --json should produce valid JSON, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1385,22 +1377,22 @@ fn test_clean_json_has_no_ansi_codes() {
 
 #[test]
 fn test_check_json_flag_accepted() {
-    horus_cmd()
-        .args(["check", "--json"])
-        .assert()
-        .success();
+    horus_cmd().args(["check", "--json"]).assert().success();
 }
 
 #[test]
 fn test_check_json_output_contains_json() {
-    let output = horus_cmd()
-        .args(["check", "--json"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["check", "--json"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     // check --json includes a JSON object at the end (may have non-JSON text before it)
-    assert!(stdout.contains("\"valid\""), "check --json should contain valid field in JSON output");
-    assert!(stdout.contains("\"path\""), "check --json should contain path field in JSON output");
+    assert!(
+        stdout.contains("\"valid\""),
+        "check --json should contain valid field in JSON output"
+    );
+    assert!(
+        stdout.contains("\"path\""),
+        "check --json should contain path field in JSON output"
+    );
 }
 
 #[test]
@@ -1411,7 +1403,11 @@ fn test_cache_info_json_flag() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-    assert!(parsed.is_ok(), "cache info --json should produce valid JSON, got: {}", stdout);
+    assert!(
+        parsed.is_ok(),
+        "cache info --json should produce valid JSON, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1422,18 +1418,23 @@ fn test_cache_list_json_flag() {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-    assert!(parsed.is_ok(), "cache list --json should produce valid JSON, got: {}", stdout);
+    assert!(
+        parsed.is_ok(),
+        "cache list --json should produce valid JSON, got: {}",
+        stdout
+    );
 }
 
 #[test]
 fn test_list_json_flag() {
-    let output = horus_cmd()
-        .args(["list", "--json"])
-        .output()
-        .unwrap();
+    let output = horus_cmd().args(["list", "--json"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-    assert!(parsed.is_ok(), "list --json should produce valid JSON, got: {}", stdout);
+    assert!(
+        parsed.is_ok(),
+        "list --json should produce valid JSON, got: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -1450,8 +1451,5 @@ fn test_verify_json_flag_accepted() {
 #[test]
 fn test_discover_command_exists() {
     // discover should work (either mdns or stub)
-    horus_cmd()
-        .args(["discover", "--help"])
-        .assert()
-        .success();
+    horus_cmd().args(["discover", "--help"]).assert().success();
 }

@@ -203,7 +203,11 @@ fn view_shm_logs(
         println!("{}", "No log entries found matching filters.".dimmed());
     } else {
         println!();
-        println!("  {} {} entries shown", cli_output::ICON_HINT.dimmed(), entries.len());
+        println!(
+            "  {} {} entries shown",
+            cli_output::ICON_HINT.dimmed(),
+            entries.len()
+        );
     }
 
     // Follow mode
@@ -270,7 +274,11 @@ fn view_file_logs(
         println!("{}", "No log entries found matching filters.".dimmed());
     } else {
         println!();
-        println!("  {} {} entries shown", cli_output::ICON_HINT.dimmed(), entries.len());
+        println!(
+            "  {} {} entries shown",
+            cli_output::ICON_HINT.dimmed(),
+            entries.len()
+        );
     }
 
     if follow && !log_dirs.is_empty() {
@@ -544,7 +552,11 @@ pub fn clear_logs(all: bool) -> HorusResult<()> {
         let log_dirs = find_log_directories()?;
         for dir in log_dirs {
             if dir.exists() {
-                println!("{} Clearing logs at {}...", cli_output::ICON_INFO.cyan(), dir.display());
+                println!(
+                    "{} Clearing logs at {}...",
+                    cli_output::ICON_INFO.cyan(),
+                    dir.display()
+                );
                 if let Ok(entries) = fs::read_dir(&dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();

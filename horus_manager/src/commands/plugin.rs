@@ -6,7 +6,11 @@ use horus_core::error::{HorusError, HorusResult};
 use std::path::PathBuf;
 
 /// Search for plugins by query with optional category filter
-pub fn run_search_with_category(query: String, category: Option<String>, json: bool) -> HorusResult<()> {
+pub fn run_search_with_category(
+    query: String,
+    category: Option<String>,
+    json: bool,
+) -> HorusResult<()> {
     use crate::plugins::PluginDiscovery;
 
     let mut discovery = PluginDiscovery::new();
@@ -36,14 +40,17 @@ pub fn run_search_with_category(query: String, category: Option<String>, json: b
         .collect();
 
     if json {
-        let items: Vec<_> = results.iter().map(|p| {
-            serde_json::json!({
-                "name": p.name,
-                "description": p.description,
-                "category": format!("{:?}", p.category),
-                "features": p.features,
+        let items: Vec<_> = results
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "description": p.description,
+                    "category": format!("{:?}", p.category),
+                    "features": p.features,
+                })
             })
-        }).collect();
+            .collect();
         let output = serde_json::json!({
             "query": query,
             "category": category,
@@ -280,10 +287,7 @@ pub fn run_info(name: String) -> HorusResult<()> {
         }
         None => {
             println!("{}", format!("Plugin '{}' not found", name).red());
-            println!(
-                "{}",
-                "Use 'horus search <query>' to find plugins".dimmed()
-            );
+            println!("{}", "Use 'horus search <query>' to find plugins".dimmed());
         }
     }
     Ok(())
@@ -529,7 +533,11 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
                 );
             }
             Err(e) => {
-                println!("\n  {} Failed to register plugin: {}", cli_output::ICON_WARN.yellow(), e);
+                println!(
+                    "\n  {} Failed to register plugin: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e
+                );
             }
         }
     }
@@ -543,7 +551,11 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
             if let Err(e) =
                 yaml_utils::add_dependency_to_horus_yaml(&horus_yaml_path, &dep_string, version)
             {
-                println!("  {} Failed to update horus.yaml: {}", cli_output::ICON_WARN.yellow(), e);
+                println!(
+                    "  {} Failed to update horus.yaml: {}",
+                    cli_output::ICON_WARN.yellow(),
+                    e
+                );
             } else {
                 println!("  {} Updated horus.yaml", cli_output::ICON_SUCCESS.green());
             }

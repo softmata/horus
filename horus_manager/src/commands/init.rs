@@ -2,9 +2,9 @@
 //!
 //! Handles workspace initialization
 
+use crate::cli_output;
 use anyhow::Result;
 use colored::*;
-use crate::cli_output;
 
 /// Run the init command - initialize a HORUS workspace
 pub fn run_init(workspace_name: Option<String>) -> Result<()> {

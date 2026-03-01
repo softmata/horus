@@ -1,7 +1,7 @@
+use crate::cli_output;
 use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::progress::{self, finish_error, finish_success};
 use anyhow::{anyhow, bail, Result};
-use crate::cli_output;
 use colored::*;
 use std::collections::HashSet;
 use std::env;
@@ -88,7 +88,10 @@ pub fn execute_build_only(files: Vec<PathBuf>, release: bool, clean: bool) -> Re
         }
         "rust" => {
             // Setup Rust build using Cargo in .horus workspace
-            println!("{} Setting up Cargo workspace...", cli_output::ICON_INFO.cyan());
+            println!(
+                "{} Setting up Cargo workspace...",
+                cli_output::ICON_INFO.cyan()
+            );
 
             // Parse horus.yaml to get dependencies
             let dependencies = if Path::new(HORUS_YAML).exists() {
@@ -262,7 +265,11 @@ path = "{}"
                         pkg.name
                     );
                     eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
-                    println!("  {} Added crates.io dependency: {}", cli_output::ICON_INFO.cyan(), pkg.name);
+                    println!(
+                        "  {} Added crates.io dependency: {}",
+                        cli_output::ICON_INFO.cyan(),
+                        pkg.name
+                    );
                 }
             }
 
@@ -398,7 +405,10 @@ pub(super) fn execute_from_cargo_toml(
         super::ensure_horus_directory()?;
 
         // Parse Cargo.toml for HORUS dependencies
-        println!("{} Scanning Cargo.toml dependencies...", cli_output::ICON_INFO.cyan());
+        println!(
+            "{} Scanning Cargo.toml dependencies...",
+            cli_output::ICON_INFO.cyan()
+        );
         let horus_deps = deps::parse_cargo_dependencies(CARGO_TOML)?;
 
         if !horus_deps.is_empty() {
@@ -444,7 +454,10 @@ pub(super) fn execute_from_cargo_toml(
         }
 
         // Run the binary with environment
-        println!("{} Executing Cargo project...\n", cli_output::ICON_INFO.cyan());
+        println!(
+            "{} Executing Cargo project...\n",
+            cli_output::ICON_INFO.cyan()
+        );
         let mut cmd = Command::new(binary);
         cmd.args(args);
         let status = cmd.status()?;
@@ -835,7 +848,10 @@ pub(super) fn execute_with_scheduler(
     match language.as_str() {
         "rust" => {
             // Use Cargo-based compilation (same as horus.yaml path)
-            println!("{} Setting up Cargo workspace...", cli_output::ICON_INFO.cyan());
+            println!(
+                "{} Setting up Cargo workspace...",
+                cli_output::ICON_INFO.cyan()
+            );
 
             // Parse horus.yaml to get dependencies
             let (horus_deps, cargo_packages, path_deps, git_deps) =
@@ -1014,7 +1030,11 @@ path = "{}"
                         pkg.name
                     );
                     eprintln!("     Example: 'cargo:{}@1.0' in horus.yaml", pkg.name);
-                    println!("  {} Added crates.io dependency: {}", cli_output::ICON_INFO.cyan(), pkg.name);
+                    println!(
+                        "  {} Added crates.io dependency: {}",
+                        cli_output::ICON_INFO.cyan(),
+                        pkg.name
+                    );
                 }
             }
 
@@ -1081,11 +1101,17 @@ path = "{}"
             }
 
             fs::write(&cargo_toml_path, cargo_toml)?;
-            println!("  {} Generated Cargo.toml", cli_output::ICON_SUCCESS.green());
+            println!(
+                "  {} Generated Cargo.toml",
+                cli_output::ICON_SUCCESS.green()
+            );
 
             // Run cargo clean if requested
             if clean {
-                println!("{} Cleaning build artifacts...", cli_output::ICON_INFO.cyan());
+                println!(
+                    "{} Cleaning build artifacts...",
+                    cli_output::ICON_INFO.cyan()
+                );
                 let mut clean_cmd = Command::new("cargo");
                 clean_cmd.arg("clean");
                 clean_cmd.current_dir(".horus");
@@ -1181,7 +1207,10 @@ pub(super) fn clean_build_cache() -> Result<()> {
             let entry = entry?;
             fs::remove_file(entry.path()).ok();
         }
-        println!("  {} Cleaned .horus/cache/", cli_output::ICON_SUCCESS.green());
+        println!(
+            "  {} Cleaned .horus/cache/",
+            cli_output::ICON_SUCCESS.green()
+        );
     }
 
     // Clean .horus/bin directory
@@ -1205,7 +1234,10 @@ pub(super) fn clean_build_cache() -> Result<()> {
     let pycache = PathBuf::from("__pycache__");
     if pycache.exists() {
         fs::remove_dir_all(&pycache)?;
-        println!("  {} Cleaned __pycache__/", cli_output::ICON_SUCCESS.green());
+        println!(
+            "  {} Cleaned __pycache__/",
+            cli_output::ICON_SUCCESS.green()
+        );
     }
 
     Ok(())

@@ -270,7 +270,11 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
         )));
     };
 
-    println!("{} Stopping node: {}", cli_output::ICON_INFO.cyan(), node.name.white().bold());
+    println!(
+        "{} Stopping node: {}",
+        cli_output::ICON_INFO.cyan(),
+        node.name.white().bold()
+    );
 
     // Write control file to stop the specific node
     let control_dir = shm_control_dir();
@@ -281,7 +285,10 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     fs::write(&control_file, "stop")
         .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
 
-    println!("{} Node stop command sent", cli_output::ICON_SUCCESS.green());
+    println!(
+        "{} Node stop command sent",
+        cli_output::ICON_SUCCESS.green()
+    );
     println!(
         "  {} The scheduler will stop this node on next tick",
         "Note:".dimmed()
@@ -291,7 +298,11 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     if force {
         let pid = node.process_id;
         if pid != 0 {
-            println!("{} Force killing process (PID: {})", cli_output::ICON_WARN.yellow(), pid);
+            println!(
+                "{} Force killing process (PID: {})",
+                cli_output::ICON_WARN.yellow(),
+                pid
+            );
             let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
         }
     }
@@ -329,7 +340,10 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
     fs::write(&control_file, "restart")
         .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
 
-    println!("{} Node restart command sent", cli_output::ICON_SUCCESS.green());
+    println!(
+        "{} Node restart command sent",
+        cli_output::ICON_SUCCESS.green()
+    );
     println!(
         "  {} The scheduler will re-initialize this node on next tick",
         "Note:".dimmed()
@@ -353,7 +367,11 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
         )));
     };
 
-    println!("{} Pausing node: {}", cli_output::ICON_INFO.cyan(), node.name.white().bold());
+    println!(
+        "{} Pausing node: {}",
+        cli_output::ICON_INFO.cyan(),
+        node.name.white().bold()
+    );
 
     // Write control file to pause the specific node
     let control_dir = shm_control_dir();
@@ -389,7 +407,11 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
         )));
     };
 
-    println!("{} Resuming node: {}", cli_output::ICON_INFO.cyan(), node.name.white().bold());
+    println!(
+        "{} Resuming node: {}",
+        cli_output::ICON_INFO.cyan(),
+        node.name.white().bold()
+    );
 
     // Write control file to resume the specific node
     let control_dir = shm_control_dir();

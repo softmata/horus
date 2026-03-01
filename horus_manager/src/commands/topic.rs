@@ -181,7 +181,11 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     }
 
     println!();
-    println!("{} Received {} message(s)", cli_output::ICON_SUCCESS.green(), messages_received);
+    println!(
+        "{} Received {} message(s)",
+        cli_output::ICON_SUCCESS.green(),
+        messages_received
+    );
 
     Ok(())
 }
@@ -405,7 +409,11 @@ pub fn publish_topic(
     let sleep_duration = rate.map(|r| Duration::from_secs_f64(1.0 / r));
     let publish_count = count.unwrap_or(1);
 
-    println!("{} Publishing to: {}", cli_output::ICON_INFO.cyan(), name.white().bold());
+    println!(
+        "{} Publishing to: {}",
+        cli_output::ICON_INFO.cyan(),
+        name.white().bold()
+    );
 
     for i in 0..publish_count {
         // Write message to topic file
@@ -426,7 +434,11 @@ pub fn publish_topic(
     }
 
     println!();
-    println!("{} Published {} message(s)", cli_output::ICON_SUCCESS.green(), publish_count);
+    println!(
+        "{} Published {} message(s)",
+        cli_output::ICON_SUCCESS.green(),
+        publish_count
+    );
 
     Ok(())
 }

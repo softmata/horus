@@ -260,7 +260,10 @@ pub fn prompt_for_password_setup() -> Result<String> {
                 "{} Password must be at least 8 characters. Please try again.",
                 crate::cli_output::ICON_ERROR.red().bold()
             );
-            println!("{} Or press Enter for no password", crate::cli_output::ICON_HINT.cyan());
+            println!(
+                "{} Or press Enter for no password",
+                crate::cli_output::ICON_HINT.cyan()
+            );
             continue;
         }
 
@@ -280,7 +283,10 @@ pub fn prompt_for_password_setup() -> Result<String> {
         let hash = hash_password(&password)?;
         save_password_hash(&hash)?;
 
-        println!("{} Password set successfully!", crate::cli_output::ICON_SUCCESS.green().bold());
+        println!(
+            "{} Password set successfully!",
+            crate::cli_output::ICON_SUCCESS.green().bold()
+        );
         println!();
 
         return Ok(hash);
@@ -326,7 +332,10 @@ pub fn reset_password() -> Result<String> {
                 "{} Password must be at least 8 characters. Please try again.",
                 crate::cli_output::ICON_ERROR.red().bold()
             );
-            println!("{} Or press Enter to disable password", crate::cli_output::ICON_HINT.cyan());
+            println!(
+                "{} Or press Enter to disable password",
+                crate::cli_output::ICON_HINT.cyan()
+            );
             continue;
         }
 

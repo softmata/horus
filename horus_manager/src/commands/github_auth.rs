@@ -56,7 +56,10 @@ pub fn login() -> HorusResult<()> {
     // Open browser for GitHub OAuth
     let auth_url = format!("{}/auth/github", registry_url);
     if open::that(&auth_url).is_err() {
-        println!("{} Could not open browser automatically.", crate::cli_output::ICON_WARN.yellow());
+        println!(
+            "{} Could not open browser automatically.",
+            crate::cli_output::ICON_WARN.yellow()
+        );
         println!("Please visit: {}", auth_url.cyan());
     }
 
@@ -179,7 +182,10 @@ pub fn logout() -> HorusResult<()> {
         println!("Successfully logged out!");
         println!("  {} API key removed from local storage", "•".dimmed());
     } else {
-        println!("{} Not currently logged in", crate::cli_output::ICON_WARN.yellow());
+        println!(
+            "{} Not currently logged in",
+            crate::cli_output::ICON_WARN.yellow()
+        );
     }
 
     Ok(())
@@ -356,7 +362,10 @@ pub fn keys_list() -> HorusResult<()> {
             }
         }
         _ => {
-            println!("{} Could not fetch API keys", crate::cli_output::ICON_WARN.yellow());
+            println!(
+                "{} Could not fetch API keys",
+                crate::cli_output::ICON_WARN.yellow()
+            );
             println!();
             println!("Manage keys at: {}/dashboard/keys", registry_url.cyan());
         }
@@ -385,13 +394,22 @@ pub fn keys_revoke(key_id: &str) -> HorusResult<()> {
         .send()
     {
         Ok(response) if response.status().is_success() => {
-            println!("{} API key revoked successfully", crate::cli_output::ICON_SUCCESS.green());
+            println!(
+                "{} API key revoked successfully",
+                crate::cli_output::ICON_SUCCESS.green()
+            );
         }
         Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
-            println!("{} API key not found", crate::cli_output::ICON_WARN.yellow());
+            println!(
+                "{} API key not found",
+                crate::cli_output::ICON_WARN.yellow()
+            );
         }
         _ => {
-            println!("{} Could not revoke API key", crate::cli_output::ICON_ERROR.red());
+            println!(
+                "{} Could not revoke API key",
+                crate::cli_output::ICON_ERROR.red()
+            );
             println!();
             println!("Try revoking at: {}/dashboard/keys", registry_url.cyan());
         }

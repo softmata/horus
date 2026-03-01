@@ -5,10 +5,10 @@
 use colored::*;
 
 pub const ICON_SUCCESS: &str = "\u{2713}"; // ✓
-pub const ICON_ERROR: &str = "\u{2717}";   // ✗
-pub const ICON_WARN: &str = "\u{26a0}";    // ⚠
-pub const ICON_INFO: &str = "\u{25b6}";    // ▶
-pub const ICON_HINT: &str = "\u{00b7}";    // ·
+pub const ICON_ERROR: &str = "\u{2717}"; // ✗
+pub const ICON_WARN: &str = "\u{26a0}"; // ⚠
+pub const ICON_INFO: &str = "\u{25b6}"; // ▶
+pub const ICON_HINT: &str = "\u{00b7}"; // ·
 
 /// Print a success message: ✓ message
 pub fn success(msg: &str) {

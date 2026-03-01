@@ -14,7 +14,10 @@ pub fn create_new_project(
     // Check version compatibility before creating project
     version::check_and_prompt_update()?;
 
-    cli_output::info(&format!("Creating new HORUS project '{}'", name.green().bold()));
+    cli_output::info(&format!(
+        "Creating new HORUS project '{}'",
+        name.green().bold()
+    ));
 
     // Determine project path
     let project_path = if let Some(p) = path {
@@ -76,7 +79,10 @@ pub fn create_new_project(
     if let Ok(mut registry) = crate::workspace::WorkspaceRegistry::load() {
         if let Ok(canonical_path) = project_path.canonicalize() {
             if registry.add(name.clone(), canonical_path).is_ok() {
-                println!("  {} Registered workspace in registry", cli_output::ICON_SUCCESS.green());
+                println!(
+                    "  {} Registered workspace in registry",
+                    cli_output::ICON_SUCCESS.green()
+                );
             }
         }
     }

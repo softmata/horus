@@ -200,7 +200,10 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                             }
 
                             if file_errors.is_empty() {
-                                println!("      {} manifest valid", cli_output::ICON_SUCCESS.green());
+                                println!(
+                                    "      {} manifest valid",
+                                    cli_output::ICON_SUCCESS.green()
+                                );
                             } else {
                                 for err in &file_errors {
                                     println!("      {} {}", cli_output::ICON_ERROR.red(), err);
@@ -209,7 +212,11 @@ fn check_workspace(target_path: &Path, quiet: bool) -> HorusResult<()> {
                             }
                         }
                         Err(e) => {
-                            println!("      {} YAML parse error: {}", cli_output::ICON_ERROR.red(), e);
+                            println!(
+                                "      {} YAML parse error: {}",
+                                cli_output::ICON_ERROR.red(),
+                                e
+                            );
                             total_errors += 1;
                         }
                     }
@@ -377,17 +384,31 @@ except ImportError as e:
 
     // Summary
     println!("\n{}", "━".repeat(60).dimmed());
-    println!("{} Workspace Check Summary\n", cli_output::ICON_INFO.cyan().bold());
+    println!(
+        "{} Workspace Check Summary\n",
+        cli_output::ICON_INFO.cyan().bold()
+    );
     println!("  Files checked: {}", files_checked);
 
     if total_errors == 0 && total_warnings == 0 {
-        println!("  Status: {} All checks passed!", cli_output::ICON_SUCCESS.green());
+        println!(
+            "  Status: {} All checks passed!",
+            cli_output::ICON_SUCCESS.green()
+        );
     } else {
         if total_errors > 0 {
-            println!("  Errors: {} {}", cli_output::ICON_ERROR.red(), total_errors);
+            println!(
+                "  Errors: {} {}",
+                cli_output::ICON_ERROR.red(),
+                total_errors
+            );
         }
         if total_warnings > 0 && !quiet {
-            println!("  Warnings: {} {}", cli_output::ICON_WARN.yellow(), total_warnings);
+            println!(
+                "  Warnings: {} {}",
+                cli_output::ICON_WARN.yellow(),
+                total_warnings
+            );
         }
     }
     println!();
@@ -414,7 +435,11 @@ fn check_single_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
 /// Check a single Rust file
 fn check_rust_file(path: &Path) -> HorusResult<()> {
-    println!("{} Checking Rust file: {}\n", cli_output::ICON_INFO.cyan(), path.display());
+    println!(
+        "{} Checking Rust file: {}\n",
+        cli_output::ICON_INFO.cyan(),
+        path.display()
+    );
 
     print!("  {} Parsing Rust syntax... ", "▸".cyan());
     let content = fs::read_to_string(path)?;
@@ -422,7 +447,10 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
     match syn::parse_file(&content) {
         Ok(_) => {
             println!("{}", cli_output::ICON_SUCCESS.green());
-            println!("\n{} Syntax check passed!", cli_output::ICON_SUCCESS.green().bold());
+            println!(
+                "\n{} Syntax check passed!",
+                cli_output::ICON_SUCCESS.green().bold()
+            );
         }
         Err(e) => {
             println!("{}", cli_output::ICON_ERROR.red());
@@ -442,7 +470,11 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
 
 /// Check a single Python file
 fn check_python_file(path: &Path) -> HorusResult<()> {
-    println!("{} Checking Python file: {}\n", cli_output::ICON_INFO.cyan(), path.display());
+    println!(
+        "{} Checking Python file: {}\n",
+        cli_output::ICON_INFO.cyan(),
+        path.display()
+    );
 
     print!("  {} Parsing Python syntax... ", "▸".cyan());
 
@@ -455,7 +487,10 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
     match output {
         Ok(result) if result.status.success() => {
             println!("{}", cli_output::ICON_SUCCESS.green());
-            println!("\n{} Syntax check passed!", cli_output::ICON_SUCCESS.green().bold());
+            println!(
+                "\n{} Syntax check passed!",
+                cli_output::ICON_SUCCESS.green().bold()
+            );
         }
         Ok(result) => {
             println!("{}", cli_output::ICON_ERROR.red());
@@ -481,7 +516,11 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
 
 /// Check a horus.yaml manifest file
 fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
-    println!("{} Checking {}...\n", cli_output::ICON_INFO.cyan(), horus_yaml_path.display());
+    println!(
+        "{} Checking {}...\n",
+        cli_output::ICON_INFO.cyan(),
+        horus_yaml_path.display()
+    );
 
     let mut errors = Vec::new();
     let mut warn_msgs = Vec::new();
@@ -556,7 +595,11 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                 println!("{}", "[WARNING]".yellow());
                 warn_msgs.push(missing_license_warning.to_string());
             } else {
-                println!("{} ({})", cli_output::ICON_SUCCESS.green(), license.dimmed());
+                println!(
+                    "{} ({})",
+                    cli_output::ICON_SUCCESS.green(),
+                    license.dimmed()
+                );
             }
         } else {
             println!("{}", "[WARNING]".yellow());
@@ -717,7 +760,12 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
 
             if resolved_path.exists() {
                 if resolved_path.is_dir() {
-                    println!("    {} {} ({})", cli_output::ICON_SUCCESS.green(), spec.name, path.display());
+                    println!(
+                        "    {} {} ({})",
+                        cli_output::ICON_SUCCESS.green(),
+                        spec.name,
+                        path.display()
+                    );
                 } else {
                     println!(
                         "    {} {} ({}) - Not a directory",
@@ -797,7 +845,10 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     if !circular_found {
-        println!("    {} No circular dependencies", cli_output::ICON_SUCCESS.green());
+        println!(
+            "    {} No circular dependencies",
+            cli_output::ICON_SUCCESS.green()
+        );
     }
 
     // 7. Version Constraint Validation
@@ -1069,7 +1120,11 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                         if let Some(available) = parts[3].strip_suffix('M') {
                             if let Ok(available_mb) = available.parse::<u64>() {
                                 if available_mb < 500 {
-                                    println!("{} ({}MB free)", cli_output::ICON_WARN.yellow(), available_mb);
+                                    println!(
+                                        "{} ({}MB free)",
+                                        cli_output::ICON_WARN.yellow(),
+                                        available_mb
+                                    );
                                     if !quiet {
                                         warn_msgs.push(format!(
                                             "Low disk space: only {}MB available (recommended: 500MB+)",
@@ -1077,13 +1132,21 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                                         ));
                                     }
                                 } else if available_mb < 100 {
-                                    println!("{} ({}MB free)", cli_output::ICON_ERROR.red(), available_mb);
+                                    println!(
+                                        "{} ({}MB free)",
+                                        cli_output::ICON_ERROR.red(),
+                                        available_mb
+                                    );
                                     errors.push(format!(
                                         "Critically low disk space: only {}MB available",
                                         available_mb
                                     ));
                                 } else {
-                                    println!("{} ({}MB free)", cli_output::ICON_SUCCESS.green(), available_mb);
+                                    println!(
+                                        "{} ({}MB free)",
+                                        cli_output::ICON_SUCCESS.green(),
+                                        available_mb
+                                    );
                                 }
                             } else {
                                 println!("{}", "⊘".dimmed());
@@ -1195,7 +1258,11 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                                 }
 
                                 if missing_packages.is_empty() {
-                                    println!("{} ({})", cli_output::ICON_SUCCESS.green(), imports.len());
+                                    println!(
+                                        "{} ({})",
+                                        cli_output::ICON_SUCCESS.green(),
+                                        imports.len()
+                                    );
                                 } else {
                                     println!("{}", cli_output::ICON_ERROR.red());
                                     errors.push(format!(
@@ -1246,7 +1313,10 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
     }
 
     if errors.is_empty() {
-        println!("{} All checks passed!", cli_output::ICON_SUCCESS.green().bold());
+        println!(
+            "{} All checks passed!",
+            cli_output::ICON_SUCCESS.green().bold()
+        );
         Ok(())
     } else {
         println!(

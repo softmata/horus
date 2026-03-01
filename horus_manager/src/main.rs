@@ -90,7 +90,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     // ── Project ──────────────────────────────────────────────────────────
-
     /// Initialize HORUS workspace in current directory
     Init {
         /// Workspace name (optional, defaults to directory name)
@@ -289,7 +288,6 @@ enum Commands {
     },
 
     // ── Introspection ────────────────────────────────────────────────────
-
     /// Topic interaction (list, echo, publish)
     #[command(visible_alias = "t")]
     Topic {
@@ -440,7 +438,6 @@ enum Commands {
     Discover,
 
     // ── Packages ─────────────────────────────────────────────────────────
-
     /// Install a package or plugin (use name@version for specific version)
     #[command(visible_alias = "i")]
     Install {
@@ -523,7 +520,6 @@ enum Commands {
     },
 
     // ── Plugins ──────────────────────────────────────────────────────────
-
     /// Enable a disabled plugin
     Enable {
         /// Plugin command name to enable
@@ -549,7 +545,6 @@ enum Commands {
     },
 
     // ── Publishing & Deploy ──────────────────────────────────────────────
-
     /// Publish package to registry
     Publish {
         /// Also generate freeze file
@@ -1477,7 +1472,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
             Ok(())
         }
 
-        Commands::Clean { shm, all, dry_run, json } => commands::clean::run_clean(shm, all, dry_run, json),
+        Commands::Clean {
+            shm,
+            all,
+            dry_run,
+            json,
+        } => commands::clean::run_clean(shm, all, dry_run, json),
 
         Commands::Launch {
             file,
@@ -1523,7 +1523,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
         }
 
         // ── New top-level commands (replace horus pkg / horus plugin) ──
-
         Commands::Install {
             name,
             ver,
@@ -1534,10 +1533,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
         } => {
             // Parse name@version syntax (takes precedence over --ver)
             let (pkg_name, pkg_ver) = match name.find('@') {
-                Some(idx) => (
-                    name[..idx].to_string(),
-                    Some(name[idx + 1..].to_string()),
-                ),
+                Some(idx) => (name[..idx].to_string(), Some(name[idx + 1..].to_string())),
                 None => (name, ver),
             };
 
@@ -1552,9 +1548,11 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::List { global, all, json } => commands::pkg::run_list(None, global, all, json),
 
-        Commands::Search { query, category, json } => {
-            commands::plugin::run_search_with_category(query, category, json)
-        }
+        Commands::Search {
+            query,
+            category,
+            json,
+        } => commands::plugin::run_search_with_category(query, category, json),
 
         Commands::Update {
             package,
@@ -1564,17 +1562,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Publish { freeze, dry_run } => commands::pkg::run_publish(freeze, dry_run),
 
-        Commands::Unpublish {
-            package,
-            ver,
-            yes,
-        } => {
+        Commands::Unpublish { package, ver, yes } => {
             // Parse name@version syntax (takes precedence over positional version)
             let (pkg_name, pkg_ver) = match package.find('@') {
-                Some(idx) => (
-                    package[..idx].to_string(),
-                    package[idx + 1..].to_string(),
-                ),
+                Some(idx) => (package[..idx].to_string(), package[idx + 1..].to_string()),
                 None => match ver {
                     Some(v) => (package, v),
                     None => {
@@ -1593,8 +1584,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
-        Commands::Enable { command } => commands::pkg::enable_plugin(&command)
-            .map_err(|e| HorusError::Config(e.to_string())),
+        Commands::Enable { command } => {
+            commands::pkg::enable_plugin(&command).map_err(|e| HorusError::Config(e.to_string()))
+        }
 
         Commands::Disable { command, reason } => {
             commands::pkg::disable_plugin(&command, reason.as_deref())
