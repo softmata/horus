@@ -47,18 +47,17 @@ pub trait Node: Send {
 // Lightweight default
 let mut scheduler = Scheduler::new();
 
-// Presets via SchedulerConfig
-let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deploy());
-let mut scheduler = Scheduler::new().with_config(SchedulerConfig::safety_critical());
-let mut scheduler = Scheduler::new().with_config(SchedulerConfig::high_performance());
-let mut scheduler = Scheduler::new().with_config(SchedulerConfig::deterministic());
+// Presets on Scheduler
+let mut scheduler = Scheduler::deploy();
+let mut scheduler = Scheduler::safety_critical();
+let mut scheduler = Scheduler::high_performance();
+let mut scheduler = Scheduler::deterministic();
 
-// Custom configuration via SchedulerConfig
+// Custom configuration via SchedulerConfig (plain data bag)
 let mut config = SchedulerConfig::minimal();
 config.realtime.rt_scheduling_class = true;
 config.monitoring.black_box_enabled = true;
-let mut scheduler = Scheduler::new()
-    .with_config(config)
+let mut scheduler = Scheduler::from_config(config)
     .tick_hz(1000.0)
     .with_name("my_robot");
 

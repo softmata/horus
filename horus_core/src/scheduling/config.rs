@@ -138,16 +138,19 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Scheduler configuration
+/// Scheduler configuration — plain data bag.
 ///
-/// Use preset factories (`minimal()`, `safety_critical()`, etc.) then
-/// mutate fields directly for customization:
+/// Use `SchedulerConfig::minimal()` as a starting point, then mutate fields directly:
 ///
 /// ```rust,ignore
 /// let mut config = SchedulerConfig::minimal();
 /// config.timing.global_rate_hz = 500.0;
 /// config.realtime.wcet_enforcement = true;
+/// let mut scheduler = Scheduler::from_config(config);
 /// ```
+///
+/// For common use cases, prefer `Scheduler` presets:
+/// `Scheduler::deploy()`, `Scheduler::safety_critical()`, etc.
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     /// Execution mode
@@ -215,93 +218,4 @@ impl SchedulerConfig {
         }
     }
 
-    /// Deploy configuration for production robots.
-    ///
-    /// 60 Hz with circuit breaker, RT features (best-effort), profiling,
-    /// and a 16MB BlackBox flight recorder.
-    pub fn deploy() -> Self {
-        let mut config = Self::minimal();
-        config.circuit_breaker = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.monitoring.profiling_enabled = true;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 16;
-        config
-    }
-
-    /// Deterministic configuration for safety certification and replay
-    pub fn deterministic() -> Self {
-        let mut config = Self::minimal();
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.max_deadline_misses = 3;
-        config.monitoring.metrics_interval_ms = 100;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 100;
-        config.recording = Some(RecordingConfigYaml::full());
-        config.deterministic = Some(DeterministicConfig::default());
-        config
-    }
-
-    /// Safety-critical configuration (medical, surgical)
-    pub fn safety_critical() -> Self {
-        let mut config = Self::minimal();
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.watchdog_timeout_ms = 100;
-        config.realtime.safety_monitor = true;
-        config.realtime.max_deadline_misses = 0;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.resources.cpu_cores = Some(vec![0, 1]);
-        config.resources.numa_aware = true;
-        config.monitoring.metrics_interval_ms = 10;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 1024;
-        config.recording = Some(RecordingConfigYaml::full());
-        config
-    }
-
-    /// High-performance configuration (racing, competition)
-    pub fn high_performance() -> Self {
-        let mut config = Self::minimal();
-        config.execution = ExecutionMode::Parallel;
-        config.timing.global_rate_hz = 10000.0;
-        config.circuit_breaker = true;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_timeout_ms = 0;
-        config.realtime.max_deadline_misses = 10;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.resources.numa_aware = true;
-        config.monitoring.metrics_interval_ms = 10000;
-        config
-    }
-
-    /// Hard real-time configuration for surgical robots, CNC machines
-    pub fn hard_realtime() -> Self {
-        let mut config = Self::minimal();
-        config.circuit_breaker = true;
-        config.execution = ExecutionMode::Parallel;
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.watchdog_timeout_ms = 10;
-        config.realtime.safety_monitor = true;
-        config.realtime.max_deadline_misses = 3;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.monitoring.profiling_enabled = false;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 100;
-        config.recording = Some(RecordingConfigYaml::minimal());
-        config
-    }
 }

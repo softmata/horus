@@ -229,7 +229,24 @@ impl Scheduler {
     // PRESET CONSTRUCTORS
     // ========================================================================
 
+    /// Create a scheduler from a custom configuration.
+    ///
+    /// ```rust,ignore
+    /// let mut config = SchedulerConfig::minimal();
+    /// config.timing.global_rate_hz = 500.0;
+    /// config.realtime.wcet_enforcement = true;
+    /// let mut scheduler = Scheduler::from_config(config);
+    /// ```
+    pub fn from_config(config: super::config::SchedulerConfig) -> Self {
+        let mut s = Self::new();
+        s.apply_config(config);
+        s
+    }
+
     /// Production deployment: RT scheduling, memory locking, blackbox, profiling.
+    ///
+    /// 60 Hz with circuit breaker, RT features (best-effort), profiling,
+    /// and a 16MB BlackBox flight recorder.
     ///
     /// ```rust,ignore
     /// let mut scheduler = Scheduler::deploy();
@@ -237,37 +254,90 @@ impl Scheduler {
     /// scheduler.run()?;
     /// ```
     pub fn deploy() -> Self {
-        let mut s = Self::new();
-        s.apply_config(super::config::SchedulerConfig::deploy());
-        s
+        let mut config = super::config::SchedulerConfig::minimal();
+        config.circuit_breaker = true;
+        config.realtime.deadline_monitoring = true;
+        config.realtime.watchdog_enabled = true;
+        config.realtime.memory_locking = true;
+        config.realtime.rt_scheduling_class = true;
+        config.monitoring.profiling_enabled = true;
+        config.monitoring.black_box_enabled = true;
+        config.monitoring.black_box_size_mb = 16;
+        Self::from_config(config)
     }
 
     /// Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor.
     pub fn safety_critical() -> Self {
-        let mut s = Self::new();
-        s.apply_config(super::config::SchedulerConfig::safety_critical());
-        s
+        let mut config = super::config::SchedulerConfig::minimal();
+        config.timing.global_rate_hz = 1000.0;
+        config.realtime.wcet_enforcement = true;
+        config.realtime.deadline_monitoring = true;
+        config.realtime.watchdog_enabled = true;
+        config.realtime.watchdog_timeout_ms = 100;
+        config.realtime.safety_monitor = true;
+        config.realtime.max_deadline_misses = 0;
+        config.realtime.memory_locking = true;
+        config.realtime.rt_scheduling_class = true;
+        config.resources.cpu_cores = Some(vec![0, 1]);
+        config.resources.numa_aware = true;
+        config.monitoring.metrics_interval_ms = 10;
+        config.monitoring.black_box_enabled = true;
+        config.monitoring.black_box_size_mb = 1024;
+        config.recording = Some(super::config::RecordingConfigYaml::full());
+        Self::from_config(config)
     }
 
     /// High-performance: parallel execution, 10kHz, WCET, NUMA-aware.
     pub fn high_performance() -> Self {
-        let mut s = Self::new();
-        s.apply_config(super::config::SchedulerConfig::high_performance());
-        s
+        let mut config = super::config::SchedulerConfig::minimal();
+        config.execution = super::config::ExecutionMode::Parallel;
+        config.timing.global_rate_hz = 10000.0;
+        config.circuit_breaker = true;
+        config.realtime.wcet_enforcement = true;
+        config.realtime.deadline_monitoring = true;
+        config.realtime.watchdog_timeout_ms = 0;
+        config.realtime.max_deadline_misses = 10;
+        config.realtime.memory_locking = true;
+        config.realtime.rt_scheduling_class = true;
+        config.resources.numa_aware = true;
+        config.monitoring.metrics_interval_ms = 10000;
+        Self::from_config(config)
     }
 
     /// Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox.
     pub fn hard_realtime() -> Self {
-        let mut s = Self::new();
-        s.apply_config(super::config::SchedulerConfig::hard_realtime());
-        s
+        let mut config = super::config::SchedulerConfig::minimal();
+        config.circuit_breaker = true;
+        config.execution = super::config::ExecutionMode::Parallel;
+        config.timing.global_rate_hz = 1000.0;
+        config.realtime.wcet_enforcement = true;
+        config.realtime.deadline_monitoring = true;
+        config.realtime.watchdog_enabled = true;
+        config.realtime.watchdog_timeout_ms = 10;
+        config.realtime.safety_monitor = true;
+        config.realtime.max_deadline_misses = 3;
+        config.realtime.memory_locking = true;
+        config.realtime.rt_scheduling_class = true;
+        config.monitoring.profiling_enabled = false;
+        config.monitoring.black_box_enabled = true;
+        config.monitoring.black_box_size_mb = 100;
+        config.recording = Some(super::config::RecordingConfigYaml::minimal());
+        Self::from_config(config)
     }
 
     /// Deterministic execution for simulation and replay.
     pub fn deterministic() -> Self {
-        let mut s = Self::new();
-        s.apply_config(super::config::SchedulerConfig::deterministic());
-        s
+        use super::deterministic::DeterministicConfig;
+        let mut config = super::config::SchedulerConfig::minimal();
+        config.timing.global_rate_hz = 1000.0;
+        config.realtime.deadline_monitoring = true;
+        config.realtime.max_deadline_misses = 3;
+        config.monitoring.metrics_interval_ms = 100;
+        config.monitoring.black_box_enabled = true;
+        config.monitoring.black_box_size_mb = 100;
+        config.recording = Some(super::config::RecordingConfigYaml::full());
+        config.deterministic = Some(DeterministicConfig::default());
+        Self::from_config(config)
     }
 
     // ========================================================================

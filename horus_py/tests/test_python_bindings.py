@@ -370,19 +370,37 @@ class TestPythonNode:
 # ============================================================================
 
 class TestSchedulerConfig:
-    """Test SchedulerConfig preset methods."""
+    """Test SchedulerConfig as a plain data bag."""
 
-    def test_standard_config(self):
+    def test_minimal_config(self):
         from horus._horus import PySchedulerConfig as SchedulerConfig
-        config = SchedulerConfig.standard()
+        config = SchedulerConfig.minimal()
         assert config is not None
+        assert config.tick_rate == 60.0
 
-    def test_safety_critical_config(self):
+    def test_config_field_mutation(self):
         from horus._horus import PySchedulerConfig as SchedulerConfig
-        config = SchedulerConfig.safety_critical()
-        assert config is not None
+        config = SchedulerConfig.minimal()
+        config.tick_rate = 500.0
+        config.wcet_enforcement = True
+        assert config.tick_rate == 500.0
+        assert config.wcet_enforcement is True
 
-    def test_high_performance_config(self):
-        from horus._horus import PySchedulerConfig as SchedulerConfig
-        config = SchedulerConfig.high_performance()
-        assert config is not None
+
+class TestSchedulerPresets:
+    """Test Scheduler preset constructors."""
+
+    def test_deploy_preset(self):
+        from horus._horus import PyScheduler
+        scheduler = PyScheduler.deploy()
+        assert scheduler is not None
+
+    def test_safety_critical_preset(self):
+        from horus._horus import PyScheduler
+        scheduler = PyScheduler.safety_critical()
+        assert scheduler is not None
+
+    def test_high_performance_preset(self):
+        from horus._horus import PyScheduler
+        scheduler = PyScheduler.high_performance()
+        assert scheduler is not None

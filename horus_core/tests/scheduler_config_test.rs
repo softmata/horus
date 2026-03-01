@@ -4,11 +4,9 @@ use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
 
-/// Verify all presets produce the exact expected field values.
-/// Guards against regressions in the mutation-based preset construction.
+/// Verify SchedulerConfig::minimal() produces the exact expected field values.
 #[test]
-fn test_preset_field_values() {
-    // --- minimal ---
+fn test_minimal_config_field_values() {
     let m = SchedulerConfig::minimal();
     assert!(matches!(m.execution, ExecutionMode::Sequential));
     assert_eq!(m.timing.global_rate_hz, 60.0);
@@ -30,84 +28,6 @@ fn test_preset_field_values() {
     assert!(m.monitoring.telemetry_endpoint.is_none());
     assert!(m.recording.is_none());
     assert!(m.deterministic.is_none());
-
-    // --- deploy = minimal + RT flags + blackbox ---
-    let d = SchedulerConfig::deploy();
-    assert!(d.circuit_breaker);
-    assert!(d.realtime.deadline_monitoring);
-    assert!(d.realtime.watchdog_enabled);
-    assert!(d.realtime.memory_locking);
-    assert!(d.realtime.rt_scheduling_class);
-    assert!(d.monitoring.profiling_enabled);
-    assert!(d.monitoring.black_box_enabled);
-    assert_eq!(d.monitoring.black_box_size_mb, 16);
-
-    // --- deterministic ---
-    let det = SchedulerConfig::deterministic();
-    assert_eq!(det.timing.global_rate_hz, 1000.0);
-    assert!(!det.circuit_breaker);
-    assert!(det.realtime.deadline_monitoring);
-    assert_eq!(det.realtime.max_deadline_misses, 3);
-    assert_eq!(det.monitoring.metrics_interval_ms, 100);
-    assert!(det.monitoring.black_box_enabled);
-    assert_eq!(det.monitoring.black_box_size_mb, 100);
-    assert!(det.recording.is_some());
-    assert!(det.deterministic.is_some());
-
-    // --- safety_critical ---
-    let sc = SchedulerConfig::safety_critical();
-    assert_eq!(sc.timing.global_rate_hz, 1000.0);
-    assert!(!sc.circuit_breaker);
-    assert!(sc.realtime.wcet_enforcement);
-    assert!(sc.realtime.deadline_monitoring);
-    assert!(sc.realtime.watchdog_enabled);
-    assert_eq!(sc.realtime.watchdog_timeout_ms, 100);
-    assert!(sc.realtime.safety_monitor);
-    assert_eq!(sc.realtime.max_deadline_misses, 0);
-    assert!(sc.realtime.memory_locking);
-    assert!(sc.realtime.rt_scheduling_class);
-    assert_eq!(sc.resources.cpu_cores, Some(vec![0, 1]));
-    assert!(sc.resources.numa_aware);
-    assert!(!sc.monitoring.profiling_enabled);
-    assert_eq!(sc.monitoring.metrics_interval_ms, 10);
-    assert!(sc.monitoring.black_box_enabled);
-    assert_eq!(sc.monitoring.black_box_size_mb, 1024);
-    assert!(sc.recording.is_some());
-
-    // --- high_performance ---
-    let hp = SchedulerConfig::high_performance();
-    assert!(matches!(hp.execution, ExecutionMode::Parallel));
-    assert_eq!(hp.timing.global_rate_hz, 10000.0);
-    assert!(hp.circuit_breaker);
-    assert!(hp.realtime.wcet_enforcement);
-    assert!(hp.realtime.deadline_monitoring);
-    assert!(!hp.realtime.watchdog_enabled);
-    assert_eq!(hp.realtime.watchdog_timeout_ms, 0);
-    assert_eq!(hp.realtime.max_deadline_misses, 10);
-    assert!(hp.realtime.memory_locking);
-    assert!(hp.realtime.rt_scheduling_class);
-    assert!(hp.resources.numa_aware);
-    assert_eq!(hp.monitoring.metrics_interval_ms, 10000);
-    assert!(!hp.monitoring.black_box_enabled);
-    assert!(hp.recording.is_none());
-
-    // --- hard_realtime ---
-    let hr = SchedulerConfig::hard_realtime();
-    assert!(matches!(hr.execution, ExecutionMode::Parallel));
-    assert_eq!(hr.timing.global_rate_hz, 1000.0);
-    assert!(hr.circuit_breaker);
-    assert!(hr.realtime.wcet_enforcement);
-    assert!(hr.realtime.deadline_monitoring);
-    assert!(hr.realtime.watchdog_enabled);
-    assert_eq!(hr.realtime.watchdog_timeout_ms, 10);
-    assert!(hr.realtime.safety_monitor);
-    assert_eq!(hr.realtime.max_deadline_misses, 3);
-    assert!(hr.realtime.memory_locking);
-    assert!(hr.realtime.rt_scheduling_class);
-    assert!(!hr.monitoring.profiling_enabled);
-    assert!(hr.monitoring.black_box_enabled);
-    assert_eq!(hr.monitoring.black_box_size_mb, 100);
-    assert!(hr.recording.is_some());
 }
 
 mod common;

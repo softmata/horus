@@ -1,10 +1,10 @@
 use horus::scheduling::config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
 use pyo3::prelude::*;
 
-/// Full scheduler configuration for Python, faithfully mirroring horus_core's SchedulerConfig.
+/// Full scheduler configuration for Python — plain data bag.
 ///
-/// All fields from the Rust config are exposed so Python users get identical behavior
-/// to Rust users when using presets like `safety_critical()` or `high_performance()`.
+/// All fields from the Rust config are exposed. For common use cases,
+/// prefer `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
 #[pyclass(module = "horus._horus")]
 #[derive(Clone, Debug)]
 pub struct PySchedulerConfig {
@@ -108,45 +108,13 @@ impl PySchedulerConfig {
     }
 
     /// Create a minimal configuration with sensible defaults.
+    ///
+    /// For common use cases, prefer Scheduler presets:
+    /// `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
     #[staticmethod]
     pub fn minimal() -> Self {
         let rust_config = SchedulerConfig::minimal();
         Self::from_rust_config(rust_config, "Minimal")
-    }
-
-    /// Create a production deployment configuration.
-    #[staticmethod]
-    pub fn deploy() -> Self {
-        let rust_config = SchedulerConfig::deploy();
-        Self::from_rust_config(rust_config, "Deploy")
-    }
-
-    /// Create safety-critical configuration
-    #[staticmethod]
-    pub fn safety_critical() -> Self {
-        let rust_config = SchedulerConfig::safety_critical();
-        Self::from_rust_config(rust_config, "SafetyCritical")
-    }
-
-    /// Create high-performance configuration
-    #[staticmethod]
-    pub fn high_performance() -> Self {
-        let rust_config = SchedulerConfig::high_performance();
-        Self::from_rust_config(rust_config, "HighPerformance")
-    }
-
-    /// Create hard real-time configuration
-    #[staticmethod]
-    pub fn hard_realtime() -> Self {
-        let rust_config = SchedulerConfig::hard_realtime();
-        Self::from_rust_config(rust_config, "HardRealTime")
-    }
-
-    /// Create deterministic configuration
-    #[staticmethod]
-    pub fn deterministic() -> Self {
-        let rust_config = SchedulerConfig::deterministic();
-        Self::from_rust_config(rust_config, "Deterministic")
     }
 
     // ========================================================================

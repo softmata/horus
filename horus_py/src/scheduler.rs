@@ -288,6 +288,17 @@ pub struct PyScheduler {
 }
 
 impl PyScheduler {
+    fn wrap_core(core_sched: CoreScheduler, tick_rate: f64) -> PyResult<Self> {
+        let running_flag = core_sched.running_flag();
+        Ok(PyScheduler {
+            inner: Mutex::new(Some(core_sched)),
+            tick_rate_hz: tick_rate,
+            scheduler_running: running_flag,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            removed_nodes: Mutex::new(HashSet::new()),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn add_node_internal(
         &self,
@@ -489,15 +500,46 @@ impl PyScheduler {
 
         let mut core_sched = CoreScheduler::new().with_name("PythonScheduler");
         core_sched.apply_config(core_config);
-        let running_flag = core_sched.running_flag();
+        Self::wrap_core(core_sched, tick_rate)
+    }
 
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: tick_rate,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
+    // ========================================================================
+    // PRESET CONSTRUCTORS
+    // ========================================================================
+
+    /// Production deployment: RT scheduling, memory locking, blackbox, profiling.
+    #[staticmethod]
+    fn deploy() -> PyResult<Self> {
+        let core_sched = CoreScheduler::deploy().with_name("PythonScheduler");
+        Self::wrap_core(core_sched, 60.0)
+    }
+
+    /// Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor.
+    #[staticmethod]
+    fn safety_critical() -> PyResult<Self> {
+        let core_sched = CoreScheduler::safety_critical().with_name("PythonScheduler");
+        Self::wrap_core(core_sched, 1000.0)
+    }
+
+    /// High-performance: parallel execution, 10kHz, WCET, NUMA-aware.
+    #[staticmethod]
+    fn high_performance() -> PyResult<Self> {
+        let core_sched = CoreScheduler::high_performance().with_name("PythonScheduler");
+        Self::wrap_core(core_sched, 10000.0)
+    }
+
+    /// Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox.
+    #[staticmethod]
+    fn hard_realtime() -> PyResult<Self> {
+        let core_sched = CoreScheduler::hard_realtime().with_name("PythonScheduler");
+        Self::wrap_core(core_sched, 1000.0)
+    }
+
+    /// Deterministic execution for simulation and replay.
+    #[staticmethod]
+    fn deterministic() -> PyResult<Self> {
+        let core_sched = CoreScheduler::deterministic().with_name("PythonScheduler");
+        Self::wrap_core(core_sched, 1000.0)
     }
 
     /// Start building a node configuration (fluent API).

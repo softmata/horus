@@ -70,19 +70,9 @@ except ImportError:
     # Mock SchedulerConfig for testing
     class SchedulerConfig:
         def __init__(self):
-            pass
+            self.tick_rate = 60.0
         @staticmethod
         def minimal(): return SchedulerConfig()
-        @staticmethod
-        def deploy(): return SchedulerConfig()
-        @staticmethod
-        def safety_critical(): return SchedulerConfig()
-        @staticmethod
-        def high_performance(): return SchedulerConfig()
-        @staticmethod
-        def hard_realtime(): return SchedulerConfig()
-        @staticmethod
-        def deterministic(): return SchedulerConfig()
 
     def get_version(): return "0.1.0-mock"
 
@@ -770,18 +760,24 @@ class Scheduler:
         scheduler.run()
     """
 
-    def __init__(self, config: Optional['SchedulerConfig'] = None):
+    def __init__(self, config: Optional['SchedulerConfig'] = None, _inner=None):
         """
         Create a scheduler.
 
         Args:
             config: Optional SchedulerConfig to configure the scheduler
         """
-        if _PyScheduler:
+        if _inner is not None:
+            # Used by preset constructors to wrap a pre-built PyScheduler
+            self._scheduler = _inner
+        elif _PyScheduler:
             if config is None:
                 # Default to 1000Hz global rate to support fine-grained per-node rate control
-                config = SchedulerConfig.builder().rate_hz(1000.0).build()
-            self._scheduler = _PyScheduler(config)
+                default_config = SchedulerConfig.minimal()
+                default_config.tick_rate = 1000.0
+                self._scheduler = _PyScheduler(default_config)
+            else:
+                self._scheduler = _PyScheduler(config)
         else:
             self._scheduler = None
         self._nodes = []
@@ -789,27 +785,37 @@ class Scheduler:
     @staticmethod
     def deploy() -> 'Scheduler':
         """Create a production deployment scheduler."""
-        return Scheduler(config=SchedulerConfig.deploy())
+        if _PyScheduler:
+            return Scheduler(_inner=_PyScheduler.deploy())
+        return Scheduler()
 
     @staticmethod
     def safety_critical() -> 'Scheduler':
         """Create a safety-critical scheduler."""
-        return Scheduler(config=SchedulerConfig.safety_critical())
+        if _PyScheduler:
+            return Scheduler(_inner=_PyScheduler.safety_critical())
+        return Scheduler()
 
     @staticmethod
     def high_performance() -> 'Scheduler':
         """Create a high-performance scheduler."""
-        return Scheduler(config=SchedulerConfig.high_performance())
+        if _PyScheduler:
+            return Scheduler(_inner=_PyScheduler.high_performance())
+        return Scheduler()
 
     @staticmethod
     def deterministic() -> 'Scheduler':
         """Create a deterministic scheduler."""
-        return Scheduler(config=SchedulerConfig.deterministic())
+        if _PyScheduler:
+            return Scheduler(_inner=_PyScheduler.deterministic())
+        return Scheduler()
 
     @staticmethod
     def hard_realtime() -> 'Scheduler':
         """Create a hard real-time scheduler."""
-        return Scheduler(config=SchedulerConfig.hard_realtime())
+        if _PyScheduler:
+            return Scheduler(_inner=_PyScheduler.hard_realtime())
+        return Scheduler()
 
     def node(self, node: 'Node'):
         """

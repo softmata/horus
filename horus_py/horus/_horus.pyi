@@ -244,8 +244,33 @@ class PyScheduler:
     Supports per-node rate control for flexible scheduling.
     """
 
-    def __init__(self) -> None:
-        """Create a new Scheduler."""
+    def __init__(self, config: Optional['PySchedulerConfig'] = None) -> None:
+        """Create a new Scheduler with optional config."""
+        ...
+
+    @staticmethod
+    def deploy() -> 'PyScheduler':
+        """Production deployment: RT scheduling, memory locking, blackbox, profiling."""
+        ...
+
+    @staticmethod
+    def safety_critical() -> 'PyScheduler':
+        """Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor."""
+        ...
+
+    @staticmethod
+    def high_performance() -> 'PyScheduler':
+        """High-performance: parallel execution, 10kHz, WCET, NUMA-aware."""
+        ...
+
+    @staticmethod
+    def hard_realtime() -> 'PyScheduler':
+        """Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox."""
+        ...
+
+    @staticmethod
+    def deterministic() -> 'PyScheduler':
+        """Deterministic execution for simulation and replay."""
         ...
 
     def add(
