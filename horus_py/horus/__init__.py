@@ -792,22 +792,22 @@ class Scheduler:
         return Scheduler(config=SchedulerConfig.deploy())
 
     @staticmethod
-    def preset_safety_critical() -> 'Scheduler':
+    def safety_critical() -> 'Scheduler':
         """Create a safety-critical scheduler."""
         return Scheduler(config=SchedulerConfig.safety_critical())
 
     @staticmethod
-    def preset_high_performance() -> 'Scheduler':
+    def high_performance() -> 'Scheduler':
         """Create a high-performance scheduler."""
         return Scheduler(config=SchedulerConfig.high_performance())
 
     @staticmethod
-    def preset_deterministic() -> 'Scheduler':
+    def deterministic() -> 'Scheduler':
         """Create a deterministic scheduler."""
         return Scheduler(config=SchedulerConfig.deterministic())
 
     @staticmethod
-    def preset_hard_realtime() -> 'Scheduler':
+    def hard_realtime() -> 'Scheduler':
         """Create a hard real-time scheduler."""
         return Scheduler(config=SchedulerConfig.hard_realtime())
 
