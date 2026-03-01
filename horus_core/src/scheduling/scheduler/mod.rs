@@ -189,21 +189,41 @@ impl Scheduler {
     /// // Preset + override
     /// let scheduler = Scheduler::deploy().tick_hz(500.0);
     /// ```
+    /// Create a scheduler with `SchedulerConfig::minimal()` defaults.
+    ///
+    /// This is equivalent to `Scheduler::from_config(SchedulerConfig::minimal())`.
+    /// `SchedulerConfig::minimal()` is the single source of truth for defaults.
     pub fn new() -> Self {
+        Self::from_config(super::config::SchedulerConfig::minimal())
+    }
+
+    // ========================================================================
+    // PRESET CONSTRUCTORS
+    // ========================================================================
+
+    /// Create a scheduler from a custom configuration.
+    ///
+    /// ```rust,ignore
+    /// let mut config = SchedulerConfig::minimal();
+    /// config.timing.global_rate_hz = 500.0;
+    /// config.realtime.wcet_enforcement = true;
+    /// let mut scheduler = Scheduler::from_config(config);
+    /// ```
+    pub fn from_config(config: super::config::SchedulerConfig) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
 
         // Detect runtime capabilities (~30-100μs one-time cost)
         let caps = RuntimeCapabilities::detect();
 
-        Self {
+        let mut s = Self {
             nodes: Vec::new(),
             running,
             execution_mode: ExecutionMode::Sequential,
             scheduler_name: "Scheduler".to_string(),
 
             tick: TickState {
-                period: Duration::from_micros(16667), // ~60Hz default
+                period: Duration::from_micros(16667), // overwritten by apply_config
                 current: 0,
                 last_instant: now,
             },
@@ -222,23 +242,7 @@ impl Scheduler {
             replay: None,
             recording: None,
             deterministic: None,
-        }
-    }
-
-    // ========================================================================
-    // PRESET CONSTRUCTORS
-    // ========================================================================
-
-    /// Create a scheduler from a custom configuration.
-    ///
-    /// ```rust,ignore
-    /// let mut config = SchedulerConfig::minimal();
-    /// config.timing.global_rate_hz = 500.0;
-    /// config.realtime.wcet_enforcement = true;
-    /// let mut scheduler = Scheduler::from_config(config);
-    /// ```
-    pub fn from_config(config: super::config::SchedulerConfig) -> Self {
-        let mut s = Self::new();
+        };
         s.apply_config(config);
         s
     }
