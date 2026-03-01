@@ -278,18 +278,6 @@ class PyScheduler:
         """
         ...
 
-    def set_tick_rate(self, rate_hz: float) -> None:
-        """
-        Set global scheduler tick rate.
-
-        This is the baseline rate. Individual nodes can have different rates
-        using per-node rate control.
-
-        Args:
-            rate_hz: Global tick rate in Hz (must be 0-10000)
-        """
-        ...
-
     def run(self) -> None:
         """Run the scheduler indefinitely until stop() is called."""
         ...
@@ -332,15 +320,6 @@ class PyScheduler:
 
         Returns:
             PyNodeInfo instance if node exists, None otherwise
-        """
-        ...
-
-    def get_nodes(self) -> list[str]:
-        """
-        Get list of registered node names.
-
-        Returns:
-            List of node names
         """
         ...
 

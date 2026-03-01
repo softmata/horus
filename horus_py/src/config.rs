@@ -104,14 +104,21 @@ pub struct PySchedulerConfig {
 impl PySchedulerConfig {
     #[new]
     pub fn new() -> Self {
-        Self::standard()
+        Self::minimal()
     }
 
-    /// Create standard configuration (default)
+    /// Create a minimal configuration with sensible defaults.
     #[staticmethod]
-    pub fn standard() -> Self {
+    pub fn minimal() -> Self {
         let rust_config = SchedulerConfig::minimal();
-        Self::from_rust_config(rust_config, "Standard")
+        Self::from_rust_config(rust_config, "Minimal")
+    }
+
+    /// Create a production deployment configuration.
+    #[staticmethod]
+    pub fn deploy() -> Self {
+        let rust_config = SchedulerConfig::deploy();
+        Self::from_rust_config(rust_config, "Deploy")
     }
 
     /// Create safety-critical configuration
@@ -142,24 +149,8 @@ impl PySchedulerConfig {
         Self::from_rust_config(rust_config, "Deterministic")
     }
 
-    /// Create a minimal configuration builder.
-    ///
-    /// Example:
-    ///     config = SchedulerConfig.builder().rate_hz(1000).build()
-    #[staticmethod]
-    pub fn builder() -> Self {
-        let rust_config = SchedulerConfig::minimal();
-        Self::from_rust_config(rust_config, "Builder")
-    }
-
-    /// Create a minimal configuration (alias for builder).
-    #[staticmethod]
-    pub fn minimal() -> Self {
-        Self::builder()
-    }
-
     // ========================================================================
-    // FLAT SETTERS (chainable methods matching Rust API)
+    // COMPOUND BUILDER METHODS (set multiple fields or improve readability)
     // ========================================================================
 
     /// Set tick rate in Hz and return self for chaining.
@@ -181,30 +172,6 @@ impl PySchedulerConfig {
         self.clone()
     }
 
-    /// Enable circuit breaker.
-    pub fn enable_circuit_breaker(&mut self) -> Self {
-        self.circuit_breaker = true;
-        self.clone()
-    }
-
-    /// Disable circuit breaker.
-    pub fn no_circuit_breaker(&mut self) -> Self {
-        self.circuit_breaker = false;
-        self.clone()
-    }
-
-    /// Enable deadline monitoring.
-    pub fn enable_deadline_monitoring(&mut self) -> Self {
-        self.deadline_monitoring = true;
-        self.clone()
-    }
-
-    /// Enable profiling.
-    pub fn enable_profiling(&mut self) -> Self {
-        self.profiling = true;
-        self.clone()
-    }
-
     /// Set execution mode to parallel.
     pub fn parallel(&mut self) -> Self {
         self.execution_mode = "parallel".to_string();
@@ -217,34 +184,10 @@ impl PySchedulerConfig {
         self.clone()
     }
 
-    /// Enable WCET enforcement.
-    pub fn wcet(&mut self) -> Self {
-        self.wcet_enforcement = true;
-        self.clone()
-    }
-
-    /// Enable memory locking (mlockall).
-    pub fn memory_lock(&mut self) -> Self {
-        self.memory_locking = true;
-        self.clone()
-    }
-
-    /// Enable real-time scheduling class (SCHED_FIFO/RR).
-    pub fn rt_scheduling(&mut self) -> Self {
-        self.rt_scheduling_class = true;
-        self.clone()
-    }
-
     /// Set black box buffer size in MB and enable it.
     pub fn blackbox_mb(&mut self, mb: usize) -> Self {
         self.black_box_enabled = true;
         self.black_box_size_mb = mb;
-        self.clone()
-    }
-
-    /// Enable safety monitor.
-    pub fn enable_safety_monitor(&mut self) -> Self {
-        self.safety_monitor = true;
         self.clone()
     }
 
@@ -257,29 +200,6 @@ impl PySchedulerConfig {
     /// Set telemetry endpoint.
     pub fn telemetry(&mut self, endpoint: String) -> Self {
         self.telemetry_endpoint = Some(endpoint);
-        self.clone()
-    }
-
-    /// Enable deterministic execution (DeterministicConfig::strict()).
-    pub fn enable_deterministic(&mut self) -> Self {
-        self.deterministic_enabled = true;
-        self.clone()
-    }
-
-    /// Enable recording (RecordingConfigYaml::full()).
-    pub fn enable_recording(&mut self) -> Self {
-        self.recording_enabled = true;
-        self.clone()
-    }
-
-    /// Set max deadline misses before emergency stop.
-    pub fn max_misses(&mut self, n: u64) -> Self {
-        self.max_deadline_misses = n;
-        self.clone()
-    }
-
-    /// Finalize configuration (no-op, for builder pattern).
-    pub fn build(&self) -> Self {
         self.clone()
     }
 

@@ -127,8 +127,9 @@ fn test_scheduler_add_basic() {
         .order(0)
         .done();
 
-    let info = scheduler.node_info("basic_node");
-    assert!(info.is_some());
+    let metrics = scheduler.metrics();
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].name, "basic_node");
 }
 
 // ============================================================================
@@ -181,27 +182,24 @@ fn test_scheduler_set_node_rate_nonexistent() {
 }
 
 // ============================================================================
-// Node Info Tests
+// Node Info Tests (via metrics())
 // ============================================================================
 
 #[test]
-fn test_scheduler_node_info_existing() {
+fn test_scheduler_metrics_existing() {
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("info_node")).order(0).done();
 
-    let info = scheduler.node_info("info_node");
-    assert!(info.is_some());
-
-    let info_map = info.unwrap();
-    assert!(info_map.contains_key("name"));
-    assert_eq!(info_map.get("name").unwrap(), "info_node");
+    let metrics = scheduler.metrics();
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].name, "info_node");
 }
 
 #[test]
-fn test_scheduler_node_info_nonexistent() {
+fn test_scheduler_metrics_empty() {
     let scheduler = Scheduler::new();
-    let info = scheduler.node_info("nonexistent");
-    assert!(info.is_none());
+    let metrics = scheduler.metrics();
+    assert!(metrics.is_empty());
 }
 
 #[test]
@@ -209,27 +207,6 @@ fn test_scheduler_node_list_empty() {
     let scheduler = Scheduler::new();
     let nodes = scheduler.node_list();
     assert!(nodes.is_empty());
-}
-
-// ============================================================================
-// Monitoring Summary Tests
-// ============================================================================
-
-#[test]
-fn test_scheduler_monitoring_summary() {
-    let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("mon_node1")).order(0).done();
-    scheduler.add(CounterNode::new("mon_node2")).order(1).done();
-
-    let summary = scheduler.monitoring_summary();
-    assert_eq!(summary.len(), 2);
-}
-
-#[test]
-fn test_scheduler_monitoring_summary_empty() {
-    let scheduler = Scheduler::new();
-    let summary = scheduler.monitoring_summary();
-    assert!(summary.is_empty());
 }
 
 // ============================================================================

@@ -188,21 +188,6 @@ impl NodeRegistration {
         self
     }
 
-    /// Set the WCET budget in milliseconds.
-    ///
-    /// Automatically marks the node as RT.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// NodeRegistration::new(slow_node)
-    ///     .wcet_ms(5)  // Must complete within 5ms
-    /// ```
-    pub fn wcet_ms(mut self, ms: u64) -> Self {
-        self.is_rt = true;
-        self.wcet_budget = Some(Duration::from_millis(ms));
-        self
-    }
-
     /// Set an explicit execution tier.
     ///
     /// Overrides automatic tier classification.
@@ -320,12 +305,6 @@ impl<'a> NodeBuilder<'a> {
     /// Set the deadline in milliseconds.
     pub fn deadline_ms(mut self, ms: u64) -> Self {
         self.config = self.config.deadline_ms(ms);
-        self
-    }
-
-    /// Set the WCET budget in milliseconds.
-    pub fn wcet_ms(mut self, ms: u64) -> Self {
-        self.config = self.config.wcet_ms(ms);
         self
     }
 

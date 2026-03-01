@@ -1102,36 +1102,8 @@ impl Scheduler {
 
     /// Apply recording configuration for the record/replay system.
     fn apply_recording_config(&mut self, recording_yaml: &super::config::RecordingConfigYaml) {
-        // Generate session name if not provided
-        let session_name = recording_yaml.session_name.clone().unwrap_or_else(|| {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            format!("session_{}", timestamp)
-        });
-
-        // Convert YAML config to internal RecordingConfig
-        let mut recording_config = RecordingConfig::new(session_name.clone());
-        recording_config.compress = recording_yaml.compress;
-        recording_config.interval = (recording_yaml.interval as u64).max(1);
-
-        if let Some(ref output_dir) = recording_yaml.output_dir {
-            recording_config.base_dir = PathBuf::from(output_dir);
-        }
-
-        // Store include/exclude filters in the config
-        recording_config.include_nodes = recording_yaml.include_nodes.clone();
-        recording_config.exclude_nodes = recording_yaml.exclude_nodes.clone();
-
-        // Wire up recording control flags
-        if recording_yaml.max_size_mb > 0 {
-            recording_config.max_size = recording_yaml.max_size_mb * 1024 * 1024;
-        }
-        recording_config.record_inputs = recording_yaml.record_inputs;
-        recording_config.record_outputs = recording_yaml.record_outputs;
-        recording_config.record_timing = recording_yaml.record_timing;
+        let recording_config = RecordingConfig::from(recording_yaml.clone());
+        let session_name = recording_config.session_name.clone();
 
         // Generate unique scheduler ID
         let scheduler_id = format!(
@@ -1143,16 +1115,15 @@ impl Scheduler {
             std::process::id() as u64
         );
 
-        // Enable recording
-        self.recording = Some(RecordingState {
-            config: recording_config,
-            scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
-        });
-
         print_line(&format!(
             "[SCHEDULER] Recording enabled (session: {}, compress: {})",
             session_name, recording_yaml.compress
         ));
+
+        self.recording = Some(RecordingState {
+            config: recording_config,
+            scheduler_recording: SchedulerRecording::new(&scheduler_id, &session_name),
+        });
     }
 
     /// Pre-allocate node capacity (prevents reallocations during runtime)
@@ -2056,20 +2027,6 @@ impl Scheduler {
             .collect()
     }
 
-    /// Get detailed information about a specific node
-    #[doc(hidden)]
-    pub fn node_info(&self, name: &str) -> Option<HashMap<String, String>> {
-        for registered in &self.nodes {
-            if registered.name == name {
-                let mut info = HashMap::new();
-                info.insert("name".to_string(), registered.name.clone());
-                info.insert("priority".to_string(), registered.priority.to_string());
-                return Some(info);
-            }
-        }
-        None
-    }
-
     /// Get performance metrics for all nodes.
     pub fn metrics(&self) -> Vec<NodeMetrics> {
         self.nodes
@@ -2116,15 +2073,6 @@ impl Scheduler {
             .iter()
             .find(|n| n.name == node_name)
             .and_then(|n| n.rt_stats.as_ref())
-    }
-
-    /// Get monitoring summary by creating temporary contexts for each node
-    #[doc(hidden)]
-    pub fn monitoring_summary(&self) -> Vec<(String, u32)> {
-        self.nodes
-            .iter()
-            .map(|registered| (registered.name.clone(), registered.priority))
-            .collect()
     }
 
     /// Write metadata to registry file for monitor to read

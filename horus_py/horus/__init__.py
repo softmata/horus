@@ -72,13 +72,17 @@ except ImportError:
         def __init__(self):
             pass
         @staticmethod
-        def standard(): return SchedulerConfig()
+        def minimal(): return SchedulerConfig()
+        @staticmethod
+        def deploy(): return SchedulerConfig()
         @staticmethod
         def safety_critical(): return SchedulerConfig()
         @staticmethod
         def high_performance(): return SchedulerConfig()
         @staticmethod
         def hard_realtime(): return SchedulerConfig()
+        @staticmethod
+        def deterministic(): return SchedulerConfig()
 
     def get_version(): return "0.1.0-mock"
 
@@ -783,93 +787,29 @@ class Scheduler:
         self._nodes = []
 
     @staticmethod
-    def from_config(config: 'SchedulerConfig') -> 'Scheduler':
-        """
-        Create a scheduler from a configuration.
-
-        Args:
-            config: SchedulerConfig instance
-
-        Returns:
-            Configured Scheduler instance
-        """
-        return Scheduler(config=config)
-
-    @staticmethod
     def deploy() -> 'Scheduler':
-        """
-        Create a production deployment scheduler.
-
-        Applies best-effort RT priority, memory locking, CPU affinity,
-        and enables a 16MB BlackBox flight recorder.
-        """
-        s = Scheduler.__new__(Scheduler)
-        s._nodes = []
-        if _PyScheduler:
-            s._scheduler = _PyScheduler.deploy()
-        else:
-            s._scheduler = None
-        return s
+        """Create a production deployment scheduler."""
+        return Scheduler(config=SchedulerConfig.deploy())
 
     @staticmethod
     def preset_safety_critical() -> 'Scheduler':
-        """
-        Create a safety-critical scheduler.
-
-        Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
-        """
-        s = Scheduler.__new__(Scheduler)
-        s._nodes = []
-        if _PyScheduler:
-            s._scheduler = _PyScheduler.preset_safety_critical()
-        else:
-            s._scheduler = None
-        return s
+        """Create a safety-critical scheduler."""
+        return Scheduler(config=SchedulerConfig.safety_critical())
 
     @staticmethod
     def preset_high_performance() -> 'Scheduler':
-        """
-        Create a high-performance scheduler.
-
-        Parallel execution, 10kHz, WCET enforcement, memory locking.
-        """
-        s = Scheduler.__new__(Scheduler)
-        s._nodes = []
-        if _PyScheduler:
-            s._scheduler = _PyScheduler.preset_high_performance()
-        else:
-            s._scheduler = None
-        return s
+        """Create a high-performance scheduler."""
+        return Scheduler(config=SchedulerConfig.high_performance())
 
     @staticmethod
     def preset_deterministic() -> 'Scheduler':
-        """
-        Create a deterministic scheduler for reproducible execution.
-
-        Sequential execution, strict topology validation, deterministic seed.
-        """
-        s = Scheduler.__new__(Scheduler)
-        s._nodes = []
-        if _PyScheduler:
-            s._scheduler = _PyScheduler.preset_deterministic()
-        else:
-            s._scheduler = None
-        return s
+        """Create a deterministic scheduler."""
+        return Scheduler(config=SchedulerConfig.deterministic())
 
     @staticmethod
     def preset_hard_realtime() -> 'Scheduler':
-        """
-        Create a hard real-time scheduler.
-
-        Parallel execution, 1kHz, <5us jitter target, 10ms watchdog.
-        """
-        s = Scheduler.__new__(Scheduler)
-        s._nodes = []
-        if _PyScheduler:
-            s._scheduler = _PyScheduler.preset_hard_realtime()
-        else:
-            s._scheduler = None
-        return s
+        """Create a hard real-time scheduler."""
+        return Scheduler(config=SchedulerConfig.hard_realtime())
 
     def node(self, node: 'Node'):
         """
@@ -1085,76 +1025,6 @@ class Scheduler:
         if self._scheduler:
             return self._scheduler.get_node_names()
         return [node.name for node in self._nodes]
-
-    def set_node_deadline(self, node_name: str, deadline_ms: Optional[float] = None) -> None:
-        """
-        Set a soft real-time deadline for a specific node.
-
-        This enables deadline monitoring for the node. If the node's tick()
-        execution exceeds the deadline, a warning will be logged and the
-        deadline_misses counter will be incremented.
-
-        Args:
-            node_name: Name of the node to configure
-            deadline_ms: Deadline in milliseconds (0-10000), or None to disable deadline monitoring
-
-        Raises:
-            RuntimeError: If node not found or deadline is out of range
-
-        Example:
-            # Set 10ms deadline for sensor node
-            scheduler.set_node_deadline("sensor_node", 10.0)
-
-            # Set 50ms deadline for control node
-            scheduler.set_node_deadline("control_node", 50.0)
-
-            # Disable deadline monitoring
-            scheduler.set_node_deadline("sensor_node", None)
-
-        Note:
-            - Deadlines are "soft" - violations are logged but don't stop execution
-            - Deadline monitoring must be enabled in SchedulerConfig (deadline_monitoring=True)
-            - Use get_node_stats() or get_all_nodes() to query deadline_misses
-        """
-        if not self._scheduler:
-            raise RuntimeError("Cannot set deadline before scheduler is started")
-        self._scheduler.set_node_deadline(node_name, deadline_ms)
-
-    def set_node_watchdog(self, node_name: str, enabled: bool, timeout_ms: Optional[int] = None) -> None:
-        """
-        Enable or disable watchdog timer for a specific node.
-
-        A watchdog timer monitors node liveness. If the node fails to execute
-        successfully within the timeout period, the watchdog expires and a
-        warning is logged.
-
-        Args:
-            node_name: Name of the node to configure
-            enabled: Enable (True) or disable (False) watchdog
-            timeout_ms: Timeout in milliseconds (10-60000), or None to use global default
-
-        Raises:
-            RuntimeError: If node not found or timeout is out of range
-
-        Example:
-            # Enable watchdog with 1000ms timeout
-            scheduler.set_node_watchdog("critical_node", True, 1000)
-
-            # Enable with default timeout
-            scheduler.set_node_watchdog("sensor_node", True)
-
-            # Disable watchdog
-            scheduler.set_node_watchdog("sensor_node", False)
-
-        Note:
-            - Watchdog is automatically fed on successful tick execution
-            - Global watchdog_enabled flag must be True in SchedulerConfig
-            - Use get_node_stats() to check watchdog_expired status
-            - Watchdog expiration is logged but doesn't stop execution
-        """
-        if not self._scheduler:
-            raise RuntimeError("Cannot set watchdog before scheduler is started")
-        self._scheduler.set_node_watchdog(node_name, enabled, timeout_ms)
 
     # ========================================================================
     # Status & Diagnostics

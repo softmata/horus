@@ -269,10 +269,6 @@ impl PyNodeBuilder {
         Ok(scheduler)
     }
 
-    /// Alias for done() - finalize and add.
-    fn add(slf: PyRefMut<'_, Self>, py: Python) -> PyResult<Py<PyScheduler>> {
-        Self::done(slf, py)
-    }
 }
 
 // ─── PyScheduler ─────────────────────────────────────────────────────────────
@@ -504,93 +500,6 @@ impl PyScheduler {
         })
     }
 
-    /// Create scheduler from a configuration preset
-    #[staticmethod]
-    pub fn from_config(config: PySchedulerConfig) -> PyResult<Self> {
-        Self::new(Some(config))
-    }
-
-    /// Create a production deployment scheduler (RT features + blackbox + profiling).
-    ///
-    /// Applies best-effort RT priority, memory locking, CPU affinity, and
-    /// enables a 16MB BlackBox flight recorder.
-    #[staticmethod]
-    pub fn deploy() -> PyResult<Self> {
-        let core_sched = CoreScheduler::deploy();
-        let running_flag = core_sched.running_flag();
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 60.0,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
-    }
-
-    /// Create a safety-critical scheduler.
-    ///
-    /// Sequential execution, 1kHz, full WCET enforcement, watchdogs, memory locking.
-    #[staticmethod]
-    pub fn preset_safety_critical() -> PyResult<Self> {
-        let core_sched = CoreScheduler::safety_critical();
-        let running_flag = core_sched.running_flag();
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 1000.0,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
-    }
-
-    /// Create a high-performance scheduler.
-    ///
-    /// Parallel execution, 10kHz, WCET enforcement, memory locking.
-    #[staticmethod]
-    pub fn preset_high_performance() -> PyResult<Self> {
-        let core_sched = CoreScheduler::high_performance();
-        let running_flag = core_sched.running_flag();
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 10000.0,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
-    }
-
-    /// Create a deterministic scheduler for reproducible execution.
-    ///
-    /// Sequential execution, strict topology validation, deterministic seed.
-    #[staticmethod]
-    pub fn preset_deterministic() -> PyResult<Self> {
-        let core_sched = CoreScheduler::deterministic();
-        let running_flag = core_sched.running_flag();
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 100.0,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
-    }
-
-    /// Create a hard real-time scheduler.
-    ///
-    /// Parallel execution, 1kHz, <5us jitter target, 10ms watchdog, panic on deadline miss.
-    #[staticmethod]
-    pub fn preset_hard_realtime() -> PyResult<Self> {
-        let core_sched = CoreScheduler::hard_realtime();
-        let running_flag = core_sched.running_flag();
-        Ok(PyScheduler {
-            inner: Mutex::new(Some(core_sched)),
-            tick_rate_hz: 1000.0,
-            scheduler_running: running_flag,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            removed_nodes: Mutex::new(HashSet::new()),
-        })
-    }
-
     /// Start building a node configuration (fluent API).
     fn node(slf: Py<Self>, _py: Python, node: Py<PyAny>) -> PyResult<PyNodeBuilder> {
         Ok(PyNodeBuilder {
@@ -653,41 +562,6 @@ impl PyScheduler {
         Ok(())
     }
 
-    /// Set per-node deadline for soft real-time scheduling.
-    /// Note: Should be set before run() via node builder for best results.
-    #[pyo3(signature = (node_name, deadline_ms=None))]
-    fn set_node_deadline(&self, node_name: String, deadline_ms: Option<f64>) -> PyResult<()> {
-        if let Some(d) = deadline_ms {
-            if d <= 0.0 || d > 10000.0 {
-                return Err(PyRuntimeError::new_err(
-                    "Deadline must be between 0 and 10000 ms",
-                ));
-            }
-        }
-        eprintln!(
-            "Warning: set_node_deadline('{}') should be configured via node builder before run()",
-            node_name
-        );
-        Ok(())
-    }
-
-    /// Enable/disable watchdog timer for a specific node.
-    /// Note: Should be configured via SchedulerConfig before creating the scheduler.
-    #[pyo3(signature = (node_name, enabled, timeout_ms=None))]
-    fn set_node_watchdog(
-        &self,
-        node_name: String,
-        enabled: bool,
-        timeout_ms: Option<u64>,
-    ) -> PyResult<()> {
-        let _ = (enabled, timeout_ms);
-        eprintln!(
-            "Warning: set_node_watchdog('{}') should be configured via SchedulerConfig",
-            node_name
-        );
-        Ok(())
-    }
-
     /// Run the scheduler indefinitely (until stop() or Ctrl+C).
     fn run(&self, py: Python) -> PyResult<()> {
         self.with_inner_run(py, |sched| sched.run())
@@ -732,19 +606,6 @@ impl PyScheduler {
     /// Check if the scheduler is running.
     fn is_running(&self) -> PyResult<bool> {
         Ok(self.scheduler_running.load(Ordering::SeqCst))
-    }
-
-    /// Set the tick rate in Hz.
-    fn set_tick_rate(&self, rate_hz: f64) -> PyResult<()> {
-        if rate_hz <= 0.0 || rate_hz > 10000.0 {
-            return Err(PyRuntimeError::new_err(
-                "Tick rate must be between 0 and 10000 Hz",
-            ));
-        }
-        eprintln!(
-            "Warning: set_tick_rate should be configured via SchedulerConfig at construction"
-        );
-        Ok(())
     }
 
     /// Get node statistics.
@@ -867,11 +728,6 @@ impl PyScheduler {
             }
             None => Ok(Vec::new()),
         }
-    }
-
-    /// Get list of added node names (alias for get_node_names).
-    fn get_nodes(&self) -> PyResult<Vec<String>> {
-        self.get_node_names()
     }
 
     /// Get node priority.
