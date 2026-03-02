@@ -79,8 +79,7 @@ pub use serde;
 pub mod prelude {
     // === Node ===
     pub use horus_core::core::{
-        HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodePresence,
-        NodeState, TopicMetadata,
+        HealthStatus, LogSummary, Node, NodeInfo, NodeMetrics, NodeState,
     };
 
     // === Topic (IPC) ===
@@ -110,8 +109,7 @@ pub mod prelude {
 
     // === Real-time ===
     pub use horus_core::core::{
-        DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority,
-        RtStats,
+        DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtNode, RtPriority, RtStats,
     };
 
     // === Parameters ===
@@ -124,9 +122,4 @@ pub mod prelude {
     pub use horus_core::hlog;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
-    pub use serde::{Deserialize, Serialize};
-
-    // === Std (commonly needed) ===
-    pub use std::sync::{Arc, Mutex};
-    pub use std::time::{Duration, Instant};
 }
