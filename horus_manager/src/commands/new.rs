@@ -341,7 +341,7 @@ struct Controller {
 impl Controller {
     fn new() -> Result<Self> {
         Ok(Self {
-            cmd_vel: Topic::new("motors.cmd_vel")?.with_logging(),
+            cmd_vel: Topic::new("motors.cmd_vel")?,
         })
     }
 }

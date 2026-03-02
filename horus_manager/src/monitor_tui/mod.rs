@@ -36,7 +36,6 @@ pub struct NodeStatus {
     pub subscribers: Vec<String>, // Topic names this node subscribes from
 }
 
-#[derive(Clone)]
 pub struct TuiDashboard {
     active_tab: Tab,
     selected_index: usize,
@@ -78,6 +77,11 @@ pub struct TuiDashboard {
 
     // Time-travel debugger state
     debugger_state: DebuggerViewState,
+
+    // Runtime debug mmaps — keyed by topic name.
+    // While an entry exists, the debug_log flag is set in the topic's SHM header,
+    // causing send/recv to emit log entries. Dropping the entry clears the flag.
+    debug_mmaps: std::collections::HashMap<String, memmap2::MmapMut>,
 }
 
 /// State for the time-travel debugger view
@@ -309,6 +313,8 @@ impl TuiDashboard {
                 recordings_cache: Vec::new(),
                 cache_time: Instant::now() - Duration::from_secs(10),
             },
+
+            debug_mmaps: std::collections::HashMap::new(),
         }
     }
 
@@ -387,9 +393,7 @@ impl TuiDashboard {
                                 self.selected_workspace = None;
                                 self.selected_index = 0;
                             } else if self.show_log_panel {
-                                self.show_log_panel = false;
-                                self.panel_target = None;
-                                self.panel_scroll_offset = 0;
+                                self.close_log_panel();
                             }
                         }
 

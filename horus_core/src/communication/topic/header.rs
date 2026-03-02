@@ -132,8 +132,9 @@ pub(crate) struct TopicHeader {
     pub(crate) backend_mode: AtomicU8,
     /// Migration lock: 0=unlocked, 1=locked
     pub(crate) migration_lock: AtomicU8,
-    /// Reserved flags
-    pub(crate) _flags: u8,
+    /// Debug logging flag — toggled at runtime by TUI monitor.
+    /// 0 = disabled (default), non-zero = log send/recv to GLOBAL_LOG_BUFFER.
+    pub(crate) debug_log: AtomicU8,
     /// Creator process ID
     pub(crate) creator_pid: u32,
     /// Creator thread ID hash (for same-thread detection)
@@ -198,7 +199,7 @@ impl TopicHeader {
             is_pod: AtomicU8::new(0),
             backend_mode: AtomicU8::new(0),
             migration_lock: AtomicU8::new(0),
-            _flags: 0,
+            debug_log: AtomicU8::new(0),
             creator_pid: 0,
             creator_thread_id_hash: 0,
             migration_epoch: AtomicU64::new(0),
@@ -253,7 +254,7 @@ impl TopicHeader {
             .store(BackendMode::Unknown as u8, Ordering::Release);
         self.migration_lock
             .store(MIGRATION_UNLOCKED, Ordering::Release);
-        self._flags = 0;
+        self.debug_log.store(0, Ordering::Relaxed);
         self.creator_pid = std::process::id();
         self.creator_thread_id_hash = hash_thread_id(std::thread::current().id());
         self.migration_epoch.store(0, Ordering::Release);
@@ -290,6 +291,18 @@ impl TopicHeader {
     #[inline]
     pub fn mode(&self) -> BackendMode {
         BackendMode::from(self.backend_mode.load(Ordering::Acquire))
+    }
+
+    /// Check if runtime debug logging is enabled (toggled by TUI monitor).
+    #[inline(always)]
+    pub fn is_debug_enabled(&self) -> bool {
+        self.debug_log.load(Ordering::Relaxed) != 0
+    }
+
+    /// Set the runtime debug logging flag.
+    pub fn set_debug(&self, enabled: bool) {
+        self.debug_log
+            .store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
     }
 
     /// Check if all active participants (and caller) are in the same process
@@ -510,6 +523,25 @@ impl TopicHeader {
             _ => BackendMode::MpmcShm,
         }
     }
+}
+
+// ============================================================================
+// Public debug flag API (for external tools like the TUI monitor)
+// ============================================================================
+
+/// Byte offset of the `debug_log` flag within the topic shared memory header.
+/// External tools can write 1/0 to this offset in the mmap'd file to
+/// enable/disable runtime debug logging for a topic.
+pub const TOPIC_DEBUG_LOG_OFFSET: usize = 23;
+
+/// Set the runtime debug flag on a topic's shared memory region.
+///
+/// # Safety
+/// `shm_ptr` must point to the start of a valid, initialized topic shared
+/// memory region (at least 640 bytes). The caller must have write access.
+pub unsafe fn set_topic_debug(shm_ptr: *mut u8, enabled: bool) {
+    let flag = shm_ptr.add(TOPIC_DEBUG_LOG_OFFSET);
+    flag.write_volatile(if enabled { 1 } else { 0 });
 }
 
 // ============================================================================

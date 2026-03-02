@@ -47,7 +47,7 @@ pub use actions::{
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
 };
 #[doc(hidden)]
-pub use communication::{PodMessage, Topic};
+pub use communication::{set_topic_debug, PodMessage, Topic, TOPIC_DEBUG_LOG_OFFSET};
 #[doc(hidden)]
 pub use core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState,

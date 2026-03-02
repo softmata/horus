@@ -98,7 +98,9 @@ impl TuiDashboard {
                     let topic = &self.topics[self.selected_index];
                     // Don't open panel for placeholder entries
                     if !topic.name.contains("No active topics") {
-                        self.panel_target = Some(LogPanelTarget::Topic(topic.name.clone()));
+                        let topic_name = topic.name.clone();
+                        self.enable_topic_debug(&topic_name);
+                        self.panel_target = Some(LogPanelTarget::Topic(topic_name));
                         self.show_log_panel = true;
                         self.panel_scroll_offset = 0;
                     }
@@ -129,7 +131,16 @@ impl TuiDashboard {
                     let topic = &self.topics[self.selected_index];
                     // Don't update for placeholder entries
                     if !topic.name.contains("No active topics") {
-                        self.panel_target = Some(LogPanelTarget::Topic(topic.name.clone()));
+                        let new_name = topic.name.clone();
+                        // Disable debug on the old topic, enable on the new one
+                        if let Some(LogPanelTarget::Topic(ref old_name)) = self.panel_target {
+                            if *old_name != new_name {
+                                let old = old_name.clone();
+                                self.disable_topic_debug(&old);
+                                self.enable_topic_debug(&new_name);
+                            }
+                        }
+                        self.panel_target = Some(LogPanelTarget::Topic(new_name));
                         self.panel_scroll_offset = 0; // Reset scroll when switching
                     }
                 }
@@ -411,5 +422,66 @@ impl TuiDashboard {
             self.debugger_state.breakpoints.push(tick);
             self.debugger_state.breakpoints.sort();
         }
+    }
+
+    // =========================================================================
+    // Runtime Debug Flag (shared memory toggle)
+    // =========================================================================
+
+    /// Enable runtime debug logging for a topic by setting its SHM header flag.
+    pub(super) fn enable_topic_debug(&mut self, topic_name: &str) {
+        use horus_core::memory::shm_topics_dir;
+        use std::fs::OpenOptions;
+
+        // Already mapped — nothing to do
+        if self.debug_mmaps.contains_key(topic_name) {
+            return;
+        }
+
+        let path = shm_topics_dir().join(format!("horus_{}", topic_name));
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(_) => return, // SHM file doesn't exist (topic not active)
+        };
+
+        // SAFETY: the file is a topic SHM region (≥640 bytes), we only write to
+        // the debug_log byte at a known offset.
+        let mut mmap = match unsafe { memmap2::MmapMut::map_mut(&file) } {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        // Set the debug flag
+        if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
+            unsafe {
+                horus_core::set_topic_debug(mmap.as_mut_ptr(), true);
+            }
+        }
+
+        self.debug_mmaps.insert(topic_name.to_string(), mmap);
+    }
+
+    /// Disable runtime debug logging for a topic by clearing its SHM header flag.
+    pub(super) fn disable_topic_debug(&mut self, topic_name: &str) {
+        if let Some(mut mmap) = self.debug_mmaps.remove(topic_name) {
+            if mmap.len() > horus_core::TOPIC_DEBUG_LOG_OFFSET {
+                unsafe {
+                    horus_core::set_topic_debug(mmap.as_mut_ptr(), false);
+                }
+            }
+            // MmapMut drop unmaps automatically
+        }
+    }
+
+    /// Close the log panel and disable debug logging on the current topic.
+    pub(super) fn close_log_panel(&mut self) {
+        // Disable debug on the topic that was being watched
+        if let Some(LogPanelTarget::Topic(ref name)) = self.panel_target {
+            let name = name.clone();
+            self.disable_topic_debug(&name);
+        }
+        self.show_log_panel = false;
+        self.panel_target = None;
+        self.panel_scroll_offset = 0;
     }
 }

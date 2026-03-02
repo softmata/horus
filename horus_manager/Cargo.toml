@@ -63,6 +63,7 @@ num_cpus = "1.16"
 ratatui = "0.30"
 crossterm = "0.28"
 rand = "0.8"
+memmap2 = "0.9"
 
 # Web monitor dependencies
 axum = { version = "0.7", features = ["ws"] }

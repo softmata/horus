@@ -153,6 +153,10 @@ use crate::utils::unlikely;
 
 pub(crate) use header::TopicHeader;
 pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
+
+// Public debug flag API for external tools (TUI monitor)
+#[doc(hidden)]
+pub use header::{set_topic_debug, TOPIC_DEBUG_LOG_OFFSET};
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
 pub use metrics::TopicMetrics;
@@ -349,6 +353,11 @@ pub(crate) struct RingTopic<T> {
     /// Metrics for monitoring
     metrics: Arc<MigrationMetrics>,
 
+    /// Raw pointer to the SHM TopicHeader — always valid for the topic's
+    /// lifetime (backed by `storage` Arc). Used for the runtime debug flag
+    /// check which must work regardless of backend/migration state.
+    header_ptr: *const TopicHeader,
+
     /// Optional logging function (set via `with_logging()`)
     log_fn: Option<fn(&T) -> String>,
 
@@ -415,6 +424,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             actual_slot_size,
         )?;
 
+        let header_ptr = storage.as_ptr() as *const TopicHeader;
+
         Ok(Self {
             name: name.to_string(),
             process_epoch: registry::get_or_create_process_epoch(name),
@@ -427,6 +438,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 slot_size: final_slot_size,
                 ..Default::default()
             }),
+            header_ptr,
             metrics: Arc::new(MigrationMetrics::default()),
             log_fn: None,
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
@@ -506,6 +518,14 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     fn header(&self) -> &TopicHeader {
         // SAFETY: storage is properly sized and aligned for TopicHeader; initialized in constructor
         unsafe { &*(self.storage.as_ptr() as *const TopicHeader) }
+    }
+
+    /// Check if runtime debug logging is enabled via the SHM header flag.
+    /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr` which
+    /// is repurposed in DirectChannel mode).
+    #[inline(always)]
+    fn is_debug_enabled(&self) -> bool {
+        unsafe { (*self.header_ptr).is_debug_enabled() }
     }
 
     /// Compute the byte offset from storage start to the data region.
@@ -1377,7 +1397,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// includes epoch check, ring operation, and housekeeping.
     #[inline(always)]
     pub fn send(&self, msg: T) {
-        if unlikely(self.log_fn.is_some()) {
+        if unlikely(self.is_debug_enabled()) {
             self.send_with_logging(msg);
             return;
         }
@@ -1408,8 +1428,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[cold]
     #[inline(never)]
     fn send_with_logging(&self, msg: T) {
-        let log_fn = self.log_fn.unwrap();
-        let summary = log_fn(&msg);
+        let summary = match self.log_fn {
+            Some(f) => f(&msg),
+            None => format!("→ {}", self.name),
+        };
         let start = std::time::Instant::now();
         self.send_lossy(msg);
         let ipc_ns = start.elapsed().as_nanos() as u64;
@@ -1474,7 +1496,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// no function pointer indirection. Same optimization as send().
     #[inline(always)]
     pub fn recv(&self) -> Option<T> {
-        if unlikely(self.log_fn.is_some()) {
+        if unlikely(self.is_debug_enabled()) {
             return self.recv_with_logging();
         }
         // Fast path: DirectChannel-local (role=Both, same-thread pub+sub)
@@ -1507,7 +1529,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[cold]
     #[inline(never)]
     fn recv_with_logging(&self) -> Option<T> {
-        let log_fn = self.log_fn.unwrap();
         let start = std::time::Instant::now();
         let result = self.try_recv();
         let ipc_ns = start.elapsed().as_nanos() as u64;
@@ -1519,7 +1540,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             use crate::core::hlog::{current_node_name, current_tick_number};
             use crate::core::log_buffer::{publish_log, LogEntry, LogType};
             let now = chrono::Local::now();
-            let summary = log_fn(msg);
+            let summary = match self.log_fn {
+                Some(f) => f(msg),
+                None => format!("← {}", self.name),
+            };
             publish_log(LogEntry {
                 timestamp: now.format("%H:%M:%S%.3f").to_string(),
                 tick_number: current_tick_number(),
@@ -1739,6 +1763,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
             send_fn: std::cell::UnsafeCell::new(dispatch::send_uninitialized::<T>),
             recv_fn: std::cell::UnsafeCell::new(dispatch::recv_uninitialized::<T>),
             local: std::cell::UnsafeCell::new(LocalState::default()),
+            header_ptr: self.header_ptr,
             metrics: Arc::clone(&self.metrics),
             log_fn: self.log_fn,
             state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
@@ -1764,7 +1789,11 @@ impl<T> RingTopic<T>
 where
     T: Clone + Send + Sync + Serialize + DeserializeOwned + crate::core::LogSummary + 'static,
 {
-    /// Enable automatic logging on send/recv
+    /// Enable automatic logging on send/recv.
+    ///
+    /// Prefer runtime debug logging via the TUI monitor instead of calling this
+    /// at compile time. This method is retained for backward compatibility.
+    #[doc(hidden)]
     pub fn with_logging(mut self) -> Self {
         self.log_fn = Some(|msg: &T| msg.log_summary());
         self
@@ -2031,6 +2060,10 @@ where
         + 'static,
 {
     /// Enable automatic logging on send/recv.
+    ///
+    /// Prefer runtime debug logging via the TUI monitor instead of calling this
+    /// at compile time. This method is retained for backward compatibility.
+    #[doc(hidden)]
     pub fn with_logging(mut self) -> Self {
         self.ring = self.ring.with_logging();
         self
