@@ -105,11 +105,6 @@ pub mod prelude {
         GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
     };
 
-    // === Real-time ===
-    pub use horus_core::core::{
-        DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtNode, RtPriority, RtStats,
-    };
-
     // === Errors ===
     pub use horus_core::error::{HorusError, HorusResult, Result};
 
