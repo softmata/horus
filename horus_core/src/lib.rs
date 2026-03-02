@@ -51,7 +51,7 @@ pub use communication::{PodMessage, Topic};
 #[doc(hidden)]
 pub use core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState,
-    RtClass, RtConfig, RtConfigBuilder, RtDegradation, RtNode, RtPriority, RtStats, TopicMetadata,
+    RtClass, RtNode, RtPriority, RtStats, TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{HorusError, HorusResult, Result};

@@ -89,7 +89,7 @@ use crate::core::LogSummary;
 /// assert!(!is_pod::<Vec<u8>>());   // false - Vec has Drop
 /// ```
 #[inline]
-pub fn is_pod<T: 'static>() -> bool {
+pub(crate) fn is_pod<T: 'static>() -> bool {
     !mem::needs_drop::<T>() && mem::size_of::<T>() > 0
 }
 

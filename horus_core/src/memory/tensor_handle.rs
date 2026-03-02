@@ -25,7 +25,8 @@
 //! drop(handle2); // Tensor memory is freed when last handle is dropped
 //! ```
 
-use super::tensor_pool::{Device, HorusTensor, TensorDtype, TensorPool, MAX_TENSOR_DIMS};
+use super::tensor_pool::{Device, HorusTensor, TensorDtype, TensorPool};
+use crate::types::MAX_TENSOR_DIMS;
 use crate::error::HorusResult;
 use std::sync::Arc;
 

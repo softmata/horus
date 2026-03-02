@@ -99,14 +99,15 @@ pub use dtype::TensorDtype;
 pub use image_encoding::ImageEncoding;
 pub use point::{PointXYZ, PointXYZI, PointXYZRGB};
 
-// Internal types
+// Descriptors must stay pub (used as associated types on public TopicMessage trait)
 #[doc(hidden)]
 pub use depth_image_descriptor::DepthImageDescriptor;
-#[doc(hidden)]
-pub use dtype::dlpack_codes;
 #[doc(hidden)]
 pub use image_descriptor::ImageDescriptor;
 #[doc(hidden)]
 pub use pointcloud_descriptor::PointCloudDescriptor;
+pub(crate) use tensor::MAX_TENSOR_DIMS;
+
+// HorusTensor stays pub — used by horus_py
 #[doc(hidden)]
-pub use tensor::{HorusTensor, MAX_TENSOR_DIMS};
+pub use tensor::HorusTensor;

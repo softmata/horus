@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// DLPack type codes (standard specification constants)
-pub mod dlpack_codes {
+pub(crate) mod dlpack_codes {
     /// Integer type
     pub const DLPACK_INT: u8 = 0;
     /// Unsigned integer type

@@ -720,7 +720,7 @@ pub struct TensorPoolStats {
 }
 
 // Re-export tensor types from types module
-pub use crate::types::{Device, HorusTensor, TensorDtype, MAX_TENSOR_DIMS};
+pub use crate::types::{Device, HorusTensor, TensorDtype};
 
 #[cfg(test)]
 mod tests {

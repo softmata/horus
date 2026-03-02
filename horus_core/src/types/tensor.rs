@@ -20,7 +20,7 @@ use super::device::{Device, DEVICE_TYPE_CPU, DEVICE_TYPE_CUDA};
 use super::dtype::TensorDtype;
 
 /// Maximum number of dimensions supported by HorusTensor
-pub const MAX_TENSOR_DIMS: usize = 8;
+pub(crate) const MAX_TENSOR_DIMS: usize = 8;
 
 /// Zero-copy tensor descriptor for shared memory communication
 ///

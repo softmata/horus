@@ -32,7 +32,7 @@ use std::io;
 
 /// Real-time scheduler policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RtScheduler {
+pub(crate) enum RtScheduler {
     /// Normal (non-RT) scheduler - SCHED_OTHER
     #[default]
     Normal,
@@ -46,7 +46,7 @@ pub enum RtScheduler {
 
 /// Result of applying RT configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RtApplyResult {
+pub(crate) enum RtApplyResult {
     /// All requested features were applied successfully
     FullSuccess,
     /// Configuration applied with some features degraded
@@ -57,7 +57,7 @@ pub enum RtApplyResult {
 
 /// Describes a degradation from the requested configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RtDegradation {
+pub(crate) enum RtDegradation {
     /// Memory locking was requested but not available
     MemoryLockUnavailable(String),
     /// Requested priority was clamped to system maximum
@@ -72,7 +72,7 @@ pub enum RtDegradation {
 
 /// Information about kernel RT support.
 #[derive(Debug, Clone, Default)]
-pub struct RtKernelInfo {
+pub(crate) struct RtKernelInfo {
     /// Whether PREEMPT_RT patch is detected
     pub preempt_rt: bool,
     /// Kernel version string
@@ -179,7 +179,7 @@ impl RtKernelInfo {
 /// real-time parameters. The builder uses sensible defaults and
 /// gracefully degrades on systems without full RT support.
 #[derive(Debug, Clone, Default)]
-pub struct RtConfigBuilder {
+pub(crate) struct RtConfigBuilder {
     memory_locked: bool,
     priority: Option<i32>,
     scheduler: RtScheduler,
@@ -292,7 +292,7 @@ impl RtConfigBuilder {
 /// This struct holds the configuration parameters and provides
 /// methods to apply them to the current thread or process.
 #[derive(Debug, Clone, Default)]
-pub struct RtConfig {
+pub(crate) struct RtConfig {
     memory_locked: bool,
     priority: Option<i32>,
     scheduler: RtScheduler,
@@ -687,7 +687,7 @@ impl RtConfig {
 /// This function is safe but should be called at thread initialization
 /// before entering RT-critical sections, not during normal execution.
 #[inline(never)] // Prevent inlining to ensure stack allocation happens
-pub fn prefault_stack(size: usize) {
+pub(crate) fn prefault_stack(size: usize) {
     // Page size is typically 4KB on most systems
     const PAGE_SIZE: usize = 4096;
 
@@ -800,7 +800,7 @@ pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
 ///     println!("RT thread {} -> CPU {}", i, cpu);
 /// }
 /// ```
-pub fn get_rt_recommended_cpus(count: usize) -> Vec<usize> {
+pub(crate) fn get_rt_recommended_cpus(count: usize) -> Vec<usize> {
     let isolated = detect_isolated_cpus();
     let nohz = detect_nohz_full_cpus();
 
@@ -859,7 +859,7 @@ pub fn get_rt_recommended_cpus(count: usize) -> Vec<usize> {
 /// Returns a summary of the system's real-time CPU configuration
 /// including isolated CPUs, nohz_full CPUs, and recommendations.
 #[derive(Debug, Clone)]
-pub struct RtCpuInfo {
+pub(crate) struct RtCpuInfo {
     /// Total number of CPUs
     pub total_cpus: usize,
     /// CPUs isolated via isolcpus kernel parameter

@@ -33,7 +33,5 @@ pub use node::{
     HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodeState, TopicMetadata,
 };
 pub use presence::NodePresence;
-pub use rt_config::{
-    get_rt_recommended_cpus, prefault_stack, RtConfig, RtConfigBuilder, RtDegradation, RtScheduler,
-};
+// rt_config types are pub(crate) — accessed directly by scheduling/ internals
 pub use rt_node::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats, WCETViolation};
