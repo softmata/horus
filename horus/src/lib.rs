@@ -106,7 +106,7 @@ pub mod prelude {
     };
 
     // === Errors ===
-    pub use horus_core::error::{HorusError, HorusResult, Result};
+    pub use horus_core::error::{Error, Result};
 
     // === Macros ===
     pub use horus_core::hlog;

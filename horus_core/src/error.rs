@@ -99,6 +99,9 @@ pub type HorusResult<T> = std::result::Result<T, HorusError>;
 /// Short alias — `use horus::prelude::*` brings this into scope
 pub type Result<T> = HorusResult<T>;
 
+/// Short alias for HorusError — `use horus::prelude::*` brings this into scope
+pub type Error = HorusError;
+
 // ============================================
 // From implementations for common error types
 // ============================================
