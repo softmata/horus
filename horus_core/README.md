@@ -35,9 +35,9 @@ fn main() -> Result<()> {
 ```rust
 pub trait Node: Send {
     fn name(&self) -> &str;
-    fn init(&mut self) -> HorusResult<()>;
+    fn init(&mut self) -> Result<()>;
     fn tick(&mut self);
-    fn shutdown(&mut self) -> HorusResult<()>;
+    fn shutdown(&mut self) -> Result<()>;
 }
 ```
 
