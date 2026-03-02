@@ -78,9 +78,7 @@ pub use serde;
 /// macros, and message definitions are included.
 pub mod prelude {
     // === Node ===
-    pub use horus_core::core::{
-        HealthStatus, LogSummary, Node, NodeInfo, NodeMetrics, NodeState,
-    };
+    pub use horus_core::core::{HealthStatus, LogSummary, Node, NodeState};
 
     // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
