@@ -84,7 +84,7 @@ pub mod prelude {
     };
 
     // === Topic (IPC) ===
-    pub use horus_core::communication::{PodMessage, Topic};
+    pub use horus_core::communication::Topic;
 
     // === Scheduler ===
     pub use horus_core::scheduling::Scheduler;
