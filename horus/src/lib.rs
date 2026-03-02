@@ -78,7 +78,7 @@ pub use serde;
 /// macros, and message definitions are included.
 pub mod prelude {
     // === Node ===
-    pub use horus_core::core::{HealthStatus, LogSummary, Node, NodeState};
+    pub use horus_core::core::{LogSummary, Node, NodeState};
 
     // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
@@ -90,7 +90,7 @@ pub mod prelude {
     pub use horus_core::memory::{DepthImage, Image, PointCloud, TensorHandle, TensorPool};
 
     // === HFrame (coordinate transforms) ===
-    pub use horus_library::hframe::{timestamp_now, HFrame, HFrameConfig, Transform};
+    pub use horus_library::hframe::{timestamp_now, HFrame, Transform};
 
     // === Message types (all standard robotics messages) ===
     pub use horus_core::types::{
@@ -109,9 +109,6 @@ pub mod prelude {
     pub use horus_core::core::{
         DeadlineMissPolicy, RtClass, RtConfig, RtConfigBuilder, RtNode, RtPriority, RtStats,
     };
-
-    // === Parameters ===
-    pub use horus_core::params::RuntimeParams;
 
     // === Errors ===
     pub use horus_core::error::{HorusError, HorusResult, Result};
