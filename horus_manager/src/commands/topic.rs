@@ -115,7 +115,14 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
 }
 
 /// Echo messages from a topic
+///
+/// Reads the ring buffer directly from the topic's shared-memory backing file
+/// instead of reading raw file bytes.  Only the payload region of the most
+/// recently written slot is inspected, so the output is actual message data
+/// rather than binary ring-buffer internals.
 pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusResult<()> {
+    use horus_core::communication::read_latest_slot_bytes;
+
     let topics = discover_shared_memory()?;
 
     // Find the topic - match by exact name, path suffix, or base name
@@ -151,30 +158,32 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     let sleep_duration = rate
         .map(|r| Duration::from_secs_f64(1.0 / r))
         .unwrap_or(Duration::from_millis(100));
-    let mut messages_received = 0;
-    let mut last_content: Option<Vec<u8>> = None;
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
+
+    let mut messages_received = 0usize;
+    // Track the write_idx so we only print when a new message is actually published.
+    let mut last_write_idx: u64 = 0;
 
     loop {
-        // Check if we've received enough messages
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         if let Some(max_count) = count {
             if messages_received >= max_count {
                 break;
             }
         }
 
-        // Read the topic file
-        if topic_path.exists() {
-            if let Ok(mut file) = std::fs::File::open(&topic_path) {
-                let mut content = Vec::new();
-                if file.read_to_end(&mut content).is_ok() && !content.is_empty() {
-                    // Only print if content changed
-                    if last_content.as_ref() != Some(&content) {
-                        messages_received += 1;
-                        print_message(&content, messages_received);
-                        last_content = Some(content);
-                    }
-                }
-            }
+        if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
+            last_write_idx = slot.write_idx;
+            messages_received += 1;
+            print_message(&slot.payload, messages_received, slot.is_pod);
         }
 
         std::thread::sleep(sleep_duration);
@@ -190,23 +199,41 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     Ok(())
 }
 
-/// Print a message in a readable format
-fn print_message(data: &[u8], seq: usize) {
+/// Print message payload in a readable format.
+///
+/// For POD types the bytes are raw struct data.
+/// For serde types the bytes are bincode-encoded; we try JSON (if the type
+/// happens to be JSON-compatible via a round-trip through `serde_json`),
+/// then fall back to a bincode hex dump showing the actual serialized form.
+fn print_message(data: &[u8], seq: usize, is_pod: bool) {
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
 
-    // Try to interpret as text first
-    if let Ok(text) = std::str::from_utf8(data) {
-        if text
-            .chars()
-            .all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
-        {
-            println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, text);
-            return;
+    if is_pod {
+        // POD types: raw struct bytes — try text, then hex
+        if let Ok(text) = std::str::from_utf8(data) {
+            if text
+                .chars()
+                .all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
+            {
+                println!("[{}] #{}: {}", timestamp.to_string().dimmed(), seq, text);
+                return;
+            }
         }
+        println!(
+            "[{}] #{}: {} bytes (POD)",
+            timestamp.to_string().dimmed(),
+            seq,
+            data.len()
+        );
+        print_hex_dump(data, 64);
+        return;
     }
 
-    // Try to parse as JSON
+    // Non-POD / serde (bincode): attempt a JSON display via serde_json.
+    // Many robotics message types use field-by-field struct layout that maps
+    // cleanly to JSON when re-encoded.
     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(data) {
+        // The payload happened to be valid JSON (e.g., JSON-serialized types).
         println!("[{}] #{}:", timestamp.to_string().dimmed(), seq);
         println!(
             "{}",
@@ -215,29 +242,34 @@ fn print_message(data: &[u8], seq: usize) {
         return;
     }
 
-    // Fall back to hex dump for binary data
+    // bincode payload — show the raw bytes as a hex dump.
     println!(
-        "[{}] #{}: {} bytes",
+        "[{}] #{}: {} bytes (bincode)",
         timestamp.to_string().dimmed(),
         seq,
         data.len()
     );
-    print_hex_dump(data, 32);
+    print_hex_dump(data, 64);
 }
 
-/// Print hex dump of binary data
+/// Print hex dump of binary data (up to `max_bytes`).
 fn print_hex_dump(data: &[u8], max_bytes: usize) {
     let bytes_to_show = data.len().min(max_bytes);
     let hex: String = data[..bytes_to_show]
-        .iter()
-        .map(|b| format!("{:02x}", b))
+        .chunks(16)
+        .map(|row| {
+            row.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .collect::<Vec<_>>()
-        .join(" ");
+        .join("\n  ");
 
     print!("  {}", hex.dimmed());
     if data.len() > max_bytes {
         print!(
-            " {} ... ({} more bytes)",
+            "\n  {} ... ({} more bytes)",
             "".dimmed(),
             data.len() - max_bytes
         );

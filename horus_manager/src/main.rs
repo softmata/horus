@@ -1208,7 +1208,12 @@ fn main() {
     // Normal clap parsing
     let cli = Cli::parse();
 
-    // Initialize structured logging based on verbosity flags
+    // Initialize the HORUS log bridge.
+    //
+    // This replaces env_logger and forwards all `log::` calls (from internal
+    // subsystems like actions, mDNS, scheduler, blackbox) to GLOBAL_LOG_BUFFER
+    // so they appear in `horus monitor --tui` and the web monitor, in addition
+    // to being mirrored to stderr for console visibility.
     let log_level = if cli.verbose {
         "debug"
     } else if cli.quiet_all {
@@ -1216,10 +1221,7 @@ fn main() {
     } else {
         "warn"
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
-        .format_timestamp(None)
-        .format_target(false)
-        .init();
+    horus_core::core::log_bridge::try_init_log_bridge(log_level);
 
     log::debug!("HORUS CLI v{}", env!("CARGO_PKG_VERSION"));
 

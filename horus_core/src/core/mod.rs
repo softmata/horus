@@ -17,6 +17,7 @@
 
 pub mod discovery;
 pub mod hlog;
+pub mod log_bridge;
 pub mod log_buffer;
 pub mod node;
 pub mod presence;

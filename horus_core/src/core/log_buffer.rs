@@ -315,20 +315,26 @@ pub fn publish_log(entry: LogEntry) {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+impl SharedLogBuffer {
+    /// Read the current write index from the mmap header.
+    ///
+    /// This is a monotonically-increasing counter: each `push()` increments it
+    /// by 1.  External tools (e.g. `horus log --follow`) can poll this value to
+    /// detect when new entries have been written without fetching all entries.
+    pub fn write_idx(&self) -> u64 {
+        let guard = self.mmap.lock().unwrap();
+        let base: *const u8 = (*guard).as_ptr();
+        // SAFETY: mmap is at least HEADER_SIZE bytes; pointer is page-aligned.
+        unsafe { load_write_idx(base) }
+    }
+}
+
 #[cfg(test)]
 impl SharedLogBuffer {
     /// Create a SharedLogBuffer backed by a file at `path`.
     /// Used in tests to avoid touching the global log path.
     pub fn new_at_path(path: &std::path::Path) -> crate::error::HorusResult<Self> {
         Self::open_at(path)
-    }
-
-    /// Read `write_idx` directly from the mmap header (for test assertions).
-    pub fn write_idx(&self) -> u64 {
-        let guard = self.mmap.lock().unwrap();
-        let base: *const u8 = (*guard).as_ptr();
-        // SAFETY: mmap is at least HEADER_SIZE bytes; pointer is page-aligned.
-        unsafe { load_write_idx(base) }
     }
 }
 

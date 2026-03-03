@@ -545,6 +545,133 @@ pub unsafe fn set_topic_debug(shm_ptr: *mut u8, enabled: bool) {
 }
 
 // ============================================================================
+// Public ring-buffer inspector (for CLI tools like `horus topic echo`)
+// ============================================================================
+
+/// Total byte size of `TopicHeader` (= 640, 10 × 64-byte cache lines).
+pub const TOPIC_HEADER_SIZE: usize = mem::size_of::<TopicHeader>();
+
+/// Result returned by `read_latest_slot_bytes`.
+pub struct TopicSlotRead {
+    /// Raw payload bytes of the most-recently-written message slot.
+    /// For POD types this is the raw struct bytes.  For non-POD types this
+    /// is the `bincode`-serialized wire form.
+    pub payload: Vec<u8>,
+    /// Monotonic write counter at the time of the read.  Pass this back to
+    /// `read_latest_slot_bytes` as `last_write_idx` on the next poll; if
+    /// the value is unchanged, no new message has been published.
+    pub write_idx: u64,
+    /// `true` when the message type is a POD (plain-old-data) type, meaning
+    /// `payload` contains raw struct bytes rather than a `bincode` stream.
+    pub is_pod: bool,
+}
+
+/// Read the latest message payload from a topic's shared-memory backing file.
+///
+/// Returns `None` when:
+/// - `path` does not exist or cannot be opened,
+/// - the file is too small to contain a valid header,
+/// - the magic-number check fails (file not a HORUS topic),
+/// - `write_idx == last_write_idx` (no new message since the previous call), or
+/// - `write_idx == 0` (no message has ever been written on this topic).
+///
+/// # Layout assumed
+///
+/// ```text
+/// offset 0        : TopicHeader (640 bytes)
+/// offset 640      : data region
+///   POD  : capacity × type_size bytes; slot[i] = raw POD bytes
+///   Serde: capacity × slot_size bytes; slot[i] = [8B pad][8B len][bincode data…]
+/// ```
+pub fn read_latest_slot_bytes(
+    path: &std::path::Path,
+    last_write_idx: u64,
+) -> Option<TopicSlotRead> {
+    use std::fs::File;
+    use memmap2::MmapOptions;
+
+    // ── 1. Open and memory-map the file ──────────────────────────────────────
+    let file = File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if meta.len() < TOPIC_HEADER_SIZE as u64 {
+        return None;
+    }
+    // SAFETY: the file is opened read-only; the mapping is read-only.
+    let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+    let base: *const u8 = mmap.as_ptr();
+
+    // ── 2. Validate magic ─────────────────────────────────────────────────────
+    // SAFETY: mmap is at least TOPIC_HEADER_SIZE bytes and page-aligned.
+    let magic = unsafe { std::ptr::read_unaligned(base as *const u64) };
+    if magic != TOPIC_MAGIC {
+        return None;
+    }
+
+    // ── 3. Read header fields (unaligned reads — we don't own the struct) ─────
+    //   Offsets as per #[repr(C, align(64))] layout (confirmed by size assert):
+    //     type_size  : offset 12  (u32)
+    //     is_pod     : offset 20  (u8, POD_YES=2)
+    //     seq/head   : offset 64  (u64)
+    //     capacity   : offset 72  (u32)
+    //     cap_mask   : offset 76  (u32)
+    //     slot_size  : offset 80  (u32)
+    let type_size  = unsafe { std::ptr::read_unaligned(base.add(12) as *const u32) } as usize;
+    let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(20) as *const u8) };
+    let write_idx  = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
+    let capacity   = unsafe { std::ptr::read_unaligned(base.add(72) as *const u32) } as usize;
+    let cap_mask   = unsafe { std::ptr::read_unaligned(base.add(76) as *const u32) } as usize;
+    let slot_size  = unsafe { std::ptr::read_unaligned(base.add(80) as *const u32) } as usize;
+
+    let is_pod = is_pod_raw == POD_YES;
+
+    // ── 4. Guard: nothing written yet, or no new data since last poll ─────────
+    if write_idx == 0 || write_idx == last_write_idx {
+        return None;
+    }
+
+    // Index of the last-written slot (write_idx was incremented *after* the write)
+    let last_written = ((write_idx.wrapping_sub(1)) as usize) & cap_mask;
+
+    // ── 5. Extract payload bytes ──────────────────────────────────────────────
+    let payload = if is_pod {
+        if type_size == 0 || capacity == 0 {
+            return None;
+        }
+        let required = TOPIC_HEADER_SIZE + capacity * type_size;
+        if mmap.len() < required {
+            return None;
+        }
+        let slot_start = TOPIC_HEADER_SIZE + last_written * type_size;
+        mmap[slot_start..slot_start + type_size].to_vec()
+    } else {
+        if slot_size < 16 || capacity == 0 {
+            return None;
+        }
+        let required = TOPIC_HEADER_SIZE + capacity * slot_size;
+        if mmap.len() < required {
+            return None;
+        }
+        // Slot layout: [8 bytes padding][8 bytes data-len (u64 LE)][data…]
+        let slot_start = TOPIC_HEADER_SIZE + last_written * slot_size;
+        let len_offset = slot_start + 8;
+        let data_offset = slot_start + 16;
+        let data_len =
+            unsafe { std::ptr::read_unaligned(mmap.as_ptr().add(len_offset) as *const u64) }
+                as usize;
+        if data_len == 0 || data_offset + data_len > mmap.len() {
+            return None;
+        }
+        mmap[data_offset..data_offset + data_len].to_vec()
+    };
+
+    Some(TopicSlotRead {
+        payload,
+        write_idx,
+        is_pod,
+    })
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 

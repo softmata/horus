@@ -156,7 +156,7 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
-pub use header::{set_topic_debug, TOPIC_DEBUG_LOG_OFFSET};
+pub use header::{read_latest_slot_bytes, set_topic_debug, TopicSlotRead, TOPIC_DEBUG_LOG_OFFSET};
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
 pub use metrics::TopicMetrics;

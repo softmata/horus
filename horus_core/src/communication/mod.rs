@@ -52,3 +52,6 @@ pub use topic::{Topic, TopicDescriptor, TopicMessage};
 // Debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use topic::{set_topic_debug, TOPIC_DEBUG_LOG_OFFSET};
+
+// Ring-buffer inspector for CLI tools (`horus topic echo`)
+pub use topic::{read_latest_slot_bytes, TopicSlotRead};
