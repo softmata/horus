@@ -40,6 +40,8 @@ pub use horus_core::actions;
 #[doc(hidden)]
 pub use horus_core::bytemuck;
 #[doc(hidden)]
+pub use horus_core::services;
+#[doc(hidden)]
 pub use horus_core::communication;
 #[doc(hidden)]
 pub use horus_core::core;
@@ -105,6 +107,12 @@ pub mod prelude {
         GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
     };
 
+    // === Services (request/response RPC) ===
+    pub use horus_core::services::{
+        AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
+        ServiceServer, ServiceServerBuilder, SyncServiceClient,
+    };
+
     // === Errors ===
     //
     // `Error` and `Result` are short aliases (for use inside application code).
@@ -115,6 +123,7 @@ pub mod prelude {
 
     // === Macros ===
     pub use horus_core::hlog;
+    pub use horus_core::service;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
 }

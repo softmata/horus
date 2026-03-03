@@ -22,6 +22,8 @@ pub mod actions;
 #[doc(hidden)]
 pub mod communication;
 #[doc(hidden)]
+pub mod services;
+#[doc(hidden)]
 pub mod core;
 #[doc(hidden)]
 pub mod dlpack;
@@ -45,6 +47,11 @@ pub use actions::{
     Action, ActionClientBuilder, ActionClientNode, ActionError, ActionServerBuilder,
     ActionServerNode, CancelResponse, ClientGoalHandle, GoalId, GoalOutcome, GoalPriority,
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
+};
+#[doc(hidden)]
+pub use services::{
+    AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
+    ServiceServer, ServiceServerBuilder, SyncServiceClient,
 };
 #[doc(hidden)]
 pub use communication::{set_topic_debug, PodMessage, Topic, TOPIC_DEBUG_LOG_OFFSET};

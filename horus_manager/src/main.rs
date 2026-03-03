@@ -32,6 +32,7 @@ Project:
 Introspection:
   topic, t          Topic interaction (list, echo, publish)
   node, n           Node management (list, info, kill)
+  service, srv      Service interaction (list, call, type, find)
   param, p          Parameter management (get, set, list, delete)
   frame, frames     Coordinate frame operations (list, echo, tree)
   msg               Message type introspection
@@ -314,6 +315,13 @@ enum Commands {
     Frame {
         #[command(subcommand)]
         command: HfCommands,
+    },
+
+    /// Service interaction (list, call, type, find)
+    #[command(visible_alias = "srv")]
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
     },
 
     /// Message type introspection
@@ -1109,6 +1117,45 @@ enum ParamCommands {
 }
 
 #[derive(Subcommand)]
+enum ServiceCommands {
+    /// List all active services
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Call a service
+    Call {
+        /// Service name
+        name: String,
+
+        /// Request as JSON (e.g. '{"a": 3, "b": 4}')
+        request: String,
+
+        /// Timeout in seconds (default: 5.0)
+        #[arg(short = 't', long = "timeout", default_value = "5.0")]
+        timeout: f64,
+    },
+
+    /// Show type info for a service
+    Type {
+        /// Service name
+        name: String,
+    },
+
+    /// Find services matching a name filter
+    Find {
+        /// Name filter (substring match)
+        filter: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum MsgCommands {
     /// List all message types
     List {
@@ -1424,6 +1471,19 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 rate,
                 count,
             } => commands::topic::publish_topic(&name, &message, rate, count),
+        },
+
+        Commands::Service { command } => match command {
+            ServiceCommands::List { verbose, json } => {
+                commands::service::list_services(verbose, json)
+            }
+            ServiceCommands::Call {
+                name,
+                request,
+                timeout,
+            } => commands::service::call_service(&name, &request, timeout),
+            ServiceCommands::Type { name } => commands::service::service_type(&name),
+            ServiceCommands::Find { filter } => commands::service::find_services(&filter),
         },
 
         Commands::Node { command } => match command {

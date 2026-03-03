@@ -19,5 +19,6 @@ pub mod pkg;
 pub mod plugin;
 pub mod record;
 pub mod run;
+pub mod service;
 pub mod test;
 pub mod topic;
