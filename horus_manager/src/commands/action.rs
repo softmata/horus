@@ -354,13 +354,13 @@ pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f
     })
     .ok();
 
-    let mut status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name).ok().unwrap_or_else(|| {
+    let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name).ok().unwrap_or_else(|| {
         Topic::new(&status_topic_name).unwrap()
     });
-    let mut feedback_topic: Topic<serde_json::Value> = Topic::new(&feedback_topic_name).ok().unwrap_or_else(|| {
+    let feedback_topic: Topic<serde_json::Value> = Topic::new(&feedback_topic_name).ok().unwrap_or_else(|| {
         Topic::new(&feedback_topic_name).unwrap()
     });
-    let mut result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).ok().unwrap_or_else(|| {
+    let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).ok().unwrap_or_else(|| {
         Topic::new(&result_topic_name).unwrap()
     });
 
