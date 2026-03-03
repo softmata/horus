@@ -228,6 +228,66 @@ macro_rules! hlog {
     };
 }
 
+/// Log a message at most once per `$interval_ms` milliseconds (throttled).
+///
+/// Equivalent to ROS2's `RCLCPP_INFO_THROTTLE` / `RCLCPP_WARN_THROTTLE`.
+/// Uses a per-callsite atomic counter — zero overhead when the interval has
+/// not elapsed.
+///
+/// # Syntax
+///
+/// ```ignore
+/// hlog_throttle!(1000, warn, "Battery low: {}%", battery_pct);
+/// //              ^^^^  ^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/// //       interval_ms  level  format string
+/// ```
+///
+/// # Example
+///
+/// ```ignore
+/// fn tick(&mut self) {
+///     // Log at most once per 5 seconds
+///     hlog_throttle!(5000, info, "State: {:?}", self.state);
+/// }
+/// ```
+#[macro_export]
+macro_rules! hlog_throttle {
+    ($interval_ms:expr, $level:ident, $($arg:tt)*) => {{
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+        let now_ms = ::std::time::SystemTime::now()
+            .duration_since(::std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last = LAST_LOG_MS.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) >= ($interval_ms as u64) {
+            LAST_LOG_MS.store(now_ms, Ordering::Relaxed);
+            $crate::hlog!($level, $($arg)*);
+        }
+    }};
+}
+
+/// Log a message exactly once per program run (at the callsite).
+///
+/// Equivalent to ROS2's `RCLCPP_INFO_ONCE` / `RCLCPP_WARN_ONCE`.
+/// Subsequent calls from the same source location are silently ignored.
+///
+/// # Syntax
+///
+/// ```ignore
+/// hlog_once!(info, "Sensor calibration complete (model: {})", self.model);
+/// ```
+#[macro_export]
+macro_rules! hlog_once {
+    ($level:ident, $($arg:tt)*) => {{
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            $crate::hlog!($level, $($arg)*);
+        }
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -424,6 +424,106 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     }
 }
 
+/// Measure topic bandwidth (bytes/sec and messages/sec)
+///
+/// Equivalent to `ros2 topic bw`.
+pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
+    use horus_core::communication::read_latest_slot_bytes;
+
+    let topics = discover_shared_memory()?;
+
+    let topic = topics.iter().find(|t| {
+        t.topic_name == name
+            || t.topic_name.ends_with(&format!("/{}", name))
+            || t.topic_name
+                .rsplit('/')
+                .next()
+                .map(|base| base == name)
+                .unwrap_or(false)
+    });
+
+    let Some(topic) = topic else {
+        return Err(HorusError::Config(format!(
+            "Topic '{}' not found. Use 'horus topic list' to see available topics.",
+            name
+        )));
+    };
+    let topic_path = shm_topics_dir().join(&topic.topic_name);
+    let window_size = window.unwrap_or(100);
+
+    println!(
+        "{} Measuring bandwidth for: {}",
+        cli_output::ICON_INFO.cyan(),
+        topic.topic_name.white().bold()
+    );
+    println!("  {} Press Ctrl+C to stop", "".dimmed());
+    println!();
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
+
+    // Each sample: (timestamp, bytes_in_slot)
+    let mut samples: Vec<(Instant, usize)> = Vec::with_capacity(window_size + 1);
+    let mut last_write_idx: u64 = 0;
+
+    loop {
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+
+        if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
+            last_write_idx = slot.write_idx;
+            samples.push((Instant::now(), slot.payload.len()));
+
+            if samples.len() > window_size {
+                samples.remove(0);
+            }
+
+            if samples.len() >= 2 {
+                let first = &samples[0];
+                let last = &samples[samples.len() - 1];
+                let duration_secs = last.0.duration_since(first.0).as_secs_f64();
+
+                if duration_secs > 0.0 {
+                    let total_bytes: usize = samples.iter().map(|(_, b)| b).sum();
+                    let bytes_per_sec = total_bytes as f64 / duration_secs;
+                    let msgs_per_sec = (samples.len() - 1) as f64 / duration_secs;
+
+                    let (bw_val, bw_unit) = if bytes_per_sec >= 1_000_000.0 {
+                        (bytes_per_sec / 1_000_000.0, "MB/s")
+                    } else if bytes_per_sec >= 1_000.0 {
+                        (bytes_per_sec / 1_000.0, "KB/s")
+                    } else {
+                        (bytes_per_sec, "B/s")
+                    };
+
+                    let avg_bytes = total_bytes / samples.len();
+
+                    print!(
+                        "\r  {} {:.2} {} ({:.1} msgs/s, avg {}/msg, window: {})    ",
+                        "Bandwidth:".cyan(),
+                        bw_val,
+                        bw_unit,
+                        msgs_per_sec,
+                        format_bytes(avg_bytes as u64),
+                        samples.len()
+                    );
+                    std::io::stdout().flush().ok();
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    println!();
+    Ok(())
+}
+
 /// Publish a message to a topic (for testing)
 pub fn publish_topic(
     name: &str,

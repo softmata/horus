@@ -57,8 +57,8 @@ pub use services::{
 pub use communication::{set_topic_debug, PodMessage, Topic, TOPIC_DEBUG_LOG_OFFSET};
 #[doc(hidden)]
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState,
-    RtClass, RtNode, RtPriority, RtStats, TopicMetadata,
+    DeadlineMissPolicy, HealthStatus, HorusRate, HorusTimer, LogSummary, Node, NodeMetrics,
+    NodePresence, NodeState, RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{HorusError, HorusResult, Result};

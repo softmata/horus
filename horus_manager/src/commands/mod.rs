@@ -1,3 +1,4 @@
+pub mod action;
 pub mod blackbox;
 pub mod cache;
 pub mod check;

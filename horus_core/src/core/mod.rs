@@ -23,6 +23,7 @@ pub mod node;
 pub mod presence;
 pub mod rt_config;
 pub mod rt_node;
+pub mod timer;
 
 // Discovery internals (used by scheduler, not user-facing)
 pub(crate) use discovery::{announce_started, announce_stopped};
@@ -34,5 +35,6 @@ pub use node::{
     HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodeState, TopicMetadata,
 };
 pub use presence::NodePresence;
+pub use timer::{HorusRate, HorusTimer, Stopwatch};
 // rt_config types are pub(crate) — accessed directly by scheduling/ internals
 pub use rt_node::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats, WCETViolation};

@@ -82,6 +82,9 @@ pub mod prelude {
     // === Node ===
     pub use horus_core::core::{LogSummary, Node, NodeState};
 
+    // === Timer / Rate ===
+    pub use horus_core::core::timer::{HorusRate, HorusTimer, Stopwatch};
+
     // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
 
@@ -123,6 +126,8 @@ pub mod prelude {
 
     // === Macros ===
     pub use horus_core::hlog;
+    pub use horus_core::hlog_once;
+    pub use horus_core::hlog_throttle;
     pub use horus_core::service;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;

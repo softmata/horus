@@ -30,9 +30,10 @@ Project:
   launch, l         Launch multiple nodes from a YAML file
 
 Introspection:
-  topic, t          Topic interaction (list, echo, publish)
+  topic, t          Topic interaction (list, echo, publish, bw)
   node, n           Node management (list, info, kill)
   service, srv      Service interaction (list, call, type, find)
+  action, a         Action interaction (list, info, send_goal, cancel_goal)
   param, p          Parameter management (get, set, list, delete)
   frame, frames     Coordinate frame operations (list, echo, tree)
   msg               Message type introspection
@@ -322,6 +323,13 @@ enum Commands {
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
+    },
+
+    /// Action interaction (list, info, send_goal, cancel_goal)
+    #[command(visible_alias = "a")]
+    Action {
+        #[command(subcommand)]
+        command: ActionCommands,
     },
 
     /// Message type introspection
@@ -940,6 +948,16 @@ enum TopicCommands {
         #[arg(short = 'n', long = "count")]
         count: Option<usize>,
     },
+
+    /// Measure topic bandwidth (bytes/sec)
+    Bw {
+        /// Topic name
+        name: String,
+
+        /// Window size for averaging (default: 100)
+        #[arg(short = 'w', long = "window")]
+        window: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1114,6 +1132,55 @@ enum ParamCommands {
 
     /// Dump all parameters as YAML to stdout
     Dump,
+}
+
+#[derive(Subcommand)]
+enum ActionCommands {
+    /// List all active actions
+    List {
+        /// Show detailed information
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
+    },
+
+    /// Show detailed info about an action
+    Info {
+        /// Action name
+        name: String,
+    },
+
+    /// Send a goal to an action server
+    #[command(name = "send_goal")]
+    SendGoal {
+        /// Action name
+        name: String,
+
+        /// Goal as JSON
+        goal: String,
+
+        /// Wait for and display the result
+        #[arg(short = 'w', long = "wait")]
+        wait: bool,
+
+        /// Timeout in seconds when waiting for result (default: 30.0)
+        #[arg(short = 't', long = "timeout", default_value = "30.0")]
+        timeout: f64,
+    },
+
+    /// Cancel a goal on an action server
+    #[command(name = "cancel_goal")]
+    CancelGoal {
+        /// Action name
+        name: String,
+
+        /// Goal ID to cancel (optional — cancels all if omitted)
+        #[arg(short = 'i', long = "goal-id")]
+        goal_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1471,6 +1538,23 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 rate,
                 count,
             } => commands::topic::publish_topic(&name, &message, rate, count),
+            TopicCommands::Bw { name, window } => commands::topic::topic_bw(&name, window),
+        },
+
+        Commands::Action { command } => match command {
+            ActionCommands::List { verbose, json } => {
+                commands::action::list_actions(verbose, json)
+            }
+            ActionCommands::Info { name } => commands::action::action_info(&name),
+            ActionCommands::SendGoal {
+                name,
+                goal,
+                wait,
+                timeout,
+            } => commands::action::send_goal(&name, &goal, wait, timeout),
+            ActionCommands::CancelGoal { name, goal_id } => {
+                commands::action::cancel_goal(&name, goal_id.as_deref())
+            }
         },
 
         Commands::Service { command } => match command {
