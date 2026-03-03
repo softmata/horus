@@ -162,7 +162,7 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
             "fields": fields,
             "md5": md5,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 
@@ -229,7 +229,7 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
             "module": msg.module,
             "md5": md5,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
     } else {
         println!("{}", md5);
     }

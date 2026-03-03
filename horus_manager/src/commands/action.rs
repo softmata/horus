@@ -354,15 +354,12 @@ pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f
     })
     .ok();
 
-    let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name).ok().unwrap_or_else(|| {
-        Topic::new(&status_topic_name).unwrap()
-    });
-    let feedback_topic: Topic<serde_json::Value> = Topic::new(&feedback_topic_name).ok().unwrap_or_else(|| {
-        Topic::new(&feedback_topic_name).unwrap()
-    });
-    let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).ok().unwrap_or_else(|| {
-        Topic::new(&result_topic_name).unwrap()
-    });
+    let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name)
+        .map_err(|e| HorusError::Communication(format!("Failed to create status topic '{}': {}", status_topic_name, e)))?;
+    let feedback_topic: Topic<serde_json::Value> = Topic::new(&feedback_topic_name)
+        .map_err(|e| HorusError::Communication(format!("Failed to create feedback topic '{}': {}", feedback_topic_name, e)))?;
+    let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name)
+        .map_err(|e| HorusError::Communication(format!("Failed to create result topic '{}': {}", result_topic_name, e)))?;
 
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
 

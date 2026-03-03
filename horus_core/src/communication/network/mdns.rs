@@ -14,10 +14,10 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use horus_core::communication::network::mdns::{HorusMdns, ServiceInfo};
+//! use horus_core::communication::network::mdns::{Mdns, ServiceInfo};
 //!
 //! // Create mDNS service
-//! let mdns = HorusMdns::new()?;
+//! let mdns = Mdns::new()?;
 //!
 //! // Register this node as a service
 //! mdns.register_service("my-robot", 9870, &["lidar", "camera"])?;
@@ -84,7 +84,7 @@ const RESOLUTION_CACHE_TTL: Duration = Duration::from_secs(300);
 /// - Service registration for HORUS nodes
 /// - Hostname resolution for `.local` addresses
 /// - Service browsing/discovery
-pub struct HorusMdns {
+pub struct Mdns {
     /// The underlying mDNS daemon
     daemon: ServiceDaemon,
     /// Cache of discovered services
@@ -95,7 +95,7 @@ pub struct HorusMdns {
     registered_service: Arc<Mutex<Option<String>>>,
 }
 
-impl HorusMdns {
+impl Mdns {
     /// Create a new mDNS service manager
     ///
     /// This starts the mDNS daemon which will handle multicast DNS queries
@@ -505,7 +505,7 @@ impl HorusMdns {
     }
 }
 
-impl Drop for HorusMdns {
+impl Drop for Mdns {
     fn drop(&mut self) {
         // Try to unregister service on drop
         let registered = self.registered_service.lock().unwrap();
@@ -526,10 +526,10 @@ pub struct MdnsCacheStats {
 
 /// Resolve an mDNS hostname to an IP address (standalone function)
 ///
-/// This is a convenience function that creates a temporary HorusMdns instance.
-/// For repeated use, create a HorusMdns instance and reuse it.
+/// This is a convenience function that creates a temporary Mdns instance.
+/// For repeated use, create a Mdns instance and reuse it.
 pub fn resolve_mdns_hostname(hostname: &str) -> HorusResult<IpAddr> {
-    let mdns = HorusMdns::new()?;
+    let mdns = Mdns::new()?;
     mdns.resolve_hostname(hostname)
 }
 
@@ -538,7 +538,7 @@ pub fn resolve_mdns_hostname_with_timeout(
     hostname: &str,
     timeout: Duration,
 ) -> HorusResult<IpAddr> {
-    let mdns = HorusMdns::new()?;
+    let mdns = Mdns::new()?;
     mdns.resolve_hostname_with_timeout(hostname, timeout)
 }
 
@@ -573,7 +573,7 @@ fn get_local_hostname() -> HorusResult<String> {
 // ============================================================================
 //
 // This section provides a user-friendly API for discovering HORUS nodes on
-// the network using mDNS/DNS-SD. It builds on the low-level HorusMdns service
+// the network using mDNS/DNS-SD. It builds on the low-level Mdns service
 // to provide:
 // - Easy-to-use discover() function for one-shot discovery
 // - DiscoveredNode struct with human-readable fields
@@ -713,7 +713,7 @@ pub fn discover() -> HorusResult<Vec<DiscoveredNode>> {
 /// # Returns
 /// A list of discovered nodes matching the filter criteria.
 pub fn discover_with_options(options: DiscoveryOptions) -> HorusResult<Vec<DiscoveredNode>> {
-    let mdns = HorusMdns::new()?;
+    let mdns = Mdns::new()?;
     let services = mdns.browse_services_with_timeout(options.timeout)?;
 
     let mut nodes: Vec<DiscoveredNode> = services
@@ -791,7 +791,7 @@ impl DiscoveryWatcher {
         let stop_clone = stop_signal.clone();
 
         let thread = thread::spawn(move || {
-            let mdns = match HorusMdns::new() {
+            let mdns = match Mdns::new() {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = sender.send(DiscoveryEvent::Error(format!(
@@ -1027,7 +1027,7 @@ pub struct MdnsNodeRegistration {
     /// Configuration
     config: MdnsRegistrationConfig,
     /// The underlying mDNS service
-    mdns: Arc<HorusMdns>,
+    mdns: Arc<Mdns>,
     /// Currently registered topics
     current_topics: RwLock<Vec<String>>,
     /// Whether we're currently registered
@@ -1060,7 +1060,7 @@ impl MdnsNodeRegistration {
         // Sanitize node name for mDNS (replace underscores with hyphens)
         let hostname = sanitize_hostname(node_name);
 
-        let mdns = Arc::new(HorusMdns::new()?);
+        let mdns = Arc::new(Mdns::new()?);
 
         Ok(Self {
             node_name: node_name.to_string(),
@@ -1212,7 +1212,7 @@ impl MdnsNodeRegistration {
     }
 
     /// Get reference to the underlying mDNS service (for advanced use)
-    pub fn mdns(&self) -> &HorusMdns {
+    pub fn mdns(&self) -> &Mdns {
         &self.mdns
     }
 }
@@ -1417,7 +1417,7 @@ mod tests {
             return;
         }
 
-        let mdns = HorusMdns::new();
+        let mdns = Mdns::new();
         if let Ok(mdns) = mdns {
             let stats = mdns.cache_stats();
             assert_eq!(stats.cached_resolutions, 0);

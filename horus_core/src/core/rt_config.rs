@@ -39,9 +39,6 @@ pub(crate) enum RtScheduler {
     /// First-In-First-Out RT scheduler - SCHED_FIFO
     /// Highest priority, no time slicing
     Fifo,
-    /// Round-Robin RT scheduler - SCHED_RR
-    /// Time-sliced among same-priority threads
-    RoundRobin,
 }
 
 /// Result of applying RT configuration.
@@ -51,8 +48,6 @@ pub(crate) enum RtApplyResult {
     FullSuccess,
     /// Configuration applied with some features degraded
     Degraded(Vec<RtDegradation>),
-    /// Configuration failed to apply
-    Failed(String),
 }
 
 /// Describes a degradation from the requested configuration.
@@ -184,9 +179,7 @@ pub(crate) struct RtConfigBuilder {
     priority: Option<i32>,
     scheduler: RtScheduler,
     cpu_affinity: Option<Vec<usize>>,
-    prefault_stack_size: Option<usize>,
     warn_on_degradation: bool,
-    fail_on_degradation: bool,
 }
 
 impl RtConfigBuilder {
@@ -235,41 +228,9 @@ impl RtConfigBuilder {
         self
     }
 
-    /// Enable stack prefaulting with the specified stack size.
-    ///
-    /// Stack prefaulting touches all stack pages at thread initialization
-    /// to ensure they are mapped into physical memory. This prevents
-    /// minor page faults during RT-critical code execution.
-    ///
-    /// # Arguments
-    /// * `size` - Stack size in bytes to prefault. Common values:
-    ///   - 64 * 1024 (64KB) for small stacks
-    ///   - 512 * 1024 (512KB) for moderate stacks
-    ///   - 8 * 1024 * 1024 (8MB) for large stacks (default thread stack)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::core::RtConfig;
-    ///
-    /// let config = RtConfig::new()
-    ///     .memory_locked(true)
-    ///     .prefault_stack(512 * 1024) // 512KB stack prefaulting
-    ///     .build();
-    /// ```
-    pub fn prefault_stack(mut self, size: usize) -> Self {
-        self.prefault_stack_size = Some(size);
-        self
-    }
-
     /// Log warnings when configuration is degraded.
     pub fn warn_on_degradation(mut self, warn: bool) -> Self {
         self.warn_on_degradation = warn;
-        self
-    }
-
-    /// Fail instead of degrading when full RT support unavailable.
-    pub fn fail_on_degradation(mut self, fail: bool) -> Self {
-        self.fail_on_degradation = fail;
         self
     }
 
@@ -280,9 +241,7 @@ impl RtConfigBuilder {
             priority: self.priority,
             scheduler: self.scheduler,
             cpu_affinity: self.cpu_affinity,
-            prefault_stack_size: self.prefault_stack_size,
             warn_on_degradation: self.warn_on_degradation,
-            fail_on_degradation: self.fail_on_degradation,
         }
     }
 }
@@ -297,9 +256,7 @@ pub(crate) struct RtConfig {
     priority: Option<i32>,
     scheduler: RtScheduler,
     cpu_affinity: Option<Vec<usize>>,
-    prefault_stack_size: Option<usize>,
     warn_on_degradation: bool,
-    fail_on_degradation: bool,
 }
 
 impl RtConfig {
@@ -307,33 +264,6 @@ impl RtConfig {
     #[allow(clippy::new_ret_no_self)]
     pub fn new() -> RtConfigBuilder {
         RtConfigBuilder::new()
-    }
-
-    /// Create a configuration optimized for hard real-time control loops.
-    ///
-    /// This enables memory locking, stack prefaulting, sets FIFO scheduler
-    /// with high priority, and optionally pins to specific CPUs.
-    pub fn hard_realtime(cpus: Option<&[usize]>) -> Self {
-        let mut builder = Self::new()
-            .memory_locked(true)
-            .prefault_stack(512 * 1024) // 512KB stack prefaulting
-            .scheduler(RtScheduler::Fifo)
-            .priority(80)
-            .warn_on_degradation(true);
-
-        if let Some(cpu_list) = cpus {
-            builder = builder.cpu_affinity(cpu_list);
-        }
-
-        builder.build()
-    }
-
-    /// Create a default non-RT configuration.
-    ///
-    /// This is a no-op configuration that doesn't modify thread
-    /// scheduling parameters.
-    pub fn normal() -> Self {
-        Self::default()
     }
 
     /// Apply this configuration to the current thread.
@@ -379,17 +309,8 @@ impl RtConfig {
                     if self.warn_on_degradation {
                         eprintln!("Warning: {}", msg);
                     }
-                    if self.fail_on_degradation {
-                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, msg));
-                    }
                 }
             }
-        }
-
-        // Apply stack prefaulting - do this early before entering RT section
-        // This prevents minor page faults during critical code execution
-        if let Some(stack_size) = self.prefault_stack_size {
-            prefault_stack(stack_size);
         }
 
         // Apply scheduler and priority
@@ -411,9 +332,6 @@ impl RtConfig {
                     if self.warn_on_degradation {
                         eprintln!("Warning: {}", msg);
                     }
-                    if self.fail_on_degradation {
-                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, msg));
-                    }
                 }
             }
         }
@@ -427,9 +345,6 @@ impl RtConfig {
                     degradations.push(RtDegradation::AffinityUnavailable(msg.clone()));
                     if self.warn_on_degradation {
                         eprintln!("Warning: {}", msg);
-                    }
-                    if self.fail_on_degradation {
-                        return Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
                     }
                 }
             }
@@ -465,13 +380,6 @@ impl RtConfig {
             ));
         }
 
-        if self.fail_on_degradation && !degradations.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "RT features not available on this platform",
-            ));
-        }
-
         if degradations.is_empty() {
             Ok(RtApplyResult::FullSuccess)
         } else {
@@ -502,7 +410,6 @@ impl RtConfig {
         let policy = match self.scheduler {
             RtScheduler::Normal => libc::SCHED_OTHER,
             RtScheduler::Fifo => libc::SCHED_FIFO,
-            RtScheduler::RoundRobin => libc::SCHED_RR,
         };
 
         // Clamp priority to valid range
@@ -609,7 +516,6 @@ impl RtConfig {
 
             let scheduler = match policy {
                 libc::SCHED_FIFO => RtScheduler::Fifo,
-                libc::SCHED_RR => RtScheduler::RoundRobin,
                 _ => RtScheduler::Normal,
             };
 
@@ -888,29 +794,6 @@ impl RtCpuInfo {
         }
     }
 
-    /// Get a human-readable summary of RT CPU configuration.
-    pub fn summary(&self) -> String {
-        let mut s = format!("RT CPU Configuration ({} total CPUs):\n", self.total_cpus);
-
-        if self.isolated_cpus.is_empty() {
-            s.push_str("  isolcpus: NONE (consider adding isolcpus=N-M to kernel params)\n");
-        } else {
-            s.push_str(&format!("  isolcpus: {:?}\n", self.isolated_cpus));
-        }
-
-        if self.nohz_full_cpus.is_empty() {
-            s.push_str("  nohz_full: NONE (consider adding nohz_full=N-M for lower latency)\n");
-        } else {
-            s.push_str(&format!("  nohz_full: {:?}\n", self.nohz_full_cpus));
-        }
-
-        s.push_str(&format!(
-            "  Recommended for RT (priority order): {:?}\n",
-            self.recommended_rt_cpus
-        ));
-
-        s
-    }
 }
 
 /// Parse a CPU list string like "2-5,7,9-11" into individual CPU indices.
@@ -981,23 +864,6 @@ mod tests {
     }
 
     #[test]
-    fn test_hard_realtime_preset() {
-        let config = RtConfig::hard_realtime(Some(&[2, 3]));
-        assert!(config.memory_locked);
-        assert_eq!(config.scheduler, RtScheduler::Fifo);
-        assert_eq!(config.priority, Some(80));
-        assert_eq!(config.cpu_affinity, Some(vec![2, 3]));
-    }
-
-    #[test]
-    fn test_normal_preset() {
-        let config = RtConfig::normal();
-        assert!(!config.memory_locked);
-        assert_eq!(config.scheduler, RtScheduler::Normal);
-        assert_eq!(config.priority, None);
-    }
-
-    #[test]
     fn test_kernel_info_detect() {
         // Just verify it doesn't panic
         let info = RtKernelInfo::detect();
@@ -1021,9 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normal_config_apply() {
-        // Normal config should always succeed
-        let config = RtConfig::normal();
+    fn test_default_config_apply() {
+        // Default config should always succeed
+        let config = RtConfig::default();
         let result = config.apply();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), RtApplyResult::FullSuccess);
@@ -1043,28 +909,4 @@ mod tests {
         super::prefault_stack(128 * 1024);
     }
 
-    #[test]
-    fn test_builder_with_prefault() {
-        let config = RtConfig::new().prefault_stack(256 * 1024).build();
-
-        assert_eq!(config.prefault_stack_size, Some(256 * 1024));
-    }
-
-    #[test]
-    fn test_hard_realtime_includes_prefault() {
-        let config = RtConfig::hard_realtime(None);
-
-        // hard_realtime preset should include stack prefaulting
-        assert!(config.prefault_stack_size.is_some());
-        assert_eq!(config.prefault_stack_size, Some(512 * 1024));
-    }
-
-    #[test]
-    fn test_config_with_prefault_apply() {
-        // Config with prefault should apply successfully
-        let config = RtConfig::new().prefault_stack(64 * 1024).build();
-
-        let result = config.apply();
-        assert!(result.is_ok());
-    }
 }

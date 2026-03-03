@@ -60,7 +60,7 @@ pub fn run_info(json: bool) -> HorusResult<()> {
             "total_size": format_size(total_size),
             "package_count": package_count,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 
@@ -89,7 +89,7 @@ pub fn run_list(json: bool) -> HorusResult<()> {
         if json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "packages": [] })).unwrap()
+                serde_json::to_string_pretty(&serde_json::json!({ "packages": [] })).unwrap_or_default()
             );
         } else {
             println!("{}", "Cached Packages".cyan().bold());
@@ -121,7 +121,7 @@ pub fn run_list(json: bool) -> HorusResult<()> {
             })
             .collect();
         let output = serde_json::json!({ "packages": pkg_list });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 

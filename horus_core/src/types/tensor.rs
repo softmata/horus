@@ -1,6 +1,6 @@
 //! Zero-copy tensor descriptor for shared memory communication
 //!
-//! [`HorusTensor`] is a lightweight 168-byte descriptor that flows through Topic
+//! [`Tensor`] is a lightweight 168-byte descriptor that flows through Topic
 //! like any other message, while the actual tensor data lives in a shared memory pool.
 //!
 //! # Memory Layout (168 bytes, repr(C), Pod-safe)
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::device::{Device, DEVICE_TYPE_CPU, DEVICE_TYPE_CUDA};
 use super::dtype::TensorDtype;
 
-/// Maximum number of dimensions supported by HorusTensor
+/// Maximum number of dimensions supported by Tensor
 pub(crate) const MAX_TENSOR_DIMS: usize = 8;
 
 /// Zero-copy tensor descriptor for shared memory communication
@@ -36,7 +36,7 @@ pub(crate) const MAX_TENSOR_DIMS: usize = 8;
 /// - The pool manages refcounts atomically
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct HorusTensor {
+pub struct Tensor {
     // === Pool identification (16 bytes) ===
     /// ID of the pool that owns this tensor
     pub pool_id: u32,
@@ -81,12 +81,12 @@ pub struct HorusTensor {
     pub strides: [u64; MAX_TENSOR_DIMS],
 }
 
-// Safety: HorusTensor is repr(C) with explicit padding, no implicit padding exists.
+// Safety: Tensor is repr(C) with explicit padding, no implicit padding exists.
 // All fields are Pod types (u8, u32, u64, [u8; N], [u64; N], TensorDtype which is repr(u8)).
-unsafe impl Pod for HorusTensor {}
-unsafe impl Zeroable for HorusTensor {}
+unsafe impl Pod for Tensor {}
+unsafe impl Zeroable for Tensor {}
 
-impl Default for HorusTensor {
+impl Default for Tensor {
     fn default() -> Self {
         Self {
             pool_id: 0,
@@ -106,7 +106,7 @@ impl Default for HorusTensor {
     }
 }
 
-impl HorusTensor {
+impl Tensor {
     /// Create a new tensor descriptor
     ///
     /// This is typically called by TensorPool, not directly.
@@ -277,13 +277,13 @@ impl HorusTensor {
 }
 
 // Custom Serialize/Deserialize to handle large arrays
-impl Serialize for HorusTensor {
+impl Serialize for Tensor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("HorusTensor", 11)?;
+        let mut state = serializer.serialize_struct("Tensor", 11)?;
         state.serialize_field("pool_id", &self.pool_id)?;
         state.serialize_field("slot_id", &self.slot_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -299,27 +299,27 @@ impl Serialize for HorusTensor {
     }
 }
 
-impl<'de> Deserialize<'de> for HorusTensor {
+impl<'de> Deserialize<'de> for Tensor {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         use serde::de::{self, MapAccess, Visitor};
 
-        struct HorusTensorVisitor;
+        struct TensorVisitor;
 
-        impl<'de> Visitor<'de> for HorusTensorVisitor {
-            type Value = HorusTensor;
+        impl<'de> Visitor<'de> for TensorVisitor {
+            type Value = Tensor;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("struct HorusTensor")
+                formatter.write_str("struct Tensor")
             }
 
-            fn visit_map<V>(self, mut map: V) -> Result<HorusTensor, V::Error>
+            fn visit_map<V>(self, mut map: V) -> Result<Tensor, V::Error>
             where
                 V: MapAccess<'de>,
             {
-                let mut tensor = HorusTensor::default();
+                let mut tensor = Tensor::default();
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
@@ -359,7 +359,7 @@ impl<'de> Deserialize<'de> for HorusTensor {
         }
 
         deserializer.deserialize_struct(
-            "HorusTensor",
+            "Tensor",
             &[
                 "pool_id",
                 "slot_id",
@@ -373,7 +373,7 @@ impl<'de> Deserialize<'de> for HorusTensor {
                 "shape",
                 "strides",
             ],
-            HorusTensorVisitor,
+            TensorVisitor,
         )
     }
 }
@@ -385,15 +385,15 @@ mod tests {
     #[test]
     fn test_tensor_size() {
         assert_eq!(
-            std::mem::size_of::<HorusTensor>(),
+            std::mem::size_of::<Tensor>(),
             168,
-            "HorusTensor must be exactly 168 bytes"
+            "Tensor must be exactly 168 bytes"
         );
     }
 
     #[test]
     fn test_tensor_creation() {
-        let tensor = HorusTensor::new(
+        let tensor = Tensor::new(
             1,
             42,
             1,
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_tensor_cuda() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::F32, Device::cuda(3));
+        let tensor = Tensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::F32, Device::cuda(3));
 
         assert!(tensor.is_cuda());
         assert!(!tensor.is_cpu());
@@ -427,14 +427,14 @@ mod tests {
         // Test GPU indices beyond old 4-GPU limit
         for gpu_id in [0, 1, 4, 7, 15, 100, 1000] {
             let tensor =
-                HorusTensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
+                Tensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
             assert_eq!(tensor.device(), Device::cuda(gpu_id));
         }
     }
 
     #[test]
     fn test_tensor_strides() {
-        let tensor = HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
 
         // Row-major strides for [2, 3, 4] with f32:
         // stride[2] = 4 (element size)
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_tensor_view() {
-        let tensor = HorusTensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(0, 0, 0, 0, &[2, 3, 4], TensorDtype::F32, Device::cpu());
 
         let view = tensor.view(&[6, 4]).unwrap();
         assert_eq!(view.shape(), &[6, 4]);
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_tensor_slice() {
-        let tensor = HorusTensor::new(1, 2, 3, 0, &[10, 5], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(1, 2, 3, 0, &[10, 5], TensorDtype::F32, Device::cpu());
 
         let slice = tensor.slice_first_dim(2, 7).unwrap();
         assert_eq!(slice.shape(), &[5, 5]);
@@ -466,12 +466,12 @@ mod tests {
 
     #[test]
     fn test_tensor_pod_soundness() {
-        let tensor = HorusTensor::default();
+        let tensor = Tensor::default();
         let bytes: &[u8] = bytemuck::bytes_of(&tensor);
         assert_eq!(bytes.len(), 168);
 
         // Roundtrip through bytes
-        let recovered: &HorusTensor = bytemuck::from_bytes(bytes);
+        let recovered: &Tensor = bytemuck::from_bytes(bytes);
         assert_eq!(recovered.dtype, TensorDtype::F32);
         assert_eq!(recovered.ndim, 0);
         assert!(recovered.is_cpu());
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_tensor_serde_roundtrip() {
-        let tensor = HorusTensor::new(
+        let tensor = Tensor::new(
             1,
             42,
             3,
@@ -490,7 +490,7 @@ mod tests {
         );
 
         let json = serde_json::to_string(&tensor).unwrap();
-        let recovered: HorusTensor = serde_json::from_str(&json).unwrap();
+        let recovered: Tensor = serde_json::from_str(&json).unwrap();
 
         assert_eq!(recovered.pool_id, tensor.pool_id);
         assert_eq!(recovered.slot_id, tensor.slot_id);
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_tensor_default() {
-        let tensor = HorusTensor::default();
+        let tensor = Tensor::default();
         assert_eq!(tensor.pool_id, 0);
         assert_eq!(tensor.slot_id, 0);
         assert_eq!(tensor.generation, 0);

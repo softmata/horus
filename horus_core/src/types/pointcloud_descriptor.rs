@@ -10,17 +10,17 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 use super::dtype::TensorDtype;
-use super::tensor::HorusTensor;
+use super::tensor::Tensor;
 
 /// Unified point cloud descriptor — Pod, 272 bytes.
 ///
-/// Contains a `HorusTensor` (shape `[N, K]`) plus field metadata.
+/// Contains a `Tensor` (shape `[N, K]`) plus field metadata.
 /// The tensor holds N points with K fields each (3 for XYZ, 4 for XYZI, etc.).
 ///
 /// # Layout (272 bytes, repr(C))
 ///
 /// ```text
-/// inner:         HorusTensor  (168 bytes)
+/// inner:         Tensor  (168 bytes)
 /// timestamp_ns:  u64          (8 bytes)
 /// field_names:   [[u8; 4]; 8] (32 bytes)  — compact field names ("x\0\0\0", etc.)
 /// field_offsets:  [u16; 8]    (16 bytes)
@@ -36,7 +36,7 @@ use super::tensor::HorusTensor;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
 pub struct PointCloudDescriptor {
     /// Inner tensor: shape [N, K], data in pool
-    inner: HorusTensor,
+    inner: Tensor,
     /// Timestamp in nanoseconds since epoch
     timestamp_ns: u64,
     /// Compact field names (4 bytes each, null-terminated)
@@ -66,7 +66,7 @@ impl PointCloudDescriptor {
     /// Create an XYZ point cloud descriptor.
     ///
     /// Tensor shape should be `[N, 3]` with dtype F32.
-    pub fn xyz(tensor: HorusTensor) -> Self {
+    pub fn xyz(tensor: Tensor) -> Self {
         let mut pc = Self::from_tensor(tensor);
         pc.set_field(0, b"x\0\0\0", 0, TensorDtype::F32);
         pc.set_field(1, b"y\0\0\0", 4, TensorDtype::F32);
@@ -79,15 +79,15 @@ impl PointCloudDescriptor {
     /// Create an XYZI point cloud descriptor.
     ///
     /// Tensor shape should be `[N, 4]` with dtype F32.
-    pub fn xyzi(tensor: HorusTensor) -> Self {
+    pub fn xyzi(tensor: Tensor) -> Self {
         let mut pc = Self::xyz(tensor);
         pc.set_field(3, b"i\0\0\0", 12, TensorDtype::F32);
         pc.field_count = 4;
         pc
     }
 
-    /// Wrap a `HorusTensor` as a `PointCloud` with no field metadata.
-    pub fn from_tensor(tensor: HorusTensor) -> Self {
+    /// Wrap a `Tensor` as a `PointCloud` with no field metadata.
+    pub fn from_tensor(tensor: Tensor) -> Self {
         Self {
             inner: tensor,
             ..Default::default()
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_xyz() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[10000, 3], TensorDtype::F32, Device::cpu());
         let pc = PointCloudDescriptor::xyz(tensor);
         assert_eq!(pc.point_count(), 10000);
         assert_eq!(pc.fields_per_point(), 3);
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_pointcloud_xyzi() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[5000, 4], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[5000, 4], TensorDtype::F32, Device::cpu());
         let pc = PointCloudDescriptor::xyzi(tensor);
         assert_eq!(pc.point_count(), 5000);
         assert!(pc.has_intensity());

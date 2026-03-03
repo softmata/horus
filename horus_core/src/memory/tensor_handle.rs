@@ -1,6 +1,6 @@
 //! RAII handle for tensor memory management
 //!
-//! This module provides a safe wrapper around `HorusTensor` that automatically
+//! This module provides a safe wrapper around `Tensor` that automatically
 //! manages reference counting through the tensor pool.
 //!
 //! # Example
@@ -25,7 +25,7 @@
 //! drop(handle2); // Tensor memory is freed when last handle is dropped
 //! ```
 
-use super::tensor_pool::{Device, HorusTensor, TensorDtype, TensorPool};
+use super::tensor_pool::{Device, Tensor, TensorDtype, TensorPool};
 use crate::error::{HorusError, HorusResult};
 use crate::types::MAX_TENSOR_DIMS;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ use std::sync::Arc;
 /// When it is dropped, the reference count is decremented. When the count
 /// reaches zero, the tensor's memory slot is returned to the pool.
 pub struct TensorHandle {
-    tensor: HorusTensor,
+    tensor: Tensor,
     pool: Arc<TensorPool>,
 }
 
@@ -45,7 +45,7 @@ impl TensorHandle {
     ///
     /// This increments the reference count. Use this when receiving a tensor
     /// from Topic or when wrapping a tensor you don't own yet.
-    pub fn new(tensor: HorusTensor, pool: Arc<TensorPool>) -> Self {
+    pub fn new(tensor: Tensor, pool: Arc<TensorPool>) -> Self {
         pool.retain(&tensor);
         Self { tensor, pool }
     }
@@ -63,7 +63,7 @@ impl TensorHandle {
     ///
     /// In debug builds the mismatch causes an immediate panic (via
     /// `debug_assert!`) before reaching the `Err` return.
-    pub(crate) fn from_owned(tensor: HorusTensor, pool: Arc<TensorPool>) -> HorusResult<Self> {
+    pub(crate) fn from_owned(tensor: Tensor, pool: Arc<TensorPool>) -> HorusResult<Self> {
         debug_assert_eq!(
             tensor.pool_id,
             pool.pool_id(),
@@ -102,7 +102,7 @@ impl TensorHandle {
     /// The descriptor can be sent through Topic. The receiver should
     /// wrap it in a new `TensorHandle` to manage the reference count.
     #[inline]
-    pub fn tensor(&self) -> &HorusTensor {
+    pub fn tensor(&self) -> &Tensor {
         &self.tensor
     }
 
@@ -110,7 +110,7 @@ impl TensorHandle {
     ///
     /// Use with care - modifying the tensor descriptor can break invariants.
     #[inline]
-    pub fn tensor_mut(&mut self) -> &mut HorusTensor {
+    pub fn tensor_mut(&mut self) -> &mut Tensor {
         &mut self.tensor
     }
 

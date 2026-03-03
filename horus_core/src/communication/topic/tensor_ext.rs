@@ -1,6 +1,6 @@
-//! Auto-managed tensor pools for `Topic<HorusTensor>`
+//! Auto-managed tensor pools for `Topic<Tensor>`
 //!
-//! Provides convenience methods on `Topic<HorusTensor>` that automatically
+//! Provides convenience methods on `Topic<Tensor>` that automatically
 //! manage a shared-memory `TensorPool` per topic. Users call `alloc()`,
 //! `send_handle()`, and `recv_handle()` instead of managing pools manually.
 //!
@@ -8,18 +8,18 @@
 //!
 //! Each topic name maps to a single `TensorPool` backed by shared memory.
 //! The pool is created lazily on first use and shared across all
-//! `Topic<HorusTensor>` instances with the same name — even across processes.
+//! `Topic<Tensor>` instances with the same name — even across processes.
 //!
-//! When sending, only the 232-byte `HorusTensor` descriptor flows through the
+//! When sending, only the 232-byte `Tensor` descriptor flows through the
 //! ring buffer. The actual tensor data stays in the pool — true zero-copy.
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use horus_core::communication::Topic;
-//! use crate::types::{HorusTensor, TensorDtype, Device};
+//! use crate::types::{Tensor, TensorDtype, Device};
 //!
-//! let topic: RingTopic<HorusTensor> = RingTopic::new("camera/rgb")?;
+//! let topic: RingTopic<Tensor> = RingTopic::new("camera/rgb")?;
 //!
 //! // Allocate a 1080p RGB image from the topic's pool
 //! let mut handle = topic.alloc(&[1080, 1920, 3], TensorDtype::U8, Device::cpu())?;
@@ -44,15 +44,15 @@ use crate::error::HorusResult;
 #[cfg(test)]
 use crate::memory::{TensorHandle, TensorPool};
 #[cfg(test)]
-use crate::types::{Device, HorusTensor, TensorDtype};
+use crate::types::{Device, Tensor, TensorDtype};
 
 #[cfg(test)]
-impl RingTopic<HorusTensor> {
+impl RingTopic<Tensor> {
     /// Get or create the auto-managed tensor pool for this topic.
     ///
     /// On first call, opens an existing pool (if another process created it)
     /// or creates a new one backed by shared memory. Subsequent calls return
-    /// the cached pool. The pool is shared across all `Topic<HorusTensor>`
+    /// the cached pool. The pool is shared across all `Topic<Tensor>`
     /// instances with the same name within this process.
     pub fn pool(&self) -> Arc<TensorPool> {
         get_or_create_pool(self.name())
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_topic_tensor_pool_roundtrip() {
-        let topic: RingTopic<HorusTensor> = RingTopic::new("test/tensor_ext_roundtrip").unwrap();
+        let topic: RingTopic<Tensor> = RingTopic::new("test/tensor_ext_roundtrip").unwrap();
 
         // Allocate a tensor
         let handle = topic
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_pool_shared_across_calls() {
-        let topic: RingTopic<HorusTensor> = RingTopic::new("test/tensor_ext_shared_pool").unwrap();
+        let topic: RingTopic<Tensor> = RingTopic::new("test/tensor_ext_shared_pool").unwrap();
 
         let pool1 = topic.pool();
         let pool2 = topic.pool();

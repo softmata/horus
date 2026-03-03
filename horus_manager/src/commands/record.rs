@@ -32,7 +32,7 @@ pub fn run_list(long: bool, json: bool) -> HorusResult<()> {
             })
             .collect();
         let output = serde_json::json!({ "sessions": session_list });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 
@@ -109,7 +109,7 @@ pub fn run_info(session: String, json: bool) -> HorusResult<()> {
             "found": !recordings.is_empty(),
             "files": files,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 
@@ -628,7 +628,8 @@ pub fn run_inject(
         );
     }
 
-    // If a script is provided, compile and run it with the injected nodes
+    // If a script is provided, launch it as a child process alongside the replay
+    let mut script_child = None;
     if let Some(script_path) = &script {
         if !script_path.exists() {
             return Err(horus_internal!(
@@ -638,43 +639,44 @@ pub fn run_inject(
         }
 
         println!(
-            "\n{} Compiling script: {}",
+            "\n{} Launching script alongside replay: {}",
             cli_output::ICON_INFO.cyan(),
             script_path.display()
         );
 
-        // Use the existing run infrastructure to compile and execute
-        // We need to set up the environment for injection
-        std::env::set_var("HORUS_INJECT_SESSION", &session);
-        std::env::set_var(
-            "HORUS_INJECT_NODES",
-            if all {
-                "*".to_string()
-            } else {
-                nodes.join(",")
-            },
+        // Spawn `horus run <script>` as a child process
+        // This handles compilation, dependency resolution, and execution
+        let current_exe = std::env::current_exe()
+            .map_err(|e| horus_internal!("Failed to get current executable path: {}", e))?;
+
+        let inject_nodes_val = if all {
+            "*".to_string()
+        } else {
+            nodes.join(",")
+        };
+
+        let child = std::process::Command::new(&current_exe)
+            .arg("run")
+            .arg(script_path)
+            .env("HORUS_INJECT_SESSION", &session)
+            .env("HORUS_INJECT_NODES", &inject_nodes_val)
+            .spawn()
+            .map_err(|e| {
+                horus_internal!("Failed to launch script '{}': {}", script_path.display(), e)
+            })?;
+
+        println!(
+            "{} Script started (PID: {})",
+            cli_output::ICON_SUCCESS.green(),
+            child.id()
         );
 
-        // For now, just inform user how to properly use injection with scripts
-        // Full integration would require modifying the `horus run` command
+        script_child = Some(child);
+
         println!(
-            "\n{} To run a script with injected recordings, use:",
-            cli_output::ICON_INFO.cyan()
-        );
-        let inject_arg = if all {
-            "--inject-all".to_string()
-        } else {
-            format!("--inject-nodes {}", nodes.join(","))
-        };
-        println!(
-            "       horus run {} --inject {} {}",
-            script_path.display(),
-            session,
-            inject_arg
-        );
-        println!(
-            "\n{} Running injected nodes only for now...\n",
-            cli_output::ICON_WARN.yellow()
+            "\n{} Running {} injected node(s) + script...\n",
+            cli_output::ICON_INFO.green(),
+            injected_count
         );
     } else {
         println!(
@@ -748,6 +750,39 @@ pub fn run_inject(
             "\n{} Injection replay completed",
             cli_output::ICON_SUCCESS.green()
         );
+    }
+
+    // Clean up script child process if it was spawned
+    if let Some(mut child) = script_child {
+        // Give script a moment to finish gracefully, then kill if still running
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    println!(
+                        "{} Script exited successfully",
+                        cli_output::ICON_SUCCESS.green()
+                    );
+                } else {
+                    eprintln!(
+                        "{} Script exited with code: {}",
+                        cli_output::ICON_WARN.yellow(),
+                        status.code().unwrap_or(-1)
+                    );
+                }
+            }
+            Ok(None) => {
+                // Still running - kill it since replay is done
+                println!(
+                    "{} Stopping script process...",
+                    cli_output::ICON_INFO.cyan()
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Err(e) => {
+                log::warn!("Failed to check script status: {}", e);
+            }
+        }
     }
 
     Ok(())

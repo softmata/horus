@@ -76,37 +76,6 @@ impl TelemetryEndpoint {
     }
 }
 
-/// Maximum number of callbacks that can be registered per event name.
-///
-/// Exceeding this limit returns [`TelemetryError::TooManyCallbacks`].
-/// The bound prevents a misbehaving caller from registering thousands of
-/// callbacks and stalling the RT scheduler on each telemetry tick.
-pub(crate) const MAX_CALLBACKS_PER_EVENT: usize = 100;
-
-/// Errors returned by the telemetry callback API.
-#[derive(Debug)]
-pub(crate) enum TelemetryError {
-    /// Registering a callback would exceed [`MAX_CALLBACKS_PER_EVENT`].
-    TooManyCallbacks {
-        /// The event name that hit the limit.
-        event: String,
-        /// Maximum allowed callbacks per event.
-        limit: usize,
-    },
-}
-
-impl std::fmt::Display for TelemetryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooManyCallbacks { event, limit } => write!(
-                f,
-                "telemetry: too many callbacks for event '{}' (limit {})",
-                event, limit
-            ),
-        }
-    }
-}
-
 /// Telemetry collector and exporter
 pub(crate) struct TelemetryManager {
     /// Endpoint for export
@@ -135,13 +104,6 @@ pub(crate) struct TelemetryManager {
     ///
     /// Dropped (and joined) when `TelemetryManager` is dropped.
     http_thread: Option<std::thread::JoinHandle<()>>,
-
-    /// Per-event callbacks fired whenever `record()` stores a matching metric.
-    ///
-    /// Keyed by event (metric) name.  Each list is bounded at
-    /// `MAX_CALLBACKS_PER_EVENT` entries.  The scheduler calls `record()` on
-    /// the hot path; callbacks must be fast (no blocking I/O).
-    callbacks: HashMap<String, Vec<Box<dyn Fn(&Metric) + Send>>>,
 }
 
 impl TelemetryManager {
@@ -194,7 +156,6 @@ impl TelemetryManager {
             enabled,
             http_tx,
             http_thread,
-            callbacks: HashMap::new(),
         }
     }
 
@@ -224,8 +185,6 @@ impl TelemetryManager {
     }
 
     /// Record a metric with custom value type and labels.
-    ///
-    /// After storing the metric, fires any callbacks registered for `name`.
     pub fn record(&mut self, name: &str, value: MetricValue, labels: HashMap<String, String>) {
         if !self.enabled {
             return;
@@ -241,40 +200,7 @@ impl TelemetryManager {
                 .as_secs(),
         };
 
-        // Fire registered callbacks before inserting so callers see the
-        // previous value (if any) via the existing metrics map.
-        if let Some(cbs) = self.callbacks.get(name) {
-            for cb in cbs {
-                cb(&metric);
-            }
-        }
-
         self.metrics.insert(name.to_string(), metric);
-    }
-
-    /// Register a callback to be invoked whenever a metric named `event` is
-    /// recorded.
-    ///
-    /// Returns [`TelemetryError::TooManyCallbacks`] when the per-event limit
-    /// (`MAX_CALLBACKS_PER_EVENT`) is reached, preventing DoS via callback
-    /// accumulation on the RT scheduler thread.
-    ///
-    /// Callbacks are called synchronously from `record()` on the scheduler
-    /// thread — they must be fast (no blocking I/O, no mutex acquisition).
-    pub fn register_callback(
-        &mut self,
-        event: &str,
-        callback: impl Fn(&Metric) + Send + 'static,
-    ) -> Result<(), TelemetryError> {
-        let list = self.callbacks.entry(event.to_string()).or_default();
-        if list.len() >= MAX_CALLBACKS_PER_EVENT {
-            return Err(TelemetryError::TooManyCallbacks {
-                event: event.to_string(),
-                limit: MAX_CALLBACKS_PER_EVENT,
-            });
-        }
-        list.push(Box::new(callback));
-        Ok(())
     }
 
     /// Check if it's time to export
@@ -542,70 +468,4 @@ mod tests {
         ));
     }
 
-    /// Registering exactly MAX_CALLBACKS_PER_EVENT callbacks must succeed;
-    /// the 101st must return TelemetryError::TooManyCallbacks.
-    #[test]
-    fn test_register_callback_limit_enforced() {
-        let mut tm = TelemetryManager::new(TelemetryEndpoint::Disabled, 1000);
-
-        for i in 0..MAX_CALLBACKS_PER_EVENT {
-            let result = tm.register_callback("tick", move |_m| {
-                // cheap no-op callback; capture `i` to make each closure unique
-                let _ = i;
-            });
-            assert!(
-                result.is_ok(),
-                "callback #{} should succeed (limit is {})",
-                i,
-                MAX_CALLBACKS_PER_EVENT
-            );
-        }
-
-        // One past the limit must fail.
-        let result = tm.register_callback("tick", |_m| {});
-        assert!(
-            matches!(result, Err(TelemetryError::TooManyCallbacks { .. })),
-            "101st callback must return TooManyCallbacks"
-        );
-    }
-
-    /// Callbacks for unrelated events are independent — filling one event's
-    /// list does not prevent registration on a different event name.
-    #[test]
-    fn test_callback_limits_are_per_event() {
-        let mut tm = TelemetryManager::new(TelemetryEndpoint::Disabled, 1000);
-
-        // Fill "event_a".
-        for _ in 0..MAX_CALLBACKS_PER_EVENT {
-            tm.register_callback("event_a", |_m| {}).unwrap();
-        }
-
-        // "event_b" must still accept callbacks.
-        assert!(
-            tm.register_callback("event_b", |_m| {}).is_ok(),
-            "unrelated event must not be affected by another event's limit"
-        );
-    }
-
-    /// Callbacks are actually invoked when the matching metric is recorded.
-    #[test]
-    fn test_callbacks_fire_on_record() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let mut tm = TelemetryManager::new(TelemetryEndpoint::Stdout, 1000);
-        let counter = Arc::new(AtomicU32::new(0));
-        let c = counter.clone();
-        tm.register_callback("my_metric", move |_m| {
-            c.fetch_add(1, Ordering::Relaxed);
-        })
-        .unwrap();
-
-        tm.gauge("my_metric", 1.0);
-        tm.gauge("my_metric", 2.0);
-        // Different event — must NOT fire the "my_metric" callbacks.
-        tm.counter("other_metric", 5);
-
-        assert_eq!(counter.load(Ordering::Relaxed), 2, "callback must fire exactly twice");
-    }
 }

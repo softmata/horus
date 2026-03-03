@@ -392,7 +392,7 @@ impl TensorPool {
 
     /// Allocate a tensor slot
     ///
-    /// Returns a HorusTensor descriptor pointing to the allocated memory.
+    /// Returns a Tensor descriptor pointing to the allocated memory.
     /// The device field on the descriptor is set automatically when the pool
     /// uses a managed memory allocator, otherwise it uses the caller-supplied device.
     pub fn alloc(
@@ -400,7 +400,7 @@ impl TensorPool {
         shape: &[u64],
         dtype: TensorDtype,
         device: Device,
-    ) -> HorusResult<HorusTensor> {
+    ) -> HorusResult<Tensor> {
         // Calculate required size — use checked arithmetic to prevent overflow.
         // A crafted shape like [u32::MAX, u32::MAX] would overflow u64 without this check,
         // causing the pool to allocate a near-zero-size region and subsequent writes to
@@ -424,7 +424,7 @@ impl TensorPool {
         let offset = self.allocate_data(aligned_size)?;
 
         // Initialize slot — bump 64-bit generation counter to prevent ABA.
-        // The returned u64 is split into low/high 32-bit halves in HorusTensor.
+        // The returned u64 is split into low/high 32-bit halves in Tensor.
         let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
         slot.offset = offset as u64;
         slot.size = size;
@@ -432,7 +432,7 @@ impl TensorPool {
         slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
 
         // Create tensor descriptor
-        Ok(HorusTensor::new(
+        Ok(Tensor::new(
             self.pool_id,
             slot_id,
             generation_u64,
@@ -473,7 +473,7 @@ impl TensorPool {
         dtype: TensorDtype,
         device: Device,
         timeout: std::time::Duration,
-    ) -> HorusResult<HorusTensor> {
+    ) -> HorusResult<Tensor> {
         use std::time::Instant;
 
         let deadline = Instant::now() + timeout;
@@ -526,7 +526,7 @@ impl TensorPool {
     /// Silently ignores mismatched pool IDs or stale generation counters.
     /// Use [`try_retain`] to get an explicit error on mismatch.
     #[inline]
-    pub fn retain(&self, tensor: &HorusTensor) {
+    pub fn retain(&self, tensor: &Tensor) {
         if tensor.pool_id != self.pool_id {
             return;
         }
@@ -546,7 +546,7 @@ impl TensorPool {
     /// Unlike [`retain`] which silently ignores stale descriptors, this method
     /// returns a [`HorusError::Memory`] if the slot has been freed and
     /// reallocated since the descriptor was issued.
-    pub fn try_retain(&self, tensor: &HorusTensor) -> HorusResult<()> {
+    pub fn try_retain(&self, tensor: &Tensor) -> HorusResult<()> {
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::Memory(format!(
                 "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
@@ -573,7 +573,7 @@ impl TensorPool {
     /// Silently ignores mismatched pool IDs or stale generation counters.
     /// Use [`try_release`] to get an explicit error on mismatch.
     #[inline]
-    pub fn release(&self, tensor: &HorusTensor) {
+    pub fn release(&self, tensor: &Tensor) {
         if tensor.pool_id != self.pool_id {
             return;
         }
@@ -598,7 +598,7 @@ impl TensorPool {
     /// returns a [`HorusError::Memory`] if the slot has been freed and
     /// reallocated since the descriptor was issued.  If the count reaches zero
     /// the slot is returned to the free list.
-    pub fn try_release(&self, tensor: &HorusTensor) -> HorusResult<()> {
+    pub fn try_release(&self, tensor: &Tensor) -> HorusResult<()> {
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::Memory(format!(
                 "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
@@ -637,7 +637,7 @@ impl TensorPool {
 
     /// Get raw pointer to tensor data
     #[inline]
-    pub fn data_ptr(&self, tensor: &HorusTensor) -> *mut u8 {
+    pub fn data_ptr(&self, tensor: &Tensor) -> *mut u8 {
         if tensor.pool_id != self.pool_id {
             return std::ptr::null_mut();
         }
@@ -657,7 +657,7 @@ impl TensorPool {
     /// Callers that hold a properly initialized tensor descriptor should never see
     /// these errors during normal operation.  They indicate either a programming
     /// error (wrong pool) or descriptor corruption / tampering from another process.
-    pub fn data_slice(&self, tensor: &HorusTensor) -> HorusResult<&[u8]> {
+    pub fn data_slice(&self, tensor: &Tensor) -> HorusResult<&[u8]> {
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::Memory(format!(
                 "pool_id mismatch in data_slice: tensor belongs to pool {}, this pool is {}",
@@ -690,7 +690,7 @@ impl TensorPool {
     /// - `tensor.pool_id` does not match this pool's ID (descriptor from a different pool)
     /// - `tensor.offset + tensor.size` exceeds the pool's data region (out-of-bounds access)
     #[allow(clippy::mut_from_ref)]
-    pub fn data_slice_mut(&self, tensor: &HorusTensor) -> HorusResult<&mut [u8]> {
+    pub fn data_slice_mut(&self, tensor: &Tensor) -> HorusResult<&mut [u8]> {
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::Memory(format!(
                 "pool_id mismatch in data_slice_mut: tensor belongs to pool {}, this pool is {}",
@@ -715,7 +715,7 @@ impl TensorPool {
         })
     }
 
-    /// Validate a `HorusTensor` descriptor received from another process.
+    /// Validate a `Tensor` descriptor received from another process.
     ///
     /// Performs all structural integrity checks before any data access:
     ///
@@ -733,7 +733,7 @@ impl TensorPool {
     ///
     /// Callers **must** call this before invoking [`data_slice`] or
     /// [`data_slice_mut`] on descriptors received from untrusted processes.
-    pub fn validate_descriptor(&self, tensor: &HorusTensor) -> HorusResult<()> {
+    pub fn validate_descriptor(&self, tensor: &Tensor) -> HorusResult<()> {
         // 1. Pool ID
         if tensor.pool_id != self.pool_id {
             return Err(HorusError::InvalidDescriptor(format!(
@@ -813,7 +813,7 @@ impl TensorPool {
     /// Get reference count for a tensor.
     ///
     /// Returns 0 if the pool ID doesn't match or the generation is stale.
-    pub fn refcount(&self, tensor: &HorusTensor) -> u32 {
+    pub fn refcount(&self, tensor: &Tensor) -> u32 {
         if tensor.pool_id != self.pool_id {
             return 0;
         }
@@ -1094,7 +1094,7 @@ pub struct TensorPoolStats {
 }
 
 // Re-export tensor types from types module
-pub use crate::types::{Device, HorusTensor, TensorDtype};
+pub use crate::types::{Device, Tensor, TensorDtype};
 
 #[cfg(test)]
 mod tests {

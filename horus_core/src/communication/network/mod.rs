@@ -31,7 +31,7 @@ pub use mdns::{
     DiscoveryResult,
     DiscoveryWatcher,
     GlobalMdnsManager,
-    HorusMdns,
+    Mdns,
     MdnsCacheStats,
     MdnsNodeRegistration,
     MdnsRegistrationBuilder,

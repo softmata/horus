@@ -1876,7 +1876,7 @@ use crate::memory::depth_image::DepthImage;
 use crate::memory::image::Image;
 use crate::memory::pointcloud::PointCloud;
 use crate::memory::TensorPool;
-use crate::types::HorusTensor;
+use crate::types::Tensor;
 
 /// Topic — Universal IPC with automatic backend detection.
 ///
@@ -2065,7 +2065,7 @@ where
 }
 
 // ============================================================================
-// Direct types — T: TopicMessage<Wire = T> (CmdVel, i32, String, HorusTensor, ...)
+// Direct types — T: TopicMessage<Wire = T> (CmdVel, i32, String, Tensor, ...)
 // ============================================================================
 //
 // When Wire = T, the wrapper is pure pass-through. No conversion, no pool.
@@ -2205,10 +2205,10 @@ impl Topic<DepthImage> {
 }
 
 // ============================================================================
-// HorusTensor — Topic<HorusTensor> with pool-managed tensor handles
+// Tensor — Topic<Tensor> with pool-managed tensor handles
 // ============================================================================
 
-impl Topic<HorusTensor> {
+impl Topic<Tensor> {
     /// Get or create the auto-managed tensor pool for this topic.
     pub fn pool(&self) -> Arc<TensorPool> {
         pool_registry::get_or_create_pool(self.ring.name())

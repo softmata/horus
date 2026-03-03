@@ -54,7 +54,7 @@ pub enum HorusError {
 
     /// Cross-process tensor descriptor validation failure.
     ///
-    /// Returned when a `HorusTensor` received from another process fails the
+    /// Returned when a `Tensor` received from another process fails the
     /// structural integrity check: wrong pool ID, out-of-range slot index,
     /// freed or reused slot, or mismatched offset/size fields.
     ///

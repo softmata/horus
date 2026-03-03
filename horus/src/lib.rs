@@ -83,7 +83,7 @@ pub mod prelude {
     pub use horus_core::core::{LogSummary, Node, NodeState};
 
     // === Rate / Stopwatch ===
-    pub use horus_core::core::timer::{HorusRate, Stopwatch};
+    pub use horus_core::core::timer::{Rate, Stopwatch};
 
     // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
@@ -113,7 +113,7 @@ pub mod prelude {
     // === Services (request/response RPC) ===
     pub use horus_core::services::{
         AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
-        ServiceServer, ServiceServerBuilder, SyncServiceClient,
+        ServiceServer, ServiceServerBuilder, ServiceClient,
     };
 
     // === Errors ===
@@ -127,7 +127,7 @@ pub mod prelude {
     // === Macros ===
     pub use horus_core::hlog;
     pub use horus_core::hlog_once;
-    pub use horus_core::hlog_throttle;
+    pub use horus_core::hlog_every;
     pub use horus_core::service;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;

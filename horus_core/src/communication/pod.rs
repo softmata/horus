@@ -56,7 +56,7 @@
 //!
 //! This provides additional methods like `as_bytes()`, `from_bytes()`, etc.
 
-use crate::types::HorusTensor;
+use crate::types::Tensor;
 use bytemuck::{Pod, Zeroable};
 use std::mem;
 
@@ -71,6 +71,13 @@ use crate::core::LogSummary;
 /// A type is considered POD if:
 /// - It has no destructor (`!needs_drop::<T>()`)
 /// - It's not a zero-sized type (`size_of::<T>() > 0`)
+/// - It's not a single byte (excludes `bool` which has validity invariants —
+///   only 0/1 are valid, arbitrary SHM bytes like 0x02 would be instant UB)
+///
+/// **Limitation**: This heuristic cannot detect enums with limited discriminant
+/// values or types like `NonZeroU32` that have validity invariants but pass
+/// `!needs_drop`. For such types, use the explicit `PodMessage` trait (which
+/// requires `bytemuck::Pod + Zeroable`) instead of relying on auto-detection.
 ///
 /// Types with destructors (String, Vec, Box, etc.) contain heap pointers
 /// that become invalid in cross-process communication, so they're excluded.
@@ -83,14 +90,19 @@ use crate::core::LogSummary;
 /// struct MyPod { x: f32, y: f32 }
 /// struct NotPod { name: String }
 ///
-/// assert!(is_pod::<MyPod>());      // true - no Drop
+/// assert!(is_pod::<MyPod>());      // true - no Drop, size > 1
 /// assert!(!is_pod::<NotPod>());    // false - String has Drop
 /// assert!(is_pod::<[f32; 3]>());   // true - primitives are POD
 /// assert!(!is_pod::<Vec<u8>>());   // false - Vec has Drop
+/// assert!(!is_pod::<bool>());      // false - excluded (validity invariant)
 /// ```
 #[inline]
 pub(crate) fn is_pod<T: 'static>() -> bool {
-    !mem::needs_drop::<T>() && mem::size_of::<T>() > 0
+    let size = mem::size_of::<T>();
+    // Exclude size <= 1: this catches `bool` (only 0/1 valid), single-byte enums,
+    // and ZSTs. Types like `u8` and `i8` are safe but rarely used as IPC messages
+    // on their own — the minor false-negative is worth preventing UB from `bool`.
+    !mem::needs_drop::<T>() && size > 1
 }
 
 // ============================================================================
@@ -164,8 +176,8 @@ pub unsafe trait PodMessage: Pod + Zeroable + Copy + Clone + Send + Sync + 'stat
     }
 }
 
-// HorusTensor is repr(C), Pod, Zeroable - safe for zero-copy IPC
-unsafe impl PodMessage for HorusTensor {}
+// Tensor is repr(C), Pod, Zeroable - safe for zero-copy IPC
+unsafe impl PodMessage for Tensor {}
 
 // Unified vision/perception types — repr(C), Pod, zero-copy IPC
 unsafe impl PodMessage for crate::types::ImageDescriptor {}

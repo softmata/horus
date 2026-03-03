@@ -1098,9 +1098,6 @@ impl Scheduler {
                         print_line(&format!("[SCHEDULER] RT degraded: {:?}", d));
                     }
                 }
-                Ok(RtApplyResult::Failed(msg)) => {
-                    print_line(&format!("[SCHEDULER] RT config failed: {}", msg));
-                }
                 Err(e) => {
                     print_line(&format!("[SCHEDULER] RT config error: {}", e));
                 }
@@ -2256,7 +2253,6 @@ impl Scheduler {
                             let mut found = false;
                             for registered in &mut self.nodes {
                                 if registered.name.as_str() == node_name
-                                    || registered.name.as_str().contains(&node_name)
                                 {
                                     found = true;
                                     match cmd.as_str() {

@@ -20,26 +20,16 @@ const RECORDINGS_DIR: &str = ".horus/recordings";
 /// Recording file extension
 const RECORDING_EXT: &str = "horus";
 
-/// Maximum recording size (100MB per node by default)
-const MAX_RECORDING_SIZE: usize = 100 * 1024 * 1024;
-
 /// Recording configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // record_inputs/record_outputs are read in #[cfg(test)] impls
 pub struct RecordingConfig {
     /// Session name
     pub session_name: String,
     /// Base directory for recordings
     pub base_dir: PathBuf,
-    /// Maximum recording size per node
-    pub max_size: usize,
-    /// Whether to compress recordings
-    pub compress: bool,
     /// Record interval (record every N ticks, 1 = every tick)
     pub interval: u64,
-    /// Nodes to include in recording (empty = all nodes)
-    pub include_nodes: Vec<String>,
-    /// Nodes to exclude from recording
-    pub exclude_nodes: Vec<String>,
     /// Whether to record input values
     pub record_inputs: bool,
     /// Whether to record output values
@@ -63,11 +53,7 @@ impl Default for RecordingConfig {
                     .as_secs()
             ),
             base_dir,
-            max_size: MAX_RECORDING_SIZE,
-            compress: true,
             interval: 1,
-            include_nodes: vec![],
-            exclude_nodes: vec![],
             record_inputs: true,
             record_outputs: true,
             record_timing: true,
@@ -76,14 +62,6 @@ impl Default for RecordingConfig {
 }
 
 impl RecordingConfig {
-    /// Create a new recording config with the given session name
-    pub fn new(session_name: String) -> Self {
-        Self {
-            session_name,
-            ..Default::default()
-        }
-    }
-
     /// Get the session directory
     pub fn session_dir(&self) -> PathBuf {
         self.base_dir.join(&self.session_name)
@@ -127,15 +105,7 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
         Self {
             session_name,
             base_dir,
-            max_size: if yaml.max_size_mb > 0 {
-                yaml.max_size_mb * 1024 * 1024
-            } else {
-                MAX_RECORDING_SIZE
-            },
-            compress: yaml.compress,
             interval: yaml.interval as u64,
-            include_nodes: yaml.include_nodes,
-            exclude_nodes: yaml.exclude_nodes,
             record_inputs: yaml.record_inputs,
             record_outputs: yaml.record_outputs,
             record_timing: yaml.record_timing,
@@ -1765,12 +1735,10 @@ mod tests {
         yaml.record_inputs = false;
         yaml.record_outputs = false;
         yaml.record_timing = false;
-        yaml.max_size_mb = 42;
 
         let config: RecordingConfig = yaml.into();
         assert!(!config.record_inputs);
         assert!(!config.record_outputs);
         assert!(!config.record_timing);
-        assert_eq!(config.max_size, 42 * 1024 * 1024);
     }
 }

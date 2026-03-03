@@ -51,13 +51,13 @@ pub use actions::{
 #[doc(hidden)]
 pub use services::{
     AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
-    ServiceServer, ServiceServerBuilder, SyncServiceClient,
+    ServiceServer, ServiceServerBuilder, ServiceClient,
 };
 #[doc(hidden)]
 pub use communication::{set_topic_debug, PodMessage, Topic, TOPIC_DEBUG_LOG_OFFSET};
 #[doc(hidden)]
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, HorusRate, LogSummary, Node, NodeMetrics, NodePresence,
+    DeadlineMissPolicy, HealthStatus, Rate, LogSummary, Node, NodeMetrics, NodePresence,
     NodeState, RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]

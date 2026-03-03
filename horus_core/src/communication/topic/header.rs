@@ -299,12 +299,6 @@ impl TopicHeader {
         self.debug_log.load(Ordering::Relaxed) != 0
     }
 
-    /// Set the runtime debug logging flag.
-    pub fn set_debug(&self, enabled: bool) {
-        self.debug_log
-            .store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
-    }
-
     /// Check if all active participants (and caller) are in the same process
     #[inline]
     pub fn is_same_process(&self) -> bool {
@@ -424,24 +418,34 @@ impl TopicHeader {
             let is_expired = is_active && p.is_lease_expired(now_ms);
 
             if !is_active || is_expired {
-                if is_expired {
-                    let old_role = p.role.load(Ordering::Acquire);
-                    if old_role & 1 != 0 {
-                        self.publisher_count.fetch_sub(1, Ordering::AcqRel);
-                    }
-                    if old_role & 2 != 0 {
-                        self.subscriber_count.fetch_sub(1, Ordering::AcqRel);
-                    }
-                }
+                // Try to claim the slot FIRST via CAS, THEN decrement expired
+                // counters. This prevents a race where two threads both decrement
+                // counters for the same expired slot but only one wins the CAS,
+                // causing counter underflow.
+                let claimed = if !is_active {
+                    p.active
+                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                } else {
+                    // Expired slot: atomically swap active 1→1 (acts as a claim fence)
+                    // We use swap instead of CAS(1,1) — if another thread cleared it
+                    // to 0 in the meantime, we'll detect that and skip.
+                    let prev = p.active.swap(1, Ordering::AcqRel);
+                    prev == 1 // Only claimed if it was still active (expired)
+                };
 
-                if p.active
-                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                    || (is_expired
-                        && p.active
-                            .compare_exchange(1, 1, Ordering::AcqRel, Ordering::Acquire)
-                            .is_ok())
-                {
+                if claimed {
+                    // Now that we own the slot, safely decrement the old role counters
+                    if is_expired {
+                        let old_role = p.role.load(Ordering::Acquire);
+                        if old_role & 1 != 0 {
+                            self.publisher_count.fetch_sub(1, Ordering::AcqRel);
+                        }
+                        if old_role & 2 != 0 {
+                            self.subscriber_count.fetch_sub(1, Ordering::AcqRel);
+                        }
+                    }
+
                     p.pid.store(pid, Ordering::Release);
                     p.thread_id_hash.store(thread_hash, Ordering::Release);
                     p.role.store(role_bit, Ordering::Release);

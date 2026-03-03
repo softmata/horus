@@ -45,7 +45,7 @@ pub trait TopicMessage: Sized + Send + 'static {
 }
 
 // ============================================================================
-// Blanket impl: all serializable types (CmdVel, Imu, i32, String, HorusTensor, ...)
+// Blanket impl: all serializable types (CmdVel, Imu, i32, String, Tensor, ...)
 // ============================================================================
 
 impl<T> TopicMessage for T

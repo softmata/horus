@@ -237,7 +237,7 @@ macro_rules! hlog {
 /// # Syntax
 ///
 /// ```ignore
-/// hlog_throttle!(1000, warn, "Battery low: {}%", battery_pct);
+/// hlog_every!(1000, warn, "Battery low: {}%", battery_pct);
 /// //              ^^^^  ^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 /// //       interval_ms  level  format string
 /// ```
@@ -247,11 +247,11 @@ macro_rules! hlog {
 /// ```ignore
 /// fn tick(&mut self) {
 ///     // Log at most once per 5 seconds
-///     hlog_throttle!(5000, info, "State: {:?}", self.state);
+///     hlog_every!(5000, info, "State: {:?}", self.state);
 /// }
 /// ```
 #[macro_export]
-macro_rules! hlog_throttle {
+macro_rules! hlog_every {
     ($interval_ms:expr, $level:ident, $($arg:tt)*) => {{
         use std::sync::atomic::{AtomicU64, Ordering};
         static LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);

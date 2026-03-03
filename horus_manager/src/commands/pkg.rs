@@ -633,7 +633,7 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
             "plugins": plugin_results,
             "all_valid": all_valid,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return if all_valid {
             Ok(())
         } else {
@@ -1416,7 +1416,7 @@ fn run_list_json(_query: Option<String>, global: bool, all: bool) -> HorusResult
     packages.extend(global_packages);
 
     let output = serde_json::json!({ "packages": packages });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
     Ok(())
 }
 

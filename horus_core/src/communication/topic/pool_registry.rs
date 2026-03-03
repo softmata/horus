@@ -1,7 +1,7 @@
 //! Shared pool registry for topic tensor extensions
 //!
 //! All topic extensions (`Topic<Image>`, `Topic<PointCloud>`, `Topic<DepthImage>`,
-//! `Topic<HorusTensor>`) share a single global registry of per-topic tensor pools.
+//! `Topic<Tensor>`) share a single global registry of per-topic tensor pools.
 //! The pool_id is derived deterministically from the topic name using FNV-1a so
 //! that publisher and subscriber processes converge on the same shared memory file.
 

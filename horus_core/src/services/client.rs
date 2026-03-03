@@ -2,7 +2,7 @@
 //!
 //! Two client types are provided:
 //!
-//! - [`SyncServiceClient`] — blocking call, suitable for scripts, tests, and
+//! - [`ServiceClient`] — blocking call, suitable for scripts, tests, and
 //!   one-shot operations.
 //! - [`AsyncServiceClient`] — non-blocking, returns a pending handle; suitable
 //!   for integration inside HORUS nodes that cannot block their tick.
@@ -10,10 +10,10 @@
 //! # Example — sync client
 //!
 //! ```rust,ignore
-//! use horus_core::services::SyncServiceClient;
+//! use horus_core::services::ServiceClient;
 //! use std::time::Duration;
 //!
-//! let client = SyncServiceClient::<AddTwoInts>::new()?;
+//! let client = ServiceClient::<AddTwoInts>::new()?;
 //! let response = client.call(
 //!     AddTwoIntsRequest { a: 3, b: 4 },
 //!     Duration::from_secs(1),
@@ -41,20 +41,20 @@ fn next_request_id() -> u64 {
     NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-// ─── SyncServiceClient ────────────────────────────────────────────────────────
+// ─── ServiceClient ────────────────────────────────────────────────────────
 
 /// Blocking service client.
 ///
 /// Creates topics on construction and reuses them for subsequent calls.
 /// Thread-safe: the internal topics use atomic operations.
-pub struct SyncServiceClient<S: Service> {
+pub struct ServiceClient<S: Service> {
     req_topic: Topic<ServiceRequest<S::Request>>,
     res_topic: Topic<ServiceResponse<S::Response>>,
     /// How often to check for a response while blocking (default: 1 ms).
     poll_interval: Duration,
 }
 
-impl<S: Service> SyncServiceClient<S>
+impl<S: Service> ServiceClient<S>
 where
     S::Request: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,
     S::Response: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static,

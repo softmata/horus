@@ -384,10 +384,17 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     println!("  {} Press Ctrl+C to stop", "".dimmed());
     println!();
 
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
+
     let mut timestamps: Vec<Instant> = Vec::with_capacity(window_size);
     let mut last_content: Option<Vec<u8>> = None;
 
-    loop {
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
         if topic_path.exists() {
             if let Ok(mut file) = std::fs::File::open(&topic_path) {
                 let mut content = Vec::new();
@@ -422,6 +429,22 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
 
         std::thread::sleep(Duration::from_millis(10));
     }
+
+    // Print final stats
+    println!();
+    if timestamps.len() >= 2 {
+        if let (Some(first), Some(last)) = (timestamps.first(), timestamps.last()) {
+            let duration = last.duration_since(*first);
+            let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
+            println!(
+                "{} Average rate: {:.2} Hz ({} samples)",
+                cli_output::ICON_INFO.cyan(),
+                rate,
+                timestamps.len()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Measure topic bandwidth (bytes/sec and messages/sec)
@@ -531,12 +554,19 @@ pub fn publish_topic(
     rate: Option<f64>,
     count: Option<usize>,
 ) -> HorusResult<()> {
-    let topic_path = shm_topics_dir().join(name);
+    use horus_core::communication::Topic;
 
-    // Create topic directory if needed
-    if let Some(parent) = topic_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
+    // Parse JSON message
+    let value: serde_json::Value = serde_json::from_str(message).map_err(|e| {
+        HorusError::Config(format!(
+            "Invalid JSON message: {}. Example: '{{\"linear\": 1.0}}'",
+            e
+        ))
+    })?;
+
+    // Create topic using the proper ring buffer protocol
+    let topic: Topic<serde_json::Value> = Topic::new(name)
+        .map_err(|e| HorusError::Communication(format!("Failed to create topic '{}': {}", name, e)))?;
 
     let sleep_duration = rate.map(|r| Duration::from_secs_f64(1.0 / r));
     let publish_count = count.unwrap_or(1);
@@ -548,15 +578,12 @@ pub fn publish_topic(
     );
 
     for i in 0..publish_count {
-        // Write message to topic file
-        if let Ok(mut file) = std::fs::File::create(&topic_path) {
-            file.write_all(message.as_bytes())?;
-            println!(
-                "  [{}] Published: {}",
-                i + 1,
-                message.chars().take(50).collect::<String>()
-            );
-        }
+        topic.send(value.clone());
+        println!(
+            "  [{}] Published: {}",
+            i + 1,
+            message.chars().take(50).collect::<String>()
+        );
 
         if let Some(duration) = sleep_duration {
             if i < publish_count - 1 {

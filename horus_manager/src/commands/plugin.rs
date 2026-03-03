@@ -56,7 +56,7 @@ pub fn run_search_with_category(
             "category": category,
             "results": items,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
 
@@ -310,7 +310,7 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                 "category": format!("{:?}", plugin.category),
                 "features": plugin.features,
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
             return Ok(());
         }
         return run_info(name);
@@ -329,7 +329,7 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                         "description": pkg.description,
                         "source": "registry",
                     });
-                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
                     return Ok(());
                 }
                 println!("{}", pkg.name.cyan().bold());
@@ -401,7 +401,7 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
                         }
                     }
                 }
-                println!("{}", serde_json::to_string_pretty(&info).unwrap());
+                println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
                 return Ok(());
             }
 
@@ -435,7 +435,7 @@ pub fn run_info_unified(name: String, json: bool) -> HorusResult<()> {
             "name": name,
             "found": false,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         return Ok(());
     }
     println!("{}", format!("'{}' not found", name).red());

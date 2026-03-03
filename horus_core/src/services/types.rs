@@ -32,7 +32,7 @@ use std::fmt::Debug;
 /// }
 ///
 /// // Use the service:
-/// let client = SyncServiceClient::<AddTwoInts>::new()?;
+/// let client = ServiceClient::<AddTwoInts>::new()?;
 /// let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, Duration::from_secs(1))?;
 /// assert_eq!(resp.sum, 7);
 /// ```

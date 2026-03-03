@@ -2,14 +2,14 @@
 //!
 //! # Rate — background thread rate limiting
 //!
-//! [`HorusRate`] is the equivalent of `ros::Rate` for standalone threads that
+//! [`Rate`] is the equivalent of `ros::Rate` for standalone threads that
 //! want to run at a fixed frequency without a scheduler.
 //!
 //! ```rust,ignore
-//! use horus_core::core::timer::HorusRate;
+//! use horus_core::core::timer::Rate;
 //!
 //! std::thread::spawn(|| {
-//!     let mut rate = HorusRate::new(100.0); // 100 Hz
+//!     let mut rate = Rate::new(100.0); // 100 Hz
 //!     loop {
 //!         do_work();
 //!         rate.sleep(); // sleeps the remaining fraction of 10 ms
@@ -30,7 +30,7 @@
 
 use std::time::{Duration, Instant};
 
-// ─── HorusRate ────────────────────────────────────────────────────────────────
+// ─── Rate ────────────────────────────────────────────────────────────────
 
 /// A rate limiter for background threads.
 ///
@@ -41,9 +41,9 @@ use std::time::{Duration, Instant};
 /// # Example
 ///
 /// ```rust,ignore
-/// use horus_core::core::timer::HorusRate;
+/// use horus_core::core::timer::Rate;
 ///
-/// let mut rate = HorusRate::new(50.0); // 50 Hz
+/// let mut rate = Rate::new(50.0); // 50 Hz
 /// loop {
 ///     do_work(); // ≤ 20 ms of work
 ///     rate.sleep();
@@ -51,21 +51,21 @@ use std::time::{Duration, Instant};
 /// }
 /// ```
 #[derive(Debug)]
-pub struct HorusRate {
+pub struct Rate {
     period: Duration,
     last_cycle_start: Instant,
     /// Smoothed actual period (for `actual_hz()`).
     smoothed_period: Option<Duration>,
 }
 
-impl HorusRate {
+impl Rate {
     /// Create a rate limiter targeting `hz` Hz.
     ///
     /// # Panics
     ///
     /// Panics if `hz` is zero or negative.
     pub fn new(hz: f64) -> Self {
-        assert!(hz > 0.0, "HorusRate: frequency must be positive (got {})", hz);
+        assert!(hz > 0.0, "Rate: frequency must be positive (got {})", hz);
         Self {
             period: Duration::from_secs_f64(1.0 / hz),
             last_cycle_start: Instant::now(),
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_rate_target_hz() {
-        let r = HorusRate::new(100.0);
+        let r = Rate::new(100.0);
         assert!((r.target_hz() - 100.0).abs() < 0.01);
     }
 

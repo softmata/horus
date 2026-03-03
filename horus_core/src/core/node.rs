@@ -14,7 +14,7 @@ pub trait LogSummary {
     fn log_summary(&self) -> String;
 }
 
-impl LogSummary for crate::types::HorusTensor {
+impl LogSummary for crate::types::Tensor {
     fn log_summary(&self) -> String {
         let shape_str: Vec<String> = self.shape().iter().map(|d| d.to_string()).collect();
         format!(

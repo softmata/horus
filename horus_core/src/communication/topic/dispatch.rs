@@ -114,7 +114,11 @@ pub(super) type RecvFn<T> = fn(&RingTopic<T>) -> Option<T>;
 /// match on the wrong variant would be instant UB.
 macro_rules! epoch_guard_send {
     ($topic:expr, $msg:ident) => {
-        let __pe = $topic.process_epoch.load(Ordering::Relaxed);
+        // Acquire ordering ensures that backend writes from the migrating thread
+        // are visible before we access BackendStorage. Relaxed would be unsound
+        // on weakly-ordered architectures (ARM/RISC-V) where a stale epoch could
+        // lead to accessing a swapped-out backend variant → unreachable_unchecked UB.
+        let __pe = $topic.process_epoch.load(Ordering::Acquire);
         if unlikely(__pe != $topic.local().cached_epoch) {
             $topic.handle_epoch_change(__pe);
             // SAFETY: send_fn set by handle_epoch_change → initialize_backend → set_dispatch_fn_ptrs
@@ -125,7 +129,8 @@ macro_rules! epoch_guard_send {
 
 macro_rules! epoch_guard_recv {
     ($topic:expr) => {
-        let __pe = $topic.process_epoch.load(Ordering::Relaxed);
+        // Acquire ordering — see epoch_guard_send comment.
+        let __pe = $topic.process_epoch.load(Ordering::Acquire);
         if unlikely(__pe != $topic.local().cached_epoch) {
             $topic.handle_epoch_change(__pe);
             // SAFETY: recv_fn set by handle_epoch_change → initialize_backend → set_dispatch_fn_ptrs
@@ -284,11 +289,10 @@ unsafe fn read_serde_slot<T: DeserializeOwned>(slot_ptr: *const u8, slot_size: u
     }
     let data_ptr = slot_ptr.add(16);
     let slice = std::slice::from_raw_parts(data_ptr, len);
-    Some(bincode::deserialize(slice).unwrap_or_else(|_| {
-        // Deserialization failed — fallback to raw read. This should not happen
-        // as the producer serialized successfully, but provides a safe fallback.
-        std::ptr::read(slot_ptr as *const T)
-    }))
+    // Return None on deserialization failure — never fall back to raw ptr::read,
+    // which would reinterpret arbitrary SHM bytes as T and cause UB for types
+    // with heap allocations (String, Vec) or validity invariants (bool, enums).
+    bincode::deserialize(slice).ok()
 }
 
 // ============================================================================

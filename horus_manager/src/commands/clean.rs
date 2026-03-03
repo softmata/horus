@@ -6,6 +6,7 @@ use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
+use horus_core::memory::shm_base_dir;
 use std::path::Path;
 
 /// Run the clean command
@@ -24,18 +25,13 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
             }
         }
         if shm || all {
-            let shm_base = if cfg!(target_os = "macos") {
-                "/tmp/horus"
-            } else {
-                "/dev/shm/horus"
-            };
-            let shm_path = std::path::Path::new(shm_base);
+            let shm_path = shm_base_dir();
             if shm_path.exists() {
                 items.push(serde_json::json!({
                     "type": "shared_memory",
-                    "path": shm_base,
-                    "size": get_dir_size(shm_path),
-                    "files": count_files(shm_path),
+                    "path": shm_path.display().to_string(),
+                    "size": get_dir_size(&shm_path),
+                    "files": count_files(&shm_path),
                     "exists": true,
                 }));
             }
@@ -58,7 +54,7 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
             "dry_run": dry_run,
             "items": items,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
         if !dry_run {
             // Actually perform the cleaning
             if !shm || all {
@@ -144,23 +140,18 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
 
 /// Clean shared memory
 fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
-    let shm_base = if cfg!(target_os = "macos") {
-        "/tmp/horus"
-    } else {
-        "/dev/shm/horus"
-    };
-
-    let shm_path = Path::new(shm_base);
+    let shm_path = shm_base_dir();
+    let shm_display = shm_path.display().to_string();
 
     if shm_path.exists() {
-        let size = get_dir_size(shm_path);
-        let file_count = count_files(shm_path);
+        let size = get_dir_size(&shm_path);
+        let file_count = count_files(&shm_path);
 
         if dry_run {
             println!(
                 "  {} Would remove {} ({}, {} files)",
                 cli_output::ICON_INFO.cyan(),
-                shm_base.white(),
+                shm_display.white(),
                 format_size(size),
                 file_count
             );
@@ -168,18 +159,18 @@ fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
             println!(
                 "  {} Removing {} ({}, {} files)",
                 cli_output::ICON_INFO.cyan(),
-                shm_base.white(),
+                shm_display.white(),
                 format_size(size),
                 file_count
             );
-            std::fs::remove_dir_all(shm_path).map_err(HorusError::Io)?;
+            std::fs::remove_dir_all(&shm_path).map_err(HorusError::Io)?;
         }
         return Ok(true);
     } else {
         println!(
             "  {} No shared memory at {}",
             cli_output::ICON_SUCCESS.dimmed(),
-            shm_base
+            shm_display
         );
     }
 

@@ -51,7 +51,7 @@ macro_rules! impl_timestamp_field {
 }
 
 /// Generate shared tensor accessor methods for descriptor types with an
-/// `inner: HorusTensor` field.
+/// `inner: Tensor` field.
 #[macro_export]
 macro_rules! impl_tensor_accessors {
     () => {
@@ -81,13 +81,13 @@ macro_rules! impl_tensor_accessors {
 
         /// Get the inner tensor descriptor.
         #[inline]
-        pub fn tensor(&self) -> &$crate::types::HorusTensor {
+        pub fn tensor(&self) -> &$crate::types::Tensor {
             &self.inner
         }
 
         /// Get a mutable reference to the inner tensor descriptor.
         #[inline]
-        pub fn tensor_mut(&mut self) -> &mut $crate::types::HorusTensor {
+        pub fn tensor_mut(&mut self) -> &mut $crate::types::Tensor {
             &mut self.inner
         }
     };
@@ -108,6 +108,6 @@ pub use image_descriptor::ImageDescriptor;
 pub use pointcloud_descriptor::PointCloudDescriptor;
 pub(crate) use tensor::MAX_TENSOR_DIMS;
 
-// HorusTensor stays pub — used by horus_py
+// Tensor stays pub — used by horus_py
 #[doc(hidden)]
-pub use tensor::HorusTensor;
+pub use tensor::Tensor;

@@ -11,17 +11,17 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 use super::dtype::TensorDtype;
-use super::tensor::HorusTensor;
+use super::tensor::Tensor;
 
 /// Unified depth image descriptor — Pod, 224 bytes.
 ///
-/// Contains a `HorusTensor` (shape `[H, W]`) plus depth metadata.
+/// Contains a `Tensor` (shape `[H, W]`) plus depth metadata.
 /// Dtype indicates units: F32 = meters, U16 = millimeters.
 ///
 /// # Layout (224 bytes, repr(C))
 ///
 /// ```text
-/// inner:        HorusTensor  (168 bytes)
+/// inner:        Tensor  (168 bytes)
 /// timestamp_ns: u64          (8 bytes)
 /// depth_scale:  f32          (4 bytes)
 /// min_depth:    u16          (2 bytes)
@@ -34,7 +34,7 @@ use super::tensor::HorusTensor;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DepthImageDescriptor {
     /// Inner tensor: shape [H, W], data in pool
-    inner: HorusTensor,
+    inner: Tensor,
     /// Timestamp in nanoseconds since epoch
     timestamp_ns: u64,
     /// Depth scale (mm per unit for U16, usually 1.0)
@@ -57,7 +57,7 @@ unsafe impl Pod for DepthImageDescriptor {}
 impl Default for DepthImageDescriptor {
     fn default() -> Self {
         Self {
-            inner: HorusTensor::default(),
+            inner: Tensor::default(),
             timestamp_ns: 0,
             depth_scale: 1.0,
             min_depth: 200,   // 20cm
@@ -72,7 +72,7 @@ impl DepthImageDescriptor {
     /// Create a depth image descriptor from a tensor.
     ///
     /// Tensor shape should be `[H, W]` with dtype F32 (meters) or U16 (mm).
-    pub fn new(tensor: HorusTensor) -> Self {
+    pub fn new(tensor: Tensor) -> Self {
         Self {
             inner: tensor,
             ..Default::default()
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_depth_image_f32() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[480, 640], TensorDtype::F32, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[480, 640], TensorDtype::F32, Device::cpu());
         let di = DepthImageDescriptor::new(tensor);
         assert_eq!(di.height(), 480);
         assert_eq!(di.width(), 640);
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn test_depth_image_u16() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[720, 1280], TensorDtype::U16, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[720, 1280], TensorDtype::U16, Device::cpu());
         let di = DepthImageDescriptor::new(tensor);
         assert_eq!(di.height(), 720);
         assert_eq!(di.width(), 1280);
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_depth_image_with_range() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::U16, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[100, 100], TensorDtype::U16, Device::cpu());
         let di = DepthImageDescriptor::new(tensor).with_range(100, 5000);
         assert_eq!(di.min_depth(), 100);
         assert_eq!(di.max_depth(), 5000);

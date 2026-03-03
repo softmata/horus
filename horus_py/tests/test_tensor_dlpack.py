@@ -169,7 +169,7 @@ def test_dlpack_roundtrip():
     Note: shape in the DLPack tensor may differ from the numpy shape (e.g.
     the internal tensor might be stored as (H*W*C,) rather than (H, W, C)).
     The test therefore compares flattened bytes, which is robust regardless
-    of the internal layout chosen by ``HorusTensor``.
+    of the internal layout chosen by ``Tensor``.
     """
     from horus._horus import Image
 

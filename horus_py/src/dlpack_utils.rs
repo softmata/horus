@@ -105,12 +105,12 @@ pub fn torch_to_numpy<'py>(tensor: &Bound<'py, PyAny>) -> PyResult<Bound<'py, Py
 
 // === DLPack helpers ===
 
-/// Prepare DLPack arguments from a HorusTensor + TensorPool.
+/// Prepare DLPack arguments from a Tensor + TensorPool.
 ///
 /// Returns (data_ptr, shape, strides_in_elements, dtype, device) — everything
 /// needed by `make_dlpack_capsule`.
 pub fn prepare_dlpack_args(
-    tensor: &horus_core::types::HorusTensor,
+    tensor: &horus_core::types::Tensor,
     pool: &horus_core::memory::TensorPool,
 ) -> (*mut c_void, Vec<i64>, Vec<i64>, TensorDtype, Device) {
     let shape: Vec<i64> = tensor.shape().iter().map(|&x| x as i64).collect();
@@ -126,8 +126,8 @@ pub fn prepare_dlpack_args(
     (data_ptr, shape, strides, tensor.dtype, tensor.device())
 }
 
-/// Shared `__dlpack_device__` implementation for types wrapping a HorusTensor.
-pub fn dlpack_device_tuple(tensor: &horus_core::types::HorusTensor) -> (i32, i32) {
+/// Shared `__dlpack_device__` implementation for types wrapping a Tensor.
+pub fn dlpack_device_tuple(tensor: &horus_core::types::Tensor) -> (i32, i32) {
     let device = tensor.device();
     (device.to_dlpack_device_type(), device.to_dlpack_device_id())
 }

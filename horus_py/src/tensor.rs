@@ -4,7 +4,7 @@
 //! and the buffer protocol.
 
 use horus::memory::{TensorHandle, TensorPool, TensorPoolConfig};
-use horus_core::types::{HorusTensor, TensorDtype};
+use horus_core::types::{Tensor, TensorDtype};
 use parking_lot::RwLock;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -188,19 +188,19 @@ impl PyTensorHandle {
     /// This is used when receiving tensors from Topic.
     #[staticmethod]
     fn from_descriptor(pool_id: u32, descriptor_bytes: &[u8]) -> PyResult<Self> {
-        if descriptor_bytes.len() != std::mem::size_of::<HorusTensor>() {
+        if descriptor_bytes.len() != std::mem::size_of::<Tensor>() {
             return Err(PyValueError::new_err(format!(
                 "Invalid descriptor size: expected {}, got {}",
-                std::mem::size_of::<HorusTensor>(),
+                std::mem::size_of::<Tensor>(),
                 descriptor_bytes.len()
             )));
         }
 
-        // SAFETY: descriptor_bytes length is validated above to match size_of::<HorusTensor>().
-        // HorusTensor is a POD type (repr(C), all primitive fields).
-        // Use read_unaligned since Python byte arrays may not meet HorusTensor alignment requirements.
-        let tensor: HorusTensor =
-            unsafe { std::ptr::read_unaligned(descriptor_bytes.as_ptr() as *const HorusTensor) };
+        // SAFETY: descriptor_bytes length is validated above to match size_of::<Tensor>().
+        // Tensor is a POD type (repr(C), all primitive fields).
+        // Use read_unaligned since Python byte arrays may not meet Tensor alignment requirements.
+        let tensor: Tensor =
+            unsafe { std::ptr::read_unaligned(descriptor_bytes.as_ptr() as *const Tensor) };
 
         let pool = get_or_create_pool(pool_id, None)?;
         let handle = TensorHandle::new(tensor, pool);
@@ -218,11 +218,11 @@ impl PyTensorHandle {
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
 
         let tensor = handle.tensor();
-        // SAFETY: HorusTensor is repr(C) with only POD fields. Reading its bytes is safe.
+        // SAFETY: Tensor is repr(C) with only POD fields. Reading its bytes is safe.
         let bytes = unsafe {
             std::slice::from_raw_parts(
-                tensor as *const HorusTensor as *const u8,
-                std::mem::size_of::<HorusTensor>(),
+                tensor as *const Tensor as *const u8,
+                std::mem::size_of::<Tensor>(),
             )
         };
         Ok(bytes.to_vec())

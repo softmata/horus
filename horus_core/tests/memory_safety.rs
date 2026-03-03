@@ -126,7 +126,7 @@ fn stale_double_release_returns_err() {
     let first = pool
         .alloc(&[8], TensorDtype::U8, Device::cpu())
         .expect("first alloc failed");
-    let stale = first; // copy of descriptor (HorusTensor is Copy)
+    let stale = first; // copy of descriptor (Tensor is Copy)
 
     // Release — slot is now free; generation is bumped.
     pool.release(&first);
@@ -408,7 +408,7 @@ fn alloc_with_timeout_unblocks_on_release() {
 /// extend beyond the pool data region, not silently expose out-of-bounds memory.
 #[test]
 fn data_slice_rejects_out_of_bounds_descriptor() {
-    use horus_core::types::HorusTensor;
+    use horus_core::types::Tensor;
 
     let pool = small_pool(POOL_BASE + 8);
 
@@ -418,9 +418,9 @@ fn data_slice_rejects_out_of_bounds_descriptor() {
         .alloc(&[4], TensorDtype::U8, Device::cpu())
         .expect("alloc failed");
 
-    // HorusTensor: pool_id, slot_id, generation_hi, generation_lo,
+    // Tensor: pool_id, slot_id, generation_hi, generation_lo,
     // offset, size, shape, dtype, device
-    let bogus = HorusTensor::new(
+    let bogus = Tensor::new(
         pool.pool_id(),
         0,
         1, // generation_full = 1 (matches slot 0 after first alloc)

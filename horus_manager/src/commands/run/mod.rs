@@ -368,7 +368,7 @@ fn execute_multiple_files(
             }
         }
     })
-    .expect("Error setting Ctrl-C handler");
+    .ok(); // Handler may already be set; ignore failure
 
     let mut handles = Vec::new();
 
@@ -413,7 +413,7 @@ fn execute_multiple_files(
                 );
                 children
                     .lock()
-                    .expect("children lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .push((node_name, child));
             }
             Err(e) => {
@@ -435,7 +435,7 @@ fn execute_multiple_files(
     // Wait for all processes to complete (concurrent, checks running flag)
     loop {
         let mut all_done = true;
-        let mut children_lock = children.lock().expect("children lock poisoned");
+        let mut children_lock = children.lock().unwrap_or_else(|e| e.into_inner());
 
         // Check each child with try_wait (non-blocking)
         children_lock.retain_mut(|(name, child)| {

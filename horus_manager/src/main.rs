@@ -1506,7 +1506,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 );
 
                 tokio::runtime::Runtime::new()
-                    .expect("failed to create tokio runtime")
+                    .map_err(|e| HorusError::Config(format!("Failed to create async runtime: {}", e)))?
                     .block_on(monitor::run(port, no_auth))
                     .map_err(|e| {
                         let err_str = e.to_string();

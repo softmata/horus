@@ -10,18 +10,18 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 use super::image_encoding::ImageEncoding;
-use super::tensor::HorusTensor;
+use super::tensor::Tensor;
 
 /// Unified image descriptor — Pod, 224 bytes.
 ///
-/// Contains a `HorusTensor` (shape `[H, W, C]`) plus domain metadata
+/// Contains a `Tensor` (shape `[H, W, C]`) plus domain metadata
 /// (encoding, step, frame_id, timestamp). This is what flows through
 /// the ring buffer; pixel data stays in shared memory.
 ///
 /// # Layout (224 bytes, repr(C))
 ///
 /// ```text
-/// inner:        HorusTensor  (168 bytes)
+/// inner:        Tensor  (168 bytes)
 /// timestamp_ns: u64          (8 bytes)
 /// step:         u32          (4 bytes)
 /// encoding:     ImageEncoding(1 byte, repr(u8))
@@ -34,7 +34,7 @@ use super::tensor::HorusTensor;
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ImageDescriptor {
     /// Inner tensor: shape [H, W, C], data in pool
-    inner: HorusTensor,
+    inner: Tensor,
     /// Timestamp in nanoseconds since epoch
     timestamp_ns: u64,
     /// Bytes per row (may include padding for alignment)
@@ -57,7 +57,7 @@ unsafe impl Pod for ImageDescriptor {}
 impl Default for ImageDescriptor {
     fn default() -> Self {
         Self {
-            inner: HorusTensor::default(),
+            inner: Tensor::default(),
             timestamp_ns: 0,
             step: 0,
             encoding: ImageEncoding::Rgb8,
@@ -76,7 +76,7 @@ impl ImageDescriptor {
     /// is correct for tensors allocated with row-padding (e.g., SIMD-aligned
     /// images).  Falls back to `width * bytes_per_pixel` only when the stride
     /// is zero (default/zeroed tensors).
-    pub fn new(tensor: HorusTensor, encoding: ImageEncoding) -> Self {
+    pub fn new(tensor: Tensor, encoding: ImageEncoding) -> Self {
         // Use the tensor's actual row stride (strides[0]) so that padded
         // images — where the row stride exceeds width * bpp — have their
         // step set correctly.  pixel() / set_pixel() / roi() all depend on
@@ -105,8 +105,8 @@ impl ImageDescriptor {
         }
     }
 
-    /// Wrap an existing `HorusTensor` as an `Image`, inferring encoding.
-    pub fn from_tensor(tensor: HorusTensor) -> Self {
+    /// Wrap an existing `Tensor` as an `Image`, inferring encoding.
+    pub fn from_tensor(tensor: Tensor) -> Self {
         let channels = if tensor.ndim >= 3 {
             tensor.shape[2] as u32
         } else {
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_image_from_tensor() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
         let img = ImageDescriptor::from_tensor(tensor);
         assert_eq!(img.height(), 480);
         assert_eq!(img.width(), 640);
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_image_mono() {
-        let tensor = HorusTensor::new(1, 0, 0, 0, &[100, 200], TensorDtype::U8, Device::cpu());
+        let tensor = Tensor::new(1, 0, 0, 0, &[100, 200], TensorDtype::U8, Device::cpu());
         let img = ImageDescriptor::from_tensor(tensor);
         assert_eq!(img.channels(), 1);
         assert_eq!(img.encoding(), ImageEncoding::Mono8);
@@ -219,7 +219,7 @@ mod tests {
         // Create a tensor with a padded row stride (e.g., SIMD-aligned rows).
         // strides[0] = width * channels + 16 bytes of padding per row.
         let mut tensor =
-            HorusTensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+            Tensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
         let padded_stride = 640u64 * 3 + 16;
         tensor.strides[0] = padded_stride;
 
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn test_image_step_fallback_for_zeroed_tensor() {
         // A zeroed (default) tensor has strides[0] == 0 — fallback to width*bpp.
-        let tensor = HorusTensor::default(); // all zeros, ndim == 0
+        let tensor = Tensor::default(); // all zeros, ndim == 0
         let img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
         // Both width and step should be 0 for an empty descriptor.
         assert_eq!(img.step(), 0);
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_image_serde_roundtrip() {
-        let tensor = HorusTensor::new(
+        let tensor = Tensor::new(
             1,
             42,
             1,

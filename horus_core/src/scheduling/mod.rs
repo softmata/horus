@@ -164,6 +164,10 @@ pub(crate) mod blackbox {
         pub fn with_path(self, _dir: PathBuf) -> Self {
             self
         }
+        pub fn with_wal_flush_interval(self, _interval: usize) -> Self {
+            self
+        }
+        pub fn flush_wal(&mut self) {}
         pub fn record(&mut self, _event: BlackBoxEvent) {}
         pub fn tick(&mut self) {}
         pub fn events(&self) -> Vec<BlackBoxRecord> {

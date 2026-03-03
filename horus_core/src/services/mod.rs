@@ -9,7 +9,7 @@
 //! # Quick Start
 //!
 //! ```rust,ignore
-//! use horus_core::{service, services::{ServiceServerBuilder, SyncServiceClient}};
+//! use horus_core::{service, services::{ServiceServerBuilder, ServiceClient}};
 //! use std::time::Duration;
 //!
 //! // Define the service
@@ -26,7 +26,7 @@
 //!     .build()?;
 //!
 //! // Client side
-//! let mut client = SyncServiceClient::<AddTwoInts>::new()?;
+//! let mut client = ServiceClient::<AddTwoInts>::new()?;
 //! let resp = client.call(AddTwoIntsRequest { a: 3, b: 4 }, Duration::from_secs(1))?;
 //! println!("sum = {}", resp.sum);
 //! ```
@@ -57,7 +57,7 @@
 //! | `ros2 service type /name` | `horus service type <name>` |
 //! | `ros2 service find <type>` | `horus service find <type>` |
 //! | `ServiceServer<Req, Res>` | [`ServiceServerBuilder<S>`] |
-//! | `ServiceClient<Req, Res>` | [`SyncServiceClient<S>`] / [`AsyncServiceClient<S>`] |
+//! | `ServiceClient<Req, Res>` | [`ServiceClient<S>`] / [`AsyncServiceClient<S>`] |
 
 pub mod client;
 pub mod macros;
@@ -65,7 +65,7 @@ pub mod server;
 pub mod types;
 
 // Public re-exports
-pub use client::{AsyncServiceClient, PendingServiceCall, SyncServiceClient};
+pub use client::{AsyncServiceClient, PendingServiceCall, ServiceClient};
 pub use server::{RequestHandler, ServiceServer, ServiceServerBuilder};
 pub use types::{
     Service, ServiceError, ServiceInfo, ServiceRequest, ServiceResponse, ServiceResult,
@@ -79,6 +79,6 @@ pub use types::{
 pub mod prelude {
     pub use super::{
         AsyncServiceClient, Service, ServiceError, ServiceInfo, ServiceRequest, ServiceResponse,
-        ServiceResult, ServiceServer, ServiceServerBuilder, SyncServiceClient,
+        ServiceResult, ServiceServer, ServiceServerBuilder, ServiceClient,
     };
 }
