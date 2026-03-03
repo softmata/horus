@@ -15,6 +15,42 @@ use std::sync::Arc;
 
 use crate::dlpack_utils;
 
+/// RAII guard that calls the DLPack deleter when dropped.
+///
+/// Used in `from_dlpack` to ensure the `DLManagedTensor` received from Python
+/// is always freed, even when an error occurs after the PyCapsule has been
+/// renamed to `"used_dltensor"`.  At that point Python's GC (via
+/// `dlpack_capsule_destructor`) will no longer call the deleter — we own the
+/// cleanup responsibility.
+///
+/// Disarm the guard (via [`DLPackDeleterGuard::disarm`]) immediately before
+/// the explicit deleter call at the end of the success path so the deleter
+/// is not invoked twice.
+struct DLPackDeleterGuard(*mut horus_core::dlpack::DLManagedTensor);
+
+impl DLPackDeleterGuard {
+    /// Prevent the destructor from calling the deleter.
+    /// Call this after the deleter has already been invoked explicitly.
+    fn disarm(&mut self) {
+        self.0 = std::ptr::null_mut();
+    }
+}
+
+impl Drop for DLPackDeleterGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: pointer is valid; we have exclusive cleanup responsibility
+            // (capsule has been renamed to "used_dltensor" so Python's GC will
+            // not invoke the deleter via dlpack_capsule_destructor).
+            unsafe {
+                if let Some(deleter) = (*self.0).deleter {
+                    deleter(self.0);
+                }
+            }
+        }
+    }
+}
+
 // Global pool registry - allows multiple pools to be accessed by ID
 lazy_static::lazy_static! {
     static ref POOL_REGISTRY: RwLock<HashMap<u32, Arc<TensorPool>>> = RwLock::new(HashMap::new());
@@ -196,8 +232,9 @@ impl PyTensorHandle {
     ///
     /// This enables: np.asarray(tensor_handle)
     #[getter]
-    fn __array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let handle = self
+    fn __array_interface__(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let this = slf.borrow();
+        let handle = this
             .handle
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("TensorHandle has been released"))?;
@@ -229,6 +266,9 @@ impl PyTensorHandle {
 
         // Version
         dict.set_item("version", 3)?;
+        // Keep a reference to the Rust object alive inside the dict so the
+        // backing tensor pool slot cannot be freed while numpy holds this dict.
+        dict.set_item("__horus_obj__", slf)?;
 
         Ok(dict.into())
     }
@@ -378,12 +418,19 @@ impl PyTensorHandle {
         }
         .map_err(|e| PyRuntimeError::new_err(format!("DLPack import failed: {}", e)))?;
 
-        // Rename capsule to "used_dltensor" (DLPack spec: prevents double-consume)
+        // Rename capsule to "used_dltensor" (DLPack spec: prevents double-consume).
+        //
+        // After this point Python's GC (dlpack_capsule_destructor) will NOT call
+        // the deleter — we own the cleanup responsibility.  Arm a RAII guard so
+        // that any `?` error return between here and the explicit deleter call at
+        // the end still invokes the deleter, preventing a memory leak.
         let used_name = CString::new("used_dltensor").unwrap();
         unsafe {
             pyo3::ffi::PyCapsule_SetName(capsule_obj.as_ptr(), used_name.as_ptr());
         }
         std::mem::forget(used_name);
+        let managed_dlpack = managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
+        let mut deleter_guard = DLPackDeleterGuard(managed_dlpack);
 
         // Allocate HORUS TensorHandle and copy data from source.
         // GPU sources are handled based on hardware capability:
@@ -395,12 +442,14 @@ impl PyTensorHandle {
         let copy_len = descriptor.size_bytes as usize;
 
         if is_cuda_source {
+            // Guard drops here and calls the deleter — no leak.
             return Err(PyRuntimeError::new_err(
                 "Cannot import CUDA DLPack tensor: CUDA support is not available",
             ));
         }
 
         // CPU source — direct memory copy into default pool
+        // Any `?` below triggers the guard, which calls the deleter.
         let pool = get_or_create_pool(1, None)?;
         let handle = TensorHandle::alloc(
             Arc::clone(&pool),
@@ -415,11 +464,14 @@ impl PyTensorHandle {
             std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_len);
         }
 
-        // Call deleter on the original DLManagedTensor (we're done with the data)
+        // Disarm the guard before calling the deleter explicitly — prevents a
+        // double-free if the guard's destructor runs after this point.
+        deleter_guard.disarm();
+
+        // Call deleter on the original DLManagedTensor (we're done with the data).
         unsafe {
-            let managed = managed_ptr as *mut horus_core::dlpack::DLManagedTensor;
-            if let Some(deleter) = (*managed).deleter {
-                deleter(managed);
+            if let Some(deleter) = (*managed_dlpack).deleter {
+                deleter(managed_dlpack);
             }
         }
 
@@ -691,4 +743,74 @@ pub fn cuda_is_available() -> bool {
 #[pyfunction]
 pub fn cuda_device_count() -> usize {
     horus::memory::cuda_device_count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guard must call the DLPack deleter when dropped without `disarm()`.
+    ///
+    /// Simulates the error path in `from_dlpack` where pool exhaustion or
+    /// allocation failure causes an early return after the capsule has been
+    /// renamed — verifying that the guard prevents the DLManagedTensor leak.
+    ///
+    /// We verify correctness by checking there is no crash or double-free:
+    /// the `data` Vec below keeps the data pointer alive, so a valid deleter
+    /// call should complete without segfault.  Under MIRI, this also catches
+    /// use-after-free if the deleter accesses already-freed memory.
+    #[test]
+    fn test_dlpack_deleter_guard_calls_deleter_on_drop() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let managed = horus_core::dlpack::to_dlpack(
+            data.as_ptr() as *mut std::ffi::c_void,
+            &[4i64],
+            &[1i64],
+            horus_core::types::TensorDtype::F32,
+            horus_core::types::Device::cpu(),
+        );
+        let managed_ptr = Box::into_raw(managed);
+
+        {
+            let _guard = DLPackDeleterGuard(managed_ptr);
+            // Simulate error path: drop guard without calling disarm().
+            // Guard drops here and calls the deleter — no leak, no crash.
+        }
+        // Reaching here means the deleter ran without crash.
+        // `data` Vec is still alive so its memory was not invalidly accessed.
+    }
+
+    /// Guard must NOT call the deleter after `disarm()`.
+    ///
+    /// Simulates the success path where the caller explicitly invokes the
+    /// deleter and then disarms the guard to prevent a double-free.
+    #[test]
+    fn test_dlpack_deleter_guard_disarmed_does_not_double_free() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let managed = horus_core::dlpack::to_dlpack(
+            data.as_ptr() as *mut std::ffi::c_void,
+            &[4i64],
+            &[1i64],
+            horus_core::types::TensorDtype::F32,
+            horus_core::types::Device::cpu(),
+        );
+        let managed_ptr = Box::into_raw(managed);
+
+        {
+            let mut guard = DLPackDeleterGuard(managed_ptr);
+
+            // Explicitly call the deleter (success path).
+            // SAFETY: managed_ptr is valid and not yet freed.
+            unsafe {
+                if let Some(deleter) = (*managed_ptr).deleter {
+                    deleter(managed_ptr);
+                }
+            }
+
+            // Disarm the guard — must NOT call deleter again on drop.
+            guard.disarm();
+            // guard drops here without calling deleter.
+        }
+        // No crash or MIRI double-free = disarm correctly suppressed second call.
+    }
 }

@@ -2365,6 +2365,7 @@ dependencies = [
  "bytemuck",
  "horus_core",
  "horus_macros",
+ "loom",
  "rmp-serde",
  "serde",
  "serde_arrays",

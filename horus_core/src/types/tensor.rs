@@ -6,7 +6,7 @@
 //! # Memory Layout (168 bytes, repr(C), Pod-safe)
 //!
 //! ```text
-//! Pool identification:  pool_id(4) + slot_id(4) + generation(4) + _pad0(4) = 16 bytes
+//! Pool identification:  pool_id(4) + slot_id(4) + generation(4) + generation_hi(4) = 16 bytes
 //! Data location:        offset(8) + size(8)                                = 16 bytes
 //! Tensor metadata:      dtype(1) + ndim(1) + device_type(1) + _pad1(1) + device_id(4) = 8 bytes
 //! Shape + strides:      shape(64) + strides(64)                            = 128 bytes
@@ -42,10 +42,19 @@ pub struct HorusTensor {
     pub pool_id: u32,
     /// Slot index within the pool
     pub slot_id: u32,
-    /// Generation counter for ABA prevention
+    /// Generation counter for ABA prevention — low 32 bits of a 64-bit generation.
+    ///
+    /// The full 64-bit generation is `generation_full()`.  Always use
+    /// `generation_full()` for pool comparisons; never compare `generation`
+    /// alone, as that only catches 32-bit wraparound.
     pub generation: u32,
-    /// Reserved for future use
-    pub _pad0: u32,
+    /// High 32 bits of the 64-bit generation counter.
+    ///
+    /// Previously named `_pad0` (always 0).  Cross-process: old descriptors
+    /// produced before this field was added will have `generation_hi = 0`,
+    /// making their `generation_full()` equal to the raw 32-bit counter —
+    /// which is backward-compatible for the first 2^32 cycles.
+    pub generation_hi: u32,
 
     // === Data location (16 bytes) ===
     /// Byte offset from pool base to tensor data
@@ -83,7 +92,7 @@ impl Default for HorusTensor {
             pool_id: 0,
             slot_id: 0,
             generation: 0,
-            _pad0: 0,
+            generation_hi: 0,
             offset: 0,
             size: 0,
             dtype: TensorDtype::F32,
@@ -101,10 +110,14 @@ impl HorusTensor {
     /// Create a new tensor descriptor
     ///
     /// This is typically called by TensorPool, not directly.
+    ///
+    /// `generation_full` is the full 64-bit generation counter from the pool's
+    /// `SlotHeader`.  It is split into low/high 32-bit halves stored in
+    /// `generation` and `generation_hi` respectively.
     pub fn new(
         pool_id: u32,
         slot_id: u32,
-        generation: u32,
+        generation_full: u64,
         offset: u64,
         shape: &[u64],
         dtype: TensorDtype,
@@ -134,8 +147,8 @@ impl HorusTensor {
         Self {
             pool_id,
             slot_id,
-            generation,
-            _pad0: 0,
+            generation: generation_full as u32,
+            generation_hi: (generation_full >> 32) as u32,
             offset,
             size,
             dtype,
@@ -146,6 +159,16 @@ impl HorusTensor {
             shape: shape_arr,
             strides,
         }
+    }
+
+    /// Full 64-bit generation counter for ABA prevention.
+    ///
+    /// Reconstructed from `generation` (low 32 bits) and `generation_hi`
+    /// (high 32 bits).  Always use this for pool comparisons — never compare
+    /// `generation` alone, as that only catches 32-bit wraparound.
+    #[inline]
+    pub fn generation_full(&self) -> u64 {
+        (self.generation_hi as u64) << 32 | self.generation as u64
     }
 
     /// Get the device this tensor resides on
@@ -227,7 +250,7 @@ impl HorusTensor {
         Some(Self::new(
             self.pool_id,
             self.slot_id,
-            self.generation,
+            self.generation_full(),
             self.offset,
             new_shape,
             self.dtype,
@@ -260,10 +283,11 @@ impl Serialize for HorusTensor {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("HorusTensor", 10)?;
+        let mut state = serializer.serialize_struct("HorusTensor", 11)?;
         state.serialize_field("pool_id", &self.pool_id)?;
         state.serialize_field("slot_id", &self.slot_id)?;
         state.serialize_field("generation", &self.generation)?;
+        state.serialize_field("generation_hi", &self.generation_hi)?;
         state.serialize_field("offset", &self.offset)?;
         state.serialize_field("size", &self.size)?;
         state.serialize_field("dtype", &self.dtype)?;
@@ -302,6 +326,7 @@ impl<'de> Deserialize<'de> for HorusTensor {
                         "pool_id" => tensor.pool_id = map.next_value()?,
                         "slot_id" => tensor.slot_id = map.next_value()?,
                         "generation" => tensor.generation = map.next_value()?,
+                        "generation_hi" => tensor.generation_hi = map.next_value()?,
                         "offset" => tensor.offset = map.next_value()?,
                         "size" => tensor.size = map.next_value()?,
                         "dtype" => tensor.dtype = map.next_value()?,
@@ -339,6 +364,7 @@ impl<'de> Deserialize<'de> for HorusTensor {
                 "pool_id",
                 "slot_id",
                 "generation",
+                "generation_hi",
                 "offset",
                 "size",
                 "dtype",

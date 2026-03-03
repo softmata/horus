@@ -86,6 +86,35 @@ pub struct BlackBox {
     wal_file: Option<BufWriter<File>>,
     /// Whether recording is enabled
     enabled: bool,
+    /// Flush the WAL buffer every N records (default: 64).
+    ///
+    /// Calling `BufWriter::flush()` on every `record()` invocation turns into
+    /// thousands of `fsync`-equivalent syscalls per second at high scheduler
+    /// frequencies, stalling the scheduler thread on disk latency.  Batching
+    /// the flush amortises the I/O cost at the expense of potentially losing
+    /// the last `wal_flush_interval - 1` records on a hard crash.
+    wal_flush_interval: usize,
+    /// Records written to the WAL since the last flush.
+    wal_records_since_flush: usize,
+    /// Cumulative count of records silently evicted when the ring buffer was full.
+    ///
+    /// When the circular buffer reaches `max_size`, the oldest record is
+    /// dropped to make room for the new one.  This counter tracks every such
+    /// eviction so that post-mortem analysis tools can detect and report gaps
+    /// in the event history rather than silently treating a full buffer as a
+    /// complete record.
+    lost_records: u64,
+}
+
+/// Snapshot serialised to and from the `blackbox.json` persistence file.
+///
+/// Wrapping the event list in a struct lets us store metadata (e.g.
+/// `lost_records`) alongside the events in the same JSON document.
+/// `load()` falls back to the old bare-array format for backward compatibility.
+#[derive(Serialize, Deserialize)]
+struct BlackBoxSnapshot {
+    lost_records: u64,
+    events: Vec<BlackBoxRecord>,
 }
 
 impl BlackBox {
@@ -101,7 +130,26 @@ impl BlackBox {
             persist_path: None,
             wal_file: None,
             enabled: max_size_mb > 0,
+            wal_flush_interval: 64,
+            wal_records_since_flush: 0,
+            lost_records: 0,
         }
+    }
+
+    /// Set how many WAL records are written between `BufWriter::flush()` calls.
+    ///
+    /// A higher value reduces I/O syscall frequency at the cost of more
+    /// records lost in a hard crash.  The default (64) is a reasonable
+    /// balance for RT systems running at 100–1000 Hz:
+    ///   - 100 Hz, interval 64 → at most 1 flush per ~640 ms
+    ///   - 1000 Hz, interval 64 → at most 1 flush per ~64 ms
+    ///
+    /// Set to 1 to restore the original per-record fsync behaviour (useful
+    /// for debugging or very low-frequency schedulers where the overhead is
+    /// acceptable).
+    pub fn with_wal_flush_interval(mut self, interval: usize) -> Self {
+        self.wal_flush_interval = interval.max(1);
+        self
     }
 
     /// Set persistence path for WAL and JSON snapshot.
@@ -138,19 +186,44 @@ impl BlackBox {
             event,
         };
 
-        // Write to WAL first (for crash recovery)
+        // Write to WAL first (for crash recovery).
+        //
+        // BufWriter batches writes in user-space; `flush()` drains the buffer
+        // to the OS (fsync-equivalent).  Flushing on every record would cause
+        // thousands of syscalls/second at high scheduler frequencies, stalling
+        // the RT thread on disk I/O.  Instead we flush every
+        // `wal_flush_interval` records; an explicit `flush_wal()` call on
+        // scheduler shutdown ensures no records are lost on clean exit.
         if let Some(ref mut wal) = self.wal_file {
             if let Ok(json) = serde_json::to_string(&record) {
                 let _ = writeln!(wal, "{}", json);
-                let _ = wal.flush();
+                self.wal_records_since_flush += 1;
+                if self.wal_records_since_flush >= self.wal_flush_interval {
+                    let _ = wal.flush();
+                    self.wal_records_since_flush = 0;
+                }
             }
         }
 
-        // Add to circular buffer
+        // Add to circular buffer, counting every eviction so callers can
+        // detect gaps in the event history during post-mortem analysis.
         if self.buffer.len() >= self.max_size {
             self.buffer.pop_front();
+            self.lost_records += 1;
         }
         self.buffer.push_back(record);
+    }
+
+    /// Flush any buffered WAL data to the OS immediately.
+    ///
+    /// Must be called on scheduler shutdown to ensure the last batch of
+    /// records (up to `wal_flush_interval - 1`) is not lost.  Also safe
+    /// to call at any point for a manual sync (e.g., before a checkpoint).
+    pub fn flush_wal(&mut self) {
+        if let Some(ref mut wal) = self.wal_file {
+            let _ = wal.flush();
+            self.wal_records_since_flush = 0;
+        }
     }
 
     /// Increment tick counter (call once per scheduler tick)
@@ -181,31 +254,55 @@ impl BlackBox {
             .collect()
     }
 
-    /// Save buffer to disk
+    /// Save buffer and loss counter to disk.
+    ///
+    /// The JSON snapshot uses the format:
+    /// ```json
+    /// { "lost_records": <u64>, "events": [ … ] }
+    /// ```
+    /// The `lost_records` field allows analysis tools to detect and report
+    /// incomplete event history when replaying the snapshot.
     pub fn save(&self) -> std::io::Result<()> {
         if let Some(ref path) = self.persist_path {
             let file = File::create(path)?;
             let writer = BufWriter::new(file);
-            serde_json::to_writer_pretty(writer, &self.events())?;
+            let snapshot = BlackBoxSnapshot {
+                lost_records: self.lost_records,
+                events: self.events(),
+            };
+            serde_json::to_writer_pretty(writer, &snapshot)?;
             info!(
-                "[BLACKBOX] Saved {} events to {:?}",
+                "[BLACKBOX] Saved {} events ({} lost) to {:?}",
                 self.buffer.len(),
+                self.lost_records,
                 path
             );
         }
         Ok(())
     }
 
-    /// Load buffer from disk
+    /// Load buffer from disk.
+    ///
+    /// Accepts both the current format (`{ "lost_records": …, "events": […] }`)
+    /// and the legacy bare-array format for backward compatibility with snapshots
+    /// written before the loss counter was introduced.
     pub fn load(&mut self) -> std::io::Result<()> {
         if let Some(ref path) = self.persist_path {
             if path.exists() {
                 let content = fs::read_to_string(path)?;
-                let events: Vec<BlackBoxRecord> = serde_json::from_str(&content)?;
-                self.buffer = VecDeque::from(events);
+                // Try new snapshot format first; fall back to bare event array.
+                if let Ok(snapshot) = serde_json::from_str::<BlackBoxSnapshot>(&content) {
+                    self.lost_records = snapshot.lost_records;
+                    self.buffer = VecDeque::from(snapshot.events);
+                } else {
+                    let events: Vec<BlackBoxRecord> = serde_json::from_str(&content)?;
+                    self.buffer = VecDeque::from(events);
+                    self.lost_records = 0;
+                }
                 info!(
-                    "[BLACKBOX] Loaded {} events from {:?}",
+                    "[BLACKBOX] Loaded {} events ({} lost) from {:?}",
                     self.buffer.len(),
+                    self.lost_records,
                     path
                 );
             }
@@ -213,10 +310,11 @@ impl BlackBox {
         Ok(())
     }
 
-    /// Clear the buffer
+    /// Clear the buffer and reset counters.
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.tick_counter = 0;
+        self.lost_records = 0;
     }
 
     /// Get buffer size
@@ -227,6 +325,15 @@ impl BlackBox {
     /// Check if buffer is empty
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
+    }
+
+    /// Return the cumulative count of records lost due to ring buffer overflow.
+    ///
+    /// A non-zero value means the snapshot is incomplete: at least this many
+    /// events were silently evicted before they could be retrieved.  Post-mortem
+    /// analysis tools should surface this value prominently when it is non-zero.
+    pub fn get_loss_count(&self) -> u64 {
+        self.lost_records
     }
 }
 
@@ -275,6 +382,138 @@ mod tests {
 
         // Should only have last 10
         assert_eq!(bb.len(), 10);
+    }
+
+    /// WAL flush_interval=64: verify that wal_records_since_flush resets every
+    /// 64 records and that an explicit flush_wal() drains any remainder.
+    ///
+    /// This is a white-box test: we inspect `wal_records_since_flush` directly
+    /// rather than mocking the file, which avoids platform-specific I/O setup.
+    #[test]
+    fn wal_batched_flush_interval() {
+        let mut bb = BlackBox::new(1).with_wal_flush_interval(4);
+        // No WAL file — flush_wal is a no-op but counter still resets.
+        // (We're testing the counter logic, not actual file I/O.)
+        assert_eq!(bb.wal_records_since_flush, 0);
+
+        // Write 3 records — should NOT have flushed yet (interval = 4).
+        for i in 0..3u32 {
+            bb.record(BlackBoxEvent::Custom {
+                category: "test".to_string(),
+                message: format!("event {}", i),
+            });
+        }
+        assert_eq!(
+            bb.wal_records_since_flush, 0,
+            "records_since_flush should be 0 when no wal_file is attached"
+        );
+
+        // Now attach a real WAL file and re-test with a tmpfile.
+        let tmp =
+            std::env::temp_dir().join(format!("horus_bb_flush_test_{}.wal", std::process::id()));
+        let dir = std::env::temp_dir();
+        let mut bb = BlackBox::new(1)
+            .with_wal_flush_interval(4)
+            .with_path(dir.clone());
+
+        // Write 9 records → 2 full batches (flush at 4, 8) + 1 pending.
+        for i in 0..9u32 {
+            bb.record(BlackBoxEvent::Custom {
+                category: "test".to_string(),
+                message: format!("event {}", i),
+            });
+        }
+        // 9 mod 4 = 1 pending record (not yet flushed)
+        assert_eq!(
+            bb.wal_records_since_flush, 1,
+            "should have 1 pending record (9 mod 4)"
+        );
+
+        // explicit flush_wal() resets the counter
+        bb.flush_wal();
+        assert_eq!(
+            bb.wal_records_since_flush, 0,
+            "flush_wal() must reset counter"
+        );
+
+        // Clean up
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(dir.join("blackbox.wal"));
+        let _ = std::fs::remove_file(dir.join("blackbox.json"));
+    }
+
+    /// Fill the buffer past capacity and verify the loss counter matches the
+    /// number of records that were evicted.
+    #[test]
+    fn test_loss_counter_increments_on_overflow() {
+        let mut bb = BlackBox::new(1);
+        bb.max_size = 10;
+
+        // Record 15 events — the first 5 should be evicted.
+        for i in 0..15u32 {
+            bb.record(BlackBoxEvent::Custom {
+                category: "test".to_string(),
+                message: format!("event {}", i),
+            });
+        }
+
+        assert_eq!(bb.len(), 10, "buffer must be capped at max_size");
+        assert_eq!(
+            bb.get_loss_count(),
+            5,
+            "5 records were evicted; loss counter must equal the overflow count"
+        );
+    }
+
+    /// clear() must reset the loss counter along with the buffer.
+    #[test]
+    fn test_clear_resets_loss_counter() {
+        let mut bb = BlackBox::new(1);
+        bb.max_size = 3;
+
+        for i in 0..6u32 {
+            bb.record(BlackBoxEvent::Custom {
+                category: "t".to_string(),
+                message: i.to_string(),
+            });
+        }
+        assert_eq!(bb.get_loss_count(), 3);
+        bb.clear();
+        assert_eq!(bb.get_loss_count(), 0, "clear() must reset lost_records to 0");
+    }
+
+    /// save() must include `lost_records` in the JSON output.
+    #[test]
+    fn test_save_includes_lost_records() {
+        let dir = std::env::temp_dir().join(format!(
+            "horus_bb_loss_save_test_{}",
+            std::process::id()
+        ));
+        let mut bb = BlackBox::new(1).with_path(dir.clone());
+        bb.max_size = 3;
+
+        for i in 0..6u32 {
+            bb.record(BlackBoxEvent::Custom {
+                category: "t".to_string(),
+                message: i.to_string(),
+            });
+        }
+        assert_eq!(bb.get_loss_count(), 3);
+
+        bb.save().expect("save must not fail");
+
+        let content = std::fs::read_to_string(dir.join("blackbox.json"))
+            .expect("snapshot file must exist");
+        let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(
+            json["lost_records"].as_u64(),
+            Some(3),
+            "snapshot JSON must contain lost_records = 3"
+        );
+
+        // Clean up.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

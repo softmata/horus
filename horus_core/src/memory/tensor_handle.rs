@@ -26,8 +26,8 @@
 //! ```
 
 use super::tensor_pool::{Device, HorusTensor, TensorDtype, TensorPool};
+use crate::error::{HorusError, HorusResult};
 use crate::types::MAX_TENSOR_DIMS;
-use crate::error::HorusResult;
 use std::sync::Arc;
 
 /// RAII handle that automatically manages tensor reference counting
@@ -50,12 +50,36 @@ impl TensorHandle {
         Self { tensor, pool }
     }
 
-    /// Create a handle without incrementing the reference count
+    /// Create a handle without incrementing the reference count.
     ///
     /// Use this when you've just allocated a tensor and already have a refcount of 1.
-    /// This is an internal API - prefer `alloc()` for new tensors.
-    pub(crate) fn from_owned(tensor: HorusTensor, pool: Arc<TensorPool>) -> Self {
-        Self { tensor, pool }
+    /// This is an internal API — prefer [`alloc`] for new tensors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::InvalidDescriptor`] if `tensor.pool_id` does not
+    /// match `pool.pool_id()`.  A mismatch causes `clone()` to call `retain()`
+    /// on the wrong pool, silently corrupting refcounts and risking use-after-free.
+    ///
+    /// In debug builds the mismatch causes an immediate panic (via
+    /// `debug_assert!`) before reaching the `Err` return.
+    pub(crate) fn from_owned(tensor: HorusTensor, pool: Arc<TensorPool>) -> HorusResult<Self> {
+        debug_assert_eq!(
+            tensor.pool_id,
+            pool.pool_id(),
+            "TensorHandle::from_owned: tensor.pool_id ({}) does not match pool.pool_id ({}); \
+             clone() would corrupt refcounts on the wrong pool",
+            tensor.pool_id,
+            pool.pool_id()
+        );
+        if tensor.pool_id != pool.pool_id() {
+            return Err(HorusError::InvalidDescriptor(format!(
+                "TensorHandle::from_owned: tensor.pool_id ({}) does not match pool.pool_id ({})",
+                tensor.pool_id,
+                pool.pool_id()
+            )));
+        }
+        Ok(Self { tensor, pool })
     }
 
     /// Allocate a new tensor and return a handle
@@ -68,7 +92,9 @@ impl TensorHandle {
         device: Device,
     ) -> HorusResult<Self> {
         let tensor = pool.alloc(shape, dtype, device)?;
-        Ok(Self::from_owned(tensor, pool))
+        // SAFETY: tensor was just allocated from `pool`, so pool_ids always match.
+        Ok(Self::from_owned(tensor, pool)
+            .expect("tensor just allocated from pool always has matching pool_id"))
     }
 
     /// Get the underlying tensor descriptor
@@ -94,25 +120,39 @@ impl TensorHandle {
         self.pool.data_ptr(&self.tensor)
     }
 
-    /// Get tensor data as a slice
+    /// Get tensor data as a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::Memory`] if the tensor descriptor is invalid (pool_id
+    /// mismatch or out-of-bounds offset/size).  A properly constructed `TensorHandle`
+    /// should never produce this error during normal operation.
     #[inline]
-    pub fn data_slice(&self) -> &[u8] {
+    pub fn data_slice(&self) -> crate::error::HorusResult<&[u8]> {
         self.pool.data_slice(&self.tensor)
     }
 
-    /// Get tensor data as a mutable slice
+    /// Get tensor data as a mutable byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::Memory`] if the tensor descriptor is invalid.
     #[inline]
-    pub fn data_slice_mut(&self) -> &mut [u8] {
+    pub fn data_slice_mut(&self) -> crate::error::HorusResult<&mut [u8]> {
         self.pool.data_slice_mut(&self.tensor)
     }
 
-    /// Get tensor data as a typed slice
+    /// Get tensor data as a typed slice.
     ///
     /// # Safety
     /// Caller must ensure the dtype matches the requested type T.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::Memory`] if the tensor descriptor is invalid.
     #[inline]
-    pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
-        let bytes = self.data_slice();
+    pub unsafe fn data_as<T: Copy>(&self) -> crate::error::HorusResult<&[T]> {
+        let bytes = self.data_slice()?;
         let ptr = bytes.as_ptr() as *const T;
         debug_assert!(
             ptr.is_aligned(),
@@ -123,17 +163,21 @@ impl TensorHandle {
         );
         let len = bytes.len() / std::mem::size_of::<T>();
         // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid for `len` elements.
-        std::slice::from_raw_parts(ptr, len)
+        Ok(std::slice::from_raw_parts(ptr, len))
     }
 
-    /// Get tensor data as a mutable typed slice
+    /// Get tensor data as a mutable typed slice.
     ///
     /// # Safety
     /// Caller must ensure the dtype matches the requested type T.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HorusError::Memory`] if the tensor descriptor is invalid.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
-        let bytes = self.data_slice_mut();
+    pub unsafe fn data_as_mut<T: Copy>(&self) -> crate::error::HorusResult<&mut [T]> {
+        let bytes = self.data_slice_mut()?;
         let ptr = bytes.as_mut_ptr() as *mut T;
         debug_assert!(
             ptr.is_aligned(),
@@ -144,7 +188,7 @@ impl TensorHandle {
         );
         let len = bytes.len() / std::mem::size_of::<T>();
         // SAFETY: Caller guarantees T matches the tensor dtype. Pointer is valid and writable for `len` elements.
-        std::slice::from_raw_parts_mut(ptr, len)
+        Ok(std::slice::from_raw_parts_mut(ptr, len))
     }
 
     /// Get the current reference count
@@ -330,14 +374,14 @@ mod tests {
 
         // SAFETY: Handle was allocated with shape [4] and dtype F32, so data_as_mut::<f32>()
         // returns a valid &mut [f32; 4] slice backed by the tensor's shared memory region.
-        let data = unsafe { handle.data_as_mut::<f32>() };
+        let data = unsafe { handle.data_as_mut::<f32>().unwrap() };
         data[0] = 1.0;
         data[1] = 2.0;
         data[2] = 3.0;
         data[3] = 4.0;
 
         // SAFETY: Same allocation as above; data_as::<f32>() reads the previously written values.
-        let data = unsafe { handle.data_as::<f32>() };
+        let data = unsafe { handle.data_as::<f32>().unwrap() };
         assert_eq!(data, &[1.0, 2.0, 3.0, 4.0]);
 
         std::fs::remove_file(pool.shm_path()).ok();
@@ -362,5 +406,84 @@ mod tests {
         assert_eq!(handle.refcount(), 1);
 
         std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    // ── from_owned pool-identity validation tests ──────────────────────────
+
+    /// from_owned with matching pool_id must succeed.
+    #[test]
+    fn test_from_owned_matching_pool_succeeds() {
+        let pool = create_test_pool();
+        let tensor = pool
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        // This is the canonical use: tensor came from pool, IDs match.
+        let result = TensorHandle::from_owned(tensor, Arc::clone(&pool));
+        assert!(
+            result.is_ok(),
+            "from_owned with matching pool_id must succeed"
+        );
+        let handle = result.unwrap();
+        assert_eq!(handle.refcount(), 1);
+
+        std::fs::remove_file(pool.shm_path()).ok();
+    }
+
+    /// from_owned with a mismatched pool_id must return Err (release) or panic (debug).
+    ///
+    /// In release builds the function returns `HorusError::InvalidDescriptor`.
+    /// In debug builds the `debug_assert_eq!` fires first, causing a panic —
+    /// so we only assert the `Err` path in `#[cfg(not(debug_assertions))]`.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_from_owned_mismatched_pool_returns_err() {
+        let pool_a = create_test_pool();
+        let pool_b = create_test_pool();
+
+        // Allocate from pool_a but hand the descriptor to pool_b.
+        let tensor = pool_a
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        // pool_a and pool_b have different pool_ids.
+        assert_ne!(pool_a.pool_id(), pool_b.pool_id());
+
+        let result = TensorHandle::from_owned(tensor, Arc::clone(&pool_b));
+        assert!(
+            result.is_err(),
+            "from_owned with mismatched pool_id must return Err"
+        );
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                crate::error::HorusError::InvalidDescriptor(_)
+            ),
+            "error must be InvalidDescriptor"
+        );
+
+        // Release the slot from the correct pool to avoid a leak.
+        pool_a.release(&tensor);
+
+        std::fs::remove_file(pool_a.shm_path()).ok();
+        std::fs::remove_file(pool_b.shm_path()).ok();
+    }
+
+    /// Debug-mode panic test: from_owned with mismatched pool panics via debug_assert.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "does not match pool.pool_id")]
+    fn test_from_owned_mismatched_pool_panics_in_debug() {
+        let pool_a = create_test_pool();
+        let pool_b = create_test_pool();
+
+        let tensor = pool_a
+            .alloc(&[8], TensorDtype::U8, Device::cpu())
+            .expect("alloc failed");
+
+        assert_ne!(pool_a.pool_id(), pool_b.pool_id());
+
+        // This must panic (debug_assert fires before the Err return).
+        let _ = TensorHandle::from_owned(tensor, Arc::clone(&pool_b));
     }
 }

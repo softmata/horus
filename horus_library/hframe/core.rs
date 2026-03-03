@@ -4,7 +4,7 @@
 //! all frame transforms and handles chain resolution.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::RwLock;
 
 use super::transform::Transform;
@@ -41,11 +41,33 @@ pub struct HFrameCore {
 
     /// Configuration
     config: HFrameConfig,
+
+    /// Global generation counter for atomic cache invalidation.
+    ///
+    /// Incremented (with `Release` ordering) after every topology change
+    /// (frame add/remove) and every transform write.  Cache entries store the
+    /// generation at which they were computed; `get_or_compute_chain` loads
+    /// the counter with `Acquire` ordering and rejects any entry whose stored
+    /// generation does not match.
+    ///
+    /// The Release/Acquire pair creates a happens-before edge: if a reader
+    /// observes generation N it is guaranteed to see the topology and
+    /// transform data that was visible when generation N was established.
+    /// This eliminates the window that existed with per-frame invalidation,
+    /// where a concurrent reader could see a new transform but still hold
+    /// a cached chain that pre-dated the topology change that produced it.
+    global_generation: AtomicU64,
 }
 
-/// LRU cache for transform chains
+/// LRU cache for transform chains.
+///
+/// Each entry stores the global generation at which the chain was computed.
+/// A reader that observes a different global generation must treat the entry
+/// as stale and recompute — this ensures the chain is always consistent with
+/// the transform and topology data visible at the reader's generation.
 struct ChainCache {
-    entries: HashMap<(FrameId, FrameId), Vec<FrameId>>,
+    /// `(src, dst)  →  (generation_when_cached, chain_frame_ids)`
+    entries: HashMap<(FrameId, FrameId), (u64, Vec<FrameId>)>,
     order: Vec<(FrameId, FrameId)>,
     max_size: usize,
 }
@@ -59,11 +81,12 @@ impl ChainCache {
         }
     }
 
-    fn get(&self, src: FrameId, dst: FrameId) -> Option<&Vec<FrameId>> {
-        self.entries.get(&(src, dst))
+    /// Return `(generation, &chain)` for a cached entry, or `None` if absent.
+    fn get(&self, src: FrameId, dst: FrameId) -> Option<(u64, &Vec<FrameId>)> {
+        self.entries.get(&(src, dst)).map(|(gen, chain)| (*gen, chain))
     }
 
-    fn insert(&mut self, src: FrameId, dst: FrameId, chain: Vec<FrameId>) {
+    fn insert(&mut self, src: FrameId, dst: FrameId, generation: u64, chain: Vec<FrameId>) {
         let key = (src, dst);
 
         // Evict oldest if full
@@ -74,8 +97,10 @@ impl ChainCache {
             }
         }
 
-        self.entries.insert(key, chain);
-        self.order.push(key);
+        self.entries.insert(key, (generation, chain));
+        if !self.order.contains(&key) {
+            self.order.push(key);
+        }
     }
 
     fn invalidate(&mut self) {
@@ -104,6 +129,7 @@ impl HFrameCore {
             dynamic_count: AtomicUsize::new(0),
             chain_cache: RwLock::new(ChainCache::new(config.chain_cache_size)),
             config: config.clone(),
+            global_generation: AtomicU64::new(0),
         }
     }
 
@@ -125,8 +151,11 @@ impl HFrameCore {
                 children[parent as usize].push(id);
             }
 
-            // Invalidate cache
-            self.chain_cache.write().unwrap().invalidate();
+            // Bump generation: atomically invalidates all cached chains.
+            // The Release ordering synchronizes with Acquire loads in
+            // get_or_compute_chain — any reader that sees gen+1 is
+            // guaranteed to also see the parent store above.
+            self.global_generation.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -144,8 +173,8 @@ impl HFrameCore {
                 children[parent as usize].push(id);
             }
 
-            // Invalidate cache
-            self.chain_cache.write().unwrap().invalidate();
+            // Bump generation (see init_dynamic for the ordering rationale).
+            self.global_generation.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -171,8 +200,8 @@ impl HFrameCore {
                 children[old_parent as usize].retain(|&child| child != id);
             }
 
-            // Invalidate cache
-            self.chain_cache.write().unwrap().invalidate();
+            // Bump generation (see init_dynamic for the ordering rationale).
+            self.global_generation.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -192,6 +221,9 @@ impl HFrameCore {
         }
         self.static_count.store(0, Ordering::Relaxed);
         self.dynamic_count.store(0, Ordering::Relaxed);
+        // Bump generation AND clear the cache map (reset_all is a full tear-down;
+        // there is no point keeping entries in memory).
+        self.global_generation.fetch_add(1, Ordering::Release);
         self.chain_cache.write().unwrap().invalidate();
     }
 
@@ -266,20 +298,29 @@ impl HFrameCore {
     // Transform Updates
     // ========================================================================
 
-    /// Update a frame's transform
+    /// Update a frame's transform.
+    ///
+    /// After writing the transform, the global generation is incremented with
+    /// `Release` ordering.  Any reader that subsequently loads the generation
+    /// with `Acquire` is guaranteed to observe the new transform value and
+    /// will not serve a cached chain that pre-dates this write.
     #[inline]
     pub fn update(&self, id: FrameId, transform: &Transform, timestamp_ns: u64) {
         let idx = id as usize;
         if idx < self.slots.len() {
             self.slots[idx].update(transform, timestamp_ns);
+            // Increment AFTER the slot write so the Release fence publishes
+            // the transform to any thread that Acquires on global_generation.
+            self.global_generation.fetch_add(1, Ordering::Release);
         }
     }
 
-    /// Set a static transform
+    /// Set a static transform (see `update` for ordering rationale).
     pub fn set_static_transform(&self, id: FrameId, transform: &Transform) {
         let idx = id as usize;
         if idx < self.slots.len() {
             self.slots[idx].set_static_transform(transform);
+            self.global_generation.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -364,23 +405,45 @@ impl HFrameCore {
     // Internal
     // ========================================================================
 
-    /// Get chain from cache or compute it
+    /// Get chain from cache or compute it.
+    ///
+    /// Loads the global generation with `Acquire` ordering before consulting
+    /// the cache.  An entry is only valid when its stored generation equals
+    /// the current global generation — any intervening topology change or
+    /// transform write will have bumped the counter, causing a cache miss
+    /// and a fresh chain computation.
+    ///
+    /// This eliminates the race window that existed with the old per-frame
+    /// `invalidate()` approach: the Release/Acquire pairing on the generation
+    /// counter guarantees that a reader observing generation N sees exactly
+    /// the state (parents + transforms) that was visible when generation N
+    /// was established.
     fn get_or_compute_chain(&self, src: FrameId, dst: FrameId) -> Option<Vec<FrameId>> {
-        // Try cache first
+        // Acquire load: synchronizes with all preceding Release stores in
+        // update(), set_static_transform(), init_dynamic(), init_static(), and
+        // reset_slot().
+        let gen = self.global_generation.load(Ordering::Acquire);
+
+        // Cache hit: valid only when the stored generation matches.
         {
             let cache = self.chain_cache.read().unwrap();
-            if let Some(chain) = cache.get(src, dst) {
-                return Some(chain.clone());
+            if let Some((cached_gen, chain)) = cache.get(src, dst) {
+                if cached_gen == gen {
+                    return Some(chain.clone());
+                }
+                // cached_gen != gen → stale entry; fall through to recompute.
             }
         }
 
-        // Compute chain
+        // Compute the chain using the topology visible at `gen`.
         let chain = self.compute_chain(src, dst)?;
 
-        // Cache it
+        // Store with the generation we read at the top of this call.  If
+        // another writer bumped the generation concurrently, the next reader
+        // will see a mismatch and recompute — that is safe and correct.
         {
             let mut cache = self.chain_cache.write().unwrap();
-            cache.insert(src, dst, chain.clone());
+            cache.insert(src, dst, gen, chain.clone());
         }
 
         Some(chain)
@@ -679,5 +742,110 @@ mod tests {
         core.init_dynamic(2, 1);
 
         assert!(core.validate().is_ok());
+    }
+
+    /// A concurrent writer updating a parent frame's transform and a reader
+    /// querying the child chain must always observe a consistent result.
+    ///
+    /// With the old per-frame `invalidate()` approach a reader could see the
+    /// new transform but use a cached chain that pre-dated the topology change.
+    /// The generation-based approach makes this impossible: the reader either
+    /// sees generation N (old state) or N+1 (new state) — never a mix.
+    #[test]
+    fn test_generation_cache_invalidation_concurrent() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let core = Arc::new(make_core());
+
+        // world(0) → base(1) → camera(2)
+        core.init_static(0, NO_PARENT);
+        core.init_dynamic(1, 0);
+        core.init_dynamic(2, 1);
+        // Give camera a fixed transform so resolve(2,0) can always succeed.
+        core.update(2, &Transform::from_translation([0.0, 0.0, 0.5]), 0);
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Writer: repeatedly updates base_link transform with increasing X translation.
+        let core_w = Arc::clone(&core);
+        let barrier_w = Arc::clone(&barrier);
+        let writer = thread::spawn(move || {
+            barrier_w.wait();
+            for i in 0..1000u64 {
+                let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
+                core_w.update(1, &tf, i * 1000);
+            }
+        });
+
+        // Reader: repeatedly resolves the camera → world chain.
+        // Must never panic and must always find a connected path.
+        let core_r = Arc::clone(&core);
+        let barrier_r = Arc::clone(&barrier);
+        let reader = thread::spawn(move || {
+            barrier_r.wait();
+            for _ in 0..1000 {
+                // chain must always include all three frames — never a
+                // partial or stale topology path.
+                if let Some(chain) = core_r.frame_chain(2, 0) {
+                    assert!(
+                        chain.contains(&0) && chain.contains(&1) && chain.contains(&2),
+                        "chain must span world→base→camera: {:?}",
+                        chain
+                    );
+                }
+            }
+        });
+
+        writer.join().expect("writer thread must not panic");
+        reader.join().expect("reader thread must not panic");
+
+        // After all writes settle, the final resolved base→world transform
+        // must match the last written value (i = 999 → X = 999.0).
+        let tf = core.resolve(1, 0).expect("resolve(base→world) must succeed after all writes");
+        assert!(
+            (tf.translation[0] - 999.0).abs() < 1e-4,
+            "final X translation must be 999.0, got {}",
+            tf.translation[0]
+        );
+    }
+
+    /// get_loss_count equivalent for HFrame: verify generation increments on
+    /// each update and that a stale cache entry is rejected.
+    #[test]
+    fn test_generation_increments_on_update() {
+        let core = make_core();
+
+        core.init_static(0, NO_PARENT);
+        core.init_dynamic(1, 0);
+
+        let gen_before = core.global_generation.load(Ordering::Acquire);
+        core.update(1, &Transform::from_translation([1.0, 0.0, 0.0]), 1000);
+        let gen_after = core.global_generation.load(Ordering::Acquire);
+
+        assert!(
+            gen_after > gen_before,
+            "generation must increment after update(); before={}, after={}",
+            gen_before,
+            gen_after
+        );
+    }
+
+    /// A topology change (new frame) bumps the generation.
+    #[test]
+    fn test_generation_increments_on_topology_change() {
+        let core = make_core();
+        core.init_static(0, NO_PARENT);
+
+        let gen_before = core.global_generation.load(Ordering::Acquire);
+        core.init_dynamic(1, 0);
+        let gen_after = core.global_generation.load(Ordering::Acquire);
+
+        assert!(
+            gen_after > gen_before,
+            "generation must increment after init_dynamic(); before={}, after={}",
+            gen_before,
+            gen_after
+        );
     }
 }

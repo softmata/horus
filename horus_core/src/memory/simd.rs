@@ -175,12 +175,31 @@ unsafe fn simd_copy_to_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
     let dst_addr = dst_ptr as usize;
     let unaligned_prefix = (SIMD_ALIGNMENT - (dst_addr % SIMD_ALIGNMENT)) % SIMD_ALIGNMENT;
 
-    if unaligned_prefix > 0 && unaligned_prefix <= remaining {
+    // If the prefix bytes needed for alignment exceed the remaining length, we
+    // cannot bring dst into alignment within this buffer.  Fall back to scalar
+    // copy for the entire buffer rather than issuing a misaligned
+    // _mm256_stream_si256, which requires 32-byte alignment and causes SIGBUS
+    // or silent data corruption when that invariant is violated.
+    if unaligned_prefix > remaining {
+        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
+        return;
+    }
+
+    if unaligned_prefix > 0 {
         std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, unaligned_prefix);
         src_ptr = src_ptr.add(unaligned_prefix);
         dst_ptr = dst_ptr.add(unaligned_prefix);
         remaining -= unaligned_prefix;
     }
+
+    // Invariant: dst_ptr is now 32-byte aligned (or remaining == 0).
+    // In release builds the prefix logic above guarantees this; the assert
+    // catches violations in debug builds (e.g. misaligned test allocations).
+    debug_assert_eq!(
+        (dst_ptr as usize) % SIMD_ALIGNMENT,
+        0,
+        "SIMD dst must be 32-byte aligned before streaming stores"
+    );
 
     // Main SIMD loop: 256 bits (32 bytes) per iteration
     // Process 4 vectors (128 bytes) per loop for better instruction-level parallelism
@@ -237,16 +256,29 @@ unsafe fn simd_copy_from_shm_avx2(src: *const u8, dst: *mut u8, len: usize) {
     let mut dst_ptr = dst;
     let mut remaining = len;
 
-    // Handle unaligned prefix
+    // Handle unaligned prefix (bring dst to 32-byte alignment)
     let dst_addr = dst_ptr as usize;
     let unaligned_prefix = (SIMD_ALIGNMENT - (dst_addr % SIMD_ALIGNMENT)) % SIMD_ALIGNMENT;
 
-    if unaligned_prefix > 0 && unaligned_prefix <= remaining {
+    // Fall back to scalar if we can't align within the remaining buffer.
+    if unaligned_prefix > remaining {
+        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, remaining);
+        return;
+    }
+
+    if unaligned_prefix > 0 {
         std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, unaligned_prefix);
         src_ptr = src_ptr.add(unaligned_prefix);
         dst_ptr = dst_ptr.add(unaligned_prefix);
         remaining -= unaligned_prefix;
     }
+
+    // Invariant: dst_ptr is now 32-byte aligned (or remaining == 0).
+    debug_assert_eq!(
+        (dst_ptr as usize) % SIMD_ALIGNMENT,
+        0,
+        "SIMD dst must be 32-byte aligned after prefix copy"
+    );
 
     const VECTOR_SIZE: usize = 32;
     const UNROLL_FACTOR: usize = 4;
@@ -407,5 +439,53 @@ mod tests {
         }
 
         assert_eq!(src, dst);
+    }
+
+    /// Verify that simd_copy_to_shm and simd_copy_from_shm produce correct output
+    /// for every possible unaligned offset 0..32 into the destination buffer.
+    ///
+    /// This exercises the unaligned-prefix logic in the AVX2 path (when AVX2 is
+    /// available) and confirms that the debug_assert alignment invariant holds.
+    /// A buffer of 8 KiB ensures the SIMD threshold is exceeded for all offsets.
+    #[test]
+    fn test_simd_copy_all_dst_offsets() {
+        const BUF_SIZE: usize = 8 * 1024;
+        // Over-allocate so we can start at offsets 0..32 and still copy BUF_SIZE bytes.
+        const EXTRA: usize = 32;
+        let src: Vec<u8> = (0..BUF_SIZE).map(|i| (i % 251) as u8).collect();
+
+        for offset in 0..32usize {
+            // dst_storage is aligned to at least 8 bytes by Vec; starting at
+            // `offset` gives us every alignment 0..31 relative to 32.
+            let mut dst_storage = vec![0u8; BUF_SIZE + EXTRA];
+            let dst_ptr = unsafe { dst_storage.as_mut_ptr().add(offset) };
+
+            // SAFETY: src is BUF_SIZE bytes; dst_ptr points into dst_storage with
+            // BUF_SIZE bytes available from `offset`; regions don't overlap.
+            unsafe {
+                simd_copy_to_shm(src.as_ptr(), dst_ptr, BUF_SIZE);
+            }
+
+            assert_eq!(
+                &src[..],
+                &dst_storage[offset..offset + BUF_SIZE],
+                "simd_copy_to_shm wrong at dst offset {}",
+                offset,
+            );
+
+            // Reset and test simd_copy_from_shm with the same offset.
+            let mut dst_storage2 = vec![0u8; BUF_SIZE + EXTRA];
+            let dst_ptr2 = unsafe { dst_storage2.as_mut_ptr().add(offset) };
+            unsafe {
+                simd_copy_from_shm(src.as_ptr(), dst_ptr2, BUF_SIZE);
+            }
+
+            assert_eq!(
+                &src[..],
+                &dst_storage2[offset..offset + BUF_SIZE],
+                "simd_copy_from_shm wrong at dst offset {}",
+                offset,
+            );
+        }
     }
 }

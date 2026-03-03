@@ -123,6 +123,25 @@ impl PyBoundingBox2D {
 // Detection
 // ============================================
 
+/// Byte size of the serialized `Detection` wire format.
+///
+/// Layout (all little-endian):
+/// ```text
+///  0.. 4  bbox.x        (f32)
+///  4.. 8  bbox.y        (f32)
+///  8..12  bbox.width    (f32)
+/// 12..16  bbox.height   (f32)
+/// 16..20  confidence    (f32)
+/// 20..24  class_id      (u32)
+/// 24..56  class_name    (32 bytes, null-padded UTF-8)
+/// 56..60  instance_id   (u32)
+/// 60..72  padding       (12 bytes, reserved)
+/// ```
+///
+/// Any change to `Detection`'s fields must update this constant and the
+/// `to_bytes` / `from_bytes` implementations together.
+const DETECTION_BYTE_SIZE: usize = 72;
+
 /// 2D object detection result
 #[pyclass(name = "Detection")]
 #[derive(Debug, Clone)]
@@ -207,57 +226,112 @@ impl PyDetection {
         self.confidence >= threshold
     }
 
-    /// Convert to bytes for IPC transmission
+    /// Convert to bytes for IPC transmission.
+    ///
+    /// Produces exactly `DETECTION_BYTE_SIZE` bytes in the documented layout.
     fn to_bytes(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        // Create 72-byte Detection struct
-        let mut bytes = vec![0u8; 72];
+        use std::io::{Cursor, Write};
 
-        // BoundingBox2D (16 bytes)
-        bytes[0..4].copy_from_slice(&self.bbox.x.to_le_bytes());
-        bytes[4..8].copy_from_slice(&self.bbox.y.to_le_bytes());
-        bytes[8..12].copy_from_slice(&self.bbox.width.to_le_bytes());
-        bytes[12..16].copy_from_slice(&self.bbox.height.to_le_bytes());
+        let mut bytes = vec![0u8; DETECTION_BYTE_SIZE];
+        debug_assert_eq!(
+            bytes.len(),
+            DETECTION_BYTE_SIZE,
+            "to_bytes buffer must be exactly DETECTION_BYTE_SIZE bytes"
+        );
 
-        // confidence (4 bytes)
-        bytes[16..20].copy_from_slice(&self.confidence.to_le_bytes());
+        let mut cur = Cursor::new(&mut bytes[..]);
 
-        // class_id (4 bytes)
-        bytes[20..24].copy_from_slice(&self.class_id.to_le_bytes());
+        // BoundingBox2D (16 bytes): x, y, width, height (f32 LE each)
+        cur.write_all(&self.bbox.x.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        cur.write_all(&self.bbox.y.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        cur.write_all(&self.bbox.width.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        cur.write_all(&self.bbox.height.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
 
-        // class_name (32 bytes, null-padded)
+        // confidence (4 bytes, f32 LE)
+        cur.write_all(&self.confidence.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        // class_id (4 bytes, u32 LE)
+        cur.write_all(&self.class_id.to_le_bytes())
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        // class_name: 32 bytes, null-padded UTF-8; truncated to 31 chars to
+        // leave room for the NUL terminator.
         let name_bytes = self.class_name.as_bytes();
         let len = name_bytes.len().min(31);
-        bytes[24..24 + len].copy_from_slice(&name_bytes[..len]);
+        cur.write_all(&name_bytes[..len])
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        // Advance cursor past the rest of the name field (already zeroed).
+        let pos = cur.position() as usize;
+        drop(cur);
+        // Zero-pad: the vec was initialised to all-zeros, so we just need to
+        // set the cursor to skip past the name region.
+        let _ = pos; // cursor dropped; name region beyond `len` is already 0.
 
-        // instance_id (4 bytes)
+        // instance_id (4 bytes, u32 LE) at offset 56.
         bytes[56..60].copy_from_slice(&self.instance_id.to_le_bytes());
+        // padding bytes[60..72] are already zero.
 
-        // padding (12 bytes) - already zero
-
+        debug_assert_eq!(bytes.len(), DETECTION_BYTE_SIZE);
         Ok(PyBytes::new(py, &bytes).into())
     }
 
-    /// Create from bytes (IPC deserialization)
+    /// Create from bytes (IPC deserialization).
+    ///
+    /// Requires exactly `DETECTION_BYTE_SIZE` bytes.  Both too-short and
+    /// too-long buffers are rejected to catch format version mismatches early.
     #[staticmethod]
     fn from_bytes(data: &[u8]) -> PyResult<Self> {
-        if data.len() < 72 {
+        if data.len() != DETECTION_BYTE_SIZE {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Detection requires 72 bytes, got {}",
+                "Detection requires exactly {} bytes, got {}",
+                DETECTION_BYTE_SIZE,
                 data.len()
             )));
         }
 
-        let x = f32::from_le_bytes(data[0..4].try_into().unwrap());
-        let y = f32::from_le_bytes(data[4..8].try_into().unwrap());
-        let width = f32::from_le_bytes(data[8..12].try_into().unwrap());
-        let height = f32::from_le_bytes(data[12..16].try_into().unwrap());
-        let confidence = f32::from_le_bytes(data[16..20].try_into().unwrap());
-        let class_id = u32::from_le_bytes(data[20..24].try_into().unwrap());
+        // Use a cursor so reads are sequential and bounds-checked by the Read
+        // trait implementation — no manual index arithmetic.
+        use std::io::{Cursor, Read};
 
-        let name_end = data[24..56].iter().position(|&b| b == 0).unwrap_or(32);
-        let class_name = String::from_utf8_lossy(&data[24..24 + name_end]).to_string();
+        let mut cur = Cursor::new(data);
 
-        let instance_id = u32::from_le_bytes(data[56..60].try_into().unwrap());
+        let mut buf4 = [0u8; 4];
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let x = f32::from_le_bytes(buf4);
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let y = f32::from_le_bytes(buf4);
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let width = f32::from_le_bytes(buf4);
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let height = f32::from_le_bytes(buf4);
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let confidence = f32::from_le_bytes(buf4);
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let class_id = u32::from_le_bytes(buf4);
+
+        // class_name: 32-byte null-padded field.
+        let mut name_buf = [0u8; 32];
+        cur.read_exact(&mut name_buf).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
+        let class_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
+
+        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let instance_id = u32::from_le_bytes(buf4);
+
+        // Remaining 12 bytes are padding — cursor position is at 60, data ends
+        // at 72.  We do not read the padding; the length check above ensures
+        // the buffer is exactly the right size.
 
         Ok(Self {
             bbox: PyBoundingBox2D::new(x, y, width, height),
@@ -1002,4 +1076,105 @@ pub fn register_perception_module(parent: &Bound<'_, PyModule>) -> PyResult<()> 
     parent.add_submodule(&perception)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod detection_serialization_tests {
+    use super::*;
+
+    /// Helper: build the raw 72-byte wire buffer for a Detection without a
+    /// Python runtime (mirrors the logic in `to_bytes` but returns `Vec<u8>`).
+    fn encode(d: &PyDetection) -> Vec<u8> {
+        let mut bytes = vec![0u8; DETECTION_BYTE_SIZE];
+        bytes[0..4].copy_from_slice(&d.bbox.x.to_le_bytes());
+        bytes[4..8].copy_from_slice(&d.bbox.y.to_le_bytes());
+        bytes[8..12].copy_from_slice(&d.bbox.width.to_le_bytes());
+        bytes[12..16].copy_from_slice(&d.bbox.height.to_le_bytes());
+        bytes[16..20].copy_from_slice(&d.confidence.to_le_bytes());
+        bytes[20..24].copy_from_slice(&d.class_id.to_le_bytes());
+        let name = d.class_name.as_bytes();
+        let len = name.len().min(31);
+        bytes[24..24 + len].copy_from_slice(&name[..len]);
+        bytes[56..60].copy_from_slice(&d.instance_id.to_le_bytes());
+        bytes
+    }
+
+    /// Round-trip test: encode → decode → verify all fields match.
+    #[test]
+    fn test_detection_round_trip() {
+        let original = PyDetection {
+            bbox: PyBoundingBox2D::new(10.0, 20.0, 100.0, 50.0),
+            confidence: 0.95,
+            class_id: 3,
+            class_name: "person".to_string(),
+            instance_id: 42,
+        };
+
+        let bytes = encode(&original);
+        assert_eq!(bytes.len(), DETECTION_BYTE_SIZE);
+
+        let decoded = PyDetection::from_bytes(&bytes).expect("from_bytes failed");
+
+        assert_eq!((decoded.bbox.x - original.bbox.x).abs() < 1e-6, true);
+        assert_eq!((decoded.bbox.y - original.bbox.y).abs() < 1e-6, true);
+        assert_eq!((decoded.bbox.width - original.bbox.width).abs() < 1e-6, true);
+        assert_eq!((decoded.bbox.height - original.bbox.height).abs() < 1e-6, true);
+        assert_eq!((decoded.confidence - original.confidence).abs() < 1e-6, true);
+        assert_eq!(decoded.class_id, original.class_id);
+        assert_eq!(decoded.class_name, original.class_name);
+        assert_eq!(decoded.instance_id, original.instance_id);
+    }
+
+    /// Edge case: zero bounding box and NaN confidence round-trips as NaN.
+    #[test]
+    fn test_detection_round_trip_nan_confidence() {
+        let original = PyDetection {
+            bbox: PyBoundingBox2D::new(0.0, 0.0, 0.0, 0.0),
+            confidence: f32::NAN,
+            class_id: 0,
+            class_name: String::new(),
+            instance_id: 0,
+        };
+
+        let bytes = encode(&original);
+        let decoded = PyDetection::from_bytes(&bytes).expect("from_bytes failed");
+
+        assert!(decoded.confidence.is_nan(), "NaN confidence must survive round-trip");
+        assert_eq!(decoded.class_name, "");
+        assert_eq!(decoded.class_id, 0);
+        assert_eq!(decoded.instance_id, 0);
+    }
+
+    /// class_name longer than 31 bytes must be silently truncated.
+    #[test]
+    fn test_detection_long_class_name_truncated() {
+        let long_name = "a".repeat(40);
+        let original = PyDetection {
+            bbox: PyBoundingBox2D::new(0.0, 0.0, 1.0, 1.0),
+            confidence: 1.0,
+            class_id: 1,
+            class_name: long_name,
+            instance_id: 0,
+        };
+
+        let bytes = encode(&original);
+        assert_eq!(bytes.len(), DETECTION_BYTE_SIZE);
+        let decoded = PyDetection::from_bytes(&bytes).expect("from_bytes failed");
+        // Truncated to 31 bytes (null terminator takes the 32nd).
+        assert_eq!(decoded.class_name.len(), 31);
+    }
+
+    /// from_bytes must reject buffers shorter than DETECTION_BYTE_SIZE.
+    #[test]
+    fn test_from_bytes_rejects_short_buffer() {
+        let short = vec![0u8; DETECTION_BYTE_SIZE - 1];
+        assert!(PyDetection::from_bytes(&short).is_err());
+    }
+
+    /// from_bytes must reject buffers longer than DETECTION_BYTE_SIZE.
+    #[test]
+    fn test_from_bytes_rejects_long_buffer() {
+        let long = vec![0u8; DETECTION_BYTE_SIZE + 1];
+        assert!(PyDetection::from_bytes(&long).is_err());
+    }
 }

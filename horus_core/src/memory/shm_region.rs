@@ -16,6 +16,8 @@ use crate::memory::platform::shm_topics_dir;
 use memmap2::{MmapMut, MmapOptions};
 #[cfg(target_os = "linux")]
 use std::fs::{File, OpenOptions};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
 /// Cross-platform shared memory region for high-performance IPC
 ///
@@ -60,7 +62,12 @@ impl ShmRegion {
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
         // Use flat namespace - all topics in same directory (ROS-like simplicity)
         let horus_shm_dir = shm_topics_dir();
-        std::fs::create_dir_all(&horus_shm_dir)?;
+        // Mode 0o700: only the owner can list or access the SHM directory.
+        // Other local users must not be able to enumerate running nodes/topics.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&horus_shm_dir)?;
 
         // Topic names use dot notation (e.g., "motors.cmd_vel") - no conversion needed
         // Names can also contain "/" for namespacing (e.g., "links/sensor_test")
@@ -68,25 +75,39 @@ impl ShmRegion {
 
         // Create parent directory if the name contains "/" (e.g., "links/sensor_test")
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
         }
 
-        let (file, is_owner) = if path.exists() {
-            let file = OpenOptions::new().read(true).write(true).open(&path)?;
-            let metadata = file.metadata()?;
-            if metadata.len() < size as u64 {
+        // Atomically try to be the creator: `create_new` maps to O_CREAT|O_EXCL,
+        // guaranteeing exactly one winner even when many threads race simultaneously.
+        // The previous path.exists() + create(true) pattern had a TOCTOU window
+        // where all racing threads could see the file absent and all become "owner".
+        // Mode 0o600: owner read/write only — no world-readable SHM files.
+        let (file, is_owner) = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => {
+                // We created the file — set its size and become the owner.
                 file.set_len(size as u64)?;
+                (file, true)
             }
-            (file, false)
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&path)?;
-            file.set_len(size as u64)?;
-            (file, true)
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another thread/process created it first — open normally.
+                let file = OpenOptions::new().read(true).write(true).open(&path)?;
+                let metadata = file.metadata()?;
+                if metadata.len() < size as u64 {
+                    file.set_len(size as u64)?;
+                }
+                (file, false)
+            }
+            Err(e) => return Err(e.into()),
         };
 
         // SAFETY: file is a valid open file with sufficient size set above; len(size) matches the file size
@@ -125,14 +146,62 @@ impl Drop for ShmRegion {
 // Much faster than /tmp file-based approach
 // ============================================================================
 
+/// Poll the size of an open SHM fd via `fstat`.  Returns the file size
+/// in bytes, or -1 on fstat failure.
+#[cfg(target_os = "macos")]
+fn fstat_size(fd: i32) -> libc::off_t {
+    // SAFETY: zeroed libc::stat is a valid all-zero value for the POD struct.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fd is a valid open file descriptor owned by the caller.
+    if unsafe { libc::fstat(fd, &mut st) } == 0 {
+        st.st_size
+    } else {
+        -1
+    }
+}
+
+/// Wait for a non-owner SHM fd to reach the expected size.
+///
+/// There is a partial-initialization window between the owner calling
+/// `shm_open(O_CREAT)` and the subsequent `ftruncate()`.  A non-owner
+/// that opens the object in this window sees `st_size == 0` and must
+/// not call `mmap()` yet — doing so either fails or maps nothing.
+///
+/// This function retries with exponential backoff (1 ms base, up to
+/// `SHM_INIT_MAX_RETRIES` attempts) before giving up.
+///
+/// Returns `Ok(())` when the object has been fully sized, or `Err(())`
+/// if the owner appears to have crashed before completing initialization.
+#[cfg(target_os = "macos")]
+fn wait_for_shm_init(fd: i32, expected_size: usize) -> Result<(), ()> {
+    const SHM_INIT_MAX_RETRIES: u32 = 10;
+
+    for retry in 0..SHM_INIT_MAX_RETRIES {
+        if fstat_size(fd) >= expected_size as libc::off_t {
+            return Ok(());
+        }
+        // Exponential backoff: 1, 2, 4, 8, 16, 32, 64 ms (capped).
+        let delay_ms = 1u64 << retry.min(6);
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+    }
+
+    Err(())
+}
+
 #[cfg(target_os = "macos")]
 impl ShmRegion {
     /// Create or open a shared memory region using shm_open (RAM-backed)
     pub fn new(name: &str, size: usize) -> HorusResult<Self> {
         use std::ffi::CString;
 
-        // Use flat namespace - all topics share same prefix (ROS-like simplicity)
-        let shm_name = format!("/horus_{}", name);
+        // Include SHM namespace so multiple HORUS instances can coexist on the
+        // same machine without shm_open name collisions.  The namespace is
+        // always non-empty (auto-generated from PGID+UID when no env var is set).
+        let shm_name = format!(
+            "/horus_{}_{}",
+            crate::memory::platform::shm_namespace(),
+            name
+        );
         let c_name = CString::new(shm_name.clone()).map_err(|e| {
             HorusError::Memory(format!(
                 "Invalid shm name '{}': topic names cannot contain null bytes: {}",
@@ -142,11 +211,71 @@ impl ShmRegion {
 
         // Try to open existing first
         // SAFETY: c_name is a valid null-terminated CString; flags are valid POSIX constants
-        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
 
         let (fd, is_owner) = if fd >= 0 {
-            // Opened existing
-            (fd, false)
+            // Opened existing — verify size before mmap.
+            //
+            // The SHM object may have just been created by another process
+            // that hasn't called ftruncate() yet (size == 0). mmapping a
+            // zero-size object either fails or maps nothing, causing a crash.
+            // Retry with exponential backoff; if still wrong after all retries,
+            // the creator crashed mid-setup — reclaim the zombie object.
+            if wait_for_shm_init(fd, size).is_ok() {
+                (fd, false)
+            } else {
+                // Zombie: creator died between shm_open(O_CREAT) and ftruncate.
+                // Reclaim: close fd, unlink the object, then re-create.
+                // SAFETY: fd is a valid open file descriptor
+                unsafe { libc::close(fd) };
+                // SAFETY: c_name is a valid null-terminated CString
+                unsafe { libc::shm_unlink(c_name.as_ptr()) };
+
+                // Now try to become the new owner.
+                // SAFETY: O_CREAT|O_RDWR|O_EXCL are valid POSIX flags
+                let new_fd = unsafe {
+                    libc::shm_open(
+                        c_name.as_ptr(),
+                        libc::O_CREAT | libc::O_RDWR | libc::O_EXCL,
+                        0o600,
+                    )
+                };
+                if new_fd >= 0 {
+                    // Won the re-create race — set the size.
+                    // SAFETY: new_fd is a valid open file descriptor
+                    if unsafe { libc::ftruncate(new_fd, size as libc::off_t) } != 0 {
+                        unsafe { libc::close(new_fd) };
+                        unsafe { libc::shm_unlink(c_name.as_ptr()) };
+                        return Err(HorusError::Memory(format!(
+                            "Failed to set shm '{}' to {} bytes after zombie reclaim: {}",
+                            shm_name,
+                            size,
+                            std::io::Error::last_os_error()
+                        )));
+                    }
+                    (new_fd, true)
+                } else {
+                    // Lost the re-create race to yet another process — open their copy.
+                    // SAFETY: c_name is a valid null-terminated CString
+                    let retry_fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
+                    if retry_fd < 0 {
+                        return Err(HorusError::Memory(format!(
+                            "Failed to open/create shm '{}' after zombie cleanup: {}",
+                            shm_name,
+                            std::io::Error::last_os_error()
+                        )));
+                    }
+                    // The new owner is responsible for sizing; wait for it.
+                    if wait_for_shm_init(retry_fd, size).is_err() {
+                        unsafe { libc::close(retry_fd) };
+                        return Err(HorusError::Memory(format!(
+                            "shm '{}' not fully initialized after all retries",
+                            shm_name
+                        )));
+                    }
+                    (retry_fd, false)
+                }
+            }
         } else {
             // Create new
             // SAFETY: c_name is a valid null-terminated CString; O_CREAT|O_RDWR|O_EXCL are valid POSIX flags
@@ -154,18 +283,29 @@ impl ShmRegion {
                 libc::shm_open(
                     c_name.as_ptr(),
                     libc::O_CREAT | libc::O_RDWR | libc::O_EXCL,
-                    0o666,
+                    0o600,
                 )
             };
             if fd < 0 {
-                // Race condition: someone else created it, try opening again
+                // Race condition: someone else created it between our two shm_open calls.
+                // Open their copy and wait for them to finish ftruncate.
                 // SAFETY: c_name is still a valid null-terminated CString
-                let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o666) };
+                let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
                 if fd < 0 {
                     return Err(HorusError::Memory(format!(
                         "Failed to open/create shm '{}': {}",
                         shm_name,
                         std::io::Error::last_os_error()
+                    )));
+                }
+                // Wait for the winner to call ftruncate before we mmap.
+                if wait_for_shm_init(fd, size).is_err() {
+                    // SAFETY: fd is a valid open file descriptor
+                    unsafe { libc::close(fd) };
+                    return Err(HorusError::Memory(format!(
+                        "shm '{}' not fully initialized after all retries: \
+                         winner process may have crashed mid-setup",
+                        shm_name
                     )));
                 }
                 (fd, false)
@@ -427,6 +567,69 @@ mod tests {
         for i in 0..size {
             let val = unsafe { *ptr.add(i) };
             assert_eq!(val, 0, "Byte {} not zeroed", i);
+        }
+    }
+
+    /// Two threads race to create the same SHM region.  Both must end up
+    /// with a valid, fully-sized mapping — no crash, no mmap of a zero-size object.
+    #[test]
+    fn shm_concurrent_creation_race() {
+        use std::sync::{Arc, Barrier};
+
+        let name = unique_name("test_concurrent_create");
+        let size = 4096;
+        let n_threads = 4;
+
+        // Synchronize all threads to start simultaneously, maximizing the race window.
+        let barrier = Arc::new(Barrier::new(n_threads));
+
+        let results: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let b = barrier.clone();
+                let n = name.clone();
+                std::thread::spawn(move || {
+                    b.wait(); // all threads start at the same time
+                    ShmRegion::new(&n, size)
+                })
+            })
+            .collect();
+
+        let outcomes: Vec<_> = results
+            .into_iter()
+            .map(|h| h.join().expect("thread panicked"))
+            .collect();
+
+        // Every thread must have succeeded.
+        let (successes, failures): (Vec<_>, Vec<_>) = outcomes.iter().partition(|r| r.is_ok());
+        assert_eq!(
+            failures.len(),
+            0,
+            "{}/{} threads failed to create/open SHM; errors: {:?}",
+            failures.len(),
+            n_threads,
+            failures
+        );
+
+        // Exactly one thread must be the owner.
+        let owner_count = successes
+            .iter()
+            .filter(|r| r.as_ref().unwrap().is_owner())
+            .count();
+        assert_eq!(
+            owner_count, 1,
+            "expected exactly 1 owner thread, got {}",
+            owner_count
+        );
+
+        // All regions must be the correct size and accessible.
+        for region in successes.iter().map(|r| r.as_ref().unwrap()) {
+            let ptr = region.as_ptr();
+            // Write and read-back a single byte to confirm the mapping is live.
+            unsafe {
+                let p = ptr as *mut u8;
+                *p = 0xAB;
+                assert_eq!(*p, 0xAB, "mapped region is not readable/writable");
+            }
         }
     }
 

@@ -179,6 +179,13 @@ pub fn make_dlpack_capsule(
 /// Per DLPack spec: if capsule name is still "dltensor" at destruction time,
 /// the consumer never claimed it, so we must call the deleter.
 ///
+/// # Double-free safety
+///
+/// Python's GC can invoke a PyCapsule destructor more than once in certain
+/// reference-cycle scenarios.  To prevent a double-free we **null the capsule
+/// pointer before calling the deleter** (via `PyCapsule_SetPointer`).  Any
+/// subsequent invocation finds a null pointer and returns immediately.
+///
 /// # Safety
 ///
 /// Called by Python's PyCapsule machinery. `capsule` must be a valid PyCapsule
@@ -195,6 +202,23 @@ pub unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyOb
         // SAFETY: capsule contains a DLManagedTensor pointer set by PyCapsule_New.
         let ptr = pyo3::ffi::PyCapsule_GetPointer(capsule, name_ptr);
         if !ptr.is_null() {
+            // ── Double-free prevention ────────────────────────────────────
+            // Attempt to null out the capsule pointer BEFORE calling the
+            // deleter.  If the GC triggers this destructor a second time
+            // (e.g. after a reference cycle is broken), the second call
+            // finds null and returns without touching freed memory.
+            //
+            // CPython's `PyCapsule_SetPointer` rejects NULL with a
+            // `ValueError` (it uses NULL as an internal sentinel).  We
+            // must therefore clear any exception it sets so that the error
+            // does not leak into the surrounding Python error state and
+            // corrupt the next Python operation.  We already captured `ptr`
+            // above, so cleanup proceeds regardless of whether the null-out
+            // succeeded.
+            if pyo3::ffi::PyCapsule_SetPointer(capsule, std::ptr::null_mut()) != 0 {
+                pyo3::ffi::PyErr_Clear();
+            }
+
             // SAFETY: ptr is the DLManagedTensor* we stored in the capsule.
             // Calling the deleter transfers ownership back and frees resources.
             let managed = ptr as *mut horus_core::dlpack::DLManagedTensor;

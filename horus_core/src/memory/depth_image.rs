@@ -9,7 +9,7 @@ use crate::types::{DepthImageDescriptor, Device, TensorDtype};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
-use crate::error::HorusResult;
+use crate::error::{HorusError, HorusResult};
 
 /// Depth image with zero-copy shared memory backing.
 ///
@@ -85,10 +85,17 @@ impl DepthImage {
     /// Set depth at pixel (x, y).
     ///
     /// For F32: value is in meters. For U16: converts from meters to raw units.
-    /// Returns `&mut Self` for method chaining.
-    pub fn set_depth(&mut self, x: u32, y: u32, value: f32) -> &mut Self {
+    /// Returns `Ok(&mut Self)` for method chaining on success.
+    ///
+    /// # Errors
+    ///
+    /// - [`HorusError::OutOfRange`] — for U16 images, if the converted
+    ///   millimeter value does not fit in `u16` (e.g., value > 65.535m at
+    ///   default scale 1.0). Callers must handle this instead of silently
+    ///   storing the saturated `u16::MAX`.
+    pub fn set_depth(&mut self, x: u32, y: u32, value: f32) -> HorusResult<&mut Self> {
         if x >= self.width() || y >= self.height() {
-            return self;
+            return Ok(self);
         }
         let idx = (y * self.width() + x) as usize;
 
@@ -100,14 +107,24 @@ impl DepthImage {
                 data[offset..offset + 4].copy_from_slice(&bytes);
             }
         } else if self.descriptor.is_millimeters() {
-            let mm = (value * 1000.0 / self.descriptor.depth_scale()) as u16;
+            // Convert meters → raw millimeter units, then range-check before cast.
+            // `as u16` would silently saturate; we must reject out-of-range values
+            // so callers can distinguish a valid 65535mm reading from an overflow.
+            let mm_f32 = value * 1000.0 / self.descriptor.depth_scale();
+            if !mm_f32.is_finite() || mm_f32 < 0.0 || mm_f32 > u16::MAX as f32 {
+                return Err(HorusError::OutOfRange(format!(
+                    "Depth {:.4}m maps to {:.1}mm, which is outside u16 range [0, 65535]",
+                    value, mm_f32
+                )));
+            }
+            let mm = mm_f32 as u16;
             let data = self.data_mut();
             let offset = idx * 2;
             if offset + 2 <= data.len() {
                 data[offset..offset + 2].copy_from_slice(&mm.to_le_bytes());
             }
         }
-        self
+        Ok(self)
     }
 
     /// Get raw depth at pixel (x, y) as u16 (millimeters).
@@ -127,10 +144,13 @@ impl DepthImage {
         }
     }
 
-    /// Calculate depth statistics: (min, max, mean) in meters.
+    /// Calculate depth statistics: `Some((min, max, mean))` in meters.
     ///
-    /// Skips invalid depths (0 for U16, NaN/Inf for F32).
-    pub fn depth_statistics(&self) -> (f32, f32, f32) {
+    /// Returns `None` when the image contains no valid depth pixels (all
+    /// pixels are 0 for U16, or NaN/Inf/0 for F32).  This distinguishes
+    /// "no data" from a real all-zero depth reading, avoiding the previous
+    /// ambiguity of returning `(0.0, 0.0, 0.0)` for both cases.
+    pub fn depth_statistics(&self) -> Option<(f32, f32, f32)> {
         let w = self.width();
         let h = self.height();
         let mut min = f32::MAX;
@@ -156,9 +176,9 @@ impl DepthImage {
         }
 
         if count == 0 {
-            return (0.0, 0.0, 0.0);
+            return None;
         }
-        (min, max, (sum / count as f64) as f32)
+        Some((min, max, (sum / count as f64) as f32))
     }
 
     // === DepthImage-specific metadata accessors ===
@@ -208,5 +228,101 @@ impl std::fmt::Debug for DepthImage {
             .field("height", &self.height())
             .field("unit", &unit)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::HorusError;
+    use crate::types::TensorDtype;
+
+    #[test]
+    fn test_set_depth_u16_overflow_returns_err() {
+        // 70 meters → 70_000mm, which exceeds u16::MAX (65535).
+        // Before this fix, the cast `as u16` would silently wrap to ~4464.
+        let mut depth = DepthImage::new(4, 4, TensorDtype::U16).unwrap();
+        let result = depth.set_depth(0, 0, 70.0);
+        assert!(
+            matches!(result, Err(HorusError::OutOfRange(_))),
+            "Expected OutOfRange for 70m on U16 depth image, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_set_depth_u16_in_range_succeeds() {
+        // 10 meters → 10_000mm, well within u16 range.
+        let mut depth = DepthImage::new(4, 4, TensorDtype::U16).unwrap();
+        depth.set_depth(0, 0, 10.0).unwrap();
+        // Round-trip: get_depth reads back from raw mm.
+        let v = depth.get_depth(0, 0).expect("should have value");
+        assert!((v - 10.0).abs() < 0.001, "Expected ~10.0m, got {}", v);
+    }
+
+    #[test]
+    fn test_set_depth_f32_no_overflow_check() {
+        // F32 images accept any finite value — no u16 overflow check applies.
+        let mut depth = DepthImage::new(4, 4, TensorDtype::F32).unwrap();
+        depth.set_depth(0, 0, 1000.0).unwrap();
+        let v = depth.get_depth(0, 0).expect("should have value");
+        assert!((v - 1000.0).abs() < 0.001, "Expected 1000.0m, got {}", v);
+    }
+
+    #[test]
+    fn test_set_depth_out_of_bounds_returns_ok() {
+        // OOB is a silent no-op (returns Ok but doesn't write).
+        let mut depth = DepthImage::new(2, 2, TensorDtype::U16).unwrap();
+        let result = depth.set_depth(99, 99, 1.0);
+        assert!(result.is_ok(), "OOB should return Ok, not Err");
+    }
+
+    #[test]
+    fn test_set_depth_u16_negative_returns_err() {
+        let mut depth = DepthImage::new(2, 2, TensorDtype::U16).unwrap();
+        let result = depth.set_depth(0, 0, -1.0);
+        assert!(
+            matches!(result, Err(HorusError::OutOfRange(_))),
+            "Negative depth should return OutOfRange, got {:?}",
+            result
+        );
+    }
+
+    /// depth_statistics() must return None when no valid pixels exist.
+    ///
+    /// Before this change the function returned (0.0, 0.0, 0.0) for all-zero
+    /// images, which was ambiguous with a real all-zero depth reading.
+    #[test]
+    fn test_depth_statistics_none_for_empty() {
+        // New zero-initialized image: all pixels are 0 (invalid/no-data).
+        let depth = DepthImage::new(4, 4, TensorDtype::F32).unwrap();
+        assert_eq!(
+            depth.depth_statistics(),
+            None,
+            "all-zero F32 image must return None, not Some((0,0,0))"
+        );
+
+        let depth_u16 = DepthImage::new(4, 4, TensorDtype::U16).unwrap();
+        assert_eq!(
+            depth_u16.depth_statistics(),
+            None,
+            "all-zero U16 image must return None"
+        );
+    }
+
+    /// depth_statistics() returns Some with correct (min, max, mean) for valid data.
+    #[test]
+    fn test_depth_statistics_some_with_data() {
+        let mut depth = DepthImage::new(4, 4, TensorDtype::F32).unwrap();
+        depth.set_depth(0, 0, 1.0).unwrap();
+        depth.set_depth(1, 0, 2.0).unwrap();
+        depth.set_depth(2, 0, 3.0).unwrap();
+
+        let stats = depth.depth_statistics();
+        assert!(stats.is_some(), "should have statistics with valid pixels");
+        let (min, max, mean) = stats.unwrap();
+        assert!((min - 1.0).abs() < 1e-4, "min={}", min);
+        assert!((max - 3.0).abs() < 1e-4, "max={}", max);
+        assert!((mean - 2.0).abs() < 1e-4, "mean={}", mean);
     }
 }

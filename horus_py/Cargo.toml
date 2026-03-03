@@ -5,10 +5,13 @@ edition = "2021"
 
 [lib]
 name = "horus_py"
-crate-type = ["cdylib"]
+# `rlib` is added alongside `cdylib` so that `cargo test` can build a test
+# binary.  The `extension-module` pyo3 feature is guarded by a Cargo feature
+# so it is not active during unit testing (which would require Python symbols).
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.27", features = ["extension-module", "abi3-py39", "num-bigint", "num-complex"] }
+pyo3 = { version = "0.27", features = ["abi3-py39", "num-bigint", "num-complex"] }
 horus = { path = "../horus" }
 horus_core = { path = "../horus_core" }
 horus_library = { path = "../horus_library" }
@@ -26,4 +29,9 @@ lazy_static = "1.4"  # For global pool registry
 pyo3-build-config = "0.27"
 
 [features]
-default = []
+# `extension-module` must be active for building the Python `.so` file but must
+# NOT be active during `cargo test` (the test binary cannot link against libpython).
+# It is the default so that normal `cargo build` / `maturin` produce a working
+# extension; pass `--no-default-features` when running unit tests.
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]

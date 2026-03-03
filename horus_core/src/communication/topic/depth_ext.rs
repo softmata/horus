@@ -27,9 +27,9 @@ mod tests {
         assert_eq!(depth.width(), 3);
         assert!(depth.is_meters());
 
-        depth.set_depth(0, 0, 1.5);
-        depth.set_depth(1, 0, 2.0);
-        depth.set_depth(2, 0, 0.5);
+        depth.set_depth(0, 0, 1.5).unwrap();
+        depth.set_depth(1, 0, 2.0).unwrap();
+        depth.set_depth(2, 0, 0.5).unwrap();
 
         topic.send(&depth);
 

@@ -434,8 +434,14 @@ fn test_rt_feature_display() {
 
 #[test]
 fn test_parallel_execution_all_nodes_tick() {
-    // Create scheduler in parallel mode via high_performance preset
-    let mut scheduler = Scheduler::high_performance();
+    // Use a custom parallel config with a low tick rate to avoid exhausting OS
+    // thread limits when running alongside 600+ other tests in parallel.
+    // `high_performance()` runs at 10 kHz × 3 nodes = 30,000 thread spawns per
+    // second, which causes EAGAIN under concurrent test load.
+    let mut config = SchedulerConfig::minimal();
+    config.execution = crate::scheduling::config::ExecutionMode::Parallel;
+    config.timing.global_rate_hz = 100.0; // 100 Hz: ~30 ticks in 300ms, well within OS limits
+    let mut scheduler = Scheduler::from_config(config);
 
     let c1 = Arc::new(AtomicUsize::new(0));
     let c2 = Arc::new(AtomicUsize::new(0));
@@ -454,8 +460,8 @@ fn test_parallel_execution_all_nodes_tick() {
         .order(102)
         .done();
 
-    // Run for 100ms — all 3 non-RT nodes should tick in parallel
-    let result = scheduler.run_for(Duration::from_millis(500));
+    // Run for 300ms — all 3 non-RT nodes should tick at least once
+    let result = scheduler.run_for(Duration::from_millis(300));
     assert!(result.is_ok());
 
     // Every node must have ticked at least once
@@ -673,6 +679,10 @@ fn test_blackbox_with_path() {
         category: "test".to_string(),
         message: "wal_test".to_string(),
     });
+    // Explicitly flush the BufWriter before reading the file.
+    // Without flush_wal() the batch interval (default 64) may not have been
+    // reached yet, leaving the record in the BufWriter's internal buffer.
+    bb.flush_wal();
 
     // WAL file should exist and have content
     let wal_path = tmp.join("blackbox.wal");

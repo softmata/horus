@@ -4,8 +4,35 @@ use axum::{
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 
+/// Simple WebSocket upgrade handler.
+///
+/// Authentication is enforced by `ws_auth_middleware` (applied in `mod.rs`),
+/// which runs before this handler and rejects unauthenticated requests with
+/// 401 before the WebSocket connection is upgraded.
 pub async fn websocket_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(handle_websocket)
+}
+
+/// Extract `session_token` from the `Cookie` request header.
+/// Exported for use by `ws_auth_middleware` in `mod.rs`.
+pub fn extract_cookie_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let cookie_header = headers.get(axum::http::header::COOKIE)?;
+    let cookie_str = cookie_header.to_str().ok()?;
+    for cookie in cookie_str.split(';') {
+        let cookie = cookie.trim();
+        if let Some(value) = cookie.strip_prefix("session_token=") {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Extract token from `Authorization: Bearer <token>` header.
+/// Exported for use by `ws_auth_middleware` in `mod.rs`.
+pub fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let auth = headers.get(axum::http::header::AUTHORIZATION)?;
+    let auth_str = auth.to_str().ok()?;
+    auth_str.strip_prefix("Bearer ")
 }
 
 async fn handle_websocket(socket: WebSocket) {
@@ -27,7 +54,8 @@ async fn handle_websocket(socket: WebSocket) {
                     .map(|n| {
                         serde_json::json!({
                             "name": n.name,
-                            "pid": n.process_id,
+                            // PID intentionally omitted — system PIDs must not
+                            // be disclosed to clients (security hardening).
                             "status": n.status,
                             "health": n.health.as_str(),
                             "health_color": n.health.color(),
@@ -63,7 +91,7 @@ async fn handle_websocket(socket: WebSocket) {
         let topics = topics_result.unwrap_or_default();
         let (graph_nodes, graph_edges) = graph_result.unwrap_or_default();
 
-        // Convert graph data
+        // Convert graph data — PID omitted from graph nodes for the same reason.
         let graph_nodes_json = graph_nodes
             .into_iter()
             .map(|n| {
@@ -74,7 +102,7 @@ async fn handle_websocket(socket: WebSocket) {
                         crate::graph::NodeType::Process => "process",
                         crate::graph::NodeType::Topic => "topic",
                     },
-                    "pid": n.pid,
+                    // "pid" field removed — PIDs must not be disclosed to clients.
                     "active": n.active,
                 })
             })

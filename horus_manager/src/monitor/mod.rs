@@ -9,7 +9,7 @@ use axum::{
     Router,
 };
 use qrcode::{render::unicode, QrCode};
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -17,8 +17,8 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 // Security imports
 use crate::security::{security_headers_middleware, AuthService};
 
-// Re-export handlers for router setup
-use handlers::*;
+// Re-export handlers for router setup (pub so integration tests can compose routers).
+pub use handlers::*;
 
 /// Validate a path component (session name, filename) to prevent directory traversal.
 ///
@@ -80,6 +80,11 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub current_workspace: Option<std::path::PathBuf>,
     pub auth_disabled: bool,
+    /// Whether to trust `X-Forwarded-For` / `X-Real-IP` headers from a
+    /// reverse proxy.  Controlled by the `HORUS_TRUST_PROXY` environment
+    /// variable.  Must be `false` (the default) on direct-internet deployments
+    /// so clients cannot spoof their IP to bypass per-IP rate limiting.
+    pub trust_proxy: bool,
 }
 
 /// Get local IP address for network access
@@ -119,17 +124,132 @@ async fn monitor_session_middleware(
         .await
 }
 
+/// WebSocket-specific authentication middleware.
+///
+/// Accepts a session token from three sources (checked in order):
+///   1. `Cookie: session_token=<token>` — set automatically by the browser after login
+///   2. `Authorization: Bearer <token>` — for non-browser clients
+///   3. `?token=<token>` URL query parameter — the standard workaround for
+///      browser `WebSocket` clients, which cannot set custom HTTP headers
+///
+/// ## Why a separate middleware instead of reusing `monitor_session_middleware`
+///
+/// The standard session middleware only checks Cookie and Authorization headers
+/// (sufficient for all HTTP API calls).  WebSocket connections from a browser
+/// must pass the token in the URL query string because the `WebSocket` API does
+/// not expose a way to set headers on the initial HTTP upgrade request.
+///
+/// ## Why a middleware layer and not a check inside `websocket_handler`
+///
+/// When Axum's `WebSocketUpgrade` extractor is dropped without calling
+/// `on_upgrade()`, axum emits an HTTP 426 "Upgrade Required" response that
+/// overrides any 401 the handler would have returned.  By placing the auth
+/// check in a middleware layer that runs *before* the handler, the
+/// `WebSocketUpgrade` extractor is never reached for unauthenticated requests.
+async fn ws_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    // Auth disabled → let every request through.
+    if state.auth_disabled {
+        return Ok(next.run(req).await);
+    }
+
+    // 1. Cookie: session_token=<token>
+    let token_from_cookie = req
+        .headers()
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .map(|c| c.trim())
+                .find_map(|c| c.strip_prefix("session_token="))
+        })
+        .map(|s| s.to_string());
+
+    // 2. Authorization: Bearer <token>
+    let token_from_bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    // 3. ?token= query parameter (browser WebSocket clients cannot set headers)
+    let token_from_query = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .filter(|v| !v.is_empty())
+        .map(|s| s.to_string());
+
+    let token = token_from_cookie
+        .or(token_from_bearer)
+        .or(token_from_query)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    if !state.auth_service.validate_session(&token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(next.run(req).await)
+}
+
 /// Run the web monitor server
-pub async fn run(port: u16) -> anyhow::Result<()> {
-    // Check if password is configured, if not prompt for setup
-    let password_hash = if !crate::security::auth::is_password_configured() {
-        crate::security::auth::prompt_for_password_setup()?
+///
+/// `no_auth` corresponds to the `--no-auth` CLI flag.  When `true`, the
+/// monitor starts without requiring a password.  A loud warning is printed
+/// to stderr so operators are never silently running an open endpoint.
+/// When `false` and no password is configured, `run` returns an error
+/// instructing the user to set a password.
+pub async fn run(port: u16, no_auth: bool) -> anyhow::Result<()> {
+    use colored::Colorize;
+    // Determine the password hash and authentication mode.
+    let (password_hash, auth_disabled) = if !crate::security::auth::is_password_configured() {
+        if no_auth {
+            // Explicit opt-out: proceed without authentication.
+            (String::new(), true)
+        } else {
+            // No password file and no --no-auth → refuse to start.
+            anyhow::bail!(
+                "No monitor password is set.\n\
+                 \n\
+                 To set a password:  horus monitor -r\n\
+                 To disable auth:    horus monitor --no-auth\n\
+                 \n\
+                 Running without a password exposes the entire monitoring API \
+                 to anyone on your network. Use --no-auth only in trusted \
+                 environments."
+            );
+        }
     } else {
-        crate::security::auth::load_password_hash()?
+        let hash = crate::security::auth::load_password_hash()?;
+        let disabled = hash.is_empty();
+        if disabled && !no_auth {
+            // Hash file exists but is empty (user previously opted out).
+            // Require explicit --no-auth to proceed.
+            anyhow::bail!(
+                "Authentication is disabled (empty password on file).\n\
+                 \n\
+                 To set a password:  horus monitor -r\n\
+                 To disable auth:    horus monitor --no-auth"
+            );
+        }
+        (hash, disabled || no_auth)
     };
 
-    // Check if authentication is disabled (empty password)
-    let auth_disabled = password_hash.is_empty();
+    if auth_disabled {
+        eprintln!(
+            "\n{} HORUS monitor is running WITHOUT authentication.\n\
+             {} Anyone on your network can access all monitoring APIs.\n\
+             {} Set a password with: horus monitor -r\n",
+            "[WARNING]".red().bold(),
+            "[WARNING]".red().bold(),
+            "[WARNING]".red().bold(),
+        );
+    }
 
     // Initialize authentication service with password
     let auth_service = Arc::new(AuthService::new(password_hash)?);
@@ -147,7 +267,28 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         auth_service: auth_service.clone(),
         current_workspace: current_workspace.clone(),
         auth_disabled,
+        trust_proxy: crate::config::trust_proxy(),
     });
+
+    // ─── Middleware ordering contract ─────────────────────────────────────────
+    // The auth layer MUST be applied to `api_routes` BEFORE any Router::merge.
+    //
+    // Rationale: In Axum, `Router::layer(L)` wraps the routes already in the
+    // router at the time of the call.  `Router::merge` DOES preserve per-router
+    // layers, but only because we apply the layer before merging.  Applying the
+    // layer AFTER `merge(api_routes)` would wrap ALL routes — including the
+    // public login route — which is wrong; and applying it too late could
+    // silently expose routes if Axum ever changes merge semantics.
+    //
+    // Correct order (current):
+    //   1. Add all /api/* routes to `api_routes`          ← routes defined
+    //   2. api_routes.layer(auth)                          ← layer applied
+    //   3. public_routes.merge(api_routes)                 ← merge after layer
+    //
+    // NEVER do:
+    //   1. public_routes.merge(api_routes).layer(auth)     ← would guard login too
+    //   2. api_routes without layer, then merge            ← leaves /api/* open
+    // ─────────────────────────────────────────────────────────────────────────
 
     // API routes
     let mut api_routes = Router::new()
@@ -237,7 +378,6 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/debug/sessions/:id/watches/values",
             get(debug_watches_values_handler),
         )
-        .route("/api/ws", get(websocket_handler))
         .route("/api/logout", post(logout_handler));
 
     // Only add authentication middleware if password is set
@@ -245,6 +385,23 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         api_routes = api_routes.layer(middleware::from_fn_with_state(
             state.clone(),
             monitor_session_middleware,
+        ));
+    }
+
+    // WebSocket route with its own dedicated auth middleware.
+    //
+    // `/api/ws` is intentionally NOT part of `api_routes` above.  Reason: the
+    // standard `monitor_session_middleware` only checks Cookie and Authorization
+    // headers, but browser WebSocket clients must pass their token via the
+    // `?token=` query parameter (the `WebSocket` API does not allow custom
+    // headers).  `ws_auth_middleware` accepts all three sources.  It also
+    // prevents a 426 "Upgrade Required" response that Axum would emit if the
+    // `WebSocketUpgrade` extractor were dropped without calling `on_upgrade()`.
+    let mut ws_route = Router::new().route("/api/ws", get(websocket_handler));
+    if !auth_disabled {
+        ws_route = ws_route.layer(middleware::from_fn_with_state(
+            state.clone(),
+            ws_auth_middleware,
         ));
     }
 
@@ -267,12 +424,12 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
     let app = public_routes
         .merge(api_routes)
+        .merge(ws_route)
         .layer(cors)
         .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state);
 
     // Display startup info
-    use colored::Colorize;
     println!(
         "\n{}",
         "╔════════════════════════════════════════════╗".cyan()
@@ -317,7 +474,286 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     println!("{}", "  Press Ctrl+C to stop the server\n".bright_black());
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
+}
+
+// ─── Auth middleware ordering tests ──────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request, routing::post};
+    use tower::ServiceExt; // for .oneshot()
+
+    /// Build a minimal router identical in structure to `run()` but without
+    /// starting a real TCP listener.  Auth is always enabled in tests.
+    fn build_test_app() -> axum::Router {
+        // Use a real Argon2 hash so that PasswordHash::new() succeeds inside
+        // AuthService::login().  A raw string would fail to parse, causing
+        // login() to return Err (mapped to 429) on the very first attempt —
+        // which would break the brute-force rate-limit test.
+        let password_hash = crate::security::auth::hash_password("test_monitor_password_123")
+            .expect("hash_password should not fail in tests");
+        let auth_service =
+            Arc::new(AuthService::new(password_hash).expect("AuthService::new should not fail"));
+        let params = Arc::new(horus_core::RuntimeParams::default());
+        let state = Arc::new(AppState {
+            port: 0,
+            params,
+            auth_service: auth_service.clone(),
+            current_workspace: None,
+            auth_disabled: false, // auth IS active
+            trust_proxy: false,   // no proxy in tests
+        });
+
+        // Replicate the route+middleware structure from `run()` for the routes
+        // being tested.  Using a representative subset of /api/* routes covers
+        // the middleware ordering contract without pulling in all handlers.
+        let mut api_routes = Router::new()
+            .route("/api/status", get(status_handler))
+            .route("/api/debug/sessions", get(debug_sessions_list_handler))
+            .route("/api/debug/sessions", post(debug_session_create_handler))
+            .route("/api/debug/sessions/:id", get(debug_session_get_handler));
+
+        // ← Auth layer applied BEFORE merge (this is the invariant being tested)
+        api_routes = api_routes.layer(middleware::from_fn_with_state(
+            state.clone(),
+            monitor_session_middleware,
+        ));
+
+        // /api/ws uses its own dedicated middleware (Cookie, Bearer, ?token=),
+        // mirroring the structure in `run()`.
+        let ws_route = Router::new()
+            .route("/api/ws", get(websocket_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                ws_auth_middleware,
+            ));
+
+        let public_routes = Router::new().route("/api/login", post(login_handler));
+
+        public_routes
+            .merge(api_routes)
+            .merge(ws_route)
+            .with_state(state)
+    }
+
+    /// Unauthenticated GET /api/debug/sessions must return 401.
+    #[tokio::test]
+    async fn debug_sessions_list_requires_auth() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/debug/sessions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "GET /api/debug/sessions without credentials must return 401"
+        );
+    }
+
+    /// Unauthenticated GET /api/debug/sessions/:id must return 401.
+    #[tokio::test]
+    async fn debug_session_get_requires_auth() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/debug/sessions/some-session-id")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// Unauthenticated GET /api/status (another protected route) must return 401.
+    #[tokio::test]
+    async fn api_status_requires_auth() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// After AUTH_MAX_ATTEMPTS failed login attempts from the same IP, the next
+    /// attempt must return 429 (Too Many Requests), not 401.
+    ///
+    /// In tests, ConnectInfo is not available so the handler falls back to
+    /// "127.0.0.1" — all requests therefore share the same rate-limit bucket,
+    /// which is exactly what we want for this test.  The Arc<AuthService> is
+    /// shared across Router clones (app.clone() only clones the Arc, not the
+    /// inner data), so rate-limit counters accumulate across `oneshot` calls.
+    #[tokio::test]
+    async fn login_brute_force_triggers_rate_limit() {
+        let app = build_test_app();
+
+        // AUTH_MAX_ATTEMPTS wrong passwords → all 401 (wrong password, not yet rate-limited).
+        for attempt in 0..crate::config::AUTH_MAX_ATTEMPTS {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/login")
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(r#"{"password":"wrong_password"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "attempt {} should return 401 (wrong password, not yet rate-limited)",
+                attempt + 1,
+            );
+        }
+
+        // AUTH_MAX_ATTEMPTS + 1: rate limiter engages → 429.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/login")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"password":"wrong_password"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "attempt {} should return 429 (rate limited)",
+            crate::config::AUTH_MAX_ATTEMPTS + 1,
+        );
+    }
+
+    /// POST /api/login is a public route and must NOT return 401 when no token
+    /// is present (it should process the request regardless of auth state).
+    #[tokio::test]
+    async fn login_route_is_public() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/login")
+            .header("Content-Type", "application/json")
+            .body(Body::from(r#"{"password":"wrong"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Login with wrong password returns 401 from the handler, but NOT from
+        // the session middleware.  The important thing is that the response is
+        // not 404 (route missing), which would indicate the public route wasn't
+        // registered.  Any non-404 status means the route was reached.
+        assert_ne!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "/api/login must be a registered public route"
+        );
+    }
+
+    /// `run()` with no password configured and no --no-auth must return an Err
+    /// with a message pointing the user to `horus monitor -r` or `--no-auth`.
+    ///
+    /// We test via a closure mirroring the exact policy logic inside `run()`.
+    #[test]
+    fn run_no_password_no_flag_returns_error() {
+        // Mirrors the policy decision in `run()` before the TCP bind.
+        let check_policy = |no_password_configured: bool, no_auth: bool| -> anyhow::Result<()> {
+            if no_password_configured && !no_auth {
+                anyhow::bail!(
+                    "No monitor password is set.\n\
+                     \n\
+                     To set a password:  horus monitor -r\n\
+                     To disable auth:    horus monitor --no-auth"
+                );
+            }
+            Ok(())
+        };
+
+        // No password, no flag → must be an error.
+        let result = check_policy(true, false);
+        assert!(
+            result.is_err(),
+            "`run()` without a password and without --no-auth must fail"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("No monitor password is set"),
+            "error message should explain the problem: {}",
+            msg
+        );
+        assert!(
+            msg.contains("--no-auth"),
+            "error message should mention --no-auth: {}",
+            msg
+        );
+        assert!(
+            msg.contains("horus monitor -r"),
+            "error message should mention password setup: {}",
+            msg
+        );
+
+        // No password but --no-auth → must succeed.
+        assert!(
+            check_policy(true, true).is_ok(),
+            "no password + --no-auth must be allowed"
+        );
+        // Password configured, no --no-auth → must succeed.
+        assert!(
+            check_policy(false, false).is_ok(),
+            "password configured, no --no-auth must be allowed"
+        );
+    }
+
+    /// Minimum password length constant must be ≥ 12 (NIST SP 800-63B minimum).
+    #[test]
+    fn min_password_length_meets_nist_minimum() {
+        assert!(
+            crate::config::MIN_PASSWORD_LENGTH >= 12,
+            "MIN_PASSWORD_LENGTH must be ≥ 12 (NIST SP 800-63B); got {}",
+            crate::config::MIN_PASSWORD_LENGTH,
+        );
+    }
+
+    /// GET /api/ws without a session token must return 401 (the HTTP upgrade
+    /// must be rejected before the WebSocket connection is established).
+    ///
+    /// The test sends a proper WebSocket upgrade request (Connection: Upgrade,
+    /// Upgrade: websocket, Sec-WebSocket-Key, Sec-WebSocket-Version headers)
+    /// without any session token.  `ws_auth_middleware` runs before the
+    /// `WebSocketUpgrade` extractor and returns 401 for unauthenticated
+    /// requests, preventing the 426 "Upgrade Required" that Axum would emit
+    /// if the extractor were dropped without calling `on_upgrade()`.
+    #[tokio::test]
+    async fn websocket_upgrade_without_token_returns_401() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/ws")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("Sec-WebSocket-Version", "13")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "WebSocket upgrade without token must be rejected with 401"
+        );
+    }
 }

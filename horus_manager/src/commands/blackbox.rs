@@ -216,8 +216,8 @@ fn format_event_detail(event: &BlackBoxEvent) -> String {
             reason,
             total_ticks,
         } => format!("{} after {} ticks", reason, total_ticks),
-        BlackBoxEvent::NodeAdded { name, priority } => {
-            format!("{} (priority {})", name, priority)
+        BlackBoxEvent::NodeAdded { name, order } => {
+            format!("{} (order {})", name, order)
         }
         BlackBoxEvent::NodeTick {
             name,

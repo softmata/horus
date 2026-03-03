@@ -34,6 +34,8 @@ mod discovery;
 mod executor;
 mod registry;
 mod resolver;
+#[cfg(target_os = "linux")]
+pub mod sandbox;
 
 pub use discovery::{AvailablePlugin, PluginCategory, PluginDiscovery, PluginSourceType};
 pub use executor::{PluginExecutor, PluginInfo};

@@ -1211,6 +1211,189 @@ fn migration_epoch_visible_across_clones() {
     assert_eq!(t2.recv(), Some(42));
 }
 
+/// Regression: `check_migration` must re-validate the epoch after `sync_local`
+/// so that a concurrent migration between the epoch Acquire-load and
+/// `sync_local` does not leave an inconsistent (mode, cached_epoch) pair.
+///
+/// # Race being tested
+///
+/// ```text
+/// Thread A (t2.check_migration_now):
+///   1. loads epoch E  → E != cached_epoch → enters if block
+///   2. sync_local reads header.backend_mode (currently ModeA from epoch E)
+/// Thread B (migrator):
+///   3. force_migrate: epoch → E+1, header.backend_mode ← ModeB
+/// Thread A:
+///   4. [OLD] initialize_backend uses cached_mode=ModeA, cached_epoch=E  ← stale
+///   4. [FIX] reloads epoch: sees E+1, re-syncs → cached_mode=ModeB, cached_epoch=E+1
+/// ```
+///
+/// The test stresses the fixed path by running rapid migrations in a background
+/// thread while the main thread calls `check_migration_now` 50 times.  After
+/// migrations settle, the cached epoch must equal the header epoch (no stale
+/// state) and send/recv must work correctly.
+#[test]
+fn check_migration_revalidates_epoch_after_concurrent_migration() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    let name = unique("epoch_revalidate");
+
+    // Initialise the topic in a known non-DirectChannel state so the
+    // background migrations don't immediately re-migrate back to DirectChannel
+    // (which would prevent epoch accumulation).
+    {
+        let init_t: Topic<u64> = Topic::new(&name).expect("init");
+        init_t.send(0);
+        let _ = init_t.recv();
+        // Attempt MpmcIntra; skip test if SHM / backend setup fails.
+        if !matches!(init_t.force_migrate(BackendMode::MpmcIntra), MigrationResult::Success { .. }) {
+            return;
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let name_clone = name.clone();
+
+    // Background thread: alternate between two modes to keep bumping the epoch.
+    let migrator = thread::spawn(move || {
+        let tm: Topic<u64> = Topic::new(&name_clone).expect("migrator");
+        let modes = [BackendMode::MpmcIntra, BackendMode::SpscIntra];
+        let mut idx = 0usize;
+        while !stop_clone.load(Ordering::Relaxed) {
+            let _ = tm.force_migrate(modes[idx & 1]);
+            idx = idx.wrapping_add(1);
+            std::hint::spin_loop();
+        }
+    });
+
+    // Main thread: t2 calls check_migration_now under migration pressure.
+    let t2: Topic<u64> = Topic::new(&name).expect("t2");
+    t2.send(1);
+    let _ = t2.recv();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut iterations = 0usize;
+    while Instant::now() < deadline {
+        t2.check_migration_now();
+        iterations += 1;
+        if iterations >= 50 {
+            break;
+        }
+        std::hint::spin_loop();
+    }
+
+    // Stop the migrator and wait for it to finish.
+    stop.store(true, Ordering::Relaxed);
+    migrator.join().expect("migrator thread panicked");
+
+    // One final sync so t2 catches up to wherever the header settled.
+    t2.check_migration_now();
+
+    let header_epoch = t2.ring.header().migration_epoch.load(Ordering::Acquire);
+    let t2_cached  = t2.ring.local().cached_epoch;
+    assert_eq!(
+        t2_cached, header_epoch,
+        "after migrations settled, t2.cached_epoch ({}) must equal \
+         header.migration_epoch ({}); epoch re-validation loop is broken",
+        t2_cached, header_epoch
+    );
+
+    // t2 has role=Both (producer + consumer from the init calls above).
+    // Drain any stale messages from the migration churn, then do a self-loop
+    // round-trip to confirm the backend is functional after convergence.
+    while t2.recv().is_some() {}
+    t2.send(9001);
+    let got = t2.recv();
+    assert_eq!(
+        got,
+        Some(9001),
+        "t2 self-loop round-trip must work after epoch re-validation convergence"
+    );
+}
+
+/// 16 threads all race to call `check_migration_now()` simultaneously on a
+/// shared topic that needs migration.  Without exponential backoff the retry
+/// loop livelocks: every thread gets `LockContention`, spins, then retries at
+/// exactly the same instant as all peers — no thread makes progress.
+///
+/// With backoff + jitter, threads desynchronise quickly and at least one
+/// succeeds on each attempt.  The test passes if all 16 threads complete
+/// within a generous wall-clock budget (10 s) and the topic remains usable.
+#[test]
+fn concurrent_migration_no_livelock_16_threads() {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const THREADS: usize = 16;
+
+    // Initialise the topic in SHM mode so that the auto-migration system
+    // sees a non-optimal backend and attempts to migrate all 16 threads at once.
+    let name = unique("livelock16");
+    {
+        let init: Topic<u64> = Topic::new(&name).expect("init");
+        init.send(0);
+        let _ = init.recv();
+        // Force into SHM so that every thread finds !is_optimal() and races.
+        if !matches!(
+            init.force_migrate(BackendMode::MpmcShm),
+            MigrationResult::Success { .. }
+        ) {
+            // Backend setup unavailable in this environment — skip.
+            return;
+        }
+    }
+
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let completed = Arc::new(AtomicU32::new(0));
+
+    let handles: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let name = name.clone();
+            let barrier = barrier.clone();
+            let completed = completed.clone();
+            thread::spawn(move || {
+                let t: Topic<u64> = Topic::new(&name).expect("create");
+                t.send(1);
+                let _ = t.recv();
+                // All threads hit check_migration_now at the same instant.
+                barrier.wait();
+                t.check_migration_now();
+                completed.fetch_add(1, Ordering::Relaxed);
+            })
+        })
+        .collect();
+
+    // All threads must finish within 10 seconds (livelock would hang indefinitely).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for handle in handles {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // join() has no timeout, but the test runner will kill us if we truly livelock.
+        let _ = handle.join().expect("thread panicked");
+        if Instant::now() > deadline {
+            panic!(
+                "livelock detected: only {}/{} threads completed within 10 s",
+                completed.load(Ordering::Relaxed),
+                THREADS
+            );
+        }
+    }
+
+    assert_eq!(
+        completed.load(Ordering::Relaxed),
+        THREADS as u32,
+        "not all threads completed migration"
+    );
+
+    // Topic must still be usable after the migration storm.
+    let t: Topic<u64> = Topic::new(&name).expect("post-check");
+    t.send(99);
+    assert_eq!(t.recv(), Some(99), "topic unusable after concurrent migration");
+}
+
 // ============================================================================
 // 13. MESSAGE TYPE VARIETY
 // ============================================================================

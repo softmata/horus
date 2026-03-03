@@ -116,8 +116,8 @@ pub unsafe fn from_dlpack(
 
     // Extract strides (convert from elements to bytes if present)
     let strides: Vec<u64> = if tensor.strides.is_null() {
-        // Compute default row-major strides
-        compute_contiguous_strides(&shape, dtype.size_bytes())
+        // Compute default row-major strides; may return Err on overflow.
+        compute_contiguous_strides(&shape, dtype.size_bytes())?
     } else {
         // Convert element strides to byte strides
         let elem_size = dtype.size_bytes() as u64;
@@ -169,19 +169,39 @@ fn dtype_from_dlpack(code: u8, bits: u8, lanes: u16) -> Result<TensorDtype, DLPa
     })
 }
 
-/// Compute contiguous (row-major) strides in bytes
-fn compute_contiguous_strides(shape: &[u64], elem_size: usize) -> Vec<u64> {
+/// Compute contiguous (row-major) strides in bytes.
+///
+/// Returns `Err(InvalidTensor)` if any stride multiplication overflows `u64`.
+/// This prevents silent garbage stride values that would direct numpy/torch
+/// to wrong memory addresses on very large shapes.
+///
+/// For scalar tensors (ndim == 0), returns `[0]` as a single-element sentinel.
+fn compute_contiguous_strides(
+    shape: &[u64],
+    elem_size: usize,
+) -> Result<Vec<u64>, DLPackImportError> {
     let ndim = shape.len();
     if ndim == 0 {
-        return vec![];
+        // Scalar tensor: one zero stride (no real dimension to stride over).
+        return Ok(vec![0]);
     }
 
     let mut strides = vec![0u64; ndim];
     strides[ndim - 1] = elem_size as u64;
     for i in (0..ndim - 1).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1];
+        strides[i] = strides[i + 1].checked_mul(shape[i + 1]).ok_or_else(|| {
+            DLPackImportError::InvalidTensor(format!(
+                "Shape too large: stride overflow at dimension {} \
+                     (strides[{}]={} * shape[{}]={})",
+                i,
+                i + 1,
+                strides[i + 1],
+                i + 1,
+                shape[i + 1]
+            ))
+        })?;
     }
-    strides
+    Ok(strides)
 }
 
 #[cfg(test)]
@@ -246,12 +266,39 @@ mod tests {
     #[test]
     fn test_contiguous_strides() {
         let shape = vec![2u64, 3, 4];
-        let strides = compute_contiguous_strides(&shape, 4); // f32
+        let strides = compute_contiguous_strides(&shape, 4).unwrap(); // f32
 
         // For [2, 3, 4] with f32:
         // stride[2] = 4 (bytes)
         // stride[1] = 4 * 4 = 16
         // stride[0] = 16 * 3 = 48
         assert_eq!(strides, vec![48, 16, 4]);
+    }
+
+    #[test]
+    fn test_contiguous_strides_overflow_returns_err() {
+        // shape[1] * elem_size * 2 overflows u64:
+        //   strides[1] = elem_size = 2
+        //   strides[0] = strides[1] * shape[1] = 2 * (u64::MAX/2 + 1) = overflow
+        let shape = vec![2u64, u64::MAX / 2 + 1];
+        let result = compute_contiguous_strides(&shape, 2);
+        assert!(
+            result.is_err(),
+            "expected Err on stride overflow, got {:?}",
+            result
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("overflow"),
+            "error should mention overflow: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_contiguous_strides_scalar_returns_zero_stride() {
+        // A 0-dim (scalar) tensor returns a single-element zero-stride sentinel.
+        let strides = compute_contiguous_strides(&[], 4).unwrap();
+        assert_eq!(strides, vec![0], "scalar tensor should have stride [0]");
     }
 }

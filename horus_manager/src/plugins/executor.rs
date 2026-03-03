@@ -8,6 +8,9 @@ use colored::*;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt as _;
+
 use super::registry::{PluginEntry, PluginRegistry};
 use super::resolver::PluginResolver;
 use super::HORUS_VERSION;
@@ -153,17 +156,49 @@ impl PluginExecutor {
         self.execute_binary(&entry.binary, args)
     }
 
-    /// Execute a binary with args
+    /// Execute a binary with sandboxed environment.
+    ///
+    /// Security measures applied:
+    /// - **Environment sanitization**: clears all inherited env vars; passes
+    ///   only `HORUS_VERSION`, `HORUS_PLUGIN`, and `PATH` (from parent).
+    /// - **Linux sandbox** (via `pre_exec` in the child process):
+    ///   - `RLIMIT_CPU`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE` caps
+    ///   - Inherited FD closure (fd > 2 are closed before exec)
+    ///   - `PR_SET_NO_NEW_PRIVS` — no privilege escalation via setuid/setgid bits
+    ///   - Seccomp-BPF deny list — blocks socket, ptrace, and container-escape
+    ///     syscalls while allowing normal plugin operation
     fn execute_binary(&self, binary: &Path, args: &[String]) -> Result<i32> {
-        let status = Command::new(binary)
-            .args(args)
-            .env("HORUS_VERSION", HORUS_VERSION)
-            .env("HORUS_PLUGIN", "1")
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()?;
+        let mut cmd = Command::new(binary);
 
+        cmd.args(args);
+
+        // Environment sanitization: clear all inherited env vars, then
+        // explicitly allow only the vars that plugins legitimately need.
+        cmd.env_clear();
+        cmd.env("HORUS_VERSION", HORUS_VERSION);
+        cmd.env("HORUS_PLUGIN", "1");
+        // Preserve PATH so the plugin binary can invoke standard tools.
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+
+        cmd.stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        // On Linux: apply rlimits, FD cleanup, no_new_privs, and seccomp
+        // in the child process (between fork and exec).
+        #[cfg(target_os = "linux")]
+        {
+            let plugin_dir = binary.parent().map(|p| p.to_path_buf());
+            // SAFETY: we only call async-signal-safe libc functions inside the
+            // closure (setrlimit, close, prctl).  No Rust allocator is used.
+            unsafe {
+                cmd.pre_exec(move || super::sandbox::apply(plugin_dir.as_deref()));
+            }
+        }
+
+        let status = cmd.status()?;
         Ok(status.code().unwrap_or(1))
     }
 

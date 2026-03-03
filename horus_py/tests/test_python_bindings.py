@@ -404,3 +404,62 @@ class TestSchedulerPresets:
         from horus._horus import PyScheduler
         scheduler = PyScheduler.high_performance()
         assert scheduler is not None
+
+
+# ============================================================================
+# Regression: inverted CPU/CUDA guard in torch_to_numpy (dlpack_utils.rs)
+# ============================================================================
+
+class _MockDevice:
+    """Minimal mock of a torch device object."""
+    def __init__(self, device_type: str):
+        self.type = device_type
+
+
+class _MockTensor:
+    """Minimal mock of a torch.Tensor with device and numpy() method."""
+    def __init__(self, device_type: str, np_data=None):
+        self.device = _MockDevice(device_type)
+        self._np_data = np_data
+
+    def numpy(self):
+        return self._np_data
+
+
+class TestFromTorchCpuCudaGuard:
+    """
+    Regression tests for the inverted CPU/CUDA check that was previously in
+    dlpack_utils::torch_to_numpy.  The guard must:
+      - Reject tensors whose device.type != "cpu" with a clear error message.
+      - Accept CPU tensors and proceed to numpy conversion.
+    """
+
+    def test_cuda_tensor_raises_error(self):
+        """CUDA tensor passed to from_torch must raise, not silently proceed."""
+        from horus._horus import Image
+        cuda_tensor = _MockTensor("cuda")
+        with pytest.raises(Exception) as exc_info:
+            Image.from_torch(cuda_tensor)
+        msg = str(exc_info.value).lower()
+        assert "cpu" in msg or "cuda" in msg, (
+            f"Expected error mentioning CPU or CUDA, got: {exc_info.value}"
+        )
+
+    def test_non_cpu_device_also_raises(self):
+        """Any non-CPU device (e.g. 'mps', 'xpu') must also be rejected."""
+        from horus._horus import Image
+        for device_type in ("cuda:0", "cuda:1", "mps", "xpu"):
+            tensor = _MockTensor(device_type)
+            with pytest.raises(Exception, match="(?i)cpu"):
+                Image.from_torch(tensor)
+
+    def test_cpu_tensor_does_not_raise_on_guard(self):
+        """CPU tensor must pass the device guard (may still fail on bad data)."""
+        import numpy as np
+        from horus._horus import Image
+        # Provide a valid H×W×3 uint8 array so from_numpy also succeeds.
+        data = np.zeros((4, 4, 3), dtype=np.uint8)
+        cpu_tensor = _MockTensor("cpu", data)
+        # If torch_to_numpy guard is correct, this reaches from_numpy and succeeds.
+        img = Image.from_torch(cpu_tensor)
+        assert img is not None

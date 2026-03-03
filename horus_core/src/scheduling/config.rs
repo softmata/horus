@@ -66,6 +66,20 @@ pub struct MonitoringConfig {
     pub black_box_enabled: bool,
     /// Black box buffer size in MB
     pub black_box_size_mb: usize,
+    /// How many WAL records to accumulate before flushing to the OS.
+    ///
+    /// Flushing the WAL `BufWriter` on every `record()` call causes thousands
+    /// of `fsync`-equivalent syscalls per second at high scheduler frequencies,
+    /// stalling the scheduler thread on disk I/O.  Batching amortises the cost:
+    ///
+    /// | Scheduler Hz | interval=1 (old) | interval=64 | interval=256 |
+    /// |---|---|---|---|
+    /// | 100 | 100 flushes/s | ≤2 flushes/s | ≤1 flush/2s |
+    /// | 1000 | 1000 flushes/s | ≤16 flushes/s | ≤4 flushes/s |
+    ///
+    /// Default: 64 (a flush every ~640 ms at 100 Hz, ~64 ms at 1 kHz).
+    /// Set to 1 to restore the legacy per-record flush behaviour.
+    pub wal_flush_interval: usize,
     /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
     pub telemetry_endpoint: Option<String>,
 }
@@ -211,6 +225,7 @@ impl SchedulerConfig {
                 metrics_interval_ms: 1000,
                 black_box_enabled: false,
                 black_box_size_mb: 0,
+                wal_flush_interval: 64,
                 telemetry_endpoint: None,
             },
             recording: None,

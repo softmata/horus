@@ -630,18 +630,59 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         let current_epoch = header.migration_epoch.load(Ordering::Acquire);
         if current_epoch != local.cached_epoch {
-            local.cached_epoch = current_epoch;
+            // Epoch changed — another participant completed a migration while we
+            // weren't looking.  Sync local state to the new epoch, then
+            // re-validate: a *second* concurrent migration may have advanced the
+            // epoch again between our Acquire load above and the reads inside
+            // sync_local().  Loop (up to 4 times) until the epoch is stable so
+            // that initialize_backend() sees a consistent (mode, epoch) pair.
+            // If migrations keep arriving we proceed with the best-effort latest
+            // epoch; the next send/recv will re-check via the epoch_guard macros.
+            const MAX_EPOCH_RETRIES: u32 = 4;
+            let mut stable_epoch = current_epoch;
+            local.cached_epoch = stable_epoch;
             Self::sync_local(local, header, true);
-            // Re-initialize backend + dispatch fn ptrs to match the new mode.
-            // Another participant already performed the migration; we just need
-            // to update our local storage and fn ptrs to match.
+            for _ in 0..MAX_EPOCH_RETRIES {
+                let reloaded = header.migration_epoch.load(Ordering::Acquire);
+                if reloaded == stable_epoch {
+                    break; // Epoch unchanged — local state is consistent.
+                }
+                // Concurrent migration advanced the epoch while we were
+                // syncing; re-sync to the newer epoch and check again.
+                stable_epoch = reloaded;
+                local.cached_epoch = stable_epoch;
+                Self::sync_local(local, header, true);
+            }
+            // Re-initialize backend for the new (stable) epoch.
+            //
+            // `initialize_backend()` short-circuits when `backend_matches_mode`
+            // is true — it checks only the *type* of the backend, not the epoch.
+            // If the backend MODE is the same across epochs (e.g. DirectChannel
+            // epoch 0 → DirectChannel epoch 2 after a double migration) the
+            // short-circuit would silently leave us holding the ring from the old
+            // epoch, causing send/recv to diverge from other participants who
+            // have moved to the ring for the new epoch.
+            //
+            // Resetting to Uninitialized before the call bypasses the
+            // short-circuit and forces a registry lookup (or creation) for
+            // `stable_epoch`, ensuring we always join the correct ring.
+            //
+            // SAFETY: backend UnsafeCell is accessed from this thread only.
+            // The old backend Arc is dropped here; any in-flight messages in it
+            // were already handled during the migration that incremented the
+            // epoch (the migrator holds the lock and drains before updating the
+            // header).  Resetting is therefore safe and loss-free.
+            {
+                let backend = unsafe { &mut *self.backend.get() };
+                *backend = BackendStorage::Uninitialized;
+            }
             self.initialize_backend();
-            registry::notify_epoch_change(&self.name, current_epoch);
+            registry::notify_epoch_change(&self.name, stable_epoch);
         }
 
         let migrator = BackendMigrator::new(header);
         if !migrator.is_optimal() {
-            for _attempt in 0..5 {
+            for attempt in 0u32..5 {
                 match migrator.migrate_to_optimal() {
                     MigrationResult::Success { new_epoch } => {
                         local.cached_epoch = new_epoch;
@@ -673,7 +714,30 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         if migrator.is_optimal() {
                             break;
                         }
-                        // Still not optimal after other migration — retry our migration
+                        // Still not optimal after other migration — retry with
+                        // exponential backoff + per-thread jitter to avoid livelock
+                        // when many threads race to migrate the same topic.
+                        //
+                        // attempt 0: spin_loop hint only (no extra sleep — the
+                        //   spin-wait above already yielded CPU time)
+                        // attempts 1-4: sleep 2^attempt × 100 ns + jitter, capped
+                        //   at 1 ms per retry.
+                        if attempt > 0 {
+                            // Base delay: 200 ns, 400 ns, 800 ns, 1 600 ns → cap 1 ms.
+                            let base_ns: u64 = (100u64 << attempt).min(1_000_000);
+                            // Per-thread jitter derived from the stack address of a
+                            // local variable (differs between threads due to
+                            // ASLR + per-thread stacks).  Mixed with a Fibonacci
+                            // constant to spread the lower bits.
+                            let local_addr = &base_ns as *const u64 as u64;
+                            let jitter_ns = (local_addr
+                                .wrapping_mul(0x9e3779b97f4a7c15)
+                                >> 32)
+                                % base_ns.max(1);
+                            std::thread::sleep(std::time::Duration::from_nanos(
+                                base_ns + jitter_ns,
+                            ));
+                        }
                     }
                     MigrationResult::NotNeeded => {
                         local.cached_mode = header.mode();
@@ -2171,6 +2235,9 @@ impl Topic<HorusTensor> {
     pub fn recv_handle(&self) -> Option<crate::memory::TensorHandle> {
         let tensor = self.ring.recv()?;
         let pool = self.pool();
-        Some(crate::memory::TensorHandle::from_owned(tensor, pool))
+        // from_owned validates pool_id matches; returns None (discards the
+        // tensor) if the descriptor was sent from a different pool — this
+        // prevents refcount corruption on a mismatched pool.
+        crate::memory::TensorHandle::from_owned(tensor, pool).ok()
     }
 }

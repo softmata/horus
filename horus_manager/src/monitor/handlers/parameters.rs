@@ -8,6 +8,35 @@ use std::sync::Arc;
 
 use crate::monitor::AppState;
 
+/// Validate that `key` is a safe parameter name and contains no path
+/// traversal sequences.
+///
+/// A safe key:
+/// - Is non-empty and at most 256 bytes.
+/// - Contains only alphanumeric characters, underscores, hyphens, dots, and
+///   forward slashes (for hierarchical keys like `"sensors/lidar/rate"`).
+/// - Does not contain the sequences `..` or `//` (directory traversal /
+///   double-slash ambiguity).
+/// - Does not start or end with `/`.
+///
+/// Returns `true` when the key is safe; `false` otherwise.
+fn is_safe_path_component(key: &str) -> bool {
+    if key.is_empty() || key.len() > 256 {
+        return false;
+    }
+    // Reject traversal sequences.
+    if key.contains("..") || key.contains("//") {
+        return false;
+    }
+    // Reject leading/trailing slashes.
+    if key.starts_with('/') || key.ends_with('/') {
+        return false;
+    }
+    // Allow only safe characters: alphanumeric, `_`, `-`, `.`, `/`.
+    key.chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+}
+
 /// List all parameters
 pub async fn params_list_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let params_map = state.params.get_all();
@@ -54,6 +83,16 @@ pub async fn params_get_handler(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
+    if !is_safe_path_component(&key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "success": false,
+                "error": format!("Invalid parameter key '{}'", key)
+            })
+            .to_string(),
+        );
+    }
     match state.params.get::<serde_json::Value>(&key) {
         Some(value) => (
             StatusCode::OK,
@@ -88,6 +127,16 @@ pub async fn params_set_handler(
     Path(key): Path<String>,
     Json(req): Json<SetParamRequest>,
 ) -> impl IntoResponse {
+    if !is_safe_path_component(&key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "success": false,
+                "error": format!("Invalid parameter key '{}'", key)
+            })
+            .to_string(),
+        );
+    }
     let result = if let Some(expected_version) = req.version {
         state
             .params
@@ -138,6 +187,16 @@ pub async fn params_delete_handler(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> impl IntoResponse {
+    if !is_safe_path_component(&key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({
+                "success": false,
+                "error": format!("Invalid parameter key '{}'", key)
+            })
+            .to_string(),
+        );
+    }
     match state.params.remove(&key) {
         Some(old_value) => {
             let _ = state.params.save_to_disk();
@@ -250,5 +309,52 @@ pub async fn params_import_handler(
             })
             .to_string(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_path_component;
+
+    /// Normal hierarchical keys are accepted.
+    #[test]
+    fn test_safe_keys_accepted() {
+        assert!(is_safe_path_component("sensors/lidar/rate"));
+        assert!(is_safe_path_component("robot_name"));
+        assert!(is_safe_path_component("max-speed"));
+        assert!(is_safe_path_component("config.v2"));
+        assert!(is_safe_path_component("a"));
+    }
+
+    /// Path traversal sequences must be rejected (callers get 400 Bad Request).
+    #[test]
+    fn test_path_traversal_rejected() {
+        assert!(!is_safe_path_component("../../secret"));
+        assert!(!is_safe_path_component("../etc/passwd"));
+        assert!(!is_safe_path_component("sensors/../passwords"));
+        assert!(!is_safe_path_component("double//slash"));
+    }
+
+    /// Leading and trailing slashes must be rejected.
+    #[test]
+    fn test_leading_trailing_slash_rejected() {
+        assert!(!is_safe_path_component("/leading"));
+        assert!(!is_safe_path_component("trailing/"));
+    }
+
+    /// Empty and oversized keys must be rejected.
+    #[test]
+    fn test_empty_and_oversized_rejected() {
+        assert!(!is_safe_path_component(""));
+        assert!(!is_safe_path_component(&"a".repeat(257)));
+    }
+
+    /// Shell metacharacters outside the safe set must be rejected.
+    #[test]
+    fn test_special_chars_rejected() {
+        assert!(!is_safe_path_component("key;rm -rf /"));
+        assert!(!is_safe_path_component("key|cat /etc/shadow"));
+        assert!(!is_safe_path_component("key`whoami`"));
+        assert!(!is_safe_path_component("key$(id)"));
     }
 }

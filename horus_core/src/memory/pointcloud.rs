@@ -75,6 +75,8 @@ impl PointCloud {
     /// Extract all XYZ coordinates as `Vec<[f32; 3]>`.
     ///
     /// Only valid for F32 clouds with at least 3 fields per point.
+    /// Returns `None` if dtype is wrong, the tensor claims more points than
+    /// the backing allocation contains, or the data pointer is not 4-byte aligned.
     pub fn extract_xyz(&self) -> Option<Vec<[f32; 3]>> {
         if self.dtype() != TensorDtype::F32 || self.fields_per_point() < 3 {
             return None;
@@ -82,14 +84,35 @@ impl PointCloud {
 
         let fpp = self.fields_per_point() as usize;
         let count = self.point_count() as usize;
+
+        // Validate bounds and alignment BEFORE the unsafe reinterpretation.
+        // A corrupted descriptor may report more points than the slot contains;
+        // checking after the slice is created is too late to prevent UB.
+        let bytes = self.data();
+        let required_bytes = count
+            .checked_mul(fpp)
+            .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()))
+            .unwrap_or(usize::MAX);
+        if required_bytes > bytes.len() {
+            return None;
+        }
+        // f32 requires 4-byte alignment; verify before reinterpretation.
+        if bytes.as_ptr() as usize % std::mem::align_of::<f32>() != 0 {
+            return None;
+        }
+
+        // SAFETY:
+        // - dtype is F32 (checked above).
+        // - The pointer is 4-byte aligned (verified above).
+        // - `floats.len() >= count * fpp` (bounds-validated above), so every
+        //   in-loop access `floats[base..base+3]` is guaranteed in-bounds.
         let floats = unsafe { self.data_as::<f32>() };
 
         let mut points = Vec::with_capacity(count);
         for i in 0..count {
             let base = i * fpp;
-            if base + 3 <= floats.len() {
-                points.push([floats[base], floats[base + 1], floats[base + 2]]);
-            }
+            // No per-iteration bounds check needed — pre-validated above.
+            points.push([floats[base], floats[base + 1], floats[base + 2]]);
         }
         Some(points)
     }
@@ -134,5 +157,68 @@ impl std::fmt::Debug for PointCloud {
             .field("fields_per_point", &self.fields_per_point())
             .field("dtype", &self.dtype())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TensorDtype;
+
+    #[test]
+    fn test_extract_xyz_truncated_data_returns_none() {
+        // Allocate a real PointCloud with 10 points (120 bytes of storage).
+        let real = PointCloud::new(10, 3, TensorDtype::F32).unwrap();
+        let pool = real.pool().clone();
+
+        // Copy the descriptor and inflate shape[0] so it claims 100 points
+        // (1200 bytes), far more than the 120-byte slot contains.
+        // This simulates a corrupted tensor descriptor received cross-process.
+        let mut bad_desc = *real.descriptor();
+        bad_desc.tensor_mut().shape[0] = 100;
+
+        let bad_pc = PointCloud::from_owned(bad_desc, pool);
+
+        // extract_xyz must detect the mismatch and return None, not access
+        // out-of-bounds memory or cause undefined behaviour.
+        assert!(
+            bad_pc.extract_xyz().is_none(),
+            "extract_xyz should return None when descriptor claims more data than is allocated"
+        );
+
+        // Keep `real` alive to prevent slot reuse during the test.
+        drop(real);
+    }
+
+    #[test]
+    fn test_extract_xyz_valid_cloud() {
+        let mut pc = PointCloud::new(3, 3, TensorDtype::F32).unwrap();
+        let floats: &mut [f32] = bytemuck::cast_slice_mut(pc.data_mut());
+        floats[0..9].copy_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+
+        let xyz = pc.extract_xyz().expect("valid XYZ cloud should extract");
+        assert_eq!(xyz.len(), 3);
+        assert_eq!(xyz[0], [1.0, 2.0, 3.0]);
+        assert_eq!(xyz[1], [4.0, 5.0, 6.0]);
+        assert_eq!(xyz[2], [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn test_extract_xyz_wrong_dtype_returns_none() {
+        let pc = PointCloud::new(10, 3, TensorDtype::U16).unwrap();
+        assert!(
+            pc.extract_xyz().is_none(),
+            "extract_xyz should return None for non-F32 dtype"
+        );
+    }
+
+    #[test]
+    fn test_extract_xyz_too_few_fields_returns_none() {
+        // A 1-field-per-point cloud cannot produce XYZ triples.
+        let pc = PointCloud::new(10, 2, TensorDtype::F32).unwrap();
+        assert!(
+            pc.extract_xyz().is_none(),
+            "extract_xyz should return None for < 3 fields per point"
+        );
     }
 }

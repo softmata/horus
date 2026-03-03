@@ -53,9 +53,15 @@ jobs:
           sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
 
       # Run MIRI on core modules with unsafe code
-      - name: MIRI - horus_core memory module
+      - name: MIRI - horus_core memory module (unit tests)
         run: |
           cargo miri test -p horus_core --lib -- memory::
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+
+      - name: MIRI - horus_core memory safety integration tests
+        run: |
+          cargo miri test -p horus_core --test memory_safety
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
 

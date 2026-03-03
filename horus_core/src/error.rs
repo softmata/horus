@@ -52,9 +52,34 @@ pub enum HorusError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    /// Cross-process tensor descriptor validation failure.
+    ///
+    /// Returned when a `HorusTensor` received from another process fails the
+    /// structural integrity check: wrong pool ID, out-of-range slot index,
+    /// freed or reused slot, or mismatched offset/size fields.
+    ///
+    /// Callers MUST treat this as an indication of data corruption or a
+    /// malicious sender and abort the receive operation.
+    #[error("Invalid tensor descriptor: {0}")]
+    InvalidDescriptor(String),
+
     /// Operation not supported on this platform
     #[error("Unsupported: {0}")]
     Unsupported(String),
+
+    /// Value is outside the valid range for the target type.
+    ///
+    /// Returned when a numeric value would overflow or underflow the
+    /// destination type (e.g., a depth in meters too large to store as u16 mm).
+    #[error("Out of range: {0}")]
+    OutOfRange(String),
+
+    /// Operation timed out waiting for a resource.
+    ///
+    /// Returned by [`TensorPool::alloc_with_timeout`] when no free slot becomes
+    /// available within the requested duration.
+    #[error("Timeout: {0}")]
+    Timeout(String),
 
     /// Internal errors with source location for debugging.
     /// Use the `horus_internal!()` macro to create these — it captures file/line automatically.

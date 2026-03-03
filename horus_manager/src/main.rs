@@ -407,6 +407,17 @@ enum Commands {
         /// Reset password before starting
         #[arg(short = 'r', long = "reset-password")]
         reset_password: bool,
+
+        /// Disable authentication (no password required).
+        ///
+        /// WARNING: Anyone on your network will be able to access ALL monitoring
+        /// APIs without a password.  Only use this in fully trusted environments
+        /// such as isolated development machines or air-gapped robots.
+        ///
+        /// Without this flag, `horus monitor` refuses to start if no password
+        /// has been configured.  Set a password with: horus monitor -r
+        #[arg(long = "no-auth")]
+        no_auth: bool,
     },
 
     /// Discover HORUS nodes on the local network via mDNS
@@ -1353,6 +1364,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             port,
             tui,
             reset_password,
+            no_auth,
         } => {
             // Reset password if requested
             if reset_password {
@@ -1379,7 +1391,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
 
                 tokio::runtime::Runtime::new()
                     .expect("failed to create tokio runtime")
-                    .block_on(monitor::run(port))
+                    .block_on(monitor::run(port, no_auth))
                     .map_err(|e| {
                         let err_str = e.to_string();
                         if err_str.contains("Address already in use") || err_str.contains("os error 98") {

@@ -53,16 +53,32 @@ macro_rules! impl_tensor_backed {
             }
 
             /// Get raw data as a byte slice (zero-copy from shared memory).
+            ///
+            /// # Panics
+            ///
+            /// Panics if the tensor descriptor is internally inconsistent (pool_id
+            /// mismatch or out-of-bounds offset).  This indicates a programming
+            /// error — a properly constructed `Image`/`DepthImage`/`PointCloud` value
+            /// always carries a valid descriptor allocated from its own pool.
             #[inline]
             pub fn data(&self) -> &[u8] {
-                self.pool.data_slice(self.descriptor.tensor())
+                self.pool.data_slice(self.descriptor.tensor()).expect(
+                    "tensor descriptor must be valid: pool_id matches and offset is in bounds",
+                )
             }
 
             /// Get raw data as a mutable byte slice (zero-copy from shared memory).
+            ///
+            /// # Panics
+            ///
+            /// Panics if the tensor descriptor is internally inconsistent.
+            /// See [`data`](Self::data) for details.
             #[inline]
             #[allow(clippy::mut_from_ref)]
             pub fn data_mut(&self) -> &mut [u8] {
-                self.pool.data_slice_mut(self.descriptor.tensor())
+                self.pool.data_slice_mut(self.descriptor.tensor()).expect(
+                    "tensor descriptor must be valid: pool_id matches and offset is in bounds",
+                )
             }
 
             /// Copy data from a buffer into shared memory.

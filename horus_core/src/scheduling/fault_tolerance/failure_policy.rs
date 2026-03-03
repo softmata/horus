@@ -105,7 +105,14 @@ enum FailureHandlerState {
     Ignore,
 }
 
-/// What the scheduler should do after a node failure
+/// What the scheduler should do after a node failure.
+///
+/// ## RT-safe: no heap allocation
+///
+/// All variants are unit variants (no payload).  The enum derives `Copy`,
+/// ensuring it is returned from `record_failure()` entirely on the stack.
+/// **Never add a `String` or `Vec` payload to any variant** — that would
+/// introduce a heap allocation on the RT scheduling hot path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureAction {
     /// Stop the scheduler immediately
@@ -116,7 +123,7 @@ pub enum FailureAction {
     SkipNode,
     /// Do nothing, continue as normal
     Continue,
-    /// Restart limit exhausted — escalate to fatal
+    /// Restart limit exhausted — escalate to fatal stop
     FatalAfterRestarts,
 }
 
@@ -195,7 +202,22 @@ impl FailureHandler {
         }
     }
 
-    /// Record a failed tick and get the action the scheduler should take.
+    /// Record a failed tick and return the action the scheduler must take.
+    ///
+    /// ## RT-safe: no heap allocation
+    ///
+    /// This method runs on the real-time scheduling hot path and must **never**
+    /// allocate heap memory:
+    ///
+    /// - Returns `FailureAction` by value — `Copy` enum, stack-only.
+    /// - All arithmetic uses saturating integer ops (no panics, no allocs).
+    /// - `Instant::now()` is stack-allocated.
+    /// - `CircuitBreaker::record_failure()` uses atomics + `parking_lot::Mutex`
+    ///   (no heap allocation; the mutex is embedded in the breaker struct).
+    ///
+    /// **Maintenance rule**: do not add `format!()`, `String::new()`,
+    /// `Vec::new()`, `Box::new()`, or any other allocating call to this method
+    /// or any function it calls on the hot path.
     pub fn record_failure(&mut self) -> FailureAction {
         match &mut self.state {
             FailureHandlerState::Fatal => FailureAction::StopScheduler,

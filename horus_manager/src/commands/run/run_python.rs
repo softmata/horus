@@ -24,16 +24,22 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
     let uses_horus = detect_horus_usage_python(&file)?;
 
     if uses_horus {
+        // Validate and canonicalize the path before use so that a crafted
+        // filename cannot escape the wrapper's env-var sandboxing.
+        let canonical_file = validate_node_path(&file)?;
+
         // Use scheduler wrapper for HORUS nodes
         eprintln!(
             "{} Executing Python node with HORUS scheduler...",
             cli_output::ICON_INFO.cyan()
         );
 
-        let wrapper_script = create_python_wrapper(&file)?;
+        let wrapper_script = create_python_wrapper()?;
 
         let mut cmd = Command::new(python_cmd);
         cmd.arg(&wrapper_script);
+        // Pass the real node path out-of-band — never inline in Python source.
+        cmd.env("HORUS_NODE_FILE", &canonical_file);
         cmd.args(args);
 
         // Spawn child process so we can handle Ctrl+C
@@ -177,63 +183,140 @@ fn detect_horus_usage_python(file: &Path) -> Result<bool> {
     Ok(false)
 }
 
-fn create_python_wrapper(original_file: &Path) -> Result<PathBuf> {
-    let wrapper_path = env::temp_dir().join(format!(
-        "horus_wrapper_{}.py",
-        original_file
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-    ));
+/// Validate that a Python node file path is safe to execute.
+///
+/// Returns the canonicalized absolute path on success.  Rejects paths that
+/// contain null bytes (which Path already forbids in Rust, so this is a
+/// belt-and-suspenders check) or that cannot be resolved on the filesystem.
+fn validate_node_path(file: &Path) -> Result<PathBuf> {
+    // Canonicalize resolves symlinks and ensures the file actually exists.
+    let canonical = file
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Invalid node path '{}': {}", file.display(), e))?;
 
-    let wrapper_content = format!(
-        r#"#!/usr/bin/env python3
+    // Reject paths whose OS string contains any null byte (defensive: Rust's
+    // OsStr should already prevent this, but be explicit).
+    {
+        use std::os::unix::ffi::OsStrExt;
+        if canonical.as_os_str().as_bytes().contains(&0u8) {
+            bail!("Node path contains a null byte and cannot be used safely.");
+        }
+    }
+
+    Ok(canonical)
+}
+
+/// Create a temporary Python wrapper script that loads the real node file from
+/// the `HORUS_NODE_FILE` environment variable at runtime.
+///
+/// **Security**: the user-supplied file path is intentionally NOT interpolated
+/// into the Python source here.  It is passed out-of-band via the environment
+/// variable so that a crafted filename like `'); os.system('rm -rf /')` cannot
+/// execute arbitrary code.
+fn create_python_wrapper() -> Result<PathBuf> {
+    // Use a timestamp-based name so the wrapper cannot be guessed or hijacked,
+    // and no user-controlled string is included in the filename.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let wrapper_path = env::temp_dir().join(format!("horus_wrapper_{ts}.py"));
+
+    // Fixed template — no user input anywhere inside this string.
+    let wrapper_content = r#"#!/usr/bin/env python3
 """
 HORUS Python Node Wrapper
-Auto-generated wrapper for HORUS scheduler integration
+Auto-generated wrapper for HORUS scheduler integration.
+The node file path is supplied via the HORUS_NODE_FILE environment variable;
+it is never interpolated into this source code.
 """
 import sys
 import os
-
-# HORUS Python bindings are available via the 'horus' package
-# Install with: cargo install maturin && maturin develop (from horus_py directory)
-# Or: pip install horus-robotics
 
 class HorusSchedulerIntegration:
     def __init__(self):
         self.running = True
 
     def run_node(self):
-        """Run the user's node code with scheduler integration"""
+        """Run the user's node code with scheduler integration."""
+        node_file = os.environ.get('HORUS_NODE_FILE')
+        if not node_file:
+            print("Error: HORUS_NODE_FILE environment variable not set", file=sys.stderr)
+            sys.exit(2)
+
         exit_code = 0
         try:
-            # Execute user code in global namespace with proper scope
-            # Pass globals() so imports and module-level code are accessible everywhere
-            exec(compile(open(r'{}').read(), r'{}', 'exec'), globals())
+            with open(node_file, 'r') as fh:
+                source = fh.read()
+            # compile() with the real filename produces correct tracebacks.
+            exec(compile(source, node_file, 'exec'), globals())
         except SystemExit as e:
-            # Preserve exit code from sys.exit()
             exit_code = e.code if e.code is not None else 0
         except KeyboardInterrupt:
-            # Ctrl+C received - exit cleanly
             print("\nGraceful shutdown initiated...", file=sys.stderr)
             exit_code = 0
         except Exception as e:
-            print(f" Node execution failed: {{e}}", file=sys.stderr)
+            print(f" Node execution failed: {e}", file=sys.stderr)
             exit_code = 1
 
         sys.exit(exit_code)
 
-# Initialize HORUS integration
 if __name__ == "__main__":
     print(" HORUS Python Node Starting...", file=sys.stderr)
     scheduler = HorusSchedulerIntegration()
     scheduler.run_node()
-"#,
-        original_file.display(),
-        original_file.display()
-    );
+"#;
 
     fs::write(&wrapper_path, wrapper_content)?;
-
     Ok(wrapper_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Malformed / non-existent paths must be rejected by validate_node_path.
+    /// Critically, none of the special characters in these paths must end up
+    /// interpolated into any Python source string.
+    #[test]
+    fn test_malicious_path_rejected() {
+        let evil_paths = [
+            // Classic injection attempt
+            "'); __import__('os').system('id')",
+            // Double-quote variant
+            r#""); __import__('os').system('id')"#,
+            // Semicolon path traversal with backtick
+            "/tmp/../../etc/shadow`id`",
+            // Null-byte injection (non-representable as a real Path on Linux,
+            // but let's make sure a manufactured OsString attempt is caught).
+        ];
+        for path in &evil_paths {
+            let result = validate_node_path(Path::new(path));
+            assert!(
+                result.is_err(),
+                "validate_node_path should reject malicious path: {path}"
+            );
+        }
+    }
+
+    /// The wrapper script content must not contain any format placeholder
+    /// that could be filled with user data.
+    #[test]
+    fn test_wrapper_contains_no_format_placeholders() {
+        // create_python_wrapper writes a fixed string — verify it doesn't
+        // contain `{}` or `r'{}'` patterns that would indicate leftover
+        // format!() interpolation.
+        let wrapper_path = create_python_wrapper().expect("wrapper creation failed");
+        let content = fs::read_to_string(&wrapper_path).expect("read wrapper");
+        fs::remove_file(&wrapper_path).ok();
+
+        assert!(
+            !content.contains("r'{}'") && !content.contains("open(r'"),
+            "Wrapper must not contain inline path placeholders; got:\n{content}"
+        );
+        assert!(
+            content.contains("HORUS_NODE_FILE"),
+            "Wrapper must read node path from HORUS_NODE_FILE env var"
+        );
+    }
 }

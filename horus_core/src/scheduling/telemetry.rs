@@ -11,6 +11,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::net::UdpSocket;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Telemetry metric types
@@ -75,6 +76,37 @@ impl TelemetryEndpoint {
     }
 }
 
+/// Maximum number of callbacks that can be registered per event name.
+///
+/// Exceeding this limit returns [`TelemetryError::TooManyCallbacks`].
+/// The bound prevents a misbehaving caller from registering thousands of
+/// callbacks and stalling the RT scheduler on each telemetry tick.
+pub(crate) const MAX_CALLBACKS_PER_EVENT: usize = 100;
+
+/// Errors returned by the telemetry callback API.
+#[derive(Debug)]
+pub(crate) enum TelemetryError {
+    /// Registering a callback would exceed [`MAX_CALLBACKS_PER_EVENT`].
+    TooManyCallbacks {
+        /// The event name that hit the limit.
+        event: String,
+        /// Maximum allowed callbacks per event.
+        limit: usize,
+    },
+}
+
+impl std::fmt::Display for TelemetryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooManyCallbacks { event, limit } => write!(
+                f,
+                "telemetry: too many callbacks for event '{}' (limit {})",
+                event, limit
+            ),
+        }
+    }
+}
+
 /// Telemetry collector and exporter
 pub(crate) struct TelemetryManager {
     /// Endpoint for export
@@ -93,10 +125,32 @@ pub(crate) struct TelemetryManager {
     udp_socket: Option<UdpSocket>,
     /// Whether telemetry is enabled
     enabled: bool,
+    /// Bounded sender to the background HTTP export thread.
+    ///
+    /// `Some` only when the endpoint is `Http`.  The RT scheduler thread calls
+    /// `try_send()` (non-blocking); if the channel is full the snapshot is
+    /// silently dropped rather than stalling the scheduler.
+    http_tx: Option<mpsc::SyncSender<TelemetrySnapshot>>,
+    /// Background thread that performs blocking HTTP I/O.
+    ///
+    /// Dropped (and joined) when `TelemetryManager` is dropped.
+    http_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Per-event callbacks fired whenever `record()` stores a matching metric.
+    ///
+    /// Keyed by event (metric) name.  Each list is bounded at
+    /// `MAX_CALLBACKS_PER_EVENT` entries.  The scheduler calls `record()` on
+    /// the hot path; callbacks must be fast (no blocking I/O).
+    callbacks: HashMap<String, Vec<Box<dyn Fn(&Metric) + Send>>>,
 }
 
 impl TelemetryManager {
-    /// Create a new telemetry manager
+    /// Create a new telemetry manager.
+    ///
+    /// For `Http` endpoints, spawns a dedicated background thread that
+    /// performs blocking network I/O.  The scheduler thread calls `export()`
+    /// which posts a snapshot to a bounded channel; the background thread
+    /// reads and POSTs at its own pace without blocking the RT loop.
     pub fn new(endpoint: TelemetryEndpoint, interval_ms: u64) -> Self {
         let enabled = !matches!(endpoint, TelemetryEndpoint::Disabled);
 
@@ -104,6 +158,29 @@ impl TelemetryManager {
             UdpSocket::bind("0.0.0.0:0").ok()
         } else {
             None
+        };
+
+        // For HTTP endpoints, spin up a background export thread so that
+        // TcpStream::connect() never runs on the RT scheduler thread.
+        // Channel capacity 4: enough to absorb a brief burst while the
+        // background thread is busy with a slow POST, without growing unboundedly.
+        let (http_tx, http_thread) = if let TelemetryEndpoint::Http(url) = &endpoint {
+            let (tx, rx) = mpsc::sync_channel::<TelemetrySnapshot>(4);
+            let url = url.clone();
+            let handle = std::thread::Builder::new()
+                .name("horus-telemetry-http".to_string())
+                .spawn(move || {
+                    // Run until the sender is dropped (scheduler shuts down).
+                    while let Ok(snapshot) = rx.recv() {
+                        if let Err(e) = http_post_blocking(&url, &snapshot) {
+                            log::warn!("[TELEMETRY] HTTP export failed: {}", e);
+                        }
+                    }
+                })
+                .ok();
+            (Some(tx), handle)
+        } else {
+            (None, None)
         };
 
         Self {
@@ -115,6 +192,9 @@ impl TelemetryManager {
             start_time: Instant::now(),
             udp_socket,
             enabled,
+            http_tx,
+            http_thread,
+            callbacks: HashMap::new(),
         }
     }
 
@@ -143,7 +223,9 @@ impl TelemetryManager {
         self.record(name, MetricValue::Gauge(value), labels);
     }
 
-    /// Record a metric with custom value type and labels
+    /// Record a metric with custom value type and labels.
+    ///
+    /// After storing the metric, fires any callbacks registered for `name`.
     pub fn record(&mut self, name: &str, value: MetricValue, labels: HashMap<String, String>) {
         if !self.enabled {
             return;
@@ -159,7 +241,40 @@ impl TelemetryManager {
                 .as_secs(),
         };
 
+        // Fire registered callbacks before inserting so callers see the
+        // previous value (if any) via the existing metrics map.
+        if let Some(cbs) = self.callbacks.get(name) {
+            for cb in cbs {
+                cb(&metric);
+            }
+        }
+
         self.metrics.insert(name.to_string(), metric);
+    }
+
+    /// Register a callback to be invoked whenever a metric named `event` is
+    /// recorded.
+    ///
+    /// Returns [`TelemetryError::TooManyCallbacks`] when the per-event limit
+    /// (`MAX_CALLBACKS_PER_EVENT`) is reached, preventing DoS via callback
+    /// accumulation on the RT scheduler thread.
+    ///
+    /// Callbacks are called synchronously from `record()` on the scheduler
+    /// thread — they must be fast (no blocking I/O, no mutex acquisition).
+    pub fn register_callback(
+        &mut self,
+        event: &str,
+        callback: impl Fn(&Metric) + Send + 'static,
+    ) -> Result<(), TelemetryError> {
+        let list = self.callbacks.entry(event.to_string()).or_default();
+        if list.len() >= MAX_CALLBACKS_PER_EVENT {
+            return Err(TelemetryError::TooManyCallbacks {
+                event: event.to_string(),
+                limit: MAX_CALLBACKS_PER_EVENT,
+            });
+        }
+        list.push(Box::new(callback));
+        Ok(())
     }
 
     /// Check if it's time to export
@@ -167,13 +282,9 @@ impl TelemetryManager {
         self.enabled && self.last_export.elapsed() >= self.interval
     }
 
-    /// Export metrics to configured endpoint
-    pub fn export(&mut self) -> Result<(), String> {
-        if !self.enabled {
-            return Ok(());
-        }
-
-        let snapshot = TelemetrySnapshot {
+    /// Build a snapshot of all current metrics.
+    fn build_snapshot(&self) -> TelemetrySnapshot {
+        TelemetrySnapshot {
             timestamp_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -181,14 +292,53 @@ impl TelemetryManager {
             scheduler_name: self.scheduler_name.clone(),
             uptime_secs: self.start_time.elapsed().as_secs_f64(),
             metrics: self.metrics.values().cloned().collect(),
-        };
+        }
+    }
 
-        let result = match &self.endpoint {
-            TelemetryEndpoint::LocalFile(path) => self.export_to_file(path, &snapshot),
-            TelemetryEndpoint::Udp(addr) => self.export_to_udp(addr, &snapshot),
-            TelemetryEndpoint::Http(url) => self.export_to_http(url, &snapshot),
-            TelemetryEndpoint::Stdout => self.export_to_stdout(&snapshot),
-            TelemetryEndpoint::Disabled => Ok(()),
+    /// Export metrics to the configured endpoint.
+    ///
+    /// For `Http` endpoints this method is **non-blocking**: it posts the
+    /// snapshot to the background thread's channel and returns immediately.
+    /// If the channel is full (background thread is lagging) the snapshot
+    /// is silently dropped to preserve RT scheduling latency.
+    ///
+    /// For `LocalFile`, `Udp`, and `Stdout` endpoints, the export is
+    /// performed synchronously (these operations are fast and bounded).
+    pub fn export(&mut self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let snapshot = self.build_snapshot();
+
+        let result = if let Some(ref tx) = self.http_tx {
+            // Non-blocking send: drop snapshot if channel is full rather than
+            // stalling the RT scheduler thread waiting for the HTTP export to
+            // drain.  The background thread will catch up on subsequent exports.
+            match tx.try_send(snapshot) {
+                Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    Err("HTTP export thread has exited".to_string())
+                }
+            }
+        } else {
+            match &self.endpoint {
+                TelemetryEndpoint::LocalFile(path) => {
+                    let path = path.clone();
+                    self.export_to_file(&path, &snapshot)
+                }
+                TelemetryEndpoint::Udp(addr) => {
+                    let addr = addr.clone();
+                    self.export_to_udp(&addr, &snapshot)
+                }
+                TelemetryEndpoint::Http(_) => {
+                    // http_tx is always Some when endpoint is Http; this branch
+                    // is unreachable, but handled gracefully.
+                    Ok(())
+                }
+                TelemetryEndpoint::Stdout => self.export_to_stdout(&snapshot),
+                TelemetryEndpoint::Disabled => Ok(()),
+            }
         };
 
         self.last_export = Instant::now();
@@ -224,68 +374,6 @@ impl TelemetryManager {
         }
     }
 
-    /// Export to HTTP endpoint (blocking, use sparingly)
-    fn export_to_http(&self, url: &str, snapshot: &TelemetrySnapshot) -> Result<(), String> {
-        // Use a simple blocking POST
-        // In production, you'd want async here
-        let json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
-
-        // Simple HTTP POST without external dependencies
-        // Parse URL
-        let url = url
-            .trim_start_matches("http://")
-            .trim_start_matches("https://");
-        let (host, path) = if let Some(idx) = url.find('/') {
-            (&url[..idx], &url[idx..])
-        } else {
-            (url, "/")
-        };
-
-        // Connect and send
-        use std::io::{BufRead, BufReader};
-        use std::net::TcpStream;
-
-        let mut stream = TcpStream::connect(format!("{}:80", host))
-            .map_err(|e| format!("Connect failed: {}", e))?;
-
-        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-
-        let request = format!(
-            "POST {} HTTP/1.1\r\n\
-             Host: {}\r\n\
-             Content-Type: application/json\r\n\
-             Content-Length: {}\r\n\
-             Connection: close\r\n\
-             \r\n\
-             {}",
-            path,
-            host,
-            json.len(),
-            json
-        );
-
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| format!("Write failed: {}", e))?;
-
-        // Read response (just check status)
-        let mut reader = BufReader::new(&stream);
-        let mut status_line = String::new();
-        reader
-            .read_line(&mut status_line)
-            .map_err(|e| format!("Read failed: {}", e))?;
-
-        if !status_line.contains("200")
-            && !status_line.contains("201")
-            && !status_line.contains("204")
-        {
-            return Err(format!("HTTP error: {}", status_line.trim()));
-        }
-
-        Ok(())
-    }
-
     /// Export to stdout (for debugging)
     fn export_to_stdout(&self, snapshot: &TelemetrySnapshot) -> Result<(), String> {
         println!("[TELEMETRY] === Metrics Snapshot ===");
@@ -305,6 +393,76 @@ impl Default for TelemetryManager {
     fn default() -> Self {
         Self::new(TelemetryEndpoint::Disabled, 1000)
     }
+}
+
+impl Drop for TelemetryManager {
+    fn drop(&mut self) {
+        // Dropping the sender signals the background thread to exit (the
+        // receiver's `recv()` returns `Err` when all senders are gone).
+        drop(self.http_tx.take());
+        // Join the background thread so it drains any queued snapshots
+        // before the process exits.
+        if let Some(handle) = self.http_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Blocking HTTP POST of a telemetry snapshot.
+///
+/// This function runs exclusively on the dedicated `horus-telemetry-http`
+/// background thread — **never** on the RT scheduler thread.
+fn http_post_blocking(url: &str, snapshot: &TelemetrySnapshot) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpStream;
+
+    let json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
+
+    let url_stripped = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let (host, path) = if let Some(idx) = url_stripped.find('/') {
+        (&url_stripped[..idx], &url_stripped[idx..])
+    } else {
+        (url_stripped, "/")
+    };
+
+    let mut stream =
+        TcpStream::connect(format!("{}:80", host)).map_err(|e| format!("Connect failed: {}", e))?;
+
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+
+    let request = format!(
+        "POST {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        path,
+        host,
+        json.len(),
+        json
+    );
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Write failed: {}", e))?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .map_err(|e| format!("Read failed: {}", e))?;
+
+    if !status_line.contains("200") && !status_line.contains("201") && !status_line.contains("204")
+    {
+        return Err(format!("HTTP error: {}", status_line.trim()));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -327,6 +485,43 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// HTTP export must be non-blocking from the caller's perspective.
+    ///
+    /// We create a TelemetryManager with an Http endpoint pointing at a port
+    /// where no server is listening.  `export()` must return almost instantly
+    /// regardless — the actual (failing) TCP connect happens on the background
+    /// thread, not on the test thread.
+    ///
+    /// A generous 200 ms budget is used to allow for scheduling jitter; a
+    /// blocking connect would typically take ~75 s (OS TCP timeout) and would
+    /// trigger the 200 ms assertion failure well before then.
+    #[test]
+    fn http_export_is_non_blocking() {
+        // Port 19999 is unlikely to have a server, so the background thread
+        // will get a connection refused error — but the test thread must not
+        // wait for that.
+        let mut tm = TelemetryManager::new(
+            TelemetryEndpoint::Http("http://127.0.0.1:19999/metrics".to_string()),
+            100,
+        );
+        tm.gauge("test_metric", 1.0);
+
+        let start = std::time::Instant::now();
+        // Call export multiple times to ensure no single call blocks.
+        for _ in 0..5 {
+            let _ = tm.export();
+        }
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(200),
+            "export() with Http endpoint must be non-blocking; took {:?}",
+            elapsed
+        );
+        // TelemetryManager drop will join the background thread; the test waits
+        // for it to finish (the thread will quickly error on connect refused).
+    }
+
     #[test]
     fn test_telemetry_endpoint_parsing() {
         assert!(matches!(
@@ -345,5 +540,72 @@ mod tests {
             TelemetryEndpoint::from_string("udp://127.0.0.1:9999"),
             TelemetryEndpoint::Udp(_)
         ));
+    }
+
+    /// Registering exactly MAX_CALLBACKS_PER_EVENT callbacks must succeed;
+    /// the 101st must return TelemetryError::TooManyCallbacks.
+    #[test]
+    fn test_register_callback_limit_enforced() {
+        let mut tm = TelemetryManager::new(TelemetryEndpoint::Disabled, 1000);
+
+        for i in 0..MAX_CALLBACKS_PER_EVENT {
+            let result = tm.register_callback("tick", move |_m| {
+                // cheap no-op callback; capture `i` to make each closure unique
+                let _ = i;
+            });
+            assert!(
+                result.is_ok(),
+                "callback #{} should succeed (limit is {})",
+                i,
+                MAX_CALLBACKS_PER_EVENT
+            );
+        }
+
+        // One past the limit must fail.
+        let result = tm.register_callback("tick", |_m| {});
+        assert!(
+            matches!(result, Err(TelemetryError::TooManyCallbacks { .. })),
+            "101st callback must return TooManyCallbacks"
+        );
+    }
+
+    /// Callbacks for unrelated events are independent — filling one event's
+    /// list does not prevent registration on a different event name.
+    #[test]
+    fn test_callback_limits_are_per_event() {
+        let mut tm = TelemetryManager::new(TelemetryEndpoint::Disabled, 1000);
+
+        // Fill "event_a".
+        for _ in 0..MAX_CALLBACKS_PER_EVENT {
+            tm.register_callback("event_a", |_m| {}).unwrap();
+        }
+
+        // "event_b" must still accept callbacks.
+        assert!(
+            tm.register_callback("event_b", |_m| {}).is_ok(),
+            "unrelated event must not be affected by another event's limit"
+        );
+    }
+
+    /// Callbacks are actually invoked when the matching metric is recorded.
+    #[test]
+    fn test_callbacks_fire_on_record() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let mut tm = TelemetryManager::new(TelemetryEndpoint::Stdout, 1000);
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        tm.register_callback("my_metric", move |_m| {
+            c.fetch_add(1, Ordering::Relaxed);
+        })
+        .unwrap();
+
+        tm.gauge("my_metric", 1.0);
+        tm.gauge("my_metric", 2.0);
+        // Different event — must NOT fire the "my_metric" callbacks.
+        tm.counter("other_metric", 5);
+
+        assert_eq!(counter.load(Ordering::Relaxed), 2, "callback must fire exactly twice");
     }
 }

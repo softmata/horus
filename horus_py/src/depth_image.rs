@@ -147,26 +147,30 @@ impl PyDepthImage {
     // === Numpy Array Interface ===
 
     #[getter]
-    fn __array_interface__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if self.inner.is_cuda() {
+    fn __array_interface__(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let this = slf.borrow();
+        if this.inner.is_cuda() {
             return Err(PyTypeError::new_err(
                 "Cannot create numpy array from CUDA depth image.",
             ));
         }
 
-        let tensor = self.inner.descriptor().tensor();
+        let tensor = this.inner.descriptor().tensor();
         let dict = PyDict::new(py);
 
-        let shape = vec![self.inner.height() as i64, self.inner.width() as i64];
+        let shape = vec![this.inner.height() as i64, this.inner.width() as i64];
         dict.set_item("shape", PyTuple::new(py, &shape)?)?;
         dict.set_item("typestr", tensor.dtype.numpy_typestr())?;
 
-        let ptr = self.inner.pool().data_ptr(tensor) as usize;
+        let ptr = this.inner.pool().data_ptr(tensor) as usize;
         dict.set_item("data", (ptr, false))?;
 
         let strides: Vec<i64> = tensor.strides().iter().map(|&x| x as i64).collect();
         dict.set_item("strides", PyTuple::new(py, &strides)?)?;
         dict.set_item("version", 3)?;
+        // Keep a reference to the Rust object alive inside the dict so the
+        // backing tensor pool slot cannot be freed while numpy holds this dict.
+        dict.set_item("__horus_obj__", slf)?;
 
         Ok(dict.into())
     }
@@ -188,12 +192,15 @@ impl PyDepthImage {
                 x, y
             )));
         }
-        self.inner.set_depth(x, y, value);
+        self.inner
+            .set_depth(x, y, value)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(())
     }
 
-    /// Calculate depth statistics: (min, max, mean) in meters.
-    fn depth_statistics(&self) -> (f32, f32, f32) {
+    /// Calculate depth statistics: `(min, max, mean)` in meters, or `None`
+    /// when the image contains no valid depth pixels.
+    fn depth_statistics(&self) -> Option<(f32, f32, f32)> {
         self.inner.depth_statistics()
     }
 

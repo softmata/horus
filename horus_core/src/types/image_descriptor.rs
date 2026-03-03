@@ -70,13 +70,29 @@ impl Default for ImageDescriptor {
 
 impl ImageDescriptor {
     /// Create a new image descriptor from pre-built tensor + metadata.
+    ///
+    /// The `step` (bytes per row) is taken from `tensor.strides[0]`, which
+    /// reflects the actual row stride including any alignment padding.  This
+    /// is correct for tensors allocated with row-padding (e.g., SIMD-aligned
+    /// images).  Falls back to `width * bytes_per_pixel` only when the stride
+    /// is zero (default/zeroed tensors).
     pub fn new(tensor: HorusTensor, encoding: ImageEncoding) -> Self {
-        let width = if tensor.ndim >= 2 {
-            tensor.shape[1] as u32
+        // Use the tensor's actual row stride (strides[0]) so that padded
+        // images — where the row stride exceeds width * bpp — have their
+        // step set correctly.  pixel() / set_pixel() / roi() all depend on
+        // step being accurate; a wrong step causes them to read or write the
+        // wrong bytes in adjacent rows.
+        let step = if tensor.ndim >= 1 && tensor.strides[0] > 0 {
+            tensor.strides[0] as u32
         } else {
-            0
+            // Fallback for zeroed/default tensors (no meaningful stride).
+            let width = if tensor.ndim >= 2 {
+                tensor.shape[1] as u32
+            } else {
+                0
+            };
+            width * encoding.bytes_per_pixel()
         };
-        let step = width * encoding.bytes_per_pixel();
 
         Self {
             inner: tensor,
@@ -196,6 +212,39 @@ mod tests {
         let mut img = ImageDescriptor::default();
         img.set_frame_id("camera_left");
         assert_eq!(img.frame_id(), "camera_left");
+    }
+
+    #[test]
+    fn test_image_step_uses_tensor_stride() {
+        // Create a tensor with a padded row stride (e.g., SIMD-aligned rows).
+        // strides[0] = width * channels + 16 bytes of padding per row.
+        let mut tensor =
+            HorusTensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+        let padded_stride = 640u64 * 3 + 16;
+        tensor.strides[0] = padded_stride;
+
+        let img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
+
+        // step must reflect the padded stride, not width * bpp.
+        assert_eq!(
+            img.step(),
+            padded_stride as u32,
+            "step should equal tensor.strides[0] for padded images"
+        );
+        assert_ne!(
+            img.step(),
+            640 * 3,
+            "step must NOT equal width*bpp when there is row padding"
+        );
+    }
+
+    #[test]
+    fn test_image_step_fallback_for_zeroed_tensor() {
+        // A zeroed (default) tensor has strides[0] == 0 — fallback to width*bpp.
+        let tensor = HorusTensor::default(); // all zeros, ndim == 0
+        let img = ImageDescriptor::new(tensor, ImageEncoding::Rgb8);
+        // Both width and step should be 0 for an empty descriptor.
+        assert_eq!(img.step(), 0);
     }
 
     #[test]

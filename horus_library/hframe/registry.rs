@@ -49,15 +49,7 @@ impl FrameRegistry {
     ///
     /// Returns the assigned frame ID.
     pub fn register(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
-        // Check for existing frame
-        {
-            let name_map = self.name_to_id.read().unwrap();
-            if name_map.contains_key(name) {
-                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
-            }
-        }
-
-        // Resolve parent ID
+        // Resolve parent ID (short-lived read lock, released before write phase).
         let parent_id = if let Some(parent) = parent_name {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
@@ -67,37 +59,58 @@ impl FrameRegistry {
             NO_PARENT
         };
 
-        // Allocate new ID
-        let id = self.allocate_id()?;
-
-        // Initialize slot in core
-        self.core.init_dynamic(id, parent_id);
-
-        // Register name mappings
-        {
+        // Atomically: duplicate check → reserve HashMap capacity → allocate ID
+        // → insert.  Holding the write lock for the entire sequence guarantees
+        // that no concurrent thread can consume the reserved slot between
+        // `try_reserve` and `insert`, and that `next_id` is only incremented
+        // after all allocations succeed (no ID leak on OOM).
+        let id = {
             let mut name_map = self.name_to_id.write().unwrap();
-            let mut id_map = self.id_to_name.write().unwrap();
 
-            name_map.insert(name.to_string(), id);
-            if (id as usize) < id_map.len() {
-                id_map[id as usize] = Some(name.to_string());
+            // Duplicate check under write lock (eliminates the read→write
+            // TOCTOU window of the old code).
+            if name_map.contains_key(name) {
+                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
             }
-        }
+
+            // Pre-reserve HashMap capacity.  If this returns Err (OOM),
+            // `next_id` has NOT been touched — no frame ID is leaked.
+            name_map.try_reserve(1).map_err(|_| {
+                HorusError::Memory(format!(
+                    "OOM: cannot allocate name-map entry for frame '{}'",
+                    name
+                ))
+            })?;
+
+            // Allocate the frame ID.  `next_id` is incremented here; this is
+            // safe because `try_reserve` above guarantees the insert below
+            // will not reallocate (and we hold the write lock so no other
+            // thread can consume the reserved capacity).
+            let id = self.allocate_id()?;
+
+            // Insert into name_map (infallible: capacity was pre-reserved).
+            name_map.insert(name.to_string(), id);
+
+            // Update id_to_name (pre-allocated Vec, always in-bounds).
+            {
+                let mut id_map = self.id_to_name.write().unwrap();
+                if (id as usize) < id_map.len() {
+                    id_map[id as usize] = Some(name.to_string());
+                }
+            }
+
+            id
+        };
+
+        // Initialize slot in core (outside the name-map locks).
+        self.core.init_dynamic(id, parent_id);
 
         Ok(id)
     }
 
     /// Register a static frame
     pub fn register_static(&self, name: &str, parent_name: Option<&str>) -> HorusResult<FrameId> {
-        // Check for existing frame
-        {
-            let name_map = self.name_to_id.read().unwrap();
-            if name_map.contains_key(name) {
-                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
-            }
-        }
-
-        // Resolve parent ID
+        // Resolve parent ID (short-lived read lock, released before write phase).
         let parent_id = if let Some(parent) = parent_name {
             let name_map = self.name_to_id.read().unwrap();
             *name_map
@@ -107,22 +120,38 @@ impl FrameRegistry {
             NO_PARENT
         };
 
-        // Allocate new ID
-        let id = self.allocate_id()?;
-
-        // Initialize slot in core as static
-        self.core.init_static(id, parent_id);
-
-        // Register name mappings
-        {
+        // Same atomic reserve → allocate → insert sequence as `register()`.
+        // See that function for the ordering rationale.
+        let id = {
             let mut name_map = self.name_to_id.write().unwrap();
-            let mut id_map = self.id_to_name.write().unwrap();
+
+            if name_map.contains_key(name) {
+                return Err(HorusError::AlreadyExists(format!("Frame '{}'", name)));
+            }
+
+            name_map.try_reserve(1).map_err(|_| {
+                HorusError::Memory(format!(
+                    "OOM: cannot allocate name-map entry for frame '{}'",
+                    name
+                ))
+            })?;
+
+            let id = self.allocate_id()?;
 
             name_map.insert(name.to_string(), id);
-            if (id as usize) < id_map.len() {
-                id_map[id as usize] = Some(name.to_string());
+
+            {
+                let mut id_map = self.id_to_name.write().unwrap();
+                if (id as usize) < id_map.len() {
+                    id_map[id as usize] = Some(name.to_string());
+                }
             }
-        }
+
+            id
+        };
+
+        // Initialize slot in core as static.
+        self.core.init_static(id, parent_id);
 
         Ok(id)
     }
@@ -388,6 +417,30 @@ mod tests {
         let id2 = registry.get_or_create("frame", None).unwrap();
 
         assert_eq!(id1, id2);
+    }
+
+    /// After a failed registration (duplicate), the next successful registration
+    /// must still receive the next sequential ID — verifying that next_id is
+    /// not incremented when an error is returned.
+    #[test]
+    fn test_next_id_not_incremented_on_failure() {
+        let registry = make_registry();
+
+        // First frame gets ID 0.
+        let id_a = registry.register("a", None).unwrap();
+        assert_eq!(id_a, 0);
+
+        // Duplicate registration must fail.
+        let result = registry.register("a", None);
+        assert!(matches!(result, Err(HorusError::AlreadyExists(_))));
+
+        // Parent-not-found must also fail without consuming an ID.
+        let result2 = registry.register("orphan", Some("nonexistent"));
+        assert!(matches!(result2, Err(HorusError::NotFound(_))));
+
+        // Next successful registration must get ID 1 (not 2 or 3).
+        let id_b = registry.register("b", None).unwrap();
+        assert_eq!(id_b, 1);
     }
 
     #[test]

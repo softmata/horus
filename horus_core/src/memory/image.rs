@@ -126,7 +126,12 @@ impl Image {
     ///
     /// Returns `None` if the ROI extends beyond image bounds.
     pub fn roi(&self, x: u32, y: u32, w: u32, h: u32) -> Option<Vec<u8>> {
-        if x + w > self.width() || y + h > self.height() {
+        // Use checked_add to prevent silent u32 overflow when x+w or y+h
+        // wraps around (e.g. x = u32::MAX - 100, w = 200 → wraps to ~100).
+        // A wrapped value passes the naive comparison but leads to OOB access.
+        if x.checked_add(w).map_or(true, |xe| xe > self.width())
+            || y.checked_add(h).map_or(true, |ye| ye > self.height())
+        {
             return None;
         }
         let bpp = self.encoding().bytes_per_pixel() as usize;
@@ -186,5 +191,55 @@ impl std::fmt::Debug for Image {
             .field("height", &self.height())
             .field("encoding", &self.encoding())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// roi() with x+w near u32::MAX must return None, not panic or access OOB.
+    ///
+    /// Before the checked_add fix, `x + w` would overflow to a small number,
+    /// pass the naive `> self.width()` check, and allow the subsequent loop
+    /// to index into arbitrary memory.
+    #[test]
+    fn test_roi_overflow_x_returns_none() {
+        let img = Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc");
+        // x = u32::MAX - 100, w = 200 → naive x+w = 99 (overflows), which
+        // would pass `99 > 4` = false and silently allow OOB.
+        assert_eq!(img.roi(u32::MAX - 100, 0, 200, 1), None);
+    }
+
+    /// Same overflow check for y+h axis.
+    #[test]
+    fn test_roi_overflow_y_returns_none() {
+        let img = Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc");
+        assert_eq!(img.roi(0, u32::MAX - 100, 1, 200), None);
+    }
+
+    /// Normal in-bounds ROI must succeed.
+    #[test]
+    fn test_roi_valid_returns_some() {
+        let img = Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc");
+        let roi = img.roi(0, 0, 2, 2);
+        assert!(roi.is_some());
+        // 2×2 pixels, 3 bytes each (Rgb8)
+        assert_eq!(roi.unwrap().len(), 2 * 2 * 3);
+    }
+
+    /// ROI that exactly touches the boundary (x+w == width) must succeed.
+    #[test]
+    fn test_roi_exact_boundary_returns_some() {
+        let img = Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc");
+        assert!(img.roi(0, 0, 4, 4).is_some());
+    }
+
+    /// ROI that exceeds the boundary by 1 must fail.
+    #[test]
+    fn test_roi_one_past_boundary_returns_none() {
+        let img = Image::new(4, 4, ImageEncoding::Rgb8).expect("alloc");
+        assert_eq!(img.roi(0, 0, 5, 4), None);
+        assert_eq!(img.roi(0, 0, 4, 5), None);
     }
 }

@@ -106,7 +106,12 @@ pub mod prelude {
     };
 
     // === Errors ===
-    pub use horus_core::error::{Error, Result};
+    //
+    // `Error` and `Result` are short aliases (for use inside application code).
+    // `HorusError` is also exported so callers can pattern-match exhaustively:
+    //   `use horus::prelude::*;`
+    //   `if let Err(HorusError::InvalidDescriptor(msg)) = result { ... }`
+    pub use horus_core::error::{Error, HorusError, Result};
 
     // === Macros ===
     pub use horus_core::hlog;

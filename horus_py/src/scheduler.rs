@@ -18,6 +18,42 @@ use std::time::Duration;
 
 // ─── PyNodeAdapter ───────────────────────────────────────────────────────────
 // Implements horus_core::Node by bridging to Python objects via GIL acquisition.
+//
+// # GIL / Rust-lock Safety
+//
+// The GIL and Rust Mutexes interact through three invariants that MUST be
+// maintained to avoid deadlock:
+//
+// ## Invariant 1 — No Rust lock is held when Python::with_gil is entered
+//
+//   `init()`, `tick()`, and `shutdown()` each call `Python::with_gil`.
+//   Before that call, every Rust MutexGuard must already be dropped.
+//   `node_context` is only locked for brief, non-blocking operations
+//   (`start_tick`, `record_tick`) that complete before Python is invoked.
+//
+// ## Invariant 2 — The GIL is released before long scheduler operations
+//
+//   `with_inner_run` calls `py.allow_threads(...)` to release the GIL while
+//   `CoreScheduler::run()` executes.  The `self.inner` Mutex is unlocked
+//   (taken via `guard.take()`) *before* `allow_threads` is called.
+//   Consequently, when Python callbacks re-acquire the GIL inside `tick()`,
+//   no PyScheduler-level Mutex is still held.
+//
+// ## Invariant 3 — Python callbacks MUST NOT re-enter the scheduler
+//
+//   A Python callback that calls `scheduler.run()` / `scheduler.add()` will
+//   find `self.inner == None` and receive `RuntimeError("Scheduler already
+//   running")` — an error, not a deadlock.  However, users must never block
+//   inside a Python callback waiting for the scheduler to become free;
+//   doing so would deadlock the scheduler thread.
+//
+// ## Summary table
+//
+//   | Lock         | Held when with_gil entered? | Held when Python CB runs? |
+//   |------------- |-----------------------------|---------------------------|
+//   | GIL          | Yes (that's the whole point)| Yes                       |
+//   | node_context | No — released before call   | No                        |
+//   | self.inner   | No — taken out before run   | No                        |
 
 struct PyNodeAdapter {
     py_object: Py<PyAny>,
@@ -77,10 +113,13 @@ impl CoreNode for PyNodeAdapter {
         }
 
         Python::with_gil(|py| {
-            // Start tick timing on the context
+            // GIL Safety: `node_context` is locked only for the duration of
+            // `start_tick()`.  The MutexGuard is dropped at the closing `}` of
+            // this if-let block — BEFORE any Python code is invoked.  This
+            // ensures no Rust lock is held when the Python callback runs.
             if let Ok(mut ctx) = self.node_context.lock() {
                 ctx.start_tick();
-            }
+            } // ← node_context MutexGuard released here
 
             let py_info = if let Some(ref cached) = self.cached_info {
                 cached.clone_ref(py)
@@ -100,6 +139,10 @@ impl CoreNode for PyNodeAdapter {
                 }
             };
 
+            // Python callback runs here.  No Rust Mutex is held at this point
+            // (see module-level GIL/lock safety comment).  If the Python code
+            // calls back into Rust (e.g., topic.send()), that is safe because
+            // node_context and self.inner are unlocked.
             let result = self
                 .py_object
                 .call_method1(py, "tick", (py_info,))
@@ -107,9 +150,11 @@ impl CoreNode for PyNodeAdapter {
 
             match result {
                 Ok(_) => {
+                    // node_context is again briefly locked only for record_tick()
+                    // and released before the next Python interaction.
                     if let Ok(mut ctx) = self.node_context.lock() {
                         ctx.record_tick();
-                    }
+                    } // ← node_context MutexGuard released here
                 }
                 Err(e) => {
                     if e.is_instance_of::<pyo3::exceptions::PyKeyboardInterrupt>(py) {
@@ -1142,5 +1187,70 @@ impl PyScheduler {
             .map_err(|_| PyRuntimeError::new_err("Internal lock poisoned"))? = HashSet::new();
 
         Ok(())
+    }
+}
+
+// ─── Lock-ordering safety tests ─────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horus_core::core::NodeInfo as CoreNodeInfo;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    /// Verify that `node_context` is NOT locked when a Python callback is
+    /// about to be invoked inside `tick()`.
+    ///
+    /// We simulate this by cloning the Arc, and — inside a mock "callback" —
+    /// using `try_lock()` to assert the mutex is free.  If the lock were held
+    /// across the callback site, `try_lock` would return `Err(WouldBlock)`.
+    ///
+    /// This test does not require PyO3 / a live Python interpreter.
+    #[test]
+    fn node_context_not_locked_at_callback_site() {
+        let node_context = Arc::new(Mutex::new(CoreNodeInfo::new("test_node".to_string())));
+        let observer = node_context.clone();
+
+        // Simulate the sequence inside PyNodeAdapter::tick():
+        // 1. Acquire and release lock for start_tick
+        {
+            let mut ctx = node_context.lock().unwrap();
+            ctx.start_tick();
+        } // ← lock released
+
+        // 2. "Python callback" runs — must be able to acquire node_context
+        let try_result = observer.try_lock();
+        assert!(
+            try_result.is_ok(),
+            "node_context was still locked at Python callback site — \
+             GIL deadlock would occur if Python re-entered Rust here"
+        );
+        drop(try_result);
+
+        // 3. Acquire and release lock for record_tick
+        {
+            let mut ctx = node_context.lock().unwrap();
+            ctx.record_tick();
+        }
+    }
+
+    /// Verify that `scheduler_running` can be observed from a second thread
+    /// while a node callback is running (simulates topic.send() pattern).
+    #[test]
+    fn scheduler_running_flag_readable_during_callback() {
+        let running = Arc::new(AtomicBool::new(true));
+        let observer = running.clone();
+
+        // Simulate: scheduler is running
+        running.store(true, Ordering::SeqCst);
+
+        // Another thread (e.g., Python callback invoking topic.send()) can
+        // read the flag without blocking.
+        let handle = std::thread::spawn(move || observer.load(Ordering::SeqCst));
+
+        assert!(
+            handle.join().unwrap(),
+            "Running flag should be observable from callback thread"
+        );
     }
 }

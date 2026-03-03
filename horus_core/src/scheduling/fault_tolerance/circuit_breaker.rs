@@ -99,14 +99,26 @@ impl CircuitBreaker {
         match current_state {
             CircuitState::Closed => true,
             CircuitState::Open => {
-                // Check if timeout has elapsed
+                // The Mutex serializes the timeout check. Two threads can both
+                // call get_state() → Open before either transitions, so we use
+                // CAS to ensure only one thread resets success_count; both
+                // return true (allowing probe requests) regardless of who wins.
                 let guard = self.last_failure_time.lock();
                 if let Some(last_failure) = *guard {
                     if last_failure.elapsed() >= self.timeout {
-                        // Try half-open
-                        self.state
-                            .store(CircuitState::HalfOpen as u8, Ordering::SeqCst);
-                        self.success_count.store(0, Ordering::SeqCst);
+                        // CAS Open → HalfOpen: winner resets success_count.
+                        if self
+                            .state
+                            .compare_exchange(
+                                CircuitState::Open as u8,
+                                CircuitState::HalfOpen as u8,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            self.success_count.store(0, Ordering::Release);
+                        }
                         return true;
                     }
                 }
@@ -125,18 +137,31 @@ impl CircuitBreaker {
 
         match current_state {
             CircuitState::Closed => {
-                // Reset failure count on success
-                self.failure_count.store(0, Ordering::SeqCst);
+                // Reset failure count on success in Closed state
+                self.failure_count.store(0, Ordering::Release);
             }
             CircuitState::HalfOpen => {
-                let count = self.success_count.fetch_add(1, Ordering::SeqCst) + 1;
+                let count = self.success_count.fetch_add(1, Ordering::AcqRel) + 1;
 
                 if count >= self.success_threshold {
-                    // Recovered! Close the circuit
-                    self.state
-                        .store(CircuitState::Closed as u8, Ordering::SeqCst);
-                    self.failure_count.store(0, Ordering::SeqCst);
-                    self.success_count.store(0, Ordering::SeqCst);
+                    // CAS HalfOpen → Closed: only the winner resets counters.
+                    // Without CAS, two concurrent threads both reaching the
+                    // threshold would both store Closed and both reset counters,
+                    // corrupting any failure count that arrived between the stores.
+                    if self
+                        .state
+                        .compare_exchange(
+                            CircuitState::HalfOpen as u8,
+                            CircuitState::Closed as u8,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        // Exactly one thread resets counters.
+                        self.failure_count.store(0, Ordering::Release);
+                        self.success_count.store(0, Ordering::Release);
+                    }
                 }
             }
             CircuitState::Open => {
@@ -151,22 +176,49 @@ impl CircuitBreaker {
 
         match current_state {
             CircuitState::Closed => {
-                let count = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
+                let count = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
 
                 if count >= self.failure_threshold {
-                    // Too many failures, open the circuit
-                    self.state.store(CircuitState::Open as u8, Ordering::SeqCst);
-                    let mut guard = self.last_failure_time.lock();
-                    *guard = Some(Instant::now());
+                    // CAS Closed → Open: only the winner records the transition
+                    // time. Without CAS, concurrent threads exceeding the
+                    // threshold would all store Open independently, leaving
+                    // the failure_time updated multiple times and the state
+                    // machine in an inconsistent position.
+                    if self
+                        .state
+                        .compare_exchange(
+                            CircuitState::Closed as u8,
+                            CircuitState::Open as u8,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        // Exactly one thread records the open time.
+                        let mut guard = self.last_failure_time.lock();
+                        *guard = Some(Instant::now());
+                    }
                 }
             }
             CircuitState::HalfOpen => {
-                // Failed during recovery test, reopen immediately
-                self.state.store(CircuitState::Open as u8, Ordering::SeqCst);
-                self.failure_count.store(0, Ordering::SeqCst);
-                self.success_count.store(0, Ordering::SeqCst);
-                let mut guard = self.last_failure_time.lock();
-                *guard = Some(Instant::now());
+                // Any failure during recovery re-opens the circuit immediately.
+                // CAS HalfOpen → Open: only the winner resets counters and
+                // records the failure time (prevents double-reset).
+                if self
+                    .state
+                    .compare_exchange(
+                        CircuitState::HalfOpen as u8,
+                        CircuitState::Open as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    self.failure_count.store(0, Ordering::Release);
+                    self.success_count.store(0, Ordering::Release);
+                    let mut guard = self.last_failure_time.lock();
+                    *guard = Some(Instant::now());
+                }
             }
             CircuitState::Open => {
                 // Already open, update last failure time

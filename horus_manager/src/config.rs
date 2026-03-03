@@ -33,11 +33,25 @@ pub fn plugin_registry_url() -> String {
 /// Maximum login attempts before rate limiting kicks in.
 pub const AUTH_MAX_ATTEMPTS: usize = 5;
 
+/// Minimum password length for the monitor.
+///
+/// Passwords shorter than this are rejected at setup/reset time.
+/// 12 characters is the NIST SP 800-63B recommended minimum for user-chosen
+/// passwords without additional complexity requirements.
+pub const MIN_PASSWORD_LENGTH: usize = 12;
+
 /// Rate limit window duration in seconds.
 pub const AUTH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 /// Session inactivity timeout in seconds (1 hour).
 pub const SESSION_TIMEOUT_SECS: u64 = 3600;
+
+/// Absolute session lifetime in seconds (8 hours), regardless of activity.
+///
+/// An attacker who captures a session token cannot extend access beyond this
+/// window by simply replaying requests; the session is unconditionally revoked
+/// after 8 hours even if it has been continuously active.
+pub const SESSION_ABSOLUTE_TIMEOUT_SECS: u64 = 8 * 3600; // 28_800
 
 // === Cache & Monitoring Constants ===
 
@@ -63,3 +77,18 @@ pub const HORUS_YAML: &str = "horus.yaml";
 
 /// Cargo manifest file name.
 pub const CARGO_TOML: &str = "Cargo.toml";
+
+// === Reverse Proxy Configuration ===
+
+/// Whether to trust reverse-proxy IP headers (X-Forwarded-For, X-Real-IP).
+///
+/// Set `HORUS_TRUST_PROXY=1` (or `true` / `yes`) when horus-monitor is
+/// deployed behind a reverse proxy that rewrites forwarded headers.
+/// When disabled (the default), those headers are ignored so a remote client
+/// cannot spoof an arbitrary IP address to bypass per-IP rate limiting.
+pub fn trust_proxy() -> bool {
+    matches!(
+        std::env::var("HORUS_TRUST_PROXY").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}

@@ -33,7 +33,7 @@ pub(crate) enum ValidationRule {
 
 /// Parameter metadata including validation rules
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ParamMetadata {
+pub struct ParamMetadata {
     /// Human-readable description
     pub description: Option<String>,
     /// Unit of measurement (e.g., "m/s", "Hz")
@@ -210,14 +210,18 @@ impl RuntimeParams {
     }
 
     /// Set metadata for a parameter
-    pub(crate) fn set_metadata(&self, key: &str, metadata: ParamMetadata) -> Result<(), HorusError> {
+    pub(crate) fn set_metadata(
+        &self,
+        key: &str,
+        metadata: ParamMetadata,
+    ) -> Result<(), HorusError> {
         let mut meta_map = self.metadata.write()?;
         meta_map.insert(key.to_string(), metadata);
         Ok(())
     }
 
     /// Get metadata for a parameter
-    pub(crate) fn get_metadata(&self, key: &str) -> Option<ParamMetadata> {
+    pub fn get_metadata(&self, key: &str) -> Option<ParamMetadata> {
         self.metadata.read().ok()?.get(key).cloned()
     }
 

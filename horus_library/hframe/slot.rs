@@ -4,7 +4,7 @@
 //! per-frame transforms with history.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{self, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use super::transform::Transform;
 
@@ -40,10 +40,18 @@ impl TransformEntry {
 
 /// Lock-free frame slot with history ring buffer
 ///
-/// Uses a seqlock (version-dance) protocol for lock-free reads:
-/// - Writers increment version to odd before writing, even after
-/// - Readers spin-wait if version is odd (write in progress)
-/// - Readers retry if version changed during read
+/// Uses two seqlock (version-dance) counters for lock-free reads:
+///
+/// **`version`** — outer seqlock covering the entire slot (metadata + history):
+/// - Odd = write in progress, Even = stable
+/// - Readers spin-wait if odd, retry if the value changed across their read
+///
+/// **`history_version`** — inner seqlock covering the history ring-buffer only:
+/// - Provides an explicit generation counter specifically for the multi-entry
+///   history scan in `read_interpolated()` and `read_at()`.
+/// - Catches ABA / re-order races where a concurrent writer completes a new
+///   history entry between the reader's per-entry accesses, even if the outer
+///   `version` momentarily returns to its starting parity.
 ///
 /// Memory layout is cache-line aligned for optimal performance.
 #[repr(C, align(64))]
@@ -72,6 +80,17 @@ pub struct FrameSlot {
 
     /// History buffer capacity (set at creation, immutable)
     history_capacity: usize,
+
+    /// Generation counter for the history ring-buffer.
+    ///
+    /// Incremented (to odd) before any history element is written and again
+    /// (to even) after the write completes — matching the outer `version`
+    /// seqlock pattern but scoped to history mutations only.
+    ///
+    /// `read_interpolated()` and `read_at()` load this before and after the
+    /// multi-entry scan and retry if it changed, preventing torn reads of
+    /// partially-overwritten history entries.
+    history_version: AtomicU64,
 }
 
 // Safety: We guarantee thread-safety via the seqlock protocol
@@ -93,6 +112,7 @@ impl FrameSlot {
             _padding: [0; 64 - 8 - 8 - 4 - 1],
             history: UnsafeCell::new(history),
             history_capacity,
+            history_version: AtomicU64::new(0),
         }
     }
 
@@ -124,16 +144,18 @@ impl FrameSlot {
             .store(FrameType::Unallocated as u8, Ordering::Release);
         self.sequence.store(0, Ordering::Release);
 
-        // SAFETY: Write is serialized via the version counter (odd = write in progress).
-        // No concurrent reader will observe a partial write.
+        // SAFETY: Both seqlocks odd; no reader will commit a result overlapping
+        // this reset window.
+        let hv = self.history_version.fetch_add(1, Ordering::AcqRel) + 1;
         unsafe {
             let history = &mut *self.history.get();
             for entry in history.iter_mut() {
                 *entry = TransformEntry::default();
             }
         }
+        self.history_version.store(hv + 1, Ordering::Release);
 
-        // Mark as stable
+        // Mark as stable (outer seqlock)
         self.version.store(v + 1, Ordering::Release);
     }
 
@@ -176,7 +198,7 @@ impl FrameSlot {
     /// Multiple writers are safe but will serialize via version counter.
     /// For best performance, have only one writer per frame.
     pub fn update(&self, transform: &Transform, timestamp_ns: u64) {
-        // Step 1: Mark write in progress (odd version)
+        // Step 1: Mark write in progress (odd version, outer seqlock)
         let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;
         debug_assert!(v & 1 == 1, "Version should be odd during write");
 
@@ -184,8 +206,15 @@ impl FrameSlot {
         let seq = self.sequence.fetch_add(1, Ordering::AcqRel);
         let idx = (seq as usize) % self.history_capacity;
 
-        // SAFETY: Seqlock protocol ensures readers see either old or new value.
-        // Version is odd during write, preventing readers from using stale data.
+        // Step 3: Mark history write in progress (odd history_version, inner seqlock)
+        let hv = self.history_version.fetch_add(1, Ordering::AcqRel) + 1;
+        debug_assert!(
+            hv & 1 == 1,
+            "history_version should be odd during history write"
+        );
+
+        // SAFETY: Both seqlocks are odd (write in progress); no reader will
+        // commit a result that overlaps this write window.
         unsafe {
             let history = &mut *self.history.get();
             history[idx] = TransformEntry {
@@ -194,15 +223,19 @@ impl FrameSlot {
             };
         }
 
-        // Step 4: Mark write complete (even version)
+        // Step 4: Mark history write complete (even history_version)
+        self.history_version.store(hv + 1, Ordering::Release);
+
+        // Step 5: Mark write complete (even version, outer seqlock)
         self.version.store(v + 1, Ordering::Release);
     }
 
     /// Set a static transform (only index 0 is used)
     pub fn set_static_transform(&self, transform: &Transform) {
         let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;
+        let hv = self.history_version.fetch_add(1, Ordering::AcqRel) + 1;
 
-        // SAFETY: Write is serialized via the version counter. Readers retry on version mismatch.
+        // SAFETY: Both seqlocks odd; readers will retry on mismatch.
         unsafe {
             let history = &mut *self.history.get();
             history[0] = TransformEntry {
@@ -211,6 +244,7 @@ impl FrameSlot {
             };
         }
 
+        self.history_version.store(hv + 1, Ordering::Release);
         // For static frames, sequence stays at 1 to indicate "has data"
         self.sequence.store(1, Ordering::Release);
         self.version.store(v + 1, Ordering::Release);
@@ -223,9 +257,34 @@ impl FrameSlot {
     /// Read the latest transform (lock-free read)
     ///
     /// Returns None if no transform has been written yet.
+    ///
+    /// # Seqlock invariant
+    ///
+    /// Both the initial (v1) and the re-check (v2) version loads **must** use
+    /// `Ordering::Acquire`:
+    ///
+    /// - **v1 Acquire**: pairs with the writer's final `Release` store of the
+    ///   even (stable) version.  This makes every data write that happened
+    ///   before that store visible to us before we read any transform data.
+    ///
+    /// - **v2 Acquire**: ensures that, on weak-memory architectures (ARM64,
+    ///   RISC-V), the CPU cannot reorder the v2 load to occur *before* our
+    ///   data reads.  With `Relaxed` on v2 the hardware may speculatively
+    ///   load the version, promote it past the data reads, and commit a
+    ///   torn-read result even though v1 == v2 appeared to hold.
+    ///
+    /// Correct seqlock read pattern:
+    /// ```text
+    ///   v1 = load.Acquire(version)     // barrier: all writer stores visible
+    ///   data = read(transform)          // inside the version pair
+    ///   v2 = load.Acquire(version)     // barrier: data reads cannot float up
+    ///   if v1 != v2 { retry }           // writer intervened — discard data
+    /// ```
     pub fn read_latest(&self) -> Option<TransformEntry> {
         loop {
-            // Step 1: Read version (must be even = stable)
+            // Step 1: Read version (must be even = stable).
+            // Acquire pairs with writer's Release store of even version,
+            // making all preceding data writes visible to this thread.
             let v1 = self.version.load(Ordering::Acquire);
             if v1 & 1 == 1 {
                 // Writer in progress, spin
@@ -250,12 +309,17 @@ impl FrameSlot {
                 unsafe { (&*self.history.get())[idx] }
             };
 
-            // Step 4: Verify version unchanged
+            // Step 4: Verify version unchanged.
+            // fence(Acquire) prevents v2 from floating above the raw data reads
+            // on ARM64 (`dmb ishld`). This provides formal C++11 ordering
+            // guarantees beyond those of the underlying UnsafeCell reads, and
+            // is a no-op on x86 (TSO already provides this ordering).
+            atomic::fence(Ordering::Acquire);
             let v2 = self.version.load(Ordering::Acquire);
             if v1 == v2 {
                 return Some(entry);
             }
-            // Version changed, retry
+            // Version changed during our read, retry
         }
     }
 
@@ -267,6 +331,7 @@ impl FrameSlot {
         }
 
         loop {
+            // Outer seqlock: wait for a stable (even) slot version.
             let v1 = self.version.load(Ordering::Acquire);
             if v1 & 1 == 1 {
                 std::hint::spin_loop();
@@ -278,9 +343,25 @@ impl FrameSlot {
                 return None;
             }
 
-            // SAFETY: Version was even (stable). Read is validated by v2 == v1 check below.
+            // Inner seqlock: snapshot history_version before the history scan.
+            // If a concurrent writer was mid-write, history_version is odd — retry.
+            let hv1 = self.history_version.load(Ordering::Acquire);
+            if hv1 & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            // SAFETY: Both seqlocks even (stable). Result validated by hv/v checks below.
             let result = unsafe { self.find_at_timestamp(&*self.history.get(), seq, target_ts) };
 
+            // Inner check: history must not have changed during the scan.
+            atomic::fence(Ordering::Acquire);
+            let hv2 = self.history_version.load(Ordering::Acquire);
+            if hv1 != hv2 {
+                continue; // History mutated — discard and retry
+            }
+
+            // Outer check: slot version unchanged.
             let v2 = self.version.load(Ordering::Acquire);
             if v1 == v2 {
                 return result;
@@ -296,6 +377,7 @@ impl FrameSlot {
         }
 
         loop {
+            // Outer seqlock: wait for a stable (even) slot version.
             let v1 = self.version.load(Ordering::Acquire);
             if v1 & 1 == 1 {
                 std::hint::spin_loop();
@@ -307,10 +389,28 @@ impl FrameSlot {
                 return None;
             }
 
-            // SAFETY: Version was even (stable). Read is validated by v2 == v1 check below.
+            // Inner seqlock: snapshot history_version before the multi-entry scan.
+            // A concurrent writer bumps history_version to odd before touching any
+            // history element; reading an odd value means a write is in progress.
+            let hv1 = self.history_version.load(Ordering::Acquire);
+            if hv1 & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            // SAFETY: Both seqlocks even (stable). Result validated by hv/v checks below.
             let result =
                 unsafe { self.interpolate_at_timestamp(&*self.history.get(), seq, target_ts) };
 
+            // Inner check: history_version must be unchanged — guarantees the
+            // multi-entry scan was not interrupted by a concurrent history write.
+            atomic::fence(Ordering::Acquire);
+            let hv2 = self.history_version.load(Ordering::Acquire);
+            if hv1 != hv2 {
+                continue; // History mutated during scan — discard and retry
+            }
+
+            // Outer check: slot version unchanged.
             let v2 = self.version.load(Ordering::Acquire);
             if v1 == v2 {
                 return result;
@@ -424,6 +524,7 @@ impl FrameSlot {
                 )
             };
 
+            atomic::fence(Ordering::Acquire);
             let v2 = self.version.load(Ordering::Acquire);
             if v1 == v2 {
                 return Some((oldest_ts, newest_ts));
@@ -579,5 +680,77 @@ mod tests {
         // Final value should be correct
         let entry = slot.read_latest().unwrap();
         assert!((entry.transform.translation[0] - 999.0).abs() < 1e-10);
+    }
+
+    /// Verify that concurrent history writes and read_interpolated() calls never
+    /// produce NaN or Inf translations — which would indicate a torn read where
+    /// two half-written floats were combined into a nonsensical interpolation.
+    ///
+    /// The writer pushes transforms with monotonically increasing x-translation
+    /// (0.0, 1.0, 2.0, …) at 1ms virtual-time intervals.  The reader queries
+    /// with a midpoint timestamp and verifies the result is always finite and
+    /// within the known range [0.0, write_count].
+    #[test]
+    fn test_concurrent_interpolate_no_nan_or_torn_read() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const WRITE_COUNT: u64 = 2000;
+        const HISTORY_SIZE: usize = 64;
+        const TICK_NS: u64 = 1_000_000; // 1ms per tick
+
+        let slot = Arc::new(FrameSlot::new(HISTORY_SIZE));
+        slot.init_dynamic(NO_PARENT);
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Writer: push transforms at simulated 1kHz (1ms increments)
+        let slot_w = slot.clone();
+        let barrier_w = barrier.clone();
+        let writer = thread::spawn(move || {
+            barrier_w.wait();
+            for i in 0..WRITE_COUNT {
+                let tf = Transform::from_translation([i as f64, i as f64 * 0.5, 0.0]);
+                slot_w.update(&tf, i * TICK_NS);
+            }
+        });
+
+        // Reader: query midpoint timestamps and verify finite, in-range results
+        let slot_r = slot.clone();
+        let barrier_r = barrier.clone();
+        let reader = thread::spawn(move || {
+            barrier_r.wait();
+            for i in 0..WRITE_COUNT {
+                let query_ts = i * TICK_NS + TICK_NS / 2; // midpoint between ticks
+                if let Some(tf) = slot_r.read_interpolated(query_ts) {
+                    // All components must be finite — NaN/Inf indicates a torn read
+                    assert!(
+                        tf.translation[0].is_finite(),
+                        "NaN/Inf in translation.x at query_ts={}",
+                        query_ts
+                    );
+                    assert!(
+                        tf.translation[1].is_finite(),
+                        "NaN/Inf in translation.y at query_ts={}",
+                        query_ts
+                    );
+                    assert!(
+                        tf.translation[2].is_finite(),
+                        "NaN/Inf in translation.z at query_ts={}",
+                        query_ts
+                    );
+                    // x-translation must be within the written range [0, WRITE_COUNT]
+                    assert!(
+                        tf.translation[0] >= -1.0 && tf.translation[0] <= WRITE_COUNT as f64,
+                        "x-translation {} out of expected range at query_ts={}",
+                        tf.translation[0],
+                        query_ts
+                    );
+                }
+            }
+        });
+
+        writer.join().unwrap();
+        reader.join().unwrap();
     }
 }

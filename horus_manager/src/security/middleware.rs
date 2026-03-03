@@ -10,18 +10,49 @@ use axum::{
 };
 use std::sync::Arc;
 
-/// Session validation middleware - checks for session token in cookie or Authorization header
+/// Session validation middleware.
+///
+/// Checks for a valid session token (Cookie or Authorization header) on every
+/// request.  Additionally, for state-mutating methods (POST, PUT, DELETE,
+/// PATCH), it enforces the CSRF double-submit pattern: the client must supply
+/// the `X-CSRF-Token` header with the token that was returned in the login
+/// JSON response.
+///
+/// The `/api/logout` POST route is excluded from CSRF checking because it is
+/// self-directed and idempotent (at worst an attacker can log the victim out,
+/// which is harmless compared to the alternative of requiring a CSRF token
+/// before allowing logout).
 pub async fn session_middleware(
     State(auth_service): State<Arc<AuthService>>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Extract session token from Cookie header or Authorization header
+    // Extract session token from Cookie header or Authorization header.
+    // The lifetime of `token` is tied to `req`, so it must not outlive `req`.
     let token = extract_session_token(&req).ok_or(StatusCode::UNAUTHORIZED)?;
 
-    // Validate session
+    // Validate session (idle + absolute timeout check).
     if !auth_service.validate_session(token) {
         return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // CSRF check for state-mutating methods.
+    let method = req.method();
+    if matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::DELETE
+            | axum::http::Method::PATCH
+    ) {
+        // /api/logout only needs a valid session; skip CSRF for it.
+        let path = req.uri().path();
+        if path != "/api/logout" {
+            let csrf_token = extract_csrf_token(&req).ok_or(StatusCode::FORBIDDEN)?;
+            if !auth_service.validate_csrf(token, csrf_token) {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
     }
 
     Ok(next.run(req).await)
@@ -51,6 +82,13 @@ fn extract_session_token(req: &Request<Body>) -> Option<&str> {
     }
 
     None
+}
+
+/// Extract CSRF token from the `X-CSRF-Token` request header.
+fn extract_csrf_token(req: &Request<Body>) -> Option<&str> {
+    req.headers()
+        .get("X-CSRF-Token")
+        .and_then(|v| v.to_str().ok())
 }
 
 /// Security headers middleware

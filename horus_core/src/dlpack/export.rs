@@ -21,8 +21,19 @@ struct DLPackContext {
 
 /// Deleter callback for DLManagedTensor
 ///
-/// This is called by the consumer when they're done with the tensor.
+/// This is called by the consumer when they're done with the tensor, or by the
+/// PyCapsule destructor for unclaimed tensors.
+///
 /// It frees the context and the DLManagedTensor itself.
+///
+/// # Double-free safety
+///
+/// `manager_ctx` is nulled out immediately before the context `Box` is dropped.
+/// If this function is somehow called a second time (caller bug or reference
+/// cycle), the null-check on `manager_ctx` prevents a double-free of the
+/// context.  The `DLManagedTensor` itself is still freed once; the primary
+/// protection against double-free of `managed` is [`dlpack_capsule_destructor`]
+/// nulling the capsule pointer before invoking this deleter.
 unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
     if managed.is_null() {
         return;
@@ -31,13 +42,16 @@ unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
     // SAFETY: null check above. The pointer was created by `Box::into_raw` in
     // `to_dlpack` (or by the Python capsule path), so it is valid, aligned,
     // and was allocated via the global allocator.
-    let managed = &mut *managed;
+    let managed_ref = &mut *managed;
 
-    // Free the context
-    if !managed.manager_ctx.is_null() {
-        // SAFETY: manager_ctx was created by `Box::into_raw(context)` in
-        // `to_dlpack`, so reconstructing the Box reclaims ownership.
-        let _ = Box::from_raw(managed.manager_ctx as *mut DLPackContext);
+    // Free the context — null it out first so a hypothetical second invocation
+    // skips this block instead of reconstructing a dangling Box.
+    if !managed_ref.manager_ctx.is_null() {
+        let ctx_ptr = managed_ref.manager_ctx as *mut DLPackContext;
+        // Null before drop: any second call sees null and skips.
+        managed_ref.manager_ctx = std::ptr::null_mut();
+        // SAFETY: ctx_ptr was created by `Box::into_raw(context)` in `to_dlpack`.
+        let _ = Box::from_raw(ctx_ptr);
     }
 
     // SAFETY: `managed` was created by `Box::into_raw` in the export path.
@@ -126,6 +140,66 @@ pub fn to_dlpack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// dlpack_deleter must not crash when manager_ctx is already null.
+    ///
+    /// This simulates the state after a first cleanup call has already freed
+    /// and nulled the context: a second invocation (caller bug or GC anomaly)
+    /// should return safely without a double-free.
+    ///
+    /// The primary guard is `dlpack_capsule_destructor` nulling the capsule
+    /// pointer; this test verifies the secondary defense inside `dlpack_deleter`.
+    #[test]
+    fn test_dlpack_deleter_null_context_is_safe() {
+        let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let managed = to_dlpack(
+            data.as_ptr() as *mut c_void,
+            &[4i64],
+            &[1i64],
+            TensorDtype::F32,
+            Device::cpu(),
+        );
+        let managed_ptr = Box::into_raw(managed);
+
+        // Simulate state after a first cleanup: free the context via the deleter
+        // mechanism but leave manager_ctx as null (the deleter nulls it before
+        // freeing, so on a second call it would see null).
+        //
+        // We achieve this by calling the deleter once — which frees both the
+        // context and the managed tensor — but we verify the null-ctx guard
+        // separately below with a fresh allocation.
+        //
+        // Fresh allocation to test the null-manager_ctx guard path directly:
+        let managed2 = to_dlpack(
+            data.as_ptr() as *mut c_void,
+            &[4i64],
+            &[1i64],
+            TensorDtype::F32,
+            Device::cpu(),
+        );
+        let managed2_ptr = Box::into_raw(managed2);
+
+        unsafe {
+            // Manually free the context (simulate what the first deleter call does)
+            // and null manager_ctx to represent "already cleaned up".
+            let ctx_ptr = (*managed2_ptr).manager_ctx as *mut DLPackContext;
+            (*managed2_ptr).manager_ctx = std::ptr::null_mut();
+            let _ = Box::from_raw(ctx_ptr); // free context
+
+            // Call deleter with manager_ctx=null — must not crash or double-free.
+            if let Some(deleter) = (*managed2_ptr).deleter {
+                deleter(managed2_ptr); // frees managed2_ptr; context skip is the guard
+            }
+            // Reaching here without a crash or MIRI error means the guard works.
+        }
+
+        // Clean up the first allocation normally.
+        unsafe {
+            if let Some(deleter) = (*managed_ptr).deleter {
+                deleter(managed_ptr);
+            }
+        }
+    }
 
     #[test]
     fn test_to_dlpack_cpu() {

@@ -185,10 +185,59 @@ jobs:
         env:
           RUSTDOCFLAGS: ${{ github.ref == 'refs/heads/main' && '-D warnings' || '' }}
 
+  loom:
+    name: Loom Concurrency Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-loom-
+
+      # Loom exhaustively explores all thread interleavings.
+      # Tests use at most 3 threads with minimal operations to keep runtimes
+      # tractable (seconds, not hours).
+      - name: Loom — ring buffers (horus_core)
+        run: cargo test -p horus_core --test loom_ring_buffers -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
+      - name: Loom — circuit breaker (horus_core)
+        run: cargo test -p horus_core --test loom_circuit_breaker -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
+      - name: Loom — watchdog / PRNG / deterministic clock (horus_core)
+        run: cargo test -p horus_core --test loom_concurrency -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
+      - name: Loom — HFrame seqlock (horus_library)
+        run: cargo test -p horus_library --test loom_seqlock -- --nocapture
+        env:
+          RUST_LOG: loom=debug
+
   # Final status check
   ci-success:
     name: CI Success
-    needs: [check, fmt, clippy, test, doc, security]
+    needs: [check, fmt, clippy, test, doc, security, loom]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -199,7 +248,8 @@ jobs:
              [[ "${{ needs.fmt.result }}" == "success" ]] && \
              [[ "${{ needs.clippy.result }}" == "success" ]] && \
              [[ "${{ needs.test.result }}" == "success" ]] && \
-             [[ "${{ needs.doc.result }}" == "success" ]]; then
+             [[ "${{ needs.doc.result }}" == "success" ]] && \
+             [[ "${{ needs.loom.result }}" == "success" ]]; then
             echo "All core checks passed!"
             # Security is informational (has continue-on-error)
             echo "Security audit: ${{ needs.security.result }}"
@@ -211,5 +261,6 @@ jobs:
             echo "clippy: ${{ needs.clippy.result }}"
             echo "test: ${{ needs.test.result }}"
             echo "doc: ${{ needs.doc.result }}"
+            echo "loom: ${{ needs.loom.result }}"
             exit 1
           fi

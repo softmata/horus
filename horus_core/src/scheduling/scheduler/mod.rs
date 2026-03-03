@@ -127,6 +127,11 @@ pub(crate) struct MonitorState {
     pub profiler: RuntimeProfiler,
     pub last_snapshot: Instant,
     pub working_dir: PathBuf,
+    /// Pre-allocated buffer for `check_watchdogs()`.
+    ///
+    /// Reused every tick to avoid the heap allocation that a `-> Vec<String>`
+    /// return would require.  Passed by `&mut` into `SafetyMonitor::check_watchdogs`.
+    pub watchdog_expired_buf: Vec<String>,
 }
 
 /// Replay state — only present when replaying a recording.
@@ -238,6 +243,7 @@ impl Scheduler {
                 profiler: RuntimeProfiler::new_default(),
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                watchdog_expired_buf: Vec::new(),
             },
             replay: None,
             recording: None,
@@ -1013,7 +1019,7 @@ impl Scheduler {
     /// Configure the safety monitor for RT nodes (watchdogs, WCET, deadlines).
     fn apply_safety_config(&mut self, rt: &super::config::RealTimeConfig) {
         if rt.safety_monitor || rt.wcet_enforcement || rt.deadline_monitoring {
-            let mut monitor = SafetyMonitor::new(rt.max_deadline_misses);
+            let monitor = SafetyMonitor::new(rt.max_deadline_misses);
 
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
@@ -1127,8 +1133,9 @@ impl Scheduler {
         // Black box flight recorder
         if monitoring.black_box_enabled && monitoring.black_box_size_mb > 0 {
             let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
-            let mut bb =
-                super::blackbox::BlackBox::new(monitoring.black_box_size_mb).with_path(bb_dir);
+            let mut bb = super::blackbox::BlackBox::new(monitoring.black_box_size_mb)
+                .with_path(bb_dir)
+                .with_wal_flush_interval(monitoring.wal_flush_interval);
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStart {
                 name: self.scheduler_name.clone(),
                 node_count: self.nodes.len(),
@@ -1851,11 +1858,12 @@ impl Scheduler {
     /// Check watchdogs and handle emergency stop. Returns `true` if scheduler should stop.
     fn check_safety_monitors(&mut self) -> bool {
         if let Some(ref monitor) = self.monitor.safety {
-            let expired_watchdogs = monitor.check_watchdogs();
-            if !expired_watchdogs.is_empty() {
+            // Pass the pre-allocated buffer to avoid a heap allocation every tick.
+            monitor.check_watchdogs(&mut self.monitor.watchdog_expired_buf);
+            if !self.monitor.watchdog_expired_buf.is_empty() {
                 print_line(&format!(
                     " Watchdog expired for nodes: {:?}",
-                    expired_watchdogs
+                    self.monitor.watchdog_expired_buf
                 ));
             }
 
@@ -2073,6 +2081,9 @@ impl Scheduler {
                 reason: "Normal shutdown".to_string(),
                 total_ticks,
             });
+            // Flush any buffered WAL records that haven't reached the batch
+            // interval yet — prevents losing the final events on clean exit.
+            bb.flush_wal();
             if let Err(e) = bb.save() {
                 print_line(&format!("[BLACKBOX] Failed to save: {}", e));
             }

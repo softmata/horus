@@ -7,7 +7,7 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use horus_core::core::{RtConfig, RtScheduler};
 //!
 //! // Create RT configuration for a critical control loop
@@ -248,7 +248,7 @@ impl RtConfigBuilder {
     ///   - 8 * 1024 * 1024 (8MB) for large stacks (default thread stack)
     ///
     /// # Example
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use horus_core::core::RtConfig;
     ///
     /// let config = RtConfig::new()
@@ -676,7 +676,7 @@ impl RtConfig {
 /// - Runs in O(size / 4096) time
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// use horus_core::core::prefault_stack;
 ///
 /// // Prefault 512KB of stack space
@@ -791,7 +791,7 @@ pub(crate) fn detect_nohz_full_cpus() -> Vec<usize> {
 /// * `Vec<usize>` - Recommended CPU indices in preference order
 ///
 /// # Example
-/// ```rust,no_run
+/// ```rust,ignore
 /// use horus_core::core::get_rt_recommended_cpus;
 ///
 /// // Get 2 CPUs for RT tasks

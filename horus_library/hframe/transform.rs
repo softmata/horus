@@ -377,7 +377,23 @@ fn matrix_to_quaternion(m: [[f64; 3]; 3]) -> [f64; 4] {
 }
 
 /// Quaternion SLERP (Spherical Linear intERPolation)
+///
+/// Inputs should be unit quaternions but the function is robust against
+/// slight floating-point deviations (norm within ±0.01 of 1.0):
+/// - `dot` is clamped to `[-1.0, 1.0]` before `acos()` to prevent NaN from
+///   rounding errors on near-unit inputs.
+/// - The result is always a unit quaternion.
 pub fn quaternion_slerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
+    // Guard: inputs should be unit quaternions.
+    debug_assert!(
+        (a[0].powi(2) + a[1].powi(2) + a[2].powi(2) + a[3].powi(2) - 1.0).abs() < 0.01,
+        "quaternion_slerp: input `a` is not a unit quaternion (norm² deviation > 0.01)"
+    );
+    debug_assert!(
+        (b[0].powi(2) + b[1].powi(2) + b[2].powi(2) + b[3].powi(2) - 1.0).abs() < 0.01,
+        "quaternion_slerp: input `b` is not a unit quaternion (norm² deviation > 0.01)"
+    );
+
     // Compute dot product
     let mut dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 
@@ -407,7 +423,9 @@ pub fn quaternion_slerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
         ];
     }
 
-    let theta_0 = dot.acos();
+    // Clamp dot to [-1.0, 1.0] before acos() to prevent NaN from floating-point
+    // rounding on near-unit quaternions (e.g. dot = 1.0000001 → acos → NaN).
+    let theta_0 = dot.clamp(-1.0, 1.0).acos();
     let theta = theta_0 * t;
     let sin_theta = theta.sin();
     let sin_theta_0 = theta_0.sin();
@@ -415,12 +433,25 @@ pub fn quaternion_slerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
     let s0 = theta.cos() - dot * sin_theta / sin_theta_0;
     let s1 = sin_theta / sin_theta_0;
 
-    [
+    let result = [
         s0 * a[0] + s1 * b[0],
         s0 * a[1] + s1 * b[1],
         s0 * a[2] + s1 * b[2],
         s0 * a[3] + s1 * b[3],
-    ]
+    ];
+
+    // Guard: result must be finite (no NaN/Inf).
+    // Note: we do not assert unit-norm here because slightly-unnormalized inputs
+    // produce slightly-unnormalized output — that is the caller's responsibility.
+    debug_assert!(
+        result[0].is_finite()
+            && result[1].is_finite()
+            && result[2].is_finite()
+            && result[3].is_finite(),
+        "quaternion_slerp: result contains NaN/Inf"
+    );
+
+    result
 }
 
 #[cfg(test)]
@@ -529,5 +560,57 @@ mod tests {
         let tf = Transform::identity();
         let bytes: &[u8] = horus_core::bytemuck::bytes_of(&tf);
         assert!(!bytes.is_empty());
+    }
+
+    /// Regression test: quaternion_slerp must not produce NaN when inputs are
+    /// slightly over-normalized (norm > 1.0) due to floating-point rounding.
+    ///
+    /// Before the fix, `dot.acos()` with dot = 1.0000001 returned NaN and
+    /// propagated silently through all downstream coordinate transforms.
+    /// The fix clamps dot to [-1.0, 1.0] before acos().
+    #[test]
+    fn test_slerp_unnormalized_inputs_no_nan() {
+        // Slightly over-normalized quaternions (norm ≈ 1.001, mimicking
+        // accumulated floating-point error in a sensor pipeline).
+        let factor = 1.001_f64.sqrt(); // scale so that norm² = 1.001
+        let a: [f64; 4] = [
+            0.0,
+            0.0,
+            0.0,
+            1.0 * factor, // identity-ish, but norm > 1.0
+        ];
+        let b: [f64; 4] = [
+            0.0,
+            (PI / 4.0).sin() * factor,
+            0.0,
+            (PI / 4.0).cos() * factor, // 90° around Y, but norm > 1.0
+        ];
+
+        for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
+            let result = quaternion_slerp(a, b, t);
+            // The only guarantee for unnormalized inputs is finite output (no NaN/Inf).
+            // Callers are responsible for normalizing quaternions before SLERP.
+            assert!(
+                result.iter().all(|x| x.is_finite()),
+                "slerp returned NaN/Inf at t={}: {:?}",
+                t,
+                result
+            );
+        }
+    }
+
+    /// Edge case: slerp of two identical (unit) quaternions must return the same
+    /// quaternion for all t, with no NaN.
+    #[test]
+    fn test_slerp_identical_quats_no_nan() {
+        let q = [0.0_f64, (PI / 6.0).sin(), 0.0, (PI / 6.0).cos()]; // 60° around Y
+        for &t in &[0.0, 0.5, 1.0] {
+            let result = quaternion_slerp(q, q, t);
+            assert!(
+                result.iter().all(|x| x.is_finite()),
+                "NaN for identical quats at t={}",
+                t
+            );
+        }
     }
 }

@@ -92,8 +92,10 @@ impl RingTopic<HorusTensor> {
     pub fn recv_handle(&self) -> Option<TensorHandle> {
         let tensor = self.recv()?;
         let pool = self.pool();
-        // from_owned: the sender already incremented the refcount for us
-        Some(TensorHandle::from_owned(tensor, pool))
+        // from_owned: the sender already incremented the refcount for us.
+        // Validates pool_id match; returns None if descriptor belongs to a
+        // different pool (prevents refcount corruption).
+        TensorHandle::from_owned(tensor, pool).ok()
     }
 }
 
@@ -111,7 +113,7 @@ mod tests {
             .unwrap();
 
         // Write data
-        let data = handle.data_slice_mut();
+        let data = handle.data_slice_mut().unwrap();
         let floats: &mut [f32] =
             bytemuck::cast_slice_mut(&mut data[..6 * std::mem::size_of::<f32>()]);
         for (i, v) in floats.iter_mut().enumerate() {
@@ -126,7 +128,7 @@ mod tests {
         assert_eq!(recv_handle.shape(), &[2, 3]);
         assert_eq!(recv_handle.dtype(), TensorDtype::F32);
 
-        let recv_data = recv_handle.data_slice();
+        let recv_data = recv_handle.data_slice().unwrap();
         let recv_floats: &[f32] =
             bytemuck::cast_slice(&recv_data[..6 * std::mem::size_of::<f32>()]);
         for (i, v) in recv_floats.iter().enumerate() {
