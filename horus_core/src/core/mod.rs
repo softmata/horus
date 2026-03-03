@@ -17,7 +17,6 @@
 
 pub mod discovery;
 pub mod hlog;
-pub mod lifecycle;
 pub mod log_bridge;
 pub mod log_buffer;
 pub mod node;
@@ -32,13 +31,10 @@ pub(crate) use discovery::{announce_started, announce_stopped};
 // LogType must be pub for hlog! macro expansion in downstream crates
 pub use log_buffer::LogType;
 
-pub use lifecycle::{
-    LifecycleCommand, LifecycleManager, LifecycleNode, LifecycleState, LifecycleTransitionResult,
-};
 pub use node::{
     HealthStatus, LogSummary, NetworkStatus, Node, NodeInfo, NodeMetrics, NodeState, TopicMetadata,
 };
 pub use presence::NodePresence;
-pub use timer::{HorusRate, HorusTimer, Stopwatch};
+pub use timer::{HorusRate, Stopwatch};
 // rt_config types are pub(crate) — accessed directly by scheduling/ internals
 pub use rt_node::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats, WCETViolation};

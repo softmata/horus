@@ -31,7 +31,7 @@ Project:
 
 Introspection:
   topic, t          Topic interaction (list, echo, publish, bw)
-  node, n           Node management (list, info, kill, lifecycle)
+  node, n           Node management (list, info, kill)
   service, srv      Service interaction (list, call, type, find)
   action, a         Action interaction (list, info, send_goal, cancel_goal)
   param, p          Parameter management (get, set, list, delete)
@@ -1070,44 +1070,6 @@ enum NodeCommands {
         /// Node name
         name: String,
     },
-
-    // ── Lifecycle ──────────────────────────────────────────────────────────
-    /// Show current managed lifecycle state (Unconfigured/Inactive/Active/…)
-    Lifecycle {
-        /// Node name
-        name: String,
-    },
-
-    /// Trigger Unconfigured→Inactive lifecycle transition
-    Configure {
-        /// Node name
-        name: String,
-    },
-
-    /// Trigger Inactive→Active lifecycle transition
-    Activate {
-        /// Node name
-        name: String,
-    },
-
-    /// Trigger Active→Inactive lifecycle transition
-    Deactivate {
-        /// Node name
-        name: String,
-    },
-
-    /// Trigger Inactive→Unconfigured lifecycle transition (release all resources)
-    Cleanup {
-        /// Node name
-        name: String,
-    },
-
-    /// Trigger managed shutdown (any state → ShuttingDown → Finalized)
-    #[command(name = "lifecycle-shutdown")]
-    LifecycleShutdown {
-        /// Node name
-        name: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1619,12 +1581,6 @@ fn run_command(command: Commands) -> HorusResult<()> {
             NodeCommands::Restart { name } => commands::node::restart_node(&name),
             NodeCommands::Pause { name } => commands::node::pause_node(&name),
             NodeCommands::Resume { name } => commands::node::resume_node(&name),
-            NodeCommands::Lifecycle { name } => commands::node::node_lifecycle(&name),
-            NodeCommands::Configure { name } => commands::node::lifecycle_configure(&name),
-            NodeCommands::Activate { name } => commands::node::lifecycle_activate(&name),
-            NodeCommands::Deactivate { name } => commands::node::lifecycle_deactivate(&name),
-            NodeCommands::Cleanup { name } => commands::node::lifecycle_cleanup(&name),
-            NodeCommands::LifecycleShutdown { name } => commands::node::lifecycle_shutdown(&name),
         },
 
         Commands::Param { command } => match command {

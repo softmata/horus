@@ -82,14 +82,8 @@ pub mod prelude {
     // === Node ===
     pub use horus_core::core::{LogSummary, Node, NodeState};
 
-    // === Timer / Rate ===
-    pub use horus_core::core::timer::{HorusRate, HorusTimer, Stopwatch};
-
-    // === Lifecycle ===
-    pub use horus_core::core::lifecycle::{
-        LifecycleCommand, LifecycleManager, LifecycleNode, LifecycleState,
-        LifecycleTransitionResult,
-    };
+    // === Rate / Stopwatch ===
+    pub use horus_core::core::timer::{HorusRate, Stopwatch};
 
     // === Topic (IPC) ===
     pub use horus_core::communication::Topic;
