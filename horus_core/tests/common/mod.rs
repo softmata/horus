@@ -1,14 +1,11 @@
 //! Shared test utilities for horus_core integration tests
 
-/// Clean up stale shared memory files from previous test runs.
+/// Clean up shared memory files before each test.
 ///
-/// Stale `/dev/shm/horus/` files from previous test runs can cause SIGSEGV
-/// when mapped with incompatible layouts. This function removes them once
-/// per test process.
+/// Stale `/dev/shm/horus/` files from previous tests can cause SIGSEGV
+/// when mapped with incompatible layouts. Each test must start with a
+/// clean SHM state to avoid cross-test interference.
 pub fn cleanup_stale_shm() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
-        let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
-    });
+    let _ = std::fs::remove_dir_all("/dev/shm/horus/topics");
+    let _ = std::fs::remove_dir_all("/dev/shm/horus/nodes");
 }

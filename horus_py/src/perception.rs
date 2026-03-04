@@ -302,31 +302,39 @@ impl PyDetection {
 
         let mut buf4 = [0u8; 4];
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let x = f32::from_le_bytes(buf4);
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let y = f32::from_le_bytes(buf4);
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let width = f32::from_le_bytes(buf4);
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let height = f32::from_le_bytes(buf4);
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let confidence = f32::from_le_bytes(buf4);
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let class_id = u32::from_le_bytes(buf4);
 
         // class_name: 32-byte null-padded field.
         let mut name_buf = [0u8; 32];
-        cur.read_exact(&mut name_buf).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut name_buf)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(32);
         let class_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
 
-        cur.read_exact(&mut buf4).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        cur.read_exact(&mut buf4)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let instance_id = u32::from_le_bytes(buf4);
 
         // Remaining 12 bytes are padding — cursor position is at 60, data ends
@@ -1117,9 +1125,18 @@ mod detection_serialization_tests {
 
         assert_eq!((decoded.bbox.x - original.bbox.x).abs() < 1e-6, true);
         assert_eq!((decoded.bbox.y - original.bbox.y).abs() < 1e-6, true);
-        assert_eq!((decoded.bbox.width - original.bbox.width).abs() < 1e-6, true);
-        assert_eq!((decoded.bbox.height - original.bbox.height).abs() < 1e-6, true);
-        assert_eq!((decoded.confidence - original.confidence).abs() < 1e-6, true);
+        assert_eq!(
+            (decoded.bbox.width - original.bbox.width).abs() < 1e-6,
+            true
+        );
+        assert_eq!(
+            (decoded.bbox.height - original.bbox.height).abs() < 1e-6,
+            true
+        );
+        assert_eq!(
+            (decoded.confidence - original.confidence).abs() < 1e-6,
+            true
+        );
         assert_eq!(decoded.class_id, original.class_id);
         assert_eq!(decoded.class_name, original.class_name);
         assert_eq!(decoded.instance_id, original.instance_id);
@@ -1139,7 +1156,10 @@ mod detection_serialization_tests {
         let bytes = encode(&original);
         let decoded = PyDetection::from_bytes(&bytes).expect("from_bytes failed");
 
-        assert!(decoded.confidence.is_nan(), "NaN confidence must survive round-trip");
+        assert!(
+            decoded.confidence.is_nan(),
+            "NaN confidence must survive round-trip"
+        );
         assert_eq!(decoded.class_name, "");
         assert_eq!(decoded.class_id, 0);
         assert_eq!(decoded.instance_id, 0);

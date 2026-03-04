@@ -21,7 +21,7 @@
 //!     .done();
 //! ```
 
-use super::types::NodeKind;
+use super::types::{ExecutionClass, NodeKind};
 use crate::core::{Node, RtNode};
 use std::time::Duration;
 
@@ -46,6 +46,8 @@ pub struct NodeRegistration {
     pub(crate) tier: Option<super::types::NodeTier>,
     /// Failure policy override (None = use tier default)
     pub(crate) failure_policy: Option<super::fault_tolerance::FailurePolicy>,
+    /// Execution class — determines scheduling group
+    pub(crate) execution_class: ExecutionClass,
 }
 
 impl NodeRegistration {
@@ -67,6 +69,7 @@ impl NodeRegistration {
             deadline: None,
             tier: None,
             failure_policy: None,
+            execution_class: ExecutionClass::BestEffort,
         }
     }
 
@@ -86,6 +89,7 @@ impl NodeRegistration {
             deadline: Some(deadline),
             tier: None,
             failure_policy: None,
+            execution_class: ExecutionClass::Rt,
         }
     }
 
@@ -126,6 +130,7 @@ impl NodeRegistration {
     /// Mark this as a real-time node.
     ///
     /// RT nodes get special treatment:
+    /// - Dedicated RT thread execution
     /// - Priority scheduling
     /// - Deadline monitoring
     /// - WCET enforcement (if configured)
@@ -138,6 +143,55 @@ impl NodeRegistration {
     /// ```
     pub fn rt(mut self) -> Self {
         self.is_rt = true;
+        self.execution_class = ExecutionClass::Rt;
+        self
+    }
+
+    /// Mark this as a compute node for parallel execution.
+    ///
+    /// Compute nodes run in a parallel thread pool, isolated from RT nodes.
+    /// Use for CPU-bound work like planning, SLAM, or image processing.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// NodeRegistration::new(path_planner)
+    ///     .compute()
+    ///     .rate_hz(10.0)
+    /// ```
+    pub fn compute(mut self) -> Self {
+        self.execution_class = ExecutionClass::Compute;
+        self
+    }
+
+    /// Mark this as an event-triggered node.
+    ///
+    /// The node will be triggered when data arrives on the specified topic.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// NodeRegistration::new(obstacle_detector)
+    ///     .on("lidar_scan")
+    /// ```
+    pub fn on(mut self, topic: &str) -> Self {
+        self.execution_class = ExecutionClass::Event(topic.to_string());
+        self
+    }
+
+    /// Mark this as an async I/O node.
+    ///
+    /// Async I/O nodes run their `tick()` via `tokio::task::spawn_blocking()` on
+    /// a separate tokio runtime. Use for I/O-bound work like file operations,
+    /// network requests, or database queries. Blocking I/O in these nodes never
+    /// affects RT jitter or compute throughput.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// NodeRegistration::new(telemetry_uploader)
+    ///     .async_io()
+    ///     .rate_hz(1.0)  // Upload once per second
+    /// ```
+    pub fn async_io(mut self) -> Self {
+        self.execution_class = ExecutionClass::AsyncIo;
         self
     }
 
@@ -287,6 +341,24 @@ impl<'a> NodeBuilder<'a> {
     /// Mark this as a real-time node.
     pub fn rt(mut self) -> Self {
         self.config = self.config.rt();
+        self
+    }
+
+    /// Mark this as a compute node for parallel execution.
+    pub fn compute(mut self) -> Self {
+        self.config = self.config.compute();
+        self
+    }
+
+    /// Mark this as an event-triggered node.
+    pub fn on(mut self, topic: &str) -> Self {
+        self.config = self.config.on(topic);
+        self
+    }
+
+    /// Mark this as an async I/O node (runs on tokio blocking pool).
+    pub fn async_io(mut self) -> Self {
+        self.config = self.config.async_io();
         self
     }
 

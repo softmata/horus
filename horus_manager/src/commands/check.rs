@@ -26,7 +26,10 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
                 "valid": false,
                 "error": "Path not found",
             });
-            println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).unwrap_or_default()
+            );
             return Ok(());
         }
         println!(
@@ -53,7 +56,10 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
             "valid": valid,
             "error": error_msg,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return if valid { Ok(()) } else { result };
     }
 

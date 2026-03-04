@@ -591,8 +591,8 @@ pub fn read_latest_slot_bytes(
     path: &std::path::Path,
     last_write_idx: u64,
 ) -> Option<TopicSlotRead> {
-    use std::fs::File;
     use memmap2::MmapOptions;
+    use std::fs::File;
 
     // ── 1. Open and memory-map the file ──────────────────────────────────────
     let file = File::open(path).ok()?;
@@ -619,12 +619,12 @@ pub fn read_latest_slot_bytes(
     //     capacity   : offset 72  (u32)
     //     cap_mask   : offset 76  (u32)
     //     slot_size  : offset 80  (u32)
-    let type_size  = unsafe { std::ptr::read_unaligned(base.add(12) as *const u32) } as usize;
-    let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(20) as *const u8) };
-    let write_idx  = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
-    let capacity   = unsafe { std::ptr::read_unaligned(base.add(72) as *const u32) } as usize;
-    let cap_mask   = unsafe { std::ptr::read_unaligned(base.add(76) as *const u32) } as usize;
-    let slot_size  = unsafe { std::ptr::read_unaligned(base.add(80) as *const u32) } as usize;
+    let type_size = unsafe { std::ptr::read_unaligned(base.add(12) as *const u32) } as usize;
+    let is_pod_raw = unsafe { std::ptr::read_unaligned(base.add(20)) };
+    let write_idx = unsafe { std::ptr::read_unaligned(base.add(64) as *const u64) };
+    let capacity = unsafe { std::ptr::read_unaligned(base.add(72) as *const u32) } as usize;
+    let cap_mask = unsafe { std::ptr::read_unaligned(base.add(76) as *const u32) } as usize;
+    let slot_size = unsafe { std::ptr::read_unaligned(base.add(80) as *const u32) } as usize;
 
     let is_pod = is_pod_raw == POD_YES;
 

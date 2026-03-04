@@ -209,7 +209,7 @@ impl SharedLogBuffer {
         // accesses are at offsets that are multiples of 8 (HEADER_SIZE=64,
         // SLOT_SIZE=512), satisfying the 8-byte alignment requirement.
         let base: *mut u8 = {
-            let s: &mut [u8] = &mut *guard;
+            let s: &mut [u8] = &mut guard;
             s.as_mut_ptr()
         };
 

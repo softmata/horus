@@ -31,17 +31,13 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
 
     for topic in &topics {
         // Match topics that end with /request or /response
-        if let Some(svc_name) = topic
-            .topic_name
-            .strip_suffix("/request")
-            .or_else(|| {
-                // Also handle horus_topic/ prefix
-                topic
-                    .topic_name
-                    .strip_prefix("horus_topic/")
-                    .and_then(|n| n.strip_suffix("/request"))
-            })
-        {
+        if let Some(svc_name) = topic.topic_name.strip_suffix("/request").or_else(|| {
+            // Also handle horus_topic/ prefix
+            topic
+                .topic_name
+                .strip_prefix("horus_topic/")
+                .and_then(|n| n.strip_suffix("/request"))
+        }) {
             let entry = services
                 .entry(svc_name.to_string())
                 .or_insert_with(|| DiscoveredService {
@@ -56,16 +52,12 @@ fn discover_services() -> HorusResult<Vec<DiscoveredService>> {
             entry.has_request = true;
             entry.request_publishers = topic.publishers.len();
             entry.request_subscribers = topic.subscribers.len();
-        } else if let Some(svc_name) = topic
-            .topic_name
-            .strip_suffix("/response")
-            .or_else(|| {
-                topic
-                    .topic_name
-                    .strip_prefix("horus_topic/")
-                    .and_then(|n| n.strip_suffix("/response"))
-            })
-        {
+        } else if let Some(svc_name) = topic.topic_name.strip_suffix("/response").or_else(|| {
+            topic
+                .topic_name
+                .strip_prefix("horus_topic/")
+                .and_then(|n| n.strip_suffix("/response"))
+        }) {
             let entry = services
                 .entry(svc_name.to_string())
                 .or_insert_with(|| DiscoveredService {
@@ -96,21 +88,25 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
     let services = discover_services()?;
 
     if json {
-        let json_output = serde_json::to_string_pretty(
-            &services
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "name": s.name,
-                        "active": s.has_request && s.has_response,
-                        "servers": s.response_publishers,
-                        "clients": s.request_publishers,
-                    })
+        let items: Vec<_> = services
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "active": s.has_request && s.has_response,
+                    "servers": s.response_publishers,
+                    "clients": s.request_publishers,
                 })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        println!("{}", json_output);
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -137,16 +133,8 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
             };
             println!("  {} {}", "Service:".cyan(), svc.name.white().bold());
             println!("    {} {}", "Status:".dimmed(), status);
-            println!(
-                "    {} {}",
-                "Servers:".dimmed(),
-                svc.response_publishers
-            );
-            println!(
-                "    {} {}",
-                "Clients:".dimmed(),
-                svc.request_publishers
-            );
+            println!("    {} {}", "Servers:".dimmed(), svc.response_publishers);
+            println!("    {} {}", "Clients:".dimmed(), svc.request_publishers);
             println!("    {} {}/request", "Request topic:".dimmed(), svc.name);
             println!("    {} {}/response", "Response topic:".dimmed(), svc.name);
             println!();
@@ -168,10 +156,7 @@ pub fn list_services(verbose: bool, json: bool) -> HorusResult<()> {
             };
             println!(
                 "  {:<35} {:>8} {:>8} {}",
-                svc.name,
-                svc.response_publishers,
-                svc.request_publishers,
-                status
+                svc.name, svc.response_publishers, svc.request_publishers, status
             );
         }
     }
@@ -252,13 +237,12 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
     use std::time::{Duration, Instant};
 
     // Parse the request JSON to validate it's valid JSON.
-    let request_value: serde_json::Value =
-        serde_json::from_str(request_json).map_err(|e| {
-            HorusError::Config(format!(
-                "Invalid request JSON: {}\n  Example: horus service call {} '{{\"a\": 3, \"b\": 4}}'",
-                e, name
-            ))
-        })?;
+    let request_value: serde_json::Value = serde_json::from_str(request_json).map_err(|e| {
+        HorusError::Config(format!(
+            "Invalid request JSON: {}\n  Example: horus service call {} '{{\"a\": 3, \"b\": 4}}'",
+            e, name
+        ))
+    })?;
 
     // We use serde_json::Value as the payload type — the topics are JSON-encoded.
     let req_topic_name = format!("{}/request", name);
@@ -292,9 +276,12 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
             ))
         })?;
 
-    let res_topic: Topic<ServiceResponse<serde_json::Value>> =
-        Topic::new(&res_topic_name).map_err(|e| {
-            HorusError::Config(format!("Cannot open response topic '{}': {}", res_topic_name, e))
+    let res_topic: Topic<ServiceResponse<serde_json::Value>> = Topic::new(&res_topic_name)
+        .map_err(|e| {
+            HorusError::Config(format!(
+                "Cannot open response topic '{}': {}",
+                res_topic_name, e
+            ))
         })?;
 
     // Send the request.
@@ -303,12 +290,25 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
         payload: request_value,
     });
 
-    // Poll for the matching response.
+    // Poll for the matching response with Ctrl+C support.
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
+
     let timeout = Duration::from_secs_f64(timeout_secs);
     let deadline = Instant::now() + timeout;
     let poll_interval = Duration::from_millis(10);
 
     loop {
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            println!();
+            println!("{} Service call cancelled.", cli_output::ICON_WARN.yellow());
+            return Ok(());
+        }
+
         if Instant::now() >= deadline {
             return Err(HorusError::Config(format!(
                 "Service call timed out after {:.1}s.\n  Is a server registered for '{}'?",
@@ -320,17 +320,18 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
             if resp.request_id == request_id {
                 if resp.ok {
                     let payload = resp.payload.unwrap_or(serde_json::Value::Null);
-                    println!(
-                        "{} Response received:",
-                        cli_output::ICON_SUCCESS.green()
-                    );
+                    println!("{} Response received:", cli_output::ICON_SUCCESS.green());
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&payload).unwrap_or_default()
                     );
                 } else {
                     let err = resp.error.as_deref().unwrap_or("unknown error");
-                    println!("{} Service returned error: {}", cli_output::ICON_ERROR.red(), err);
+                    println!(
+                        "{} Service returned error: {}",
+                        cli_output::ICON_ERROR.red(),
+                        err
+                    );
                 }
                 return Ok(());
             }
@@ -351,11 +352,7 @@ pub fn find_services(type_filter: &str) -> HorusResult<()> {
     // service names that contain the filter string.
     let matched: Vec<&DiscoveredService> = services
         .iter()
-        .filter(|s| {
-            s.name
-                .to_lowercase()
-                .contains(&type_filter.to_lowercase())
-        })
+        .filter(|s| s.name.to_lowercase().contains(&type_filter.to_lowercase()))
         .collect();
 
     if matched.is_empty() {

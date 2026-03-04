@@ -75,3 +75,7 @@ harness = false
 [[bench]]
 name = "topic_throughput"
 harness = false
+
+[[bench]]
+name = "scheduler_jitter"
+harness = false

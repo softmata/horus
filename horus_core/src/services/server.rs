@@ -42,8 +42,7 @@ use crate::services::types::{Service, ServiceRequest, ServiceResponse};
 /// Handler function type for service requests.
 ///
 /// Takes the request payload and returns either a response or an error string.
-pub type RequestHandler<Req, Res> =
-    Box<dyn Fn(Req) -> Result<Res, String> + Send + Sync + 'static>;
+pub type RequestHandler<Req, Res> = Box<dyn Fn(Req) -> Result<Res, String> + Send + Sync + 'static>;
 
 // ─── ServiceServer ────────────────────────────────────────────────────────────
 

@@ -1,10 +1,4 @@
 //! Integration tests for Scheduler DX (Developer Experience) API
-//!
-//! Tests the preset constructors:
-//! - `Scheduler::safety_critical()`
-//! - `Scheduler::high_performance()`
-//! - `Scheduler::deterministic()`
-//! - `Scheduler::hard_realtime()`
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
@@ -114,70 +108,6 @@ fn test_new_with_capacity() {
 }
 
 // =============================================================================
-// Preset Constructor Tests
-// =============================================================================
-
-#[test]
-fn test_safety_critical_creates_scheduler() {
-    cleanup_stale_shm();
-    let mut scheduler = Scheduler::safety_critical();
-    let counter = Arc::new(AtomicU32::new(0));
-
-    scheduler
-        .add(TickCounterNode::new("safety_node", counter.clone()))
-        .order(0)
-        .done();
-
-    let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_high_performance_creates_scheduler() {
-    cleanup_stale_shm();
-    let mut scheduler = Scheduler::high_performance();
-    let counter = Arc::new(AtomicU32::new(0));
-
-    scheduler
-        .add(TickCounterNode::new("perf_node", counter.clone()))
-        .order(0)
-        .done();
-
-    let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_deterministic_creates_scheduler() {
-    cleanup_stale_shm();
-    let mut scheduler = Scheduler::deterministic();
-    let counter = Arc::new(AtomicU32::new(0));
-
-    scheduler
-        .add(TickCounterNode::new("det_node", counter.clone()))
-        .order(0)
-        .done();
-
-    let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
-}
-
-#[test]
-fn test_hard_realtime_creates_scheduler() {
-    cleanup_stale_shm();
-    let mut scheduler = Scheduler::hard_realtime();
-    let counter = Arc::new(AtomicU32::new(0));
-
-    scheduler
-        .add(TickCounterNode::new("hrt_node", counter.clone()))
-        .order(0)
-        .done();
-
-    let result = scheduler.run_for(Duration::from_millis(100));
-    assert!(result.is_ok());
-}
-
-// =============================================================================
 // Status Introspection Tests
 // =============================================================================
 
@@ -259,7 +189,7 @@ fn test_blackbox_mut_accessor() {
     scheduler.apply_config(config);
 
     let bb = scheduler.blackbox_mut().expect("BlackBox should exist");
-    bb.record(BlackBoxEvent::Custom {
+    bb.lock().unwrap().record(BlackBoxEvent::Custom {
         category: "test".to_string(),
         message: "Integration test event".to_string(),
     });

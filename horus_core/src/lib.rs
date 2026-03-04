@@ -22,8 +22,6 @@ pub mod actions;
 #[doc(hidden)]
 pub mod communication;
 #[doc(hidden)]
-pub mod services;
-#[doc(hidden)]
 pub mod core;
 #[doc(hidden)]
 pub mod dlpack;
@@ -35,6 +33,8 @@ pub mod memory;
 pub mod params;
 #[doc(hidden)]
 pub mod scheduling;
+#[doc(hidden)]
+pub mod services;
 pub(crate) mod terminal;
 #[doc(hidden)]
 pub mod types;
@@ -49,16 +49,11 @@ pub use actions::{
     GoalResponse, GoalStatus, PreemptionPolicy, ServerGoalHandle, SyncActionClient,
 };
 #[doc(hidden)]
-pub use services::{
-    AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
-    ServiceServer, ServiceServerBuilder, ServiceClient,
-};
-#[doc(hidden)]
 pub use communication::{set_topic_debug, PodMessage, Topic, TOPIC_DEBUG_LOG_OFFSET};
 #[doc(hidden)]
 pub use core::{
-    DeadlineMissPolicy, HealthStatus, Rate, LogSummary, Node, NodeMetrics, NodePresence,
-    NodeState, RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
+    DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
+    RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{HorusError, HorusResult, Result};
@@ -66,6 +61,11 @@ pub use error::{HorusError, HorusResult, Result};
 pub use params::RuntimeParams;
 #[doc(hidden)]
 pub use scheduling::Scheduler;
+#[doc(hidden)]
+pub use services::{
+    AsyncServiceClient, Service, ServiceClient, ServiceError, ServiceRequest, ServiceResponse,
+    ServiceResult, ServiceServer, ServiceServerBuilder,
+};
 
 // Re-export dependencies used by macro-generated code and horus_py
 #[doc(hidden)]

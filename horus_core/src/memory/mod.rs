@@ -28,7 +28,9 @@ pub(crate) mod tensor_descriptor;
 // Re-export platform functions needed by horus_manager
 #[doc(hidden)]
 pub use platform::{
-    has_native_shm, shm_base_dir, shm_control_dir, shm_logs_path, shm_network_dir, shm_topics_dir,
+    cleanup_stale_namespaces, has_native_shm, list_all_horus_namespaces, shm_base_dir,
+    shm_control_dir, shm_logs_path, shm_namespace, shm_network_dir, shm_topics_dir,
+    NamespaceCleanupResult, NamespaceInfo,
 };
 #[doc(hidden)]
 pub mod tensor_handle;
@@ -141,7 +143,7 @@ macro_rules! impl_tensor_backed {
 
             /// Element data type.
             #[inline]
-            pub fn dtype(&self) -> crate::types::TensorDtype {
+            pub fn dtype(&self) -> $crate::types::TensorDtype {
                 self.descriptor.dtype()
             }
 

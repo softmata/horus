@@ -268,7 +268,7 @@ fn test_rt_node_priority_ordering() {
 fn test_rt_node_with_safety_critical_config() {
     cleanup_stale_shm();
     // Use safety-critical configuration (all RT features enabled)
-    let mut scheduler = Scheduler::safety_critical();
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
 
     scheduler
         .add(MotorControlNode::new("critical_motor"))

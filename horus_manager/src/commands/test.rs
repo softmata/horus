@@ -8,7 +8,6 @@
 
 use anyhow::{Context, Result};
 use colored::*;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -104,7 +103,6 @@ pub fn run_tests(
 
     // Step 2: Set up test environment
     if simulation {
-        env::set_var("HORUS_SIMULATION_MODE", "1");
         println!(
             "  {} Simulation mode enabled (no hardware required)",
             "[*]".cyan()
@@ -198,7 +196,7 @@ pub fn run_tests(
         println!("{}", "Tests passed!".green().bold());
     } else {
         println!("{}", "Some tests failed".red().bold());
-        std::process::exit(status.code().unwrap_or(1));
+        anyhow::bail!("Tests failed with exit code {}", status.code().unwrap_or(1));
     }
 
     Ok(())

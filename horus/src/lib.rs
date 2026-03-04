@@ -40,8 +40,6 @@ pub use horus_core::actions;
 #[doc(hidden)]
 pub use horus_core::bytemuck;
 #[doc(hidden)]
-pub use horus_core::services;
-#[doc(hidden)]
 pub use horus_core::communication;
 #[doc(hidden)]
 pub use horus_core::core;
@@ -63,6 +61,8 @@ pub use horus_core::scheduling;
 pub use horus_core::serde_json;
 #[doc(hidden)]
 pub use horus_core::serde_yaml;
+#[doc(hidden)]
+pub use horus_core::services;
 #[doc(hidden)]
 pub use horus_core::types;
 #[doc(hidden)]
@@ -112,8 +112,8 @@ pub mod prelude {
 
     // === Services (request/response RPC) ===
     pub use horus_core::services::{
-        AsyncServiceClient, Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
-        ServiceServer, ServiceServerBuilder, ServiceClient,
+        AsyncServiceClient, Service, ServiceClient, ServiceError, ServiceRequest, ServiceResponse,
+        ServiceResult, ServiceServer, ServiceServerBuilder,
     };
 
     // === Errors ===
@@ -126,8 +126,8 @@ pub mod prelude {
 
     // === Macros ===
     pub use horus_core::hlog;
-    pub use horus_core::hlog_once;
     pub use horus_core::hlog_every;
+    pub use horus_core::hlog_once;
     pub use horus_core::service;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;

@@ -730,9 +730,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                             // ASLR + per-thread stacks).  Mixed with a Fibonacci
                             // constant to spread the lower bits.
                             let local_addr = &base_ns as *const u64 as u64;
-                            let jitter_ns = (local_addr
-                                .wrapping_mul(0x9e3779b97f4a7c15)
-                                >> 32)
+                            let jitter_ns = (local_addr.wrapping_mul(0x9e3779b97f4a7c15) >> 32)
                                 % base_ns.max(1);
                             std::thread::sleep(std::time::Duration::from_nanos(
                                 base_ns + jitter_ns,

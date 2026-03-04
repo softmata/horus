@@ -793,7 +793,6 @@ impl RtCpuInfo {
             recommended_rt_cpus,
         }
     }
-
 }
 
 /// Parse a CPU list string like "2-5,7,9-11" into individual CPU indices.
@@ -908,5 +907,4 @@ mod tests {
         // This should not panic
         super::prefault_stack(128 * 1024);
     }
-
 }

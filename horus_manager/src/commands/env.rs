@@ -279,7 +279,10 @@ pub fn run_list(json: bool) -> HorusResult<()> {
             })
             .collect();
         let output = serde_json::json!({ "environments": env_list });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -370,7 +373,10 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
             },
             "packages": pkgs,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 

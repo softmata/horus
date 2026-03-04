@@ -78,7 +78,7 @@ pub use types::{
 /// ```
 pub mod prelude {
     pub use super::{
-        AsyncServiceClient, Service, ServiceError, ServiceInfo, ServiceRequest, ServiceResponse,
-        ServiceResult, ServiceServer, ServiceServerBuilder, ServiceClient,
+        AsyncServiceClient, Service, ServiceClient, ServiceError, ServiceInfo, ServiceRequest,
+        ServiceResponse, ServiceResult, ServiceServer, ServiceServerBuilder,
     };
 }

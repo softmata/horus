@@ -206,7 +206,7 @@ fn generate_secure_token() -> String {
     let mut random_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut random_bytes);
     use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&random_bytes)
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random_bytes)
 }
 
 /// Constant-time byte comparison to prevent timing side-channels.

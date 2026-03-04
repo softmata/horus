@@ -47,11 +47,10 @@ pub trait Node: Send {
 // Lightweight default
 let mut scheduler = Scheduler::new();
 
-// Presets on Scheduler
-let mut scheduler = Scheduler::deploy();
-let mut scheduler = Scheduler::safety_critical();
-let mut scheduler = Scheduler::high_performance();
-let mut scheduler = Scheduler::deterministic();
+// Per-node execution classes via fluent builders
+scheduler.add(motor).order(0).rt().rate_hz(1000.0).done();
+scheduler.add(planner).order(5).compute().done();
+scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
 
 // Custom configuration via SchedulerConfig (plain data bag)
 let mut config = SchedulerConfig::minimal();

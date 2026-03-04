@@ -45,15 +45,15 @@ topic.send(CmdVel(linear=1.5, angular=0.3))
 msg = topic.recv()  # Returns CmdVel instance
 ```
 
-## Scheduler Presets
+## Scheduler API
 
 ```python
 import horus
 
-scheduler = horus.Scheduler()                    # Lightweight default
-scheduler = horus.Scheduler.deploy()             # Production
-scheduler = horus.Scheduler.safety_critical()    # Safety systems
-scheduler = horus.Scheduler.deterministic()      # Reproducible execution
+scheduler = horus.Scheduler()
+scheduler.node(motor_ctrl).order(0).rt().rate_hz(1000.0).done()
+scheduler.node(planner).order(5).compute().done()
+scheduler.node(telemetry).order(10).async_io().rate_hz(1.0).done()
 ```
 
 ## Multiple Nodes

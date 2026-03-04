@@ -36,7 +36,7 @@ pub struct FieldInfo {
 }
 
 /// List all message types
-pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
+pub fn list_messages(verbose: bool, filter: Option<&str>, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
 
     // Apply filter if specified
@@ -52,6 +52,32 @@ pub fn list_messages(verbose: bool, filter: Option<&str>) -> HorusResult<()> {
     } else {
         messages.iter().collect()
     };
+
+    if json {
+        let items: Vec<_> = filtered
+            .iter()
+            .map(|m| {
+                let hash = compute_message_definition_hash(m);
+                serde_json::json!({
+                    "name": m.name,
+                    "module": m.module,
+                    "fields": m.fields.len(),
+                    "hash": hash,
+                    "doc": m.doc,
+                    "source_file": m.source_file
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
+        return Ok(());
+    }
 
     if filtered.is_empty() {
         if filter.is_some() {
@@ -153,16 +179,19 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
                 })
             })
             .collect();
-        let md5 = compute_message_hash(msg);
+        let hash = compute_message_definition_hash(msg);
         let output = serde_json::json!({
             "name": msg.name,
             "module": msg.module,
             "source_file": msg.source_file,
             "doc": msg.doc,
             "fields": fields,
-            "md5": md5,
+            "hash": hash,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -198,15 +227,14 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
         }
     }
 
-    // Compute MD5
-    let md5 = compute_message_hash(msg);
+    let hash = compute_message_definition_hash(msg);
     println!();
-    println!("  {} {}", "MD5:".cyan(), md5.dimmed());
+    println!("  {} {}", "Hash:".cyan(), hash.dimmed());
 
     Ok(())
 }
 
-/// Show message hash (MD5)
+/// Show message definition hash
 pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
     let messages = discover_messages()?;
 
@@ -221,17 +249,20 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
             name
         )));
     };
-    let md5 = compute_message_hash(msg);
+    let hash = compute_message_definition_hash(msg);
 
     if json {
         let output = serde_json::json!({
             "name": msg.name,
             "module": msg.module,
-            "md5": md5,
+            "hash": hash,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
     } else {
-        println!("{}", md5);
+        println!("{}", hash);
     }
 
     Ok(())
@@ -241,24 +272,63 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
 fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     let mut messages = Vec::new();
 
-    // Find the horus_library messages directory
-    let base_paths = [
+    // Find the horus_library messages directory.
+    // Search strategy (in order):
+    //   1. HORUS_SOURCE_DIR env var (explicit override)
+    //   2. Relative to the horus binary location
+    //   3. Known install paths
+    //   4. Relative to CWD (legacy fallback)
+    let mut search_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    // 1. HORUS_SOURCE_DIR env var
+    if let Ok(source_dir) = std::env::var("HORUS_SOURCE_DIR") {
+        search_paths.push(Path::new(&source_dir).join("horus_library/messages"));
+    }
+
+    // 2. Relative to executable location
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Binary might be in target/debug or target/release
+            for ancestor in [exe_dir, exe_dir.parent().unwrap_or(exe_dir)] {
+                search_paths.push(ancestor.join("horus_library/messages"));
+                search_paths.push(ancestor.join("../horus_library/messages"));
+                search_paths.push(ancestor.join("../../horus_library/messages"));
+            }
+        }
+    }
+
+    // 3. Known install paths
+    if let Some(home) = dirs::home_dir() {
+        search_paths.push(home.join(".horus/library/messages"));
+        search_paths.push(home.join("horus/horus_library/messages"));
+    }
+    search_paths.push(Path::new("/opt/horus/library/messages").to_path_buf());
+    search_paths.push(Path::new("/usr/local/share/horus/messages").to_path_buf());
+
+    // 4. Relative to CWD (legacy fallback)
+    for rel in &[
         "horus_library/messages",
         "../horus_library/messages",
         "../../horus_library/messages",
-    ];
+    ] {
+        search_paths.push(Path::new(rel).to_path_buf());
+    }
 
     let mut messages_dir = None;
-    for path in base_paths {
-        let p = Path::new(path);
-        if p.exists() && p.is_dir() {
-            messages_dir = Some(p.to_path_buf());
+    for path in &search_paths {
+        if path.exists() && path.is_dir() {
+            messages_dir = Some(path.clone());
             break;
         }
     }
 
     let messages_dir = messages_dir.ok_or_else(|| {
-        HorusError::Config("Could not find horus_library/messages directory".to_string())
+        HorusError::Config(
+            "Could not find horus_library/messages directory.\n  \
+             Set HORUS_SOURCE_DIR to the root of your HORUS source tree,\n  \
+             e.g.: export HORUS_SOURCE_DIR=/path/to/horus"
+                .to_string(),
+        )
     })?;
 
     // Parse each .rs file in the messages directory
@@ -467,8 +537,12 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     Some((name, field_type))
 }
 
-/// Compute MD5 hash of message definition
-fn compute_message_hash(msg: &MessageInfo) -> String {
+/// Compute a definition hash for a message type.
+///
+/// Uses SipHash (via `DefaultHasher`) on the canonical representation
+/// of the message (module::name + field names/types). This detects
+/// when a message definition changes across versions.
+fn compute_message_definition_hash(msg: &MessageInfo) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -478,11 +552,9 @@ fn compute_message_hash(msg: &MessageInfo) -> String {
         canonical.push_str(&format!("  {}: {}\n", field.name, field.field_type));
     }
 
-    // Compute hash (using DefaultHasher as a simple hash)
     let mut hasher = DefaultHasher::new();
     canonical.hash(&mut hasher);
     let hash = hasher.finish();
 
-    // Format as hex (similar to MD5 output style)
     format!("{:016x}", hash)
 }

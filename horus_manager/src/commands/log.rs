@@ -91,7 +91,12 @@ fn parse_since(since: Option<&str>) -> HorusResult<Option<SystemTime>> {
         "m" => num * 60,
         "h" => num * 3600,
         "d" => num * 86400,
-        _ => unreachable!(),
+        _ => {
+            return Err(HorusError::Config(format!(
+                "Unknown time unit in: {}",
+                since
+            )))
+        }
     };
 
     Ok(Some(SystemTime::now() - Duration::from_secs(secs)))
@@ -135,7 +140,14 @@ fn print_entry(entry: &LogEntry) {
     let ts = entry.timestamp.dimmed();
 
     if let Some(ref topic) = entry.topic {
-        println!("{} {} {} {} {}", ts, lstr, node, topic.cyan(), entry.message);
+        println!(
+            "{} {} {} {} {}",
+            ts,
+            lstr,
+            node,
+            topic.cyan(),
+            entry.message
+        );
     } else {
         println!("{} {} {} {}", ts, lstr, node, entry.message);
     }
@@ -219,7 +231,11 @@ pub fn view_logs(
         })
         .collect();
 
-    let shown: Vec<&&LogEntry> = filtered.iter().rev().take(max_entries).collect::<Vec<_>>()
+    let shown: Vec<&&LogEntry> = filtered
+        .iter()
+        .rev()
+        .take(max_entries)
+        .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect();
@@ -271,10 +287,11 @@ fn follow_logs(node_filter: Option<&str>, min_level: LogLevel) -> HorusResult<()
         }
 
         // Fetch all and display only entries written after `last_seen_idx`.
-        // The ring buffer is monotonic so this is safe even on wrap-around,
-        // as long as fewer than MAX_LOG_ENTRIES (5000) arrive in 100 ms.
+        // write_idx is monotonically increasing (u64), so subtraction is safe.
+        // Cap to the buffer's returned length to handle cases where more
+        // entries arrived than the ring buffer can hold (older ones are lost).
         let all = GLOBAL_LOG_BUFFER.get_all();
-        let new_count = (current_idx - last_seen_idx) as usize;
+        let new_count = (current_idx.wrapping_sub(last_seen_idx) as usize).min(all.len());
         let start = all.len().saturating_sub(new_count);
 
         for entry in &all[start..] {

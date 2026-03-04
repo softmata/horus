@@ -121,19 +121,7 @@ fn format_unix_timestamp(secs: u64) -> String {
 pub(crate) fn discover_registry_files() -> Vec<std::path::PathBuf> {
     let mut registry_files = Vec::new();
 
-    // Cross-platform home directory detection
-    let home_path = if cfg!(target_os = "windows") {
-        // Windows: use USERPROFILE or HOMEPATH
-        std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOMEPATH"))
-            .ok()
-            .map(std::path::PathBuf::from)
-    } else {
-        // Linux/macOS: use HOME
-        std::env::var("HOME").ok().map(std::path::PathBuf::from)
-    };
-
-    let home_path = match home_path {
+    let home_path = match dirs::home_dir() {
         Some(path) => path,
         None => return registry_files,
     };

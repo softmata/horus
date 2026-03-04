@@ -166,12 +166,12 @@ fn execute_single_file(
         }
     }
 
-    // Setup environment
-    setup_environment()?;
+    // Build environment for child processes (no env::set_var)
+    let child_env = build_child_env()?;
 
     // Execute
     eprintln!("{} Executing...\n", cli_output::ICON_INFO.cyan());
-    run_rust::execute_with_scheduler(file_path, language, args, release, clean)?;
+    run_rust::execute_with_scheduler(file_path, language, args, release, clean, &child_env)?;
 
     Ok(())
 }
@@ -346,27 +346,16 @@ fn execute_multiple_files(
     let running = Arc::new(AtomicBool::new(true));
     let children: Arc<Mutex<Vec<(String, std::process::Child)>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Setup Ctrl+C handler with access to children
+    // Setup Ctrl+C handler — only sets the flag, main loop handles killing.
+    // This avoids a race condition where the handler blocks on the children mutex
+    // while the main loop holds it, leaving children unkilled.
     let r = running.clone();
-    let c = children.clone();
     ctrlc::set_handler(move || {
-        println!(
+        eprintln!(
             "\n{} Shutting down all processes...",
             cli_output::ICON_WARN.yellow()
         );
         r.store(false, Ordering::SeqCst);
-
-        // Kill all child processes
-        if let Ok(mut children_lock) = c.lock() {
-            for (name, child) in children_lock.iter_mut() {
-                println!(
-                    "  {} Terminating [{}]...",
-                    cli_output::ICON_WARN.yellow(),
-                    name
-                );
-                let _ = child.kill();
-            }
-        }
     })
     .ok(); // Handler may already be set; ignore failure
 
@@ -434,10 +423,26 @@ fn execute_multiple_files(
 
     // Wait for all processes to complete (concurrent, checks running flag)
     loop {
-        let mut all_done = true;
         let mut children_lock = children.lock().unwrap_or_else(|e| e.into_inner());
 
+        // If shutdown requested, kill all remaining children and break
+        if !running.load(Ordering::SeqCst) {
+            for (name, child) in children_lock.iter_mut() {
+                eprintln!(
+                    "  {} Terminating [{}]...",
+                    cli_output::ICON_WARN.yellow(),
+                    name
+                );
+                let _ = child.kill();
+                let _ = child.wait(); // Reap to prevent zombie
+            }
+            children_lock.clear();
+            drop(children_lock);
+            break;
+        }
+
         // Check each child with try_wait (non-blocking)
+        let mut all_done = true;
         children_lock.retain_mut(|(name, child)| {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -469,11 +474,9 @@ fn execute_multiple_files(
             }
         });
 
-        let still_running = !children_lock.is_empty();
         drop(children_lock);
 
-        // Exit if all processes done or Ctrl+C was pressed and we killed them
-        if all_done || (!running.load(Ordering::SeqCst) && !still_running) {
+        if all_done {
             break;
         }
 
@@ -656,59 +659,63 @@ fn ensure_horus_directory() -> Result<()> {
     Ok(())
 }
 
-fn setup_environment() -> Result<()> {
+/// Build a map of environment variables for child processes.
+///
+/// Used by sibling modules (run_rust, run_python) to get env vars for Commands.
+///
+/// Returns the env vars instead of calling `env::set_var` to avoid UB in
+/// multi-threaded contexts. Callers should pass these via `Command::envs()`.
+pub(super) fn build_child_env() -> Result<Vec<(String, String)>> {
     let current_dir = env::current_dir()?;
     let horus_bin = current_dir.join(".horus/bin");
     let horus_lib = current_dir.join(".horus/lib");
     let horus_packages = current_dir.join(".horus/packages");
 
-    // Update PATH
-    if let Ok(path) = env::var("PATH") {
-        let new_path = format!("{}:{}", horus_bin.display(), path);
-        env::set_var("PATH", new_path);
-    }
+    let mut env_vars: Vec<(String, String)> = Vec::new();
+
+    // PATH
+    let new_path = if let Ok(path) = env::var("PATH") {
+        format!("{}:{}", horus_bin.display(), path)
+    } else {
+        horus_bin.display().to_string()
+    };
+    env_vars.push(("PATH".to_string(), new_path));
 
     // Build LD_LIBRARY_PATH: local + global cache libs
     let mut lib_paths = vec![horus_lib.display().to_string()];
 
-    // Add global cache library paths if they exist
     let global_cache =
         crate::paths::cache_dir().unwrap_or_else(|_| install::home_dir().join(".horus/cache"));
-    {
-        if global_cache.exists() {
-            // Scan for packages with lib/ directories
-            if let Ok(entries) = fs::read_dir(&global_cache) {
-                for entry in entries.flatten() {
-                    let lib_dir = entry.path().join("lib");
-                    if lib_dir.exists() {
-                        lib_paths.push(lib_dir.display().to_string());
-                    }
-                    // Also check target/release for Rust packages
-                    let target_lib = entry.path().join("target/release");
-                    if target_lib.exists() {
-                        lib_paths.push(target_lib.display().to_string());
-                    }
+    if global_cache.exists() {
+        if let Ok(entries) = fs::read_dir(&global_cache) {
+            for entry in entries.flatten() {
+                let lib_dir = entry.path().join("lib");
+                if lib_dir.exists() {
+                    lib_paths.push(lib_dir.display().to_string());
+                }
+                let target_lib = entry.path().join("target/release");
+                if target_lib.exists() {
+                    lib_paths.push(target_lib.display().to_string());
                 }
             }
         }
     }
 
-    // Set LD_LIBRARY_PATH with all paths
     let lib_path_str = lib_paths.join(":");
-    if let Ok(ld_path) = env::var("LD_LIBRARY_PATH") {
-        let new_path = format!("{}:{}", lib_path_str, ld_path);
-        env::set_var("LD_LIBRARY_PATH", new_path);
+    let ld_library_path = if let Ok(ld_path) = env::var("LD_LIBRARY_PATH") {
+        format!("{}:{}", lib_path_str, ld_path)
     } else {
-        env::set_var("LD_LIBRARY_PATH", lib_path_str);
-    }
+        lib_path_str
+    };
+    env_vars.push(("LD_LIBRARY_PATH".to_string(), ld_library_path));
 
-    // Update PYTHONPATH for Python imports
-    if let Ok(py_path) = env::var("PYTHONPATH") {
-        let new_path = format!("{}:{}", horus_packages.display(), py_path);
-        env::set_var("PYTHONPATH", new_path);
+    // PYTHONPATH
+    let python_path = if let Ok(py_path) = env::var("PYTHONPATH") {
+        format!("{}:{}", horus_packages.display(), py_path)
     } else {
-        env::set_var("PYTHONPATH", horus_packages.display().to_string());
-    }
+        horus_packages.display().to_string()
+    };
+    env_vars.push(("PYTHONPATH".to_string(), python_path));
 
-    Ok(())
+    Ok(env_vars)
 }

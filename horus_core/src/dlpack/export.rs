@@ -56,7 +56,7 @@ unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensor) {
 
     // SAFETY: `managed` was created by `Box::into_raw` in the export path.
     // Reconstructing the Box drops it and frees the allocation.
-    let _ = Box::from_raw(managed as *mut DLManagedTensor);
+    let _ = Box::from_raw(managed);
 }
 
 /// Convert HORUS tensor information to DLPack format

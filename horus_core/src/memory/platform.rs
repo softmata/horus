@@ -182,6 +182,322 @@ pub fn has_native_shm() -> bool {
     }
 }
 
+// ============================================================================
+// Stale SHM namespace cleanup
+// ============================================================================
+
+/// Returns the parent directory where HORUS SHM namespace directories live.
+///
+/// - Linux: `/dev/shm/`
+/// - macOS: `/tmp/`
+/// - Windows: `%TEMP%`
+pub fn shm_parent_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("/dev/shm")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/tmp")
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::env::temp_dir()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PathBuf::from("/tmp")
+    }
+}
+
+/// Parse a HORUS auto-generated namespace directory name.
+///
+/// Returns `Some((pgid, uid))` for names matching `horus_pgid{N}_uid{N}`.
+/// Returns `None` for custom namespaces (e.g. `horus_my_robot`) which are
+/// never auto-cleaned.
+pub fn parse_namespace_pgid(dir_name: &str) -> Option<(i32, u32)> {
+    let suffix = dir_name.strip_prefix("horus_pgid")?;
+    let (pgid_str, rest) = suffix.split_once("_uid")?;
+    let pgid: i32 = pgid_str.parse().ok()?;
+    let uid: u32 = rest.parse().ok()?;
+    Some((pgid, uid))
+}
+
+/// Check whether any process in the given process group is still alive.
+///
+/// Uses `kill(-pgid, 0)` which checks for existence without sending a signal.
+/// Returns `false` if the process group doesn't exist or we lack permission to signal it.
+#[cfg(unix)]
+pub fn process_group_alive(pgid: i32) -> bool {
+    if pgid <= 0 {
+        return false;
+    }
+    // SAFETY: kill with signal 0 is a standard existence check.
+    // Negative pid means "send to process group |pid|".
+    let ret = unsafe { libc::kill(-pgid, 0) };
+    if ret == 0 {
+        return true;
+    }
+    // EPERM means the process group exists but we can't signal it — still alive.
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    errno == libc::EPERM
+}
+
+#[cfg(not(unix))]
+pub fn process_group_alive(_pgid: i32) -> bool {
+    // On non-Unix platforms, we can't check process groups.
+    // Conservatively assume alive to avoid deleting active namespaces.
+    true
+}
+
+/// Result of a stale namespace cleanup operation.
+#[derive(Debug, Clone)]
+pub struct NamespaceCleanupResult {
+    /// Number of stale namespace directories removed.
+    pub removed: usize,
+    /// Total bytes freed.
+    pub bytes_freed: u64,
+    /// Directories that were skipped (still alive, other user, etc.).
+    pub skipped: usize,
+    /// Errors encountered (non-fatal — we skip and continue).
+    pub errors: Vec<String>,
+}
+
+/// Information about a single HORUS namespace directory.
+#[derive(Debug, Clone)]
+pub struct NamespaceInfo {
+    /// Full path to the namespace directory.
+    pub path: PathBuf,
+    /// Directory name (e.g. `horus_pgid12345_uid1000`).
+    pub dir_name: String,
+    /// Parsed PGID, if this is an auto-generated namespace.
+    pub pgid: Option<i32>,
+    /// Parsed UID, if this is an auto-generated namespace.
+    pub uid: Option<u32>,
+    /// Whether the owning process group is still alive.
+    pub alive: bool,
+    /// Total size in bytes.
+    pub size_bytes: u64,
+    /// Number of files inside.
+    pub file_count: usize,
+}
+
+/// Scan the SHM parent directory and remove stale HORUS namespace directories.
+///
+/// A namespace is considered stale when:
+/// 1. Its name matches `horus_pgid{N}_uid{N}` (auto-generated, not custom)
+/// 2. Its UID matches the current user (we never touch other users' dirs)
+/// 3. Its process group is no longer alive
+/// 4. It's not the current process's namespace
+///
+/// This is safe to call at any time. It only removes directories that belong
+/// to dead process groups owned by the current user.
+pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
+    let mut result = NamespaceCleanupResult {
+        removed: 0,
+        bytes_freed: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+
+    let parent = shm_parent_dir();
+    if !parent.exists() {
+        return result;
+    }
+
+    let current_ns = format!("horus_{}", shm_namespace());
+
+    #[cfg(unix)]
+    let current_uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let current_uid: u32 = 0;
+
+    let entries = match std::fs::read_dir(&parent) {
+        Ok(e) => e,
+        Err(e) => {
+            result
+                .errors
+                .push(format!("Failed to read {}: {}", parent.display(), e));
+            return result;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // Only look at horus_pgid* directories
+        if !dir_name.starts_with("horus_pgid") {
+            continue;
+        }
+
+        // Skip the current process's namespace
+        if dir_name == current_ns {
+            result.skipped += 1;
+            continue;
+        }
+
+        // Parse PGID and UID from the directory name
+        let (pgid, uid) = match parse_namespace_pgid(&dir_name) {
+            Some(parsed) => parsed,
+            None => {
+                result.skipped += 1;
+                continue;
+            }
+        };
+
+        // Only clean our own user's directories
+        if uid != current_uid {
+            result.skipped += 1;
+            continue;
+        }
+
+        // Check if the process group is still alive
+        if process_group_alive(pgid) {
+            result.skipped += 1;
+            continue;
+        }
+
+        // Process group is dead — remove the stale namespace
+        let dir_path = entry.path();
+        let size = dir_size_bytes(&dir_path);
+
+        match std::fs::remove_dir_all(&dir_path) {
+            Ok(()) => {
+                log::info!(
+                    "Removed stale SHM namespace: {} (freed {})",
+                    dir_name,
+                    format_bytes_compact(size)
+                );
+                result.removed += 1;
+                result.bytes_freed += size;
+            }
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to remove {}: {}",
+                    dir_path.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    if result.removed > 0 {
+        log::info!(
+            "SHM cleanup: removed {} stale namespace(s), freed {}",
+            result.removed,
+            format_bytes_compact(result.bytes_freed)
+        );
+    }
+
+    result
+}
+
+/// List all HORUS namespace directories in the SHM parent.
+///
+/// Returns info about every `horus_*` directory, including whether each is
+/// alive or stale. Used by `horus clean --shm` for verbose display.
+pub fn list_all_horus_namespaces() -> Vec<NamespaceInfo> {
+    let parent = shm_parent_dir();
+    if !parent.exists() {
+        return Vec::new();
+    }
+
+    let entries = match std::fs::read_dir(&parent) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut namespaces = Vec::new();
+
+    for entry in entries.flatten() {
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // Only look at horus_* directories
+        if !dir_name.starts_with("horus_") {
+            continue;
+        }
+
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let (pgid, uid, alive) = match parse_namespace_pgid(&dir_name) {
+            Some((pgid, _uid)) => (Some(pgid), Some(_uid), process_group_alive(pgid)),
+            None => (None, None, true), // Custom namespaces assumed alive
+        };
+
+        let size_bytes = dir_size_bytes(&path);
+        let file_count = dir_file_count(&path);
+
+        namespaces.push(NamespaceInfo {
+            path,
+            dir_name,
+            pgid,
+            uid,
+            alive,
+            size_bytes,
+            file_count,
+        });
+    }
+
+    namespaces
+}
+
+/// Recursively compute the total size of a directory in bytes.
+fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    let mut size = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Ok(meta) = p.metadata() {
+                    size += meta.len();
+                }
+            } else if p.is_dir() {
+                size += dir_size_bytes(&p);
+            }
+        }
+    }
+    size
+}
+
+/// Recursively count files in a directory.
+fn dir_file_count(path: &std::path::Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                count += 1;
+            } else if p.is_dir() {
+                count += dir_file_count(&p);
+            }
+        }
+    }
+    count
+}
+
+/// Format bytes in a compact human-readable form.
+fn format_bytes_compact(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,7 +546,10 @@ mod tests {
         // We can't safely unset env vars in a parallel test environment, so we only
         // verify the contract (non-empty) rather than the specific auto-gen format.
         let ns = generate_namespace();
-        assert!(!ns.is_empty(), "generate_namespace() must never return an empty string");
+        assert!(
+            !ns.is_empty(),
+            "generate_namespace() must never return an empty string"
+        );
     }
 
     /// generate_namespace() with HORUS_NAMESPACE set returns the sanitized value.
@@ -336,6 +655,95 @@ mod tests {
     fn test_different_namespaces_give_different_paths() {
         let ns_a = format!("horus_{}", sanitize_namespace("app_a"));
         let ns_b = format!("horus_{}", sanitize_namespace("app_b"));
-        assert_ne!(ns_a, ns_b, "different app names must produce different SHM directory names");
+        assert_ne!(
+            ns_a, ns_b,
+            "different app names must produce different SHM directory names"
+        );
+    }
+
+    // ========================================================================
+    // Stale namespace cleanup tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_namespace_pgid_valid() {
+        assert_eq!(
+            parse_namespace_pgid("horus_pgid12345_uid1000"),
+            Some((12345, 1000))
+        );
+        assert_eq!(
+            parse_namespace_pgid("horus_pgid1_uid0"),
+            Some((1, 0))
+        );
+        assert_eq!(
+            parse_namespace_pgid("horus_pgid999999999_uid65534"),
+            Some((999999999, 65534))
+        );
+    }
+
+    #[test]
+    fn test_parse_namespace_pgid_custom_namespaces() {
+        // Custom namespaces should return None — never auto-cleaned
+        assert_eq!(parse_namespace_pgid("horus_my_robot"), None);
+        assert_eq!(parse_namespace_pgid("horus_test"), None);
+        assert_eq!(parse_namespace_pgid("horus_"), None);
+        assert_eq!(parse_namespace_pgid("not_horus_pgid1_uid1"), None);
+    }
+
+    #[test]
+    fn test_parse_namespace_pgid_malformed() {
+        assert_eq!(parse_namespace_pgid("horus_pgidabc_uid1000"), None);
+        assert_eq!(parse_namespace_pgid("horus_pgid123_uidabc"), None);
+        assert_eq!(parse_namespace_pgid("horus_pgid_uid"), None);
+        assert_eq!(parse_namespace_pgid("horus_pgid123"), None);
+        assert_eq!(parse_namespace_pgid(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_process_group_alive_current() {
+        // Our own process group should be alive
+        let pgid = unsafe { libc::getpgrp() };
+        assert!(
+            process_group_alive(pgid),
+            "current process group should be alive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_process_group_alive_nonexistent() {
+        // PGID 999999999 is extremely unlikely to exist
+        assert!(
+            !process_group_alive(999999999),
+            "nonexistent process group should not be alive"
+        );
+    }
+
+    #[test]
+    fn test_process_group_alive_invalid_pgid() {
+        assert!(!process_group_alive(0));
+        assert!(!process_group_alive(-1));
+    }
+
+    #[test]
+    fn test_format_bytes_compact() {
+        assert_eq!(format_bytes_compact(0), "0 B");
+        assert_eq!(format_bytes_compact(512), "512 B");
+        assert_eq!(format_bytes_compact(1024), "1.0 KB");
+        assert_eq!(format_bytes_compact(1536), "1.5 KB");
+        assert_eq!(format_bytes_compact(1048576), "1.0 MB");
+        assert_eq!(format_bytes_compact(1073741824), "1.0 GB");
+    }
+
+    #[test]
+    fn test_shm_parent_dir_exists() {
+        let parent = shm_parent_dir();
+        // On any normal system, /dev/shm or /tmp should exist
+        assert!(
+            parent.exists(),
+            "shm_parent_dir() should point to an existing directory: {}",
+            parent.display()
+        );
     }
 }

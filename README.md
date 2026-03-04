@@ -109,13 +109,13 @@ scheduler.add(control_node).order(1).rate_hz(100.0).done(); // Per-node rate
 scheduler.run()?;
 ```
 
-**Presets** for common use cases:
+**Per-node execution classes** for fine-grained control:
 
 ```rust
-Scheduler::deploy()           // Production: RT + flight recorder
-Scheduler::safety_critical()  // Watchdogs + sequential
-Scheduler::high_performance() // Parallel + 10kHz
-Scheduler::deterministic()    // Reproducible execution
+let mut scheduler = Scheduler::new();
+scheduler.add(motor_ctrl).order(0).rt().rate_hz(1000.0).done();
+scheduler.add(planner).order(5).compute().done();
+scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
 ```
 
 ### Topics (Pub/Sub)

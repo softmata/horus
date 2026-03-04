@@ -71,7 +71,7 @@ pub fn create_new_project(
             create_main_rs(&project_path, use_macro)?;
         }
         "python" => create_main_py(&project_path)?,
-        _ => unreachable!(),
+        other => anyhow::bail!("Unsupported language: {}", other),
     }
 
     // Register workspace in ~/.horus/workspaces.json

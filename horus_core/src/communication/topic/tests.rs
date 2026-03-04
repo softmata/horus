@@ -1247,7 +1247,10 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
         init_t.send(0);
         let _ = init_t.recv();
         // Attempt MpmcIntra; skip test if SHM / backend setup fails.
-        if !matches!(init_t.force_migrate(BackendMode::MpmcIntra), MigrationResult::Success { .. }) {
+        if !matches!(
+            init_t.force_migrate(BackendMode::MpmcIntra),
+            MigrationResult::Success { .. }
+        ) {
             return;
         }
     }
@@ -1292,7 +1295,7 @@ fn check_migration_revalidates_epoch_after_concurrent_migration() {
     t2.check_migration_now();
 
     let header_epoch = t2.ring.header().migration_epoch.load(Ordering::Acquire);
-    let t2_cached  = t2.ring.local().cached_epoch;
+    let t2_cached = t2.ring.local().cached_epoch;
     assert_eq!(
         t2_cached, header_epoch,
         "after migrations settled, t2.cached_epoch ({}) must equal \
@@ -1391,7 +1394,11 @@ fn concurrent_migration_no_livelock_16_threads() {
     // Topic must still be usable after the migration storm.
     let t: Topic<u64> = Topic::new(&name).expect("post-check");
     t.send(99);
-    assert_eq!(t.recv(), Some(99), "topic unusable after concurrent migration");
+    assert_eq!(
+        t.recv(),
+        Some(99),
+        "topic unusable after concurrent migration"
+    );
 }
 
 // ============================================================================

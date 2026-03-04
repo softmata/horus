@@ -83,7 +83,9 @@ impl ChainCache {
 
     /// Return `(generation, &chain)` for a cached entry, or `None` if absent.
     fn get(&self, src: FrameId, dst: FrameId) -> Option<(u64, &Vec<FrameId>)> {
-        self.entries.get(&(src, dst)).map(|(gen, chain)| (*gen, chain))
+        self.entries
+            .get(&(src, dst))
+            .map(|(gen, chain)| (*gen, chain))
     }
 
     fn insert(&mut self, src: FrameId, dst: FrameId, generation: u64, chain: Vec<FrameId>) {
@@ -802,7 +804,9 @@ mod tests {
 
         // After all writes settle, the final resolved base→world transform
         // must match the last written value (i = 999 → X = 999.0).
-        let tf = core.resolve(1, 0).expect("resolve(base→world) must succeed after all writes");
+        let tf = core
+            .resolve(1, 0)
+            .expect("resolve(base→world) must succeed after all writes");
         assert!(
             (tf.translation[0] - 999.0).abs() < 1e-4,
             "final X translation must be 999.0, got {}",

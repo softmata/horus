@@ -6,11 +6,12 @@ use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
-use horus_core::memory::shm_base_dir;
+use horus_core::memory::{list_all_horus_namespaces, shm_namespace, NamespaceInfo};
+use horus_core::NodePresence;
 use std::path::Path;
 
 /// Run the clean command
-pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult<()> {
+pub fn run_clean(shm: bool, all: bool, dry_run: bool, force: bool, json: bool) -> HorusResult<()> {
     if json {
         let mut items = Vec::new();
         if !shm || all {
@@ -25,20 +26,21 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
             }
         }
         if shm || all {
-            let shm_path = shm_base_dir();
-            if shm_path.exists() {
+            let namespaces = list_all_horus_namespaces();
+            for ns in &namespaces {
                 items.push(serde_json::json!({
                     "type": "shared_memory",
-                    "path": shm_path.display().to_string(),
-                    "size": get_dir_size(&shm_path),
-                    "files": count_files(&shm_path),
+                    "path": ns.path.display().to_string(),
+                    "namespace": ns.dir_name,
+                    "size": ns.size_bytes,
+                    "files": ns.file_count,
+                    "alive": ns.alive,
                     "exists": true,
                 }));
             }
         }
         if all {
-            if let Ok(home) = dirs::home_dir().ok_or(()) {
-                let cache_dir = home.join(".horus").join("cache");
+            if let Ok(cache_dir) = crate::paths::cache_dir() {
                 if cache_dir.exists() {
                     items.push(serde_json::json!({
                         "type": "horus_cache",
@@ -54,14 +56,17 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
             "dry_run": dry_run,
             "items": items,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         if !dry_run {
             // Actually perform the cleaning
             if !shm || all {
                 clean_build_cache(false)?;
             }
             if shm || all {
-                clean_shared_memory(false)?;
+                clean_shared_memory(false, force)?;
             }
             if all {
                 clean_horus_cache(false)?;
@@ -82,7 +87,7 @@ pub fn run_clean(shm: bool, all: bool, dry_run: bool, json: bool) -> HorusResult
 
     // Clean shared memory
     if shm || all {
-        cleaned_anything |= clean_shared_memory(dry_run)?;
+        cleaned_anything |= clean_shared_memory(dry_run, force)?;
     }
 
     // Clean HORUS cache directory
@@ -138,51 +143,172 @@ fn clean_build_cache(dry_run: bool) -> HorusResult<bool> {
     Ok(false)
 }
 
-/// Clean shared memory
-fn clean_shared_memory(dry_run: bool) -> HorusResult<bool> {
-    let shm_path = shm_base_dir();
-    let shm_display = shm_path.display().to_string();
+/// Clean shared memory — scans ALL horus_* namespace directories
+fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
+    let namespaces = list_all_horus_namespaces();
 
-    if shm_path.exists() {
-        let size = get_dir_size(&shm_path);
-        let file_count = count_files(&shm_path);
-
-        if dry_run {
-            println!(
-                "  {} Would remove {} ({}, {} files)",
-                cli_output::ICON_INFO.cyan(),
-                shm_display.white(),
-                format_size(size),
-                file_count
-            );
-        } else {
-            println!(
-                "  {} Removing {} ({}, {} files)",
-                cli_output::ICON_INFO.cyan(),
-                shm_display.white(),
-                format_size(size),
-                file_count
-            );
-            std::fs::remove_dir_all(&shm_path).map_err(HorusError::Io)?;
-        }
-        return Ok(true);
-    } else {
+    if namespaces.is_empty() {
         println!(
-            "  {} No shared memory at {}",
-            cli_output::ICON_SUCCESS.dimmed(),
-            shm_display
+            "  {} No HORUS shared memory namespaces found",
+            cli_output::ICON_SUCCESS.dimmed()
+        );
+        return Ok(false);
+    }
+
+    let current_ns = format!("horus_{}", shm_namespace());
+
+    // Categorize namespaces
+    let mut stale: Vec<&NamespaceInfo> = Vec::new();
+    let mut active: Vec<&NamespaceInfo> = Vec::new();
+    for ns in &namespaces {
+        if ns.alive {
+            active.push(ns);
+        } else {
+            stale.push(ns);
+        }
+    }
+
+    // Display namespace table
+    println!(
+        "  {} Found {} HORUS namespace(s):",
+        cli_output::ICON_INFO.cyan(),
+        namespaces.len()
+    );
+    println!();
+    println!(
+        "    {:<40} {:>10} {:>6}  {}",
+        "Namespace".white().bold(),
+        "Size".white().bold(),
+        "Files".white().bold(),
+        "Status".white().bold()
+    );
+    println!("    {}", "-".repeat(72).dimmed());
+
+    for ns in &namespaces {
+        let status = if ns.dir_name == current_ns {
+            "current".green().to_string()
+        } else if ns.alive {
+            "active".yellow().to_string()
+        } else {
+            "stale".red().to_string()
+        };
+
+        let name_display = if ns.dir_name == current_ns {
+            format!("{} {}", ns.dir_name, "(this)".dimmed())
+        } else {
+            ns.dir_name.clone()
+        };
+
+        println!(
+            "    {:<40} {:>10} {:>6}  {}",
+            name_display,
+            format_size(ns.size_bytes),
+            ns.file_count,
+            status
+        );
+    }
+    println!();
+
+    if stale.is_empty() && !force {
+        println!(
+            "  {} No stale namespaces to clean.",
+            cli_output::ICON_SUCCESS.dimmed()
+        );
+        if !active.is_empty() {
+            println!(
+                "  {} Use {} to also remove active namespaces.",
+                "Tip:".dimmed(),
+                "--force".white().bold()
+            );
+        }
+        return Ok(false);
+    }
+
+    // Determine which namespaces to remove
+    let to_remove: Vec<&NamespaceInfo> = if force {
+        // With --force: remove all namespaces (stale + active, including current)
+        namespaces.iter().collect()
+    } else {
+        // Default: remove only stale namespaces
+        stale
+    };
+
+    if to_remove.is_empty() {
+        return Ok(false);
+    }
+
+    // Check for active nodes if forcing removal of active namespaces
+    if force {
+        let active_nodes = NodePresence::read_all();
+        if !active_nodes.is_empty() {
+            println!(
+                "  {} Forcing SHM clean with {} active process(es):",
+                cli_output::ICON_WARN.yellow(),
+                active_nodes.len()
+            );
+            for node in &active_nodes {
+                println!(
+                    "    {} {} (PID {})",
+                    cli_output::ICON_INFO.cyan(),
+                    node.name,
+                    node.pid
+                );
+            }
+            println!();
+        }
+    }
+
+    let total_size: u64 = to_remove.iter().map(|ns| ns.size_bytes).sum();
+    let total_files: usize = to_remove.iter().map(|ns| ns.file_count).sum();
+
+    if dry_run {
+        println!(
+            "  {} Would remove {} namespace(s) ({}, {} files)",
+            cli_output::ICON_INFO.cyan(),
+            to_remove.len(),
+            format_size(total_size),
+            total_files
+        );
+    } else {
+        let mut removed = 0usize;
+        let mut freed = 0u64;
+        for ns in &to_remove {
+            match std::fs::remove_dir_all(&ns.path) {
+                Ok(()) => {
+                    removed += 1;
+                    freed += ns.size_bytes;
+                    println!(
+                        "  {} Removed {} ({})",
+                        cli_output::ICON_INFO.cyan(),
+                        ns.dir_name.white(),
+                        format_size(ns.size_bytes)
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "  {} Failed to remove {}: {}",
+                        cli_output::ICON_WARN.yellow(),
+                        ns.dir_name,
+                        e
+                    );
+                }
+            }
+        }
+        println!();
+        println!(
+            "  {} Removed {} namespace(s), freed {}",
+            cli_output::ICON_SUCCESS.green(),
+            removed,
+            format_size(freed)
         );
     }
 
-    Ok(false)
+    Ok(true)
 }
 
 /// Clean HORUS cache directory
 fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HorusError::Config("Could not determine home directory".to_string()))?;
-
-    let cache_dir = home.join(".horus").join("cache");
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
 
     if cache_dir.exists() {
         let size = get_dir_size(&cache_dir);

@@ -395,12 +395,7 @@ impl TensorPool {
     /// Returns a Tensor descriptor pointing to the allocated memory.
     /// The device field on the descriptor is set automatically when the pool
     /// uses a managed memory allocator, otherwise it uses the caller-supplied device.
-    pub fn alloc(
-        &self,
-        shape: &[u64],
-        dtype: TensorDtype,
-        device: Device,
-    ) -> HorusResult<Tensor> {
+    pub fn alloc(&self, shape: &[u64], dtype: TensorDtype, device: Device) -> HorusResult<Tensor> {
         // Calculate required size — use checked arithmetic to prevent overflow.
         // A crafted shape like [u32::MAX, u32::MAX] would overflow u64 without this check,
         // causing the pool to allocate a near-zero-size region and subsequent writes to

@@ -467,5 +467,4 @@ mod tests {
             TelemetryEndpoint::Udp(_)
         ));
     }
-
 }

@@ -11,19 +11,33 @@
 //! scheduler.add(control_node).order(1).done();
 //! scheduler.run()?;
 //!
-//! // Production — RT features + flight recorder
-//! let mut scheduler = Scheduler::deploy();
-//! scheduler.add(motor_ctrl).order(0).rt().done();
+//! // Nodes declare their execution needs
+//! let mut scheduler = Scheduler::new().tick_hz(500.0);
+//! scheduler.add(motor_ctrl).order(0).rt().rate_hz(1000.0).done();
+//! scheduler.add(planner).order(5).compute().done();
+//! scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
 //! scheduler.run()?;
-//!
-//! // Preset + override
-//! let mut scheduler = Scheduler::deploy().tick_hz(500.0);
 //! ```
 
 pub mod config;
 pub(crate) mod safety_monitor;
 pub mod scheduler;
 pub(crate) mod types;
+
+// Low-level execution primitives (NodeRunner, TickResult)
+pub(crate) mod primitives;
+
+// Dedicated RT thread executor
+pub(crate) mod rt_executor;
+
+// Parallel compute thread pool executor
+pub(crate) mod compute_executor;
+
+// Event-driven executor for topic-triggered nodes
+pub(crate) mod event_executor;
+
+// Async I/O executor for I/O-bound nodes (tokio spawn_blocking)
+pub(crate) mod async_executor;
 
 // Advanced execution modules — individual types re-exported below
 pub(crate) mod fault_tolerance;
@@ -224,7 +238,7 @@ pub use crate::core::rt_node::WCETViolation;
 #[doc(hidden)]
 pub use blackbox::{BlackBox, BlackBoxEvent, BlackBoxRecord};
 #[doc(hidden)]
-pub use config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
+pub use config::{RecordingConfigYaml, SchedulerConfig};
 #[doc(hidden)]
 pub use fault_tolerance::{CircuitState, FailureHandlerStats, FailurePolicy};
 #[doc(hidden)]
@@ -241,3 +255,5 @@ pub use safety_monitor::{SafetyState, SafetyStats};
 pub use scheduler::RtFeatureDegradation;
 #[doc(hidden)]
 pub use types::NodeTier;
+#[doc(hidden)]
+pub use types::ExecutionClass;

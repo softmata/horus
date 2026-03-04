@@ -254,7 +254,7 @@ enum Commands {
     /// Clean build artifacts and shared memory
     Clean {
         /// Only clean shared memory
-        #[arg(long = "shm")]
+        #[arg(long = "shm", conflicts_with = "all")]
         shm: bool,
 
         /// Clean everything (build cache + shared memory + horus cache)
@@ -264,6 +264,10 @@ enum Commands {
         /// Show what would be cleaned without removing anything
         #[arg(short = 'n', long = "dry-run")]
         dry_run: bool,
+
+        /// Force clean even if HORUS processes are running
+        #[arg(short = 'f', long = "force")]
+        force: bool,
 
         /// Output as JSON
         #[arg(long = "json")]
@@ -287,6 +291,10 @@ enum Commands {
         /// List nodes in the launch file without launching
         #[arg(long = "list")]
         list: bool,
+
+        /// Seconds to wait for graceful shutdown before SIGKILL (default: 2)
+        #[arg(long = "shutdown-timeout", default_value = "2")]
+        shutdown_timeout: u64,
     },
 
     // ── Introspection ────────────────────────────────────────────────────
@@ -353,7 +361,7 @@ enum Commands {
         since: Option<String>,
 
         /// Follow log output in real-time
-        #[arg(short = 'f', long = "follow")]
+        #[arg(short = 'f', long = "follow", conflicts_with_all = ["clear", "clear_all"])]
         follow: bool,
 
         /// Number of recent log entries to show
@@ -361,7 +369,7 @@ enum Commands {
         count: Option<usize>,
 
         /// Clear logs instead of viewing
-        #[arg(long = "clear")]
+        #[arg(long = "clear", conflicts_with = "clear_all")]
         clear: bool,
 
         /// Clear all logs (including file-based logs)
@@ -633,7 +641,7 @@ enum Commands {
         dry_run: bool,
 
         /// List configured deployment targets
-        #[arg(long = "list")]
+        #[arg(long = "list", conflicts_with_all = ["run_after", "arch", "remote_dir", "dry_run"])]
         list: bool,
     },
 
@@ -1233,6 +1241,10 @@ enum MsgCommands {
         /// Filter by name or module
         #[arg(short = 'f', long = "filter")]
         filter: Option<String>,
+
+        /// Output as JSON
+        #[arg(long = "json")]
+        json: bool,
     },
 
     /// Show message type definition
@@ -1339,6 +1351,10 @@ fn main() {
 
     log::debug!("HORUS CLI v{}", env!("CARGO_PKG_VERSION"));
 
+    // Silently clean up stale SHM namespace directories from crashed processes.
+    // Cost: one read_dir + one kill() per stale dir (<1ms).
+    let _ = horus_core::memory::cleanup_stale_namespaces();
+
     if let Err(e) = run_command(cli.command) {
         eprintln!("{} {}", "Error:".red().bold(), e);
         std::process::exit(1);
@@ -1347,9 +1363,7 @@ fn main() {
 
 fn run_command(command: Commands) -> HorusResult<()> {
     match command {
-        Commands::Init { name } => {
-            commands::init::run_init(name).map_err(|e| HorusError::Config(e.to_string()))
-        }
+        Commands::Init { name } => commands::init::run_init(name).map_err(HorusError::from),
 
         Commands::New {
             name,
@@ -1367,7 +1381,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             };
 
             commands::new::create_new_project(name, path, language.to_string(), use_macro)
-                .map_err(|e| HorusError::Config(e.to_string()))
+                .map_err(HorusError::from)
         }
 
         Commands::Run {
@@ -1383,17 +1397,15 @@ fn run_command(command: Commands) -> HorusResult<()> {
             // Set quiet mode for progress indicators
             horus_manager::progress::set_quiet(quiet);
 
-            // Store drivers override in environment variable for later use
+            // SAFETY: These set_var calls run in single-threaded main() before
+            // any child processes or threads are spawned. They configure env vars
+            // that child processes inherit via process environment.
             if let Some(ref driver_list) = drivers {
                 std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
             }
-
-            // Store enable capabilities in environment variable for later use
             if let Some(ref enable_list) = enable {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
-
-            // If recording enabled, set environment variable for nodes to pick up
             if let Some(ref session_name) = record {
                 std::env::set_var("HORUS_RECORD_SESSION", session_name);
                 println!(
@@ -1404,8 +1416,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             }
 
             // Build and run
-            commands::run::execute_run(files, args, release, clean)
-                .map_err(|e| HorusError::Config(e.to_string()))
+            commands::run::execute_run(files, args, release, clean).map_err(HorusError::from)
         }
 
         Commands::Build {
@@ -1419,19 +1430,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
             // Set quiet mode for progress indicators
             horus_manager::progress::set_quiet(quiet);
 
-            // Store drivers override in environment variable for later use
+            // SAFETY: Single-threaded main() context, before any child processes.
             if let Some(ref driver_list) = drivers {
                 std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
             }
-
-            // Store enable capabilities in environment variable for later use
             if let Some(ref enable_list) = enable {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
 
             // Build only - compile but don't execute
-            commands::run::execute_build_only(files, release, clean)
-                .map_err(|e| HorusError::Config(e.to_string()))
+            commands::run::execute_build_only(files, release, clean).map_err(HorusError::from)
         }
 
         Commands::Check { path, quiet, json } => commands::check::run_check(path, quiet, json),
@@ -1450,12 +1458,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
             drivers,
             enable,
         } => {
-            // Store drivers override in environment variable for later use
+            // SAFETY: Single-threaded main() context, before any child processes.
             if let Some(ref driver_list) = drivers {
                 std::env::set_var("HORUS_DRIVERS", driver_list.join(","));
             }
-
-            // Store enable capabilities in environment variable for later use
             if let Some(ref enable_list) = enable {
                 std::env::set_var("HORUS_ENABLE", enable_list.join(","));
             }
@@ -1472,7 +1478,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 no_cleanup,
                 verbose,
             )
-            .map_err(|e| HorusError::Config(e.to_string()))?;
+            .map_err(HorusError::from)?;
             Ok(())
         }
 
@@ -1484,13 +1490,13 @@ fn run_command(command: Commands) -> HorusResult<()> {
         } => {
             // Reset password if requested
             if reset_password {
-                security::auth::reset_password().map_err(|e| HorusError::Config(e.to_string()))?;
+                security::auth::reset_password().map_err(HorusError::from)?;
             }
 
             if tui {
                 println!("{} Opening HORUS monitor (TUI)...", "".cyan());
                 // Launch TUI monitor
-                monitor_tui::TuiDashboard::run().map_err(|e| HorusError::Config(e.to_string()))
+                monitor_tui::TuiDashboard::run().map_err(HorusError::from)
             } else {
                 // Default: Launch web monitor and auto-open browser
                 println!(
@@ -1542,9 +1548,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
         },
 
         Commands::Action { command } => match command {
-            ActionCommands::List { verbose, json } => {
-                commands::action::list_actions(verbose, json)
-            }
+            ActionCommands::List { verbose, json } => commands::action::list_actions(verbose, json),
             ActionCommands::Info { name } => commands::action::action_info(&name),
             ActionCommands::SendGoal {
                 name,
@@ -1634,26 +1638,30 @@ fn run_command(command: Commands) -> HorusResult<()> {
             shm,
             all,
             dry_run,
+            force,
             json,
-        } => commands::clean::run_clean(shm, all, dry_run, json),
+        } => commands::clean::run_clean(shm, all, dry_run, force, json),
 
         Commands::Launch {
             file,
             dry_run,
             namespace,
             list,
+            shutdown_timeout,
         } => {
             if list {
                 commands::launch::list_launch_nodes(&file)
             } else {
-                commands::launch::run_launch(&file, dry_run, namespace)
+                commands::launch::run_launch(&file, dry_run, namespace, shutdown_timeout)
             }
         }
 
         Commands::Msg { command } => match command {
-            MsgCommands::List { verbose, filter } => {
-                commands::msg::list_messages(verbose, filter.as_deref())
-            }
+            MsgCommands::List {
+                verbose,
+                filter,
+                json,
+            } => commands::msg::list_messages(verbose, filter.as_deref(), json),
             MsgCommands::Show { name, json } => commands::msg::show_message(&name, json),
             MsgCommands::Md5 { name, json } => commands::msg::message_hash(&name, json),
         },
@@ -1723,15 +1731,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
         Commands::Unpublish { package, ver, yes } => {
             // Parse name@version syntax (takes precedence over positional version)
             let (pkg_name, pkg_ver) = match package.find('@') {
-                Some(idx) => (package[..idx].to_string(), package[idx + 1..].to_string()),
+                Some(idx) => {
+                    let (name, rest) = package.split_at(idx);
+                    (name.to_string(), rest[1..].to_string())
+                }
                 None => match ver {
                     Some(v) => (package, v),
                     None => {
-                        eprintln!(
-                            "{} Version required. Use: horus unpublish name@version",
-                            "Error:".red().bold()
-                        );
-                        std::process::exit(1);
+                        return Err(HorusError::Config(
+                            "Version required. Use: horus unpublish name@version".to_string(),
+                        ));
                     }
                 },
             };
@@ -1743,16 +1752,16 @@ fn run_command(command: Commands) -> HorusResult<()> {
         Commands::Info { name, json } => commands::plugin::run_info_unified(name, json),
 
         Commands::Enable { command } => {
-            commands::pkg::enable_plugin(&command).map_err(|e| HorusError::Config(e.to_string()))
+            commands::pkg::enable_plugin(&command).map_err(HorusError::from)
         }
 
         Commands::Disable { command, reason } => {
-            commands::pkg::disable_plugin(&command, reason.as_deref())
-                .map_err(|e| HorusError::Config(e.to_string()))
+            commands::pkg::disable_plugin(&command, reason.as_deref()).map_err(HorusError::from)
         }
 
-        Commands::Verify { plugin, json } => commands::pkg::verify_plugins(plugin.as_deref(), json)
-            .map_err(|e| HorusError::Config(e.to_string())),
+        Commands::Verify { plugin, json } => {
+            commands::pkg::verify_plugins(plugin.as_deref(), json).map_err(HorusError::from)
+        }
 
         Commands::Env { command } => match command {
             EnvCommands::Freeze { output, publish } => commands::env::run_freeze(output, publish),

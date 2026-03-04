@@ -18,8 +18,21 @@ pub fn list_params(verbose: bool, json: bool) -> HorusResult<()> {
     let all_params = params.get_all();
 
     if json {
-        let json_output = serde_json::to_string_pretty(&all_params)?;
-        println!("{}", json_output);
+        let items: Vec<_> = all_params
+            .iter()
+            .map(|(key, value)| {
+                serde_json::json!({
+                    "name": key,
+                    "value": value,
+                    "type": value_type(value)
+                })
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -280,7 +293,7 @@ fn format_value_compact(value: &Value) -> String {
     match value {
         Value::String(s) => {
             if s.len() > 20 {
-                format!("\"{}...\"", &s[..17])
+                format!("\"{}\"", crate::cli_output::safe_truncate(s, 20))
             } else {
                 format!("\"{}\"", s)
             }

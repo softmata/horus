@@ -17,8 +17,8 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
     // Check for Python interpreter
     let python_cmd = detect_python_interpreter()?;
 
-    // Setup Python path for horus_py integration
-    setup_python_environment()?;
+    // Build PYTHONPATH for child processes (no env::set_var)
+    let python_path = build_python_path()?;
 
     // Detect if this is a HORUS node or plain Python script
     let uses_horus = detect_horus_usage_python(&file)?;
@@ -40,6 +40,7 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         cmd.arg(&wrapper_script);
         // Pass the real node path out-of-band — never inline in Python source.
         cmd.env("HORUS_NODE_FILE", &canonical_file);
+        cmd.env("PYTHONPATH", &python_path);
         cmd.args(args);
 
         // Spawn child process so we can handle Ctrl+C
@@ -67,9 +68,12 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         // Cleanup wrapper script
         fs::remove_file(wrapper_script).ok();
 
-        // Exit with the same code as the Python script
+        // Propagate the child's exit code as an error
         if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+            bail!(
+                "Python node exited with code {}",
+                status.code().unwrap_or(1)
+            );
         }
     } else {
         // Direct execution for plain Python scripts
@@ -80,6 +84,7 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
 
         let mut cmd = Command::new(python_cmd);
         cmd.arg(&file);
+        cmd.env("PYTHONPATH", &python_path);
         cmd.args(args);
 
         // Spawn child process so we can handle Ctrl+C
@@ -104,9 +109,12 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
         // Wait for child to complete
         let status = child.wait()?;
 
-        // Exit with the same code as the Python script
+        // Propagate the child's exit code as an error
         if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+            bail!(
+                "Python script exited with code {}",
+                status.code().unwrap_or(1)
+            );
         }
     }
 
@@ -123,11 +131,13 @@ pub(crate) fn detect_python_interpreter() -> Result<String> {
     bail!("No Python interpreter found. Install Python 3.7+ and ensure it's in PATH.");
 }
 
-pub(super) fn setup_python_environment() -> Result<()> {
+/// Build PYTHONPATH for child processes without calling `env::set_var`.
+///
+/// Returns the combined PYTHONPATH string to pass via `Command::env()`.
+pub(super) fn build_python_path() -> Result<String> {
     let current_dir = env::current_dir()?;
     let horus_packages = current_dir.join(".horus/packages");
 
-    // Add global cache Python packages to PYTHONPATH
     let global_cache = crate::paths::cache_dir()?;
 
     let mut python_paths = Vec::new();
@@ -138,7 +148,6 @@ pub(super) fn setup_python_environment() -> Result<()> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    // Check for lib directory (Python packages)
                     let lib_dir = path.join("lib");
                     if lib_dir.exists() {
                         python_paths.push(lib_dir.display().to_string());
@@ -156,11 +165,7 @@ pub(super) fn setup_python_environment() -> Result<()> {
         python_paths.push(current_path);
     }
 
-    // Set the combined PYTHONPATH
-    let new_path = python_paths.join(":");
-    env::set_var("PYTHONPATH", new_path);
-
-    Ok(())
+    Ok(python_paths.join(":"))
 }
 
 fn detect_horus_usage_python(file: &Path) -> Result<bool> {

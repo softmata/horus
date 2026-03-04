@@ -234,6 +234,9 @@ pub struct NodeInfo {
 
     // Thread safety for metrics updates
     metrics_lock: Arc<Mutex<()>>,
+
+    // Event notification counter — bumped by publishers to trigger event-driven nodes
+    event_notifier: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl NodeInfo {
@@ -255,6 +258,7 @@ impl NodeInfo {
             warning_history: Vec::new(),
             custom_data: std::collections::HashMap::new(),
             metrics_lock: Arc::new(Mutex::new(())),
+            event_notifier: None,
         }
     }
 
@@ -438,7 +442,46 @@ impl NodeInfo {
     pub fn get_custom_data(&self, key: &str) -> Option<&String> {
         self.custom_data.get(key)
     }
+
+    // Event notification methods
+
+    /// Set the event notifier for this node (used by EventExecutor).
+    ///
+    /// The notifier is an atomic counter that publishers bump to signal new data.
+    /// The event watcher thread checks this counter to decide when to tick.
+    pub fn set_event_notifier(&mut self, notifier: Arc<std::sync::atomic::AtomicU64>) {
+        // Also register in the global registry for external notification
+        EVENT_NOTIFIER_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(self.name.clone(), notifier.clone());
+        self.event_notifier = Some(notifier);
+    }
+
+    /// Notify an event node by name (bumps its generation counter).
+    ///
+    /// This is the primary way to trigger an event-driven node from external code
+    /// or from a topic publisher. Returns `true` if the node was found.
+    pub fn notify_event(node_name: &str) -> bool {
+        let registry = EVENT_NOTIFIER_REGISTRY
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(notifier) = registry.get(node_name) {
+            notifier.fetch_add(1, std::sync::atomic::Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
 }
+
+/// Global registry of event notifiers keyed by node name.
+///
+/// Allows external code (topic publishers, tests) to notify event-driven nodes
+/// without holding a direct reference to their NodeInfo.
+static EVENT_NOTIFIER_REGISTRY: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Topic metadata for monitoring and introspection
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -9,10 +9,10 @@ use crate::core::node::TopicMetadata;
 use crate::memory::platform::shm_nodes_dir;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Node presence data written to shared memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,16 +397,18 @@ mod tests {
         );
 
         let presence = NodePresence::new(&node_name, None, vec![], vec![], 0, None);
-        presence.write().expect("write() must succeed in test environment");
+        presence
+            .write()
+            .expect("write() must succeed in test environment");
 
         let path = NodePresence::presence_path(&node_name);
-        let meta = std::fs::metadata(&path)
-            .expect("presence file must exist after write()");
+        let meta = std::fs::metadata(&path).expect("presence file must exist after write()");
 
         // Mode bits: mask off the file-type bits, keep only permission bits.
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(
-            mode, 0o600,
+            mode,
+            0o600,
             "presence file '{}' must have mode 0600, got {:03o}",
             path.display(),
             mode
@@ -434,12 +436,12 @@ mod tests {
         presence.write().expect("write() must succeed");
 
         let dir = shm_nodes_dir();
-        let meta = std::fs::metadata(&dir)
-            .expect("nodes directory must exist after write()");
+        let meta = std::fs::metadata(&dir).expect("nodes directory must exist after write()");
 
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(
-            mode, 0o700,
+            mode,
+            0o700,
             "nodes directory '{}' must have mode 0700, got {:03o}",
             dir.display(),
             mode

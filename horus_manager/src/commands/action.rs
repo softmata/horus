@@ -116,23 +116,27 @@ pub fn list_actions(verbose: bool, json: bool) -> HorusResult<()> {
     let actions = discover_actions()?;
 
     if json {
-        let json_output = serde_json::to_string_pretty(
-            &actions
-                .iter()
-                .map(|a| {
-                    serde_json::json!({
-                        "name": a.name,
-                        "goal_publishers": a.goal_publishers,
-                        "result_subscribers": a.result_subscribers,
-                        "has_feedback": a.has_feedback,
-                        "has_status": a.has_status,
-                        "has_cancel": a.has_cancel,
-                    })
+        let items: Vec<_> = actions
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "goal_publishers": a.goal_publishers,
+                    "result_subscribers": a.result_subscribers,
+                    "has_feedback": a.has_feedback,
+                    "has_status": a.has_status,
+                    "has_cancel": a.has_cancel,
                 })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        println!("{}", json_output);
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -182,8 +186,16 @@ pub fn list_actions(verbose: bool, json: bool) -> HorusResult<()> {
                 .collect::<Vec<_>>()
                 .join(", ")
             );
-            println!("    {} {}", "Goal publishers:".dimmed(), action.goal_publishers);
-            println!("    {} {}", "Result subscribers:".dimmed(), action.result_subscribers);
+            println!(
+                "    {} {}",
+                "Goal publishers:".dimmed(),
+                action.goal_publishers
+            );
+            println!(
+                "    {} {}",
+                "Result subscribers:".dimmed(),
+                action.result_subscribers
+            );
             println!();
         }
     } else {
@@ -207,9 +219,7 @@ pub fn list_actions(verbose: bool, json: bool) -> HorusResult<()> {
             .count();
             println!(
                 "  {:<40} {:>6} {}/5 topics",
-                action.name,
-                action.goal_publishers,
-                topics_present
+                action.name, action.goal_publishers, topics_present
             );
         }
     }
@@ -273,8 +283,16 @@ pub fn action_info(name: &str) -> HorusResult<()> {
     }
 
     println!();
-    println!("  {} {}", "Goal publishers (clients):".cyan(), action.goal_publishers);
-    println!("  {} {}", "Result subscribers (clients):".cyan(), action.result_subscribers);
+    println!(
+        "  {} {}",
+        "Goal publishers (clients):".cyan(),
+        action.goal_publishers
+    );
+    println!(
+        "  {} {}",
+        "Result subscribers (clients):".cyan(),
+        action.result_subscribers
+    );
     println!();
     println!(
         "  {} Use 'horus action send_goal {} <goal_json>' to send a goal",
@@ -291,7 +309,12 @@ pub fn action_info(name: &str) -> HorusResult<()> {
 ///
 /// Sends the goal and then monitors status/feedback/result until completion or
 /// timeout.  Equivalent to `ros2 action send_goal`.
-pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f64) -> HorusResult<()> {
+pub fn send_goal(
+    name: &str,
+    goal_json: &str,
+    wait_result: bool,
+    timeout_secs: f64,
+) -> HorusResult<()> {
     use horus_core::communication::Topic;
     use std::time::{Duration, Instant};
 
@@ -326,7 +349,11 @@ pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f
         name.white().bold()
     );
     println!("  {} {}", "Goal:".dimmed(), goal_json);
-    println!("  {} {}", "Goal ID:".dimmed(), &goal_id[..8]);
+    println!(
+        "  {} {}",
+        "Goal ID:".dimmed(),
+        goal_id.get(..8).unwrap_or(&goal_id)
+    );
     println!();
 
     let goal_topic: Topic<serde_json::Value> = Topic::new(&goal_topic_name).map_err(|e| {
@@ -354,12 +381,25 @@ pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f
     })
     .ok();
 
-    let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name)
-        .map_err(|e| HorusError::Communication(format!("Failed to create status topic '{}': {}", status_topic_name, e)))?;
-    let feedback_topic: Topic<serde_json::Value> = Topic::new(&feedback_topic_name)
-        .map_err(|e| HorusError::Communication(format!("Failed to create feedback topic '{}': {}", feedback_topic_name, e)))?;
-    let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name)
-        .map_err(|e| HorusError::Communication(format!("Failed to create result topic '{}': {}", result_topic_name, e)))?;
+    let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name).map_err(|e| {
+        HorusError::Communication(format!(
+            "Failed to create status topic '{}': {}",
+            status_topic_name, e
+        ))
+    })?;
+    let feedback_topic: Topic<serde_json::Value> =
+        Topic::new(&feedback_topic_name).map_err(|e| {
+            HorusError::Communication(format!(
+                "Failed to create feedback topic '{}': {}",
+                feedback_topic_name, e
+            ))
+        })?;
+    let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).map_err(|e| {
+        HorusError::Communication(format!(
+            "Failed to create result topic '{}': {}",
+            result_topic_name, e
+        ))
+    })?;
 
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
 
@@ -379,35 +419,44 @@ pub fn send_goal(name: &str, goal_json: &str, wait_result: bool, timeout_secs: f
             break;
         }
 
-        // Check feedback
+        // Check feedback (filter by goal_id)
         if let Some(feedback) = feedback_topic.recv() {
-            println!(
-                "  {} {}",
-                "Feedback:".cyan(),
-                serde_json::to_string(&feedback).unwrap_or_default()
-            );
+            let msg_goal_id = feedback.get("goal_id").and_then(|v| v.as_str());
+            if msg_goal_id.is_none() || msg_goal_id == Some(&goal_id) {
+                println!(
+                    "  {} {}",
+                    "Feedback:".cyan(),
+                    serde_json::to_string(&feedback).unwrap_or_default()
+                );
+            }
         }
 
-        // Check status
+        // Check status (filter by goal_id)
         if let Some(status) = status_topic.recv() {
-            if let Some(status_str) = status.get("status").and_then(|s| s.as_str()) {
-                println!("  {} {}", "Status:".cyan(), status_str);
-                match status_str {
-                    "Succeeded" | "Aborted" | "Canceled" | "Preempted" => break,
-                    _ => {}
+            let msg_goal_id = status.get("goal_id").and_then(|v| v.as_str());
+            if msg_goal_id.is_none() || msg_goal_id == Some(&goal_id) {
+                if let Some(status_str) = status.get("status").and_then(|s| s.as_str()) {
+                    println!("  {} {}", "Status:".cyan(), status_str);
+                    match status_str {
+                        "Succeeded" | "Aborted" | "Canceled" | "Preempted" => break,
+                        _ => {}
+                    }
                 }
             }
         }
 
-        // Check result
+        // Check result (filter by goal_id)
         if let Some(result) = result_topic.recv() {
-            println!();
-            println!("{} Result:", cli_output::ICON_SUCCESS.green());
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_default()
-            );
-            break;
+            let msg_goal_id = result.get("goal_id").and_then(|v| v.as_str());
+            if msg_goal_id.is_none() || msg_goal_id == Some(&goal_id) {
+                println!();
+                println!("{} Result:", cli_output::ICON_SUCCESS.green());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+                break;
+            }
         }
 
         std::thread::sleep(Duration::from_millis(100));
@@ -428,13 +477,12 @@ pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
         "cancel_all": goal_id.is_none(),
     });
 
-    let cancel_topic: Topic<serde_json::Value> =
-        Topic::new(&cancel_topic_name).map_err(|e| {
-            HorusError::Config(format!(
-                "Cannot open cancel topic '{}': {}",
-                cancel_topic_name, e
-            ))
-        })?;
+    let cancel_topic: Topic<serde_json::Value> = Topic::new(&cancel_topic_name).map_err(|e| {
+        HorusError::Config(format!(
+            "Cannot open cancel topic '{}': {}",
+            cancel_topic_name, e
+        ))
+    })?;
 
     cancel_topic.send(cancel_request);
 

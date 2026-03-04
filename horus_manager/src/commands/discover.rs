@@ -271,11 +271,7 @@ fn print_event_colored(event: &DiscoveryEvent) {
 
 /// Truncate a string to max length with ellipsis
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
+    crate::cli_output::safe_truncate(s, max_len)
 }
 
 #[cfg(test)]

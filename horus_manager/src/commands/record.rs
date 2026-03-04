@@ -32,7 +32,10 @@ pub fn run_list(long: bool, json: bool) -> HorusResult<()> {
             })
             .collect();
         let output = serde_json::json!({ "sessions": session_list });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -109,7 +112,10 @@ pub fn run_info(session: String, json: bool) -> HorusResult<()> {
             "found": !recordings.is_empty(),
             "files": files,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -192,6 +198,13 @@ pub fn run_replay(
     overrides: Vec<(String, String, String)>,
 ) -> HorusResult<()> {
     use horus_core::Scheduler;
+
+    if speed <= 0.0 {
+        return Err(horus_internal!(
+            "--speed must be greater than 0 (got {})",
+            speed
+        ));
+    }
 
     let manager = RecordingManager::new();
 
@@ -322,7 +335,26 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
         .session_recordings(&session2)
         .map_err(|e| horus_internal!("Failed to load session '{}': {}", session2, e))?;
 
-    // Find matching nodes
+    // Build a lookup map for session2 recordings by node base name
+    let session2_by_name: std::collections::HashMap<&str, &std::path::PathBuf> = recordings2
+        .iter()
+        .filter_map(|path| {
+            let name = path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .split('@')
+                .next()
+                .unwrap_or("");
+            if !name.is_empty() && name != "scheduler" {
+                Some((name, path))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Find matching nodes via HashMap lookup (O(n+m) instead of O(n*m))
     let mut total_diffs = 0;
     let max_diffs = limit.unwrap_or(100);
 
@@ -335,67 +367,58 @@ pub fn run_diff(session1: String, session2: String, limit: Option<usize>) -> Hor
             .next()
             .unwrap_or("");
 
-        for path2 in &recordings2 {
-            let name2 = path2
-                .file_stem()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .split('@')
-                .next()
-                .unwrap_or("");
+        if name1.is_empty() || name1 == "scheduler" {
+            continue;
+        }
 
-            if name1 == name2 && !name1.is_empty() && name1 != "scheduler" {
-                // Load and compare
-                if let (Ok(rec1), Ok(rec2)) = (
-                    horus_core::scheduling::NodeRecording::load(path1),
-                    horus_core::scheduling::NodeRecording::load(path2),
-                ) {
-                    let diffs = diff_recordings(&rec1, &rec2);
-                    if !diffs.is_empty() {
-                        println!(
-                            "  {} Node '{}': {} differences",
-                            cli_output::ICON_WARN.yellow(),
-                            name1,
-                            diffs.len()
-                        );
-                        for diff in diffs.iter().take(max_diffs - total_diffs) {
-                            match diff {
-                                horus_core::scheduling::RecordingDiff::OutputDifference {
-                                    tick,
-                                    topic,
-                                    ..
-                                } => {
-                                    println!("    Tick {}: output '{}' differs", tick, topic);
-                                }
-                                horus_core::scheduling::RecordingDiff::MissingTick {
-                                    tick,
-                                    in_recording,
-                                } => {
-                                    println!(
-                                        "    Tick {} missing in recording {}",
-                                        tick, in_recording
-                                    );
-                                }
-                                horus_core::scheduling::RecordingDiff::MissingOutput {
-                                    tick,
-                                    topic,
-                                    in_recording,
-                                } => {
-                                    println!(
-                                        "    Tick {}: output '{}' missing in recording {}",
-                                        tick, topic, in_recording
-                                    );
-                                }
+        if let Some(path2) = session2_by_name.get(name1) {
+            // Load and compare
+            if let (Ok(rec1), Ok(rec2)) = (
+                horus_core::scheduling::NodeRecording::load(path1),
+                horus_core::scheduling::NodeRecording::load(path2),
+            ) {
+                let diffs = diff_recordings(&rec1, &rec2);
+                if !diffs.is_empty() {
+                    println!(
+                        "  {} Node '{}': {} differences",
+                        cli_output::ICON_WARN.yellow(),
+                        name1,
+                        diffs.len()
+                    );
+                    for diff in diffs.iter().take(max_diffs.saturating_sub(total_diffs)) {
+                        match diff {
+                            horus_core::scheduling::RecordingDiff::OutputDifference {
+                                tick,
+                                topic,
+                                ..
+                            } => {
+                                println!("    Tick {}: output '{}' differs", tick, topic);
                             }
-                            total_diffs += 1;
+                            horus_core::scheduling::RecordingDiff::MissingTick {
+                                tick,
+                                in_recording,
+                            } => {
+                                println!("    Tick {} missing in recording {}", tick, in_recording);
+                            }
+                            horus_core::scheduling::RecordingDiff::MissingOutput {
+                                tick,
+                                topic,
+                                in_recording,
+                            } => {
+                                println!(
+                                    "    Tick {}: output '{}' missing in recording {}",
+                                    tick, topic, in_recording
+                                );
+                            }
                         }
-                    } else {
-                        println!(
-                            "  {} Node '{}': identical",
-                            cli_output::ICON_SUCCESS.green(),
-                            name1
-                        );
+                        total_diffs += 1;
                     }
+                } else {
+                    println!(
+                        "  {} Node '{}': identical",
+                        cli_output::ICON_SUCCESS.green(),
+                        name1
+                    );
                 }
             }
         }
@@ -437,29 +460,30 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
         let mut file = std::fs::File::create(&output)
             .map_err(|e| horus_internal!("Failed to create output file: {}", e))?;
 
-        writeln!(file, "{{")?;
-        writeln!(file, "  \"session\": \"{}\",", session)?;
-        writeln!(file, "  \"recordings\": [")?;
-
-        for (i, path) in recordings.iter().enumerate() {
+        // Use serde_json for proper escaping of all string values
+        let mut recording_entries = Vec::new();
+        for path in &recordings {
             if let Ok(recording) = horus_core::scheduling::NodeRecording::load(path) {
-                let comma = if i < recordings.len() - 1 { "," } else { "" };
-                writeln!(file, "    {{")?;
-                writeln!(file, "      \"node_name\": \"{}\",", recording.node_name)?;
-                writeln!(file, "      \"node_id\": \"{}\",", recording.node_id)?;
-                writeln!(file, "      \"first_tick\": {},", recording.first_tick)?;
-                writeln!(file, "      \"last_tick\": {},", recording.last_tick)?;
-                writeln!(
-                    file,
-                    "      \"snapshot_count\": {}",
-                    recording.snapshots.len()
-                )?;
-                writeln!(file, "    }}{}", comma)?;
+                recording_entries.push(serde_json::json!({
+                    "node_name": recording.node_name,
+                    "node_id": recording.node_id,
+                    "first_tick": recording.first_tick,
+                    "last_tick": recording.last_tick,
+                    "snapshot_count": recording.snapshots.len(),
+                }));
             }
         }
 
-        writeln!(file, "  ]")?;
-        writeln!(file, "}}")?;
+        let output_json = serde_json::json!({
+            "session": session,
+            "recordings": recording_entries,
+        });
+
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string_pretty(&output_json).unwrap_or_default()
+        )?;
 
         println!(
             "{} Exported to {:?}",
@@ -496,16 +520,18 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
                         })
                         .collect();
 
+                    // Quote all string fields and escape inner quotes for CSV safety
+                    let outputs_joined = outputs_str.join(";").replace('"', "\"\"");
                     writeln!(
                         file,
-                        "{},{},{},{},{},{},\"{}\"",
-                        recording.node_name,
-                        recording.node_id,
+                        "\"{}\",\"{}\",{},{},{},{},\"{}\"",
+                        recording.node_name.replace('"', "\"\""),
+                        recording.node_id.replace('"', "\"\""),
                         snapshot.tick,
                         snapshot.timestamp_us,
                         snapshot.inputs.len(),
                         snapshot.outputs.len(),
-                        outputs_str.join(";")
+                        outputs_joined
                     )?;
                 }
             }
@@ -526,6 +552,30 @@ pub fn run_export(session: String, output: PathBuf, format: String) -> HorusResu
     Ok(())
 }
 
+/// RAII guard that kills a child process on drop, preventing zombie/orphan
+/// processes if the parent thread panics or returns early.
+struct ChildGuard {
+    child: std::process::Child,
+    name: String,
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {} // Already exited
+            _ => {
+                log::info!(
+                    "ChildGuard: killing '{}' (PID {})",
+                    self.name,
+                    self.child.id()
+                );
+                let _ = self.child.kill();
+                let _ = self.child.wait(); // Reap to prevent zombie
+            }
+        }
+    }
+}
+
 /// Inject recorded nodes into a live/scripted run
 #[allow(clippy::too_many_arguments)]
 pub fn run_inject(
@@ -539,6 +589,13 @@ pub fn run_inject(
     loop_playback: bool,
 ) -> HorusResult<()> {
     use horus_core::Scheduler;
+
+    if speed <= 0.0 {
+        return Err(horus_internal!(
+            "--speed must be greater than 0 (got {})",
+            speed
+        ));
+    }
 
     let manager = RecordingManager::new();
 
@@ -671,7 +728,14 @@ pub fn run_inject(
             child.id()
         );
 
-        script_child = Some(child);
+        script_child = Some(ChildGuard {
+            name: script_path.display().to_string(),
+            child,
+        });
+
+        // Brief delay to let the script process start and subscribe to topics
+        // before the scheduler begins publishing replay data
+        std::thread::sleep(std::time::Duration::from_secs(1));
 
         println!(
             "\n{} Running {} injected node(s) + script...\n",
@@ -717,7 +781,9 @@ pub fn run_inject(
                         let node_name = filename.split('@').next().unwrap_or("");
                         let should_inject = all || nodes.iter().any(|n| n == node_name);
                         if should_inject {
-                            let _ = scheduler.add_replay(path.clone(), 0);
+                            if let Err(e) = scheduler.add_replay(path.clone(), 0) {
+                                log::warn!("Failed to re-inject '{}' in loop: {}", node_name, e);
+                            }
                         }
                     }
 
@@ -752,10 +818,10 @@ pub fn run_inject(
         );
     }
 
-    // Clean up script child process if it was spawned
-    if let Some(mut child) = script_child {
-        // Give script a moment to finish gracefully, then kill if still running
-        match child.try_wait() {
+    // Clean up script child process if it was spawned.
+    // The ChildGuard will kill on drop automatically, but we check status for reporting.
+    if let Some(mut guard) = script_child {
+        match guard.child.try_wait() {
             Ok(Some(status)) => {
                 if status.success() {
                     println!(
@@ -771,18 +837,17 @@ pub fn run_inject(
                 }
             }
             Ok(None) => {
-                // Still running - kill it since replay is done
+                // Still running - ChildGuard drop will kill it
                 println!(
                     "{} Stopping script process...",
                     cli_output::ICON_INFO.cyan()
                 );
-                let _ = child.kill();
-                let _ = child.wait();
             }
             Err(e) => {
                 log::warn!("Failed to check script status: {}", e);
             }
         }
+        // ChildGuard drops here, killing if still running
     }
 
     Ok(())

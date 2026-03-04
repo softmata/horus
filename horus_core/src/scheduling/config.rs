@@ -2,15 +2,6 @@
 
 use super::deterministic::DeterministicConfig;
 
-/// Execution mode for the scheduler
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    /// Parallel execution with dependency resolution
-    Parallel,
-    /// Traditional sequential execution
-    Sequential,
-}
-
 /// Timing configuration
 #[derive(Debug, Clone)]
 pub struct TimingConfig {
@@ -162,13 +153,8 @@ impl RecordingConfigYaml {
 /// config.realtime.wcet_enforcement = true;
 /// let mut scheduler = Scheduler::from_config(config);
 /// ```
-///
-/// For common use cases, prefer `Scheduler` presets:
-/// `Scheduler::deploy()`, `Scheduler::safety_critical()`, etc.
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
-    /// Execution mode
-    pub execution: ExecutionMode,
     /// Timing configuration
     pub timing: TimingConfig,
     /// Enable tier-based fault tolerance (circuit breaker, restart policies)
@@ -201,7 +187,6 @@ impl SchedulerConfig {
     /// Most features are disabled by default.
     pub fn minimal() -> Self {
         Self {
-            execution: ExecutionMode::Sequential,
             timing: TimingConfig {
                 global_rate_hz: 60.0,
             },

@@ -633,7 +633,10 @@ pub fn verify_plugins(plugin_name: Option<&str>, json: bool) -> Result<()> {
             "plugins": plugin_results,
             "all_valid": all_valid,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return if all_valid {
             Ok(())
         } else {
@@ -902,7 +905,11 @@ pub fn run_install(
         let client = registry::RegistryClient::new();
         let workspace_path = match &install_target {
             workspace::InstallTarget::Local(p) => p.clone(),
-            _ => unreachable!(), // Already blocked global above
+            _ => {
+                return Err(HorusError::Config(
+                    "Expected local install target".to_string(),
+                ))
+            }
         };
 
         // Pass None for base_dir - CLI paths are resolved relative to current_dir
@@ -1416,7 +1423,10 @@ fn run_list_json(_query: Option<String>, global: bool, all: bool) -> HorusResult
     packages.extend(global_packages);
 
     let output = serde_json::json!({ "packages": packages });
-    println!("{}", serde_json::to_string_pretty(&output).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    );
     Ok(())
 }
 

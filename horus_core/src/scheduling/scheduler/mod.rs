@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod recording;
@@ -34,7 +34,6 @@ extern "C" fn sigterm_handler(_signum: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
 }
 
-use super::config::ExecutionMode;
 use super::fault_tolerance::{FailureAction, FailurePolicy};
 use super::profiler::RuntimeProfiler;
 use super::safety_monitor::SafetyMonitor;
@@ -120,11 +119,16 @@ pub(crate) struct TickState {
 }
 
 /// Monitoring features: safety, blackbox flight recorder, telemetry, profiling.
+///
+/// Profiler and blackbox are wrapped in `Arc<Mutex<>>` so they can be shared
+/// with executor threads (RT, compute, event, async I/O) for cross-group
+/// monitoring. Lock contention is negligible since monitoring calls are fast
+/// and executors tick at different cadences.
 pub(crate) struct MonitorState {
     pub safety: Option<SafetyMonitor>,
-    pub blackbox: Option<super::blackbox::BlackBox>,
+    pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
-    pub profiler: RuntimeProfiler,
+    pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
     pub working_dir: PathBuf,
     /// Pre-allocated buffer for `check_watchdogs()`.
@@ -158,7 +162,6 @@ pub(crate) struct DeterministicState {
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
-    pub(super) execution_mode: ExecutionMode,
     pub(super) scheduler_name: String,
 
     // Grouped sub-structs
@@ -188,11 +191,8 @@ impl Scheduler {
     /// // Minimal — just capability detection
     /// let scheduler = Scheduler::new();
     ///
-    /// // Production preset
-    /// let scheduler = Scheduler::deploy();
-    ///
-    /// // Preset + override
-    /// let scheduler = Scheduler::deploy().tick_hz(500.0);
+    /// // Configure with builder methods
+    /// let scheduler = Scheduler::new().tick_hz(500.0);
     /// ```
     /// Create a scheduler with `SchedulerConfig::minimal()` defaults.
     ///
@@ -221,10 +221,19 @@ impl Scheduler {
         // Detect runtime capabilities (~30-100μs one-time cost)
         let caps = RuntimeCapabilities::detect();
 
+        // Clean up stale SHM namespaces from crashed processes (<1ms)
+        let cleanup = crate::memory::platform::cleanup_stale_namespaces();
+        if cleanup.removed > 0 {
+            log::info!(
+                "Cleaned {} stale SHM namespace(s), freed {} bytes",
+                cleanup.removed,
+                cleanup.bytes_freed
+            );
+        }
+
         let mut s = Self {
             nodes: Vec::new(),
             running,
-            execution_mode: ExecutionMode::Sequential,
             scheduler_name: "Scheduler".to_string(),
 
             tick: TickState {
@@ -240,7 +249,7 @@ impl Scheduler {
                 safety: None,
                 blackbox: None,
                 telemetry: None,
-                profiler: RuntimeProfiler::new_default(),
+                profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
                 working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
                 watchdog_expired_buf: Vec::new(),
@@ -251,103 +260,6 @@ impl Scheduler {
         };
         s.apply_config(config);
         s
-    }
-
-    /// Production deployment: RT scheduling, memory locking, blackbox, profiling.
-    ///
-    /// 60 Hz with circuit breaker, RT features (best-effort), profiling,
-    /// and a 16MB BlackBox flight recorder.
-    ///
-    /// ```rust,ignore
-    /// let mut scheduler = Scheduler::deploy();
-    /// scheduler.add(motor_ctrl).order(0).rt().done();
-    /// scheduler.run()?;
-    /// ```
-    pub fn deploy() -> Self {
-        let mut config = super::config::SchedulerConfig::minimal();
-        config.circuit_breaker = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.monitoring.profiling_enabled = true;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 16;
-        Self::from_config(config)
-    }
-
-    /// Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor.
-    pub fn safety_critical() -> Self {
-        let mut config = super::config::SchedulerConfig::minimal();
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.watchdog_timeout_ms = 100;
-        config.realtime.safety_monitor = true;
-        config.realtime.max_deadline_misses = 0;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.resources.cpu_cores = Some(vec![0, 1]);
-        config.resources.numa_aware = true;
-        config.monitoring.metrics_interval_ms = 10;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 1024;
-        config.recording = Some(super::config::RecordingConfigYaml::full());
-        Self::from_config(config)
-    }
-
-    /// High-performance: parallel execution, 10kHz, WCET, NUMA-aware.
-    pub fn high_performance() -> Self {
-        let mut config = super::config::SchedulerConfig::minimal();
-        config.execution = super::config::ExecutionMode::Parallel;
-        config.timing.global_rate_hz = 10000.0;
-        config.circuit_breaker = true;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_timeout_ms = 0;
-        config.realtime.max_deadline_misses = 10;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.resources.numa_aware = true;
-        config.monitoring.metrics_interval_ms = 10000;
-        Self::from_config(config)
-    }
-
-    /// Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox.
-    pub fn hard_realtime() -> Self {
-        let mut config = super::config::SchedulerConfig::minimal();
-        config.circuit_breaker = true;
-        config.execution = super::config::ExecutionMode::Parallel;
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.wcet_enforcement = true;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.watchdog_enabled = true;
-        config.realtime.watchdog_timeout_ms = 10;
-        config.realtime.safety_monitor = true;
-        config.realtime.max_deadline_misses = 3;
-        config.realtime.memory_locking = true;
-        config.realtime.rt_scheduling_class = true;
-        config.monitoring.profiling_enabled = false;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 100;
-        config.recording = Some(super::config::RecordingConfigYaml::minimal());
-        Self::from_config(config)
-    }
-
-    /// Deterministic execution for simulation and replay.
-    pub fn deterministic() -> Self {
-        use super::deterministic::DeterministicConfig;
-        let mut config = super::config::SchedulerConfig::minimal();
-        config.timing.global_rate_hz = 1000.0;
-        config.realtime.deadline_monitoring = true;
-        config.realtime.max_deadline_misses = 3;
-        config.monitoring.metrics_interval_ms = 100;
-        config.monitoring.black_box_enabled = true;
-        config.monitoring.black_box_size_mb = 100;
-        config.recording = Some(super::config::RecordingConfigYaml::full());
-        config.deterministic = Some(DeterministicConfig::default());
-        Self::from_config(config)
     }
 
     // ========================================================================
@@ -490,13 +402,11 @@ impl Scheduler {
     /// }
     /// ```
     #[doc(hidden)]
-    pub fn blackbox(&self) -> Option<&super::blackbox::BlackBox> {
+    pub fn blackbox(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
         self.monitor.blackbox.as_ref()
     }
 
-    /// Get a mutable reference to the BlackBox flight recorder.
-    ///
-    /// Use this to manually record custom events or configure persistence.
+    /// Get the shared blackbox for recording events.
     ///
     /// # Example
     /// ```rust,ignore
@@ -506,16 +416,16 @@ impl Scheduler {
     /// let mut scheduler = Scheduler::new();
     ///
     /// // Record a custom event
-    /// if let Some(bb) = scheduler.blackbox_mut() {
-    ///     bb.record(BlackBoxEvent::Custom {
+    /// if let Some(bb) = scheduler.blackbox() {
+    ///     bb.lock().unwrap().record(BlackBoxEvent::Custom {
     ///         category: "safety".to_string(),
     ///         message: "Manual override activated".to_string(),
     ///     });
     /// }
     /// ```
     #[doc(hidden)]
-    pub fn blackbox_mut(&mut self) -> Option<&mut super::blackbox::BlackBox> {
-        self.monitor.blackbox.as_mut()
+    pub fn blackbox_mut(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
+        self.monitor.blackbox.as_ref()
     }
 
     /// Get the circuit breaker state for a specific node.
@@ -968,19 +878,6 @@ impl Scheduler {
     /// Apply a full configuration struct. Used internally by presets and horus_py.
     #[doc(hidden)]
     pub fn apply_config(&mut self, config: super::config::SchedulerConfig) {
-        use super::config::*;
-
-        // Execution mode
-        self.execution_mode = config.execution;
-        match config.execution {
-            ExecutionMode::Parallel => {
-                print_line("Parallel execution mode selected");
-            }
-            ExecutionMode::Sequential => {
-                print_line("Sequential execution mode selected");
-            }
-        }
-
         // Global tick rate
         let rate_hz =
             if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
@@ -1120,10 +1017,10 @@ impl Scheduler {
     fn apply_monitoring_config(&mut self, monitoring: &super::config::MonitoringConfig) {
         // Profiling
         if monitoring.profiling_enabled {
-            self.monitor.profiler.enable();
+            self.monitor.profiler.lock().unwrap().enable();
             print_line("Profiling enabled");
         } else {
-            self.monitor.profiler.disable();
+            self.monitor.profiler.lock().unwrap().disable();
             print_line("Profiling disabled");
         }
 
@@ -1141,7 +1038,7 @@ impl Scheduler {
                     1_000_000.0 / self.tick.period.as_micros() as f64
                 ),
             });
-            self.monitor.blackbox = Some(bb);
+            self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
             print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
                 monitoring.black_box_size_mb
@@ -1465,6 +1362,7 @@ impl Scheduler {
         let deadline = config.deadline;
         let tier = config.tier;
         let failure_policy = config.failure_policy;
+        let execution_class = config.execution_class;
 
         let node_name = node.name().to_string();
 
@@ -1524,6 +1422,7 @@ impl Scheduler {
             is_stopped: false,
             is_paused: false,
             rt_stats,
+            execution_class,
         });
 
         if let Some(rate) = node_rate {
@@ -1652,7 +1551,12 @@ impl Scheduler {
         node_filter: Option<&[&str]>,
         duration: Option<Duration>,
     ) -> HorusResult<()> {
-        let rt = tokio::runtime::Runtime::new()
+        // Use a single-threaded tokio runtime for the scheduler main loop.
+        // The main loop only needs timers (tokio::time::sleep). Heavy async I/O
+        // nodes run on their own dedicated runtime (see AsyncExecutor).
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .map_err(|e| horus_internal!("Failed to create tokio runtime: {}", e))?;
 
         rt.block_on(async {
@@ -1664,7 +1568,85 @@ impl Scheduler {
             self.update_registry();
             self.adjust_tick_period_for_node_rates();
 
-            // Main tick loop
+            // Group nodes by ExecutionClass and dispatch to dedicated executors:
+            // - RT nodes → RtExecutor (dedicated high-priority thread)
+            // - Compute nodes → ComputeExecutor (parallel thread pool)
+            // - Event nodes → EventExecutor (per-node watcher threads)
+            // - AsyncIo nodes → AsyncExecutor (tokio blocking pool)
+            // - BestEffort nodes → stay in self.nodes for main-thread sequential execution
+            let all_nodes = std::mem::take(&mut self.nodes);
+            let groups = super::types::group_nodes_by_class(all_nodes);
+
+            // BestEffort nodes remain on the main thread
+            self.nodes = groups.main_nodes;
+
+            // Shared monitors for all executor threads
+            let shared_monitors = super::types::SharedMonitors {
+                profiler: self.monitor.profiler.clone(),
+                blackbox: self.monitor.blackbox.clone(),
+            };
+
+            let rt_executor = if !groups.rt_nodes.is_empty() {
+                print_line(&format!(
+                    "Starting RT executor with {} RT nodes on dedicated thread",
+                    groups.rt_nodes.len()
+                ));
+                Some(super::rt_executor::RtExecutor::start(
+                    groups.rt_nodes,
+                    self.running.clone(),
+                    self.tick.period,
+                    shared_monitors.clone(),
+                ))
+            } else {
+                None
+            };
+
+            let compute_executor = if !groups.compute_nodes.is_empty() {
+                print_line(&format!(
+                    "Starting compute executor with {} nodes on thread pool",
+                    groups.compute_nodes.len()
+                ));
+                Some(super::compute_executor::ComputeExecutor::start(
+                    groups.compute_nodes,
+                    self.running.clone(),
+                    self.tick.period,
+                    shared_monitors.clone(),
+                ))
+            } else {
+                None
+            };
+
+            let event_executor = if !groups.event_nodes.is_empty() {
+                print_line(&format!(
+                    "Starting event executor with {} event-triggered nodes",
+                    groups.event_nodes.len()
+                ));
+                Some(super::event_executor::EventExecutor::start(
+                    groups.event_nodes,
+                    self.running.clone(),
+                    shared_monitors.clone(),
+                ))
+            } else {
+                None
+            };
+
+            let async_executor = if !groups.async_io_nodes.is_empty() {
+                print_line(&format!(
+                    "Starting async I/O executor with {} nodes on tokio pool",
+                    groups.async_io_nodes.len()
+                ));
+                Some(super::async_executor::AsyncExecutor::start(
+                    groups.async_io_nodes,
+                    self.running.clone(),
+                    self.tick.period,
+                    shared_monitors.clone(),
+                ))
+            } else {
+                None
+            };
+
+            // Main tick loop — BestEffort nodes execute sequentially on this thread,
+            // while RT/Compute/Event nodes run on their dedicated executors.
             while self.is_running() {
                 if self.should_stop_loop(start_time, duration) {
                     break;
@@ -1681,6 +1663,25 @@ impl Scheduler {
                     tokio::time::sleep(sleep_dur).await;
                 }
                 self.advance_tick();
+            }
+
+            // Stop executors and reclaim nodes for shutdown
+            self.running.store(false, Ordering::SeqCst);
+            if let Some(executor) = rt_executor {
+                let rt_nodes = executor.stop();
+                self.nodes.extend(rt_nodes);
+            }
+            if let Some(executor) = compute_executor {
+                let compute_nodes = executor.stop();
+                self.nodes.extend(compute_nodes);
+            }
+            if let Some(executor) = event_executor {
+                let event_nodes = executor.stop();
+                self.nodes.extend(event_nodes);
+            }
+            if let Some(executor) = async_executor {
+                let async_nodes = executor.stop();
+                self.nodes.extend(async_nodes);
             }
 
             self.shutdown_filtered_nodes(node_filter);
@@ -1866,10 +1867,12 @@ impl Scheduler {
 
             if monitor.is_emergency_stop() {
                 print_line(" Emergency stop activated - shutting down scheduler");
-                if let Some(ref mut bb) = self.monitor.blackbox {
-                    bb.record(super::blackbox::BlackBoxEvent::EmergencyStop {
-                        reason: "Safety monitor triggered emergency stop".to_string(),
-                    });
+                if let Some(ref bb) = self.monitor.blackbox {
+                    bb.lock()
+                        .unwrap()
+                        .record(super::blackbox::BlackBoxEvent::EmergencyStop {
+                            reason: "Safety monitor triggered emergency stop".to_string(),
+                        });
                 }
 
                 // Transition all RT nodes to safe state
@@ -1879,11 +1882,16 @@ impl Scheduler {
                             let name = registered.name.clone();
                             print_line(&format!(" Entering safe state for RT node '{}'", name));
                             rt_node.enter_safe_state();
-                            if let Some(ref mut bb) = self.monitor.blackbox {
-                                bb.record(super::blackbox::BlackBoxEvent::Custom {
-                                    category: "safe_state".to_string(),
-                                    message: format!("Node '{}' transitioned to safe state", name),
-                                });
+                            if let Some(ref bb) = self.monitor.blackbox {
+                                bb.lock()
+                                    .unwrap()
+                                    .record(super::blackbox::BlackBoxEvent::Custom {
+                                        category: "safe_state".to_string(),
+                                        message: format!(
+                                            "Node '{}' transitioned to safe state",
+                                            name
+                                        ),
+                                    });
                             }
                         }
                     }
@@ -1932,11 +1940,13 @@ impl Scheduler {
 
             // Record degradation to blackbox when nodes are suppressed
             if suppressed_count > 0 {
-                if let Some(ref mut bb) = self.monitor.blackbox {
-                    bb.record(super::blackbox::BlackBoxEvent::Custom {
-                        category: "safety".to_string(),
-                        message: format!("{} nodes suppressed", suppressed_count),
-                    });
+                if let Some(ref bb) = self.monitor.blackbox {
+                    bb.lock()
+                        .unwrap()
+                        .record(super::blackbox::BlackBoxEvent::Custom {
+                            category: "safety".to_string(),
+                            message: format!("{} nodes suppressed", suppressed_count),
+                        });
                 }
             }
         }
@@ -1944,16 +1954,15 @@ impl Scheduler {
         // === Runtime feature integrations ===
 
         // Black box tick increment
-        if let Some(ref mut bb) = self.monitor.blackbox {
-            bb.tick();
+        if let Some(ref bb) = self.monitor.blackbox {
+            bb.lock().unwrap().tick();
         }
 
         // Telemetry export (if interval elapsed)
         if let Some(ref mut tm) = self.monitor.telemetry {
             if tm.should_export() {
-                let total_ticks = self
-                    .monitor
-                    .profiler
+                let profiler = self.monitor.profiler.lock().unwrap();
+                let total_ticks = profiler
                     .node_stats
                     .values()
                     .map(|s| s.count)
@@ -1965,13 +1974,14 @@ impl Scheduler {
 
                 for registered in &self.nodes {
                     let node_name = registered.name.as_str();
-                    if let Some(stats) = self.monitor.profiler.node_stats.get(node_name) {
+                    if let Some(stats) = profiler.node_stats.get(node_name) {
                         let mut labels = std::collections::HashMap::new();
                         labels.insert("node".to_string(), node_name.to_string());
                         tm.gauge_with_labels("node_avg_duration_us", stats.avg_us, labels.clone());
                         tm.counter_with_labels("node_tick_count", stats.count as u64, labels);
                     }
                 }
+                drop(profiler);
 
                 let _ = tm.export();
             }
@@ -2066,6 +2076,8 @@ impl Scheduler {
         let total_ticks = self
             .monitor
             .profiler
+            .lock()
+            .unwrap()
             .node_stats
             .values()
             .map(|s| s.count)
@@ -2073,7 +2085,8 @@ impl Scheduler {
             .unwrap_or(0) as u64;
 
         // Record scheduler stop to blackbox and save
-        if let Some(ref mut bb) = self.monitor.blackbox {
+        if let Some(ref bb) = self.monitor.blackbox {
+            let mut bb = bb.lock().unwrap();
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
                 reason: "Normal shutdown".to_string(),
                 total_ticks,
@@ -2252,8 +2265,7 @@ impl Scheduler {
                             // Find and process the node
                             let mut found = false;
                             for registered in &mut self.nodes {
-                                if registered.name.as_str() == node_name
-                                {
+                                if registered.name.as_str() == node_name {
                                     found = true;
                                     match cmd.as_str() {
                                         "stop" => {
@@ -2482,11 +2494,13 @@ impl Scheduler {
                         " Pre-condition failed for RT node '{}' — skipping tick",
                         name
                     ));
-                    if let Some(ref mut bb) = self.monitor.blackbox {
-                        bb.record(super::blackbox::BlackBoxEvent::Custom {
-                            category: "rt_condition".to_string(),
-                            message: format!("Pre-condition failed for '{}'", name),
-                        });
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!("Pre-condition failed for '{}'", name),
+                            });
                     }
                     return false;
                 }
@@ -2496,17 +2510,18 @@ impl Scheduler {
                         " Invariant violated before tick for RT node '{}'",
                         name
                     ));
-                    if let Some(ref mut bb) = self.monitor.blackbox {
-                        bb.record(super::blackbox::BlackBoxEvent::Custom {
-                            category: "rt_condition".to_string(),
-                            message: format!("Invariant violated before tick for '{}'", name),
-                        });
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!("Invariant violated before tick for '{}'", name),
+                            });
                     }
                 }
             }
 
-            let tick_start = Instant::now();
-            let tick_result = {
+            let (tick_start, tick_duration, tick_result) = {
                 let registered = &mut self.nodes[i];
                 if let Some(ref mut context) = registered.context {
                     context.start_tick();
@@ -2515,19 +2530,15 @@ impl Scheduler {
                     let tick_number = context.metrics().total_ticks;
                     set_node_context(&registered.name, tick_number);
 
-                    // Execute node tick with panic handling
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        registered.node.tick();
-                    }));
+                    // Execute node tick via NodeRunner (timing + panic isolation)
+                    let tr = super::primitives::NodeRunner::run_tick(&mut registered.node);
 
                     clear_node_context();
-                    result
+                    (tr.tick_start, tr.duration, tr.result)
                 } else {
                     return false;
                 }
             };
-
-            let tick_duration = tick_start.elapsed();
 
             // RtNode post-condition and invariant checks (after successful tick)
             if tick_result.is_ok() {
@@ -2535,11 +2546,13 @@ impl Scheduler {
                     if !rt_node.post_condition() {
                         let name = self.nodes[i].name.as_str();
                         print_line(&format!(" Post-condition failed for RT node '{}'", name));
-                        if let Some(ref mut bb) = self.monitor.blackbox {
-                            bb.record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!("Post-condition failed for '{}'", name),
-                            });
+                        if let Some(ref bb) = self.monitor.blackbox {
+                            bb.lock()
+                                .unwrap()
+                                .record(super::blackbox::BlackBoxEvent::Custom {
+                                    category: "rt_condition".to_string(),
+                                    message: format!("Post-condition failed for '{}'", name),
+                                });
                         }
                     }
                     if !rt_node.invariant() {
@@ -2548,11 +2561,16 @@ impl Scheduler {
                             " Invariant violated after tick for RT node '{}'",
                             name
                         ));
-                        if let Some(ref mut bb) = self.monitor.blackbox {
-                            bb.record(super::blackbox::BlackBoxEvent::Custom {
-                                category: "rt_condition".to_string(),
-                                message: format!("Invariant violated after tick for '{}'", name),
-                            });
+                        if let Some(ref bb) = self.monitor.blackbox {
+                            bb.lock()
+                                .unwrap()
+                                .record(super::blackbox::BlackBoxEvent::Custom {
+                                    category: "rt_condition".to_string(),
+                                    message: format!(
+                                        "Invariant violated after tick for '{}'",
+                                        name
+                                    ),
+                                });
                         }
                     }
                 }
@@ -2575,11 +2593,12 @@ impl Scheduler {
         // Profiling and monitoring
         {
             let node_name = self.nodes[i].name.as_str();
+            let mut profiler = self.monitor.profiler.lock().unwrap();
             if tick_result.is_err() {
-                self.monitor.profiler.record_node_failure(node_name);
+                profiler.record_node_failure(node_name);
                 print_line(&format!("Node '{}' panicked during execution", node_name));
             }
-            self.monitor.profiler.record(node_name, tick_duration);
+            profiler.record(node_name, tick_duration);
         }
 
         // Update per-node RtStats
@@ -2612,9 +2631,8 @@ impl Scheduler {
 
     /// Check WCET budget and deadline violations for real-time nodes.
     ///
-    /// For nodes registered via `add_rt()` (NodeKind::Rt), this invokes:
-    /// - `on_wcet_violation()` when the WCET budget is exceeded
-    /// - `on_deadline_miss()` + `deadline_miss_policy()` dispatch when the deadline is missed
+    /// Uses `TimingEnforcer` for the core WCET/deadline detection, then dispatches
+    /// node callbacks, stats updates, blackbox recording, and policy actions.
     ///
     /// Returns `true` if the scheduler should stop (EmergencyStop policy).
     fn check_timing_violations(
@@ -2623,64 +2641,74 @@ impl Scheduler {
         tick_start: Instant,
         tick_duration: Duration,
     ) -> bool {
+        use super::primitives::{DeadlineAction, TimingEnforcer};
+
         let node_name = self.nodes[i].name.clone();
 
-        // Check WCET budget for RT nodes
-        if self.nodes[i].is_rt_node && self.nodes[i].wcet_budget.is_some() {
-            let violation = if let Some(ref monitor) = self.monitor.safety {
-                monitor.check_wcet(&node_name, tick_duration).err()
-            } else {
-                None
-            };
+        // Check WCET budget for RT nodes via TimingEnforcer
+        if self.nodes[i].is_rt_node {
+            if let Some(wcet_budget) = self.nodes[i].wcet_budget {
+                if let Some(wcet_result) =
+                    TimingEnforcer::check_wcet(&node_name, tick_duration, wcet_budget)
+                {
+                    let violation = &wcet_result.violation;
+                    print_line(&format!(
+                        " WCET violation in {}: {:?} > {:?}",
+                        violation.node_name, violation.actual, violation.budget
+                    ));
 
-            if let Some(violation) = violation {
-                print_line(&format!(
-                    " WCET violation in {}: {:?} > {:?}",
-                    violation.node_name, violation.actual, violation.budget
-                ));
+                    // Invoke RtNode callback
+                    if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
+                        rt_node.on_wcet_violation(violation);
+                    }
 
-                // Invoke RtNode callback
-                if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
-                    rt_node.on_wcet_violation(&violation);
-                }
+                    // Update RtStats
+                    if let Some(ref mut stats) = self.nodes[i].rt_stats {
+                        stats.wcet_violations += 1;
+                    }
 
-                // Update RtStats
-                if let Some(ref mut stats) = self.nodes[i].rt_stats {
-                    stats.wcet_violations += 1;
-                }
+                    // Record in blackbox
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::WCETViolation {
+                                name: node_name.clone(),
+                                budget_us: violation.budget.as_micros() as u64,
+                                actual_us: violation.actual.as_micros() as u64,
+                            });
+                    }
 
-                // Record in blackbox
-                if let Some(ref mut bb) = self.monitor.blackbox {
-                    bb.record(super::blackbox::BlackBoxEvent::WCETViolation {
-                        name: node_name.clone(),
-                        budget_us: violation.budget.as_micros() as u64,
-                        actual_us: violation.actual.as_micros() as u64,
-                    });
+                    // Also report to safety monitor if available
+                    if let Some(ref monitor) = self.monitor.safety {
+                        let _ = monitor.check_wcet(&node_name, tick_duration);
+                    }
                 }
             }
         }
 
-        // Check deadline for RT nodes
+        // Check deadline for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
             if let Some(deadline) = self.nodes[i].deadline {
-                let elapsed = tick_start.elapsed();
-                if elapsed > deadline {
+                // Get policy from RtNode (or default Warn)
+                let policy = if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
+                    rt_node.deadline_miss_policy()
+                } else {
+                    crate::core::DeadlineMissPolicy::Warn
+                };
+
+                if let Some(dm) = TimingEnforcer::check_deadline(tick_start, deadline, policy) {
                     if let Some(ref monitor) = self.monitor.safety {
                         monitor.record_deadline_miss(&node_name);
                     }
                     print_line(&format!(
                         " Deadline miss in {}: {:?} > {:?}",
-                        node_name, elapsed, deadline
+                        node_name, dm.elapsed, dm.deadline
                     ));
 
-                    // Invoke RtNode callback and get policy
-                    let policy = if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
-                        rt_node.on_deadline_miss(elapsed, deadline);
-                        rt_node.deadline_miss_policy()
-                    } else {
-                        // Regular RT node (added via .rt()) — default to Warn
-                        crate::core::DeadlineMissPolicy::Warn
-                    };
+                    // Invoke RtNode callback
+                    if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
+                        rt_node.on_deadline_miss(dm.elapsed, dm.deadline);
+                    }
 
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
@@ -2688,28 +2716,29 @@ impl Scheduler {
                     }
 
                     // Record in blackbox
-                    if let Some(ref mut bb) = self.monitor.blackbox {
-                        bb.record(super::blackbox::BlackBoxEvent::DeadlineMiss {
-                            name: node_name.clone(),
-                            deadline_us: deadline.as_micros() as u64,
-                            actual_us: elapsed.as_micros() as u64,
-                        });
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::DeadlineMiss {
+                                name: node_name.clone(),
+                                deadline_us: dm.deadline.as_micros() as u64,
+                                actual_us: dm.elapsed.as_micros() as u64,
+                            });
                     }
 
-                    // Dispatch on DeadlineMissPolicy
-                    match policy {
-                        crate::core::DeadlineMissPolicy::Warn => {
+                    // Dispatch on deadline action
+                    match dm.action {
+                        DeadlineAction::Warn => {
                             // Already logged above — no further action
                         }
-                        crate::core::DeadlineMissPolicy::Skip => {
-                            // Pause node for one tick — it will be unpaused next tick
+                        DeadlineAction::Skip => {
                             self.nodes[i].is_paused = true;
                             print_line(&format!(
                                 " Deadline policy: skipping '{}' for one tick",
                                 node_name
                             ));
                         }
-                        crate::core::DeadlineMissPolicy::EmergencyStop => {
+                        DeadlineAction::EmergencyStop => {
                             print_line(&format!(
                                 " Deadline policy: emergency stop triggered by '{}'",
                                 node_name
@@ -2717,21 +2746,19 @@ impl Scheduler {
                             if let Some(ref monitor) = self.monitor.safety {
                                 monitor.trigger_emergency_stop(format!(
                                     "Deadline miss in '{}': {:?} > {:?}",
-                                    node_name, elapsed, deadline
+                                    node_name, dm.elapsed, dm.deadline
                                 ));
                             }
                             return true;
                         }
-                        crate::core::DeadlineMissPolicy::Degrade => {
-                            // Lower priority (increase priority number by 10)
+                        DeadlineAction::Degrade => {
                             self.nodes[i].priority = self.nodes[i].priority.saturating_add(10);
                             print_line(&format!(
                                 " Deadline policy: degraded '{}' priority to {}",
                                 node_name, self.nodes[i].priority
                             ));
                         }
-                        crate::core::DeadlineMissPolicy::Fallback => {
-                            // Try to swap in the fallback node
+                        DeadlineAction::Fallback => {
                             let fallback = self.nodes[i]
                                 .node
                                 .as_rt_mut()
@@ -2835,145 +2862,18 @@ impl Scheduler {
         false
     }
 
-    /// Execute nodes in priority order with profiling and RT support.
+    /// Execute main-thread (BestEffort) nodes sequentially in priority order.
     ///
-    /// In Sequential mode: all nodes execute one-by-one in priority order.
-    /// In Parallel mode: RT nodes execute sequentially first (deterministic timing),
-    /// then non-RT nodes execute in parallel via crossbeam::scope.
+    /// RT, Compute, and Event nodes are handled by their dedicated executors.
+    /// Only BestEffort nodes remain in `self.nodes` for main-thread execution.
     async fn execute_nodes(&mut self, node_filter: Option<&[&str]>) {
         // Sort by priority
         self.nodes.sort_by_key(|r| r.priority);
 
-        if self.execution_mode == ExecutionMode::Sequential {
-            // Sequential mode: execute all nodes one by one (original behavior)
-            let num_nodes = self.nodes.len();
-            for i in 0..num_nodes {
-                if self.execute_single_node(i, node_filter) {
-                    return; // Fatal failure — scheduler stopping
-                }
-            }
-            return;
-        }
-
-        // === Parallel mode ===
-        // Phase 1: Determine which nodes should tick and classify RT vs non-RT
-        let now = Instant::now();
-        let mut rt_indices = Vec::new();
-        let mut parallel_indices = Vec::new();
-
-        for i in 0..self.nodes.len() {
-            if self.nodes[i].is_stopped || self.nodes[i].is_paused {
-                continue;
-            }
-            if !self.nodes[i].initialized {
-                continue;
-            }
-
-            let node_name = self.nodes[i].name.as_str();
-            let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
-            if !should_run {
-                continue;
-            }
-
-            // Rate limiting check
-            if let Some(rate_hz) = self.nodes[i].rate_hz {
-                if let Some(last_tick) = self.nodes[i].last_tick {
-                    let elapsed_secs = (now - last_tick).as_secs_f64();
-                    if elapsed_secs < 1.0 / rate_hz {
-                        continue;
-                    }
-                }
-            }
-
-            // Failure handler check
-            if !self.nodes[i].failure_handler.should_allow() {
-                continue;
-            }
-
-            if self.nodes[i].is_rt_node {
-                rt_indices.push(i);
-            } else {
-                parallel_indices.push(i);
-            }
-        }
-
-        // Phase 2: Execute RT nodes sequentially (deterministic timing required)
-        for &i in &rt_indices {
+        let num_nodes = self.nodes.len();
+        for i in 0..num_nodes {
             if self.execute_single_node(i, node_filter) {
-                return;
-            }
-        }
-
-        // Phase 3: Execute non-RT nodes in parallel via crossbeam::scope
-        if parallel_indices.is_empty() {
-            return;
-        }
-
-        // If only one non-RT node, just run it directly
-        if parallel_indices.len() == 1 {
-            let i = parallel_indices[0];
-            if self.nodes[i].rate_hz.is_some() {
-                self.nodes[i].last_tick = Some(Instant::now());
-            }
-            if self.execute_single_node(i, node_filter) {
-                return;
-            }
-            return;
-        }
-
-        // Pre-tick setup: update last_tick, feed watchdog, start context
-        for &i in &parallel_indices {
-            if self.nodes[i].rate_hz.is_some() {
-                self.nodes[i].last_tick = Some(Instant::now());
-            }
-            if let Some(ref mut ctx) = self.nodes[i].context {
-                ctx.start_tick();
-            }
-        }
-
-        // Parallel tick: each thread ticks one node, returns (index, name, duration, result)
-        struct ParallelResult {
-            index: usize,
-            tick_start: Instant,
-            duration: Duration,
-            result: std::thread::Result<()>,
-        }
-
-        let nodes_ptr = self.nodes.as_mut_ptr();
-        let parallel_results: Vec<ParallelResult> = crossbeam::scope(|s| {
-            let handles: Vec<_> = parallel_indices
-                .iter()
-                .map(|&i| {
-                    // SAFETY: Each thread accesses a distinct index into the nodes vec.
-                    // crossbeam::scope guarantees threads don't outlive the borrow.
-                    let node_ref = unsafe { &mut *nodes_ptr.add(i) };
-                    s.spawn(move |_| {
-                        let tick_start = Instant::now();
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            node_ref.node.tick();
-                        }));
-                        let duration = tick_start.elapsed();
-                        ParallelResult {
-                            index: i,
-                            tick_start,
-                            duration,
-                            result,
-                        }
-                    })
-                })
-                .collect();
-
-            handles
-                .into_iter()
-                .map(|h| h.join().expect("crossbeam thread panicked"))
-                .collect()
-        })
-        .expect("crossbeam scope panicked");
-
-        // Phase 4: Process results sequentially on main thread
-        for pr in parallel_results {
-            if self.process_tick_result(pr.index, pr.tick_start, pr.duration, pr.result) {
-                return; // Fatal failure
+                return; // Fatal failure — scheduler stopping
             }
         }
     }

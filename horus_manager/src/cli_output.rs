@@ -47,3 +47,19 @@ pub fn empty(msg: &str, tip: Option<&str>) {
         hint(t);
     }
 }
+
+/// Truncate a string to at most `max_bytes` bytes, respecting UTF-8 char boundaries.
+/// Appends "..." if truncated.
+pub fn safe_truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let suffix = "...";
+    let target = max_len.saturating_sub(suffix.len());
+    // Walk back to nearest char boundary
+    let mut end = target;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &s[..end], suffix)
+}

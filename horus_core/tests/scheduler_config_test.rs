@@ -2,13 +2,12 @@
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
-use horus_core::scheduling::{ExecutionMode, Scheduler, SchedulerConfig};
+use horus_core::scheduling::{Scheduler, SchedulerConfig};
 
 /// Verify SchedulerConfig::minimal() produces the exact expected field values.
 #[test]
 fn test_minimal_config_field_values() {
     let m = SchedulerConfig::minimal();
-    assert!(matches!(m.execution, ExecutionMode::Sequential));
     assert_eq!(m.timing.global_rate_hz, 60.0);
     assert!(!m.circuit_breaker);
     assert!(!m.realtime.wcet_enforcement);
@@ -91,7 +90,7 @@ fn test_standard_config() {
 fn test_safety_critical_config() {
     cleanup_stale_shm();
     // Apply safety-critical robot configuration
-    let mut scheduler = Scheduler::safety_critical();
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
 
     scheduler
         .add(TestNode::new("safety_monitor"))
@@ -110,7 +109,7 @@ fn test_safety_critical_config() {
 fn test_high_performance_config() {
     cleanup_stale_shm();
     // Apply high-performance robot configuration
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().tick_hz(10000.0);
 
     scheduler.add(TestNode::new("fast_sensor")).order(0).done();
     scheduler.add(TestNode::new("fast_control")).order(1).done();
@@ -155,29 +154,25 @@ fn test_custom_exotic_robot_config() {
 }
 
 #[test]
-fn test_execution_modes() {
+fn test_execution_classes() {
     cleanup_stale_shm();
-    // Test Sequential mode
+    // Test BestEffort nodes (main thread)
     {
-        let mut config = SchedulerConfig::minimal();
-        config.execution = ExecutionMode::Sequential;
         let mut scheduler = Scheduler::new();
-        scheduler.apply_config(config);
-
         scheduler.add(TestNode::new("seq_node")).order(0).done();
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
         assert!(result.is_ok());
     }
 
-    // Test Parallel mode
+    // Test mixed execution classes: compute + best-effort
     {
-        let mut config = SchedulerConfig::minimal();
-        config.execution = ExecutionMode::Parallel;
         let mut scheduler = Scheduler::new();
-        scheduler.apply_config(config);
-
-        scheduler.add(TestNode::new("par_node1")).order(0).done();
-        scheduler.add(TestNode::new("par_node2")).order(0).done();
+        scheduler
+            .add(TestNode::new("compute_node"))
+            .order(0)
+            .compute()
+            .done();
+        scheduler.add(TestNode::new("main_node")).order(1).done();
         let result = scheduler.run_for(std::time::Duration::from_millis(50));
         assert!(result.is_ok());
     }
@@ -222,7 +217,7 @@ fn test_soft_robotics_config() {
 fn test_high_performance_optimizer_nodes() {
     cleanup_stale_shm();
     // Test high-performance configuration with optimizer nodes
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().tick_hz(10000.0);
 
     scheduler.add(TestNode::new("perf_sensor")).order(0).done();
     scheduler

@@ -30,7 +30,9 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::communication::Topic;
 use crate::error::HorusResult;
-use crate::services::types::{Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult};
+use crate::services::types::{
+    Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
+};
 
 // ─── Request ID generator ─────────────────────────────────────────────────────
 
@@ -78,11 +80,7 @@ where
     /// Call the service synchronously.
     ///
     /// Blocks until a matching response is received or `timeout` elapses.
-    pub fn call(
-        &mut self,
-        request: S::Request,
-        timeout: Duration,
-    ) -> ServiceResult<S::Response> {
+    pub fn call(&mut self, request: S::Request, timeout: Duration) -> ServiceResult<S::Response> {
         let request_id = next_request_id();
 
         // Send the request.

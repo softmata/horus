@@ -72,7 +72,6 @@ except ImportError:
         def __init__(self):
             self.tick_rate = 60.0
             self.circuit_breaker = False
-            self.execution_mode = "sequential"
             self.memory_locking = False
             self.rt_scheduling_class = False
             self.profiling = False
@@ -786,8 +785,6 @@ class Scheduler:
             cfg = _SchedulerConfig.minimal()
             cfg.tick_rate = tick_rate
             cfg.circuit_breaker = circuit_breaker
-            if parallel:
-                cfg.execution_mode = "parallel"
             if rt:
                 cfg.memory_locking = True
                 cfg.rt_scheduling_class = True

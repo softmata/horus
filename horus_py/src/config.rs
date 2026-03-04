@@ -1,4 +1,4 @@
-use horus::scheduling::config::{ExecutionMode, RecordingConfigYaml, SchedulerConfig};
+use horus::scheduling::config::{RecordingConfigYaml, SchedulerConfig};
 use pyo3::prelude::*;
 
 /// Full scheduler configuration for Python — plain data bag.
@@ -8,11 +8,6 @@ use pyo3::prelude::*;
 #[pyclass(module = "horus._horus")]
 #[derive(Clone, Debug)]
 pub struct PySchedulerConfig {
-    // --- Execution ---
-    #[pyo3(get, set)]
-    /// Execution mode: "sequential" or "parallel"
-    pub execution_mode: String,
-
     // --- Timing ---
     #[pyo3(get, set)]
     /// Global tick rate in Hz
@@ -140,18 +135,6 @@ impl PySchedulerConfig {
         self.clone()
     }
 
-    /// Set execution mode to parallel.
-    pub fn parallel(&mut self) -> Self {
-        self.execution_mode = "parallel".to_string();
-        self.clone()
-    }
-
-    /// Set execution mode to sequential.
-    pub fn sequential(&mut self) -> Self {
-        self.execution_mode = "sequential".to_string();
-        self.clone()
-    }
-
     /// Set black box buffer size in MB and enable it.
     pub fn blackbox_mb(&mut self, mb: usize) -> Self {
         self.black_box_enabled = true;
@@ -173,11 +156,10 @@ impl PySchedulerConfig {
 
     fn __repr__(&self) -> String {
         format!(
-            "SchedulerConfig(config={}, mode={}, tick_rate={:.1}Hz, circuit_breaker={}, \
+            "SchedulerConfig(config={}, tick_rate={:.1}Hz, circuit_breaker={}, \
              wcet={}, deadline_monitoring={}, safety_monitor={}, memory_locking={}, \
              deterministic={}, recording={})",
             self.config_name,
-            self.execution_mode,
             self.tick_rate,
             self.circuit_breaker,
             self.wcet_enforcement,
@@ -198,11 +180,6 @@ impl PySchedulerConfig {
     /// Convert to horus_core's SchedulerConfig, faithfully representing ALL stored fields.
     pub fn to_core_config(&self) -> SchedulerConfig {
         let mut config = SchedulerConfig::minimal();
-
-        config.execution = match self.execution_mode.as_str() {
-            "parallel" => ExecutionMode::Parallel,
-            _ => ExecutionMode::Sequential,
-        };
 
         config.timing.global_rate_hz = self.tick_rate;
 
@@ -237,10 +214,6 @@ impl PySchedulerConfig {
 
     fn from_rust_config(rust_config: SchedulerConfig, name: &str) -> Self {
         PySchedulerConfig {
-            execution_mode: match rust_config.execution {
-                ExecutionMode::Parallel => "parallel".to_string(),
-                ExecutionMode::Sequential => "sequential".to_string(),
-            },
             tick_rate: rust_config.timing.global_rate_hz,
             circuit_breaker: rust_config.circuit_breaker,
             wcet_enforcement: rust_config.realtime.wcet_enforcement,

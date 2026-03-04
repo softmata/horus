@@ -426,8 +426,7 @@ mod tests {
     fn test_tensor_unlimited_gpu() {
         // Test GPU indices beyond old 4-GPU limit
         for gpu_id in [0, 1, 4, 7, 15, 100, 1000] {
-            let tensor =
-                Tensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
+            let tensor = Tensor::new(0, 0, 0, 0, &[10], TensorDtype::F32, Device::cuda(gpu_id));
             assert_eq!(tensor.device(), Device::cuda(gpu_id));
         }
     }

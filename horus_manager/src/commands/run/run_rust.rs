@@ -15,6 +15,8 @@ pub(super) struct ExecutableInfo {
     pub(super) name: String,
     pub(super) command: String,
     pub(super) args_override: Vec<String>,
+    /// Extra env vars to pass to the child process via Command::env().
+    pub(super) env_vars: Vec<(String, String)>,
 }
 
 impl ExecutableInfo {
@@ -27,6 +29,9 @@ impl ExecutableInfo {
         } else {
             cmd.args(user_args);
         }
+
+        // Apply extra env vars
+        cmd.envs(self.env_vars.iter().cloned());
 
         cmd
     }
@@ -420,8 +425,8 @@ pub(super) fn execute_from_cargo_toml(
             install::resolve_dependencies(horus_deps)?;
         }
 
-        // Setup environment with .horus libraries
-        super::setup_environment()?;
+        // Build environment for child processes (no env::set_var)
+        let child_env = super::build_child_env()?;
 
         // For Rust projects, run cargo directly
         let project_name = get_project_name()?;
@@ -437,6 +442,7 @@ pub(super) fn execute_from_cargo_toml(
             cmd.arg("build");
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
+            cmd.envs(child_env.iter().cloned());
             if release {
                 cmd.arg("--release");
             }
@@ -460,6 +466,7 @@ pub(super) fn execute_from_cargo_toml(
         );
         let mut cmd = Command::new(binary);
         cmd.args(args);
+        cmd.envs(child_env.iter().cloned());
         let status = cmd.status()?;
         if !status.success() {
             bail!("Execution failed");
@@ -484,9 +491,6 @@ pub(super) fn build_rust_files_batch(
 
     // Ensure .horus directory exists
     super::ensure_horus_directory()?;
-
-    // Setup environment
-    super::setup_environment()?;
 
     // Load ignore patterns from horus.yaml if it exists
     let ignore = if Path::new(HORUS_YAML).exists() {
@@ -673,12 +677,14 @@ path = "{}"
     let profile = if release { "release" } else { "debug" };
     let mut executables = Vec::new();
 
+    let child_env = super::build_child_env()?;
     for name in binary_names {
         let binary_path = format!(".horus/target/{}/{}", profile, name);
         executables.push(ExecutableInfo {
             name,
             command: binary_path,
             args_override: Vec::new(),
+            env_vars: child_env.clone(),
         });
     }
 
@@ -714,8 +720,8 @@ pub(super) fn build_file_for_concurrent_execution(
         install::resolve_dependencies_with_context(dependencies, Some(&language))?;
     }
 
-    // Setup environment
-    super::setup_environment()?;
+    // Build environment for child processes (no env::set_var)
+    let child_env = super::build_child_env()?;
 
     match language.as_str() {
         "rust" => {
@@ -821,17 +827,22 @@ path = "{}"
                 name,
                 command: binary_path,
                 args_override: Vec::new(),
+                env_vars: child_env,
             })
         }
         "python" => {
             // Python doesn't need building, just setup interpreter
             let python_cmd = super::run_python::detect_python_interpreter()?;
-            super::run_python::setup_python_environment()?;
+            let python_path = super::run_python::build_python_path()?;
+
+            let mut env = child_env;
+            env.push(("PYTHONPATH".to_string(), python_path));
 
             Ok(ExecutableInfo {
                 name,
                 command: python_cmd,
                 args_override: vec![file_path.to_string_lossy().to_string()],
+                env_vars: env,
             })
         }
         _ => bail!("Unsupported language: {}", language),
@@ -844,6 +855,7 @@ pub(super) fn execute_with_scheduler(
     args: Vec<String>,
     release: bool,
     clean: bool,
+    child_env: &[(String, String)],
 ) -> Result<()> {
     match language.as_str() {
         "rust" => {
@@ -1126,6 +1138,7 @@ path = "{}"
             let mut cmd = Command::new("cargo");
             cmd.arg("build");
             cmd.current_dir(".horus");
+            cmd.envs(child_env.iter().cloned());
             if release {
                 cmd.arg("--release");
             }
@@ -1158,12 +1171,12 @@ path = "{}"
             println!("{} Executing...\n", cli_output::ICON_INFO.cyan());
             let mut cmd = Command::new(binary_path);
             cmd.args(args);
+            cmd.envs(child_env.iter().cloned());
 
             let status = cmd.status()?;
 
-            // Exit with the same code as the program
             if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
+                bail!("Process exited with code {}", status.code().unwrap_or(1));
             }
         }
         "python" => {

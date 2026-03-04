@@ -8,7 +8,7 @@ use crate::progress::format_bytes;
 use colored::*;
 use horus_core::error::{HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 /// List all active topics
@@ -16,24 +16,30 @@ pub fn list_topics(verbose: bool, json: bool) -> HorusResult<()> {
     let topics = discover_shared_memory()?;
 
     if json {
-        let json_output = serde_json::to_string_pretty(
-            &topics
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.topic_name,
-                        "size_bytes": t.size_bytes,
-                        "active": t.active,
-                        "message_type": t.message_type,
-                        "publishers": t.publishers,
-                        "subscribers": t.subscribers,
-                        "rate_hz": t.message_rate_hz
-                    })
+        let items: Vec<_> = topics
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.topic_name,
+                    "size_bytes": t.size_bytes,
+                    "active": t.active,
+                    "message_type": t.message_type,
+                    "publishers": t.publishers,
+                    "subscribers": t.subscribers,
+                    "rate_hz": t.message_rate_hz,
+                    "status": format!("{:?}", t.status),
+                    "age": t.age_string
                 })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        println!("{}", json_output);
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -155,9 +161,15 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     println!("  {} Press Ctrl+C to stop", "".dimmed());
     println!();
 
-    let sleep_duration = rate
-        .map(|r| Duration::from_secs_f64(1.0 / r))
-        .unwrap_or(Duration::from_millis(100));
+    let sleep_duration = match rate {
+        Some(r) if r <= 0.0 => {
+            return Err(HorusError::Config(
+                "Rate must be greater than 0.0".to_string(),
+            ));
+        }
+        Some(r) => Duration::from_secs_f64(1.0 / r),
+        None => Duration::from_millis(100),
+    };
 
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = running.clone();
@@ -354,6 +366,8 @@ pub fn topic_info(name: &str) -> HorusResult<()> {
 
 /// Measure topic publish rate
 pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
+    use horus_core::communication::read_latest_slot_bytes;
+
     let topics = discover_shared_memory()?;
 
     // Match by exact name, path suffix, or base name
@@ -375,6 +389,11 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
     let window_size = window.unwrap_or(10);
+    if window_size == 0 {
+        return Err(HorusError::Config(
+            "--window must be at least 1".to_string(),
+        ));
+    }
 
     println!(
         "{} Measuring rate for: {}",
@@ -391,38 +410,38 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     })
     .ok();
 
-    let mut timestamps: Vec<Instant> = Vec::with_capacity(window_size);
-    let mut last_content: Option<Vec<u8>> = None;
+    let mut timestamps: std::collections::VecDeque<Instant> =
+        std::collections::VecDeque::with_capacity(window_size + 1);
+    let mut last_write_idx: u64 = 0;
+    let mut total_messages: u64 = 0;
+    let start_time = Instant::now();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
-        if topic_path.exists() {
-            if let Ok(mut file) = std::fs::File::open(&topic_path) {
-                let mut content = Vec::new();
-                if file.read_to_end(&mut content).is_ok()
-                    && !content.is_empty()
-                    && last_content.as_ref() != Some(&content)
-                {
-                    timestamps.push(Instant::now());
-                    last_content = Some(content);
+        if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
+            last_write_idx = slot.write_idx;
+            timestamps.push_back(Instant::now());
+            total_messages += 1;
 
-                    // Keep only window_size timestamps
-                    if timestamps.len() > window_size {
-                        timestamps.remove(0);
-                    }
+            // Keep only window_size timestamps
+            while timestamps.len() > window_size {
+                timestamps.pop_front();
+            }
 
-                    // Calculate rate
-                    if let (Some(first), Some(last)) = (timestamps.first(), timestamps.last()) {
-                        let duration = last.duration_since(*first);
-                        let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
+            // Calculate rate (need at least 2 timestamps)
+            if timestamps.len() >= 2 {
+                let first = timestamps.front().unwrap();
+                let last = timestamps.back().unwrap();
+                let duration_secs = last.duration_since(*first).as_secs_f64();
 
-                        print!(
-                            "\r  {} {:.2} Hz (window: {})    ",
-                            "Rate:".cyan(),
-                            rate,
-                            timestamps.len()
-                        );
-                        std::io::stdout().flush().ok();
-                    }
+                if duration_secs > 0.0 {
+                    let rate = (timestamps.len() - 1) as f64 / duration_secs;
+                    print!(
+                        "\r  {} {:.2} Hz (window: {})    ",
+                        "Rate:".cyan(),
+                        rate,
+                        timestamps.len()
+                    );
+                    std::io::stdout().flush().ok();
                 }
             }
         }
@@ -432,17 +451,18 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
 
     // Print final stats
     println!();
-    if timestamps.len() >= 2 {
-        if let (Some(first), Some(last)) = (timestamps.first(), timestamps.last()) {
-            let duration = last.duration_since(*first);
-            let rate = (timestamps.len() - 1) as f64 / duration.as_secs_f64();
-            println!(
-                "{} Average rate: {:.2} Hz ({} samples)",
-                cli_output::ICON_INFO.cyan(),
-                rate,
-                timestamps.len()
-            );
-        }
+    let elapsed = start_time.elapsed().as_secs_f64();
+    if total_messages > 0 && elapsed > 0.0 {
+        let avg_rate = total_messages as f64 / elapsed;
+        println!(
+            "{} Average rate: {:.2} Hz ({} messages in {:.1}s)",
+            cli_output::ICON_INFO.cyan(),
+            avg_rate,
+            total_messages,
+            elapsed
+        );
+    } else {
+        println!("{} No messages received", cli_output::ICON_INFO.dimmed());
     }
     Ok(())
 }
@@ -473,6 +493,11 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
     let window_size = window.unwrap_or(100);
+    if window_size == 0 {
+        return Err(HorusError::Config(
+            "--window must be at least 1".to_string(),
+        ));
+    }
 
     println!(
         "{} Measuring bandwidth for: {}",
@@ -490,7 +515,8 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     .ok();
 
     // Each sample: (timestamp, bytes_in_slot)
-    let mut samples: Vec<(Instant, usize)> = Vec::with_capacity(window_size + 1);
+    let mut samples: std::collections::VecDeque<(Instant, usize)> =
+        std::collections::VecDeque::with_capacity(window_size + 1);
     let mut last_write_idx: u64 = 0;
 
     loop {
@@ -500,10 +526,10 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
 
         if let Some(slot) = read_latest_slot_bytes(&topic_path, last_write_idx) {
             last_write_idx = slot.write_idx;
-            samples.push((Instant::now(), slot.payload.len()));
+            samples.push_back((Instant::now(), slot.payload.len()));
 
-            if samples.len() > window_size {
-                samples.remove(0);
+            while samples.len() > window_size {
+                samples.pop_front();
             }
 
             if samples.len() >= 2 {
@@ -565,11 +591,27 @@ pub fn publish_topic(
     })?;
 
     // Create topic using the proper ring buffer protocol
-    let topic: Topic<serde_json::Value> = Topic::new(name)
-        .map_err(|e| HorusError::Communication(format!("Failed to create topic '{}': {}", name, e)))?;
+    let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
+        HorusError::Communication(format!("Failed to create topic '{}': {}", name, e))
+    })?;
 
-    let sleep_duration = rate.map(|r| Duration::from_secs_f64(1.0 / r));
+    let sleep_duration = match rate {
+        Some(r) if r <= 0.0 => {
+            return Err(HorusError::Config(
+                "Rate must be greater than 0.0".to_string(),
+            ));
+        }
+        Some(r) => Some(Duration::from_secs_f64(1.0 / r)),
+        None => None,
+    };
     let publish_count = count.unwrap_or(1);
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .ok();
 
     println!(
         "{} Publishing to: {}",
@@ -577,8 +619,13 @@ pub fn publish_topic(
         name.white().bold()
     );
 
+    let mut published = 0;
     for i in 0..publish_count {
+        if !running.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         topic.send(value.clone());
+        published += 1;
         println!(
             "  [{}] Published: {}",
             i + 1,
@@ -596,14 +643,8 @@ pub fn publish_topic(
     println!(
         "{} Published {} message(s)",
         cli_output::ICON_SUCCESS.green(),
-        publish_count
+        published
     );
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct TopicInfo {
-    pub name: String,
-    pub message_type: Option<String>,
 }

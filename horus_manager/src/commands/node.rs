@@ -37,28 +37,32 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
     };
 
     if json {
-        let json_output = serde_json::to_string_pretty(
-            &filtered_nodes
-                .iter()
-                .map(|n| {
-                    serde_json::json!({
-                        "name": n.name,
-                        "status": n.status,
-                        "health": format!("{:?}", n.health),
-                        "priority": n.priority,
-                        "pid": n.process_id,
-                        "cpu_usage": n.cpu_usage,
-                        "memory_usage": n.memory_usage,
-                        "tick_count": n.tick_count,
-                        "rate_hz": n.actual_rate_hz,
-                        "error_count": n.error_count,
-                        "category": format!("{:?}", n.category)
-                    })
+        let items: Vec<_> = filtered_nodes
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "name": n.name,
+                    "status": n.status,
+                    "health": format!("{:?}", n.health),
+                    "priority": n.priority,
+                    "pid": n.process_id,
+                    "cpu_usage": n.cpu_usage,
+                    "memory_usage": n.memory_usage,
+                    "tick_count": n.tick_count,
+                    "rate_hz": n.actual_rate_hz,
+                    "error_count": n.error_count,
+                    "category": format!("{:?}", n.category)
                 })
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        println!("{}", json_output);
+            })
+            .collect();
+        let output = serde_json::json!({
+            "count": items.len(),
+            "items": items
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
+        );
         return Ok(());
     }
 
@@ -167,9 +171,9 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
 pub fn node_info(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
-    let node = nodes.iter().find(|n| {
-        n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
-    });
+    let node = nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
         return Err(HorusError::Config(format!(
@@ -259,9 +263,9 @@ pub fn node_info(name: &str) -> HorusResult<()> {
 pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
-    let node = nodes.iter().find(|n| {
-        n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
-    });
+    let node = nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
         return Err(HorusError::Config(format!(
@@ -314,9 +318,9 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
 pub fn restart_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
-    let node = nodes.iter().find(|n| {
-        n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
-    });
+    let node = nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
         return Err(HorusError::Config(format!(
@@ -356,9 +360,9 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
 pub fn pause_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
-    let node = nodes.iter().find(|n| {
-        n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
-    });
+    let node = nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
         return Err(HorusError::Config(format!(
@@ -396,9 +400,9 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
 pub fn resume_node(name: &str) -> HorusResult<()> {
     let nodes = discover_nodes()?;
 
-    let node = nodes.iter().find(|n| {
-        n.name == name || n.name.ends_with(&format!("/{}", name)) || n.name.contains(name)
-    });
+    let node = nodes
+        .iter()
+        .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
         return Err(HorusError::Config(format!(
@@ -429,9 +433,5 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
 
 /// Truncate name to fit in column
 fn truncate_name(name: &str, max_len: usize) -> String {
-    if name.len() <= max_len {
-        name.to_string()
-    } else {
-        format!("{}...", &name[..max_len - 3])
-    }
+    crate::cli_output::safe_truncate(name, max_len)
 }

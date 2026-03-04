@@ -97,7 +97,7 @@ impl PointCloud {
             return None;
         }
         // f32 requires 4-byte alignment; verify before reinterpretation.
-        if bytes.as_ptr() as usize % std::mem::align_of::<f32>() != 0 {
+        if !(bytes.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
             return None;
         }
 

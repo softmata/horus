@@ -85,7 +85,12 @@ pub struct LaunchConfig {
 }
 
 /// Run the launch command
-pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> HorusResult<()> {
+pub fn run_launch(
+    file: &Path,
+    dry_run: bool,
+    namespace: Option<String>,
+    shutdown_timeout_secs: u64,
+) -> HorusResult<()> {
     log::debug!("launching from file: {:?}", file);
 
     // Check if file exists
@@ -194,8 +199,10 @@ pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> Horu
                 for (name, mut proc) in processes {
                     print!("  {} Stopping {}...", "".yellow(), name);
                     if proc.kill().is_ok() {
+                        let _ = proc.wait(); // Reap to prevent zombie
                         println!(" {}", "stopped".green());
                     } else {
+                        let _ = proc.wait(); // Reap even if kill failed
                         println!(" {}", "already stopped".dimmed());
                     }
                 }
@@ -289,8 +296,8 @@ pub fn run_launch(file: &Path, dry_run: bool, namespace: Option<String>) -> Horu
             let _ = proc.kill();
         }
 
-        // Wait a bit for graceful shutdown
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Wait for graceful shutdown
+        std::thread::sleep(std::time::Duration::from_secs(shutdown_timeout_secs));
 
         // Force kill if still running
         if proc.try_wait().map(|s| s.is_none()).unwrap_or(false) {

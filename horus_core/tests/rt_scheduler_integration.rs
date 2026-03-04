@@ -132,7 +132,7 @@ fn test_scheduler_with_rt_nodes() {
 fn test_scheduler_with_safety_critical_config() {
     cleanup_stale_shm();
     // Configure for safety-critical operation
-    let mut scheduler = Scheduler::safety_critical();
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
 
     // Add critical nodes
     scheduler
@@ -276,7 +276,7 @@ fn test_watchdog_functionality() {
 fn test_high_performance_rt_config() {
     cleanup_stale_shm();
     // Configure for high-performance racing robot
-    let mut scheduler = Scheduler::high_performance();
+    let mut scheduler = Scheduler::new().tick_hz(10000.0);
 
     // Add ultra-fast control nodes
     scheduler

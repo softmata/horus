@@ -479,16 +479,18 @@ mod tests {
         }
         assert_eq!(bb.get_loss_count(), 3);
         bb.clear();
-        assert_eq!(bb.get_loss_count(), 0, "clear() must reset lost_records to 0");
+        assert_eq!(
+            bb.get_loss_count(),
+            0,
+            "clear() must reset lost_records to 0"
+        );
     }
 
     /// save() must include `lost_records` in the JSON output.
     #[test]
     fn test_save_includes_lost_records() {
-        let dir = std::env::temp_dir().join(format!(
-            "horus_bb_loss_save_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("horus_bb_loss_save_test_{}", std::process::id()));
         let mut bb = BlackBox::new(1).with_path(dir.clone());
         bb.max_size = 3;
 
@@ -502,8 +504,8 @@ mod tests {
 
         bb.save().expect("save must not fail");
 
-        let content = std::fs::read_to_string(dir.join("blackbox.json"))
-            .expect("snapshot file must exist");
+        let content =
+            std::fs::read_to_string(dir.join("blackbox.json")).expect("snapshot file must exist");
         let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
 
         assert_eq!(

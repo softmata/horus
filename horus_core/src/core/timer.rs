@@ -83,9 +83,9 @@ impl Rate {
         // Update smoothed actual period.
         self.smoothed_period = Some(match self.smoothed_period {
             None => elapsed,
-            Some(prev) => Duration::from_secs_f64(
-                0.9 * prev.as_secs_f64() + 0.1 * elapsed.as_secs_f64(),
-            ),
+            Some(prev) => {
+                Duration::from_secs_f64(0.9 * prev.as_secs_f64() + 0.1 * elapsed.as_secs_f64())
+            }
         });
 
         if let Some(remaining) = self.period.checked_sub(elapsed) {
@@ -106,11 +106,12 @@ impl Rate {
     /// Returns the target frequency before the first `sleep()` call.
     #[inline]
     pub fn actual_hz(&self) -> f64 {
-        let period = self
-            .smoothed_period
-            .unwrap_or(self.period)
-            .as_secs_f64();
-        if period > 0.0 { 1.0 / period } else { f64::INFINITY }
+        let period = self.smoothed_period.unwrap_or(self.period).as_secs_f64();
+        if period > 0.0 {
+            1.0 / period
+        } else {
+            f64::INFINITY
+        }
     }
 
     /// The target frequency in Hz.
@@ -158,7 +159,9 @@ impl Stopwatch {
     /// Create a stopwatch that starts immediately.
     #[inline]
     pub fn start() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 
     /// Elapsed time since `start()`.

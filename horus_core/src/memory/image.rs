@@ -129,8 +129,8 @@ impl Image {
         // Use checked_add to prevent silent u32 overflow when x+w or y+h
         // wraps around (e.g. x = u32::MAX - 100, w = 200 → wraps to ~100).
         // A wrapped value passes the naive comparison but leads to OOB access.
-        if x.checked_add(w).map_or(true, |xe| xe > self.width())
-            || y.checked_add(h).map_or(true, |ye| ye > self.height())
+        if x.checked_add(w).is_none_or(|xe| xe > self.width())
+            || y.checked_add(h).is_none_or(|ye| ye > self.height())
         {
             return None;
         }

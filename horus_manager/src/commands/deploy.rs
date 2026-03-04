@@ -404,6 +404,30 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
         ));
     }
 
+    // Safety check: show what directory will be synced and confirm
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    println!(
+        "  {} Will sync '{}' to {}:{}/ (with --delete)",
+        cli_output::ICON_WARN.yellow(),
+        cwd,
+        config.target,
+        config.remote_dir
+    );
+    println!(
+        "  {} Files on remote not present locally will be DELETED",
+        cli_output::ICON_WARN.yellow()
+    );
+    print!("  Continue? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("  Cancelled.");
+        return Ok(());
+    }
+
     // Build rsync command
     let mut cmd = Command::new("rsync");
     cmd.args(["-avz", "--delete", "--progress"]);
@@ -413,11 +437,15 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
         cmd.args(["--exclude", exclude]);
     }
 
-    // SSH options
+    // SSH options with ConnectTimeout and properly quoted identity path
     let ssh_cmd = if let Some(ref identity) = config.identity {
-        format!("ssh -p {} -i {}", config.port, identity.display())
+        format!(
+            "ssh -p {} -o ConnectTimeout=30 -i '{}'",
+            config.port,
+            identity.display()
+        )
     } else {
-        format!("ssh -p {}", config.port)
+        format!("ssh -p {} -o ConnectTimeout=30", config.port)
     };
     cmd.args(["-e", &ssh_cmd]);
 
@@ -459,9 +487,10 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
 
     let remote_cmd = format!("cd {} && {}", config.remote_dir, binary_path);
 
-    // Build SSH command
+    // Build SSH command with ConnectTimeout
     let mut cmd = Command::new("ssh");
     cmd.args(["-p", &config.port.to_string()]);
+    cmd.args(["-o", "ConnectTimeout=30"]);
 
     if let Some(ref identity) = config.identity {
         cmd.args(["-i", &identity.to_string_lossy()]);
@@ -511,41 +540,23 @@ fn find_binary_name() -> Option<String> {
     }
 
     let content = std::fs::read_to_string(cargo_toml).ok()?;
+    let parsed: toml::Value = content.parse().ok()?;
 
-    // Try to find [[bin]] name first
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with("name") && line.contains('=') {
-            let parts: Vec<&str> = line.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                let name = parts[1].trim().trim_matches('"').trim_matches('\'');
+    // Try [[bin]] name first
+    if let Some(bins) = parsed.get("bin").and_then(|b| b.as_array()) {
+        if let Some(first_bin) = bins.first() {
+            if let Some(name) = first_bin.get("name").and_then(|n| n.as_str()) {
                 return Some(name.to_string());
             }
         }
     }
 
-    // Fall back to package name
-    let mut in_package = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if line == "[package]" {
-            in_package = true;
-            continue;
-        }
-        if line.starts_with('[') {
-            in_package = false;
-            continue;
-        }
-        if in_package && line.starts_with("name") {
-            let parts: Vec<&str> = line.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                let name = parts[1].trim().trim_matches('"').trim_matches('\'');
-                return Some(name.to_string());
-            }
-        }
-    }
-
-    None
+    // Fall back to [package].name
+    parsed
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.to_string())
 }
 
 /// List available deployment targets from config

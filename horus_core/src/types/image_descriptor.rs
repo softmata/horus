@@ -218,8 +218,7 @@ mod tests {
     fn test_image_step_uses_tensor_stride() {
         // Create a tensor with a padded row stride (e.g., SIMD-aligned rows).
         // strides[0] = width * channels + 16 bytes of padding per row.
-        let mut tensor =
-            Tensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
+        let mut tensor = Tensor::new(1, 0, 0, 0, &[480, 640, 3], TensorDtype::U8, Device::cpu());
         let padded_stride = 640u64 * 3 + 16;
         tensor.strides[0] = padded_stride;
 

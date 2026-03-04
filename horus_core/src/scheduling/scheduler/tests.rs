@@ -1,3 +1,4 @@
+
 use super::*;
 use crate::core::Node;
 use crate::scheduling::config::SchedulerConfig;
@@ -434,12 +435,8 @@ fn test_rt_feature_display() {
 
 #[test]
 fn test_parallel_execution_all_nodes_tick() {
-    // Use a custom parallel config with a low tick rate to avoid exhausting OS
-    // thread limits when running alongside 600+ other tests in parallel.
-    // `high_performance()` runs at 10 kHz × 3 nodes = 30,000 thread spawns per
-    // second, which causes EAGAIN under concurrent test load.
+    // Compute nodes are dispatched to the parallel compute executor automatically.
     let mut config = SchedulerConfig::minimal();
-    config.execution = crate::scheduling::config::ExecutionMode::Parallel;
     config.timing.global_rate_hz = 100.0; // 100 Hz: ~30 ticks in 300ms, well within OS limits
     let mut scheduler = Scheduler::from_config(config);
 
@@ -450,17 +447,20 @@ fn test_parallel_execution_all_nodes_tick() {
     scheduler
         .add(CounterNode::with_counter("par_a", c1.clone()))
         .order(100)
+        .compute()
         .done();
     scheduler
         .add(CounterNode::with_counter("par_b", c2.clone()))
         .order(101)
+        .compute()
         .done();
     scheduler
         .add(CounterNode::with_counter("par_c", c3.clone()))
         .order(102)
+        .compute()
         .done();
 
-    // Run for 300ms — all 3 non-RT nodes should tick at least once
+    // Run for 300ms — all 3 compute nodes should tick at least once
     let result = scheduler.run_for(Duration::from_millis(300));
     assert!(result.is_ok());
 
@@ -472,8 +472,8 @@ fn test_parallel_execution_all_nodes_tick() {
 
 #[test]
 fn test_parallel_rt_nodes_run_sequentially() {
-    // RT nodes must run sequentially even in parallel mode
-    let mut scheduler = Scheduler::high_performance();
+    // RT nodes run on a dedicated thread; BestEffort nodes on main thread
+    let mut scheduler = Scheduler::new().tick_hz(10000.0);
 
     let rt_counter = Arc::new(AtomicUsize::new(0));
     let normal_counter = Arc::new(AtomicUsize::new(0));
@@ -588,7 +588,10 @@ fn test_rate_limiting_does_not_lower_tick_period() {
 
 #[test]
 fn test_deterministic_config_wires_clock() {
-    let scheduler = Scheduler::deterministic();
+    let mut config = SchedulerConfig::minimal();
+    config.timing.global_rate_hz = 1000.0;
+    config.deterministic = Some(DeterministicConfig::default());
+    let scheduler = Scheduler::from_config(config);
     assert!(scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_some());
     assert_eq!(scheduler.virtual_tick(), Some(0));
@@ -613,7 +616,11 @@ fn test_deterministic_config_virtual_time() {
 #[test]
 fn test_deterministic_advances_on_run() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let mut scheduler = Scheduler::deterministic();
+    let mut config = SchedulerConfig::minimal();
+    config.timing.global_rate_hz = 1000.0;
+    config.deterministic = Some(DeterministicConfig::default());
+    config.recording = Some(super::super::config::RecordingConfigYaml::full());
+    let mut scheduler = Scheduler::from_config(config);
     scheduler
         .add(CounterNode::with_counter("test", counter.clone()))
         .order(0)
@@ -646,8 +653,11 @@ fn test_standard_config_no_deterministic() {
 #[test]
 fn test_recording_hooks_wired() {
     let counter = Arc::new(AtomicUsize::new(0));
-    // Recording is already enabled by deterministic() preset
-    let mut scheduler = Scheduler::deterministic();
+    let mut config = SchedulerConfig::minimal();
+    config.timing.global_rate_hz = 1000.0;
+    config.deterministic = Some(DeterministicConfig::default());
+    config.recording = Some(super::super::config::RecordingConfigYaml::full());
+    let mut scheduler = Scheduler::from_config(config);
     scheduler
         .add(CounterNode::with_counter("rec_node", counter.clone()))
         .order(0)
@@ -704,7 +714,11 @@ fn test_blackbox_with_path() {
 
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
-    let scheduler = Scheduler::deploy();
+    let mut config = SchedulerConfig::minimal();
+    config.circuit_breaker = true;
+    config.monitoring.black_box_enabled = true;
+    config.monitoring.black_box_size_mb = 16;
+    let scheduler = Scheduler::from_config(config);
     assert!(
         scheduler.blackbox().is_some(),
         "Deploy preset should create a blackbox"
@@ -1382,9 +1396,8 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
         .wcet_us(1_000) // 1ms budget — will be violated by 50ms sleep
         .done();
 
-    // Enable safety monitor with WCET enforcement
+    // Enable WCET enforcement
     let mut config = SchedulerConfig::minimal();
-    config.realtime.safety_monitor = true;
     config.realtime.wcet_enforcement = true;
     scheduler.apply_config(config);
 
@@ -1396,12 +1409,12 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
         "slow node should have ticked"
     );
 
-    // Check safety stats for WCET overruns
-    if let Some(stats) = scheduler.safety_stats() {
+    // RT nodes are reclaimed after stop — check per-node rt_stats for WCET violations
+    if let Some(stats) = scheduler.rt_stats("slow_sensor") {
         assert!(
-            stats.wcet_overruns > 0,
-            "WCET violation should have been detected, got {} overruns",
-            stats.wcet_overruns
+            stats.wcet_violations > 0,
+            "WCET violation should have been detected, got {} violations",
+            stats.wcet_violations
         );
     }
 }
@@ -1412,9 +1425,8 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
 fn test_deadline_miss_detected_for_slow_rt_node() {
     let slow_counter = Arc::new(AtomicUsize::new(0));
 
-    // Enable safety monitor with deadline monitoring BEFORE adding nodes
+    // Enable deadline monitoring
     let mut config = SchedulerConfig::minimal();
-    config.realtime.safety_monitor = true;
     config.realtime.deadline_monitoring = true;
 
     let mut scheduler = Scheduler::new();
@@ -1439,8 +1451,8 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
         "node should have ticked"
     );
 
-    // Check for deadline misses
-    if let Some(stats) = scheduler.safety_stats() {
+    // RT nodes are reclaimed after stop — check per-node rt_stats for deadline misses
+    if let Some(stats) = scheduler.rt_stats("ctrl_loop") {
         assert!(
             stats.deadline_misses > 0,
             "Deadline miss should have been detected, got {} misses",
