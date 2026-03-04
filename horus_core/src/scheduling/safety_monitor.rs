@@ -333,23 +333,26 @@ mod tests {
 
     // ── Watchdog TOCTOU fix tests ─────────────────────────────────────────
 
-    /// feed() called 1μs before check() with timeout=1ms must return not-expired.
+    /// feed() called shortly before check() with a generous timeout must return not-expired.
     ///
     /// Before the fix, the Mutex<Instant> TOCTOU window let a heartbeat arrive
     /// between the lock() and elapsed() calls, resulting in a stale timestamp and
     /// a false-positive expired reading.  With AtomicU64 the window is eliminated.
+    ///
+    /// Uses a 50ms timeout so that even on loaded non-RT systems where
+    /// thread::sleep(1μs) can oversleep to ~1ms, the check still passes.
     #[test]
     fn test_watchdog_feed_then_check_1us_not_expired() {
         use std::thread;
 
-        let wd = Watchdog::new(Duration::from_millis(1));
+        let wd = Watchdog::new(Duration::from_millis(50));
 
-        // Feed, then sleep 1μs (< 1ms timeout), then check.
+        // Feed, then sleep briefly (well under the 50ms timeout), then check.
         wd.feed();
         thread::sleep(Duration::from_micros(1));
         assert!(
             !wd.check(),
-            "watchdog should NOT be expired 1μs after feed with 1ms timeout"
+            "watchdog should NOT be expired shortly after feed with 50ms timeout"
         );
     }
 

@@ -4,8 +4,22 @@ use crate::core::Node;
 use crate::scheduling::config::SchedulerConfig;
 use crate::scheduling::deterministic::DeterministicConfig;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+/// Global mutex to serialize scheduler tests. The scheduler uses process-global
+/// state (SIGTERM handler, shared memory namespaces, event notifier registry)
+/// that causes non-deterministic failures under parallel execution.
+static SCHEDULER_TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+/// Acquire the scheduler test lock and reset the SIGTERM flag.
+fn lock_scheduler() -> MutexGuard<'static, ()> {
+    let guard = SCHEDULER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Reset the global SIGTERM flag so previous tests don't interfere
+    super::SIGTERM_RECEIVED.store(false, Ordering::SeqCst);
+    guard
+}
 
 /// Simple test node that counts its tick invocations
 struct CounterNode {
@@ -45,6 +59,7 @@ impl Node for CounterNode {
 
 #[test]
 fn test_scheduler_new() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(scheduler.is_running());
     assert_eq!(scheduler.node_list().len(), 0);
@@ -52,6 +67,7 @@ fn test_scheduler_new() {
 
 #[test]
 fn test_scheduler_default() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::default();
     assert!(scheduler.is_running());
     assert_eq!(scheduler.node_list().len(), 0);
@@ -59,6 +75,7 @@ fn test_scheduler_default() {
 
 #[test]
 fn test_scheduler_with_name() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_name("TestScheduler");
     // The name is stored internally and used in logging
     assert!(scheduler.is_running());
@@ -66,6 +83,7 @@ fn test_scheduler_with_name() {
 
 #[test]
 fn test_scheduler_with_capacity() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_capacity(100);
     assert!(scheduler.is_running());
     // Capacity is pre-allocated but empty
@@ -78,6 +96,7 @@ fn test_scheduler_with_capacity() {
 
 #[test]
 fn test_scheduler_add_node() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("test_node")).order(0).done();
 
@@ -88,6 +107,7 @@ fn test_scheduler_add_node() {
 
 #[test]
 fn test_scheduler_add_multiple_nodes() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("node1")).order(0).done();
     scheduler.add(CounterNode::new("node2")).order(1).done();
@@ -99,6 +119,7 @@ fn test_scheduler_add_multiple_nodes() {
 
 #[test]
 fn test_scheduler_node_priority_ordering() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     // Add nodes with different priorities
     scheduler
@@ -122,6 +143,7 @@ fn test_scheduler_node_priority_ordering() {
 
 #[test]
 fn test_scheduler_add_basic() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler
         .add(CounterNode::new("basic_node"))
@@ -139,12 +161,14 @@ fn test_scheduler_add_basic() {
 
 #[test]
 fn test_scheduler_is_running() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(scheduler.is_running());
 }
 
 #[test]
 fn test_scheduler_stop() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(scheduler.is_running());
     scheduler.stop();
@@ -153,6 +177,7 @@ fn test_scheduler_stop() {
 
 #[test]
 fn test_scheduler_stop_and_check_multiple_times() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     scheduler.stop();
     assert!(!scheduler.is_running());
@@ -165,6 +190,7 @@ fn test_scheduler_stop_and_check_multiple_times() {
 
 #[test]
 fn test_scheduler_set_node_rate() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("sensor")).order(0).done();
     scheduler.set_node_rate("sensor", 100.0);
@@ -175,6 +201,7 @@ fn test_scheduler_set_node_rate() {
 
 #[test]
 fn test_scheduler_set_node_rate_nonexistent() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("node1")).order(0).done();
     // Setting rate for nonexistent node should not panic
@@ -188,6 +215,7 @@ fn test_scheduler_set_node_rate_nonexistent() {
 
 #[test]
 fn test_scheduler_metrics_existing() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler.add(CounterNode::new("info_node")).order(0).done();
 
@@ -198,6 +226,7 @@ fn test_scheduler_metrics_existing() {
 
 #[test]
 fn test_scheduler_metrics_empty() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     let metrics = scheduler.metrics();
     assert!(metrics.is_empty());
@@ -205,6 +234,7 @@ fn test_scheduler_metrics_empty() {
 
 #[test]
 fn test_scheduler_node_list_empty() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     let nodes = scheduler.node_list();
     assert!(nodes.is_empty());
@@ -216,12 +246,14 @@ fn test_scheduler_node_list_empty() {
 
 #[test]
 fn test_scheduler_is_recording_default() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(!scheduler.is_recording());
 }
 
 #[test]
 fn test_scheduler_enable_recording() {
+        let _guard = lock_scheduler();
     use crate::scheduling::config::RecordingConfigYaml;
     let mut config = crate::scheduling::config::SchedulerConfig::minimal();
     config.recording = Some(RecordingConfigYaml::full());
@@ -232,18 +264,21 @@ fn test_scheduler_enable_recording() {
 
 #[test]
 fn test_scheduler_is_replaying_default() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(!scheduler.is_replaying());
 }
 
 #[test]
 fn test_scheduler_current_tick() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert_eq!(scheduler.current_tick(), 0);
 }
 
 #[test]
 fn test_scheduler_start_at_tick() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new().start_at_tick(1000);
     assert_eq!(scheduler.current_tick(), 1000);
 }
@@ -254,6 +289,7 @@ fn test_scheduler_start_at_tick() {
 
 #[test]
 fn test_scheduler_with_safety_monitor() {
+        let _guard = lock_scheduler();
     let mut config = crate::scheduling::config::SchedulerConfig::minimal();
     config.realtime.safety_monitor = true;
     config.realtime.max_deadline_misses = 10;
@@ -268,6 +304,7 @@ fn test_scheduler_with_safety_monitor() {
 
 #[test]
 fn test_scheduler_add_rt_node() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     scheduler
         .add(CounterNode::new("rt_node"))
@@ -288,6 +325,7 @@ fn test_scheduler_add_rt_node() {
 
 #[test]
 fn test_scheduler_run_for_short_duration() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     let counter = Arc::new(AtomicUsize::new(0));
     scheduler
@@ -309,6 +347,7 @@ fn test_scheduler_run_for_short_duration() {
 
 #[test]
 fn test_scheduler_chainable_api() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new()
         .with_name("ChainedScheduler")
         .with_capacity(10);
@@ -328,6 +367,7 @@ fn test_scheduler_chainable_api() {
 
 #[test]
 fn test_scheduler_list_recordings() {
+        let _guard = lock_scheduler();
     // This might fail if no recordings exist, but shouldn't panic
     let result = Scheduler::list_recordings();
     // Just verify the function is callable
@@ -340,6 +380,7 @@ fn test_scheduler_list_recordings() {
 
 #[test]
 fn test_scheduler_name_builder() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_name("BuilderName");
     // Verify the scheduler was created successfully
     assert!(scheduler.is_running());
@@ -351,6 +392,7 @@ fn test_scheduler_name_builder() {
 
 #[test]
 fn test_scheduler_with_override() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new().with_override("node1", "output1", vec![1, 2, 3, 4]);
 
     // Should not panic and scheduler should still be running
@@ -363,6 +405,7 @@ fn test_scheduler_with_override() {
 
 #[test]
 fn test_scheduler_auto_optimization() {
+        let _guard = lock_scheduler();
     // Test that Scheduler::new() auto-detects capabilities
     let scheduler = Scheduler::new();
 
@@ -388,6 +431,7 @@ fn test_scheduler_auto_optimization() {
 
 #[test]
 fn test_scheduler_degradations() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
 
     // Degradations should be a non-empty list in most dev environments
@@ -407,6 +451,7 @@ fn test_scheduler_degradations() {
 
 #[test]
 fn test_scheduler_has_full_rt() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
 
     // has_full_rt() should return false if there are high-severity degradations
@@ -420,6 +465,7 @@ fn test_scheduler_has_full_rt() {
 
 #[test]
 fn test_rt_feature_display() {
+        let _guard = lock_scheduler();
     // Test Display implementations for all RtFeature variants
     assert_eq!(format!("{}", RtFeature::RtPriority), "RT Priority");
     assert_eq!(format!("{}", RtFeature::MemoryLocking), "Memory Locking");
@@ -435,6 +481,7 @@ fn test_rt_feature_display() {
 
 #[test]
 fn test_parallel_execution_all_nodes_tick() {
+        let _guard = lock_scheduler();
     // Compute nodes are dispatched to the parallel compute executor automatically.
     let mut config = SchedulerConfig::minimal();
     config.timing.global_rate_hz = 100.0; // 100 Hz: ~30 ticks in 300ms, well within OS limits
@@ -472,6 +519,7 @@ fn test_parallel_execution_all_nodes_tick() {
 
 #[test]
 fn test_parallel_rt_nodes_run_sequentially() {
+        let _guard = lock_scheduler();
     // RT nodes run on a dedicated thread; BestEffort nodes on main thread
     let mut scheduler = Scheduler::new().tick_hz(10000.0);
 
@@ -511,6 +559,7 @@ fn test_parallel_rt_nodes_run_sequentially() {
 
 #[test]
 fn test_rate_limiting_adjusts_tick_period() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
 
     // Default tick period is ~60Hz = 16667us
@@ -537,6 +586,7 @@ fn test_rate_limiting_adjusts_tick_period() {
 
 #[test]
 fn test_rate_limiting_node_ticks_at_declared_rate() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
 
     let counter = Arc::new(AtomicUsize::new(0));
@@ -565,6 +615,7 @@ fn test_rate_limiting_node_ticks_at_declared_rate() {
 
 #[test]
 fn test_rate_limiting_does_not_lower_tick_period() {
+        let _guard = lock_scheduler();
     // If a node has a rate lower than default, tick_period should stay the same
     let mut scheduler = Scheduler::new();
 
@@ -588,6 +639,7 @@ fn test_rate_limiting_does_not_lower_tick_period() {
 
 #[test]
 fn test_deterministic_config_wires_clock() {
+        let _guard = lock_scheduler();
     let mut config = SchedulerConfig::minimal();
     config.timing.global_rate_hz = 1000.0;
     config.deterministic = Some(DeterministicConfig::default());
@@ -600,6 +652,7 @@ fn test_deterministic_config_wires_clock() {
 
 #[test]
 fn test_deterministic_config_virtual_time() {
+        let _guard = lock_scheduler();
     let mut config = SchedulerConfig::minimal();
     config.deterministic = Some(DeterministicConfig {
         seed: 123,
@@ -615,6 +668,7 @@ fn test_deterministic_config_virtual_time() {
 
 #[test]
 fn test_deterministic_advances_on_run() {
+        let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
     let mut config = SchedulerConfig::minimal();
     config.timing.global_rate_hz = 1000.0;
@@ -640,6 +694,7 @@ fn test_deterministic_advances_on_run() {
 
 #[test]
 fn test_standard_config_no_deterministic() {
+        let _guard = lock_scheduler();
     let scheduler = Scheduler::new();
     assert!(!scheduler.is_simulation_mode());
     assert!(scheduler.deterministic_clock().is_none());
@@ -652,6 +707,7 @@ fn test_standard_config_no_deterministic() {
 
 #[test]
 fn test_recording_hooks_wired() {
+        let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
     let mut config = SchedulerConfig::minimal();
     config.timing.global_rate_hz = 1000.0;
@@ -681,6 +737,7 @@ fn test_recording_hooks_wired() {
 
 #[test]
 fn test_blackbox_with_path() {
+        let _guard = lock_scheduler();
     let tmp = std::env::temp_dir().join(format!("horus_bb_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
 
@@ -714,6 +771,7 @@ fn test_blackbox_with_path() {
 
 #[test]
 fn test_deploy_config_creates_blackbox_with_wal() {
+        let _guard = lock_scheduler();
     let mut config = SchedulerConfig::minimal();
     config.circuit_breaker = true;
     config.monitoring.black_box_enabled = true;
@@ -731,6 +789,7 @@ fn test_deploy_config_creates_blackbox_with_wal() {
 
 #[test]
 fn test_per_node_rates_work_without_dead_code() {
+        let _guard = lock_scheduler();
     // Per-node rates work through set_node_rate() / .rate_hz(), not the removed config flag
     let counter = Arc::new(AtomicUsize::new(0));
     let mut scheduler = Scheduler::new().tick_hz(1000.0);
@@ -820,6 +879,7 @@ impl Node for OrderTrackingNode {
 /// shutdown() called for every node at scheduler stop.
 #[test]
 fn test_scheduler_lifecycle_init_tick_shutdown() {
+        let _guard = lock_scheduler();
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
     let init_a = Arc::new(AtomicBool::new(false));
     let init_b = Arc::new(AtomicBool::new(false));
@@ -925,6 +985,7 @@ fn test_scheduler_lifecycle_init_tick_shutdown() {
 /// motor control (50) before planning (150) before logging (200).
 #[test]
 fn test_scheduler_priority_execution_order_robotics() {
+        let _guard = lock_scheduler();
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Create 5 nodes simulating robotics priority tiers
@@ -1020,6 +1081,7 @@ fn test_scheduler_priority_execution_order_robotics() {
 /// Verifies every tick has deterministic priority ordering.
 #[test]
 fn test_scheduler_10_nodes_100_ticks_priority_order() {
+        let _guard = lock_scheduler();
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let priorities: Vec<(&str, u32)> = vec![
@@ -1102,6 +1164,7 @@ fn test_scheduler_10_nodes_100_ticks_priority_order() {
 /// Verify that all nodes get init() called exactly once, even with many nodes.
 #[test]
 fn test_scheduler_all_nodes_init_called_once() {
+        let _guard = lock_scheduler();
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let init_flags: Vec<(String, Arc<AtomicBool>)> = (0..5)
@@ -1218,6 +1281,7 @@ impl Node for SlowNode {
 /// Robotics: motor controller failure must halt the system immediately.
 #[test]
 fn test_fatal_policy_stops_scheduler_on_panic() {
+        let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
     let healthy_counter = Arc::new(AtomicUsize::new(0));
 
@@ -1260,6 +1324,7 @@ fn test_fatal_policy_stops_scheduler_on_panic() {
 /// Robotics: sensor driver crash should attempt restart before giving up.
 #[test]
 fn test_restart_policy_reinitializes_after_panic() {
+        let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -1293,6 +1358,7 @@ fn test_restart_policy_reinitializes_after_panic() {
 /// Robotics: logging node failure should not crash the system.
 #[test]
 fn test_skip_policy_circuit_breaker_skips_node() {
+        let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
     let healthy_counter = Arc::new(AtomicUsize::new(0));
 
@@ -1336,6 +1402,7 @@ fn test_skip_policy_circuit_breaker_skips_node() {
 /// Robotics: best-effort diagnostics node that may occasionally fail.
 #[test]
 fn test_ignore_policy_continues_after_failure() {
+        let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
     let healthy_counter = Arc::new(AtomicUsize::new(0));
 
@@ -1371,6 +1438,7 @@ fn test_ignore_policy_continues_after_failure() {
 /// Robotics: motor control loop exceeding 1ms WCET must be flagged.
 #[test]
 fn test_wcet_violation_detected_for_slow_rt_node() {
+        let _guard = lock_scheduler();
     let slow_counter = Arc::new(AtomicUsize::new(0));
     let fast_counter = Arc::new(AtomicUsize::new(0));
 
@@ -1423,6 +1491,7 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
 /// Robotics: control loop missing 10ms deadline means actuator stale.
 #[test]
 fn test_deadline_miss_detected_for_slow_rt_node() {
+        let _guard = lock_scheduler();
     let slow_counter = Arc::new(AtomicUsize::new(0));
 
     // Enable deadline monitoring
@@ -1464,6 +1533,7 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
 /// Verify shutdown is called for every node even when scheduler stops normally.
 #[test]
 fn test_scheduler_shutdown_called_for_all_nodes() {
+        let _guard = lock_scheduler();
     let log = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let shutdown_flags: Vec<(String, Arc<AtomicBool>)> = (0..4)
@@ -1507,6 +1577,7 @@ fn test_scheduler_shutdown_called_for_all_nodes() {
 /// Robotics: empty config file or all nodes disabled — must not crash.
 #[test]
 fn test_zero_nodes_exits_cleanly() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     // No nodes added
     assert_eq!(scheduler.node_list().len(), 0);
@@ -1520,6 +1591,7 @@ fn test_zero_nodes_exits_cleanly() {
 /// Robotics: misconfigured launch file with duplicate node names.
 #[test]
 fn test_duplicate_node_names_both_added() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     let counter1 = Arc::new(AtomicUsize::new(0));
     let counter2 = Arc::new(AtomicUsize::new(0));
@@ -1554,6 +1626,7 @@ fn test_duplicate_node_names_both_added() {
 /// Robotics: one bad sensor driver must not crash the whole robot.
 #[test]
 fn test_panic_in_init_caught_others_continue() {
+        let _guard = lock_scheduler();
     struct PanicInitNode;
     impl Node for PanicInitNode {
         fn name(&self) -> &str {
@@ -1591,6 +1664,7 @@ fn test_panic_in_init_caught_others_continue() {
 /// Robotics: runtime panic in diagnostics node shouldn't stop motors.
 #[test]
 fn test_panic_in_tick_caught_others_continue() {
+        let _guard = lock_scheduler();
     let panic_counter = Arc::new(AtomicUsize::new(0));
     let good_counter = Arc::new(AtomicUsize::new(0));
 
@@ -1626,6 +1700,7 @@ fn test_panic_in_tick_caught_others_continue() {
 /// Robotics: emergency stop triggered immediately after boot.
 #[test]
 fn test_immediate_stop_still_inits_and_shuts_down() {
+        let _guard = lock_scheduler();
     let counter = Arc::new(AtomicUsize::new(0));
 
     let mut scheduler = Scheduler::new();
@@ -1644,6 +1719,7 @@ fn test_immediate_stop_still_inits_and_shuts_down() {
 /// Robotics: complex robot with many sensors, actuators, and processing nodes.
 #[test]
 fn test_many_nodes_50_plus() {
+        let _guard = lock_scheduler();
     let mut scheduler = Scheduler::new();
     let counters: Vec<Arc<AtomicUsize>> = (0..50).map(|_| Arc::new(AtomicUsize::new(0))).collect();
 

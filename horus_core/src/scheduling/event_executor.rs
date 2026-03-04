@@ -337,22 +337,25 @@ mod tests {
     #[test]
     fn test_event_executor_ticks_on_notification() {
         let count = Arc::new(AtomicU64::new(0));
-        let nodes = vec![make_event_node("evt_node", "test_topic", count.clone())];
+        let nodes = vec![make_event_node("evt_node_notify", "test_topic", count.clone())];
         let running = Arc::new(AtomicBool::new(true));
 
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
 
-        // Give the thread time to start and set up the notifier
-        std::thread::sleep(Duration::from_millis(10));
+        // Wait for the watcher thread to register its notifier in the global registry.
+        // On loaded systems the thread may take longer to start.
+        let mut registered = false;
+        for _ in 0..50 {
+            if crate::core::NodeInfo::notify_event("evt_node_notify") {
+                registered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(registered, "Event node notifier should be registered within 250ms");
 
-        // We need to get the notifier from the node's context.
-        // Since the node is inside the thread, we use NodeInfo's event notifier.
-        // For testing, we'll use the NodeInfo registry to find the notifier.
-        // The simplest approach: use notify_event_node() which bumps the counter.
-        crate::core::NodeInfo::notify_event("evt_node");
-
-        // Wait for the watcher to process
-        std::thread::sleep(Duration::from_millis(20));
+        // Wait for the watcher to process the notification we just sent
+        std::thread::sleep(Duration::from_millis(50));
 
         let ticks = count.load(Ordering::Relaxed);
         assert!(
@@ -362,9 +365,9 @@ mod tests {
         );
 
         // Send more notifications
-        crate::core::NodeInfo::notify_event("evt_node");
-        crate::core::NodeInfo::notify_event("evt_node");
-        std::thread::sleep(Duration::from_millis(20));
+        crate::core::NodeInfo::notify_event("evt_node_notify");
+        crate::core::NodeInfo::notify_event("evt_node_notify");
+        std::thread::sleep(Duration::from_millis(50));
 
         let ticks = count.load(Ordering::Relaxed);
         assert!(
