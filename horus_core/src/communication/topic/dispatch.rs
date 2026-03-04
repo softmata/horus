@@ -90,7 +90,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use super::backend::BackendStorage;
 use super::local_state::{EPOCH_CHECK_INTERVAL, LEASE_REFRESH_INTERVAL};
 use super::RingTopic;
-use super::{simd_aware_read, simd_aware_write, READY_FLAG_SPIN_LIMIT};
+use super::{simd_aware_read, simd_aware_write};
 use crate::utils::unlikely;
 
 // ============================================================================
@@ -243,31 +243,6 @@ macro_rules! intra_recv_fn {
 // ============================================================================
 // Shared helpers — #[inline(always)] for zero-overhead extraction
 // ============================================================================
-
-/// Bounded spin waiting for a per-slot ready flag to reach the expected value.
-///
-/// Returns true if the ready flag matched within READY_FLAG_SPIN_LIMIT iterations.
-/// On x86, each spin_loop() is a PAUSE (~10-20 cycles), so 256 spins ≈ ~1.7µs
-/// worst case at 3GHz — well within try_recv latency bounds.
-///
-/// # Safety
-/// `ready_ptr` must point to a valid AtomicU64 within the topic's data region
-/// (either SHM mmap or co-located slot). The pointer must remain valid for the
-/// duration of the spin (guaranteed by ShmRegion lifetime).
-#[inline(always)]
-unsafe fn spin_for_ready(ready_ptr: &AtomicU64, expected: u64) -> bool {
-    let mut spins = 0u32;
-    loop {
-        if ready_ptr.load(Ordering::Acquire) == expected {
-            return true;
-        }
-        spins += 1;
-        if spins >= READY_FLAG_SPIN_LIMIT {
-            return false;
-        }
-        std::hint::spin_loop();
-    }
-}
 
 /// Read and deserialize a message from a serde-format SHM slot.
 ///
@@ -571,7 +546,6 @@ pub(super) fn send_shm_pod_broadcast<
     unsafe {
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        ready_ptr.store(0, Ordering::Release);
         let base = local.cached_data_ptr as *mut T;
         simd_aware_write(base.add(index), msg);
         ready_ptr.store(seq.wrapping_add(1), Ordering::Release);
@@ -824,7 +798,6 @@ pub(super) fn send_shm_pod_broadcast_colo<
     let seq = header.sequence_or_head.fetch_add(1, Ordering::AcqRel);
     let index = (seq & mask) as usize;
     unsafe {
-        colo_seq(local.cached_data_ptr, index).store(0, Ordering::Release);
         std::ptr::write(colo_data::<T>(local.cached_data_ptr, index), msg);
         colo_seq(local.cached_data_ptr, index).store(seq.wrapping_add(1), Ordering::Release);
     }
@@ -939,7 +912,7 @@ pub(super) fn recv_shm_mpsc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let ready_ok = unsafe {
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        spin_for_ready(ready_ptr, tail.wrapping_add(1))
+        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
         return None;
@@ -1043,7 +1016,7 @@ pub(super) fn recv_shm_mpmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
     let ready_ok = unsafe {
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
-        spin_for_ready(ready_ptr, tail.wrapping_add(1))
+        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
         return None;
@@ -1111,7 +1084,7 @@ pub(super) fn recv_shm_pod_broadcast<
         let ready_ptr =
             &*(local.cached_seq_ptr.add(index * 8) as *const std::sync::atomic::AtomicU64);
         let ready_val = ready_ptr.load(Ordering::Acquire);
-        ready_val != 0 && ready_val >= tail.wrapping_add(1)
+        ready_val >= tail.wrapping_add(1)
     };
     if !ready {
         return None;
@@ -1204,7 +1177,7 @@ pub(super) fn recv_shm_mpsc_serde<
     let ready_ok = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        spin_for_ready(ready_ptr, tail.wrapping_add(1))
+        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
         return None;
@@ -1315,7 +1288,7 @@ pub(super) fn recv_shm_mpmc_serde<
     let ready_ok = unsafe {
         let slot_ptr = local.cached_data_ptr.add(slot_offset);
         let ready_ptr = &*(slot_ptr as *const std::sync::atomic::AtomicU64);
-        spin_for_ready(ready_ptr, tail.wrapping_add(1))
+        ready_ptr.load(Ordering::Acquire) == tail.wrapping_add(1)
     };
     if !ready_ok {
         return None;
@@ -1444,7 +1417,7 @@ pub(super) fn recv_shm_mpsc_pod_colo<
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
     let ready_ok =
-        unsafe { spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1)) };
+        unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1) };
     if !ready_ok {
         return None;
     }
@@ -1535,7 +1508,7 @@ pub(super) fn recv_shm_mpmc_pod_colo<
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
     let ready_ok =
-        unsafe { spin_for_ready(colo_seq(local.cached_data_ptr, index), tail.wrapping_add(1)) };
+        unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1) };
     if !ready_ok {
         return None;
     }
@@ -1597,7 +1570,7 @@ pub(super) fn recv_shm_pod_broadcast_colo<
     let index = (tail & mask) as usize;
     let ready = unsafe {
         let seq_val = colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire);
-        seq_val != 0 && seq_val >= tail.wrapping_add(1)
+        seq_val >= tail.wrapping_add(1)
     };
     if !ready {
         return None;

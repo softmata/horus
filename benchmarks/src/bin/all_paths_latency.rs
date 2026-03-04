@@ -895,7 +895,7 @@ fn bench_spsc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let consumer: Topic<CmdVel> = Topic::new(&topic_name).unwrap();
     let _ = consumer.recv(); // Register as consumer
 
-    let child_count = WARMUP + ITERATIONS;
+    let child_count = PODSHM_MSGS_PER_PUB;
     // Paced publisher: prevents ring overflow that causes queuing delay.
     // Without pacing, producer outruns consumer → ring fills → measured latency
     // shows queuing delay (~3µs) instead of true wire latency (~300ns).
@@ -999,7 +999,7 @@ fn bench_spmc_shm(timer: &PrecisionTimer) -> ScenarioResult {
     let _ = consumer.recv(); // Register parent as consumer
 
     // Spawn child consumer first (registers as 2nd subscriber)
-    let child_count = WARMUP + ITERATIONS;
+    let child_count = PODSHM_MSGS_PER_PUB;
     let mut child_cons = spawn_consumer(&topic_name, child_count, CORE_CHILD_CONS);
     thread::sleep(Duration::from_millis(200));
 

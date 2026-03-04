@@ -165,9 +165,6 @@ pub use metrics::TopicMetrics;
 ///
 /// When a multi-producer path does `fetch_add` on head to claim a slot, there's a
 /// brief window before the ready flag is written. Consumers spin for up to this many
-/// iterations before returning None. On x86, each spin_loop() is a PAUSE (~10-20 cycles),
-/// so 256 * 20 = ~5120 cycles ≈ ~1.7µs worst case at 3GHz — well within try_recv bounds.
-const READY_FLAG_SPIN_LIMIT: u32 = 256;
 pub(crate) use migration::{BackendMigrator, MigrationResult};
 pub use types::TopicDescriptor;
 pub(crate) use types::{BackendMode, ConnectionState, TopicRole};
