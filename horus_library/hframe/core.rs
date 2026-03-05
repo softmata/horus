@@ -10,7 +10,7 @@ use std::sync::RwLock;
 use super::transform::Transform;
 
 use super::config::HFrameConfig;
-use super::slot::FrameSlot;
+use super::slot::{FrameSlot, TransformEntry};
 use horus_core::error::HorusError;
 use horus_core::HorusResult;
 
@@ -307,23 +307,47 @@ impl HFrameCore {
     /// with `Acquire` is guaranteed to observe the new transform value and
     /// will not serve a cached chain that pre-dates this write.
     #[inline]
-    pub fn update(&self, id: FrameId, transform: &Transform, timestamp_ns: u64) {
+    pub fn update(&self, id: FrameId, transform: &Transform, timestamp_ns: u64) -> HorusResult<()> {
         let idx = id as usize;
-        if idx < self.slots.len() {
-            self.slots[idx].update(transform, timestamp_ns);
-            // Increment AFTER the slot write so the Release fence publishes
-            // the transform to any thread that Acquires on global_generation.
-            self.global_generation.fetch_add(1, Ordering::Release);
+        if idx >= self.slots.len() {
+            return Err(HorusError::InvalidInput(format!(
+                "Frame ID {} out of range (max {})",
+                id,
+                self.slots.len()
+            )));
         }
+
+        // Validate and auto-normalize the transform
+        let validated = transform
+            .validated()
+            .map_err(|e| HorusError::InvalidInput(format!("Transform: {}", e)))?;
+
+        self.slots[idx].update(&validated, timestamp_ns);
+        // Increment AFTER the slot write so the Release fence publishes
+        // the transform to any thread that Acquires on global_generation.
+        self.global_generation.fetch_add(1, Ordering::Release);
+        Ok(())
     }
 
     /// Set a static transform (see `update` for ordering rationale).
-    pub fn set_static_transform(&self, id: FrameId, transform: &Transform) {
+    pub fn set_static_transform(&self, id: FrameId, transform: &Transform) -> HorusResult<()> {
         let idx = id as usize;
-        if idx < self.slots.len() {
-            self.slots[idx].set_static_transform(transform);
-            self.global_generation.fetch_add(1, Ordering::Release);
+        if idx >= self.slots.len() {
+            return Err(HorusError::InvalidInput(format!(
+                "Frame ID {} out of range (max {})",
+                id,
+                self.slots.len()
+            )));
         }
+
+        // Validate and auto-normalize the transform
+        let validated = transform
+            .validated()
+            .map_err(|e| HorusError::InvalidInput(format!("Transform: {}", e)))?;
+
+        self.slots[idx].set_static_transform(&validated);
+        self.global_generation.fetch_add(1, Ordering::Release);
+        Ok(())
     }
 
     // ========================================================================
@@ -354,6 +378,166 @@ impl HFrameCore {
 
         // Compose transforms with timestamp
         self.compose_chain(&chain, Some(timestamp_ns))
+    }
+
+    /// Resolve transform with strict time-range checking.
+    ///
+    /// Unlike `resolve_at()` which silently clamps to edge values when the
+    /// requested timestamp falls outside the buffer window, this method
+    /// returns `Err(Extrapolation)` if any frame in the chain would need
+    /// to extrapolate.
+    pub fn resolve_at_strict(
+        &self,
+        src: FrameId,
+        dst: FrameId,
+        timestamp_ns: u64,
+    ) -> HorusResult<Transform> {
+        if src == dst {
+            return Ok(Transform::identity());
+        }
+
+        // Get chain
+        let chain = self.get_or_compute_chain(src, dst).ok_or_else(|| {
+            HorusError::Communication(format!(
+                "No transform path between frame {} and frame {}",
+                src, dst
+            ))
+        })?;
+
+        // Check time range for each non-root frame in the chain
+        // (root frames don't store transforms, only their children do)
+        for &frame_id in &chain {
+            let idx = frame_id as usize;
+            if idx >= self.slots.len() {
+                continue;
+            }
+            let slot = &self.slots[idx];
+            if slot.is_static() {
+                continue; // Static frames are always in range
+            }
+            if let Some((oldest, newest)) = slot.time_range() {
+                if oldest == 0 && newest == 0 {
+                    continue; // No data yet — resolve_at will handle this
+                }
+                if timestamp_ns < oldest {
+                    return Err(HorusError::Extrapolation(format!(
+                        "Frame {}: requested {}ns, oldest buffered {}ns ({}ns into past)",
+                        frame_id,
+                        timestamp_ns,
+                        oldest,
+                        oldest - timestamp_ns
+                    )));
+                }
+                if timestamp_ns > newest {
+                    return Err(HorusError::Extrapolation(format!(
+                        "Frame {}: requested {}ns, newest buffered {}ns ({}ns into future)",
+                        frame_id,
+                        timestamp_ns,
+                        newest,
+                        timestamp_ns - newest
+                    )));
+                }
+            }
+        }
+
+        // All frames have the requested timestamp in range — resolve normally
+        self.compose_chain(&chain, Some(timestamp_ns))
+            .ok_or_else(|| {
+                HorusError::Communication(format!(
+                    "Failed to compose transform chain between frame {} and frame {}",
+                    src, dst
+                ))
+            })
+    }
+
+    /// Resolve transform with time tolerance checking.
+    ///
+    /// Like `resolve_at_strict()` but allows a tolerance window: if the
+    /// requested timestamp is within `tolerance_ns` of the buffer edges,
+    /// the query succeeds (using interpolation/clamping). If it's further
+    /// than `tolerance_ns` from the nearest entry, returns `Err(Extrapolation)`.
+    ///
+    /// `tolerance_ns = u64::MAX` behaves identically to `resolve_at()` (no limit).
+    pub fn resolve_at_with_tolerance(
+        &self,
+        src: FrameId,
+        dst: FrameId,
+        timestamp_ns: u64,
+        tolerance_ns: u64,
+    ) -> HorusResult<Transform> {
+        if src == dst {
+            return Ok(Transform::identity());
+        }
+
+        let chain = self.get_or_compute_chain(src, dst).ok_or_else(|| {
+            HorusError::Communication(format!(
+                "No transform path between frame {} and frame {}",
+                src, dst
+            ))
+        })?;
+
+        // Check time range + tolerance for each frame in the chain
+        if tolerance_ns < u64::MAX {
+            for &frame_id in &chain {
+                let idx = frame_id as usize;
+                if idx >= self.slots.len() {
+                    continue;
+                }
+                let slot = &self.slots[idx];
+                if slot.is_static() {
+                    continue;
+                }
+                if let Some((oldest, newest)) = slot.time_range() {
+                    if oldest == 0 && newest == 0 {
+                        continue;
+                    }
+                    if timestamp_ns < oldest && oldest.saturating_sub(timestamp_ns) > tolerance_ns {
+                        return Err(HorusError::Extrapolation(format!(
+                            "Frame {}: requested {}ns, oldest buffered {}ns, gap {}ns exceeds tolerance {}ns",
+                            frame_id, timestamp_ns, oldest,
+                            oldest - timestamp_ns, tolerance_ns
+                        )));
+                    }
+                    if timestamp_ns > newest && timestamp_ns.saturating_sub(newest) > tolerance_ns {
+                        return Err(HorusError::Extrapolation(format!(
+                            "Frame {}: requested {}ns, newest buffered {}ns, gap {}ns exceeds tolerance {}ns",
+                            frame_id, timestamp_ns, newest,
+                            timestamp_ns - newest, tolerance_ns
+                        )));
+                    }
+                }
+            }
+        }
+
+        self.compose_chain(&chain, Some(timestamp_ns))
+            .ok_or_else(|| {
+                HorusError::Communication(format!(
+                    "Failed to compose transform chain between frame {} and frame {}",
+                    src, dst
+                ))
+            })
+    }
+
+    /// Read the latest transform entry for a frame.
+    ///
+    /// Returns `None` if the frame has never been updated or the ID is invalid.
+    pub fn read_latest(&self, id: FrameId) -> Option<TransformEntry> {
+        let idx = id as usize;
+        if idx < self.slots.len() {
+            self.slots[idx].read_latest()
+        } else {
+            None
+        }
+    }
+
+    /// Get the time range of buffered transforms for a frame.
+    pub fn time_range(&self, id: FrameId) -> Option<(u64, u64)> {
+        let idx = id as usize;
+        if idx < self.slots.len() {
+            self.slots[idx].time_range()
+        } else {
+            None
+        }
     }
 
     /// Check if a transform path exists
@@ -401,6 +585,79 @@ impl HFrameCore {
         }
 
         Ok(())
+    }
+
+    // ========================================================================
+    // Diagnostics
+    // ========================================================================
+
+    /// Get the path from a frame to its root as a list of frame IDs.
+    ///
+    /// Returns `[start, parent, grandparent, ..., root]`.
+    /// Used for diagnostics — not on the hot path.
+    pub fn path_to_root_ids(&self, start: FrameId) -> Vec<FrameId> {
+        self.path_to_root(start)
+    }
+
+    /// Produce a detailed diagnostic message when chain resolution fails.
+    ///
+    /// This is called only on the error path (never on successful lookups),
+    /// so it is allowed to do more expensive work like walking both paths
+    /// to root and checking per-frame data availability.
+    pub fn diagnose_chain_failure(&self, src: FrameId, dst: FrameId) -> String {
+        let src_path = self.path_to_root(src);
+        let dst_path = self.path_to_root(dst);
+
+        // Check if either path is empty (frame allocated but no parent set)
+        if src_path.is_empty() {
+            return format!("Source frame {} is not initialized", src);
+        }
+        if dst_path.is_empty() {
+            return format!("Destination frame {} is not initialized", dst);
+        }
+
+        // Check for common ancestor
+        let src_root = *src_path.last().unwrap();
+        let dst_root = *dst_path.last().unwrap();
+
+        if src_root != dst_root {
+            return format!(
+                "Frames are in disconnected trees: frame {} has root {} (chain: {:?}), \
+                 frame {} has root {} (chain: {:?})",
+                src, src_root, src_path, dst, dst_root, dst_path
+            );
+        }
+
+        // They share a root but compute_chain returned None — shouldn't happen
+        // unless there's a concurrent modification. Report what we know.
+        let mut details = Vec::new();
+        for &fid in src_path.iter().chain(dst_path.iter()) {
+            let idx = fid as usize;
+            if idx >= self.slots.len() {
+                details.push(format!("  frame {}: slot out of range", fid));
+                continue;
+            }
+            let has_data = self.slots[idx].read_latest().is_some();
+            let is_static = self.slots[idx].is_static();
+            if !has_data && !is_static {
+                details.push(format!("  frame {}: no transform data published", fid));
+            }
+        }
+
+        if details.is_empty() {
+            format!(
+                "No transform path between frame {} and frame {} \
+                 (both share root {}, path may have been invalidated concurrently)",
+                src, dst, src_root
+            )
+        } else {
+            format!(
+                "No transform path between frame {} and frame {}:\n{}",
+                src,
+                dst,
+                details.join("\n")
+            )
+        }
     }
 
     // ========================================================================
@@ -580,8 +837,9 @@ impl HFrameCore {
             };
 
             if let Some(tf) = entry {
-                // Going down: need inverse (stored is parent->child, we want child->parent)
-                result = result.compose(&tf.inverse());
+                // Going down: need inverse (stored is child->parent, we want parent->child).
+                // The inverse must go on the OUTSIDE (applied last) — same pattern as UP.
+                result = tf.inverse().compose(&result);
             } else if !slot.is_static() {
                 return None;
             }

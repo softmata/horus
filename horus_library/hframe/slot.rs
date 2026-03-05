@@ -195,8 +195,11 @@ impl FrameSlot {
     /// Update the frame's transform (lock-free write)
     ///
     /// # Thread Safety
-    /// Multiple writers are safe but will serialize via version counter.
-    /// For best performance, have only one writer per frame.
+    /// Reads are lock-free and safe to call concurrently with a single writer.
+    /// **Requires: only one writer per frame at a time.** Concurrent writers on
+    /// the same frame will corrupt the seqlock (fetch_add makes one writer's
+    /// version even while it's still writing, causing readers to see torn data).
+    /// The HFrame API enforces this by design: each frame has one logical owner.
     pub fn update(&self, transform: &Transform, timestamp_ns: u64) {
         // Step 1: Mark write in progress (odd version, outer seqlock)
         let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;

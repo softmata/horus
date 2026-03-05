@@ -21,8 +21,10 @@ fn hframe_benchmark_lookup_by_id() {
     let camera = hf.register_frame("camera", Some("base_link")).unwrap();
 
     // Update transforms
-    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000);
-    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000);
+    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        .unwrap();
+    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
+        .unwrap();
 
     // Warm up
     for _ in 0..1000 {
@@ -104,13 +106,13 @@ fn hframe_benchmark_update() {
 
     // Warm up
     for i in 0..1000 {
-        hf.update_transform_by_id(base, &tf, i);
+        let _ = hf.update_transform_by_id(base, &tf, i);
     }
 
     // Benchmark
     let start = Instant::now();
     for i in 0..ITERATIONS {
-        hf.update_transform_by_id(base, &tf, i);
+        let _ = hf.update_transform_by_id(base, &tf, i);
     }
     let elapsed = start.elapsed();
 
@@ -203,8 +205,10 @@ fn hframe_benchmark_concurrent_reads() {
     let base = hf.register_frame("base_link", Some("world")).unwrap();
     let camera = hf.register_frame("camera", Some("base_link")).unwrap();
 
-    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000);
-    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000);
+    hf.update_transform_by_id(base, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+        .unwrap();
+    hf.update_transform_by_id(camera, &Transform::from_translation([0.0, 0.0, 0.5]), 1000)
+        .unwrap();
 
     let world = hf.frame_id("world").unwrap();
 

@@ -118,7 +118,11 @@ pub mod prelude {
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
     // === HFrame (coordinate transforms) ===
-    pub use horus_library::hframe::{timestamp_now, HFrame, Transform};
+    pub use horus_library::hframe::{
+        timestamp_now, FrameInfo, HFrame, HFrameConfig, HFrameStats, Transform,
+        TransformQuery, TransformQueryFrom,
+        FrameBuilder, StaticFrameBuilder, StaticFrameBuilderWithParent,
+    };
 
     // === Message types (all standard robotics messages) ===
     pub use horus_core::types::{

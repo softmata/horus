@@ -74,6 +74,29 @@ pub enum HorusError {
     #[error("Out of range: {0}")]
     OutOfRange(String),
 
+    /// Transform query fell outside the buffered time range.
+    ///
+    /// Returned by `HFrame::tf_at_strict()` when the requested timestamp is
+    /// outside the frame's ring buffer window. The standard `tf_at()` silently
+    /// clamps to the nearest edge value (matching TF2's `canTransform` pattern);
+    /// use `tf_at_strict()` when extrapolation must be an error.
+    ///
+    /// The string describes the direction and gap:
+    /// `"Frame 'lidar': requested 1000ns, oldest buffered 5000ns (4000ns into past)"`
+    #[error("Extrapolation: {0}")]
+    Extrapolation(String),
+
+    /// Transform data is stale (last update exceeded the acceptable age).
+    ///
+    /// Returned by staleness-checking APIs when a frame's most recent
+    /// transform update is older than a caller-specified threshold.
+    /// This typically indicates a sensor driver has stopped publishing.
+    ///
+    /// The string describes the frame and age:
+    /// `"Frame 'imu': last update 2.5s ago, threshold 0.5s"`
+    #[error("Stale: {0}")]
+    Stale(String),
+
     /// Operation timed out waiting for a resource.
     ///
     /// Returned by [`TensorPool::alloc_with_timeout`] when no free slot becomes
@@ -388,6 +411,29 @@ mod tests {
         let err = HorusError::Parse("Expected float, got 'abc'".to_string());
         let msg = format!("{}", err);
         assert!(msg.contains("Parse error"), "Display: {}", msg);
+    }
+
+    /// Extrapolation variant for HFrame time-range violations.
+    #[test]
+    fn variant_extrapolation() {
+        let err = HorusError::Extrapolation(
+            "Frame 'lidar': requested 1000ns, oldest buffered 5000ns (4000ns into past)"
+                .to_string(),
+        );
+        let msg = format!("{}", err);
+        assert!(msg.contains("Extrapolation"), "Display: {}", msg);
+        assert!(msg.contains("lidar"), "Should contain frame name: {}", msg);
+    }
+
+    /// Stale variant for expired transform data.
+    #[test]
+    fn variant_stale() {
+        let err =
+            HorusError::Stale("Frame 'imu': last update 2.5s ago, threshold 0.5s".to_string());
+        let msg = format!("{}", err);
+        assert!(msg.contains("Stale"), "Display: {}", msg);
+        assert!(msg.contains("imu"), "Should contain frame name: {}", msg);
+        assert!(msg.contains("2.5s"), "Should contain age: {}", msg);
     }
 
     /// Unsupported variant.

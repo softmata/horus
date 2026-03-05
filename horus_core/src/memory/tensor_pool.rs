@@ -223,23 +223,28 @@ impl TensorPool {
 
         let mmap_size = data_offset + config.pool_size;
 
-        // Try to open existing or create new
-        let (file, is_owner) = if shm_path.exists() {
-            let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
-            let actual_size = file.metadata()?.len();
-            if actual_size < mmap_size as u64 {
+        // Atomically try to be the creator: `create_new` maps to O_CREAT|O_EXCL,
+        // guaranteeing exactly one winner even when many threads/processes race.
+        // The previous path.exists() + create(true) pattern had a TOCTOU window.
+        let (file, is_owner) = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&shm_path)
+        {
+            Ok(file) => {
                 file.set_len(mmap_size as u64)?;
+                (file, true)
             }
-            (file, false)
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&shm_path)?;
-            file.set_len(mmap_size as u64)?;
-            (file, true)
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
+                let actual_size = file.metadata()?.len();
+                if actual_size < mmap_size as u64 {
+                    file.set_len(mmap_size as u64)?;
+                }
+                (file, false)
+            }
+            Err(e) => return Err(e.into()),
         };
 
         // SAFETY: file is a valid open file descriptor with sufficient size for the mapping.
@@ -518,7 +523,9 @@ impl TensorPool {
 
     /// Increment reference count for a tensor.
     ///
-    /// Silently ignores mismatched pool IDs or stale generation counters.
+    /// Silently ignores mismatched pool IDs, stale generation counters, or
+    /// slots that were freed between the generation check and the refcount
+    /// increment (TOCTOU prevention via CAS loop that rejects refcount 0).
     /// Use [`try_retain`] to get an explicit error on mismatch.
     #[inline]
     pub fn retain(&self, tensor: &Tensor) {
@@ -533,7 +540,22 @@ impl TensorPool {
             return;
         }
 
-        slot.refcount.fetch_add(1, Ordering::AcqRel);
+        // CAS loop: atomically increment refcount only if it's > 0.
+        // If refcount is 0, the slot was freed between our generation check
+        // and now — silently bail out instead of leaking the new allocation.
+        loop {
+            let current = slot.refcount.load(Ordering::Acquire);
+            if current == 0 {
+                return; // Slot was freed — stale descriptor
+            }
+            if slot
+                .refcount
+                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
     }
 
     /// Increment reference count, returning an error on pool-ID or generation mismatch.
@@ -558,8 +580,25 @@ impl TensorPool {
                 slot_gen
             )));
         }
-        slot.refcount.fetch_add(1, Ordering::AcqRel);
-        Ok(())
+        // CAS loop: atomically increment refcount only if it's > 0.
+        // If refcount is 0, the slot was freed between our generation check
+        // and now (TOCTOU race).
+        loop {
+            let current = slot.refcount.load(Ordering::Acquire);
+            if current == 0 {
+                return Err(HorusError::Memory(format!(
+                    "Slot freed during retain: generation matched but refcount dropped to 0 \
+                     (concurrent release between generation check and refcount increment)"
+                )));
+            }
+            if slot
+                .refcount
+                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
     }
 
     /// Decrement reference count for a tensor.

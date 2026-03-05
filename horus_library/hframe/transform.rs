@@ -85,6 +85,101 @@ impl Transform {
         }
     }
 
+    // ========================================================================
+    // Short Constructors
+    // ========================================================================
+
+    /// Create a translation-only transform from x, y, z components.
+    ///
+    /// Equivalent to `Transform::from_translation([x, y, z])`.
+    #[inline]
+    pub fn xyz(x: f64, y: f64, z: f64) -> Self {
+        Self::from_translation([x, y, z])
+    }
+
+    /// Create a translation-only transform along the X axis.
+    #[inline]
+    pub fn x(x: f64) -> Self {
+        Self::from_translation([x, 0.0, 0.0])
+    }
+
+    /// Create a translation-only transform along the Y axis.
+    #[inline]
+    pub fn y(y: f64) -> Self {
+        Self::from_translation([0.0, y, 0.0])
+    }
+
+    /// Create a translation-only transform along the Z axis.
+    #[inline]
+    pub fn z(z: f64) -> Self {
+        Self::from_translation([0.0, 0.0, z])
+    }
+
+    /// Create a rotation-only transform around the Z axis (yaw).
+    ///
+    /// Angle in radians.
+    #[inline]
+    pub fn yaw(angle: f64) -> Self {
+        Self::from_euler([0.0, 0.0, 0.0], [0.0, 0.0, angle])
+    }
+
+    /// Create a rotation-only transform around the Y axis (pitch).
+    ///
+    /// Angle in radians.
+    #[inline]
+    pub fn pitch(angle: f64) -> Self {
+        Self::from_euler([0.0, 0.0, 0.0], [0.0, angle, 0.0])
+    }
+
+    /// Create a rotation-only transform around the X axis (roll).
+    ///
+    /// Angle in radians.
+    #[inline]
+    pub fn roll(angle: f64) -> Self {
+        Self::from_euler([0.0, 0.0, 0.0], [angle, 0.0, 0.0])
+    }
+
+    /// Create a rotation-only transform from roll, pitch, yaw angles.
+    ///
+    /// Angles in radians. Convention: roll=X, pitch=Y, yaw=Z.
+    #[inline]
+    pub fn rpy(roll: f64, pitch: f64, yaw: f64) -> Self {
+        Self::from_euler([0.0, 0.0, 0.0], [roll, pitch, yaw])
+    }
+
+    // ========================================================================
+    // Chainable Rotation Modifiers
+    // ========================================================================
+
+    /// Compose a yaw (Z-axis) rotation onto this transform.
+    ///
+    /// Returns a new transform with the translation preserved and the
+    /// rotation composed: `self.rotation * yaw_rotation`.
+    #[inline]
+    pub fn with_yaw(self, angle: f64) -> Self {
+        self.compose(&Self::yaw(angle))
+    }
+
+    /// Compose a pitch (Y-axis) rotation onto this transform.
+    #[inline]
+    pub fn with_pitch(self, angle: f64) -> Self {
+        self.compose(&Self::pitch(angle))
+    }
+
+    /// Compose a roll (X-axis) rotation onto this transform.
+    #[inline]
+    pub fn with_roll(self, angle: f64) -> Self {
+        self.compose(&Self::roll(angle))
+    }
+
+    /// Compose an RPY rotation onto this transform.
+    ///
+    /// Equivalent to `self.compose(Transform::rpy(roll, pitch, yaw))`.
+    #[inline]
+    pub fn with_rpy(self, roll: f64, pitch: f64, yaw: f64) -> Self {
+        self.compose(&Self::rpy(roll, pitch, yaw))
+    }
+
     /// Normalize the rotation quaternion
     fn normalize_rotation(&mut self) {
         let norm = (self.rotation[0].powi(2)
@@ -224,6 +319,81 @@ impl Transform {
             translation,
             rotation,
         }
+    }
+
+    /// Validate that this transform contains no NaN/Inf values and has a
+    /// valid rotation quaternion.
+    ///
+    /// Returns `Ok(())` if valid, or `Err(HorusError::InvalidInput)` describing
+    /// the problem. Called automatically by `HFrame::update_transform*` methods.
+    ///
+    /// # Validation rules
+    /// 1. Translation must be finite (no NaN, no Inf)
+    /// 2. Rotation must be finite (no NaN, no Inf)
+    /// 3. Rotation must not be the zero quaternion `[0,0,0,0]`
+    /// 4. Rotation norm must be in `[0.5, 2.0]` — near-unit quaternions are
+    ///    auto-normalized, far-from-unit ones are rejected
+    pub fn validate(&self) -> Result<(), String> {
+        // Check translation for NaN/Inf
+        for (i, &v) in self.translation.iter().enumerate() {
+            if !v.is_finite() {
+                let axis = ["x", "y", "z"][i];
+                return Err(format!("translation.{} is {} (must be finite)", axis, v));
+            }
+        }
+
+        // Check rotation for NaN/Inf
+        for (i, &v) in self.rotation.iter().enumerate() {
+            if !v.is_finite() {
+                let comp = ["x", "y", "z", "w"][i];
+                return Err(format!("rotation.{} is {} (must be finite)", comp, v));
+            }
+        }
+
+        // Check for zero quaternion
+        let norm_sq = self.rotation[0].powi(2)
+            + self.rotation[1].powi(2)
+            + self.rotation[2].powi(2)
+            + self.rotation[3].powi(2);
+
+        if norm_sq < 1e-20 {
+            return Err("rotation is zero quaternion [0,0,0,0]".to_string());
+        }
+
+        // Check quaternion norm range
+        let norm = norm_sq.sqrt();
+        if !(0.5..=2.0).contains(&norm) {
+            return Err(format!(
+                "rotation quaternion norm {} is outside valid range [0.5, 2.0]",
+                norm
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate and auto-normalize the rotation quaternion.
+    ///
+    /// Returns the validated (and possibly normalized) transform, or an error.
+    /// Near-unit quaternions (norm in `[0.5, 2.0]`) are normalized to unit length.
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.validate()?;
+
+        // Auto-normalize quaternion to unit length
+        let norm = (self.rotation[0].powi(2)
+            + self.rotation[1].powi(2)
+            + self.rotation[2].powi(2)
+            + self.rotation[3].powi(2))
+        .sqrt();
+
+        if (norm - 1.0).abs() > 1e-10 {
+            self.rotation[0] /= norm;
+            self.rotation[1] /= norm;
+            self.rotation[2] /= norm;
+            self.rotation[3] /= norm;
+        }
+
+        Ok(self)
     }
 
     /// Check if transform is approximately identity
@@ -612,5 +782,248 @@ mod tests {
                 t
             );
         }
+    }
+
+    // =====================================================================
+    // Input Validation Tests
+    // =====================================================================
+
+    #[test]
+    fn test_validate_identity_ok() {
+        assert!(Transform::identity().validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_normal_transform_ok() {
+        let tf = Transform::from_euler([1.0, 2.0, 3.0], [0.1, 0.2, 0.3]);
+        assert!(tf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_nan_translation_x() {
+        let tf = Transform {
+            translation: [f64::NAN, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("translation.x"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_nan_translation_y() {
+        let tf = Transform {
+            translation: [0.0, f64::NAN, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("translation.y"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_nan_translation_z() {
+        let tf = Transform {
+            translation: [0.0, 0.0, f64::NAN],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("translation.z"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_inf_translation() {
+        let tf = Transform {
+            translation: [f64::INFINITY, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("translation.x"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_neg_inf_translation() {
+        let tf = Transform {
+            translation: [0.0, f64::NEG_INFINITY, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("translation.y"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_nan_rotation() {
+        let tf = Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [f64::NAN, 0.0, 0.0, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("rotation.x"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_inf_rotation() {
+        let tf = Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, f64::INFINITY, 1.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("rotation.z"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_zero_quaternion() {
+        let tf = Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 0.0],
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("zero quaternion"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_far_from_unit_quaternion() {
+        let tf = Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 5.0], // norm = 5.0, way out of range
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("outside valid range"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validate_tiny_quaternion() {
+        let tf = Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 0.1], // norm = 0.1, below 0.5
+        };
+        let err = tf.validate().unwrap_err();
+        assert!(err.contains("outside valid range"), "Error: {}", err);
+    }
+
+    #[test]
+    fn test_validated_auto_normalizes() {
+        // Quaternion with norm ~1.5 (within [0.5, 2.0])
+        let tf = Transform {
+            translation: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0, 1.5],
+        };
+        let result = tf.validated().unwrap();
+        // Should be normalized to unit length
+        let norm = (result.rotation[0].powi(2)
+            + result.rotation[1].powi(2)
+            + result.rotation[2].powi(2)
+            + result.rotation[3].powi(2))
+        .sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-10,
+            "Expected unit quaternion, got norm={}",
+            norm
+        );
+        // Translation should be unchanged
+        assert_eq!(result.translation, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_validated_already_unit_unchanged() {
+        let tf = Transform::identity();
+        let result = tf.validated().unwrap();
+        assert_eq!(result.rotation, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_validated_rejects_nan() {
+        let tf = Transform {
+            translation: [f64::NAN, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        assert!(tf.validated().is_err());
+    }
+
+    // =====================================================================
+    // Short Constructor Tests
+    // =====================================================================
+
+    #[test]
+    fn test_xyz_equivalence() {
+        let a = Transform::xyz(1.0, 2.0, 3.0);
+        let b = Transform::from_translation([1.0, 2.0, 3.0]);
+        assert_eq!(a.translation, b.translation);
+        assert_eq!(a.rotation, b.rotation);
+    }
+
+    #[test]
+    fn test_x_y_z_shortcuts() {
+        let tx = Transform::x(5.0);
+        assert_eq!(tx.translation, [5.0, 0.0, 0.0]);
+
+        let ty = Transform::y(3.0);
+        assert_eq!(ty.translation, [0.0, 3.0, 0.0]);
+
+        let tz = Transform::z(1.5);
+        assert_eq!(tz.translation, [0.0, 0.0, 1.5]);
+    }
+
+    #[test]
+    fn test_yaw_rotation() {
+        let tf = Transform::yaw(std::f64::consts::FRAC_PI_2); // 90° around Z
+        assert_eq!(tf.translation, [0.0, 0.0, 0.0]);
+
+        // Rotating [1,0,0] by 90° yaw → [0,1,0]
+        let pt = tf.transform_point([1.0, 0.0, 0.0]);
+        assert!((pt[0]).abs() < 1e-10);
+        assert!((pt[1] - 1.0).abs() < 1e-10);
+        assert!((pt[2]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_pitch_rotation() {
+        let tf = Transform::pitch(std::f64::consts::FRAC_PI_2); // 90° around Y
+                                                                // Rotating [1,0,0] by 90° pitch → [0,0,-1]
+        let pt = tf.transform_point([1.0, 0.0, 0.0]);
+        assert!((pt[0]).abs() < 1e-10);
+        assert!((pt[1]).abs() < 1e-10);
+        assert!((pt[2] + 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_roll_rotation() {
+        let tf = Transform::roll(std::f64::consts::FRAC_PI_2); // 90° around X
+                                                               // Rotating [0,1,0] by 90° roll → [0,0,1]
+        let pt = tf.transform_point([0.0, 1.0, 0.0]);
+        assert!((pt[0]).abs() < 1e-10);
+        assert!((pt[1]).abs() < 1e-10);
+        assert!((pt[2] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_rpy_equivalence() {
+        let a = Transform::rpy(0.1, 0.2, 0.3);
+        let b = Transform::from_euler([0.0, 0.0, 0.0], [0.1, 0.2, 0.3]);
+        for i in 0..4 {
+            assert!((a.rotation[i] - b.rotation[i]).abs() < 1e-15);
+        }
+    }
+
+    #[test]
+    fn test_with_yaw_composition() {
+        let tf = Transform::xyz(1.0, 0.0, 0.0).with_yaw(std::f64::consts::FRAC_PI_2);
+
+        // Translation should be preserved (1,0,0)
+        assert!((tf.translation[0] - 1.0).abs() < 1e-10);
+
+        // Rotating [1,0,0] by the composed rotation (90° yaw) → [0,1,0]
+        let pt = tf.transform_point([0.0, 0.0, 0.0]);
+        assert!((pt[0] - 1.0).abs() < 1e-10); // Only translation applies to origin
+    }
+
+    #[test]
+    fn test_with_rpy() {
+        let tf = Transform::x(2.0).with_rpy(0.0, 0.0, std::f64::consts::PI);
+
+        // Translation is 2.0 in X
+        assert!((tf.translation[0] - 2.0).abs() < 1e-10);
+
+        // 180° yaw on [1,0,0] → [-1,0,0]
+        let v = tf.transform_vector([1.0, 0.0, 0.0]);
+        assert!((v[0] + 1.0).abs() < 1e-10);
     }
 }

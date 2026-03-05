@@ -57,7 +57,7 @@ use std::time::Duration;
 
 struct PyNodeAdapter {
     py_object: Py<PyAny>,
-    leaked_name: &'static str,
+    node_name: String,
     node_context: Arc<Mutex<CoreNodeInfo>>,
     cached_info: Option<Py<PyNodeInfo>>,
     stop_requested: Arc<AtomicBool>,
@@ -69,7 +69,7 @@ struct PyNodeAdapter {
 
 impl CoreNode for PyNodeAdapter {
     fn name(&self) -> &str {
-        self.leaked_name
+        &self.node_name
     }
 
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
@@ -81,7 +81,7 @@ impl CoreNode for PyNodeAdapter {
                     scheduler_running: Some(self.scheduler_running.clone()),
                 },
             )
-            .map_err(|e| HorusError::node(self.leaked_name, e.to_string()))?;
+            .map_err(|e| HorusError::node(&self.node_name, e.to_string()))?;
 
             self.cached_info = Some(py_info.clone_ref(py));
 
@@ -98,7 +98,7 @@ impl CoreNode for PyNodeAdapter {
                         Ok(())
                     } else {
                         Err(HorusError::node(
-                            self.leaked_name,
+                            &self.node_name,
                             format!("init failed: {}", e),
                         ))
                     }
@@ -163,7 +163,7 @@ impl CoreNode for PyNodeAdapter {
                         self.scheduler_running.store(false, Ordering::SeqCst);
                     } else {
                         // Panic for horus_core's catch_unwind / failure policy
-                        panic!("Python node '{}' tick failed: {}", self.leaked_name, e);
+                        panic!("Python node '{}' tick failed: {}", &self.node_name, e);
                     }
                 }
             }
@@ -182,7 +182,7 @@ impl CoreNode for PyNodeAdapter {
                         scheduler_running: Some(self.scheduler_running.clone()),
                     },
                 )
-                .map_err(|e| HorusError::node(self.leaked_name, e.to_string()))?
+                .map_err(|e| HorusError::node(&self.node_name, e.to_string()))?
             };
 
             let result = self
@@ -198,7 +198,7 @@ impl CoreNode for PyNodeAdapter {
                         Ok(())
                     } else {
                         Err(HorusError::node(
-                            self.leaked_name,
+                            &self.node_name,
                             format!("shutdown failed: {}", e),
                         ))
                     }
@@ -386,11 +386,9 @@ impl PyScheduler {
                 .ok()
         });
 
-        let leaked_name: &'static str = Box::leak(name.clone().into_boxed_str());
-
         let adapter = PyNodeAdapter {
             py_object: node,
-            leaked_name,
+            node_name: name.clone(),
             node_context: Arc::new(Mutex::new(CoreNodeInfo::new(name.clone()))),
             cached_info: None,
             stop_requested: self.stop_requested.clone(),

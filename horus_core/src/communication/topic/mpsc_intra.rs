@@ -79,14 +79,19 @@ impl<T> MpscRing<T> {
 
     /// Read the most recent message without advancing the consumer.
     ///
-    /// Returns a clone of the latest value. Returns `None` if the ring is empty,
+    /// Returns a copy of the latest value. Returns `None` if the ring is empty,
     /// nothing was ever published, or the latest slot's write isn't yet complete.
     ///
-    /// Uses `Clone` instead of moving to avoid double-free: the slot remains
-    /// valid for `try_recv` to consume later.
+    /// # Safety invariant: requires `T: Copy`
+    ///
+    /// Between the sequence check and the data read, the single consumer thread
+    /// could call `try_recv()` which moves the value out via `assume_init_read()`
+    /// and marks the slot for reuse. For types with heap allocations (String, Vec),
+    /// this would be use-after-free. `T: Copy` guarantees no heap pointers — the
+    /// bytes in the slot are always safe to read even after logical consumption.
     pub(crate) fn read_latest(&self) -> Option<T>
     where
-        T: Clone,
+        T: Copy,
     {
         let head = self.head.0.load(Ordering::Acquire);
         let tail = self.tail.0.load(Ordering::Acquire);
@@ -100,9 +105,10 @@ impl<T> MpscRing<T> {
         let seq = slot.sequence.load(Ordering::Acquire);
         // Slot is readable when sequence == prev + 1 (write completed)
         if seq == prev.wrapping_add(1) {
-            // SAFETY: producer finished writing (sequence confirms).
-            // We clone instead of moving to preserve the slot for try_recv.
-            let msg = unsafe { (*slot.data.get()).assume_init_ref().clone() };
+            // SAFETY: T is Copy (no heap pointers, no Drop). Even if the consumer
+            // has consumed this slot via try_recv, the bytes remain valid because
+            // Copy types have no destructor that frees memory.
+            let msg = unsafe { (*slot.data.get()).assume_init_read() };
             Some(msg)
         } else {
             None

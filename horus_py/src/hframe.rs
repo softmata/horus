@@ -390,16 +390,19 @@ impl PyHFrame {
     }
 
     /// Update a frame's transform by ID (faster)
+    ///
+    /// Raises ValueError if the transform contains NaN/Inf or an invalid quaternion.
     #[pyo3(signature = (frame_id, transform, timestamp_ns=None))]
     fn update_transform_by_id(
         &self,
         frame_id: u32,
         transform: &PyTransform,
         timestamp_ns: Option<u64>,
-    ) {
+    ) -> PyResult<()> {
         let ts = timestamp_ns.unwrap_or_else(timestamp_now);
         self.inner
-            .update_transform_by_id(frame_id, &transform.inner, ts);
+            .update_transform_by_id(frame_id, &transform.inner, ts)
+            .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Get transform from src frame to dst frame
