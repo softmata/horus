@@ -187,7 +187,7 @@ class device:
     Example:
         # Context manager for default device
         with device("cuda:0"):
-            t = Tensor([1, 2, 3])  # Created on GPU
+            model = Model.load("model.onnx")
 
         # Check availability
         if device.cuda_available():

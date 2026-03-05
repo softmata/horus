@@ -219,7 +219,10 @@ impl ComputeExecutor {
             let elapsed = loop_start.elapsed();
             if elapsed > tick_period {
                 if !shedding_active {
-                    let shed_count = nodes.iter().filter(|n| n.priority >= SHED_THRESHOLD).count();
+                    let shed_count = nodes
+                        .iter()
+                        .filter(|n| n.priority >= SHED_THRESHOLD)
+                        .count();
                     if shed_count > 0 {
                         print_line(&format!(
                             "[Compute] Overload detected (cycle took {:?} > {:?}), shedding {} background nodes (order >= {})",

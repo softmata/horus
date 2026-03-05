@@ -1,29 +1,25 @@
 """
 HORUS AI - Machine Learning Integration for Robotics
 
-Provides a clean, Pythonic API for ML model loading, tensor operations,
-and framework interop (PyTorch, JAX, TensorFlow, ONNX).
+Provides a clean, Pythonic API for ML model loading, inference,
+and preprocessing (PyTorch, TensorFlow, ONNX).
 
 Example:
-    from horus.ai import Tensor, Model, device
+    from horus.ai import Model, device
+    import numpy as np
 
     # Load model
     model = Model.load("yolov8n.onnx", device="cuda:0")
 
-    # Run inference
-    output = model(input_tensor)
-
-    # Framework interop (zero-copy)
-    torch_tensor = tensor.torch()
-    np_array = tensor.numpy()
+    # Run inference (returns np.ndarray)
+    output = model(np.zeros((1, 3, 640, 640), dtype=np.float32))
 
     # Preprocessing pipelines
     from horus.ai import transforms
     preprocess = transforms.imagenet_preprocess()
-    tensor = preprocess(image)
+    processed = preprocess(image)
 """
 
-from .tensor import Tensor
 from .device import device, Device, get_default_device, set_default_device
 from .model import Model
 from .registry import ModelRegistry, ModelEntry
@@ -42,7 +38,6 @@ except ImportError:
 
 __all__ = [
     # Core classes
-    "Tensor",
     "Model",
     "ModelRegistry",
     "ModelEntry",

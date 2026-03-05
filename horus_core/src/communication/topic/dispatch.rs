@@ -984,6 +984,7 @@ pub(super) fn recv_shm_spmc_pod<T: Clone + Send + Sync + Serialize + Deserialize
         }
         std::hint::spin_loop();
     }
+    housekeep_epoch!(local, topic);
     None
 }
 
@@ -1251,6 +1252,7 @@ pub(super) fn recv_shm_spmc_serde<
         housekeep_lease!(local, topic);
         return Some(msg);
     }
+    housekeep_epoch!(local, topic);
     None
 }
 
@@ -1416,8 +1418,9 @@ pub(super) fn recv_shm_mpsc_pod_colo<
     let index = (tail & mask) as usize;
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
-    let ready_ok =
-        unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1) };
+    let ready_ok = unsafe {
+        colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1)
+    };
     if !ready_ok {
         return None;
     }
@@ -1476,6 +1479,7 @@ pub(super) fn recv_shm_spmc_pod_colo<
         }
         std::hint::spin_loop();
     }
+    housekeep_epoch!(local, topic);
     None
 }
 
@@ -1507,9 +1511,11 @@ pub(super) fn recv_shm_mpmc_pod_colo<
     let index = (tail & mask) as usize;
     // SAFETY: colo_seq returns a reference to the inline AtomicU64 at the start
     // of the co-located 64-byte slot. index < capacity is guaranteed by mask.
-    let ready_ok =
-        unsafe { colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1) };
+    let ready_ok = unsafe {
+        colo_seq(local.cached_data_ptr, index).load(Ordering::Acquire) >= tail.wrapping_add(1)
+    };
     if !ready_ok {
+        housekeep_epoch!(local, topic);
         return None;
     }
 
@@ -1529,6 +1535,7 @@ pub(super) fn recv_shm_mpmc_pod_colo<
         housekeep_lease!(local, topic);
         return Some(msg);
     }
+    housekeep_epoch!(local, topic);
     None
 }
 

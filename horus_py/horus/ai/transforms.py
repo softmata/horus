@@ -7,13 +7,38 @@ Provides composable transforms for ML preprocessing pipelines.
 from typing import Optional, Union, Tuple, List, Callable, Any
 import numpy as np
 
-from .tensor import Tensor
+# Dtype mapping for string -> numpy dtype conversion
+DTYPE_MAP = {
+    "float32": np.float32,
+    "float64": np.float64,
+    "float16": np.float16,
+    "int8": np.int8,
+    "int16": np.int16,
+    "int32": np.int32,
+    "int64": np.int64,
+    "uint8": np.uint8,
+    "uint16": np.uint16,
+    "uint32": np.uint32,
+    "uint64": np.uint64,
+    "bool": np.bool_,
+    "f32": np.float32,
+    "f64": np.float64,
+    "f16": np.float16,
+    "i8": np.int8,
+    "i16": np.int16,
+    "i32": np.int32,
+    "i64": np.int64,
+    "u8": np.uint8,
+    "u16": np.uint16,
+    "u32": np.uint32,
+    "u64": np.uint64,
+}
 
 
 class Transform:
     """Base class for transforms."""
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
+    def __call__(self, data: np.ndarray) -> np.ndarray:
         """Apply transform to data."""
         raise NotImplementedError
 
@@ -37,7 +62,7 @@ class Compose(Transform):
     def __init__(self, transforms: List[Transform]):
         self.transforms = transforms
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
+    def __call__(self, data: np.ndarray) -> np.ndarray:
         for t in self.transforms:
             data = t(data)
         return data
@@ -49,20 +74,19 @@ class Compose(Transform):
 
 class ToTensor(Transform):
     """
-    Convert numpy array to Tensor.
+    Convert data to numpy array with specified dtype.
 
     Example:
         to_tensor = ToTensor()
-        tensor = to_tensor(np_array)
+        array = to_tensor(data)
     """
 
     def __init__(self, dtype: str = "float32"):
         self.dtype = dtype
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            return data
-        return Tensor(data, dtype=self.dtype)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        np_dtype = DTYPE_MAP.get(self.dtype, np.float32)
+        return np.asarray(data, dtype=np_dtype)
 
     def __repr__(self) -> str:
         return f"ToTensor(dtype='{self.dtype}')"
@@ -92,11 +116,8 @@ class Resize(Transform):
         self.keep_aspect = keep_aspect
         self.interpolation = interpolation
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        arr = data
 
         # Try using cv2 for resize
         try:
@@ -160,7 +181,7 @@ class Resize(Transform):
                 x_indices = (np.arange(self.width) * w / self.width).astype(int)
                 result = arr[y_indices[:, None], x_indices]
 
-        return Tensor.from_numpy(result)
+        return result
 
     def __repr__(self) -> str:
         return f"Resize({self.width}, {self.height}, keep_aspect={self.keep_aspect})"
@@ -192,14 +213,8 @@ class Normalize(Transform):
         self.std = np.array(std) if std else None
         self.scale = scale
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        # Convert to float for normalization
-        arr = arr.astype(np.float32)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        arr = data.astype(np.float32)
 
         # Scale first
         if self.scale != 1.0:
@@ -211,7 +226,7 @@ class Normalize(Transform):
         if self.std is not None:
             arr = arr / self.std
 
-        return Tensor.from_numpy(arr)
+        return arr
 
     def __repr__(self) -> str:
         if self.mean is not None:
@@ -232,19 +247,12 @@ class CenterCrop(Transform):
         self.width = width
         self.height = height
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        h, w = arr.shape[:2]
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        h, w = data.shape[:2]
         y_start = max(0, (h - self.height) // 2)
         x_start = max(0, (w - self.width) // 2)
 
-        cropped = arr[y_start:y_start + self.height, x_start:x_start + self.width]
-
-        return Tensor.from_numpy(cropped)
+        return data[y_start:y_start + self.height, x_start:x_start + self.width]
 
     def __repr__(self) -> str:
         return f"CenterCrop({self.width}, {self.height})"
@@ -271,13 +279,8 @@ class Pad(Transform):
         self.fill = fill
         self.mode = mode
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        h, w = arr.shape[:2]
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        h, w = data.shape[:2]
 
         # Calculate padding
         pad_h = max(0, self.height - h)
@@ -289,36 +292,36 @@ class Pad(Transform):
         pad_right = pad_w - pad_left
 
         # Pad
-        if arr.ndim == 3:
+        if data.ndim == 3:
             if self.mode == "constant":
                 padded = np.pad(
-                    arr,
+                    data,
                     ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                     mode="constant",
                     constant_values=self.fill if isinstance(self.fill, int) else 0,
                 )
             else:
                 padded = np.pad(
-                    arr,
+                    data,
                     ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)),
                     mode=self.mode,
                 )
         else:
             if self.mode == "constant":
                 padded = np.pad(
-                    arr,
+                    data,
                     ((pad_top, pad_bottom), (pad_left, pad_right)),
                     mode="constant",
                     constant_values=self.fill if isinstance(self.fill, int) else 0,
                 )
             else:
                 padded = np.pad(
-                    arr,
+                    data,
                     ((pad_top, pad_bottom), (pad_left, pad_right)),
                     mode=self.mode,
                 )
 
-        return Tensor.from_numpy(padded)
+        return padded
 
     def __repr__(self) -> str:
         return f"Pad({self.width}, {self.height}, fill={self.fill})"
@@ -333,16 +336,10 @@ class HWC2CHW(Transform):
         chw_tensor = convert(hwc_image)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        if arr.ndim == 3:
-            arr = arr.transpose(2, 0, 1)
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        if data.ndim == 3:
+            return data.transpose(2, 0, 1)
+        return data
 
     def __repr__(self) -> str:
         return "HWC2CHW()"
@@ -357,16 +354,10 @@ class CHW2HWC(Transform):
         hwc_tensor = convert(chw_image)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        if arr.ndim == 3:
-            arr = arr.transpose(1, 2, 0)
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        if data.ndim == 3:
+            return data.transpose(1, 2, 0)
+        return data
 
     def __repr__(self) -> str:
         return "CHW2HWC()"
@@ -381,16 +372,10 @@ class BGR2RGB(Transform):
         rgb = convert(bgr_image)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            arr = arr[..., ::-1].copy()
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        if data.ndim == 3 and data.shape[2] == 3:
+            return data[..., ::-1].copy()
+        return data
 
     def __repr__(self) -> str:
         return "BGR2RGB()"
@@ -405,16 +390,10 @@ class RGB2BGR(Transform):
         bgr = convert(rgb_image)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            arr = arr[..., ::-1].copy()
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        if data.ndim == 3 and data.shape[2] == 3:
+            return data[..., ::-1].copy()
+        return data
 
     def __repr__(self) -> str:
         return "RGB2BGR()"
@@ -429,15 +408,8 @@ class AddBatch(Transform):
         batched = add_batch(image)  # (H, W, C) -> (1, H, W, C)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        arr = np.expand_dims(arr, axis=0)
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        return np.expand_dims(data, axis=0)
 
     def __repr__(self) -> str:
         return "AddBatch()"
@@ -452,16 +424,10 @@ class RemoveBatch(Transform):
         unbatched = remove_batch(batched)  # (1, H, W, C) -> (H, W, C)
     """
 
-    def __call__(self, data: Union[Tensor, np.ndarray]) -> Tensor:
-        if isinstance(data, Tensor):
-            arr = data.numpy()
-        else:
-            arr = data
-
-        if arr.ndim > 0 and arr.shape[0] == 1:
-            arr = np.squeeze(arr, axis=0)
-
-        return Tensor.from_numpy(arr)
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        if data.ndim > 0 and data.shape[0] == 1:
+            return np.squeeze(data, axis=0)
+        return data
 
     def __repr__(self) -> str:
         return "RemoveBatch()"

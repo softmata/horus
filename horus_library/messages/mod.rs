@@ -79,7 +79,7 @@ pub use geometry::{
 // Sensor
 pub use sensor::{
     BatteryState, FluidPressure, Illuminance, Imu, JointState, LaserScan, MagneticField, NavSatFix,
-    Odometry, Range, Temperature,
+    Odometry, RangeSensor, Temperature,
 };
 
 // Clock & Time
@@ -93,15 +93,15 @@ pub use control::{
 
 // Diagnostics
 pub use diagnostics::{
-    DiagnosticReport, DiagnosticValue, EmergencyStop, HealthStatus, Heartbeat, NodeHeartbeat,
-    NodeState, ResourceUsage, SafetyStatus, Status, StatusLevel,
+    DiagnosticReport, DiagnosticStatus, DiagnosticValue, EmergencyStop, Heartbeat, NodeHeartbeat,
+    NodeStateMsg, ResourceUsage, SafetyStatus, StatusLevel,
 };
 
 // Vision
 pub use vision::{CameraInfo, CompressedImage, RegionOfInterest};
 
 // Navigation
-pub use navigation::{CostMap, Goal, OccupancyGrid, Path, PathPlan};
+pub use navigation::{CostMap, NavGoal, NavPath, OccupancyGrid, PathPlan};
 
 // Force
 pub use force::{ForceCommand, ImpedanceParameters, TactileArray, WrenchStamped};
@@ -113,8 +113,7 @@ pub use perception::PlaneDetection;
 pub use detection::{BoundingBox2D, BoundingBox3D, Detection, Detection3D};
 pub use landmark::{Landmark, Landmark3D, LandmarkArray};
 pub use segmentation::SegmentationMask;
-#[allow(deprecated)]
-pub use tracking::{TrackedObject, TrackingBBox, TrackingHeader};
+pub use tracking::{TrackedObject, TrackingHeader};
 
 // ML types (serde-based)
 pub use ml::{

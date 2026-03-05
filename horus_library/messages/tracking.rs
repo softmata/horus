@@ -7,13 +7,6 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::messages::detection::BoundingBox2D;
 
-/// Deprecated: Use [`BoundingBox2D`] instead. This type alias exists for backward compatibility.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use BoundingBox2D from detection module instead"
-)]
-pub type TrackingBBox = BoundingBox2D;
-
 /// Tracked object state
 ///
 /// Combines detection with tracking information like ID, velocity, and age.

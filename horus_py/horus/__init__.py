@@ -2,14 +2,30 @@
 HORUS Python - Simple, Intuitive Robotics Framework
 
 A user-friendly Python API for the HORUS robotics framework.
+
+Quick start::
+
+    import horus
+
+    # Create an image backed by shared memory
+    img = horus.Image(480, 640, "rgb8")
+
+    # Send over a topic (zero-copy)
+    topic = horus.Topic("camera/rgb")
+    topic.send(img)
+
+    # Receive (in another process)
+    received = topic.recv()
+    arr = received.to_numpy()   # zero-copy NumPy array
+
+Domain types: ``Image``, ``PointCloud``, ``DepthImage``
+Communication: ``Topic``, ``Node``, ``Scheduler``
 """
 
 # Extend namespace package path to include horus.library
 __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 from typing import Optional, Any, Dict, List, Callable, Union
-import pickle
-import json
 from collections import defaultdict
 import time
 
@@ -22,10 +38,6 @@ try:
         PyNode as _PyNode,
         PyNodeInfo as _NodeInfo,
         Topic,  # Unified communication API
-        RouterClient,  # Explicit router connection management
-        RouterServer,  # Router server management
-        default_router_endpoint,  # Helper: "topic@router"
-        router_endpoint,  # Helper: "topic@host:port"
         PyScheduler as _PyScheduler,
         PyNodeState as NodeState,
         PySchedulerConfig as _SchedulerConfig,
@@ -50,10 +62,6 @@ except ImportError:
     _PyNode = None
     _NodeInfo = None
     Topic = None  # Unified communication API
-    RouterClient = None  # Router client management
-    RouterServer = None  # Router server management
-    default_router_endpoint = lambda t: f"{t}@router"
-    router_endpoint = lambda t, h="127.0.0.1", p=7777: f"{t}@{h}:{p}"
     _PyScheduler = None
 
     # Mock NodeState for testing
@@ -61,7 +69,6 @@ except ImportError:
         UNINITIALIZED = "uninitialized"
         INITIALIZING = "initializing"
         RUNNING = "running"
-        PAUSED = "paused"
         STOPPING = "stopping"
         STOPPED = "stopped"
         ERROR = "error"
@@ -486,30 +493,8 @@ class Node:
             import time
             start_ns = time.perf_counter_ns()
 
-            # Serialize based on type
-            if isinstance(data, bytes):
-                result = hub.send_bytes(data, self)
-            elif isinstance(data, str):
-                result = hub.send_bytes(data.encode('utf-8'), self)
-            elif isinstance(data, (dict, list, tuple, int, float, bool, type(None))):
-                # Only use metadata for generic hubs
-                if hub.is_generic():
-                    json_bytes = json.dumps(data).encode('utf-8')
-                    result = hub.send_with_metadata(json_bytes, "json", self)
-                else:
-                    # Typed hubs - use send() directly with the Python object
-                    result = hub.send(data, self)
-            elif hasattr(data, '__array_interface__') or type(data).__name__ == 'ndarray':
-                # Zero-copy path for numpy arrays
-                result = hub.send_numpy(data, self)
-            else:
-                # Only use metadata for generic hubs
-                if hub.is_generic():
-                    pickled = pickle.dumps(data)
-                    result = hub.send_with_metadata(pickled, "pickle", self)
-                else:
-                    # Typed hubs - use send() directly with the Python object
-                    result = hub.send(data, self)
+            # PyTopic.send() handles all serialization internally in Rust
+            result = hub.send(data, self)
 
             end_ns = time.perf_counter_ns()
             ipc_ns = end_ns - start_ns
@@ -559,48 +544,22 @@ class Node:
                 # Measure IPC timing
                 start_ns = time.perf_counter_ns()
 
-                # Use metadata method only for generic hubs
-                if hub.is_generic():
-                    result = hub.recv_with_metadata(self)
-                    end_ns = time.perf_counter_ns()
+                # PyTopic.recv() handles all deserialization internally in Rust
+                msg = hub.recv(self)
+                end_ns = time.perf_counter_ns()
 
-                    if result is None:
-                        break
+                if msg is None:
+                    break
 
-                    ipc_ns = end_ns - start_ns
-                    data_bytes, msg_type, timestamp = result  # Phase 2: Now includes timestamp
-
-                    # Deserialize
-                    if msg_type == "json":
-                        msg = json.loads(data_bytes.decode('utf-8'))
-                    elif msg_type == "pickle":
-                        msg = pickle.loads(data_bytes)
-                    elif msg_type == "numpy":
-                        # Keep as raw bytes for numpy arrays
-                        msg = data_bytes
-                    else:
-                        try:
-                            msg = data_bytes.decode('utf-8')
-                        except:
-                            msg = data_bytes
-                else:
-                    # Typed hub - use regular recv()
-                    msg = hub.recv(self)
-                    end_ns = time.perf_counter_ns()
-
-                    if msg is None:
-                        break
-
-                    ipc_ns = end_ns - start_ns
-                    # Typed hubs don't have metadata timestamps, use current time
-                    timestamp = time.time()
+                ipc_ns = end_ns - start_ns
+                timestamp = time.time()
 
                 # Log the subscribe operation if NodeInfo available
                 if self.info:
                     data_repr = _truncate_for_logging(msg)
                     self.info.log_sub(topic, data_repr, ipc_ns)
 
-                # Phase 2: Store message with timestamp
+                # Store message with timestamp
                 self._msg_queues[topic].append(msg)
                 self._msg_timestamps[topic].append(timestamp)
 
@@ -737,10 +696,6 @@ class Scheduler:
     """
     Scheduler for running HORUS nodes.
 
-    Example (presets):
-        scheduler = Scheduler.deploy()
-        scheduler = Scheduler.safety_critical()
-
     Example (kwargs):
         scheduler = Scheduler(tick_rate=500.0, circuit_breaker=True, rt=True)
 
@@ -802,41 +757,6 @@ class Scheduler:
         else:
             self._scheduler = None
         self._nodes = []
-
-    @staticmethod
-    def deploy() -> 'Scheduler':
-        """Create a production deployment scheduler."""
-        if _PyScheduler:
-            return Scheduler(_inner=_PyScheduler.deploy())
-        return Scheduler()
-
-    @staticmethod
-    def safety_critical() -> 'Scheduler':
-        """Create a safety-critical scheduler."""
-        if _PyScheduler:
-            return Scheduler(_inner=_PyScheduler.safety_critical())
-        return Scheduler()
-
-    @staticmethod
-    def high_performance() -> 'Scheduler':
-        """Create a high-performance scheduler."""
-        if _PyScheduler:
-            return Scheduler(_inner=_PyScheduler.high_performance())
-        return Scheduler()
-
-    @staticmethod
-    def deterministic() -> 'Scheduler':
-        """Create a deterministic scheduler."""
-        if _PyScheduler:
-            return Scheduler(_inner=_PyScheduler.deterministic())
-        return Scheduler()
-
-    @staticmethod
-    def hard_realtime() -> 'Scheduler':
-        """Create a hard real-time scheduler."""
-        if _PyScheduler:
-            return Scheduler(_inner=_PyScheduler.hard_realtime())
-        return Scheduler()
 
     def add(self, node: 'Node', order: int = 100, rate_hz: Optional[float] = None,
             rt: bool = False, deadline_ms: Optional[float] = None,
@@ -1393,17 +1313,7 @@ __all__ = [
     "Scheduler",
     "NodeState",
     "Topic",  # Unified communication API
-    "RouterClient",  # Explicit router connection management
-    "RouterServer",  # Router server management
-    "default_router_endpoint",  # Helper: "topic@router"
-    "router_endpoint",  # Helper: "topic@host:port"
     "run",
-    # Typed message classes (zero-copy IPC)
-    "CmdVel",
-    "Pose2D",
-    "Imu",
-    "Odometry",
-    "LaserScan",
     # Custom message generation
     "msggen",  # horus.msggen module for custom typed messages
     # AI/ML submodule
@@ -1433,16 +1343,18 @@ __all__ = [
     "calculate_iou",
 ]
 
-# Override with Rust native message classes (zero-copy IPC) when available
-try:
-    CmdVel = _RustCmdVel
-    Pose2D = _RustPose2D
-    Imu = _RustImu
-    Odometry = _RustOdometry
-    LaserScan = _RustLaserScan
-except NameError:
-    # Rust bindings not available, library fallback already assigned above
-    pass
+# Use Rust native message classes for zero-copy IPC only if the Python library
+# didn't already provide them (Python library classes have richer features)
+if not _has_messages:
+    try:
+        CmdVel = _RustCmdVel
+        Pose2D = _RustPose2D
+        Imu = _RustImu
+        Odometry = _RustOdometry
+        LaserScan = _RustLaserScan
+        _has_messages = True
+    except NameError:
+        pass
 
 # Import simple async API
 from .async_node import AsyncNode, AsyncTopic, sleep, gather, wait_for

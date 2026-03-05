@@ -246,14 +246,14 @@ pub use node_builder::{NodeBuilder, NodeRegistration};
 #[doc(hidden)]
 pub use record_replay::{
     diff_recordings, Breakpoint, BreakpointCondition, DebugEvent, DebugSessionState, DebuggerState,
-    NodeRecording, NodeReplayer, Recording, RecordingDiff, RecordingManager, ReplayDebugger,
-    SchedulerRecording, WatchExpression, WatchType, WatchValue,
+    NodeRecording, NodeReplayer, NodeTickSnapshot, Recording, RecordingConfig, RecordingDiff,
+    RecordingManager, ReplayDebugger, SchedulerRecording, WatchExpression, WatchType, WatchValue,
 };
 #[doc(hidden)]
 pub use safety_monitor::{SafetyState, SafetyStats};
 #[doc(hidden)]
 pub use scheduler::RtFeatureDegradation;
 #[doc(hidden)]
-pub use types::NodeTier;
-#[doc(hidden)]
 pub use types::ExecutionClass;
+#[doc(hidden)]
+pub use types::NodeTier;

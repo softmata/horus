@@ -38,8 +38,6 @@ toml = "0.8"
 toml_edit = "0.22"
 reqwest = { version = "0.11", features = ["json", "multipart", "blocking"] }
 tempfile = "3.8"
-eframe = "0.24"
-egui = "0.24"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 walkdir = "2.3"
 sha2 = "0.10"

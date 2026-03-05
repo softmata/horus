@@ -1,19 +1,14 @@
 // Type-based Topic implementation for Python bindings
 //
-// Topic is the unified API replacing Hub and Link:
+// Topic is the unified API:
 //   from horus import Topic, CmdVel, Pose2D
 //   topic = Topic(CmdVel)  # Type determines everything
 //
 // Network support:
 //   topic = Topic(CmdVel, endpoint="cmdvel@192.168.1.5:9000")  # Direct UDP
 //   topic = Topic(CmdVel, endpoint="cmdvel@localhost")         # Unix socket
-//   topic = Topic(CmdVel, endpoint="cmdvel@router")            # Via router
-//   topic = Topic(CmdVel, endpoint="cmdvel@*")                 # Multicast
 //
-// Backend hints for fine-grained control:
-//   topic = Topic(CmdVel, backend="direct")    # DirectChannel (~3ns)
-//   topic = Topic(CmdVel, backend="spsc")      # SPSC intra-process (~18ns)
-//   topic = Topic(CmdVel, backend="mpmc_shm")  # MPMC shared memory (~167ns)
+// Note: Backend is auto-selected. The `backend` parameter is accepted but ignored.
 
 use horus::communication::Topic;
 use horus_core::memory::{DepthImage, Image, PointCloud};
@@ -33,7 +28,7 @@ use crate::image::PyImage;
 use crate::pointcloud::PyPointCloud;
 
 /// Log a failed Python node callback at debug level instead of silently dropping it.
-/// Used for non-critical observability calls (register_publisher/subscriber, log_pub/sub)
+/// Used for non-critical observability calls (log_pub/sub)
 /// that must never crash the data path.
 #[inline]
 fn log_py_callback(result: PyResult<Py<PyAny>>, method: &str, topic: &str) {
@@ -423,11 +418,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "CmdVel")),
-                                "register_publisher",
-                                &self.name,
-                            );
                             use horus::core::LogSummary;
                             log_py_callback(
                                 info.call_method1(
@@ -456,11 +446,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "Pose2D")),
-                                "register_publisher",
-                                &self.name,
-                            );
                             use horus::core::LogSummary;
                             log_py_callback(
                                 info.call_method1(
@@ -489,11 +474,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "Imu")),
-                                "register_publisher",
-                                &self.name,
-                            );
                             use horus::core::LogSummary;
                             log_py_callback(
                                 info.call_method1(
@@ -522,15 +502,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(
-                                    py,
-                                    "register_publisher",
-                                    (&self.name, "Odometry"),
-                                ),
-                                "register_publisher",
-                                &self.name,
-                            );
                             use horus::core::LogSummary;
                             log_py_callback(
                                 info.call_method1(
@@ -563,15 +534,6 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(
-                                    py,
-                                    "register_publisher",
-                                    (&self.name, "LaserScan"),
-                                ),
-                                "register_publisher",
-                                &self.name,
-                            );
-                            log_py_callback(
                                 info.call_method1(py, "log_pub", (&self.name, log_summary, ipc_ns)),
                                 "log_pub",
                                 &self.name,
@@ -595,11 +557,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(py, "register_publisher", (&self.name, "Image")),
-                                "register_publisher",
-                                &self.name,
-                            );
                             log_py_callback(
                                 info.call_method1(
                                     py,
@@ -635,15 +592,6 @@ impl PyTopic {
                             log_py_callback(
                                 info.call_method1(
                                     py,
-                                    "register_publisher",
-                                    (&self.name, "PointCloud"),
-                                ),
-                                "register_publisher",
-                                &self.name,
-                            );
-                            log_py_callback(
-                                info.call_method1(
-                                    py,
                                     "log_pub",
                                     (
                                         &self.name,
@@ -673,15 +621,6 @@ impl PyTopic {
                     let ipc_ns = start.elapsed().as_nanos() as u64;
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
-                            log_py_callback(
-                                info.call_method1(
-                                    py,
-                                    "register_publisher",
-                                    (&self.name, "DepthImage"),
-                                ),
-                                "register_publisher",
-                                &self.name,
-                            );
                             log_py_callback(
                                 info.call_method1(
                                     py,
@@ -734,15 +673,6 @@ impl PyTopic {
                     if let Ok(info) = node_obj.getattr(py, "info") {
                         if !info.is_none(py) {
                             log_py_callback(
-                                info.call_method1(
-                                    py,
-                                    "register_publisher",
-                                    (&self.name, "GenericMessage"),
-                                ),
-                                "register_publisher",
-                                &self.name,
-                            );
-                            log_py_callback(
                                 info.call_method1(py, "log_pub", (&self.name, log_summary, ipc_ns)),
                                 "log_pub",
                                 &self.name,
@@ -785,15 +715,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "CmdVel"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 log_py_callback(
                                     info.call_method1(
@@ -823,15 +744,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "Pose2D"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 log_py_callback(
                                     info.call_method1(
@@ -861,15 +773,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "Imu"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 log_py_callback(
                                     info.call_method1(
@@ -899,15 +802,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "Odometry"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 log_py_callback(
                                     info.call_method1(
@@ -937,15 +831,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "LaserScan"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 log_py_callback(
                                     info.call_method1(
@@ -975,15 +860,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "Image"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 log_py_callback(
                                     info.call_method1(
                                         py,
@@ -1020,15 +896,6 @@ impl PyTopic {
                                 log_py_callback(
                                     info.call_method1(
                                         py,
-                                        "register_subscriber",
-                                        (&self.name, "PointCloud"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
                                         "log_sub",
                                         (
                                             &self.name,
@@ -1059,15 +926,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "DepthImage"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 log_py_callback(
                                     info.call_method1(
                                         py,
@@ -1106,15 +964,6 @@ impl PyTopic {
                     if let Some(node_obj) = &node {
                         if let Ok(info) = node_obj.getattr(py, "info") {
                             if !info.is_none(py) {
-                                log_py_callback(
-                                    info.call_method1(
-                                        py,
-                                        "register_subscriber",
-                                        (&self.name, "GenericMessage"),
-                                    ),
-                                    "register_subscriber",
-                                    &self.name,
-                                );
                                 use horus::core::LogSummary;
                                 let log_msg = msg.log_summary();
                                 log_py_callback(

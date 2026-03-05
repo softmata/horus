@@ -143,15 +143,12 @@ impl RecordingConfigYaml {
     }
 }
 
-/// Scheduler configuration — plain data bag.
-///
-/// Use `SchedulerConfig::minimal()` as a starting point, then mutate fields directly:
+/// Internal scheduler configuration — use `Scheduler::new()` with builder methods instead.
 ///
 /// ```rust,ignore
-/// let mut config = SchedulerConfig::minimal();
-/// config.timing.global_rate_hz = 500.0;
-/// config.realtime.wcet_enforcement = true;
-/// let mut scheduler = Scheduler::from_config(config);
+/// let scheduler = Scheduler::new()
+///     .tick_hz(500.0)
+///     .safety_monitor(true);
 /// ```
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {

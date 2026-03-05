@@ -8,7 +8,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
-use horus_core::scheduling::{Scheduler, SchedulerConfig};
+use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -139,10 +139,7 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
             let compute_a = HeavyComputeNode::new("bench_compute_a", 5000); // 5ms work
             let compute_b = HeavyComputeNode::new("bench_compute_b", 5000);
 
-            let mut config = SchedulerConfig::default();
-            config.timing.global_rate_hz = 500.0;
-
-            let mut scheduler = Scheduler::from_config(config);
+            let mut scheduler = Scheduler::new().tick_hz(500.0);
             scheduler.add(rt_node).order(0).rt().rate_hz(500.0).done();
             scheduler.add(compute_a).order(10).compute().done();
             scheduler.add(compute_b).order(11).compute().done();
@@ -166,10 +163,7 @@ fn bench_new_api_rt_under_compute_load(c: &mut Criterion) {
 
             let (rt_node, _count, timestamps) = JitterMeasureNode::new("bench_rt_solo");
 
-            let mut config = SchedulerConfig::default();
-            config.timing.global_rate_hz = 500.0;
-
-            let mut scheduler = Scheduler::from_config(config);
+            let mut scheduler = Scheduler::new().tick_hz(500.0);
             scheduler.add(rt_node).order(0).rt().rate_hz(500.0).done();
 
             scheduler.run_for(Duration::from_millis(200)).unwrap();
@@ -199,10 +193,7 @@ fn bench_jitter_report(c: &mut Criterion) {
             let (rt_node, rt_count, rt_timestamps) = JitterMeasureNode::new("proof_rt");
             let slow = HeavyComputeNode::new("proof_slow", 50_000); // 50ms blocking work
 
-            let mut config = SchedulerConfig::default();
-            config.timing.global_rate_hz = 500.0;
-
-            let mut scheduler = Scheduler::from_config(config);
+            let mut scheduler = Scheduler::new().tick_hz(500.0);
             scheduler.add(rt_node).order(0).rt().rate_hz(500.0).done();
             scheduler.add(slow).order(10).compute().rate_hz(10.0).done();
 

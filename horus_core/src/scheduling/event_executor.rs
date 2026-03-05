@@ -337,7 +337,11 @@ mod tests {
     #[test]
     fn test_event_executor_ticks_on_notification() {
         let count = Arc::new(AtomicU64::new(0));
-        let nodes = vec![make_event_node("evt_node_notify", "test_topic", count.clone())];
+        let nodes = vec![make_event_node(
+            "evt_node_notify",
+            "test_topic",
+            count.clone(),
+        )];
         let running = Arc::new(AtomicBool::new(true));
 
         let executor = EventExecutor::start(nodes, running.clone(), test_monitors());
@@ -352,7 +356,10 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(registered, "Event node notifier should be registered within 250ms");
+        assert!(
+            registered,
+            "Event node notifier should be registered within 250ms"
+        );
 
         // Wait for the watcher to process the notification we just sent
         std::thread::sleep(Duration::from_millis(50));

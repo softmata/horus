@@ -103,7 +103,7 @@ pub enum StatusLevel {
 /// General-purpose status reporting for any component.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
-pub struct Status {
+pub struct DiagnosticStatus {
     /// Severity level
     pub level: u8,
     /// Error/status code (component-specific)
@@ -117,7 +117,7 @@ pub struct Status {
     pub timestamp_ns: u64,
 }
 
-impl Default for Status {
+impl Default for DiagnosticStatus {
     fn default() -> Self {
         Self {
             level: StatusLevel::Ok as u8,
@@ -129,7 +129,7 @@ impl Default for Status {
     }
 }
 
-impl Status {
+impl DiagnosticStatus {
     /// Create a new status message
     pub fn new(level: StatusLevel, code: u32, message: &str) -> Self {
         let mut status = Self {
@@ -480,7 +480,7 @@ impl DiagnosticReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, LogSummary)]
 #[repr(u8)]
 #[derive(Default)]
-pub enum NodeState {
+pub enum NodeStateMsg {
     /// Node created but not started
     #[default]
     Idle = 0,
@@ -496,7 +496,7 @@ pub enum NodeState {
     Error = 5,
 }
 
-impl NodeState {
+impl NodeStateMsg {
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -510,8 +510,7 @@ impl NodeState {
     }
 }
 
-/// Node health status — re-exported from horus_core (canonical definition).
-pub use horus_core::core::HealthStatus;
+// HealthStatus is defined in horus_core::core — import it directly from there.
 
 /// Node status heartbeat written to the filesystem for external monitoring.
 ///
@@ -545,8 +544,8 @@ pub struct NodeHeartbeat {
 impl Default for NodeHeartbeat {
     fn default() -> Self {
         Self {
-            state: NodeState::Idle as u8,
-            health: HealthStatus::Unknown as u8,
+            state: NodeStateMsg::Idle as u8,
+            health: horus_core::core::HealthStatus::Unknown as u8,
             tick_count: 0,
             target_rate_hz: 0,
             actual_rate_hz: 0,
@@ -559,7 +558,7 @@ impl Default for NodeHeartbeat {
 
 impl NodeHeartbeat {
     /// Create a new heartbeat
-    pub fn new(state: NodeState, health: HealthStatus) -> Self {
+    pub fn new(state: NodeStateMsg, health: horus_core::core::HealthStatus) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -675,7 +674,7 @@ impl SafetyStatus {
 
 crate::messages::impl_pod_message!(
     Heartbeat,
-    Status,
+    DiagnosticStatus,
     EmergencyStop,
     ResourceUsage,
     DiagnosticValue,

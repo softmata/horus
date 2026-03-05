@@ -115,10 +115,6 @@ class TestNodeState:
         from horus._horus import PyNodeState as NodeState
         assert NodeState.RUNNING == "running"
 
-    def test_paused(self):
-        from horus._horus import PyNodeState as NodeState
-        assert NodeState.PAUSED == "paused"
-
     def test_stopping(self):
         from horus._horus import PyNodeState as NodeState
         assert NodeState.STOPPING == "stopping"
@@ -385,25 +381,6 @@ class TestSchedulerConfig:
         config.wcet_enforcement = True
         assert config.tick_rate == 500.0
         assert config.wcet_enforcement is True
-
-
-class TestSchedulerPresets:
-    """Test Scheduler preset constructors."""
-
-    def test_deploy_preset(self):
-        from horus._horus import PyScheduler
-        scheduler = PyScheduler.deploy()
-        assert scheduler is not None
-
-    def test_safety_critical_preset(self):
-        from horus._horus import PyScheduler
-        scheduler = PyScheduler.safety_critical()
-        assert scheduler is not None
-
-    def test_high_performance_preset(self):
-        from horus._horus import PyScheduler
-        scheduler = PyScheduler.high_performance()
-        assert scheduler is not None
 
 
 # ============================================================================

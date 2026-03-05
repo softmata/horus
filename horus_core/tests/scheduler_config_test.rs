@@ -2,32 +2,7 @@
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
-use horus_core::scheduling::{Scheduler, SchedulerConfig};
-
-/// Verify SchedulerConfig::minimal() produces the exact expected field values.
-#[test]
-fn test_minimal_config_field_values() {
-    let m = SchedulerConfig::minimal();
-    assert_eq!(m.timing.global_rate_hz, 60.0);
-    assert!(!m.circuit_breaker);
-    assert!(!m.realtime.wcet_enforcement);
-    assert!(!m.realtime.deadline_monitoring);
-    assert!(!m.realtime.watchdog_enabled);
-    assert_eq!(m.realtime.watchdog_timeout_ms, 1000);
-    assert!(!m.realtime.safety_monitor);
-    assert_eq!(m.realtime.max_deadline_misses, 100);
-    assert!(!m.realtime.memory_locking);
-    assert!(!m.realtime.rt_scheduling_class);
-    assert!(m.resources.cpu_cores.is_none());
-    assert!(!m.resources.numa_aware);
-    assert!(!m.monitoring.profiling_enabled);
-    assert_eq!(m.monitoring.metrics_interval_ms, 1000);
-    assert!(!m.monitoring.black_box_enabled);
-    assert_eq!(m.monitoring.black_box_size_mb, 0);
-    assert!(m.monitoring.telemetry_endpoint.is_none());
-    assert!(m.recording.is_none());
-    assert!(m.deterministic.is_none());
-}
+use horus_core::scheduling::Scheduler;
 
 mod common;
 use common::cleanup_stale_shm;
@@ -134,14 +109,8 @@ fn test_space_robot_config() {
 #[test]
 fn test_custom_exotic_robot_config() {
     cleanup_stale_shm();
-    // Create custom configuration by mutating a preset's fields directly
-    let mut config = SchedulerConfig::minimal();
-    config.timing.global_rate_hz = 500.0;
-    config.realtime.wcet_enforcement = true;
-    config.realtime.safety_monitor = true;
-
-    let mut scheduler = Scheduler::new();
-    scheduler.apply_config(config);
+    // Create custom configuration using builder methods
+    let mut scheduler = Scheduler::new().tick_hz(500.0).safety_monitor(true);
 
     scheduler.add(TestNode::new("bio_sensor")).order(0).done();
     scheduler

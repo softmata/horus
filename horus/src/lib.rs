@@ -21,6 +21,28 @@
 //! }
 //! ```
 //!
+//! ## Camera Image Example
+//!
+//! Send and receive images with zero-copy shared memory:
+//!
+//! ```rust,no_run
+//! use horus::prelude::*;
+//!
+//! // Create a 480x640 RGB image (backed by shared memory)
+//! let mut img = Image::new(480, 640, ImageEncoding::Rgb8).unwrap();
+//! img.fill(&[0, 0, 255]);           // Blue
+//! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
+//!
+//! // Send — only the 168-byte descriptor goes through the ring buffer
+//! let topic: Topic<Image> = Topic::new("camera/rgb").unwrap();
+//! topic.send(&img);
+//!
+//! // Receive (in another node or process)
+//! if let Some(received) = topic.recv() {
+//!     let px = received.pixel(100, 200); // Zero-copy read
+//! }
+//! ```
+//!
 //! ## Usage
 //!
 //! Import everything you need from the prelude:
@@ -30,7 +52,8 @@
 //! ```
 //!
 //! The prelude provides all user-facing types: nodes, topics, schedulers,
-//! message types, actions, transforms, memory types, and macros.
+//! message types, actions, transforms, and domain types (`Image`,
+//! `PointCloud`, `DepthImage`).
 
 // === Internal plumbing (hidden from docs, used by horus_py / macro-generated code / horus_manager) ===
 #[doc(hidden)]
@@ -80,7 +103,7 @@ pub use serde;
 /// macros, and message definitions are included.
 pub mod prelude {
     // === Node ===
-    pub use horus_core::core::{LogSummary, Node, NodeState};
+    pub use horus_core::core::{LogSummary, Node};
 
     // === Rate / Stopwatch ===
     pub use horus_core::core::timer::{Rate, Stopwatch};
@@ -92,7 +115,7 @@ pub mod prelude {
     pub use horus_core::scheduling::Scheduler;
 
     // === Memory (domain types) ===
-    pub use horus_core::memory::{DepthImage, Image, PointCloud, TensorHandle, TensorPool};
+    pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
     // === HFrame (coordinate transforms) ===
     pub use horus_library::hframe::{timestamp_now, HFrame, Transform};

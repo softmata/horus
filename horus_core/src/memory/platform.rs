@@ -375,11 +375,9 @@ pub fn cleanup_stale_namespaces() -> NamespaceCleanupResult {
                 result.bytes_freed += size;
             }
             Err(e) => {
-                result.errors.push(format!(
-                    "Failed to remove {}: {}",
-                    dir_path.display(),
-                    e
-                ));
+                result
+                    .errors
+                    .push(format!("Failed to remove {}: {}", dir_path.display(), e));
             }
         }
     }
@@ -671,10 +669,7 @@ mod tests {
             parse_namespace_pgid("horus_pgid12345_uid1000"),
             Some((12345, 1000))
         );
-        assert_eq!(
-            parse_namespace_pgid("horus_pgid1_uid0"),
-            Some((1, 0))
-        );
+        assert_eq!(parse_namespace_pgid("horus_pgid1_uid0"), Some((1, 0)));
         assert_eq!(
             parse_namespace_pgid("horus_pgid999999999_uid65534"),
             Some((999999999, 65534))

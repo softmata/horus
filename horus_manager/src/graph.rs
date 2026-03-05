@@ -1,4 +1,42 @@
-use eframe::egui::{Pos2, Vec2};
+/// 2D point (replaces egui::Pos2 — avoids pulling in heavy GUI crates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pos2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Pos2 {
+    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
+
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
+
+impl std::ops::Add<Vec2> for Pos2 {
+    type Output = Pos2;
+    fn add(self, rhs: Vec2) -> Pos2 {
+        Pos2 {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
+/// 2D vector (replaces egui::Vec2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vec2 {
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Vec2 {
+    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
+
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+}
 
 // Graph node representation (nodes only, no topics)
 #[derive(Debug, Clone)]

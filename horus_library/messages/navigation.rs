@@ -11,7 +11,7 @@ use serde_arrays;
 /// Navigation goal specification
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
-pub struct Goal {
+pub struct NavGoal {
     /// Target pose to reach
     pub target_pose: Pose2D,
     /// Position tolerance in meters
@@ -28,7 +28,7 @@ pub struct Goal {
     pub timestamp_ns: u64,
 }
 
-impl Goal {
+impl NavGoal {
     /// Create a new navigation goal
     pub fn new(target_pose: Pose2D, position_tolerance: f64, angle_tolerance: f64) -> Self {
         Self {
@@ -202,7 +202,7 @@ impl Waypoint {
 /// Navigation path message
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, LogSummary)]
-pub struct Path {
+pub struct NavPath {
     /// Array of waypoints (max 256)
     #[serde(with = "serde_arrays")]
     pub waypoints: [Waypoint; 256],
@@ -220,7 +220,7 @@ pub struct Path {
     pub timestamp_ns: u64,
 }
 
-impl Default for Path {
+impl Default for NavPath {
     fn default() -> Self {
         Self {
             waypoints: [Waypoint::default(); 256],
@@ -234,7 +234,7 @@ impl Default for Path {
     }
 }
 
-impl Path {
+impl NavPath {
     /// Create a new empty path
     pub fn new() -> Self {
         Self {
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn test_goal_creation() {
         let target = Pose2D::new(5.0, 3.0, 1.57);
-        let goal = Goal::new(target, 0.1, 0.1);
+        let goal = NavGoal::new(target, 0.1, 0.1);
 
         assert_eq!(goal.target_pose.x, 5.0);
         assert_eq!(goal.tolerance_position, 0.1);
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn test_goal_reached() {
         let target = Pose2D::new(5.0, 3.0, 0.0);
-        let goal = Goal::new(target, 0.2, 0.1);
+        let goal = NavGoal::new(target, 0.2, 0.1);
 
         let close_pose = Pose2D::new(5.1, 3.05, 0.05);
         assert!(goal.is_reached(&close_pose));
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_path_operations() {
-        let mut path = Path::new();
+        let mut path = NavPath::new();
         let wp1 = Waypoint::new(Pose2D::new(0.0, 0.0, 0.0));
         let wp2 = Waypoint::new(Pose2D::new(1.0, 0.0, 0.0));
 
@@ -740,10 +740,10 @@ impl PathPlan {
 // =============================================================================
 
 crate::messages::impl_pod_message!(
-    Goal,
+    NavGoal,
     GoalResult,
     Waypoint,
-    Path,
+    NavPath,
     VelocityObstacle,
     VelocityObstacles,
     PathPlan,

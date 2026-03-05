@@ -1373,7 +1373,7 @@ fn concurrent_migration_no_livelock_16_threads() {
     // All threads must finish within 10 seconds (livelock would hang indefinitely).
     let deadline = Instant::now() + Duration::from_secs(10);
     for handle in handles {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let _remaining = deadline.saturating_duration_since(Instant::now());
         // join() has no timeout, but the test runner will kill us if we truly livelock.
         let _ = handle.join().expect("thread panicked");
         if Instant::now() > deadline {

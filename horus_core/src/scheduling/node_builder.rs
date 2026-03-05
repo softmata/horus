@@ -27,8 +27,9 @@ use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
 ///
-/// Use `NodeRegistration::new()` to create, then configure with chainable methods.
-/// Pass to `Scheduler::add_configured()` to register the node.
+/// Most users should use `Scheduler::add(node).rt().done()` instead.
+/// This type exists for advanced use cases like Python bindings.
+#[doc(hidden)]
 pub struct NodeRegistration {
     /// The node to add (either regular or RT)
     pub(crate) node: NodeKind,

@@ -47,6 +47,7 @@ macro_rules! impl_tensor_backed {
     ($type_name:ident, $desc_type:ty, $label:expr) => {
         impl $type_name {
             /// Create from a descriptor and pool (used by Topic recv and Python bindings).
+            #[doc(hidden)]
             pub fn from_owned(
                 descriptor: $desc_type,
                 pool: std::sync::Arc<$crate::memory::tensor_pool::TensorPool>,
@@ -108,6 +109,7 @@ macro_rules! impl_tensor_backed {
             ///
             /// # Safety
             /// Caller must ensure the dtype matches the requested type T.
+            #[doc(hidden)]
             #[inline]
             pub unsafe fn data_as<T: Copy>(&self) -> &[T] {
                 let bytes = self.data();
@@ -120,6 +122,7 @@ macro_rules! impl_tensor_backed {
             ///
             /// # Safety
             /// Caller must ensure the dtype matches the requested type T.
+            #[doc(hidden)]
             #[inline]
             #[allow(clippy::mut_from_ref)]
             pub unsafe fn data_as_mut<T: Copy>(&self) -> &mut [T] {
@@ -160,6 +163,7 @@ macro_rules! impl_tensor_backed {
             }
 
             /// Whether tensor data is on CUDA.
+            #[doc(hidden)]
             #[inline]
             pub fn is_cuda(&self) -> bool {
                 self.descriptor.is_cuda()
@@ -178,12 +182,14 @@ macro_rules! impl_tensor_backed {
             }
 
             /// Get the underlying descriptor.
+            #[doc(hidden)]
             #[inline]
             pub fn descriptor(&self) -> &$desc_type {
                 &self.descriptor
             }
 
             /// Get the pool reference.
+            #[doc(hidden)]
             #[inline]
             pub fn pool(&self) -> &std::sync::Arc<$crate::memory::tensor_pool::TensorPool> {
                 &self.pool

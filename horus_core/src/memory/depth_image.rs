@@ -2,6 +2,26 @@
 //!
 //! `DepthImage` is the primary type for depth sensor data in HORUS.
 //! Supports both F32 (meters) and U16 (millimeters) formats.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use horus::prelude::*;
+//!
+//! // Create a 480x640 depth image (float32 meters)
+//! let mut depth = DepthImage::new(480, 640, TensorDtype::F32)?;
+//! depth.set_depth(100, 200, 2.5)?; // 2.5 meters
+//!
+//! // Send via topic (zero-copy)
+//! let topic: Topic<DepthImage> = Topic::new("depth/raw")?;
+//! topic.send(&depth);
+//!
+//! // Receive and query
+//! if let Some(received) = topic.recv() {
+//!     let d = received.get_depth(100, 200); // Some(2.5)
+//!     let stats = received.depth_statistics(); // (min, max, mean)
+//! }
+//! ```
 
 use std::sync::Arc;
 

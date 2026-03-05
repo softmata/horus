@@ -9,9 +9,20 @@
 //! ```rust,ignore
 //! use horus::prelude::*;
 //!
+//! // Create a 480x640 RGB image (shared memory backed)
 //! let mut img = Image::new(480, 640, ImageEncoding::Rgb8)?;
-//! img.set_pixel(100, 200, &[255, 0, 0]);
+//! img.fill(&[0, 0, 255]);                // Fill blue
+//! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
+//!
+//! // Send via topic (zero-copy — only the descriptor travels)
+//! let topic: Topic<Image> = Topic::new("camera/rgb")?;
 //! topic.send(&img);
+//!
+//! // Receive in another node or process
+//! if let Some(received) = topic.recv() {
+//!     let px = received.pixel(100, 200);  // Zero-copy read
+//!     let roi = received.roi(0, 0, 320, 240); // Extract region
+//! }
 //! ```
 
 use std::sync::Arc;

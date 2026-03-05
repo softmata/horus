@@ -52,11 +52,10 @@ scheduler.add(motor).order(0).rt().rate_hz(1000.0).done();
 scheduler.add(planner).order(5).compute().done();
 scheduler.add(telemetry).order(10).async_io().rate_hz(1.0).done();
 
-// Custom configuration via SchedulerConfig (plain data bag)
-let mut config = SchedulerConfig::minimal();
-config.realtime.rt_scheduling_class = true;
-config.monitoring.black_box_enabled = true;
-let mut scheduler = Scheduler::from_config(config)
+// Custom configuration via builder methods
+let mut scheduler = Scheduler::new()
+    .rt_scheduling(true)
+    .with_blackbox(16)
     .tick_hz(1000.0)
     .with_name("my_robot");
 

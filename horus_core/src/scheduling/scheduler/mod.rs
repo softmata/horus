@@ -171,6 +171,10 @@ pub struct Scheduler {
     pub(super) replay: Option<ReplayState>,
     pub(super) recording: Option<RecordingState>,
     pub(super) deterministic: Option<DeterministicState>,
+
+    /// Deferred configuration applied once at `run()` time via `finalize_config()`.
+    /// Builder methods mutate this; `finalize_config()` applies it before the tick loop.
+    pub(super) pending_config: super::config::SchedulerConfig,
 }
 
 impl Default for Scheduler {
@@ -196,10 +200,56 @@ impl Scheduler {
     /// ```
     /// Create a scheduler with `SchedulerConfig::minimal()` defaults.
     ///
-    /// This is equivalent to `Scheduler::from_config(SchedulerConfig::minimal())`.
-    /// `SchedulerConfig::minimal()` is the single source of truth for defaults.
+    /// Configuration is deferred until `run()` via builder methods.
+    /// Call `.tick_hz()`, `.safety_monitor()`, `.with_blackbox()`, etc. to configure.
     pub fn new() -> Self {
-        Self::from_config(super::config::SchedulerConfig::minimal())
+        let running = Arc::new(AtomicBool::new(true));
+        let now = Instant::now();
+
+        // Detect runtime capabilities (~30-100μs one-time cost)
+        let caps = RuntimeCapabilities::detect();
+
+        // Clean up stale SHM namespaces from crashed processes (<1ms)
+        let cleanup = crate::memory::platform::cleanup_stale_namespaces();
+        if cleanup.removed > 0 {
+            log::info!(
+                "Cleaned {} stale SHM namespace(s), freed {} bytes",
+                cleanup.removed,
+                cleanup.bytes_freed
+            );
+        }
+
+        let config = super::config::SchedulerConfig::minimal();
+        let period = Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
+
+        Self {
+            nodes: Vec::new(),
+            running,
+            scheduler_name: "Scheduler".to_string(),
+
+            tick: TickState {
+                period,
+                current: 0,
+                last_instant: now,
+            },
+            rt: RtState {
+                capabilities: Some(caps),
+                degradations: Vec::new(),
+            },
+            monitor: MonitorState {
+                safety: None,
+                blackbox: None,
+                telemetry: None,
+                profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
+                last_snapshot: now,
+                working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                watchdog_expired_buf: Vec::new(),
+            },
+            replay: None,
+            recording: None,
+            deterministic: None,
+            pending_config: config,
+        }
     }
 
     // ========================================================================
@@ -208,12 +258,9 @@ impl Scheduler {
 
     /// Create a scheduler from a custom configuration.
     ///
-    /// ```rust,ignore
-    /// let mut config = SchedulerConfig::minimal();
-    /// config.timing.global_rate_hz = 500.0;
-    /// config.realtime.wcet_enforcement = true;
-    /// let mut scheduler = Scheduler::from_config(config);
-    /// ```
+    /// Prefer using `Scheduler::new()` with builder methods instead.
+    /// This is kept for Python bindings and backward compatibility.
+    #[doc(hidden)]
     pub fn from_config(config: super::config::SchedulerConfig) -> Self {
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
@@ -257,6 +304,7 @@ impl Scheduler {
             replay: None,
             recording: None,
             deterministic: None,
+            pending_config: config.clone(),
         };
         s.apply_config(config);
         s
@@ -276,6 +324,7 @@ impl Scheduler {
     pub fn tick_hz(mut self, hz: f64) -> Self {
         if hz.is_finite() && hz > 0.0 {
             self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
+            self.pending_config.timing.global_rate_hz = hz;
         }
         self
     }
@@ -292,6 +341,7 @@ impl Scheduler {
     /// ```
     pub fn with_recording(mut self) -> Self {
         let recording_yaml = super::config::RecordingConfigYaml::full();
+        self.pending_config.recording = Some(recording_yaml.clone());
         let recording_config = super::record_replay::RecordingConfig::from(recording_yaml);
         let scheduler_id = format!(
             "{:x}{:x}",
@@ -322,10 +372,155 @@ impl Scheduler {
     ///     .with_telemetry("udp://localhost:9999");
     /// ```
     pub fn with_telemetry(mut self, endpoint: &str) -> Self {
+        self.pending_config.monitoring.telemetry_endpoint = Some(endpoint.to_string());
         let ep = super::telemetry::TelemetryEndpoint::from_string(endpoint);
         let mut tm = super::telemetry::TelemetryManager::new(ep, 1000);
         tm.set_scheduler_name(&self.scheduler_name);
         self.monitor.telemetry = Some(tm);
+        self
+    }
+
+    // ========================================================================
+    // NEW BUILDER METHODS — deferred to finalize_config() at run() time
+    // ========================================================================
+
+    /// Enable the safety monitor for RT nodes (WCET enforcement, deadline monitoring, watchdogs).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .tick_hz(1000.0)
+    ///     .safety_monitor(true);
+    /// ```
+    pub fn safety_monitor(mut self, enabled: bool) -> Self {
+        self.pending_config.realtime.safety_monitor = enabled;
+        self.pending_config.realtime.wcet_enforcement = enabled;
+        self.pending_config.realtime.deadline_monitoring = enabled;
+        self
+    }
+
+    /// Enable watchdog timers for RT nodes with the given timeout.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .safety_monitor(true)
+    ///     .watchdog(Duration::from_millis(50));
+    /// ```
+    pub fn watchdog(mut self, timeout: Duration) -> Self {
+        self.pending_config.realtime.watchdog_enabled = true;
+        self.pending_config.realtime.watchdog_timeout_ms = timeout.as_millis() as u64;
+        self
+    }
+
+    /// Set the maximum number of deadline misses before emergency stop.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .safety_monitor(true)
+    ///     .max_deadline_misses(5);
+    /// ```
+    pub fn max_deadline_misses(mut self, n: u64) -> Self {
+        self.pending_config.realtime.max_deadline_misses = n;
+        self
+    }
+
+    /// Enable memory locking (mlockall) to prevent page faults.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .memory_locked(true);
+    /// ```
+    pub fn memory_locked(mut self, enabled: bool) -> Self {
+        self.pending_config.realtime.memory_locking = enabled;
+        self
+    }
+
+    /// Enable real-time scheduling class (SCHED_FIFO/RR).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .rt_scheduling(true);
+    /// ```
+    pub fn rt_scheduling(mut self, enabled: bool) -> Self {
+        self.pending_config.realtime.rt_scheduling_class = enabled;
+        self
+    }
+
+    /// Set CPU core affinity for the scheduler thread.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .cpu_affinity(&[0, 1]);
+    /// ```
+    pub fn cpu_affinity(mut self, cores: &[usize]) -> Self {
+        self.pending_config.resources.cpu_cores = Some(cores.to_vec());
+        self
+    }
+
+    /// Enable tier-based fault tolerance (circuit breaker, restart policies).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .circuit_breaker(true);
+    /// ```
+    pub fn circuit_breaker(mut self, enabled: bool) -> Self {
+        self.pending_config.circuit_breaker = enabled;
+        self
+    }
+
+    /// Enable runtime profiling.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .with_profiling();
+    /// ```
+    pub fn with_profiling(mut self) -> Self {
+        self.pending_config.monitoring.profiling_enabled = true;
+        self
+    }
+
+    /// Enable the BlackBox flight recorder with the given buffer size.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .with_blackbox(64);
+    /// ```
+    pub fn with_blackbox(mut self, size_mb: usize) -> Self {
+        self.pending_config.monitoring.black_box_enabled = true;
+        self.pending_config.monitoring.black_box_size_mb = size_mb;
+        // Eagerly create the blackbox so it's accessible before run()
+        let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
+        let bb = super::blackbox::BlackBox::new(size_mb)
+            .with_path(bb_dir)
+            .with_wal_flush_interval(self.pending_config.monitoring.wal_flush_interval);
+        self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        self
+    }
+
+    /// Enable deterministic execution mode (virtual time, seeded RNG) for simulation.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let scheduler = Scheduler::new()
+    ///     .deterministic(42);
+    /// ```
+    pub fn deterministic(mut self, seed: u64) -> Self {
+        let det_config = DeterministicConfig {
+            seed,
+            virtual_time: true,
+            tick_duration_ns: 1_000_000,
+        };
+        self.pending_config.deterministic = Some(det_config.clone());
+        // Eagerly apply so is_simulation_mode() works before run()
+        self.apply_deterministic_config(&det_config);
         self
     }
 
@@ -403,28 +598,6 @@ impl Scheduler {
     /// ```
     #[doc(hidden)]
     pub fn blackbox(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
-        self.monitor.blackbox.as_ref()
-    }
-
-    /// Get the shared blackbox for recording events.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::BlackBoxEvent;
-    ///
-    /// let mut scheduler = Scheduler::new();
-    ///
-    /// // Record a custom event
-    /// if let Some(bb) = scheduler.blackbox() {
-    ///     bb.lock().unwrap().record(BlackBoxEvent::Custom {
-    ///         category: "safety".to_string(),
-    ///         message: "Manual override activated".to_string(),
-    ///     });
-    /// }
-    /// ```
-    #[doc(hidden)]
-    pub fn blackbox_mut(&self) -> Option<&Arc<Mutex<super::blackbox::BlackBox>>> {
         self.monitor.blackbox.as_ref()
     }
 
@@ -1118,17 +1291,13 @@ impl Scheduler {
     /// - Deadline misses trigger emergency stop
     ///
     /// # Example
-    /// ```no_run
+    /// ```rust,ignore
     /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
-    /// let mut config = SchedulerConfig::minimal();
-    /// config.realtime.safety_monitor = true;
-    /// let mut scheduler = Scheduler::new();
-    /// scheduler.apply_config(config);
-    /// scheduler.add_critical_node("motor_controller", Duration::from_millis(100))?;
-    /// # Ok::<(), horus_core::error::HorusError>(())
+    /// let mut scheduler = Scheduler::new()
+    ///     .safety_monitor(true);
+    /// // ... after run() starts, safety monitor is active
     /// ```
     ///
     /// # Errors
@@ -1144,7 +1313,8 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Set config.realtime.safety_monitor = true in SchedulerConfig.".to_string(),
+                "Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
+                    .to_string(),
             ))
         }
     }
@@ -1156,17 +1326,13 @@ impl Scheduler {
     /// - Critical nodes: Emergency stop triggered
     ///
     /// # Example
-    /// ```no_run
+    /// ```rust,ignore
     /// use horus_core::Scheduler;
-    /// use horus_core::scheduling::SchedulerConfig;
     /// use std::time::Duration;
     ///
-    /// let mut config = SchedulerConfig::minimal();
-    /// config.realtime.safety_monitor = true;
-    /// let mut scheduler = Scheduler::new();
-    /// scheduler.apply_config(config);
-    /// scheduler.set_wcet_budget("motor_controller", Duration::from_micros(500))?;
-    /// # Ok::<(), horus_core::error::HorusError>(())
+    /// let mut scheduler = Scheduler::new()
+    ///     .safety_monitor(true);
+    /// // WCET budgets are typically set via .wcet_us() on the node builder
     /// ```
     ///
     /// # Errors
@@ -1182,7 +1348,8 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Set config.realtime.safety_monitor = true in SchedulerConfig.".to_string(),
+                "Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
+                    .to_string(),
             ))
         }
     }
@@ -1546,6 +1713,58 @@ impl Scheduler {
     }
 
     /// Internal method to run scheduler with optional node filtering and duration.
+    /// Apply the deferred `pending_config` before the tick loop starts.
+    ///
+    /// Called once from `run_with_filter()`. This is better than eagerly applying
+    /// config in builders because `finalize_config()` runs AFTER all nodes are added,
+    /// so `apply_safety_config` and `apply_fault_tolerance` correctly see all nodes.
+    fn finalize_config(&mut self) {
+        let config = self.pending_config.clone();
+
+        // Tick period (may already be set by tick_hz builder, but re-apply for consistency)
+        if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
+            self.tick.period =
+                Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
+        }
+
+        // Safety config runs here so it sees ALL nodes (added after builder methods)
+        self.apply_safety_config(&config.realtime);
+        self.apply_fault_tolerance(config.circuit_breaker);
+        self.apply_rt_optimizations(&config.realtime, &config.resources);
+
+        // Only apply monitoring if not already set by eager builders (with_blackbox, etc.)
+        if self.monitor.blackbox.is_none() {
+            self.apply_monitoring_config(&config.monitoring);
+        } else {
+            // Blackbox already exists (from with_blackbox builder), only apply profiling/telemetry
+            if config.monitoring.profiling_enabled {
+                self.monitor.profiler.lock().unwrap().enable();
+            }
+            if let Some(ref endpoint_str) = config.monitoring.telemetry_endpoint {
+                if self.monitor.telemetry.is_none() {
+                    let endpoint = super::telemetry::TelemetryEndpoint::from_string(endpoint_str);
+                    let mut tm = super::telemetry::TelemetryManager::new(
+                        endpoint,
+                        config.monitoring.metrics_interval_ms,
+                    );
+                    tm.set_scheduler_name(&self.scheduler_name);
+                    self.monitor.telemetry = Some(tm);
+                }
+            }
+        }
+
+        // Deterministic mode (may already be set by .deterministic() builder)
+        if config.deterministic.is_some() && self.deterministic.is_none() {
+            self.apply_deterministic_config(config.deterministic.as_ref().unwrap());
+        }
+
+        if let Some(ref recording_yaml) = config.recording {
+            if recording_yaml.enabled && self.recording.is_none() {
+                self.apply_recording_config(recording_yaml);
+            }
+        }
+    }
+
     fn run_with_filter(
         &mut self,
         node_filter: Option<&[&str]>,
@@ -1562,6 +1781,7 @@ impl Scheduler {
         rt.block_on(async {
             let start_time = Instant::now();
 
+            self.finalize_config();
             self.setup_signal_handlers();
             self.initialize_filtered_nodes(node_filter);
             Self::setup_control_directory();

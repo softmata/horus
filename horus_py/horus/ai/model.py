@@ -8,8 +8,8 @@ automatic format detection and device placement.
 from typing import Optional, Union, List, Dict, Any, Callable, Tuple
 from pathlib import Path
 import time
+import numpy as np
 
-from .tensor import Tensor
 from .device import Device, get_default_device
 
 
@@ -59,7 +59,7 @@ class Model:
         self._output_names = output_names or []
 
         # Optional preprocessing/postprocessing
-        self.preprocess: Optional[Callable[[Any], Tensor]] = None
+        self.preprocess: Optional[Callable[[Any], np.ndarray]] = None
         self.postprocess: Optional[Callable[[Any], Any]] = None
 
         # Performance tracking
@@ -248,7 +248,7 @@ class Model:
     # Inference
     # ══════════════════════════════════════════════════════════════
 
-    def __call__(self, *inputs) -> Union[Tensor, List[Tensor]]:
+    def __call__(self, *inputs) -> Union[np.ndarray, List[np.ndarray]]:
         """
         Run inference on input(s).
 
@@ -256,11 +256,11 @@ class Model:
             *inputs: Input tensor(s)
 
         Returns:
-            Output tensor(s)
+            Output numpy array(s)
         """
         return self.predict(*inputs)
 
-    def predict(self, *inputs) -> Union[Tensor, List[Tensor]]:
+    def predict(self, *inputs) -> Union[np.ndarray, List[np.ndarray]]:
         """
         Run inference on input(s).
 
@@ -274,10 +274,7 @@ class Model:
 
         # Apply preprocessing if defined
         if self.preprocess is not None:
-            inputs = tuple(
-                self.preprocess(inp) if not isinstance(inp, Tensor) else inp
-                for inp in inputs
-            )
+            inputs = tuple(self.preprocess(inp) for inp in inputs)
 
         # Convert to appropriate format
         inputs = self._prepare_inputs(inputs)
@@ -319,22 +316,18 @@ class Model:
 
     def _prepare_inputs(self, inputs: tuple) -> tuple:
         """Convert inputs to numpy arrays."""
-        import numpy as np
-
         result = []
         for inp in inputs:
-            if isinstance(inp, Tensor):
-                result.append(inp.numpy())
+            if isinstance(inp, np.ndarray):
+                result.append(inp)
             elif hasattr(inp, '__array__'):
                 result.append(np.asarray(inp))
-            elif isinstance(inp, np.ndarray):
-                result.append(inp)
             else:
                 result.append(np.array(inp))
 
         return tuple(result)
 
-    def _infer_onnx(self, inputs: tuple) -> Union[Tensor, List[Tensor]]:
+    def _infer_onnx(self, inputs: tuple) -> Union[np.ndarray, List[np.ndarray]]:
         """Run ONNX inference."""
         # Build input dict
         input_dict = {}
@@ -345,12 +338,11 @@ class Model:
         # Run inference
         outputs = self._model.run(self._output_names, input_dict)
 
-        # Convert to Tensor
         if len(outputs) == 1:
-            return Tensor.from_numpy(outputs[0], device=self._device)
-        return [Tensor.from_numpy(out, device=self._device) for out in outputs]
+            return outputs[0]
+        return list(outputs)
 
-    def _infer_pytorch(self, inputs: tuple) -> Union[Tensor, List[Tensor]]:
+    def _infer_pytorch(self, inputs: tuple) -> Union[np.ndarray, List[np.ndarray]]:
         """Run PyTorch inference."""
         import torch
 
@@ -369,17 +361,14 @@ class Model:
             else:
                 output = self._model(*torch_inputs)
 
-        # Convert output
+        # Convert output to numpy
         if isinstance(output, torch.Tensor):
-            return Tensor.from_numpy(output.cpu().numpy(), device=self._device)
+            return output.cpu().numpy()
         elif isinstance(output, (tuple, list)):
-            return [
-                Tensor.from_numpy(o.cpu().numpy(), device=self._device)
-                for o in output
-            ]
+            return [o.cpu().numpy() for o in output]
         return output
 
-    def _infer_tensorflow(self, inputs: tuple) -> Union[Tensor, List[Tensor]]:
+    def _infer_tensorflow(self, inputs: tuple) -> Union[np.ndarray, List[np.ndarray]]:
         """Run TensorFlow inference."""
         import tensorflow as tf
 
@@ -392,20 +381,15 @@ class Model:
         else:
             output = self._model(*tf_inputs)
 
-        # Convert output
+        # Convert output to numpy
         if isinstance(output, tf.Tensor):
-            return Tensor.from_numpy(output.numpy(), device=self._device)
+            return output.numpy()
         elif isinstance(output, (tuple, list)):
-            return [
-                Tensor.from_numpy(o.numpy(), device=self._device)
-                for o in output
-            ]
+            return [o.numpy() for o in output]
         return output
 
-    def _infer_tflite(self, inputs: tuple) -> Union[Tensor, List[Tensor]]:
+    def _infer_tflite(self, inputs: tuple) -> Union[np.ndarray, List[np.ndarray]]:
         """Run TFLite inference."""
-        import numpy as np
-
         # Get input/output details
         input_details = self._model.get_input_details()
         output_details = self._model.get_output_details()
@@ -419,10 +403,7 @@ class Model:
         self._model.invoke()
 
         # Get outputs
-        outputs = []
-        for detail in output_details:
-            output = self._model.get_tensor(detail['index'])
-            outputs.append(Tensor.from_numpy(output, device=self._device))
+        outputs = [self._model.get_tensor(detail['index']) for detail in output_details]
 
         if len(outputs) == 1:
             return outputs[0]

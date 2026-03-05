@@ -5,7 +5,7 @@
 
 use horus_core::core::Node;
 use horus_core::error::HorusResult as Result;
-use horus_core::scheduling::{Scheduler, SchedulerConfig};
+use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -138,11 +138,7 @@ fn test_rt_isolation_under_compute_load() {
     let (rt_node, rt_count, rt_timestamps) = RtTimingNode::new("rt_controller");
     let (slow_node, compute_count) = SlowComputeNode::new("heavy_compute", 50);
 
-    let mut config = SchedulerConfig::default();
-
-    config.timing.global_rate_hz = 1000.0; // 1kHz
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
     scheduler.add(rt_node).order(0).rt().rate_hz(1000.0).done();
     scheduler.add(slow_node).order(5).rate_hz(10.0).done(); // 10 Hz compute
 
@@ -208,11 +204,7 @@ fn test_compute_nodes_run_parallel() {
     let (node_a, count_a) = SlowComputeNode::new("compute_a", 30);
     let (node_b, count_b) = SlowComputeNode::new("compute_b", 30);
 
-    let mut config = SchedulerConfig::default();
-
-    config.timing.global_rate_hz = 100.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(100.0);
     scheduler.add(node_a).order(1).done();
     scheduler.add(node_b).order(2).done();
 
@@ -243,11 +235,7 @@ fn test_mixed_rt_and_compute_nodes() {
     let (rt_node, rt_count, _) = RtTimingNode::new("mixed_rt");
     let (compute_node, compute_count) = CounterNode::new("mixed_compute");
 
-    let mut config = SchedulerConfig::default();
-
-    config.timing.global_rate_hz = 500.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(500.0);
     scheduler.add(rt_node).order(0).rt().rate_hz(500.0).done();
     scheduler.add(compute_node).order(5).done();
 
@@ -321,11 +309,7 @@ fn test_full_system_rt_and_compute_groups() {
     let (compute_b, compute_b_count) = CounterNode::new("compute_worker_b");
     let (slow_compute, slow_compute_count) = SlowComputeNode::new("slow_planner", 30);
 
-    let mut config = SchedulerConfig::default();
-
-    config.timing.global_rate_hz = 500.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(500.0);
 
     // RT nodes
     scheduler.add(rt_fast).order(0).rt().rate_hz(500.0).done();
@@ -475,10 +459,7 @@ fn test_event_node_alongside_rt_and_besteffort() {
     let (be_node, be_count) = CounterNode::new("mixed_be_node");
     let (evt_node, evt_count) = CounterNode::new("mixed_evt_node");
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 200.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(200.0);
     scheduler.add(rt_node).order(0).rt().rate_hz(200.0).done();
     scheduler.add(be_node).order(5).done();
     scheduler.add(evt_node).order(10).on("sensor_data").done();
@@ -498,7 +479,10 @@ fn test_event_node_alongside_rt_and_besteffort() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(registered, "Event node notifier should register within 500ms");
+    assert!(
+        registered,
+        "Event node notifier should register within 500ms"
+    );
 
     // That first notify_event already sent 1 notification; send 4 more
     for _ in 0..4 {
@@ -609,16 +593,8 @@ fn test_async_io_isolation_from_rt_and_compute() {
     // Blocking async I/O node — 200ms sleep simulates network call
     let (async_node, async_count) = BlockingIoNode::new("iso_async_slow", 200);
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 1000.0;
-
-    let mut scheduler = Scheduler::from_config(config);
-    scheduler
-        .add(rt_node)
-        .order(0)
-        .rt()
-        .rate_hz(1000.0)
-        .done();
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
+    scheduler.add(rt_node).order(0).rt().rate_hz(1000.0).done();
     scheduler.add(compute_node).order(5).done();
     scheduler
         .add(async_node)
@@ -704,10 +680,7 @@ fn test_async_io_nodes_run_concurrently() {
     let (io_a, count_a) = BlockingIoNode::new("async_a_100ms", 100);
     let (io_b, count_b) = BlockingIoNode::new("async_b_100ms", 100);
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 100.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(100.0);
     scheduler.add(io_a).order(0).async_io().done();
     scheduler.add(io_b).order(1).async_io().done();
 
@@ -754,10 +727,7 @@ fn test_all_execution_groups_simultaneously() {
     // Event group
     let (event_node, event_count) = CounterNode::new("all_event");
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 500.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(500.0);
     scheduler.add(rt_node).order(0).rt().rate_hz(500.0).done();
     scheduler.add(compute_node).order(5).done();
     scheduler
@@ -794,21 +764,13 @@ fn test_all_execution_groups_simultaneously() {
     let event = event_count.load(Ordering::Relaxed);
 
     assert!(rt >= 20, "RT should tick >= 20, got {}", rt);
-    assert!(
-        compute >= 20,
-        "Compute should tick >= 20, got {}",
-        compute
-    );
+    assert!(compute >= 20, "Compute should tick >= 20, got {}", compute);
     assert!(
         async_io >= 1,
         "Async I/O should tick >= 1, got {}",
         async_io
     );
-    assert_eq!(
-        event, 5,
-        "Event should tick exactly 5 times, got {}",
-        event
-    );
+    assert_eq!(event, 5, "Event should tick exactly 5 times, got {}", event);
 
     eprintln!(
         "All groups: RT={}, Compute={}, AsyncIO={}, Event={}",
@@ -828,11 +790,7 @@ fn test_clean_shutdown_all_groups() {
     let (rt_node, rt_count, _) = RtTimingNode::new("shutdown_rt");
     let (compute_node, compute_count) = CounterNode::new("shutdown_compute");
 
-    let mut config = SchedulerConfig::default();
-
-    config.timing.global_rate_hz = 100.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(100.0);
     scheduler.add(rt_node).order(0).rt().rate_hz(100.0).done();
     scheduler.add(compute_node).order(5).done();
 
@@ -865,10 +823,7 @@ fn test_multi_rate_rt_timing_accuracy() {
     let (node_100hz, count_100hz, _) = RtTimingNode::new("rt_100hz");
     let (node_10hz, count_10hz, _) = RtTimingNode::new("rt_10hz");
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 1000.0;
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(1000.0);
     scheduler
         .add(node_1khz)
         .order(0)
@@ -881,12 +836,7 @@ fn test_multi_rate_rt_timing_accuracy() {
         .rt()
         .rate_hz(100.0)
         .done();
-    scheduler
-        .add(node_10hz)
-        .order(2)
-        .rt()
-        .rate_hz(10.0)
-        .done();
+    scheduler.add(node_10hz).order(2).rt().rate_hz(10.0).done();
 
     // Run for 500ms — enough for statistical significance
     scheduler.run_for(Duration::from_millis(500)).unwrap();
@@ -957,14 +907,16 @@ fn test_compute_load_shedding() {
     // Slow background node (order 200) — sheddable, sleeps to cause overload
     let (slow_bg, count_bg) = SlowComputeNode::new("slow_bg_200", 100);
 
-    let mut config = SchedulerConfig::default();
-    config.timing.global_rate_hz = 100.0; // 10ms tick period
-
-    let mut scheduler = Scheduler::from_config(config);
+    let mut scheduler = Scheduler::new().tick_hz(100.0);
     scheduler.add(fast_hi).order(10).compute().done();
     scheduler.add(fast_mid).order(50).compute().done();
     // Order 200 = sheddable tier. 100ms sleep on a 10ms tick period = guaranteed overload.
-    scheduler.add(slow_bg).order(200).compute().rate_hz(100.0).done();
+    scheduler
+        .add(slow_bg)
+        .order(200)
+        .compute()
+        .rate_hz(100.0)
+        .done();
 
     // Run for 500ms
     scheduler.run_for(Duration::from_millis(500)).unwrap();

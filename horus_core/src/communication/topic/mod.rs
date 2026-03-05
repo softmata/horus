@@ -1206,6 +1206,8 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 let index = (tail & mask) as usize;
                 let msg = self.read_shm_slot(index);
                 push_fn(msg);
+            } else {
+                std::hint::spin_loop();
             }
         }
     }

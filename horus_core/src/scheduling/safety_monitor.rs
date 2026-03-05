@@ -538,6 +538,8 @@ mod tests {
             "check_watchdogs() mean latency must be < 20μs for 100-200 nodes; got {} ns",
             mean_ns
         );
+        #[cfg(debug_assertions)]
+        let _ = mean_ns;
     }
 
     /// Smoke-test that a non-critical deadline miss below max does not trigger

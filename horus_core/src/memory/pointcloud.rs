@@ -2,6 +2,32 @@
 //!
 //! `PointCloud` is the primary type for 3D point data in HORUS. It wraps a Pod
 //! descriptor + `Arc<TensorPool>` and provides a rich API for point access.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use horus::prelude::*;
+//!
+//! // Create a 1000-point XYZ cloud (float32, shared memory)
+//! let mut pc = PointCloud::new(1000, 3, TensorDtype::F32)?;
+//!
+//! // Fill point data
+//! let floats: &mut [f32] = bytemuck::cast_slice_mut(pc.data_mut());
+//! for i in 0..1000 {
+//!     floats[i * 3]     = i as f32 * 0.01; // x
+//!     floats[i * 3 + 1] = 0.0;             // y
+//!     floats[i * 3 + 2] = 1.0;             // z
+//! }
+//!
+//! // Send via topic (zero-copy)
+//! let topic: Topic<PointCloud> = Topic::new("lidar/points")?;
+//! topic.send(&pc);
+//!
+//! // Receive and extract XYZ
+//! if let Some(received) = topic.recv() {
+//!     let points: Vec<[f32; 3]> = received.extract_xyz().unwrap();
+//! }
+//! ```
 
 use std::sync::Arc;
 
@@ -192,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_extract_xyz_valid_cloud() {
-        let mut pc = PointCloud::new(3, 3, TensorDtype::F32).unwrap();
+        let pc = PointCloud::new(3, 3, TensorDtype::F32).unwrap();
         let floats: &mut [f32] = bytemuck::cast_slice_mut(pc.data_mut());
         floats[0..9].copy_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
 

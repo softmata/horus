@@ -8,9 +8,9 @@ run ML inference as part of the HORUS node graph.
 from typing import Optional, Union, Callable, Type, Any, Dict
 from pathlib import Path
 import functools
+import numpy as np
 
 from .model import Model
-from .tensor import Tensor
 
 
 class MLNodeConfig:
@@ -57,10 +57,10 @@ def mlnode(
             device="cuda:0",
         )
         class DetectorNode:
-            def preprocess(self, image: Tensor) -> Tensor:
-                return image.resize(640, 640).normalize()
+            def preprocess(self, image: np.ndarray) -> np.ndarray:
+                return preprocess_fn(image)
 
-            def postprocess(self, output: Tensor) -> list:
+            def postprocess(self, output: np.ndarray) -> list:
                 return self.nms(output, threshold=0.5)
 
     2. As a factory function for simple nodes:
@@ -122,18 +122,14 @@ def mlnode(
             if node.has_msg(self._input_topic):
                 data = node.get(self._input_topic)
 
-                # Convert to Tensor if needed
-                if not isinstance(data, Tensor):
-                    data = Tensor(data)
+                # Ensure numpy array
+                if not isinstance(data, np.ndarray):
+                    data = np.asarray(data)
 
-                # Run inference
+                # Run inference (model returns np.ndarray)
                 output = self._model(data)
 
-                # Send output
-                if isinstance(output, Tensor):
-                    node.send(self._output_topic, output.numpy())
-                else:
-                    node.send(self._output_topic, output)
+                node.send(self._output_topic, output)
 
         # Create the wrapped class
         class WrappedMLNode(cls):
@@ -178,7 +174,7 @@ def from_model(
     output: str,
     device: str = "cpu",
     rate: float = 30.0,
-    preprocess: Optional[Callable[[Any], Tensor]] = None,
+    preprocess: Optional[Callable[[Any], np.ndarray]] = None,
     postprocess: Optional[Callable[[Any], Any]] = None,
 ) -> 'Node':
     """
@@ -227,18 +223,14 @@ def from_model(
         if node.has_msg(input):
             data = node.get(input)
 
-            # Convert to Tensor if needed
-            if not isinstance(data, Tensor):
-                data = Tensor(data)
+            # Ensure numpy array
+            if not isinstance(data, np.ndarray):
+                data = np.asarray(data)
 
-            # Run inference
+            # Run inference (model returns np.ndarray)
             result = loaded_model(data)
 
-            # Send output
-            if isinstance(result, Tensor):
-                node.send(output, result.numpy())
-            else:
-                node.send(output, result)
+            node.send(output, result)
 
     # Determine node name from model path
     if isinstance(model, (str, Path)):

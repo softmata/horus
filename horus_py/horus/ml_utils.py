@@ -521,13 +521,14 @@ class PerformanceMonitor:
         if len(self.latencies) > self.window_size:
             self.latencies.pop(0)
 
-        # Calculate throughput
-        elapsed = time.time() - self.start_time
-        if elapsed > 0:
-            throughput = len(self.latencies) / elapsed
-            self.throughputs.append(throughput)
-            if len(self.throughputs) > self.window_size:
-                self.throughputs.pop(0)
+        # Calculate throughput over the window of recent samples
+        if len(self.latencies) >= 2:
+            window_time_s = sum(self.latencies) / 1000.0  # ms to seconds
+            if window_time_s > 0:
+                throughput = len(self.latencies) / window_time_s
+                self.throughputs.append(throughput)
+                if len(self.throughputs) > self.window_size:
+                    self.throughputs.pop(0)
 
     def get_stats(self) -> Dict[str, float]:
         """Get current statistics"""

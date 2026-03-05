@@ -214,7 +214,6 @@ class PyNodeState:
     - UNINITIALIZED: Node created but not initialized
     - INITIALIZING: Node initialization in progress
     - RUNNING: Node actively running
-    - PAUSED: Node paused
     - STOPPING: Node shutdown in progress
     - STOPPED: Node stopped
     - ERROR: Node in error state
@@ -224,7 +223,6 @@ class PyNodeState:
     UNINITIALIZED: str
     INITIALIZING: str
     RUNNING: str
-    PAUSED: str
     STOPPING: str
     STOPPED: str
     ERROR: str
@@ -246,31 +244,6 @@ class PyScheduler:
 
     def __init__(self, config: Optional['PySchedulerConfig'] = None) -> None:
         """Create a new Scheduler with optional config."""
-        ...
-
-    @staticmethod
-    def deploy() -> 'PyScheduler':
-        """Production deployment: RT scheduling, memory locking, blackbox, profiling."""
-        ...
-
-    @staticmethod
-    def safety_critical() -> 'PyScheduler':
-        """Safety-critical: 1kHz, WCET enforcement, watchdog, safety monitor."""
-        ...
-
-    @staticmethod
-    def high_performance() -> 'PyScheduler':
-        """High-performance: parallel execution, 10kHz, WCET, NUMA-aware."""
-        ...
-
-    @staticmethod
-    def hard_realtime() -> 'PyScheduler':
-        """Hard real-time: parallel, 1kHz, full RT, watchdog, safety monitor, blackbox."""
-        ...
-
-    @staticmethod
-    def deterministic() -> 'PyScheduler':
-        """Deterministic execution for simulation and replay."""
         ...
 
     def add(

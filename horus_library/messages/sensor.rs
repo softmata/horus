@@ -258,7 +258,7 @@ impl Odometry {
 /// ultrasonic or infrared rangers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, LogSummary)]
-pub struct Range {
+pub struct RangeSensor {
     /// Sensor type (0=ultrasonic, 1=infrared)
     pub sensor_type: u8,
     /// Field of view in radians
@@ -273,7 +273,7 @@ pub struct Range {
     pub timestamp_ns: u64,
 }
 
-impl Range {
+impl RangeSensor {
     pub const ULTRASONIC: u8 = 0;
     pub const INFRARED: u8 = 1;
 
@@ -764,7 +764,7 @@ crate::messages::impl_pod_message!(
     LaserScan,
     Imu,
     Odometry,
-    Range,
+    RangeSensor,
     BatteryState,
     NavSatFix,
     JointState,

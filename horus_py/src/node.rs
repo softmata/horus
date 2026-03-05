@@ -31,10 +31,6 @@ impl PyNodeState {
     #[classattr]
     const RUNNING: &'static str = "running";
 
-    /// Paused state constant
-    #[classattr]
-    const PAUSED: &'static str = "paused";
-
     /// Stopping state constant
     #[classattr]
     const STOPPING: &'static str = "stopping";
@@ -325,20 +321,6 @@ impl PyNodeInfo {
             .lock()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to lock NodeInfo: {}", e)))?;
         Ok(info.metrics().successful_ticks)
-    }
-
-    /// Register a publisher topic for runtime discovery
-    /// Note: Topic registration is now handled by TopicRegistry. This method is a no-op kept for API compatibility.
-    fn register_publisher(&self, _topic: String, _msg_type: String) -> PyResult<()> {
-        // Topic registration is now handled by TopicRegistry when Topics are created
-        Ok(())
-    }
-
-    /// Register a subscriber topic for runtime discovery
-    /// Note: Topic registration is now handled by TopicRegistry. This method is a no-op kept for API compatibility.
-    fn register_subscriber(&self, _topic: String, _msg_type: String) -> PyResult<()> {
-        // Topic registration is now handled by TopicRegistry when Topics are created
-        Ok(())
     }
 
     /// Request the scheduler to stop

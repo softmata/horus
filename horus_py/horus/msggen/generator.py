@@ -8,8 +8,14 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
-import yaml
 import json
+
+try:
+    import yaml
+    _HAS_YAML = True
+except ImportError:
+    yaml = None
+    _HAS_YAML = False
 
 # Type mapping from user-friendly names to Rust types
 TYPE_MAP = {
@@ -228,6 +234,9 @@ impl Py{msg.name} {{
 
 
 def generate_messages_from_yaml(yaml_path: str, output_dir: Optional[Path] = None) -> List[str]:
+    if not _HAS_YAML:
+        raise ImportError("pyyaml is required for YAML message generation: pip install pyyaml")
+
     """
     Generate messages from a YAML definition file.
 

@@ -6,7 +6,7 @@ Just use 'async def tick()' and 'await' - that's it.
 """
 
 import asyncio
-from typing import Optional, Callable, Any
+from typing import Optional, Any
 from . import Node
 
 
@@ -19,52 +19,51 @@ class AsyncNode(Node):
         import horus
 
         class MyAsyncNode(horus.AsyncNode):
-            async def setup(self):
-                # Called once at start
-                self.sub = self.create_subscriber("input", str)
-                self.pub = self.create_publisher("output", str)
+            async def async_init(self):
+                print("Initialized!")
 
-            async def tick(self):
-                # Use normal Python async/await
-                msg = await self.sub.recv()  # Async receive
-                result = await self.process(msg)  # Any async operation
-                await self.pub.send(result)  # Async send
+            async def async_tick(self):
+                if self.has_msg("input"):
+                    data = self.get("input")
+                    result = await self.process(data)
+                    self.send("output", result)
 
             async def process(self, msg):
-                # Your async logic here
-                await asyncio.sleep(0.1)  # Non-blocking!
-                return msg.upper()
+                await asyncio.sleep(0.01)
+                return msg * 2
+
+        node = MyAsyncNode(
+            name="async_processor",
+            subs=["input"],
+            pubs=["output"],
+            rate=30,
+        )
+        horus.run(node)
         ```
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        # Wire our sync bridge as the tick/init/shutdown callbacks
+        kwargs.setdefault('tick', self._sync_tick)
+        kwargs.setdefault('init', self._sync_init)
+        kwargs.setdefault('shutdown', self._sync_shutdown)
+        super().__init__(**kwargs)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._task: Optional[asyncio.Task] = None
 
-    async def setup(self):
-        """
-        Override this for one-time setup.
-        Called once before first tick.
-        """
+    async def async_init(self):
+        """Override this for async one-time setup."""
         pass
 
-    async def tick(self):
-        """
-        Override this with your async logic.
-        Use 'await' for any async operations.
-        """
+    async def async_tick(self):
+        """Override this with your async logic."""
         pass
 
-    async def shutdown(self):
-        """
-        Override this for cleanup.
-        Called once when node stops.
-        """
+    async def async_shutdown(self):
+        """Override this for async cleanup."""
         pass
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Get or create event loop"""
+        """Get or create event loop."""
         if self._loop is None:
             try:
                 self._loop = asyncio.get_running_loop()
@@ -73,20 +72,20 @@ class AsyncNode(Node):
                 asyncio.set_event_loop(self._loop)
         return self._loop
 
-    def start(self):
-        """Start the async node"""
+    def _sync_init(self, node):
+        """Bridge: called by scheduler, runs async_init."""
         loop = self._get_loop()
-        loop.run_until_complete(self.setup())
+        loop.run_until_complete(self.async_init())
 
-    def run_once(self):
-        """Run one tick (called by scheduler)"""
+    def _sync_tick(self, node):
+        """Bridge: called by scheduler, runs async_tick."""
         loop = self._get_loop()
-        loop.run_until_complete(self.tick())
+        loop.run_until_complete(self.async_tick())
 
-    def stop(self):
-        """Stop the async node"""
+    def _sync_shutdown(self, node):
+        """Bridge: called by scheduler, runs async_shutdown."""
         loop = self._get_loop()
-        loop.run_until_complete(self.shutdown())
+        loop.run_until_complete(self.async_shutdown())
 
 
 class AsyncTopic:
@@ -95,11 +94,12 @@ class AsyncTopic:
 
     Example:
         ```python
-        # Create
-        topic = horus.AsyncTopic("my_topic", str)
+        from horus import AsyncTopic, CmdVel
+
+        topic = AsyncTopic(CmdVel)
 
         # Send (async)
-        await topic.send("hello")
+        await topic.send(CmdVel(linear=1.0, angular=0.5))
 
         # Receive (async, waits for message)
         msg = await topic.recv()
@@ -109,13 +109,12 @@ class AsyncTopic:
         ```
     """
 
-    def __init__(self, topic_name: str, msg_type: type):
+    def __init__(self, msg_type, capacity: int = 1024):
         from . import Topic
-        self._topic = Topic(topic_name, msg_type)
+        self._topic = Topic(msg_type, capacity)
 
     async def send(self, msg: Any):
-        """Send message asynchronously"""
-        # Run in executor to avoid blocking
+        """Send message asynchronously."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._topic.send, msg)
 
@@ -126,7 +125,7 @@ class AsyncTopic:
         """
         loop = asyncio.get_event_loop()
         while True:
-            msg = await loop.run_in_executor(None, self._topic.try_recv)
+            msg = await loop.run_in_executor(None, self._topic.recv)
             if msg is not None:
                 return msg
             await asyncio.sleep(0.001)  # Small delay to avoid busy wait
@@ -137,27 +136,7 @@ class AsyncTopic:
         Returns None immediately if no message.
         """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._topic.try_recv)
-
-    def subscribe(self, callback: Callable):
-        """Subscribe with callback (synchronous)"""
-        self._topic.subscribe(callback)
-
-    async def async_subscribe(self, async_callback: Callable):
-        """
-        Subscribe with async callback.
-
-        Example:
-            ```python
-            async def handle(msg):
-                await process(msg)
-
-            await hub.async_subscribe(handle)
-            ```
-        """
-        def wrapper(msg):
-            asyncio.create_task(async_callback(msg))
-        self._topic.subscribe(wrapper)
+        return await loop.run_in_executor(None, self._topic.recv)
 
 
 # Simple async utilities
