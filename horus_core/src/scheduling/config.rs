@@ -73,6 +73,10 @@ pub struct MonitoringConfig {
     pub wal_flush_interval: usize,
     /// Telemetry export endpoint (e.g., "udp://localhost:9999", "file:///var/log/metrics.json")
     pub telemetry_endpoint: Option<String>,
+    /// Enable verbose logging from executor threads (WCET warnings, pre/post-condition
+    /// failures, startup/shutdown messages, etc.). Emergency-stop messages are always
+    /// printed regardless of this setting. Default: true.
+    pub verbose: bool,
 }
 
 /// Recording configuration for record/replay system (YAML-compatible)
@@ -173,16 +177,6 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self::minimal()
-    }
-}
-
-impl SchedulerConfig {
-    /// Minimal configuration - starts with the most basic settings.
-    ///
-    /// Use this when you want to configure everything explicitly.
-    /// Most features are disabled by default.
-    pub fn minimal() -> Self {
         Self {
             timing: TimingConfig {
                 global_rate_hz: 60.0,
@@ -209,6 +203,7 @@ impl SchedulerConfig {
                 black_box_size_mb: 0,
                 wal_flush_interval: 64,
                 telemetry_endpoint: None,
+                verbose: true,
             },
             recording: None,
             deterministic: None,

@@ -267,6 +267,7 @@ impl PyDetection {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         // Advance cursor past the rest of the name field (already zeroed).
         let pos = cur.position() as usize;
+        #[allow(clippy::drop_non_drop)] // intentional: release &mut borrow on `bytes`
         drop(cur);
         // Zero-pad: the vec was initialised to all-zeros, so we just need to
         // set the cursor to skip past the name region.

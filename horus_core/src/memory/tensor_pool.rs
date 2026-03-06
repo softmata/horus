@@ -114,7 +114,7 @@ struct PoolHeader {
 ///
 /// Layout (40 bytes, repr(C)):
 ///   refcount(4) + flags(4) + generation(8) + offset(8) + size(8)
-///   + next_free(4) + _padding(4)
+///   + next_free(4) + owner_pid(4)
 ///
 /// Field ordering ensures `AtomicU64`/`u64` fields land on 8-byte boundaries
 /// without implicit padding.  Changed in POOL_VERSION 2 (from v1's 36-byte layout).
@@ -136,8 +136,11 @@ struct SlotHeader {
     size: u64,
     /// Next free slot index for the Treiber free-stack.
     next_free: AtomicU32,
-    /// Padding to bring struct size to 40 bytes (multiple of 8-byte alignment).
-    _padding: u32,
+    /// PID of the process that last allocated this slot.
+    /// Used for dead-process slot reclamation: if `refcount > 0` and the owning
+    /// PID is no longer alive, the slot can be safely reclaimed.
+    /// Zero means no owner tracked (pre-v2 pools or freshly initialized).
+    owner_pid: AtomicU32,
 }
 
 /// Memory allocator backend for pool data region.
@@ -428,6 +431,7 @@ impl TensorPool {
         let generation_u64 = slot.generation.fetch_add(1, Ordering::AcqRel) + 1;
         slot.offset = offset as u64;
         slot.size = size;
+        slot.owner_pid.store(std::process::id(), Ordering::Release);
         slot.refcount.store(1, Ordering::Release);
         slot.flags.store(SLOT_ALLOCATED, Ordering::Release);
 
@@ -586,10 +590,11 @@ impl TensorPool {
         loop {
             let current = slot.refcount.load(Ordering::Acquire);
             if current == 0 {
-                return Err(HorusError::Memory(format!(
+                return Err(HorusError::Memory(
                     "Slot freed during retain: generation matched but refcount dropped to 0 \
                      (concurrent release between generation check and refcount increment)"
-                )));
+                        .to_string(),
+                ));
             }
             if slot
                 .refcount
@@ -981,6 +986,122 @@ impl TensorPool {
             }
         }
 
+        // Last resort: try to reclaim slots from dead processes
+        let reclaimed = self.reclaim_dead_slots();
+        if reclaimed > 0 {
+            // Retry — reclaimed slots were pushed to the free stack
+            return self.find_free_slot_inner();
+        }
+
+        Err(HorusError::Memory(
+            "No free tensor slots available".to_string(),
+        ))
+    }
+
+    /// Reclaim tensor slots owned by processes that no longer exist.
+    ///
+    /// Scans all allocated slots. For each with `refcount > 0` and a non-zero
+    /// `owner_pid`, checks if the process is alive via `kill(pid, 0)`. Dead
+    /// processes' slots are freed: refcount reset, flags set to SLOT_FREE,
+    /// generation incremented, and pushed back onto the free stack.
+    ///
+    /// Only called as a recovery path when `find_free_slot()` fails — never
+    /// on the normal allocation fast path.
+    fn reclaim_dead_slots(&self) -> u32 {
+        let mut reclaimed = 0u32;
+        let max = self.config.max_slots as u32;
+
+        for i in 0..max {
+            let slot = self.slot(i);
+            let flags = slot.flags.load(Ordering::Acquire);
+            if flags != SLOT_ALLOCATED {
+                continue;
+            }
+
+            let pid = slot.owner_pid.load(Ordering::Acquire);
+            if pid == 0 {
+                // No owner tracked (legacy slot or unset) — can't reclaim
+                continue;
+            }
+
+            // Check if the owning process is still alive
+            if Self::is_process_alive(pid) {
+                continue;
+            }
+
+            // Process is dead — reclaim this slot.
+            // Use CAS on flags to avoid racing with a concurrent reclaim.
+            if slot
+                .flags
+                .compare_exchange(
+                    SLOT_ALLOCATED,
+                    SLOT_FREE,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                slot.refcount.store(0, Ordering::Release);
+                slot.owner_pid.store(0, Ordering::Release);
+                slot.generation.fetch_add(1, Ordering::AcqRel);
+                self.push_free_slot(i);
+                reclaimed += 1;
+            }
+        }
+
+        if reclaimed > 0 {
+            log::info!(
+                "Reclaimed {} tensor slot(s) from dead process(es)",
+                reclaimed
+            );
+        }
+
+        reclaimed
+    }
+
+    /// Check if a process is still alive via kill(pid, 0).
+    #[cfg(unix)]
+    fn is_process_alive(pid: u32) -> bool {
+        // SAFETY: kill(pid, 0) with signal 0 only checks for process existence;
+        // it does not send any signal. pid is a valid u32 cast to i32.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn is_process_alive(_pid: u32) -> bool {
+        // On non-Unix, conservatively assume the process is alive
+        true
+    }
+
+    /// Inner find_free_slot without the reclaim fallback (used for retry after reclaim).
+    fn find_free_slot_inner(&self) -> HorusResult<u32> {
+        let header = self.header();
+
+        loop {
+            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
+            let (generation, slot_id) = unpack_tagged_head(tagged_head);
+            if slot_id != INVALID_SLOT {
+                let slot = self.slot(slot_id);
+                let next = slot.next_free.load(Ordering::Acquire);
+
+                let new_tagged = pack_tagged_head(generation.wrapping_add(1), next);
+                if header
+                    .free_stack_head
+                    .compare_exchange_weak(
+                        tagged_head,
+                        new_tagged,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    return Ok(slot_id);
+                }
+                continue;
+            }
+            break;
+        }
+
         Err(HorusError::Memory(
             "No free tensor slots available".to_string(),
         ))
@@ -1015,7 +1136,8 @@ impl TensorPool {
             core::sync::atomic::compiler_fence(Ordering::SeqCst);
         }
 
-        // Mark as free
+        // Mark as free and clear owner
+        slot.owner_pid.store(0, Ordering::Release);
         slot.flags.store(SLOT_FREE, Ordering::Release);
 
         // Push to free stack (ABA-safe via generation counter)
@@ -1043,6 +1165,31 @@ impl TensorPool {
         self.slot_return_count.fetch_add(1, Ordering::Release);
         let _guard = self.slot_mutex.lock().unwrap_or_else(|e| e.into_inner());
         self.slot_available.notify_all();
+    }
+
+    /// Push a slot back onto the Treiber free stack (ABA-safe via generation counter).
+    ///
+    /// Used by `reclaim_dead_slots()` to return reclaimed slots.
+    /// Unlike `return_slot()`, this does NOT zero the data region or notify waiters
+    /// — the caller is responsible for any cleanup before calling this.
+    fn push_free_slot(&self, slot_id: u32) {
+        let header = self.header();
+        let slot = self.slot(slot_id);
+
+        loop {
+            let tagged_head = header.free_stack_head.load(Ordering::Acquire);
+            let (generation, current_head) = unpack_tagged_head(tagged_head);
+            slot.next_free.store(current_head, Ordering::Release);
+
+            let new_tagged = pack_tagged_head(generation.wrapping_add(1), slot_id);
+            if header
+                .free_stack_head
+                .compare_exchange_weak(tagged_head, new_tagged, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
     }
 
     /// Zero a memory region using per-byte volatile writes.
@@ -1659,6 +1806,126 @@ mod tests {
         // release() implicitly via TensorHandle; but since we're testing the raw
         // pool API, we release manually.
         pool.release(&_tensor);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    // ========================================================================
+    // Crash recovery tests
+    // ========================================================================
+
+    /// Test: dead-process tensor slot reclamation.
+    ///
+    /// Allocates all slots, writes a fake dead PID into one slot's owner_pid,
+    /// then attempts another allocation. The allocator should reclaim the dead
+    /// slot as a last resort and succeed.
+    #[test]
+    #[cfg(unix)]
+    fn test_reclaim_dead_process_slots() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 2,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9900, config).expect("Failed to create pool");
+
+        // Allocate both slots
+        let t1 = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc t1");
+        let t2 = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc t2");
+
+        // Pool is now full — verify we can't allocate
+        assert!(pool.alloc(&[64], TensorDtype::U8, Device::cpu()).is_err());
+
+        // Simulate process death: write a guaranteed-dead PID into slot 0's owner_pid.
+        // PID 2^30 + 1 (1073741825) should not exist on any reasonable system.
+        let dead_pid: u32 = (1 << 30) + 1;
+        let slot = pool.slot(t1.slot_id);
+        slot.owner_pid.store(dead_pid, Ordering::Release);
+
+        // Now allocation should succeed because reclaim_dead_slots kicks in
+        let t3 = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc after reclaim should succeed");
+
+        // The reclaimed slot should be valid
+        assert_eq!(pool.refcount(&t3), 1);
+
+        // Clean up
+        pool.release(&t3);
+        pool.release(&t2);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// Test: reclaim_dead_slots does NOT reclaim slots owned by living processes.
+    #[test]
+    #[cfg(unix)]
+    fn test_reclaim_skips_live_process_slots() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 2,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9901, config).expect("Failed to create pool");
+
+        // Allocate both slots — they're owned by the current (living) process
+        let t1 = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc t1");
+        let _t2 = pool
+            .alloc(&[64], TensorDtype::U8, Device::cpu())
+            .expect("alloc t2");
+
+        // Pool full, owner is alive → reclaim should find nothing → alloc fails
+        assert!(pool.alloc(&[64], TensorDtype::U8, Device::cpu()).is_err());
+
+        // Verify refcount unchanged (no spurious reclamation)
+        assert_eq!(pool.refcount(&t1), 1);
+
+        // Clean up
+        pool.release(&t1);
+        pool.release(&_t2);
+        std::fs::remove_file(&pool.shm_path).ok();
+    }
+
+    /// Test: reclaim_dead_slots returns count of reclaimed slots.
+    #[test]
+    #[cfg(unix)]
+    fn test_reclaim_dead_slots_returns_count() {
+        let config = TensorPoolConfig {
+            pool_size: 1024 * 1024,
+            max_slots: 4,
+            slot_alignment: 64,
+            allocator: Default::default(),
+        };
+        let pool = TensorPool::new(9902, config).expect("Failed to create pool");
+
+        // Allocate 3 slots
+        let t1 = pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap();
+        let t2 = pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap();
+        let t3 = pool.alloc(&[64], TensorDtype::U8, Device::cpu()).unwrap();
+
+        // Mark 2 of them as owned by dead PIDs
+        let dead_pid: u32 = (1 << 30) + 2;
+        pool.slot(t1.slot_id)
+            .owner_pid
+            .store(dead_pid, Ordering::Release);
+        pool.slot(t2.slot_id)
+            .owner_pid
+            .store(dead_pid + 1, Ordering::Release);
+
+        // Call reclaim directly
+        let reclaimed = pool.reclaim_dead_slots();
+        assert_eq!(reclaimed, 2, "Should reclaim exactly 2 dead slots");
+
+        // t3 should still be allocated with live PID
+        assert_eq!(pool.refcount(&t3), 1);
+
+        pool.release(&t3);
         std::fs::remove_file(&pool.shm_path).ok();
     }
 }

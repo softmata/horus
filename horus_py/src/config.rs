@@ -108,7 +108,7 @@ impl PySchedulerConfig {
     /// `Scheduler.deploy()`, `Scheduler.safety_critical()`, etc.
     #[staticmethod]
     pub fn minimal() -> Self {
-        let rust_config = SchedulerConfig::minimal();
+        let rust_config = SchedulerConfig::default();
         Self::from_rust_config(rust_config, "Minimal")
     }
 
@@ -179,7 +179,7 @@ impl PySchedulerConfig {
 impl PySchedulerConfig {
     /// Convert to horus_core's SchedulerConfig, faithfully representing ALL stored fields.
     pub fn to_core_config(&self) -> SchedulerConfig {
-        let mut config = SchedulerConfig::minimal();
+        let mut config = SchedulerConfig::default();
 
         config.timing.global_rate_hz = self.tick_rate;
 

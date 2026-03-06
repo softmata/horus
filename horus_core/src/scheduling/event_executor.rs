@@ -270,6 +270,7 @@ mod tests {
         SharedMonitors {
             profiler: Arc::new(Mutex::new(super::super::profiler::RuntimeProfiler::new())),
             blackbox: None,
+            verbose: true,
         }
     }
 
@@ -313,6 +314,7 @@ mod tests {
             is_paused: false,
             rt_stats: None,
             execution_class: ExecutionClass::Event(topic.to_string()),
+            has_custom_failure_policy: false,
         }
     }
 

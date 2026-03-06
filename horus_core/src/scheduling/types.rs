@@ -105,6 +105,7 @@ mod execution_class_tests {
             is_paused: false,
             rt_stats: None,
             execution_class: class,
+            has_custom_failure_policy: false,
         }
     }
 
@@ -337,6 +338,8 @@ pub(crate) struct RegisteredNode {
     pub(crate) rate_hz: Option<f64>,
     pub(crate) last_tick: Option<Instant>,
     pub(crate) failure_handler: FailureHandler,
+    /// Whether the user explicitly set a failure policy (don't override in apply_fault_tolerance)
+    pub(crate) has_custom_failure_policy: bool,
     pub(crate) is_rt_node: bool,
     pub(crate) wcet_budget: Option<Duration>,
     pub(crate) deadline: Option<Duration>,
@@ -357,4 +360,6 @@ pub(crate) struct RegisteredNode {
 pub(crate) struct SharedMonitors {
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
+    /// When false, suppresses non-emergency print_line calls in executor threads.
+    pub verbose: bool,
 }

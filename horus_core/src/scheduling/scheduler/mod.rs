@@ -198,7 +198,7 @@ impl Scheduler {
     /// // Configure with builder methods
     /// let scheduler = Scheduler::new().tick_hz(500.0);
     /// ```
-    /// Create a scheduler with `SchedulerConfig::minimal()` defaults.
+    /// Create a scheduler with default configuration.
     ///
     /// Configuration is deferred until `run()` via builder methods.
     /// Call `.tick_hz()`, `.safety_monitor()`, `.with_blackbox()`, etc. to configure.
@@ -219,7 +219,7 @@ impl Scheduler {
             );
         }
 
-        let config = super::config::SchedulerConfig::minimal();
+        let config = super::config::SchedulerConfig::default();
         let period = Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
 
         Self {
@@ -253,64 +253,6 @@ impl Scheduler {
     }
 
     // ========================================================================
-    // PRESET CONSTRUCTORS
-    // ========================================================================
-
-    /// Create a scheduler from a custom configuration.
-    ///
-    /// Prefer using `Scheduler::new()` with builder methods instead.
-    /// This is kept for Python bindings and backward compatibility.
-    #[doc(hidden)]
-    pub fn from_config(config: super::config::SchedulerConfig) -> Self {
-        let running = Arc::new(AtomicBool::new(true));
-        let now = Instant::now();
-
-        // Detect runtime capabilities (~30-100μs one-time cost)
-        let caps = RuntimeCapabilities::detect();
-
-        // Clean up stale SHM namespaces from crashed processes (<1ms)
-        let cleanup = crate::memory::platform::cleanup_stale_namespaces();
-        if cleanup.removed > 0 {
-            log::info!(
-                "Cleaned {} stale SHM namespace(s), freed {} bytes",
-                cleanup.removed,
-                cleanup.bytes_freed
-            );
-        }
-
-        let mut s = Self {
-            nodes: Vec::new(),
-            running,
-            scheduler_name: "Scheduler".to_string(),
-
-            tick: TickState {
-                period: Duration::from_micros(16667), // overwritten by apply_config
-                current: 0,
-                last_instant: now,
-            },
-            rt: RtState {
-                capabilities: Some(caps),
-                degradations: Vec::new(),
-            },
-            monitor: MonitorState {
-                safety: None,
-                blackbox: None,
-                telemetry: None,
-                profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
-                last_snapshot: now,
-                working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                watchdog_expired_buf: Vec::new(),
-            },
-            replay: None,
-            recording: None,
-            deterministic: None,
-            pending_config: config.clone(),
-        };
-        s.apply_config(config);
-        s
-    }
-
-    // ========================================================================
     // BUILDER METHODS — opt in to features one at a time
     // ========================================================================
 
@@ -326,6 +268,18 @@ impl Scheduler {
             self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
             self.pending_config.timing.global_rate_hz = hz;
         }
+        self
+    }
+
+    /// Enable or disable verbose logging from executor threads.
+    ///
+    /// When disabled, suppresses non-emergency messages from the RT thread
+    /// (WCET warnings, pre/post-condition failures, startup/shutdown notices).
+    /// Emergency-stop messages are always printed regardless of this setting.
+    ///
+    /// Default: `true` (verbose logging enabled).
+    pub fn verbose(mut self, enabled: bool) -> Self {
+        self.pending_config.monitoring.verbose = enabled;
         self
     }
 
@@ -1112,9 +1066,15 @@ impl Scheduler {
     }
 
     /// Apply fault tolerance configuration to all registered nodes.
+    ///
+    /// Nodes with user-specified failure policies (via `.failure_policy()`) are
+    /// never overridden — their handler is only reset, preserving the policy.
     fn apply_fault_tolerance(&mut self, circuit_breaker: bool) {
         for registered in self.nodes.iter_mut() {
-            if circuit_breaker {
+            if registered.has_custom_failure_policy {
+                // User explicitly set a policy — respect it, just reset state
+                registered.failure_handler.reset();
+            } else if circuit_breaker {
                 registered.failure_handler.reset();
             } else {
                 registered.failure_handler =
@@ -1561,6 +1521,7 @@ impl Scheduler {
         let node_rate = custom_rate.or_else(|| node.rate_hz());
 
         let resolved_tier = tier.unwrap_or_default();
+        let has_custom_failure_policy = failure_policy.is_some();
         let policy = failure_policy.unwrap_or_else(|| resolved_tier.default_failure_policy());
         // Allocate RtStats for RT nodes
         let rt_stats = if is_rt_node {
@@ -1582,6 +1543,7 @@ impl Scheduler {
                 None
             },
             failure_handler: super::fault_tolerance::FailureHandler::new(policy),
+            has_custom_failure_policy,
             is_rt_node,
             wcet_budget,
             deadline,
@@ -1730,7 +1692,24 @@ impl Scheduler {
         // Safety config runs here so it sees ALL nodes (added after builder methods)
         self.apply_safety_config(&config.realtime);
         self.apply_fault_tolerance(config.circuit_breaker);
-        self.apply_rt_optimizations(&config.realtime, &config.resources);
+
+        // Auto-enable mlockall if: RT nodes present, system permits it, and user didn't
+        // explicitly disable it. This prevents 10-100ms page fault spikes under memory pressure.
+        let has_rt_nodes = self
+            .nodes
+            .iter()
+            .any(|n| matches!(n.execution_class, super::types::ExecutionClass::Rt));
+        let mut rt_config = config.realtime.clone();
+        if has_rt_nodes && !rt_config.memory_locking {
+            if let Some(ref caps) = self.rt.capabilities {
+                if caps.mlockall_permitted {
+                    rt_config.memory_locking = true;
+                    self.pending_config.realtime.memory_locking = true;
+                }
+            }
+        }
+
+        self.apply_rt_optimizations(&rt_config, &config.resources);
 
         // Only apply monitoring if not already set by eager builders (with_blackbox, etc.)
         if self.monitor.blackbox.is_none() {
@@ -1754,8 +1733,10 @@ impl Scheduler {
         }
 
         // Deterministic mode (may already be set by .deterministic() builder)
-        if config.deterministic.is_some() && self.deterministic.is_none() {
-            self.apply_deterministic_config(config.deterministic.as_ref().unwrap());
+        if let Some(ref det) = config.deterministic {
+            if self.deterministic.is_none() {
+                self.apply_deterministic_config(det);
+            }
         }
 
         if let Some(ref recording_yaml) = config.recording {
@@ -1782,6 +1763,7 @@ impl Scheduler {
             let start_time = Instant::now();
 
             self.finalize_config();
+            self.install_panic_hook();
             self.setup_signal_handlers();
             self.initialize_filtered_nodes(node_filter);
             Self::setup_control_directory();
@@ -1804,6 +1786,7 @@ impl Scheduler {
             let shared_monitors = super::types::SharedMonitors {
                 profiler: self.monitor.profiler.clone(),
                 blackbox: self.monitor.blackbox.clone(),
+                verbose: self.pending_config.monitoring.verbose,
             };
 
             let rt_executor = if !groups.rt_nodes.is_empty() {
@@ -1811,11 +1794,29 @@ impl Scheduler {
                     "Starting RT executor with {} RT nodes on dedicated thread",
                     groups.rt_nodes.len()
                 ));
+                // Determine RT CPU affinity: user override > detected recommended CPUs > empty
+                let rt_cpus = if let Some(ref cores) = self.pending_config.resources.cpu_cores {
+                    cores.clone()
+                } else if let Some(ref caps) = self.rt.capabilities {
+                    if !caps.recommended_rt_cpus.is_empty() {
+                        // Use top recommended CPU(s)
+                        caps.recommended_rt_cpus.clone()
+                    } else if caps.cpu_count > 1 {
+                        // Fallback: highest-numbered CPU (least system interference)
+                        vec![caps.cpu_count - 1]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+
                 Some(super::rt_executor::RtExecutor::start(
                     groups.rt_nodes,
                     self.running.clone(),
                     self.tick.period,
                     shared_monitors.clone(),
+                    rt_cpus,
                 ))
             } else {
                 None
@@ -1912,6 +1913,70 @@ impl Scheduler {
     }
 
     /// Set up Ctrl+C and SIGTERM signal handlers for graceful shutdown.
+    /// Install a global panic hook for forensic logging.
+    ///
+    /// Chains with the previous hook and adds:
+    /// - Blackbox flush to disk (if configured)
+    /// - Crash report written to /tmp/horus_crash_<pid>.log
+    fn install_panic_hook(&self) {
+        let blackbox = self.monitor.blackbox.clone();
+        let scheduler_name = self.scheduler_name.clone();
+        let prev_hook = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |info| {
+            // 1. Flush blackbox to disk
+            if let Some(ref bb) = blackbox {
+                if let Ok(mut bb) = bb.try_lock() {
+                    bb.flush_wal();
+                }
+            }
+
+            // 2. Build crash report
+            let thread = std::thread::current();
+            let thread_name = thread.name().unwrap_or("<unnamed>");
+            let pid = std::process::id();
+            let location = if let Some(loc) = info.location() {
+                format!("{}:{}:{}", loc.file(), loc.line(), loc.column())
+            } else {
+                "unknown location".to_string()
+            };
+            let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic payload".to_string()
+            };
+
+            let report = format!(
+                "=== HORUS Crash Report ===\n\
+                 Scheduler: {}\n\
+                 PID: {}\n\
+                 Thread: {}\n\
+                 Location: {}\n\
+                 Panic: {}\n\
+                 Blackbox flushed: {}\n\
+                 ===========================\n",
+                scheduler_name,
+                pid,
+                thread_name,
+                location,
+                payload,
+                blackbox.is_some(),
+            );
+
+            // 3. Write crash report to /tmp (best-effort, no allocation beyond the format above)
+            let crash_path = format!("/tmp/horus_crash_{}.log", pid);
+            let _ = std::fs::write(&crash_path, &report);
+
+            // 4. Also print to stderr (visible in logs)
+            eprintln!("{}", report);
+
+            // 5. Chain to previous hook
+            prev_hook(info);
+        }));
+    }
+
     fn setup_signal_handlers(&self) {
         let running = self.running.clone();
         if let Err(e) = ctrlc::set_handler(move || {
@@ -2559,8 +2624,18 @@ impl Scheduler {
     /// With the simplified flat namespace model, topics are shared globally
     /// and should be cleaned up manually via `horus clean` command.
     fn cleanup_session() {
-        // No-op: flat namespace means no session-specific cleanup needed
-        // Use `horus clean --shm` to remove all shared memory
+        // Clean up this process's SHM namespace on exit.
+        // On normal exit, the namespace persists until the process group dies.
+        // On signal-triggered exit, we proactively clean stale namespaces
+        // so a restart doesn't see orphaned SHM files.
+        let cleanup = crate::memory::platform::cleanup_stale_namespaces();
+        if cleanup.removed > 0 {
+            log::info!(
+                "Session cleanup: removed {} stale SHM namespace(s), freed {} bytes",
+                cleanup.removed,
+                cleanup.bytes_freed
+            );
+        }
     }
 
     /// Snapshot node state to registry (for crash forensics and persistence)

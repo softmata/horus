@@ -6076,7 +6076,8 @@ fn slot_index_always_valid_at_wrap_boundary() {
         assert!(index_at_max < cap, "Index at u64::MAX out of bounds");
 
         // And at 0 (after wrap)
-        let index_at_zero = 0u64 & mask;
+        let zero = 0u64;
+        let index_at_zero = zero & mask;
         assert!(index_at_zero < cap, "Index at 0 out of bounds");
     }
 }

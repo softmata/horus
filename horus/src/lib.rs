@@ -119,9 +119,9 @@ pub mod prelude {
 
     // === HFrame (coordinate transforms) ===
     pub use horus_library::hframe::{
-        timestamp_now, FrameInfo, HFrame, HFrameConfig, HFrameStats, Transform,
-        TransformQuery, TransformQueryFrom,
-        FrameBuilder, StaticFrameBuilder, StaticFrameBuilderWithParent,
+        timestamp_now, FrameBuilder, FrameInfo, HFrame, HFrameConfig, HFrameStats,
+        StaticFrameBuilder, StaticFrameBuilderWithParent, Transform, TransformQuery,
+        TransformQueryFrom,
     };
 
     // === Message types (all standard robotics messages) ===

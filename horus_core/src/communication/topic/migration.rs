@@ -45,8 +45,11 @@ pub(crate) struct BackendMigrator<'a> {
 }
 
 impl<'a> BackendMigrator<'a> {
-    /// Default spin count before yield
-    pub const DEFAULT_SPIN_COUNT: u32 = 100;
+    /// Default spin count before yield.
+    ///
+    /// 1000 spins ≈ 1-10μs depending on CPU, covering typical OS preemption
+    /// windows where a producer could be suspended mid-write.
+    pub const DEFAULT_SPIN_COUNT: u32 = 1000;
 
     /// Create a new migrator for the given header
     pub fn new(header: &'a TopicHeader) -> Self {
@@ -112,13 +115,16 @@ impl<'a> BackendMigrator<'a> {
     /// finish. There is no ref-count to check — this is a best-effort
     /// quiescence barrier.
     fn drain_in_flight(&self) -> bool {
-        // Spin briefly to let sub-microsecond operations complete
+        // Spin to let sub-microsecond operations complete (~1-10μs at 1000 spins)
         for _ in 0..self.spin_count {
             std::sync::atomic::fence(Ordering::SeqCst);
             std::hint::spin_loop();
         }
-        // Yield once to allow any preempted threads to finish
-        std::thread::yield_now();
+        // Yield multiple times to give the OS scheduler opportunities to
+        // run any preempted producer threads that are mid-write.
+        for _ in 0..3 {
+            std::thread::yield_now();
+        }
         true
     }
 

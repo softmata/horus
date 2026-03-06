@@ -122,14 +122,24 @@ jobs:
           sudo chmod 777 /dev/shm/horus /dev/shm/horus/topics /dev/shm/horus/heartbeats
 
       # Build and test in separate steps to avoid crate-type collision
+      # Exclude horus_py from workspace build/test — it requires Python dev headers
+      # and its extension-module feature prevents test linking. horus_py is tested
+      # separately below with --no-default-features, and fully built in build-wheels.yml.
       - name: Build Workspace
-        run: cargo build --workspace
+        run: cargo build --workspace --exclude horus_py
 
       - name: Run Tests
         run: |
           # Use single-threaded tests to avoid race conditions in static discovery topic
           # (UnsafeCell<LocalState> is not thread-safe for parallel test access)
-          cargo test --workspace --no-fail-fast -- --test-threads=1
+          cargo test --workspace --exclude horus_py --no-fail-fast -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Run horus_py unit tests
+        run: |
+          # Test horus_py with extension-module disabled (avoids Python linker dependency)
+          cargo test -p horus_py --no-default-features -- --test-threads=1
         env:
           RUST_BACKTRACE: 1
 

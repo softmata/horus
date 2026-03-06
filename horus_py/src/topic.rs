@@ -252,21 +252,23 @@ enum TopicType {
 /// It automatically selects the optimal backend based on configuration.
 ///
 /// Examples:
-///     # Local shared memory (fastest for same-machine)
-///     topic = Topic(CmdVel)
+/// ```python
+/// # Local shared memory (fastest for same-machine)
+/// topic = Topic(CmdVel)
 ///
-///     # With custom capacity
-///     topic = Topic(Pose2D, capacity=2048)
+/// # With custom capacity
+/// topic = Topic(Pose2D, capacity=2048)
 ///
-///     # Network communication
-///     topic = Topic(CmdVel, endpoint="cmdvel@192.168.1.5:9000")  # Direct UDP
-///     topic = Topic(CmdVel, endpoint="cmdvel@localhost")         # Unix socket
-///     topic = Topic(CmdVel, endpoint="cmdvel@router")            # Via router
+/// # Network communication
+/// topic = Topic(CmdVel, endpoint="cmdvel@192.168.1.5:9000")  # Direct UDP
+/// topic = Topic(CmdVel, endpoint="cmdvel@localhost")         # Unix socket
+/// topic = Topic(CmdVel, endpoint="cmdvel@router")            # Via router
 ///
-///     # Backend hints for fine-grained control
-///     topic = Topic(CmdVel, backend="direct")    # DirectChannel (~3ns)
-///     topic = Topic(CmdVel, backend="spsc")      # SPSC intra-process (~18ns)
-///     topic = Topic(CmdVel, backend="mpmc_shm")  # MPMC shared memory (~167ns)
+/// # Backend hints for fine-grained control
+/// topic = Topic(CmdVel, backend="direct")    # DirectChannel (~3ns)
+/// topic = Topic(CmdVel, backend="spsc")      # SPSC intra-process (~18ns)
+/// topic = Topic(CmdVel, backend="mpmc_shm")  # MPMC shared memory (~167ns)
+/// ```
 #[pyclass(name = "Topic")]
 pub struct PyTopic {
     topic_type: TopicType,

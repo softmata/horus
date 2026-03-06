@@ -47,7 +47,7 @@ pub mod topic;
 
 // Re-export commonly used types for convenience
 pub use pod::PodMessage;
-pub use topic::{Topic, TopicDescriptor, TopicMessage};
+pub use topic::{SendBlockingError, Topic, TopicDescriptor, TopicMessage};
 
 // Debug flag API for external tools (TUI monitor)
 #[doc(hidden)]

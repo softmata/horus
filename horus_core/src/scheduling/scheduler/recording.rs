@@ -86,6 +86,7 @@ impl Scheduler {
             is_paused: false,
             rt_stats: None,
             execution_class: super::super::types::ExecutionClass::BestEffort,
+            has_custom_failure_policy: false,
         });
 
         self.nodes.sort_by_key(|n| n.priority);

@@ -724,7 +724,10 @@ fn accept_deterministic_repeated_queries() {
 
     hf.update_transform(
         "robot",
-        &Transform::from_euler([1.23456789, -0.98765432, 3.14159265], [0.1, 0.2, 0.3]),
+        &Transform::from_euler(
+            [1.23456789, -0.98765432, std::f64::consts::PI],
+            [0.1, 0.2, 0.3],
+        ),
         1_000_000,
     )
     .unwrap();

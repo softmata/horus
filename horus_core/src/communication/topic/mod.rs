@@ -181,6 +181,27 @@ use spmc_intra::SpmcRing;
 use spsc_intra::SpscRing;
 
 // ============================================================================
+// SendBlockingError — returned when send_blocking() cannot deliver
+// ============================================================================
+
+/// Error returned by [`Topic::send_blocking`] when the message cannot be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendBlockingError {
+    /// The ring buffer remained full for the entire timeout duration.
+    Timeout,
+}
+
+impl std::fmt::Display for SendBlockingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => write!(f, "send_blocking timed out: ring buffer full"),
+        }
+    }
+}
+
+impl std::error::Error for SendBlockingError {}
+
+// ============================================================================
 // RingDrain trait — uniform push interface for drain protocol
 // ============================================================================
 
@@ -1551,6 +1572,60 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Send a message, blocking until the ring has space or the timeout expires.
+    ///
+    /// Unlike [`send()`](Self::send) which drops the message after a brief spin+yield
+    /// retry, this method guarantees delivery or returns an explicit timeout error.
+    /// Use this for critical command topics (emergency stop, motor setpoints) where
+    /// message loss is unacceptable.
+    ///
+    /// Strategy: spin briefly (256 iters), yield briefly (8 iters), then sleep in
+    /// 100μs increments until the deadline.
+    pub fn send_blocking(
+        &self,
+        msg: T,
+        timeout: std::time::Duration,
+    ) -> Result<(), SendBlockingError> {
+        let deadline = std::time::Instant::now() + timeout;
+
+        // Phase 1: try_send (immediate)
+        let mut msg = match self.try_send(msg) {
+            Ok(()) => return Ok(()),
+            Err(returned) => returned,
+        };
+
+        // Phase 2: spin (sub-microsecond latency range)
+        for _ in 0..256u32 {
+            std::hint::spin_loop();
+            msg = match self.try_send(msg) {
+                Ok(()) => return Ok(()),
+                Err(returned) => returned,
+            };
+        }
+
+        // Phase 3: yield (microsecond range)
+        for _ in 0..8u32 {
+            std::thread::yield_now();
+            msg = match self.try_send(msg) {
+                Ok(()) => return Ok(()),
+                Err(returned) => returned,
+            };
+        }
+
+        // Phase 4: sleep in 100μs increments until deadline
+        let sleep_step = std::time::Duration::from_micros(100);
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(SendBlockingError::Timeout);
+            }
+            std::thread::sleep(sleep_step);
+            msg = match self.try_send(msg) {
+                Ok(()) => return Ok(()),
+                Err(returned) => returned,
+            };
+        }
+    }
+
     /// Receive a message with optional logging.
     ///
     /// Fast path for DirectChannel-local (role=Both): inlined ring read,
@@ -2095,6 +2170,22 @@ where
     #[inline(always)]
     pub fn try_send(&self, msg: T) -> Result<(), T> {
         self.ring.try_send(msg)
+    }
+
+    /// Send a message, blocking until the ring has space or the timeout expires.
+    ///
+    /// Use this for critical command topics (emergency stop, motor setpoints) where
+    /// message loss is unacceptable. For high-frequency sensor data where dropping
+    /// stale frames is acceptable, prefer [`send()`](Self::send).
+    ///
+    /// Returns `Ok(())` if the message was sent, or `Err(SendBlockingError::Timeout)`
+    /// if the ring remained full for the entire timeout duration.
+    pub fn send_blocking(
+        &self,
+        msg: T,
+        timeout: std::time::Duration,
+    ) -> Result<(), SendBlockingError> {
+        self.ring.send_blocking(msg, timeout)
     }
 
     /// Low-level receive without logging/recording hooks.

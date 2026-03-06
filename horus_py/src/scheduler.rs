@@ -6,7 +6,6 @@ use horus_core::core::NodeMetrics;
 use horus_core::error::HorusError;
 use horus_core::scheduling::{
     CircuitState, FailurePolicy, NodeRegistration, NodeTier, Scheduler as CoreScheduler,
-    SchedulerConfig,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -536,7 +535,7 @@ impl PyScheduler {
         let core_config = config
             .as_ref()
             .map(|c| c.to_core_config())
-            .unwrap_or_else(SchedulerConfig::minimal);
+            .unwrap_or_default();
 
         let tick_rate = config.as_ref().map_or(100.0, |c| c.tick_rate);
 

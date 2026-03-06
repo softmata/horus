@@ -94,6 +94,26 @@ use super::{simd_aware_read, simd_aware_write};
 use crate::utils::unlikely;
 
 // ============================================================================
+// Safety macro: debug_unreachable
+// ============================================================================
+
+/// In debug builds, panics with a descriptive message. In release builds,
+/// compiles to `unreachable_unchecked()` for zero overhead.
+///
+/// Use this instead of bare `unreachable_unchecked()` to catch dispatch
+/// mismatches during development without paying any runtime cost in production.
+macro_rules! debug_unreachable {
+    ($($arg:tt)*) => {
+        {
+            #[cfg(debug_assertions)]
+            panic!($($arg)*);
+            #[cfg(not(debug_assertions))]
+            unsafe { std::hint::unreachable_unchecked() }
+        }
+    };
+}
+
+// ============================================================================
 // Type aliases for function pointers
 // ============================================================================
 
@@ -198,11 +218,15 @@ macro_rules! intra_send_fn {
 
             // SAFETY: backend UnsafeCell accessed from single thread (Topic is !Sync per-instance).
             // The $variant arm is guaranteed by set_dispatch_fn_ptrs() which only assigns this
-            // function when the backend matches. unreachable_unchecked is sound because migration
-            // (which changes the variant) always updates fn ptrs atomically via epoch_guard above.
+            // function when the backend matches. debug_unreachable! compiles to
+            // unreachable_unchecked in release (sound because migration always updates fn ptrs
+            // atomically via epoch_guard above) and panics in debug for early detection.
             let ring = match unsafe { &*topic.backend.get() } {
                 BackendStorage::$variant(r) => r,
-                _ => unsafe { std::hint::unreachable_unchecked() },
+                _ => debug_unreachable!(
+                    "dispatch: expected {} variant in send",
+                    stringify!($variant)
+                ),
             };
             let result = ring.try_send(msg);
 
@@ -229,7 +253,10 @@ macro_rules! intra_recv_fn {
             // SAFETY: same single-thread + variant guarantee as intra_send_fn.
             let ring = match unsafe { &*topic.backend.get() } {
                 BackendStorage::$variant(r) => r,
-                _ => unsafe { std::hint::unreachable_unchecked() },
+                _ => debug_unreachable!(
+                    "dispatch: expected {} variant in recv",
+                    stringify!($variant)
+                ),
             };
             let result = ring.try_recv();
 
