@@ -2,7 +2,25 @@
 use super::Node;
 use std::time::Duration;
 
-/// Priority levels for real-time scheduling
+/// Priority levels for real-time scheduling.
+///
+/// Lower numeric value = higher priority (matches POSIX convention).
+///
+/// # Example
+///
+/// ```rust
+/// use horus_core::core::RtPriority;
+///
+/// // Use predefined levels
+/// let safety = RtPriority::Critical;  // value = 0
+/// let sensor = RtPriority::High;      // value = 10
+/// let planner = RtPriority::Medium;   // value = 50
+/// let logger = RtPriority::Low;       // value = 100
+///
+/// // Or a custom value
+/// let custom = RtPriority::Custom(25);
+/// assert_eq!(custom.value(), 25);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RtPriority {
     /// Highest priority - critical control loops
@@ -29,7 +47,24 @@ impl RtPriority {
     }
 }
 
-/// Real-time class for deadline handling
+/// Real-time class for deadline handling.
+///
+/// Determines how strictly deadlines are enforced and what happens on violation.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+/// use std::time::Duration;
+///
+/// impl RtNode for SafetyMonitor {
+///     fn wcet_budget(&self) -> Duration { Duration::from_micros(50) }
+///
+///     fn rt_class(&self) -> RtClass {
+///         RtClass::Hard  // Emergency stop on deadline miss
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RtClass {
     /// Must never miss deadline (safety-critical, surgical robots)
@@ -40,7 +75,24 @@ pub enum RtClass {
     Soft,
 }
 
-/// Deadline miss policy
+/// Policy for handling deadline misses.
+///
+/// Chosen automatically based on [`RtClass`], or overridden per-node.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+/// use std::time::Duration;
+///
+/// impl RtNode for VideoEncoder {
+///     fn wcet_budget(&self) -> Duration { Duration::from_millis(5) }
+///
+///     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+///         DeadlineMissPolicy::Skip  // Drop frame, keep streaming
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeadlineMissPolicy {
     /// Log warning and continue
@@ -64,7 +116,27 @@ pub struct WCETViolation {
     pub overrun: Duration,
 }
 
-/// Real-time statistics for a node
+/// Real-time statistics for a node.
+///
+/// Tracks execution time metrics using exponential moving average (EMA).
+///
+/// # Example
+///
+/// ```rust
+/// use horus_core::core::RtStats;
+/// use std::time::Duration;
+///
+/// let mut stats = RtStats::default();
+///
+/// // Record execution times
+/// stats.record_execution(Duration::from_micros(95));
+/// stats.record_execution(Duration::from_micros(105));
+/// stats.record_execution(Duration::from_micros(100));
+///
+/// assert_eq!(stats.total_ticks, 3);
+/// assert_eq!(stats.worst_execution, Duration::from_micros(105));
+/// println!("{}", stats.summary());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct RtStats {
     /// Number of deadline misses

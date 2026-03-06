@@ -1,10 +1,30 @@
 use horus_core::core::LogSummary;
 use serde::{Deserialize, Serialize};
 
-/// Command velocity message for robot control
+/// 2D velocity command for differential-drive / unicycle robots.
 ///
-/// Standard message type used across the HORUS ecosystem for controlling
-/// robot movement. Contains linear and angular velocity commands.
+/// Use `CmdVel` for **2D mobile robots** (ground robots, AMRs) where you only
+/// need forward velocity and yaw rate. For **3D robots** (drones, manipulators),
+/// use [`Twist`](crate::messages::geometry::Twist) instead.
+///
+/// `CmdVel` is a POD type (12 bytes + timestamp) — zero-copy transfer at ~50ns.
+///
+/// # CmdVel vs Twist
+///
+/// | | `CmdVel` | `Twist` |
+/// |---|---|---|
+/// | DOF | 2 (linear x, angular z) | 6 (full linear + angular) |
+/// | Precision | f32 | f64 |
+/// | Use case | Ground robots | Drones, arms, general 3D |
+/// | Size | 16 bytes | 56 bytes |
+///
+/// Conversions are provided in both directions via `From`:
+/// ```rust
+/// # use horus_library::messages::{CmdVel, geometry::Twist};
+/// let cmd = CmdVel::new(1.0, 0.5);
+/// let twist: Twist = cmd.into();  // linear[0]=1.0, angular[2]=0.5
+/// let back: CmdVel = twist.into();
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[repr(C)]
 pub struct CmdVel {

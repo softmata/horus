@@ -573,7 +573,7 @@ impl Scheduler {
     /// use horus_core::scheduling::CircuitState;
     ///
     /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(my_node).order(10).done();
+    /// scheduler.add(my_node).order(10).build();
     ///
     /// if let Some(state) = scheduler.circuit_state("my_node") {
     ///     match state {
@@ -1405,7 +1405,7 @@ impl Scheduler {
     /// Add a node using the fluent builder API.
     ///
     /// This is the **recommended** way to add nodes. No `Box::new()` required!
-    /// Call `.done()` on the builder to register the node.
+    /// Call `.build()` on the builder to register the node.
     ///
     /// # Example
     /// ```rust,ignore
@@ -1416,7 +1416,7 @@ impl Scheduler {
     /// // Simple - just node and order
     /// scheduler.add(MyNode::new())
     ///     .order(0)
-    ///     .done();
+    ///     .build();
     ///
     /// // With full RT configuration
     /// scheduler.add(MotorController::new())
@@ -1424,12 +1424,12 @@ impl Scheduler {
     ///     .rate_hz(1000.0)  // 1kHz
     ///     .rt()
     ///     .wcet_us(500)     // 500μs max execution
-    ///     .done();
+    ///     .build();
     ///
     /// // Chain multiple nodes
-    /// scheduler.add(SensorNode::new()).order(0).done();
-    /// scheduler.add(ControlNode::new()).order(1).rt().done();
-    /// scheduler.add(LoggerNode::new()).order(100).done();
+    /// scheduler.add(SensorNode::new()).order(0).build();
+    /// scheduler.add(ControlNode::new()).order(1).rt().build();
+    /// scheduler.add(LoggerNode::new()).order(100).build();
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
         super::node_builder::NodeBuilder::new(self, Box::new(node))
@@ -1447,7 +1447,7 @@ impl Scheduler {
     /// ```rust,ignore
     /// scheduler.add_rt(MotorController::new())
     ///     .order(0)
-    ///     .done();
+    ///     .build();
     /// ```
     pub fn add_rt<N: crate::core::RtNode + 'static>(
         &mut self,

@@ -93,7 +93,7 @@ impl PyImage {
     #[pyo3(signature = (height, width, encoding="rgb8"))]
     fn new(height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
-        let img = Image::new(height, width, enc)
+        let img = Image::new(width, height, enc)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
         Ok(Self { inner: img })
     }
@@ -127,7 +127,7 @@ impl PyImage {
             infer_encoding(&shape_tuple, &dtype_name)?
         };
 
-        let mut img = Image::new(height, width, enc)
+        let mut img = Image::new(width, height, enc)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
 
         let np = py.import("numpy")?;
@@ -169,7 +169,7 @@ impl PyImage {
     #[pyo3(signature = (data, height, width, encoding="rgb8"))]
     fn from_bytes(data: &[u8], height: u32, width: u32, encoding: &str) -> PyResult<Self> {
         let enc = parse_encoding(encoding)?;
-        let mut img = Image::new(height, width, enc)
+        let mut img = Image::new(width, height, enc)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create image: {}", e)))?;
 
         let expected = img.nbytes() as usize;

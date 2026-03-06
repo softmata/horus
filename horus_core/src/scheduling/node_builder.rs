@@ -18,7 +18,7 @@
 //!     .order(0)
 //!     .rate_hz(100.0)
 //!     .rt()
-//!     .done();
+//!     .build();
 //! ```
 
 use super::types::{ExecutionClass, NodeKind};
@@ -27,7 +27,7 @@ use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
 ///
-/// Most users should use `Scheduler::add(node).rt().done()` instead.
+/// Most users should use `Scheduler::add(node).rt().build()` instead.
 /// This type exists for advanced use cases like Python bindings.
 #[doc(hidden)]
 pub struct NodeRegistration {
@@ -284,7 +284,7 @@ impl NodeRegistration {
 
 /// Builder for adding a node to the scheduler with fluent configuration.
 ///
-/// Created by `Scheduler::node()`. Call `.done()` to register the node.
+/// Created by `Scheduler::node()`. Call `.build()` to register the node.
 ///
 /// # Example
 /// ```rust,ignore
@@ -292,9 +292,9 @@ impl NodeRegistration {
 ///     .order(0)
 ///     .rate_hz(100.0)
 ///     .rt()
-///     .done();
+///     .build();
 /// ```
-#[must_use = "call .done() to register the node — dropping this builder discards the registration"]
+#[must_use = "call .build() to register the node — dropping this builder discards the registration"]
 pub struct NodeBuilder<'a> {
     scheduler: &'a mut super::scheduler::Scheduler,
     config: NodeRegistration,
@@ -404,9 +404,14 @@ impl<'a> NodeBuilder<'a> {
     /// ```rust,ignore
     /// scheduler.add(my_node)
     ///     .order(0)
-    ///     .done();
+    ///     .build();
     /// ```
-    pub fn done(self) -> &'a mut super::scheduler::Scheduler {
+    pub fn build(self) -> &'a mut super::scheduler::Scheduler {
         self.scheduler.add_configured(self.config)
+    }
+
+    /// Alias for [`build()`](Self::build) — kept for backward compatibility.
+    pub fn done(self) -> &'a mut super::scheduler::Scheduler {
+        self.build()
     }
 }

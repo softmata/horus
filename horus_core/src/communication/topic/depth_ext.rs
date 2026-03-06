@@ -21,10 +21,10 @@ mod tests {
     fn test_depth_topic_roundtrip() {
         let topic: Topic<DepthImage> = Topic::new("test/depth_topic_roundtrip_unified").unwrap();
 
-        let mut depth = DepthImage::new(2, 3, TensorDtype::F32).unwrap();
+        let mut depth = DepthImage::new(3, 2, TensorDtype::F32).unwrap();
 
-        assert_eq!(depth.height(), 2);
         assert_eq!(depth.width(), 3);
+        assert_eq!(depth.height(), 2);
         assert!(depth.is_meters());
 
         depth.set_depth(0, 0, 1.5).unwrap();

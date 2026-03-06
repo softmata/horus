@@ -30,7 +30,7 @@ pub enum DLPackImportError {
 
 impl From<DLPackImportError> for crate::error::HorusError {
     fn from(err: DLPackImportError) -> Self {
-        crate::error::HorusError::Memory(err.to_string())
+        crate::error::HorusError::Memory(err.to_string().into())
     }
 }
 

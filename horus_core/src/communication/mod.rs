@@ -41,6 +41,7 @@
 //! topic.send(MotorCommand { velocity: 1.0, torque: 0.5 });
 //! ```
 
+mod macros;
 pub(crate) mod network;
 pub mod pod;
 pub mod topic;

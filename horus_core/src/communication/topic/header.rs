@@ -460,7 +460,7 @@ impl TopicHeader {
         }
 
         Err(HorusError::Communication(
-            "No available participant slots".to_string(),
+            "No available participant slots".to_string().into(),
         ))
     }
 

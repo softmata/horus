@@ -401,7 +401,7 @@ impl HFrameCore {
             HorusError::Communication(format!(
                 "No transform path between frame {} and frame {}",
                 src, dst
-            ))
+            ).into())
         })?;
 
         // Check time range for each non-root frame in the chain
@@ -446,7 +446,7 @@ impl HFrameCore {
                 HorusError::Communication(format!(
                     "Failed to compose transform chain between frame {} and frame {}",
                     src, dst
-                ))
+                ).into())
             })
     }
 
@@ -473,7 +473,7 @@ impl HFrameCore {
             HorusError::Communication(format!(
                 "No transform path between frame {} and frame {}",
                 src, dst
-            ))
+            ).into())
         })?;
 
         // Check time range + tolerance for each frame in the chain
@@ -514,7 +514,7 @@ impl HFrameCore {
                 HorusError::Communication(format!(
                     "Failed to compose transform chain between frame {} and frame {}",
                     src, dst
-                ))
+                ).into())
             })
     }
 
@@ -924,8 +924,8 @@ mod tests {
         let tf_base = Transform::from_translation([1.0, 0.0, 0.0]);
         let tf_camera = Transform::from_translation([0.0, 0.0, 0.5]);
 
-        core.update(1, &tf_base, 1000);
-        core.update(2, &tf_camera, 1000);
+        core.update(1, &tf_base, 1000).unwrap();
+        core.update(2, &tf_camera, 1000).unwrap();
 
         // camera -> world should compose both transforms
         let tf = core.resolve(2, 0).unwrap();
@@ -943,7 +943,7 @@ mod tests {
         // tf_base = transform from world to base_link
         // A point at origin in base_link is at [1,0,0] in world
         let tf_base = Transform::from_translation([1.0, 0.0, 0.0]);
-        core.update(1, &tf_base, 1000);
+        core.update(1, &tf_base, 1000).unwrap();
 
         // base -> world: transforms a point from base frame to world frame
         // point_in_world = tf_base * point_in_base
@@ -1023,7 +1023,7 @@ mod tests {
         core.init_dynamic(1, 0);
         core.init_dynamic(2, 1);
         // Give camera a fixed transform so resolve(2,0) can always succeed.
-        core.update(2, &Transform::from_translation([0.0, 0.0, 0.5]), 0);
+        core.update(2, &Transform::from_translation([0.0, 0.0, 0.5]), 0).unwrap();
 
         let barrier = Arc::new(Barrier::new(2));
 
@@ -1034,7 +1034,7 @@ mod tests {
             barrier_w.wait();
             for i in 0..1000u64 {
                 let tf = Transform::from_translation([i as f64, 0.0, 0.0]);
-                core_w.update(1, &tf, i * 1000);
+                core_w.update(1, &tf, i * 1000).unwrap();
             }
         });
 
@@ -1082,7 +1082,7 @@ mod tests {
         core.init_dynamic(1, 0);
 
         let gen_before = core.global_generation.load(Ordering::Acquire);
-        core.update(1, &Transform::from_translation([1.0, 0.0, 0.0]), 1000);
+        core.update(1, &Transform::from_translation([1.0, 0.0, 0.0]), 1000).unwrap();
         let gen_after = core.global_generation.load(Ordering::Acquire);
 
         assert!(

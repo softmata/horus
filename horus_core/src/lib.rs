@@ -58,7 +58,7 @@ pub use core::{
     RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]
-pub use error::{HorusError, HorusResult, Result};
+pub use error::{CommunicationError, HorusError, HorusResult, MemoryError, Result};
 #[doc(hidden)]
 pub use params::RuntimeParams;
 #[doc(hidden)]

@@ -410,12 +410,12 @@ impl TensorPool {
         // corrupt memory beyond the allocation.
         let num_elements: u64 = shape.iter().copied().try_fold(1u64, |acc, x| {
             acc.checked_mul(x).ok_or(HorusError::Memory(
-                "Tensor shape too large: element count overflows u64".to_string(),
+                "Tensor shape too large: element count overflows u64".to_string().into(),
             ))
         })?;
         let element_size = dtype.element_size() as u64;
         let size = num_elements.checked_mul(element_size).ok_or_else(|| {
-            HorusError::Memory("Tensor too large: shape * element_size overflows u64".to_string())
+            HorusError::Memory("Tensor too large: shape * element_size overflows u64".to_string().into())
         })?;
         let aligned_size = Self::align_up(size as usize, self.config.slot_alignment);
 
@@ -489,7 +489,7 @@ impl TensorPool {
 
             match self.alloc(shape, dtype, device) {
                 Ok(tensor) => return Ok(tensor),
-                Err(HorusError::Memory(ref msg)) if msg.contains("No free tensor slots") => {
+                Err(HorusError::Memory(ref e)) if e.to_string().contains("No free tensor slots") => {
                     // Transient exhaustion — wait for a slot to be returned.
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
@@ -572,7 +572,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
-            )));
+            ).into()));
         }
         let slot = self.slot(tensor.slot_id);
         let slot_gen = slot.generation.load(Ordering::Acquire);
@@ -582,7 +582,7 @@ impl TensorPool {
                  (slot has been freed and reallocated — potential use-after-free)",
                 tensor.generation_full(),
                 slot_gen
-            )));
+            ).into()));
         }
         // CAS loop: atomically increment refcount only if it's > 0.
         // If refcount is 0, the slot was freed between our generation check
@@ -593,7 +593,7 @@ impl TensorPool {
                 return Err(HorusError::Memory(
                     "Slot freed during retain: generation matched but refcount dropped to 0 \
                      (concurrent release between generation check and refcount increment)"
-                        .to_string(),
+                        .to_string().into(),
                 ));
             }
             if slot
@@ -642,7 +642,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
-            )));
+            ).into()));
         }
         let slot = self.slot_mut(tensor.slot_id);
         let slot_gen = slot.generation.load(Ordering::Acquire);
@@ -652,7 +652,7 @@ impl TensorPool {
                  (slot has been freed and reallocated — potential use-after-free)",
                 tensor.generation_full(),
                 slot_gen
-            )));
+            ).into()));
         }
         let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
@@ -701,7 +701,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "pool_id mismatch in data_slice: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
-            )));
+            ).into()));
         }
 
         let offset = tensor.offset as usize;
@@ -711,7 +711,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "out-of-bounds data access in data_slice: offset={} size={} region_size={}",
                 offset, size, region_size
-            )));
+            ).into()));
         }
 
         // SAFETY: base + offset + size is within the data region (bounds-checked above).
@@ -734,7 +734,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "pool_id mismatch in data_slice_mut: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
-            )));
+            ).into()));
         }
 
         let offset = tensor.offset as usize;
@@ -744,7 +744,7 @@ impl TensorPool {
             return Err(HorusError::Memory(format!(
                 "out-of-bounds data access in data_slice_mut: offset={} size={} region_size={}",
                 offset, size, region_size
-            )));
+            ).into()));
         }
 
         // SAFETY: base + offset + size is within the data region (bounds-checked above).
@@ -994,7 +994,7 @@ impl TensorPool {
         }
 
         Err(HorusError::Memory(
-            "No free tensor slots available".to_string(),
+            "No free tensor slots available".to_string().into(),
         ))
     }
 
@@ -1103,7 +1103,7 @@ impl TensorPool {
         }
 
         Err(HorusError::Memory(
-            "No free tensor slots available".to_string(),
+            "No free tensor slots available".to_string().into(),
         ))
     }
 
@@ -1217,7 +1217,7 @@ impl TensorPool {
             let aligned_current = Self::align_up(current, self.config.slot_alignment);
             // Checked add prevents offset overflow on pathological concurrent allocations.
             let new_offset = aligned_current.checked_add(size).ok_or_else(|| {
-                HorusError::Memory("Tensor pool: allocation offset overflow".to_string())
+                HorusError::Memory("Tensor pool: allocation offset overflow".to_string().into())
             })?;
 
             if new_offset > self.config.pool_size {
@@ -1225,7 +1225,7 @@ impl TensorPool {
                     "Tensor pool out of memory: need {} bytes, only {} available",
                     size,
                     self.config.pool_size.saturating_sub(current)
-                )));
+                ).into()));
             }
 
             if header
@@ -1390,7 +1390,8 @@ mod tests {
             "Expected Err for overflowing shape product, got Ok"
         );
         match result.unwrap_err() {
-            HorusError::Memory(msg) => {
+            HorusError::Memory(ref e) => {
+                let msg = e.to_string();
                 assert!(
                     msg.contains("overflows") || msg.contains("too large"),
                     "Unexpected error message: {msg}"
@@ -1404,7 +1405,8 @@ mod tests {
         let result2 = pool.alloc(&[overflow_dim], TensorDtype::F64, Device::cpu());
         assert!(result2.is_err(), "Expected Err for size overflow, got Ok");
         match result2.unwrap_err() {
-            HorusError::Memory(msg) => {
+            HorusError::Memory(ref e) => {
+                let msg = e.to_string();
                 assert!(
                     msg.contains("overflows") || msg.contains("too large"),
                     "Unexpected error message: {msg}"

@@ -9,10 +9,13 @@ use std::ops;
 use serde::{Deserialize, Serialize};
 use serde_arrays;
 
-/// 3D velocity command with linear and angular components
+/// Full 6-DOF velocity (linear + angular) for 3D robots.
 ///
-/// Used for commanding robot motion in 3D space. For 2D robots,
-/// only x (forward) and yaw (rotation) are typically used.
+/// Use `Twist` for **drones, manipulators**, or any robot that moves in 3D.
+/// For **2D ground robots**, prefer [`CmdVel`](crate::messages::CmdVel) —
+/// it's simpler and smaller.
+///
+/// Use [`Twist::new_2d()`] as a convenience for 2D-only motion.
 ///
 /// Implements `PodMessage` for ultra-fast zero-serialization transfer (~50ns).
 #[repr(C)]

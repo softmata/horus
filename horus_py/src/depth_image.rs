@@ -53,7 +53,7 @@ impl PyDepthImage {
     #[pyo3(signature = (height, width, dtype="float32"))]
     fn new(height: u32, width: u32, dtype: &str) -> PyResult<Self> {
         let dt = parse_depth_dtype(dtype)?;
-        let depth = DepthImage::new(height, width, dt)
+        let depth = DepthImage::new(width, height, dt)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create depth image: {}", e)))?;
         Ok(Self { inner: depth })
     }
@@ -87,7 +87,7 @@ impl PyDepthImage {
             (dt, contiguous)
         };
 
-        let depth = DepthImage::new(height, width, dt)
+        let depth = DepthImage::new(width, height, dt)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create depth image: {}", e)))?;
 
         let contiguous = np.call_method1("ascontiguousarray", (&array_to_use,))?;

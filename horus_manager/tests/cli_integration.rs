@@ -1,3 +1,4 @@
+use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::json;
@@ -7,7 +8,7 @@ use tempfile::TempDir;
 
 /// Helper to get the CLI command
 fn horus_cmd() -> Command {
-    Command::cargo_bin("horus").unwrap()
+    cargo_bin_cmd!("horus")
 }
 
 // ============================================================================

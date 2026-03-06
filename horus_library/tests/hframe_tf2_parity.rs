@@ -367,7 +367,8 @@ fn tf2_parity_error_disconnected_trees() {
 
     let err = hf.tf("robot", "landmark").unwrap_err();
     match err {
-        HorusError::Communication(msg) => {
+        HorusError::Communication(ref e) => {
+            let msg = e.to_string();
             assert!(msg.contains("disconnected"));
         }
         other => panic!("Expected Communication, got: {:?}", other),

@@ -523,7 +523,7 @@ impl HFrame {
             .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", dst)))?;
 
         self.core.resolve(src_id, dst_id).ok_or_else(|| {
-            HorusError::Communication(self.diagnose_chain_failure_named(src, src_id, dst, dst_id))
+            HorusError::Communication(self.diagnose_chain_failure_named(src, src_id, dst, dst_id).into())
         })
     }
 
@@ -546,7 +546,7 @@ impl HFrame {
             .resolve_at(src_id, dst_id, timestamp_ns)
             .ok_or_else(|| {
                 HorusError::Communication(
-                    self.diagnose_chain_failure_named(src, src_id, dst, dst_id),
+                    self.diagnose_chain_failure_named(src, src_id, dst, dst_id).into(),
                 )
             })
     }
@@ -741,7 +741,7 @@ impl HFrame {
             .ok_or(HorusError::Communication(format!(
                 "No transform path between '{}' and '{}'",
                 src, dst
-            )))?;
+            ).into()))?;
 
         Ok(chain
             .iter()
@@ -2191,7 +2191,8 @@ mod tests {
 
         let err = hf.tf("robot", "landmark").unwrap_err();
         match err {
-            HorusError::Communication(msg) => {
+            HorusError::Communication(ref e) => {
+                let msg = e.to_string();
                 assert!(
                     msg.contains("disconnected"),
                     "Error should mention 'disconnected': {}",

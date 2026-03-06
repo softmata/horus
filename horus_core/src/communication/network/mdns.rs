@@ -285,7 +285,7 @@ impl Mdns {
         Err(crate::error::HorusError::Communication(format!(
             "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
             hostname, MDNS_TIMEOUT
-        )))
+        ).into()))
     }
 
     /// Resolve hostname with a custom timeout
@@ -349,7 +349,7 @@ impl Mdns {
         Err(crate::error::HorusError::Communication(format!(
             "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
             hostname, timeout
-        )))
+        ).into()))
     }
 
     /// Browse for all available HORUS services on the network
@@ -551,7 +551,7 @@ fn get_local_hostname() -> HorusResult<String> {
 
     if result != 0 {
         return Err(crate::error::HorusError::Communication(
-            "Failed to get hostname".to_string(),
+            "Failed to get hostname".to_string().into(),
         ));
     }
 
@@ -565,7 +565,7 @@ fn get_local_hostname() -> HorusResult<String> {
     hostname
         .to_str()
         .map(|s| s.to_string())
-        .map_err(|e| crate::error::HorusError::Communication(format!("Invalid hostname: {}", e)))
+        .map_err(|e| crate::error::HorusError::Communication(format!("Invalid hostname: {}", e).into()))
 }
 
 // ============================================================================
@@ -952,13 +952,13 @@ pub fn find_node(name: &str) -> HorusResult<Option<DiscoveredNode>> {
 /// Convert discovery result to JSON string
 pub fn to_json(result: &DiscoveryResult) -> HorusResult<String> {
     serde_json::to_string_pretty(result)
-        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e)))
+        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e).into()))
 }
 
 /// Convert node list to JSON string
 pub fn nodes_to_json(nodes: &[DiscoveredNode]) -> HorusResult<String> {
     serde_json::to_string_pretty(nodes)
-        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e)))
+        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e).into()))
 }
 
 // ============================================================================

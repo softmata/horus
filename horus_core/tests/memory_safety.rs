@@ -143,7 +143,8 @@ fn stale_double_release_returns_err() {
         "try_release with stale descriptor must return Err; got Ok"
     );
     match result.unwrap_err() {
-        HorusError::Memory(msg) => {
+        HorusError::Memory(ref e) => {
+            let msg = e.to_string();
             assert!(
                 msg.contains("generation") || msg.contains("Generation"),
                 "error must mention generation mismatch: {msg}"

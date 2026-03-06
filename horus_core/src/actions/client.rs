@@ -30,7 +30,7 @@ use crate::actions::types::{
     GoalRequest, GoalStatus, GoalStatusUpdate,
 };
 use crate::communication::Topic;
-use crate::core::{LogSummary, Node};
+use crate::core::Node;
 use crate::HorusResult;
 
 use parking_lot::RwLock;
@@ -78,7 +78,7 @@ impl<A: Action> ClientGoalState<A> {
     }
 }
 
-// Basic accessors that don't require LogSummary bounds
+// Basic accessors
 impl<A: Action> ClientGoalHandle<A> {
     /// Get the goal ID.
     pub fn goal_id(&self) -> GoalId {
@@ -124,9 +124,9 @@ impl<A: Action> ClientGoalHandle<A> {
 // Methods that require Result/Feedback access (need Clone bounds)
 impl<A: Action> ClientGoalHandle<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Get the result if the goal has completed.
     ///
@@ -276,9 +276,9 @@ struct ActionClientInner<A: Action> {
 
 impl<A: Action> ActionClientInner<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn new() -> Self {
         Self {
@@ -436,9 +436,9 @@ pub struct ActionClientBuilder<A: Action> {
 
 impl<A: Action> ActionClientBuilder<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Create a new action client builder.
     pub fn new() -> Self {
@@ -503,9 +503,9 @@ where
 
 impl<A: Action> Default for ActionClientBuilder<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -531,9 +531,9 @@ pub struct ActionClientNode<A: Action> {
 
 impl<A: Action> ActionClientNode<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Create a new action client node.
     fn new(inner: Arc<ActionClientInner<A>>) -> Self {
@@ -653,9 +653,9 @@ pub struct ActionClientMetrics {
 // Implement Node trait for ActionClientNode
 impl<A: Action> Node for ActionClientNode<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn name(&self) -> &str {
         &self.name
@@ -692,9 +692,9 @@ pub struct SyncActionClient<A: Action> {
 
 impl<A: Action> SyncActionClient<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Create a new synchronous action client.
     pub fn new() -> HorusResult<Self> {
@@ -808,9 +808,9 @@ where
 
 impl<A: Action> Default for SyncActionClient<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn default() -> Self {
         Self::new().expect("Failed to create SyncActionClient")
@@ -828,32 +828,14 @@ mod tests {
         target: f64,
     }
 
-    impl LogSummary for TestGoal {
-        fn log_summary(&self) -> String {
-            format!("TestGoal(target={})", self.target)
-        }
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct TestFeedback {
         progress: f32,
     }
 
-    impl LogSummary for TestFeedback {
-        fn log_summary(&self) -> String {
-            format!("TestFeedback(progress={})", self.progress)
-        }
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct TestResult {
         success: bool,
-    }
-
-    impl LogSummary for TestResult {
-        fn log_summary(&self) -> String {
-            format!("TestResult(success={})", self.success)
-        }
     }
 
     struct TestAction;

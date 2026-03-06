@@ -6,7 +6,6 @@
 //! - [`Action`] - Trait defining an action with Goal/Feedback/Result types
 //! - [`GoalResponse`] / [`CancelResponse`] - Server responses to client requests
 
-use crate::core::LogSummary;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
@@ -247,14 +246,7 @@ impl CancelResponse {
 /// ```
 pub trait Action: Send + Sync + 'static {
     /// The goal request type.
-    type Goal: Clone
-        + fmt::Debug
-        + Send
-        + Sync
-        + Serialize
-        + for<'de> Deserialize<'de>
-        + LogSummary
-        + 'static;
+    type Goal: Clone + fmt::Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static;
 
     /// The feedback type sent during execution.
     type Feedback: Clone
@@ -263,18 +255,10 @@ pub trait Action: Send + Sync + 'static {
         + Sync
         + Serialize
         + for<'de> Deserialize<'de>
-        + LogSummary
         + 'static;
 
     /// The result type sent on completion.
-    type Result: Clone
-        + fmt::Debug
-        + Send
-        + Sync
-        + Serialize
-        + for<'de> Deserialize<'de>
-        + LogSummary
-        + 'static;
+    type Result: Clone + fmt::Debug + Send + Sync + Serialize + for<'de> Deserialize<'de> + 'static;
 
     /// Action name (used for topic names).
     fn name() -> &'static str;
@@ -462,7 +446,7 @@ impl std::error::Error for ActionError {}
 
 impl From<ActionError> for crate::HorusError {
     fn from(err: ActionError) -> Self {
-        crate::HorusError::Communication(err.to_string())
+        crate::HorusError::Communication(err.to_string().into())
     }
 }
 

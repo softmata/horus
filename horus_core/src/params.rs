@@ -44,7 +44,24 @@ pub struct ParamMetadata {
     pub read_only: bool,
 }
 
-/// Simple runtime parameter store
+/// Runtime parameter store for dynamic configuration.
+///
+/// Provides a typed key-value store with validation, persistence, and
+/// concurrent access support.
+///
+/// # Example
+///
+/// ```rust
+/// use horus_core::params::RuntimeParams;
+///
+/// let params = RuntimeParams::init().unwrap();
+///
+/// // Set and get typed parameters
+/// params.set("max_speed", 1.5_f64).unwrap();
+///
+/// let speed: f64 = params.get("max_speed").unwrap();
+/// assert_eq!(speed, 1.5);
+/// ```
 pub struct RuntimeParams {
     /// Parameter storage - BTreeMap maintains sorted order
     params: Arc<RwLock<BTreeMap<String, Value>>>,

@@ -206,7 +206,7 @@ impl ShmRegion {
             HorusError::Memory(format!(
                 "Invalid shm name '{}': topic names cannot contain null bytes: {}",
                 shm_name, e
-            ))
+            ).into())
         })?;
 
         // Try to open existing first
@@ -251,7 +251,7 @@ impl ShmRegion {
                             shm_name,
                             size,
                             std::io::Error::last_os_error()
-                        )));
+                        ).into()));
                     }
                     (new_fd, true)
                 } else {
@@ -263,7 +263,7 @@ impl ShmRegion {
                             "Failed to open/create shm '{}' after zombie cleanup: {}",
                             shm_name,
                             std::io::Error::last_os_error()
-                        )));
+                        ).into()));
                     }
                     // The new owner is responsible for sizing; wait for it.
                     if wait_for_shm_init(retry_fd, size).is_err() {
@@ -271,7 +271,7 @@ impl ShmRegion {
                         return Err(HorusError::Memory(format!(
                             "shm '{}' not fully initialized after all retries",
                             shm_name
-                        )));
+                        ).into()));
                     }
                     (retry_fd, false)
                 }
@@ -296,7 +296,7 @@ impl ShmRegion {
                         "Failed to open/create shm '{}': {}",
                         shm_name,
                         std::io::Error::last_os_error()
-                    )));
+                    ).into()));
                 }
                 // Wait for the winner to call ftruncate before we mmap.
                 if wait_for_shm_init(fd, size).is_err() {
@@ -306,7 +306,7 @@ impl ShmRegion {
                         "shm '{}' not fully initialized after all retries: \
                          winner process may have crashed mid-setup",
                         shm_name
-                    )));
+                    ).into()));
                 }
                 (fd, false)
             } else {
@@ -320,7 +320,7 @@ impl ShmRegion {
                     return Err(HorusError::Memory(format!(
                         "Failed to set shm '{}' to {} bytes: {} (macOS: check available memory with 'vm_stat')",
                         shm_name, size, std::io::Error::last_os_error()
-                    )));
+                    ).into()));
                 }
                 (fd, true)
             }
@@ -349,7 +349,7 @@ impl ShmRegion {
             return Err(HorusError::Memory(format!(
                 "Failed to mmap shm: {}",
                 std::io::Error::last_os_error()
-            )));
+            ).into()));
         }
 
         // Initialize to zero if owner
@@ -440,7 +440,7 @@ impl ShmRegion {
                 "CreateFileMappingW failed: error {}",
                 // SAFETY: GetLastError is always safe to call after a Windows API failure
                 unsafe { GetLastError() }
-            )));
+            ).into()));
         }
 
         // SAFETY: GetLastError is always safe to call; checks if mapping already existed
@@ -457,7 +457,7 @@ impl ShmRegion {
                 "MapViewOfFile failed: error {}",
                 // SAFETY: GetLastError is always safe to call after a Windows API failure
                 unsafe { GetLastError() }
-            )));
+            ).into()));
         }
 
         // Initialize to zero if owner

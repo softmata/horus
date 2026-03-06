@@ -79,7 +79,7 @@ impl FrameRegistry {
                 HorusError::Memory(format!(
                     "OOM: cannot allocate name-map entry for frame '{}'",
                     name
-                ))
+                ).into())
             })?;
 
             // Allocate the frame ID.  `next_id` is incremented here; this is
@@ -133,7 +133,7 @@ impl FrameRegistry {
                 HorusError::Memory(format!(
                     "OOM: cannot allocate name-map entry for frame '{}'",
                     name
-                ))
+                ).into())
             })?;
 
             let id = self.allocate_id()?;

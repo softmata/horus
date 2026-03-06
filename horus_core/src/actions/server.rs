@@ -205,7 +205,7 @@ struct FeedbackSender<A: Action> {
 
 impl<A: Action> FeedbackSender<A>
 where
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     #[allow(clippy::type_complexity)]
     fn new(link: Arc<RwLock<Option<Topic<ActionFeedback<A::Feedback>>>>>, rate_hz: f64) -> Self {
@@ -272,9 +272,9 @@ pub struct ActionServerBuilder<A: Action> {
 
 impl<A: Action> ActionServerBuilder<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Create a new action server builder.
     pub fn new() -> Self {
@@ -368,9 +368,9 @@ where
 
 impl<A: Action> Default for ActionServerBuilder<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -421,9 +421,9 @@ pub struct ActionServerNode<A: Action> {
 
 impl<A: Action> ActionServerNode<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     /// Create a new action server node.
     fn new(
@@ -818,9 +818,9 @@ pub struct ActionServerMetrics {
 // Implement Node trait for ActionServerNode
 impl<A: Action> Node for ActionServerNode<A>
 where
-    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
-    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + LogSummary + 'static,
+    A::Goal: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Feedback: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
+    A::Result: Clone + Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
 {
     fn name(&self) -> &str {
         &self.name
@@ -917,32 +917,14 @@ mod tests {
         target: f64,
     }
 
-    impl LogSummary for TestGoal {
-        fn log_summary(&self) -> String {
-            format!("TestGoal(target={})", self.target)
-        }
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct TestFeedback {
         progress: f32,
     }
 
-    impl LogSummary for TestFeedback {
-        fn log_summary(&self) -> String {
-            format!("TestFeedback(progress={})", self.progress)
-        }
-    }
-
     #[derive(Clone, Debug, Serialize, Deserialize)]
     struct TestResult {
         success: bool,
-    }
-
-    impl LogSummary for TestResult {
-        fn log_summary(&self) -> String {
-            format!("TestResult(success={})", self.success)
-        }
     }
 
     struct TestAction;

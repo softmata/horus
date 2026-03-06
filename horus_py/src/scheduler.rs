@@ -224,7 +224,7 @@ impl CoreNode for PyNodeAdapter {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.add(my_node).order(0).rate_hz(100.0).rt().done()
+///     scheduler.add(my_node).order(0).rate_hz(100.0).rt().build()
 #[pyclass(module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,

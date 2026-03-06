@@ -138,6 +138,7 @@ mod pointcloud_ext;
 #[cfg(test)]
 mod tests;
 
+use std::borrow::Borrow;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -504,7 +505,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             if header.magic != TOPIC_MAGIC {
                 return Err(HorusError::Communication(
-                    "Timeout waiting for topic header initialization".to_string(),
+                    "Timeout waiting for topic header initialization".to_string().into(),
                 ));
             }
             return Ok(header.slot_size as usize);
@@ -515,13 +516,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             return Err(HorusError::Communication(format!(
                 "Incompatible topic version: {} (expected {})",
                 header.version, TOPIC_VERSION
-            )));
+            ).into()));
         }
         if is_pod && header.type_size != type_size {
             return Err(HorusError::Communication(format!(
                 "Type size mismatch: {} (expected {})",
                 header.type_size, type_size
-            )));
+            ).into()));
         }
         Ok(header.slot_size as usize)
     }
@@ -1971,7 +1972,7 @@ use crate::types::Tensor;
 ///
 /// // Pool-backed type — same API!
 /// let topic: Topic<Image> = Topic::new("camera/rgb")?;
-/// let img = Image::new(480, 640, Rgb8)?;
+/// let img = Image::new(640, 480, Rgb8)?;
 /// topic.send(&img);
 /// let img = topic.recv();
 /// ```
@@ -2124,6 +2125,29 @@ where
         Ok(Self { ring, pool })
     }
 
+    /// Create a topic, panicking on failure.
+    ///
+    /// Use this in examples, tests, and simple applications where topic
+    /// creation cannot realistically fail (same-process, valid name).
+    /// For production code, prefer [`Topic::new()`] which returns `Result`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the underlying shared memory or ring buffer cannot be created.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use horus::prelude::*;
+    ///
+    /// let topic: Topic<CmdVel> = Topic::create("cmd_vel");
+    /// topic.send(CmdVel { linear: 1.0, angular: 0.0 });
+    /// ```
+    pub fn create(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self::new(&name).unwrap_or_else(|e| panic!("Failed to create topic '{}': {}", name, e))
+    }
+
     /// Create a new topic with custom capacity.
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         let ring = RingTopic::with_capacity(name, capacity, slot_size)?;
@@ -2242,10 +2266,11 @@ where
 impl Topic<Image> {
     /// Send an image (zero-copy).
     ///
+    /// Accepts both owned and borrowed images: `topic.send(img)` or `topic.send(&img)`.
     /// Retains the tensor so it stays alive for receivers, then sends the
     /// descriptor through the ring buffer.
-    pub fn send(&self, img: &Image) {
-        let wire = img.to_wire(&self.pool);
+    pub fn send(&self, img: impl Borrow<Image>) {
+        let wire = img.borrow().to_wire(&self.pool);
         self.ring.send(wire);
     }
 
@@ -2262,8 +2287,10 @@ impl Topic<Image> {
 
 impl Topic<PointCloud> {
     /// Send a point cloud (zero-copy).
-    pub fn send(&self, pc: &PointCloud) {
-        let wire = pc.to_wire(&self.pool);
+    ///
+    /// Accepts both owned and borrowed: `topic.send(pc)` or `topic.send(&pc)`.
+    pub fn send(&self, pc: impl Borrow<PointCloud>) {
+        let wire = pc.borrow().to_wire(&self.pool);
         self.ring.send(wire);
     }
 
@@ -2280,8 +2307,10 @@ impl Topic<PointCloud> {
 
 impl Topic<DepthImage> {
     /// Send a depth image (zero-copy).
-    pub fn send(&self, depth: &DepthImage) {
-        let wire = depth.to_wire(&self.pool);
+    ///
+    /// Accepts both owned and borrowed: `topic.send(depth)` or `topic.send(&depth)`.
+    pub fn send(&self, depth: impl Borrow<DepthImage>) {
+        let wire = depth.borrow().to_wire(&self.pool);
         self.ring.send(wire);
     }
 

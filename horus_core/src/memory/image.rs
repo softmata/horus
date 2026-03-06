@@ -9,8 +9,8 @@
 //! ```rust,ignore
 //! use horus::prelude::*;
 //!
-//! // Create a 480x640 RGB image (shared memory backed)
-//! let mut img = Image::new(480, 640, ImageEncoding::Rgb8)?;
+//! // Create a 640x480 RGB image (shared memory backed)
+//! let mut img = Image::new(640, 480, ImageEncoding::Rgb8)?;
 //! img.fill(&[0, 0, 255]);                // Fill blue
 //! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
 //!
@@ -58,11 +58,11 @@ impl Image {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let img = Image::new(480, 640, ImageEncoding::Rgb8)?;
+    /// let img = Image::new(640, 480, ImageEncoding::Rgb8)?;
     /// assert_eq!(img.width(), 640);
     /// assert_eq!(img.height(), 480);
     /// ```
-    pub fn new(height: u32, width: u32, encoding: ImageEncoding) -> HorusResult<Self> {
+    pub fn new(width: u32, height: u32, encoding: ImageEncoding) -> HorusResult<Self> {
         let pool = global_pool();
         let channels = encoding.channels();
         let dtype = encoding.tensor_dtype();

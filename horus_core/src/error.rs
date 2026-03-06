@@ -5,6 +5,84 @@
 
 use thiserror::Error;
 
+/// Structured communication layer errors.
+///
+/// Enables pattern matching on specific failure conditions:
+/// ```rust,ignore
+/// match err {
+///     HorusError::Communication(CommunicationError::TopicFull { topic }) => {
+///         // Back-pressure: wait and retry
+///     }
+///     HorusError::Communication(CommunicationError::TopicNotFound { topic }) => {
+///         // Create the topic or bail
+///     }
+///     _ => {}
+/// }
+/// ```
+#[derive(Debug, Error)]
+pub enum CommunicationError {
+    /// Ring buffer is full — publisher is faster than subscriber.
+    #[error("Topic '{topic}' is full")]
+    TopicFull { topic: String },
+
+    /// Named topic does not exist.
+    #[error("Topic '{topic}' not found")]
+    TopicNotFound { topic: String },
+
+    /// Topic creation failed (e.g., SHM or ring buffer setup).
+    #[error("Failed to create topic '{topic}': {reason}")]
+    TopicCreationFailed { topic: String, reason: String },
+
+    /// Catch-all for unstructured communication errors.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<String> for CommunicationError {
+    fn from(s: String) -> Self {
+        Self::Other(s)
+    }
+}
+
+/// Structured memory management errors.
+///
+/// Enables pattern matching on specific failure conditions:
+/// ```rust,ignore
+/// match err {
+///     HorusError::Memory(MemoryError::PoolExhausted { .. }) => {
+///         // Wait for slots to free up, or grow the pool
+///     }
+///     HorusError::Memory(MemoryError::ShmCreateFailed { path, .. }) => {
+///         // Check permissions on /dev/shm
+///     }
+///     _ => {}
+/// }
+/// ```
+#[derive(Debug, Error)]
+pub enum MemoryError {
+    /// Tensor pool has no free slots.
+    #[error("Pool exhausted: {reason}")]
+    PoolExhausted { reason: String },
+
+    /// Allocation request failed (overflow, too large, etc.).
+    #[error("Allocation failed: {reason}")]
+    AllocationFailed { reason: String },
+
+    /// Shared memory region could not be created or opened.
+    #[error("SHM failed for '{path}': {reason}")]
+    ShmCreateFailed { path: String, reason: String },
+
+    /// Catch-all for unstructured memory errors.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<String> for MemoryError {
+    fn from(s: String) -> Self {
+        Self::Other(s)
+    }
+}
+
 /// Main error type for HORUS operations
 #[derive(Debug, Error)]
 pub enum HorusError {
@@ -16,17 +94,17 @@ pub enum HorusError {
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// Communication layer errors
+    /// Communication layer errors (structured — see [`CommunicationError`]).
     #[error("Communication error: {0}")]
-    Communication(String),
+    Communication(#[from] CommunicationError),
 
     /// Node-related errors
     #[error("Node '{node}' error: {message}")]
     Node { node: String, message: String },
 
-    /// Memory management errors
+    /// Memory management errors (structured — see [`MemoryError`]).
     #[error("Memory error: {0}")]
-    Memory(String),
+    Memory(#[from] MemoryError),
 
     /// Serialization/Deserialization errors
     #[error("Serialization error: {0}")]
@@ -268,9 +346,9 @@ impl HorusError {
         }
     }
 
-    /// Create a communication error
+    /// Create a communication error (catch-all string variant).
     pub fn communication<S: Into<String>>(msg: S) -> Self {
-        HorusError::Communication(msg.into())
+        HorusError::Communication(CommunicationError::Other(msg.into()))
     }
 }
 
@@ -318,7 +396,8 @@ mod tests {
     /// Communication variant for IPC/topic failures.
     #[test]
     fn variant_communication() {
-        let err = HorusError::Communication("Topic 'cmd_vel' has no subscribers".to_string());
+        let err =
+            HorusError::communication("Topic 'cmd_vel' has no subscribers");
         let msg = format!("{}", err);
         assert!(msg.contains("Communication error"), "Display: {}", msg);
         assert!(
@@ -326,6 +405,36 @@ mod tests {
             "Should contain topic name: {}",
             msg
         );
+    }
+
+    /// Structured CommunicationError::TopicFull can be pattern-matched.
+    #[test]
+    fn variant_communication_topic_full() {
+        let err = HorusError::Communication(CommunicationError::TopicFull {
+            topic: "cmd_vel".into(),
+        });
+        match &err {
+            HorusError::Communication(CommunicationError::TopicFull { topic }) => {
+                assert_eq!(topic, "cmd_vel");
+            }
+            _ => panic!("Expected TopicFull, got {:?}", err),
+        }
+        let msg = format!("{}", err);
+        assert!(msg.contains("cmd_vel"), "Display: {}", msg);
+    }
+
+    /// Structured CommunicationError::TopicNotFound can be pattern-matched.
+    #[test]
+    fn variant_communication_topic_not_found() {
+        let err = HorusError::Communication(CommunicationError::TopicNotFound {
+            topic: "lidar_scan".into(),
+        });
+        match &err {
+            HorusError::Communication(CommunicationError::TopicNotFound { topic }) => {
+                assert_eq!(topic, "lidar_scan");
+            }
+            _ => panic!("Expected TopicNotFound, got {:?}", err),
+        }
     }
 
     /// Node variant includes BOTH node name AND message.
@@ -352,11 +461,42 @@ mod tests {
     /// Memory variant for SHM/allocation failures.
     #[test]
     fn variant_memory() {
-        let err =
-            HorusError::Memory("Failed to mmap 4096 bytes for topic 'lidar_scan'".to_string());
+        let err = HorusError::Memory(MemoryError::Other(
+            "Failed to mmap 4096 bytes for topic 'lidar_scan'".to_string(),
+        ));
         let msg = format!("{}", err);
         assert!(msg.contains("Memory error"), "Display: {}", msg);
         assert!(msg.contains("lidar_scan"), "Should contain topic: {}", msg);
+    }
+
+    /// Structured MemoryError::PoolExhausted can be pattern-matched.
+    #[test]
+    fn variant_memory_pool_exhausted() {
+        let err = HorusError::Memory(MemoryError::PoolExhausted {
+            reason: "No free tensor slots in pool 42".into(),
+        });
+        match &err {
+            HorusError::Memory(MemoryError::PoolExhausted { reason }) => {
+                assert!(reason.contains("42"));
+            }
+            _ => panic!("Expected PoolExhausted, got {:?}", err),
+        }
+    }
+
+    /// Structured MemoryError::ShmCreateFailed can be pattern-matched.
+    #[test]
+    fn variant_memory_shm_create_failed() {
+        let err = HorusError::Memory(MemoryError::ShmCreateFailed {
+            path: "/dev/shm/horus_pool_0".into(),
+            reason: "Permission denied".into(),
+        });
+        match &err {
+            HorusError::Memory(MemoryError::ShmCreateFailed { path, reason }) => {
+                assert!(path.contains("horus_pool_0"));
+                assert!(reason.contains("Permission denied"));
+            }
+            _ => panic!("Expected ShmCreateFailed, got {:?}", err),
+        }
     }
 
     /// Serialization variant for serde failures.
@@ -717,7 +857,10 @@ mod tests {
     #[test]
     fn helper_communication() {
         let err = HorusError::communication("topic full");
-        assert!(matches!(err, HorusError::Communication(ref s) if s == "topic full"));
+        assert!(matches!(
+            err,
+            HorusError::Communication(CommunicationError::Other(ref s)) if s == "topic full"
+        ));
     }
 
     // =========================================================================

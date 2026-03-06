@@ -173,6 +173,26 @@ mod execution_class_tests {
 /// - **Event**: Triggered by topic updates
 /// - **AsyncIo**: Tokio blocking pool for I/O-bound work
 /// - **BestEffort**: Default — runs in the main tick loop
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use horus::prelude::*;
+///
+/// let mut scheduler = Scheduler::new();
+///
+/// // Motor control on dedicated RT thread
+/// scheduler.add(motor_node).order(0).rt().build();
+///
+/// // Path planning in parallel compute pool
+/// scheduler.add(planner_node).order(5).compute().build();
+///
+/// // React to LiDAR scans when they arrive
+/// scheduler.add(obstacle_node).on("lidar_scan").build();
+///
+/// // Telemetry upload on async I/O pool
+/// scheduler.add(telemetry_node).async_io().rate_hz(1.0).build();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExecutionClass {
     /// Real-time node — runs on a dedicated RT thread with priority scheduling.

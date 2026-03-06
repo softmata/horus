@@ -21,10 +21,10 @@ mod tests {
     fn test_image_topic_roundtrip() {
         let topic: Topic<Image> = Topic::new("test/image_topic_roundtrip_unified").unwrap();
 
-        let img = Image::new(2, 3, ImageEncoding::Rgb8).unwrap();
+        let img = Image::new(3, 2, ImageEncoding::Rgb8).unwrap();
 
-        assert_eq!(img.height(), 2);
         assert_eq!(img.width(), 3);
+        assert_eq!(img.height(), 2);
         assert_eq!(img.channels(), 3);
         assert_eq!(img.encoding(), ImageEncoding::Rgb8);
 

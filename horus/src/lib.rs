@@ -28,8 +28,8 @@
 //! ```rust,no_run
 //! use horus::prelude::*;
 //!
-//! // Create a 480x640 RGB image (backed by shared memory)
-//! let mut img = Image::new(480, 640, ImageEncoding::Rgb8).unwrap();
+//! // Create a 640x480 RGB image (backed by shared memory)
+//! let mut img = Image::new(640, 480, ImageEncoding::Rgb8).unwrap();
 //! img.fill(&[0, 0, 255]);           // Blue
 //! img.set_pixel(100, 200, &[255, 0, 0]); // Red dot
 //!
@@ -54,6 +54,89 @@
 //! The prelude provides all user-facing types: nodes, topics, schedulers,
 //! message types, actions, transforms, and domain types (`Image`,
 //! `PointCloud`, `DepthImage`).
+//!
+//! ## API Quick Reference
+//!
+//! ### Node
+//! ```rust,ignore
+//! impl Node for MyNode {
+//!     fn name(&self) -> &'static str { "MyNode" }
+//!     fn tick(&mut self) { /* called each cycle */ }
+//!     fn init(&mut self) { /* once at startup */ }
+//!     fn shutdown(&mut self) { /* once at teardown */ }
+//! }
+//! ```
+//!
+//! ### Topic (pub/sub IPC)
+//! ```rust,ignore
+//! let topic: Topic<CmdVel> = Topic::create("cmd_vel");  // panics on error
+//! let topic: Topic<CmdVel> = Topic::new("cmd_vel")?;    // returns Result
+//! topic.send(CmdVel::new(1.0, 0.0));
+//! if let Some(msg) = topic.recv() { /* ... */ }
+//! ```
+//!
+//! ### Scheduler
+//! ```rust,ignore
+//! let mut scheduler = Scheduler::new().tick_hz(100.0);
+//! scheduler.add(sensor).order(0).rate_hz(100.0).build();
+//! scheduler.add(controller).order(1).rt().build();
+//! scheduler.add(planner).order(5).compute().build();
+//! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build();
+//! scheduler.run()?;
+//! ```
+//!
+//! ### Custom Messages
+//! ```rust,ignore
+//! message! {
+//!     MotorCommand { velocity: f32, torque: f32 }
+//! }
+//! // Ready for Topic<MotorCommand> — no extra traits needed
+//! ```
+//!
+//! ### Services (request/response)
+//! ```rust,ignore
+//! service! {
+//!     AddTwoInts {
+//!         request  { a: i64, b: i64 }
+//!         response { sum: i64 }
+//!     }
+//! }
+//! ```
+//!
+//! ### Actions (long-running tasks)
+//! ```rust,ignore
+//! action! {
+//!     Navigate {
+//!         goal     { x: f64, y: f64 }
+//!         feedback { distance_remaining: f64 }
+//!         result   { success: bool }
+//!     }
+//! }
+//! ```
+//!
+//! ### Real-Time Nodes
+//! ```rust,ignore
+//! impl RtNode for MotorCtrl {
+//!     fn wcet_budget(&self) -> Duration { Duration::from_micros(200) }
+//!     fn deadline(&self) -> Duration { Duration::from_millis(1) }
+//!     fn rt_priority(&self) -> RtPriority { RtPriority::High }
+//!     fn rt_class(&self) -> RtClass { RtClass::Firm }
+//! }
+//! scheduler.add_rt(MotorCtrl::new()).order(0).build();
+//! ```
+//!
+//! ### Key Message Types
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | `CmdVel` | 2D velocity (linear f32, angular f32) |
+//! | `Twist` | 6-DOF velocity ([f64;3] linear + angular) |
+//! | `Pose2D` | 2D position + orientation |
+//! | `Imu` | Accelerometer + gyroscope + magnetometer |
+//! | `LaserScan` | 2D LiDAR scan |
+//! | `Image` | Pool-backed image (zero-copy) |
+//! | `PointCloud` | Pool-backed 3D points (zero-copy) |
+//! | `DepthImage` | Pool-backed depth map (zero-copy) |
 
 // === Internal plumbing (hidden from docs, used by horus_py / macro-generated code / horus_manager) ===
 #[doc(hidden)]
@@ -105,6 +188,9 @@ pub mod prelude {
     // === Node ===
     pub use horus_core::core::{LogSummary, Node};
 
+    // === Real-time node ===
+    pub use horus_core::core::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats};
+
     // === Rate / Stopwatch ===
     pub use horus_core::core::timer::{Rate, Stopwatch};
 
@@ -113,6 +199,12 @@ pub mod prelude {
 
     // === Scheduler ===
     pub use horus_core::scheduling::Scheduler;
+
+    // === Execution configuration ===
+    pub use horus_core::scheduling::{ExecutionClass, FailurePolicy, NodeTier};
+
+    // === Runtime parameters ===
+    pub use horus_core::params::RuntimeParams;
 
     // === Memory (domain types) ===
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
@@ -149,13 +241,17 @@ pub mod prelude {
     // `HorusError` is also exported so callers can pattern-match exhaustively:
     //   `use horus::prelude::*;`
     //   `if let Err(HorusError::InvalidDescriptor(msg)) = result { ... }`
-    pub use horus_core::error::{Error, HorusError, Result};
+    pub use horus_core::error::{CommunicationError, Error, HorusError, MemoryError, Result};
 
     // === Macros ===
+    pub use horus_core::action;
     pub use horus_core::hlog;
     pub use horus_core::hlog_every;
     pub use horus_core::hlog_once;
+    pub use horus_core::message;
     pub use horus_core::service;
+    pub use horus_core::simple_action;
+    pub use horus_core::standard_action;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;
 }

@@ -385,20 +385,20 @@ pub fn send_goal(
         HorusError::Communication(format!(
             "Failed to create status topic '{}': {}",
             status_topic_name, e
-        ))
+        ).into())
     })?;
     let feedback_topic: Topic<serde_json::Value> =
         Topic::new(&feedback_topic_name).map_err(|e| {
             HorusError::Communication(format!(
                 "Failed to create feedback topic '{}': {}",
                 feedback_topic_name, e
-            ))
+            ).into())
         })?;
     let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).map_err(|e| {
         HorusError::Communication(format!(
             "Failed to create result topic '{}': {}",
             result_topic_name, e
-        ))
+        ).into())
     })?;
 
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);

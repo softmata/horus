@@ -10,6 +10,7 @@ use horus::prelude::*;
 // ============================================================================
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 struct SensorReading {
     x: f64,
     y: f64,
@@ -36,6 +37,7 @@ fn test_log_summary_simple_struct() {
 // ============================================================================
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 struct RobotState {
     position_x: f64,
     position_y: f64,
@@ -69,6 +71,7 @@ fn test_log_summary_many_fields() {
 // ============================================================================
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 enum MotorState {
     Idle,
     Running,
@@ -102,6 +105,7 @@ fn test_log_summary_enum_data_variant() {
 // ============================================================================
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 struct Pose {
     x: f64,
     y: f64,
@@ -109,6 +113,7 @@ struct Pose {
 }
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 struct LocalizationResult {
     pose: Pose,
     confidence: f64,
@@ -140,6 +145,7 @@ fn test_log_summary_nested_struct() {
 // ============================================================================
 
 #[derive(Debug, LogSummary)]
+#[allow(dead_code)]
 struct Velocity(f64, f64);
 
 #[test]

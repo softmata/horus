@@ -592,7 +592,7 @@ pub fn publish_topic(
 
     // Create topic using the proper ring buffer protocol
     let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
-        HorusError::Communication(format!("Failed to create topic '{}': {}", name, e))
+        HorusError::Communication(format!("Failed to create topic '{}': {}", name, e).into())
     })?;
 
     let sleep_duration = match rate {

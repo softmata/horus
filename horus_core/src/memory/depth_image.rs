@@ -8,8 +8,8 @@
 //! ```rust,ignore
 //! use horus::prelude::*;
 //!
-//! // Create a 480x640 depth image (float32 meters)
-//! let mut depth = DepthImage::new(480, 640, TensorDtype::F32)?;
+//! // Create a 640x480 depth image (float32 meters)
+//! let mut depth = DepthImage::new(640, 480, TensorDtype::F32)?;
 //! depth.set_depth(100, 200, 2.5)?; // 2.5 meters
 //!
 //! // Send via topic (zero-copy)
@@ -51,10 +51,10 @@ impl DepthImage {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let depth = DepthImage::new(480, 640, TensorDtype::F32)?;
+    /// let depth = DepthImage::new(640, 480, TensorDtype::F32)?;
     /// assert!(depth.is_meters());
     /// ```
-    pub fn new(height: u32, width: u32, dtype: TensorDtype) -> HorusResult<Self> {
+    pub fn new(width: u32, height: u32, dtype: TensorDtype) -> HorusResult<Self> {
         let pool = global_pool();
         let shape = [height as u64, width as u64];
         let tensor = pool.alloc(&shape, dtype, Device::cpu())?;
