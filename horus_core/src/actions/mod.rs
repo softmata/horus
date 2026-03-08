@@ -184,9 +184,10 @@ mod tests {
         assert_eq!(default, PreemptionPolicy::PreemptOld);
 
         let queue = PreemptionPolicy::Queue { max_size: 5 };
-        match queue {
-            PreemptionPolicy::Queue { max_size } => assert_eq!(max_size, 5),
-            _ => panic!("Expected Queue policy"),
-        }
+        assert!(
+            matches!(queue, PreemptionPolicy::Queue { max_size } if max_size == 5),
+            "Expected Queue policy, got {:?}",
+            queue
+        );
     }
 }

@@ -410,12 +410,18 @@ impl TensorPool {
         // corrupt memory beyond the allocation.
         let num_elements: u64 = shape.iter().copied().try_fold(1u64, |acc, x| {
             acc.checked_mul(x).ok_or(HorusError::Memory(
-                "Tensor shape too large: element count overflows u64".to_string().into(),
+                "Tensor shape too large: element count overflows u64"
+                    .to_string()
+                    .into(),
             ))
         })?;
         let element_size = dtype.element_size() as u64;
         let size = num_elements.checked_mul(element_size).ok_or_else(|| {
-            HorusError::Memory("Tensor too large: shape * element_size overflows u64".to_string().into())
+            HorusError::Memory(
+                "Tensor too large: shape * element_size overflows u64"
+                    .to_string()
+                    .into(),
+            )
         })?;
         let aligned_size = Self::align_up(size as usize, self.config.slot_alignment);
 
@@ -489,7 +495,9 @@ impl TensorPool {
 
             match self.alloc(shape, dtype, device) {
                 Ok(tensor) => return Ok(tensor),
-                Err(HorusError::Memory(ref e)) if e.to_string().contains("No free tensor slots") => {
+                Err(HorusError::Memory(ref e))
+                    if e.to_string().contains("No free tensor slots") =>
+                {
                     // Transient exhaustion — wait for a slot to be returned.
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
@@ -569,20 +577,26 @@ impl TensorPool {
     /// reallocated since the descriptor was issued.
     pub fn try_retain(&self, tensor: &Tensor) -> HorusResult<()> {
         if tensor.pool_id != self.pool_id {
-            return Err(HorusError::Memory(format!(
-                "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
-                tensor.pool_id, self.pool_id
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
+                    tensor.pool_id, self.pool_id
+                )
+                .into(),
+            ));
         }
         let slot = self.slot(tensor.slot_id);
         let slot_gen = slot.generation.load(Ordering::Acquire);
         if slot_gen != tensor.generation_full() {
-            return Err(HorusError::Memory(format!(
-                "Generation mismatch on retain: tensor generation {} != slot generation {} \
+            return Err(HorusError::Memory(
+                format!(
+                    "Generation mismatch on retain: tensor generation {} != slot generation {} \
                  (slot has been freed and reallocated — potential use-after-free)",
-                tensor.generation_full(),
-                slot_gen
-            ).into()));
+                    tensor.generation_full(),
+                    slot_gen
+                )
+                .into(),
+            ));
         }
         // CAS loop: atomically increment refcount only if it's > 0.
         // If refcount is 0, the slot was freed between our generation check
@@ -593,7 +607,8 @@ impl TensorPool {
                 return Err(HorusError::Memory(
                     "Slot freed during retain: generation matched but refcount dropped to 0 \
                      (concurrent release between generation check and refcount increment)"
-                        .to_string().into(),
+                        .to_string()
+                        .into(),
                 ));
             }
             if slot
@@ -639,20 +654,26 @@ impl TensorPool {
     /// the slot is returned to the free list.
     pub fn try_release(&self, tensor: &Tensor) -> HorusResult<()> {
         if tensor.pool_id != self.pool_id {
-            return Err(HorusError::Memory(format!(
-                "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
-                tensor.pool_id, self.pool_id
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "Pool ID mismatch: tensor belongs to pool {}, this pool is {}",
+                    tensor.pool_id, self.pool_id
+                )
+                .into(),
+            ));
         }
         let slot = self.slot_mut(tensor.slot_id);
         let slot_gen = slot.generation.load(Ordering::Acquire);
         if slot_gen != tensor.generation_full() {
-            return Err(HorusError::Memory(format!(
-                "Generation mismatch on release: tensor generation {} != slot generation {} \
+            return Err(HorusError::Memory(
+                format!(
+                    "Generation mismatch on release: tensor generation {} != slot generation {} \
                  (slot has been freed and reallocated — potential use-after-free)",
-                tensor.generation_full(),
-                slot_gen
-            ).into()));
+                    tensor.generation_full(),
+                    slot_gen
+                )
+                .into(),
+            ));
         }
         let prev = slot.refcount.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
@@ -698,20 +719,26 @@ impl TensorPool {
     /// error (wrong pool) or descriptor corruption / tampering from another process.
     pub fn data_slice(&self, tensor: &Tensor) -> HorusResult<&[u8]> {
         if tensor.pool_id != self.pool_id {
-            return Err(HorusError::Memory(format!(
-                "pool_id mismatch in data_slice: tensor belongs to pool {}, this pool is {}",
-                tensor.pool_id, self.pool_id
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "pool_id mismatch in data_slice: tensor belongs to pool {}, this pool is {}",
+                    tensor.pool_id, self.pool_id
+                )
+                .into(),
+            ));
         }
 
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let region_size = self.data_region_size();
         if offset.checked_add(size).is_none_or(|end| end > region_size) {
-            return Err(HorusError::Memory(format!(
-                "out-of-bounds data access in data_slice: offset={} size={} region_size={}",
-                offset, size, region_size
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "out-of-bounds data access in data_slice: offset={} size={} region_size={}",
+                    offset, size, region_size
+                )
+                .into(),
+            ));
         }
 
         // SAFETY: base + offset + size is within the data region (bounds-checked above).
@@ -731,20 +758,26 @@ impl TensorPool {
     #[allow(clippy::mut_from_ref)]
     pub fn data_slice_mut(&self, tensor: &Tensor) -> HorusResult<&mut [u8]> {
         if tensor.pool_id != self.pool_id {
-            return Err(HorusError::Memory(format!(
+            return Err(HorusError::Memory(
+                format!(
                 "pool_id mismatch in data_slice_mut: tensor belongs to pool {}, this pool is {}",
                 tensor.pool_id, self.pool_id
-            ).into()));
+            )
+                .into(),
+            ));
         }
 
         let offset = tensor.offset as usize;
         let size = tensor.size as usize;
         let region_size = self.data_region_size();
         if offset.checked_add(size).is_none_or(|end| end > region_size) {
-            return Err(HorusError::Memory(format!(
-                "out-of-bounds data access in data_slice_mut: offset={} size={} region_size={}",
-                offset, size, region_size
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "out-of-bounds data access in data_slice_mut: offset={} size={} region_size={}",
+                    offset, size, region_size
+                )
+                .into(),
+            ));
         }
 
         // SAFETY: base + offset + size is within the data region (bounds-checked above).
@@ -1221,11 +1254,14 @@ impl TensorPool {
             })?;
 
             if new_offset > self.config.pool_size {
-                return Err(HorusError::Memory(format!(
-                    "Tensor pool out of memory: need {} bytes, only {} available",
-                    size,
-                    self.config.pool_size.saturating_sub(current)
-                ).into()));
+                return Err(HorusError::Memory(
+                    format!(
+                        "Tensor pool out of memory: need {} bytes, only {} available",
+                        size,
+                        self.config.pool_size.saturating_sub(current)
+                    )
+                    .into(),
+                ));
             }
 
             if header
@@ -1397,7 +1433,7 @@ mod tests {
                     "Unexpected error message: {msg}"
                 );
             }
-            other => panic!("Expected HorusError::Memory, got {other:?}"),
+            other => unreachable!("Expected HorusError::Memory, got {other:?}"),
         }
 
         // element_size overflow: F64 element_size=8; (u64::MAX/8 + 1) * 8 = u64::MAX+1.
@@ -1412,7 +1448,7 @@ mod tests {
                     "Unexpected error message: {msg}"
                 );
             }
-            other => panic!("Expected HorusError::Memory, got {other:?}"),
+            other => unreachable!("Expected HorusError::Memory, got {other:?}"),
         }
 
         std::fs::remove_file(&pool.shm_path).ok();
@@ -1460,7 +1496,7 @@ mod tests {
                     "error should mention pool_id: {msg}"
                 );
             }
-            other => panic!("expected InvalidDescriptor, got {other:?}"),
+            other => unreachable!("expected InvalidDescriptor, got {other:?}"),
         }
         pool.release(&tensor);
         std::fs::remove_file(&pool.shm_path).ok();
@@ -1481,7 +1517,7 @@ mod tests {
                     "error should mention slot_id: {msg}"
                 );
             }
-            other => panic!("expected InvalidDescriptor, got {other:?}"),
+            other => unreachable!("expected InvalidDescriptor, got {other:?}"),
         }
         pool.release(&tensor);
         std::fs::remove_file(&pool.shm_path).ok();
@@ -1504,7 +1540,7 @@ mod tests {
                     "error should mention freed state: {msg}"
                 );
             }
-            other => panic!("expected InvalidDescriptor, got {other:?}"),
+            other => unreachable!("expected InvalidDescriptor, got {other:?}"),
         }
         std::fs::remove_file(&pool.shm_path).ok();
     }
@@ -1521,7 +1557,7 @@ mod tests {
             HorusError::InvalidDescriptor(msg) => {
                 assert!(msg.contains("offset"), "error should mention offset: {msg}");
             }
-            other => panic!("expected InvalidDescriptor, got {other:?}"),
+            other => unreachable!("expected InvalidDescriptor, got {other:?}"),
         }
         pool.release(&tensor);
         std::fs::remove_file(&pool.shm_path).ok();
@@ -1539,7 +1575,7 @@ mod tests {
             HorusError::InvalidDescriptor(msg) => {
                 assert!(msg.contains("size"), "error should mention size: {msg}");
             }
-            other => panic!("expected InvalidDescriptor, got {other:?}"),
+            other => unreachable!("expected InvalidDescriptor, got {other:?}"),
         }
         pool.release(&tensor);
         std::fs::remove_file(&pool.shm_path).ok();

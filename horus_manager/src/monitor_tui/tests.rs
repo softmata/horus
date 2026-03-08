@@ -237,10 +237,11 @@ fn test_log_panel_toggle() {
     assert!(dashboard.panel_target.is_some());
 
     // Check target type
-    match &dashboard.panel_target {
-        Some(LogPanelTarget::Node(name)) => assert_eq!(name, "test_node"),
-        _ => panic!("Expected Node target"),
-    }
+    assert!(
+        matches!(&dashboard.panel_target, Some(LogPanelTarget::Node(name)) if name == "test_node"),
+        "Expected Node target, got {:?}",
+        dashboard.panel_target
+    );
 }
 
 #[test]
@@ -249,10 +250,11 @@ fn test_log_panel_target_topic() {
     dashboard.show_log_panel = true;
     dashboard.panel_target = Some(LogPanelTarget::Topic("sensors.lidar".to_string()));
 
-    match &dashboard.panel_target {
-        Some(LogPanelTarget::Topic(name)) => assert_eq!(name, "sensors.lidar"),
-        _ => panic!("Expected Topic target"),
-    }
+    assert!(
+        matches!(&dashboard.panel_target, Some(LogPanelTarget::Topic(name)) if name == "sensors.lidar"),
+        "Expected Topic target, got {:?}",
+        dashboard.panel_target
+    );
 }
 
 // ========================================================================
@@ -270,17 +272,19 @@ fn test_param_edit_modes() {
 
     // Test Edit mode
     dashboard.param_edit_mode = ParamEditMode::Edit("my_key".to_string());
-    match &dashboard.param_edit_mode {
-        ParamEditMode::Edit(key) => assert_eq!(key, "my_key"),
-        _ => panic!("Expected Edit mode"),
-    }
+    assert!(
+        matches!(&dashboard.param_edit_mode, ParamEditMode::Edit(key) if key == "my_key"),
+        "Expected Edit mode, got {:?}",
+        dashboard.param_edit_mode
+    );
 
     // Test Delete mode
     dashboard.param_edit_mode = ParamEditMode::Delete("delete_key".to_string());
-    match &dashboard.param_edit_mode {
-        ParamEditMode::Delete(key) => assert_eq!(key, "delete_key"),
-        _ => panic!("Expected Delete mode"),
-    }
+    assert!(
+        matches!(&dashboard.param_edit_mode, ParamEditMode::Delete(key) if key == "delete_key"),
+        "Expected Delete mode, got {:?}",
+        dashboard.param_edit_mode
+    );
 }
 
 #[test]

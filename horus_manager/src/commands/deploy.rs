@@ -635,3 +635,100 @@ pub fn list_targets() -> HorusResult<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TargetArch parsing ───────────────────────────────────────────────
+
+    #[test]
+    fn target_arch_aarch64_aliases() {
+        for alias in &["aarch64", "arm64", "jetson", "pi4", "pi5"] {
+            let arch = TargetArch::from_str(alias);
+            assert!(arch.is_some(), "should parse '{}'", alias);
+            assert_eq!(arch.unwrap().rust_target(), "aarch64-unknown-linux-gnu");
+        }
+    }
+
+    #[test]
+    fn target_arch_armv7_aliases() {
+        for alias in &["armv7", "arm", "pi3", "pi2"] {
+            let arch = TargetArch::from_str(alias);
+            assert!(arch.is_some(), "should parse '{}'", alias);
+            assert_eq!(arch.unwrap().rust_target(), "armv7-unknown-linux-gnueabihf");
+        }
+    }
+
+    #[test]
+    fn target_arch_x86_64_aliases() {
+        for alias in &["x86_64", "x64", "amd64", "intel"] {
+            let arch = TargetArch::from_str(alias);
+            assert!(arch.is_some(), "should parse '{}'", alias);
+            assert_eq!(arch.unwrap().rust_target(), "x86_64-unknown-linux-gnu");
+        }
+    }
+
+    #[test]
+    fn target_arch_native_aliases() {
+        for alias in &["native", "host", "local"] {
+            let arch = TargetArch::from_str(alias);
+            assert!(arch.is_some(), "should parse '{}'", alias);
+            assert_eq!(arch.unwrap().rust_target(), "");
+        }
+    }
+
+    #[test]
+    fn target_arch_unknown_returns_none() {
+        assert!(TargetArch::from_str("mips").is_none());
+        assert!(TargetArch::from_str("riscv").is_none());
+        assert!(TargetArch::from_str("").is_none());
+    }
+
+    #[test]
+    fn target_arch_case_insensitive() {
+        assert!(TargetArch::from_str("AARCH64").is_some());
+        assert!(TargetArch::from_str("Pi4").is_some());
+        assert!(TargetArch::from_str("X86_64").is_some());
+    }
+
+    #[test]
+    fn target_arch_display_names() {
+        assert_eq!(TargetArch::Aarch64.display_name(), "ARM64 (aarch64)");
+        assert_eq!(TargetArch::Armv7.display_name(), "ARM32 (armv7)");
+        assert_eq!(TargetArch::X86_64.display_name(), "x86_64");
+        assert_eq!(TargetArch::Native.display_name(), "native");
+    }
+
+    // ── DeployYaml parsing ───────────────────────────────────────────────
+
+    #[test]
+    fn deploy_yaml_parse() {
+        let yaml = r#"
+targets:
+  robot:
+    host: pi@192.168.1.100
+    arch: aarch64
+    dir: ~/my_robot
+    port: 2222
+    identity: ~/.ssh/robot_key
+  jetson:
+    host: nvidia@jetson.local
+"#;
+        let config: DeployYaml = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.targets.len(), 2);
+
+        let robot = &config.targets["robot"];
+        assert_eq!(robot.host, "pi@192.168.1.100");
+        assert_eq!(robot.arch.as_deref(), Some("aarch64"));
+        assert_eq!(robot.dir.as_deref(), Some("~/my_robot"));
+        assert_eq!(robot.port, Some(2222));
+        assert_eq!(robot.identity.as_deref(), Some("~/.ssh/robot_key"));
+
+        let jetson = &config.targets["jetson"];
+        assert_eq!(jetson.host, "nvidia@jetson.local");
+        assert!(jetson.arch.is_none());
+        assert!(jetson.dir.is_none());
+        assert!(jetson.port.is_none());
+    }
+}

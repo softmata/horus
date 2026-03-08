@@ -141,6 +141,58 @@ pub struct LogoutRequest {
     pub session_token: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_client_ip_no_proxy_ignores_xff() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        let ip = extract_client_ip(None, &headers, false);
+        assert_eq!(ip, "127.0.0.1", "should ignore XFF when trust_proxy=false");
+    }
+
+    #[test]
+    fn extract_client_ip_trust_proxy_uses_xff() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "10.0.0.1, 192.168.1.1".parse().unwrap());
+        let ip = extract_client_ip(None, &headers, true);
+        assert_eq!(ip, "10.0.0.1", "should use first XFF entry");
+    }
+
+    #[test]
+    fn extract_client_ip_trust_proxy_uses_x_real_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "172.16.0.5".parse().unwrap());
+        let ip = extract_client_ip(None, &headers, true);
+        assert_eq!(ip, "172.16.0.5");
+    }
+
+    #[test]
+    fn extract_client_ip_xff_takes_priority_over_x_real_ip() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        headers.insert("x-real-ip", "172.16.0.5".parse().unwrap());
+        let ip = extract_client_ip(None, &headers, true);
+        assert_eq!(ip, "10.0.0.1", "XFF should take priority over X-Real-IP");
+    }
+
+    #[test]
+    fn extract_client_ip_falls_back_to_peer_addr() {
+        let headers = HeaderMap::new();
+        let peer: SocketAddr = "192.168.1.100:12345".parse().unwrap();
+        let ip = extract_client_ip(Some(peer), &headers, false);
+        assert_eq!(ip, "192.168.1.100");
+    }
+
+    #[test]
+    fn extract_client_ip_no_info_returns_localhost() {
+        let ip = extract_client_ip(None, &HeaderMap::new(), false);
+        assert_eq!(ip, "127.0.0.1");
+    }
+}
+
 /// Logout handler - invalidates session
 pub async fn logout_handler(
     State(state): State<Arc<AppState>>,

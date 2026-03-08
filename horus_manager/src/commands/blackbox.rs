@@ -489,3 +489,247 @@ impl TickRange {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TickRange parsing ────────────────────────────────────────────────
+
+    #[test]
+    fn tick_range_single_value() {
+        let r = TickRange::parse("4500").unwrap();
+        assert_eq!(r.start, 4500);
+        assert_eq!(r.end, 4500);
+    }
+
+    #[test]
+    fn tick_range_range() {
+        let r = TickRange::parse("100-200").unwrap();
+        assert_eq!(r.start, 100);
+        assert_eq!(r.end, 200);
+    }
+
+    #[test]
+    fn tick_range_with_spaces() {
+        let r = TickRange::parse(" 10 - 20 ").unwrap();
+        assert_eq!(r.start, 10);
+        assert_eq!(r.end, 20);
+    }
+
+    #[test]
+    fn tick_range_invalid_format() {
+        assert!(TickRange::parse("1-2-3").is_err());
+    }
+
+    #[test]
+    fn tick_range_non_numeric() {
+        assert!(TickRange::parse("abc").is_err());
+    }
+
+    // ── event_type_name ──────────────────────────────────────────────────
+
+    #[test]
+    fn event_type_names_correct() {
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::SchedulerStart {
+                name: "s".into(),
+                node_count: 0,
+                config: "c".into()
+            }),
+            "SchedulerStart"
+        );
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::NodeError {
+                name: "n".into(),
+                error: "e".into()
+            }),
+            "NodeError"
+        );
+        assert_eq!(
+            event_type_name(&BlackBoxEvent::EmergencyStop { reason: "r".into() }),
+            "EmergencyStop"
+        );
+    }
+
+    // ── is_anomaly ───────────────────────────────────────────────────────
+
+    #[test]
+    fn anomaly_detection() {
+        assert!(is_anomaly(&BlackBoxEvent::NodeError {
+            name: "n".into(),
+            error: "e".into()
+        }));
+        assert!(is_anomaly(&BlackBoxEvent::DeadlineMiss {
+            name: "n".into(),
+            deadline_us: 100,
+            actual_us: 200
+        }));
+        assert!(is_anomaly(&BlackBoxEvent::EmergencyStop {
+            reason: "r".into()
+        }));
+        // Non-anomalies
+        assert!(!is_anomaly(&BlackBoxEvent::SchedulerStart {
+            name: "s".into(),
+            node_count: 1,
+            config: "c".into()
+        }));
+        assert!(!is_anomaly(&BlackBoxEvent::NodeTick {
+            name: "n".into(),
+            duration_us: 50,
+            success: true
+        }));
+    }
+
+    // ── event_node_name ──────────────────────────────────────────────────
+
+    #[test]
+    fn event_node_name_extracts_correctly() {
+        assert_eq!(
+            event_node_name(&BlackBoxEvent::NodeTick {
+                name: "motor_ctrl".into(),
+                duration_us: 10,
+                success: true
+            }),
+            "motor_ctrl"
+        );
+        assert_eq!(
+            event_node_name(&BlackBoxEvent::SchedulerStop {
+                reason: "done".into(),
+                total_ticks: 100
+            }),
+            ""
+        );
+    }
+
+    // ── record_matches filtering ─────────────────────────────────────────
+
+    #[test]
+    fn record_matches_no_filters() {
+        let record = BlackBoxRecord {
+            tick: 100,
+            timestamp_us: 1234567890,
+            event: BlackBoxEvent::NodeTick {
+                name: "sensor".into(),
+                duration_us: 50,
+                success: true,
+            },
+        };
+        assert!(record_matches(&record, false, &None, &None, &None));
+    }
+
+    #[test]
+    fn record_matches_anomaly_filter() {
+        let normal = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick {
+                name: "n".into(),
+                duration_us: 10,
+                success: true,
+            },
+        };
+        let anomaly = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeError {
+                name: "n".into(),
+                error: "crash".into(),
+            },
+        };
+        assert!(!record_matches(&normal, true, &None, &None, &None));
+        assert!(record_matches(&anomaly, true, &None, &None, &None));
+    }
+
+    #[test]
+    fn record_matches_tick_range_filter() {
+        let record = BlackBoxRecord {
+            tick: 50,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick {
+                name: "n".into(),
+                duration_us: 10,
+                success: true,
+            },
+        };
+        let in_range = Some(TickRange { start: 40, end: 60 });
+        let out_of_range = Some(TickRange { start: 60, end: 80 });
+        assert!(record_matches(&record, false, &in_range, &None, &None));
+        assert!(!record_matches(&record, false, &out_of_range, &None, &None));
+    }
+
+    #[test]
+    fn record_matches_node_filter() {
+        let record = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::NodeTick {
+                name: "motor_controller".into(),
+                duration_us: 10,
+                success: true,
+            },
+        };
+        let matching = Some("motor".to_string());
+        let non_matching = Some("sensor".to_string());
+        assert!(record_matches(&record, false, &None, &matching, &None));
+        assert!(!record_matches(&record, false, &None, &non_matching, &None));
+    }
+
+    #[test]
+    fn record_matches_event_filter() {
+        let record = BlackBoxRecord {
+            tick: 1,
+            timestamp_us: 0,
+            event: BlackBoxEvent::DeadlineMiss {
+                name: "n".into(),
+                deadline_us: 100,
+                actual_us: 200,
+            },
+        };
+        let matching = Some("DeadlineMiss".to_string());
+        let non_matching = Some("NodeError".to_string());
+        assert!(record_matches(&record, false, &None, &None, &matching));
+        assert!(!record_matches(&record, false, &None, &None, &non_matching));
+    }
+
+    // ── format_timestamp ─────────────────────────────────────────────────
+
+    #[test]
+    fn format_timestamp_produces_string() {
+        let ts = format_timestamp(1_000_000); // 1 second
+                                              // Should be a formatted time, not empty
+        assert!(!ts.is_empty());
+    }
+
+    #[test]
+    fn format_timestamp_zero() {
+        let ts = format_timestamp(0);
+        assert!(!ts.is_empty());
+    }
+
+    // ── format_event_detail ──────────────────────────────────────────────
+
+    #[test]
+    fn format_event_detail_scheduler_start() {
+        let detail = format_event_detail(&BlackBoxEvent::SchedulerStart {
+            name: "main".into(),
+            node_count: 5,
+            config: "rt".into(),
+        });
+        assert!(detail.contains("main"));
+        assert!(detail.contains("5 nodes"));
+    }
+
+    #[test]
+    fn format_event_detail_deadline_miss() {
+        let detail = format_event_detail(&BlackBoxEvent::DeadlineMiss {
+            name: "ctrl".into(),
+            deadline_us: 1000,
+            actual_us: 1500,
+        });
+        assert!(detail.contains("ctrl"));
+        assert!(detail.contains("1000"));
+        assert!(detail.contains("1500"));
+        assert!(detail.contains("+500")); // overshoot
+    }
+}

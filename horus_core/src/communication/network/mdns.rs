@@ -282,10 +282,13 @@ impl Mdns {
             }
         }
 
-        Err(crate::error::HorusError::Communication(format!(
-            "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
-            hostname, MDNS_TIMEOUT
-        ).into()))
+        Err(crate::error::HorusError::Communication(
+            format!(
+                "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
+                hostname, MDNS_TIMEOUT
+            )
+            .into(),
+        ))
     }
 
     /// Resolve hostname with a custom timeout
@@ -346,10 +349,13 @@ impl Mdns {
             }
         }
 
-        Err(crate::error::HorusError::Communication(format!(
-            "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
-            hostname, timeout
-        ).into()))
+        Err(crate::error::HorusError::Communication(
+            format!(
+                "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
+                hostname, timeout
+            )
+            .into(),
+        ))
     }
 
     /// Browse for all available HORUS services on the network
@@ -562,10 +568,9 @@ fn get_local_hostname() -> HorusResult<String> {
     // The pointer is valid for the lifetime of buf which outlives this CStr usage.
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
-    hostname
-        .to_str()
-        .map(|s| s.to_string())
-        .map_err(|e| crate::error::HorusError::Communication(format!("Invalid hostname: {}", e).into()))
+    hostname.to_str().map(|s| s.to_string()).map_err(|e| {
+        crate::error::HorusError::Communication(format!("Invalid hostname: {}", e).into())
+    })
 }
 
 // ============================================================================

@@ -76,10 +76,9 @@ impl FrameRegistry {
             // Pre-reserve HashMap capacity.  If this returns Err (OOM),
             // `next_id` has NOT been touched — no frame ID is leaked.
             name_map.try_reserve(1).map_err(|_| {
-                HorusError::Memory(format!(
-                    "OOM: cannot allocate name-map entry for frame '{}'",
-                    name
-                ).into())
+                HorusError::Memory(
+                    format!("OOM: cannot allocate name-map entry for frame '{}'", name).into(),
+                )
             })?;
 
             // Allocate the frame ID.  `next_id` is incremented here; this is
@@ -130,10 +129,9 @@ impl FrameRegistry {
             }
 
             name_map.try_reserve(1).map_err(|_| {
-                HorusError::Memory(format!(
-                    "OOM: cannot allocate name-map entry for frame '{}'",
-                    name
-                ).into())
+                HorusError::Memory(
+                    format!("OOM: cannot allocate name-map entry for frame '{}'", name).into(),
+                )
             })?;
 
             let id = self.allocate_id()?;

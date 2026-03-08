@@ -382,23 +382,32 @@ pub fn send_goal(
     .ok();
 
     let status_topic: Topic<serde_json::Value> = Topic::new(&status_topic_name).map_err(|e| {
-        HorusError::Communication(format!(
-            "Failed to create status topic '{}': {}",
-            status_topic_name, e
-        ).into())
+        HorusError::Communication(
+            format!(
+                "Failed to create status topic '{}': {}",
+                status_topic_name, e
+            )
+            .into(),
+        )
     })?;
     let feedback_topic: Topic<serde_json::Value> =
         Topic::new(&feedback_topic_name).map_err(|e| {
-            HorusError::Communication(format!(
-                "Failed to create feedback topic '{}': {}",
-                feedback_topic_name, e
-            ).into())
+            HorusError::Communication(
+                format!(
+                    "Failed to create feedback topic '{}': {}",
+                    feedback_topic_name, e
+                )
+                .into(),
+            )
         })?;
     let result_topic: Topic<serde_json::Value> = Topic::new(&result_topic_name).map_err(|e| {
-        HorusError::Communication(format!(
-            "Failed to create result topic '{}': {}",
-            result_topic_name, e
-        ).into())
+        HorusError::Communication(
+            format!(
+                "Failed to create result topic '{}': {}",
+                result_topic_name, e
+            )
+            .into(),
+        )
     })?;
 
     let deadline = Instant::now() + Duration::from_secs_f64(timeout_secs);
@@ -466,6 +475,77 @@ pub fn send_goal(
 }
 
 // ─── cancel_goal ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovered_action_defaults() {
+        let action = DiscoveredAction {
+            name: "navigate".to_string(),
+            has_goal: true,
+            has_result: true,
+            has_feedback: true,
+            has_status: true,
+            has_cancel: true,
+            goal_publishers: 2,
+            result_subscribers: 1,
+        };
+        assert_eq!(action.name, "navigate");
+        assert!(action.has_goal && action.has_result && action.has_feedback);
+    }
+
+    #[test]
+    fn discovered_action_partial() {
+        let action = DiscoveredAction {
+            name: "pick".to_string(),
+            has_goal: true,
+            has_result: false,
+            has_feedback: false,
+            has_status: false,
+            has_cancel: false,
+            goal_publishers: 1,
+            result_subscribers: 0,
+        };
+        assert!(action.has_goal);
+        assert!(!action.has_result);
+    }
+
+    #[test]
+    fn action_topic_suffix_stripping() {
+        let suffixes = ["/goal", "/result", "/feedback", "/status", "/cancel"];
+        let base = "navigate_to_pose";
+        for suffix in &suffixes {
+            let topic = format!("{}{}", base, suffix);
+            let stripped = topic.strip_suffix(suffix).unwrap();
+            assert_eq!(stripped, base);
+        }
+    }
+
+    #[test]
+    fn action_topic_with_horus_prefix() {
+        let topic = "horus_topic/navigate/goal";
+        let stripped = topic
+            .strip_prefix("horus_topic/")
+            .and_then(|n| n.strip_suffix("/goal"));
+        assert_eq!(stripped, Some("navigate"));
+    }
+
+    #[test]
+    fn action_not_confused_with_service() {
+        // An action should NOT have /request or /response topics
+        let topic_names: std::collections::HashSet<String> =
+            ["nav/goal", "nav/result", "nav/feedback"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+
+        // No /request or /response for "nav" means it's an action, not a service
+        assert!(!topic_names.contains("nav/request"));
+        assert!(!topic_names.contains("nav/response"));
+    }
+}
 
 /// Cancel a goal on an action server (`horus action cancel_goal <name>`)
 pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {

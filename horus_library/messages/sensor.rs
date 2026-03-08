@@ -755,6 +755,161 @@ impl Illuminance {
 }
 
 // =============================================================================
+// softmata-core Trait Implementations
+// =============================================================================
+// These impls let HORUS Pod messages flow through any algorithm that accepts
+// `impl ScanData`, `impl ImuData`, etc. — zero-copy IPC meets generic traits.
+
+impl softmata_core::sensor::ScanData for LaserScan {
+    fn num_ranges(&self) -> usize {
+        360
+    }
+
+    fn range_at(&self, index: usize) -> f64 {
+        if index < 360 {
+            self.ranges[index] as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn angle_min(&self) -> f64 {
+        self.angle_min as f64
+    }
+
+    fn angle_max(&self) -> f64 {
+        self.angle_max as f64
+    }
+
+    fn angle_increment(&self) -> f64 {
+        self.angle_increment as f64
+    }
+
+    fn range_min(&self) -> f64 {
+        self.range_min as f64
+    }
+
+    fn range_max(&self) -> f64 {
+        self.range_max as f64
+    }
+}
+
+impl softmata_core::sensor::ImuData for Imu {
+    fn orientation(&self) -> [f64; 4] {
+        self.orientation
+    }
+
+    fn angular_velocity(&self) -> [f64; 3] {
+        self.angular_velocity
+    }
+
+    fn linear_acceleration(&self) -> [f64; 3] {
+        self.linear_acceleration
+    }
+
+    fn has_orientation(&self) -> bool {
+        self.orientation_covariance[0] >= 0.0
+    }
+}
+
+impl softmata_core::sensor::OdometryData for Odometry {
+    fn pose(&self) -> softmata_core::geometry::Pose2D {
+        self.pose.to_core()
+    }
+
+    fn linear_velocity(&self) -> f64 {
+        self.twist.linear[0]
+    }
+
+    fn angular_velocity(&self) -> f64 {
+        self.twist.angular[2]
+    }
+}
+
+impl softmata_core::sensor::JointData for JointState {
+    fn num_joints(&self) -> usize {
+        self.joint_count as usize
+    }
+
+    fn position_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.positions[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn velocity_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.velocities[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn effort_at(&self, index: usize) -> f64 {
+        if index < self.joint_count as usize {
+            self.efforts[index]
+        } else {
+            0.0
+        }
+    }
+
+    fn joint_name(&self, index: usize) -> Option<&str> {
+        if index >= self.joint_count as usize {
+            return None;
+        }
+        let bytes = &self.names[index];
+        let end = bytes.iter().position(|&b| b == 0).unwrap_or(32);
+        std::str::from_utf8(&bytes[..end]).ok()
+    }
+}
+
+impl softmata_core::sensor::BatteryData for BatteryState {
+    fn voltage(&self) -> f32 {
+        self.voltage
+    }
+
+    fn current(&self) -> f32 {
+        self.current
+    }
+
+    fn percentage(&self) -> f32 {
+        self.percentage
+    }
+}
+
+impl softmata_core::sensor::RangeData for RangeSensor {
+    fn range(&self) -> f64 {
+        self.range as f64
+    }
+
+    fn range_min(&self) -> f64 {
+        self.min_range as f64
+    }
+
+    fn range_max(&self) -> f64 {
+        self.max_range as f64
+    }
+}
+
+impl softmata_core::sensor::TemperatureData for Temperature {
+    fn celsius(&self) -> f32 {
+        self.temperature as f32
+    }
+}
+
+impl softmata_core::sensor::MagneticFieldData for MagneticField {
+    fn magnetic_field(&self) -> [f32; 3] {
+        [
+            self.magnetic_field[0] as f32,
+            self.magnetic_field[1] as f32,
+            self.magnetic_field[2] as f32,
+        ]
+    }
+}
+
+// =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
@@ -773,3 +928,186 @@ crate::messages::impl_pod_message!(
     FluidPressure,
     Illuminance,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use softmata_core::sensor::{
+        BatteryData, ImuData, JointData, OdometryData, RangeData, ScanData, TemperatureData,
+        WrenchData,
+    };
+
+    // ============================================================================
+    // ScanData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_laser_scan_scan_data_num_ranges() {
+        let scan = LaserScan::new();
+        assert_eq!(ScanData::num_ranges(&scan), 360);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_range_at_widens_f32() {
+        let mut scan = LaserScan::new();
+        scan.ranges[42] = 3.5_f32;
+        let val: f64 = ScanData::range_at(&scan, 42);
+        assert!((val - 3.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_angles() {
+        let scan = LaserScan::default();
+        let angle_min: f64 = ScanData::angle_min(&scan);
+        let angle_max: f64 = ScanData::angle_max(&scan);
+        assert!((angle_min - (-std::f64::consts::PI)).abs() < 0.01);
+        assert!((angle_max - std::f64::consts::PI).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_laser_scan_scan_data_generic_fn() {
+        fn count_valid<S: ScanData>(s: &S) -> usize {
+            (0..s.num_ranges()).filter(|&i| s.is_range_valid(i)).count()
+        }
+        let mut scan = LaserScan::new();
+        scan.ranges[0] = 1.0;
+        scan.ranges[1] = 2.0;
+        scan.ranges[2] = 0.0; // invalid (below range_min)
+        assert_eq!(count_valid(&scan), 2);
+    }
+
+    // ============================================================================
+    // ImuData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_imu_data_orientation() {
+        let mut imu = Imu::new();
+        imu.orientation = [0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2];
+        let q = ImuData::orientation(&imu);
+        assert!((q[2] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((q[3] - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_imu_data_has_orientation() {
+        let imu = Imu::new();
+        // Default covariance is [-1.0; 9] = no orientation data
+        assert!(!ImuData::has_orientation(&imu));
+
+        let mut imu2 = Imu::new();
+        imu2.orientation_covariance = [0.01; 9];
+        assert!(ImuData::has_orientation(&imu2));
+    }
+
+    #[test]
+    fn test_imu_data_angular_velocity() {
+        let mut imu = Imu::new();
+        imu.angular_velocity = [0.1, 0.2, 0.3];
+        let av = ImuData::angular_velocity(&imu);
+        assert_eq!(av, [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn test_imu_data_generic_fn() {
+        fn max_accel<I: ImuData>(imu: &I) -> f64 {
+            let a = imu.linear_acceleration();
+            a.iter().map(|v| v.abs()).fold(0.0_f64, f64::max)
+        }
+        let mut imu = Imu::new();
+        imu.linear_acceleration = [0.0, 0.0, 9.81];
+        assert!((max_accel(&imu) - 9.81).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // OdometryData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_odometry_data_pose() {
+        let mut odom = Odometry::new();
+        odom.pose = Pose2D::new(1.0, 2.0, 0.5);
+        let pose = OdometryData::pose(&odom);
+        assert!((pose.x - 1.0).abs() < 1e-6);
+        assert!((pose.y - 2.0).abs() < 1e-6);
+        assert!((pose.theta - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_odometry_data_velocities() {
+        let mut odom = Odometry::new();
+        odom.twist = Twist::new_2d(0.5, 0.1);
+        assert!((OdometryData::linear_velocity(&odom) - 0.5).abs() < 1e-6);
+        assert!((OdometryData::angular_velocity(&odom) - 0.1).abs() < 1e-6);
+    }
+
+    // ============================================================================
+    // JointData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_joint_data_basic() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder", 1.0, 0.5, 10.0).unwrap();
+        js.add_joint("elbow", 0.5, 0.2, 5.0).unwrap();
+
+        assert_eq!(JointData::num_joints(&js), 2);
+        assert!((JointData::position_at(&js, 0) - 1.0).abs() < 1e-10);
+        assert!((JointData::velocity_at(&js, 1) - 0.2).abs() < 1e-10);
+        assert!((JointData::effort_at(&js, 0) - 10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_joint_data_names() {
+        let mut js = JointState::new();
+        js.add_joint("shoulder_pan", 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(JointData::joint_name(&js, 0), Some("shoulder_pan"));
+        assert_eq!(JointData::joint_name(&js, 1), None);
+    }
+
+    #[test]
+    fn test_joint_data_out_of_bounds() {
+        let js = JointState::new();
+        assert_eq!(JointData::position_at(&js, 0), 0.0);
+        assert_eq!(JointData::joint_name(&js, 0), None);
+    }
+
+    // ============================================================================
+    // BatteryData / RangeData / TemperatureData trait tests
+    // ============================================================================
+
+    #[test]
+    fn test_battery_data() {
+        let bat = BatteryState::new(12.5, 75.0);
+        assert!((BatteryData::voltage(&bat) - 12.5).abs() < 1e-6);
+        assert!((BatteryData::percentage(&bat) - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_range_data() {
+        let range = RangeSensor::new(RangeSensor::ULTRASONIC, 1.5);
+        assert!((RangeData::range(&range) - 1.5).abs() < 1e-6);
+        assert!(RangeData::is_valid(&range));
+    }
+
+    #[test]
+    fn test_temperature_data() {
+        let temp = Temperature::new(25.5);
+        assert!((TemperatureData::celsius(&temp) - 25.5).abs() < 0.01);
+        assert!((TemperatureData::fahrenheit(&temp) - 77.9).abs() < 0.1);
+    }
+
+    // ============================================================================
+    // WrenchData trait test (via force.rs import)
+    // ============================================================================
+
+    #[test]
+    fn test_wrench_data() {
+        use crate::messages::force::WrenchStamped;
+        let w = WrenchStamped::new(Vector3::new(1.0, 2.0, 3.0), Vector3::new(0.1, 0.2, 0.3));
+        let f = WrenchData::force(&w);
+        let t = WrenchData::torque(&w);
+        assert_eq!(f, [1.0, 2.0, 3.0]);
+        assert_eq!(t, [0.1, 0.2, 0.3]);
+    }
+}

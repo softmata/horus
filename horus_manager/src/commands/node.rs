@@ -435,3 +435,54 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
 fn truncate_name(name: &str, max_len: usize) -> String {
     crate::cli_output::safe_truncate(name, max_len)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_name_short_unchanged() {
+        assert_eq!(truncate_name("my_node", 25), "my_node");
+    }
+
+    #[test]
+    fn truncate_name_exact_length() {
+        let name = "a".repeat(25);
+        let result = truncate_name(&name, 25);
+        assert!(result.len() <= 25);
+    }
+
+    #[test]
+    fn truncate_name_long_is_shortened() {
+        let name = "a_very_long_node_name_that_exceeds_the_limit";
+        let result = truncate_name(name, 10);
+        assert!(result.len() <= 10);
+    }
+
+    #[test]
+    fn list_nodes_invalid_category_returns_error() {
+        let result = list_nodes(false, false, Some("bogus".to_string()));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("bogus"),
+            "error should mention the bad category"
+        );
+    }
+
+    #[test]
+    fn list_nodes_valid_categories_accepted() {
+        // These should not fail on category parsing (they may return empty lists)
+        for cat in &["node", "nodes", "tool", "tools", "cli"] {
+            let result = list_nodes(false, false, Some(cat.to_string()));
+            // Should succeed (Ok) or fail with a non-category error
+            if let Err(e) = &result {
+                assert!(
+                    !e.to_string().contains("Unknown category"),
+                    "category '{}' should be recognized",
+                    cat
+                );
+            }
+        }
+    }
+}

@@ -567,10 +567,11 @@ fn test_health_status_variants() {
         subscribers: vec![],
     };
 
-    match node_healthy.health {
-        HealthStatus::Healthy => {}
-        _ => panic!("Expected Healthy"),
-    }
+    assert!(
+        matches!(node_healthy.health, HealthStatus::Healthy),
+        "Expected Healthy, got {:?}",
+        node_healthy.health
+    );
 }
 
 #[test]

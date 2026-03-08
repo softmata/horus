@@ -15,3 +15,6 @@ pub use horus_core::core::LogSummary;
 // Re-export message types at the crate root for convenience
 #[doc(hidden)]
 pub use messages::*;
+
+// Re-export softmata-core for canonical type access
+pub use softmata_core;

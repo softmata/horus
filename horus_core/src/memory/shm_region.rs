@@ -203,10 +203,13 @@ impl ShmRegion {
             name
         );
         let c_name = CString::new(shm_name.clone()).map_err(|e| {
-            HorusError::Memory(format!(
-                "Invalid shm name '{}': topic names cannot contain null bytes: {}",
-                shm_name, e
-            ).into())
+            HorusError::Memory(
+                format!(
+                    "Invalid shm name '{}': topic names cannot contain null bytes: {}",
+                    shm_name, e
+                )
+                .into(),
+            )
         })?;
 
         // Try to open existing first
@@ -246,12 +249,15 @@ impl ShmRegion {
                     if unsafe { libc::ftruncate(new_fd, size as libc::off_t) } != 0 {
                         unsafe { libc::close(new_fd) };
                         unsafe { libc::shm_unlink(c_name.as_ptr()) };
-                        return Err(HorusError::Memory(format!(
-                            "Failed to set shm '{}' to {} bytes after zombie reclaim: {}",
-                            shm_name,
-                            size,
-                            std::io::Error::last_os_error()
-                        ).into()));
+                        return Err(HorusError::Memory(
+                            format!(
+                                "Failed to set shm '{}' to {} bytes after zombie reclaim: {}",
+                                shm_name,
+                                size,
+                                std::io::Error::last_os_error()
+                            )
+                            .into(),
+                        ));
                     }
                     (new_fd, true)
                 } else {
@@ -259,19 +265,22 @@ impl ShmRegion {
                     // SAFETY: c_name is a valid null-terminated CString
                     let retry_fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
                     if retry_fd < 0 {
-                        return Err(HorusError::Memory(format!(
-                            "Failed to open/create shm '{}' after zombie cleanup: {}",
-                            shm_name,
-                            std::io::Error::last_os_error()
-                        ).into()));
+                        return Err(HorusError::Memory(
+                            format!(
+                                "Failed to open/create shm '{}' after zombie cleanup: {}",
+                                shm_name,
+                                std::io::Error::last_os_error()
+                            )
+                            .into(),
+                        ));
                     }
                     // The new owner is responsible for sizing; wait for it.
                     if wait_for_shm_init(retry_fd, size).is_err() {
                         unsafe { libc::close(retry_fd) };
-                        return Err(HorusError::Memory(format!(
-                            "shm '{}' not fully initialized after all retries",
-                            shm_name
-                        ).into()));
+                        return Err(HorusError::Memory(
+                            format!("shm '{}' not fully initialized after all retries", shm_name)
+                                .into(),
+                        ));
                     }
                     (retry_fd, false)
                 }
@@ -292,21 +301,27 @@ impl ShmRegion {
                 // SAFETY: c_name is still a valid null-terminated CString
                 let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR, 0o600) };
                 if fd < 0 {
-                    return Err(HorusError::Memory(format!(
-                        "Failed to open/create shm '{}': {}",
-                        shm_name,
-                        std::io::Error::last_os_error()
-                    ).into()));
+                    return Err(HorusError::Memory(
+                        format!(
+                            "Failed to open/create shm '{}': {}",
+                            shm_name,
+                            std::io::Error::last_os_error()
+                        )
+                        .into(),
+                    ));
                 }
                 // Wait for the winner to call ftruncate before we mmap.
                 if wait_for_shm_init(fd, size).is_err() {
                     // SAFETY: fd is a valid open file descriptor
                     unsafe { libc::close(fd) };
-                    return Err(HorusError::Memory(format!(
-                        "shm '{}' not fully initialized after all retries: \
+                    return Err(HorusError::Memory(
+                        format!(
+                            "shm '{}' not fully initialized after all retries: \
                          winner process may have crashed mid-setup",
-                        shm_name
-                    ).into()));
+                            shm_name
+                        )
+                        .into(),
+                    ));
                 }
                 (fd, false)
             } else {
@@ -346,10 +361,9 @@ impl ShmRegion {
                 // SAFETY: c_name is a valid null-terminated CString
                 unsafe { libc::shm_unlink(c_name.as_ptr()) };
             }
-            return Err(HorusError::Memory(format!(
-                "Failed to mmap shm: {}",
-                std::io::Error::last_os_error()
-            ).into()));
+            return Err(HorusError::Memory(
+                format!("Failed to mmap shm: {}", std::io::Error::last_os_error()).into(),
+            ));
         }
 
         // Initialize to zero if owner
@@ -436,11 +450,14 @@ impl ShmRegion {
         };
 
         if handle == 0 {
-            return Err(HorusError::Memory(format!(
-                "CreateFileMappingW failed: error {}",
-                // SAFETY: GetLastError is always safe to call after a Windows API failure
-                unsafe { GetLastError() }
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "CreateFileMappingW failed: error {}",
+                    // SAFETY: GetLastError is always safe to call after a Windows API failure
+                    unsafe { GetLastError() }
+                )
+                .into(),
+            ));
         }
 
         // SAFETY: GetLastError is always safe to call; checks if mapping already existed
@@ -453,11 +470,14 @@ impl ShmRegion {
         if ptr.is_null() {
             // SAFETY: handle is a valid file mapping handle from CreateFileMappingW
             unsafe { CloseHandle(handle) };
-            return Err(HorusError::Memory(format!(
-                "MapViewOfFile failed: error {}",
-                // SAFETY: GetLastError is always safe to call after a Windows API failure
-                unsafe { GetLastError() }
-            ).into()));
+            return Err(HorusError::Memory(
+                format!(
+                    "MapViewOfFile failed: error {}",
+                    // SAFETY: GetLastError is always safe to call after a Windows API failure
+                    unsafe { GetLastError() }
+                )
+                .into(),
+            ));
         }
 
         // Initialize to zero if owner

@@ -349,7 +349,7 @@ fn tf2_parity_error_frame_not_registered() {
             assert!(msg.contains("nonexistent"));
             assert!(msg.contains("not registered"));
         }
-        other => panic!("Expected NotFound, got: {:?}", other),
+        other => unreachable!("Expected NotFound, got: {:?}", other),
     }
 }
 
@@ -371,7 +371,7 @@ fn tf2_parity_error_disconnected_trees() {
             let msg = e.to_string();
             assert!(msg.contains("disconnected"));
         }
-        other => panic!("Expected Communication, got: {:?}", other),
+        other => unreachable!("Expected Communication, got: {:?}", other),
     }
 }
 

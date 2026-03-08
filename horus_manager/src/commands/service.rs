@@ -343,6 +343,71 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
 
 // ─── service_find ─────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovered_service_defaults() {
+        let svc = DiscoveredService {
+            name: "add_two_ints".to_string(),
+            has_request: true,
+            has_response: true,
+            request_publishers: 1,
+            request_subscribers: 1,
+            response_publishers: 1,
+            response_subscribers: 1,
+        };
+        assert_eq!(svc.name, "add_two_ints");
+        assert!(svc.has_request && svc.has_response);
+    }
+
+    #[test]
+    fn discovered_service_partial() {
+        let svc = DiscoveredService {
+            name: "broken_svc".to_string(),
+            has_request: true,
+            has_response: false,
+            request_publishers: 1,
+            request_subscribers: 0,
+            response_publishers: 0,
+            response_subscribers: 0,
+        };
+        assert!(svc.has_request);
+        assert!(!svc.has_response);
+    }
+
+    #[test]
+    fn topic_suffix_stripping_request() {
+        let topic = "my_service/request";
+        let svc_name = topic.strip_suffix("/request");
+        assert_eq!(svc_name, Some("my_service"));
+    }
+
+    #[test]
+    fn topic_suffix_stripping_response() {
+        let topic = "my_service/response";
+        let svc_name = topic.strip_suffix("/response");
+        assert_eq!(svc_name, Some("my_service"));
+    }
+
+    #[test]
+    fn topic_suffix_stripping_with_prefix() {
+        let topic = "horus_topic/my_service/request";
+        let svc_name = topic
+            .strip_prefix("horus_topic/")
+            .and_then(|n| n.strip_suffix("/request"));
+        assert_eq!(svc_name, Some("my_service"));
+    }
+
+    #[test]
+    fn topic_suffix_stripping_no_match() {
+        let topic = "my_topic/data";
+        assert!(topic.strip_suffix("/request").is_none());
+        assert!(topic.strip_suffix("/response").is_none());
+    }
+}
+
 /// Find services by type name filter (`horus service find <type_filter>`)
 pub fn find_services(type_filter: &str) -> HorusResult<()> {
     let services = discover_services()?;

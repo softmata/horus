@@ -374,7 +374,7 @@ mod tests {
         };
         RegisteredNode {
             node: super::super::types::NodeKind::Regular(Box::new(node)),
-            name: name.to_string(),
+            name: Arc::from(name),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new(name.to_string())),

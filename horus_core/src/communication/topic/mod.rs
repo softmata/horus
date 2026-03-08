@@ -505,7 +505,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             }
             if header.magic != TOPIC_MAGIC {
                 return Err(HorusError::Communication(
-                    "Timeout waiting for topic header initialization".to_string().into(),
+                    "Timeout waiting for topic header initialization"
+                        .to_string()
+                        .into(),
                 ));
             }
             return Ok(header.slot_size as usize);
@@ -513,16 +515,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         // Header already initialized — validate compatibility.
         if header.version != TOPIC_VERSION {
-            return Err(HorusError::Communication(format!(
-                "Incompatible topic version: {} (expected {})",
-                header.version, TOPIC_VERSION
-            ).into()));
+            return Err(HorusError::Communication(
+                format!(
+                    "Incompatible topic version: {} (expected {})",
+                    header.version, TOPIC_VERSION
+                )
+                .into(),
+            ));
         }
         if is_pod && header.type_size != type_size {
-            return Err(HorusError::Communication(format!(
-                "Type size mismatch: {} (expected {})",
-                header.type_size, type_size
-            ).into()));
+            return Err(HorusError::Communication(
+                format!(
+                    "Type size mismatch: {} (expected {})",
+                    header.type_size, type_size
+                )
+                .into(),
+            ));
         }
         Ok(header.slot_size as usize)
     }

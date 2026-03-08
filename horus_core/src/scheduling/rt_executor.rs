@@ -196,7 +196,7 @@ impl RtExecutor {
                 if let Some(ref bb) = monitors.blackbox {
                     if let Ok(mut bb) = bb.try_lock() {
                         bb.record(super::blackbox::BlackBoxEvent::WCETViolation {
-                            name: node.name.clone(),
+                            name: node.name.to_string(),
                             budget_us: wcet_budget.as_micros() as u64,
                             actual_us: tr.duration.as_micros() as u64,
                         });
@@ -227,7 +227,7 @@ impl RtExecutor {
                 if let Some(ref bb) = monitors.blackbox {
                     if let Ok(mut bb) = bb.try_lock() {
                         bb.record(super::blackbox::BlackBoxEvent::DeadlineMiss {
-                            name: node.name.clone(),
+                            name: node.name.to_string(),
                             deadline_us: deadline.as_micros() as u64,
                             actual_us: dm.elapsed.as_micros() as u64,
                         });
@@ -256,7 +256,7 @@ impl RtExecutor {
                     DeadlineAction::Fallback => {
                         let fallback = node.node.as_rt_mut().and_then(|rt| rt.fallback_node());
                         if let Some(fallback_node) = fallback {
-                            let fallback_name = fallback_node.name().to_string();
+                            let fallback_name: Arc<str> = Arc::from(fallback_node.name());
                             if monitors.verbose {
                                 print_line(&format!(
                                     "[RT-thread] Switching '{}' to fallback '{}'",
@@ -518,7 +518,7 @@ mod tests {
         };
         RegisteredNode {
             node: super::super::types::NodeKind::Regular(Box::new(node)),
-            name: name.to_string(),
+            name: Arc::from(name),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new(name.to_string())),
@@ -632,7 +632,7 @@ mod tests {
         let node = PanicNode;
         let registered = RegisteredNode {
             node: super::super::types::NodeKind::Regular(Box::new(node)),
-            name: "panic_rt".to_string(),
+            name: Arc::from("panic_rt"),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new("panic_rt".to_string())),
@@ -711,7 +711,7 @@ mod tests {
         };
         let panic_registered = RegisteredNode {
             node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
-            name: "panic_pre".to_string(),
+            name: Arc::from("panic_pre"),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new("panic_pre".to_string())),
@@ -968,7 +968,7 @@ mod tests {
         };
         let panic_registered = RegisteredNode {
             node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
-            name: "panic_post".to_string(),
+            name: Arc::from("panic_post"),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new("panic_post".to_string())),
@@ -1050,7 +1050,7 @@ mod tests {
         };
         let panic_registered = RegisteredNode {
             node: super::super::types::NodeKind::Regular(Box::new(panic_node)),
-            name: "always_panic".to_string(),
+            name: Arc::from("always_panic"),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new("always_panic".to_string())),
@@ -1155,7 +1155,7 @@ mod tests {
         };
         let panic_registered = RegisteredNode {
             node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
-            name: "quiet_panic".to_string(),
+            name: Arc::from("quiet_panic"),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new("quiet_panic".to_string())),

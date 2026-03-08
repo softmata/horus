@@ -398,10 +398,9 @@ impl HFrameCore {
 
         // Get chain
         let chain = self.get_or_compute_chain(src, dst).ok_or_else(|| {
-            HorusError::Communication(format!(
-                "No transform path between frame {} and frame {}",
-                src, dst
-            ).into())
+            HorusError::Communication(
+                format!("No transform path between frame {} and frame {}", src, dst).into(),
+            )
         })?;
 
         // Check time range for each non-root frame in the chain
@@ -443,10 +442,13 @@ impl HFrameCore {
         // All frames have the requested timestamp in range — resolve normally
         self.compose_chain(&chain, Some(timestamp_ns))
             .ok_or_else(|| {
-                HorusError::Communication(format!(
-                    "Failed to compose transform chain between frame {} and frame {}",
-                    src, dst
-                ).into())
+                HorusError::Communication(
+                    format!(
+                        "Failed to compose transform chain between frame {} and frame {}",
+                        src, dst
+                    )
+                    .into(),
+                )
             })
     }
 
@@ -470,10 +472,9 @@ impl HFrameCore {
         }
 
         let chain = self.get_or_compute_chain(src, dst).ok_or_else(|| {
-            HorusError::Communication(format!(
-                "No transform path between frame {} and frame {}",
-                src, dst
-            ).into())
+            HorusError::Communication(
+                format!("No transform path between frame {} and frame {}", src, dst).into(),
+            )
         })?;
 
         // Check time range + tolerance for each frame in the chain
@@ -511,10 +512,13 @@ impl HFrameCore {
 
         self.compose_chain(&chain, Some(timestamp_ns))
             .ok_or_else(|| {
-                HorusError::Communication(format!(
-                    "Failed to compose transform chain between frame {} and frame {}",
-                    src, dst
-                ).into())
+                HorusError::Communication(
+                    format!(
+                        "Failed to compose transform chain between frame {} and frame {}",
+                        src, dst
+                    )
+                    .into(),
+                )
             })
     }
 
@@ -1023,7 +1027,8 @@ mod tests {
         core.init_dynamic(1, 0);
         core.init_dynamic(2, 1);
         // Give camera a fixed transform so resolve(2,0) can always succeed.
-        core.update(2, &Transform::from_translation([0.0, 0.0, 0.5]), 0).unwrap();
+        core.update(2, &Transform::from_translation([0.0, 0.0, 0.5]), 0)
+            .unwrap();
 
         let barrier = Arc::new(Barrier::new(2));
 
@@ -1082,7 +1087,8 @@ mod tests {
         core.init_dynamic(1, 0);
 
         let gen_before = core.global_generation.load(Ordering::Acquire);
-        core.update(1, &Transform::from_translation([1.0, 0.0, 0.0]), 1000).unwrap();
+        core.update(1, &Transform::from_translation([1.0, 0.0, 0.0]), 1000)
+            .unwrap();
         let gen_after = core.global_generation.load(Ordering::Acquire);
 
         assert!(

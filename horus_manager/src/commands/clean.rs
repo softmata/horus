@@ -379,3 +379,73 @@ fn count_files(path: &Path) -> usize {
 fn format_size(bytes: u64) -> String {
     format_bytes(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn get_dir_size_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(get_dir_size(tmp.path()), 0);
+    }
+
+    #[test]
+    fn get_dir_size_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+        fs::write(tmp.path().join("b.txt"), "world!").unwrap();
+        let size = get_dir_size(tmp.path());
+        assert_eq!(size, 11); // 5 + 6
+    }
+
+    #[test]
+    fn get_dir_size_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("subdir");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("file.bin"), vec![0u8; 100]).unwrap();
+        assert_eq!(get_dir_size(tmp.path()), 100);
+    }
+
+    #[test]
+    fn get_dir_size_nonexistent() {
+        assert_eq!(get_dir_size(Path::new("/nonexistent/path")), 0);
+    }
+
+    #[test]
+    fn count_files_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(count_files(tmp.path()), 0);
+    }
+
+    #[test]
+    fn count_files_with_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.txt"), "").unwrap();
+        fs::write(tmp.path().join("b.txt"), "").unwrap();
+        assert_eq!(count_files(tmp.path()), 2);
+    }
+
+    #[test]
+    fn count_files_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(tmp.path().join("top.txt"), "").unwrap();
+        fs::write(sub.join("nested.txt"), "").unwrap();
+        assert_eq!(count_files(tmp.path()), 2);
+    }
+
+    #[test]
+    fn count_files_nonexistent() {
+        assert_eq!(count_files(Path::new("/nonexistent")), 0);
+    }
+
+    #[test]
+    fn format_size_delegates_to_format_bytes() {
+        let result = format_size(1024);
+        assert!(!result.is_empty());
+    }
+}

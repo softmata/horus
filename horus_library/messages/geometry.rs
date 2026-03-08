@@ -676,6 +676,91 @@ impl AccelStamped {
 }
 
 // =============================================================================
+// softmata-core Conversions
+// =============================================================================
+// Bidirectional conversions between HORUS IPC types and softmata-core
+// canonical types. HORUS types keep Pod/Zeroable/PodMessage/LogSummary;
+// softmata-core types are the portable, timestamp-free foundation.
+
+// --- Vector3 (exact layout match) ---
+
+impl From<softmata_core::geometry::Vector3> for Vector3 {
+    fn from(v: softmata_core::geometry::Vector3) -> Self {
+        Self {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+        }
+    }
+}
+
+impl Vector3 {
+    /// Convert to softmata-core Vector3.
+    pub fn to_core(&self) -> softmata_core::geometry::Vector3 {
+        softmata_core::geometry::Vector3::new(self.x, self.y, self.z)
+    }
+}
+
+// --- Point3 (exact layout match) ---
+
+impl From<softmata_core::geometry::Point3> for Point3 {
+    fn from(p: softmata_core::geometry::Point3) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+        }
+    }
+}
+
+impl Point3 {
+    /// Convert to softmata-core Point3.
+    pub fn to_core(&self) -> softmata_core::geometry::Point3 {
+        softmata_core::geometry::Point3::new(self.x, self.y, self.z)
+    }
+}
+
+// --- Quaternion (exact layout match) ---
+
+impl From<softmata_core::geometry::Quaternion> for Quaternion {
+    fn from(q: softmata_core::geometry::Quaternion) -> Self {
+        Self {
+            x: q.x,
+            y: q.y,
+            z: q.z,
+            w: q.w,
+        }
+    }
+}
+
+impl Quaternion {
+    /// Convert to softmata-core Quaternion.
+    pub fn to_core(&self) -> softmata_core::geometry::Quaternion {
+        softmata_core::geometry::Quaternion::new(self.x, self.y, self.z, self.w)
+    }
+}
+
+// --- Pose2D (HORUS adds timestamp_ns) ---
+
+impl From<softmata_core::geometry::Pose2D> for Pose2D {
+    fn from(p: softmata_core::geometry::Pose2D) -> Self {
+        Self {
+            x: p.x,
+            y: p.y,
+            theta: p.theta,
+            timestamp_ns: crate::hframe::timestamp_now(),
+        }
+    }
+}
+
+impl Pose2D {
+    /// Convert to softmata-core Pose2D (drops timestamp_ns).
+    pub fn to_core(&self) -> softmata_core::geometry::Pose2D {
+        softmata_core::geometry::Pose2D::new(self.x, self.y, self.theta)
+    }
+}
+
+// =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
 // These implementations enable ultra-fast zero-serialization transfer (~50ns)
@@ -1223,5 +1308,93 @@ mod tests {
         assert_eq!(v.x, 4.0);
         assert_eq!(v.y, 5.0);
         assert_eq!(v.z, 6.0);
+    }
+
+    // ============================================================================
+    // softmata-core Conversion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_vector3_from_core() {
+        let core_v = softmata_core::geometry::Vector3::new(1.0, 2.0, 3.0);
+        let horus_v: Vector3 = core_v.into();
+        assert_eq!(horus_v.x, 1.0);
+        assert_eq!(horus_v.y, 2.0);
+        assert_eq!(horus_v.z, 3.0);
+    }
+
+    #[test]
+    fn test_vector3_to_core() {
+        let horus_v = Vector3::new(4.0, 5.0, 6.0);
+        let core_v = horus_v.to_core();
+        assert_eq!(core_v.x, 4.0);
+        assert_eq!(core_v.y, 5.0);
+        assert_eq!(core_v.z, 6.0);
+    }
+
+    #[test]
+    fn test_point3_from_core() {
+        let core_p = softmata_core::geometry::Point3::new(7.0, 8.0, 9.0);
+        let horus_p: Point3 = core_p.into();
+        assert_eq!(horus_p.x, 7.0);
+        assert_eq!(horus_p.y, 8.0);
+        assert_eq!(horus_p.z, 9.0);
+    }
+
+    #[test]
+    fn test_point3_to_core() {
+        let horus_p = Point3::new(1.5, 2.5, 3.5);
+        let core_p = horus_p.to_core();
+        assert_eq!(core_p.x, 1.5);
+        assert_eq!(core_p.y, 2.5);
+        assert_eq!(core_p.z, 3.5);
+    }
+
+    #[test]
+    fn test_quaternion_from_core() {
+        let core_q = softmata_core::geometry::Quaternion::new(0.1, 0.2, 0.3, 0.9);
+        let horus_q: Quaternion = core_q.into();
+        assert_eq!(horus_q.x, 0.1);
+        assert_eq!(horus_q.y, 0.2);
+        assert_eq!(horus_q.z, 0.3);
+        assert_eq!(horus_q.w, 0.9);
+    }
+
+    #[test]
+    fn test_quaternion_to_core() {
+        let horus_q = Quaternion::new(0.0, 0.0, 0.0, 1.0);
+        let core_q = horus_q.to_core();
+        assert_eq!(core_q.x, 0.0);
+        assert_eq!(core_q.y, 0.0);
+        assert_eq!(core_q.z, 0.0);
+        assert_eq!(core_q.w, 1.0);
+    }
+
+    #[test]
+    fn test_pose2d_from_core() {
+        let core_p = softmata_core::geometry::Pose2D::new(1.0, 2.0, 0.5);
+        let horus_p: Pose2D = core_p.into();
+        assert_eq!(horus_p.x, 1.0);
+        assert_eq!(horus_p.y, 2.0);
+        assert_eq!(horus_p.theta, 0.5);
+        assert!(horus_p.timestamp_ns > 0); // auto-timestamped
+    }
+
+    #[test]
+    fn test_pose2d_to_core() {
+        let horus_p = Pose2D::new(3.0, 4.0, 1.57);
+        let core_p = horus_p.to_core();
+        assert_eq!(core_p.x, 3.0);
+        assert_eq!(core_p.y, 4.0);
+        assert_eq!(core_p.theta, 1.57);
+    }
+
+    #[test]
+    fn test_vector3_roundtrip_core() {
+        let original = Vector3::new(1.0, 2.0, 3.0);
+        let roundtripped: Vector3 = original.to_core().into();
+        assert_eq!(original.x, roundtripped.x);
+        assert_eq!(original.y, roundtripped.y);
+        assert_eq!(original.z, roundtripped.z);
     }
 }

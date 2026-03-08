@@ -150,7 +150,7 @@ fn stale_double_release_returns_err() {
                 "error must mention generation mismatch: {msg}"
             );
         }
-        other => panic!("expected HorusError::Memory, got {:?}", other),
+        other => unreachable!("expected HorusError::Memory, got {:?}", other),
     }
 
     std::fs::remove_file(pool.shm_path()).ok();

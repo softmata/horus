@@ -523,7 +523,10 @@ impl HFrame {
             .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", dst)))?;
 
         self.core.resolve(src_id, dst_id).ok_or_else(|| {
-            HorusError::Communication(self.diagnose_chain_failure_named(src, src_id, dst, dst_id).into())
+            HorusError::Communication(
+                self.diagnose_chain_failure_named(src, src_id, dst, dst_id)
+                    .into(),
+            )
         })
     }
 
@@ -546,7 +549,8 @@ impl HFrame {
             .resolve_at(src_id, dst_id, timestamp_ns)
             .ok_or_else(|| {
                 HorusError::Communication(
-                    self.diagnose_chain_failure_named(src, src_id, dst, dst_id).into(),
+                    self.diagnose_chain_failure_named(src, src_id, dst, dst_id)
+                        .into(),
                 )
             })
     }
@@ -738,10 +742,9 @@ impl HFrame {
         let chain = self
             .core
             .frame_chain(src_id, dst_id)
-            .ok_or(HorusError::Communication(format!(
-                "No transform path between '{}' and '{}'",
-                src, dst
-            ).into()))?;
+            .ok_or(HorusError::Communication(
+                format!("No transform path between '{}' and '{}'", src, dst).into(),
+            ))?;
 
         Ok(chain
             .iter()
@@ -2172,7 +2175,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("Expected NotFound, got: {:?}", other),
+            other => unreachable!("Expected NotFound, got: {:?}", other),
         }
     }
 
@@ -2199,7 +2202,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("Expected Communication, got: {:?}", other),
+            other => unreachable!("Expected Communication, got: {:?}", other),
         }
     }
 
@@ -2224,7 +2227,7 @@ mod tests {
                     msg
                 );
             }
-            other => panic!("Expected NotFound, got: {:?}", other),
+            other => unreachable!("Expected NotFound, got: {:?}", other),
         }
     }
 

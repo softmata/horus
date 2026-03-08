@@ -149,8 +149,14 @@ fn main() -> Result<()> {
 
     // Use NodeTier for explicit classification
     println!("Node tiers:");
-    println!("  PID: UltraFast (default policy: {:?})", NodeTier::UltraFast.default_failure_policy());
-    println!("  Safety: Normal (default policy: {:?})", NodeTier::Normal.default_failure_policy());
+    println!(
+        "  PID: UltraFast (default policy: {:?})",
+        NodeTier::UltraFast.default_failure_policy()
+    );
+    println!(
+        "  Safety: Normal (default policy: {:?})",
+        NodeTier::Normal.default_failure_policy()
+    );
     println!();
 
     scheduler.run_for(Duration::from_secs(3))?;

@@ -573,6 +573,54 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_hex_dump_small_payload() {
+        // Just verify it doesn't panic on various sizes
+        print_hex_dump(&[], 64);
+        print_hex_dump(&[0xAA], 64);
+        print_hex_dump(&[0x01, 0x02, 0x03, 0x04], 64);
+    }
+
+    #[test]
+    fn print_hex_dump_truncated() {
+        let data: Vec<u8> = (0..128).collect();
+        // Should not panic, truncates to max_bytes
+        print_hex_dump(&data, 16);
+    }
+
+    #[test]
+    fn print_message_pod_text() {
+        // ASCII text should print as text, not crash
+        print_message(b"hello world", 1, true);
+    }
+
+    #[test]
+    fn print_message_pod_binary() {
+        // Non-ASCII POD should fall back to hex
+        print_message(&[0xFF, 0x00, 0x01], 1, true);
+    }
+
+    #[test]
+    fn print_message_serde_valid_json() {
+        // Valid JSON payload
+        print_message(b"{\"x\":1.0}", 1, false);
+    }
+
+    #[test]
+    fn print_message_serde_non_json() {
+        // Non-JSON serde (bincode-like) should fall back to hex
+        print_message(
+            &[0x05, 0x00, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o'],
+            1,
+            false,
+        );
+    }
+}
+
 /// Publish a message to a topic (for testing)
 pub fn publish_topic(
     name: &str,

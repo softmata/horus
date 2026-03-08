@@ -63,7 +63,7 @@ fn test_blackbox_save_load_round_trip() {
             assert_eq!(name, "test_sched");
             assert_eq!(*node_count, 3);
         }
-        _ => panic!("First event should be SchedulerStart"),
+        other => unreachable!("First event should be SchedulerStart, got {:?}", other),
     }
 
     // Cleanup
@@ -102,7 +102,7 @@ fn test_blackbox_legacy_array_compat() {
             assert_eq!(category, "test");
             assert_eq!(message, "legacy event");
         }
-        _ => panic!("Should be a Custom event"),
+        other => unreachable!("Should be a Custom event, got {:?}", other),
     }
 
     // loss counter should be 0 for legacy format

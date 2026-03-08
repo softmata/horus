@@ -188,7 +188,7 @@ fn migration_success_increments_epoch() {
             assert_eq!(new_epoch, 1);
             assert_eq!(header.mode(), BackendMode::SpscIntra);
         }
-        other => panic!("Expected Success, got {:?}", other),
+        other => unreachable!("Expected Success, got {:?}", other),
     }
 }
 
@@ -247,7 +247,7 @@ fn migrate_to_optimal_works() {
             assert_eq!(header.mode(), header.detect_optimal_backend());
         }
         MigrationResult::NotNeeded => {}
-        other => panic!("Unexpected: {:?}", other),
+        other => unreachable!("Unexpected: {:?}", other),
     }
 }
 
@@ -7388,4 +7388,91 @@ fn stress_ring_buffer_saturation() {
             last_seq, expected_sends - 1, staleness
         );
     }
+}
+
+// ============================================================================
+// 52. Registry module unit tests
+// ============================================================================
+
+#[test]
+fn registry_store_and_lookup() {
+    let name = &unique("reg_store");
+    let backend: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
+    let stored = registry::store_or_get_backend(name, 100, backend.clone());
+    // Should return the same Arc (same pointer)
+    assert!(Arc::ptr_eq(&stored, &backend));
+
+    // Lookup should find it
+    let found = registry::lookup_backend(name, 100);
+    assert!(found.is_some());
+    assert!(Arc::ptr_eq(&found.unwrap(), &backend));
+}
+
+#[test]
+fn registry_store_deduplicates() {
+    let name = &unique("reg_dedup");
+    let first: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
+    let second: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(8));
+
+    let stored1 = registry::store_or_get_backend(name, 200, first.clone());
+    let stored2 = registry::store_or_get_backend(name, 200, second.clone());
+
+    // Both should return the FIRST backend (first-writer-wins)
+    assert!(Arc::ptr_eq(&stored1, &first));
+    assert!(Arc::ptr_eq(&stored2, &first));
+}
+
+#[test]
+fn registry_lookup_missing_returns_none() {
+    let found = registry::lookup_backend("nonexistent_topic_xyz", 999);
+    assert!(found.is_none());
+}
+
+#[test]
+fn registry_remove_topic() {
+    let name = &unique("reg_remove");
+    let backend: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u64>::new(4));
+    registry::store_or_get_backend(name, 300, backend);
+
+    assert!(registry::lookup_backend(name, 300).is_some());
+
+    registry::remove_topic(name);
+
+    assert!(registry::lookup_backend(name, 300).is_none());
+}
+
+#[test]
+fn registry_epoch_notify_store_and_load() {
+    let name = &unique("reg_epoch");
+    let epoch = registry::get_or_create_process_epoch(name);
+    assert_eq!(epoch.load(Ordering::Acquire), 0);
+
+    registry::notify_epoch_change(name, 42);
+    assert_eq!(epoch.load(Ordering::Acquire), 42);
+}
+
+#[test]
+fn registry_epoch_get_or_create_is_idempotent() {
+    let name = &unique("reg_epoch_idem");
+    let e1 = registry::get_or_create_process_epoch(name);
+    let e2 = registry::get_or_create_process_epoch(name);
+    // Same Arc — same underlying AtomicU64
+    assert!(Arc::ptr_eq(&e1, &e2));
+}
+
+#[test]
+fn registry_different_epochs_coexist() {
+    let name = &unique("reg_multi_epoch");
+    let b1: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u32>::new(4));
+    let b2: Arc<dyn std::any::Any + Send + Sync> = Arc::new(SpscRing::<u32>::new(8));
+
+    registry::store_or_get_backend(name, 1, b1.clone());
+    registry::store_or_get_backend(name, 2, b2.clone());
+
+    let found1 = registry::lookup_backend(name, 1);
+    let found2 = registry::lookup_backend(name, 2);
+    assert!(found1.is_some());
+    assert!(found2.is_some());
+    assert!(Arc::ptr_eq(&found1.unwrap(), &b1));
+    assert!(Arc::ptr_eq(&found2.unwrap(), &b2));
 }

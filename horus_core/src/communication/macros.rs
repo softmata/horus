@@ -254,7 +254,10 @@ mod tests {
     fn test_message_satisfies_topic_message_bounds() {
         // The blanket TopicMessage impl requires: Clone + Send + Sync + Serialize + DeserializeOwned + 'static
         // Verify our generated type satisfies these bounds
-        fn assert_topic_message_bounds<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>() {}
+        fn assert_topic_message_bounds<
+            T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        >() {
+        }
         assert_topic_message_bounds::<TestMotorCmd>();
         assert_topic_message_bounds::<TestSensor>();
         assert_topic_message_bounds::<TestPose>();

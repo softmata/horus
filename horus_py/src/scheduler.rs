@@ -23,18 +23,18 @@ use std::time::Duration;
 // The GIL and Rust Mutexes interact through three invariants that MUST be
 // maintained to avoid deadlock:
 //
-// ## Invariant 1 — No Rust lock is held when Python::with_gil is entered
+// ## Invariant 1 — No Rust lock is held when Python::attach is entered
 //
-//   `init()`, `tick()`, and `shutdown()` each call `Python::with_gil`.
+//   `init()`, `tick()`, and `shutdown()` each call `Python::attach`.
 //   Before that call, every Rust MutexGuard must already be dropped.
 //   `node_context` is only locked for brief, non-blocking operations
 //   (`start_tick`, `record_tick`) that complete before Python is invoked.
 //
 // ## Invariant 2 — The GIL is released before long scheduler operations
 //
-//   `with_inner_run` calls `py.allow_threads(...)` to release the GIL while
+//   `with_inner_run` calls `py.detach(...)` to release the GIL while
 //   `CoreScheduler::run()` executes.  The `self.inner` Mutex is unlocked
-//   (taken via `guard.take()`) *before* `allow_threads` is called.
+//   (taken via `guard.take()`) *before* `detach` is called.
 //   Consequently, when Python callbacks re-acquire the GIL inside `tick()`,
 //   no PyScheduler-level Mutex is still held.
 //
@@ -48,7 +48,7 @@ use std::time::Duration;
 //
 // ## Summary table
 //
-//   | Lock         | Held when with_gil entered? | Held when Python CB runs? |
+//   | Lock         | Held when attach entered?   | Held when Python CB runs? |
 //   |------------- |-----------------------------|---------------------------|
 //   | GIL          | Yes (that's the whole point)| Yes                       |
 //   | node_context | No — released before call   | No                        |
@@ -72,7 +72,7 @@ impl CoreNode for PyNodeAdapter {
     }
 
     fn init(&mut self) -> horus_core::error::HorusResult<()> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let py_info = Py::new(
                 py,
                 PyNodeInfo {
@@ -111,7 +111,7 @@ impl CoreNode for PyNodeAdapter {
             return;
         }
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // GIL Safety: `node_context` is locked only for the duration of
             // `start_tick()`.  The MutexGuard is dropped at the closing `}` of
             // this if-let block — BEFORE any Python code is invoked.  This
@@ -170,7 +170,7 @@ impl CoreNode for PyNodeAdapter {
     }
 
     fn shutdown(&mut self) -> horus_core::error::HorusResult<()> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let py_info = if let Some(ref cached) = self.cached_info {
                 cached.clone_ref(py)
             } else {
@@ -494,7 +494,7 @@ impl PyScheduler {
     fn with_inner_run<F>(&self, py: Python, f: F) -> PyResult<()>
     where
         F: FnOnce(&mut CoreScheduler) -> horus_core::error::HorusResult<()> + Send,
-        // CoreScheduler must be Send for py.allow_threads
+        // CoreScheduler must be Send for py.detach
     {
         let mut inner = {
             let mut guard = self
@@ -508,7 +508,7 @@ impl PyScheduler {
 
         self.stop_requested.store(false, Ordering::Relaxed);
 
-        let result = py.allow_threads(move || {
+        let result = py.detach(move || {
             let r = f(&mut inner);
             (inner, r)
         });

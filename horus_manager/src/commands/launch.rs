@@ -549,3 +549,99 @@ pub fn list_launch_nodes(file: &Path) -> HorusResult<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_config_deserialize_minimal() {
+        let yaml = "nodes: []";
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.nodes.is_empty());
+        assert!(config.namespace.is_none());
+        assert!(config.session.is_none());
+    }
+
+    #[test]
+    fn launch_config_deserialize_full() {
+        let yaml = r#"
+session: test_session
+namespace: /robot
+env:
+  HORUS_LOG: debug
+nodes:
+  - name: motor_ctrl
+    package: my_robot
+    priority: 1
+    rate_hz: 100
+    restart: always
+    depends_on: [sensor_node]
+    params:
+      max_speed: 1.5
+    env:
+      MOTOR_ID: "0"
+  - name: sensor_node
+    command: /usr/local/bin/sensor
+    args: ["--port", "5000"]
+"#;
+        let config: LaunchConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.session.as_deref(), Some("test_session"));
+        assert_eq!(config.namespace.as_deref(), Some("/robot"));
+        assert_eq!(config.nodes.len(), 2);
+
+        let motor = &config.nodes[0];
+        assert_eq!(motor.name, "motor_ctrl");
+        assert_eq!(motor.package.as_deref(), Some("my_robot"));
+        assert_eq!(motor.priority, Some(1));
+        assert_eq!(motor.rate_hz, Some(100));
+        assert_eq!(motor.restart, "always");
+        assert_eq!(motor.depends_on, vec!["sensor_node"]);
+
+        let sensor = &config.nodes[1];
+        assert_eq!(sensor.name, "sensor_node");
+        assert_eq!(sensor.command.as_deref(), Some("/usr/local/bin/sensor"));
+        assert_eq!(sensor.args, vec!["--port", "5000"]);
+    }
+
+    #[test]
+    fn launch_node_default_restart_is_never() {
+        let yaml = "name: test_node";
+        let node: LaunchNode = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(node.restart, "never");
+    }
+
+    #[test]
+    fn launch_config_roundtrip_serde() {
+        let config = LaunchConfig {
+            nodes: vec![LaunchNode {
+                name: "test".to_string(),
+                package: None,
+                priority: Some(5),
+                rate_hz: Some(50),
+                params: HashMap::new(),
+                env: HashMap::new(),
+                command: None,
+                args: vec![],
+                namespace: None,
+                depends_on: vec![],
+                start_delay: None,
+                restart: "never".to_string(),
+            }],
+            env: HashMap::new(),
+            namespace: None,
+            session: Some("roundtrip".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let decoded: LaunchConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(decoded.nodes.len(), 1);
+        assert_eq!(decoded.nodes[0].name, "test");
+        assert_eq!(decoded.session.as_deref(), Some("roundtrip"));
+    }
+
+    #[test]
+    fn run_launch_missing_file_returns_error() {
+        let result = run_launch(Path::new("/nonexistent/launch.yaml"), false, None, 5);
+        assert!(result.is_err());
+    }
+}

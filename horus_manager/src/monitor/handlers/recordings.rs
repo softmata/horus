@@ -288,6 +288,51 @@ pub async fn recordings_delete_handler(Path(session): Path<String>) -> impl Into
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.00 KB");
+        assert_eq!(format_size(1536), "1.50 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.00 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
+    }
+
+    #[test]
+    fn recording_list_item_serializable() {
+        let item = RecordingListItem {
+            session_name: "test_session".into(),
+            started_at: "2026-01-01 00:00:00".into(),
+            ended_at: Some("2026-01-01 00:05:00".into()),
+            total_ticks: 3000,
+            node_count: 5,
+            size_bytes: 1024 * 1024,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["session_name"], "test_session");
+        assert_eq!(json["total_ticks"], 3000);
+        assert_eq!(json["node_count"], 5);
+    }
+}
+
 /// Format bytes to human-readable size
 fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;

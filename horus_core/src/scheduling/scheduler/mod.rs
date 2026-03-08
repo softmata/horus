@@ -603,7 +603,7 @@ impl Scheduler {
     ) -> Option<super::fault_tolerance::FailureHandlerStats> {
         self.nodes
             .iter()
-            .find(|n| n.name == node_name)
+            .find(|n| &*n.name == node_name)
             .map(|n| n.failure_handler.stats())
     }
 
@@ -615,7 +615,7 @@ impl Scheduler {
     /// - Suppressed/in-backoff → `Open`
     #[doc(hidden)]
     pub fn circuit_state(&self, node_name: &str) -> Option<super::fault_tolerance::CircuitState> {
-        self.nodes.iter().find(|n| n.name == node_name).map(|n| {
+        self.nodes.iter().find(|n| &*n.name == node_name).map(|n| {
             let stats = n.failure_handler.stats();
             if stats.is_suppressed {
                 super::fault_tolerance::CircuitState::Open
@@ -904,14 +904,14 @@ impl Scheduler {
                     if stats.is_suppressed {
                         lines.push(format!(
                             "    - {}: SUPPRESSED ({}, {})",
-                            node.name.as_str(),
+                            node.name.as_ref(),
                             stats.policy,
                             stats.state
                         ));
                     } else if stats.failure_count > 0 {
                         lines.push(format!(
                             "    - {}: {} failures ({}, {})",
-                            node.name.as_str(),
+                            node.name.as_ref(),
                             stats.failure_count,
                             stats.policy,
                             stats.state
@@ -1047,15 +1047,13 @@ impl Scheduler {
 
             for registered in self.nodes.iter() {
                 if registered.is_rt_node {
-                    let node_name = registered.name.clone();
-
                     if rt.watchdog_enabled {
                         let watchdog_timeout = Duration::from_millis(rt.watchdog_timeout_ms);
-                        monitor.add_critical_node(node_name.clone(), watchdog_timeout);
+                        monitor.add_critical_node(registered.name.to_string(), watchdog_timeout);
                     }
 
                     if let Some(wcet) = registered.wcet_budget {
-                        monitor.set_wcet_budget(node_name, wcet);
+                        monitor.set_wcet_budget(registered.name.to_string(), wcet);
                     }
                 }
             }
@@ -1532,7 +1530,7 @@ impl Scheduler {
 
         self.nodes.push(RegisteredNode {
             node,
-            name: node_name.clone(),
+            name: Arc::from(node_name.as_str()),
             priority,
             initialized: false,
             context: Some(context),
@@ -1626,7 +1624,7 @@ impl Scheduler {
             return self;
         }
         for registered in self.nodes.iter_mut() {
-            if registered.name == name {
+            if &*registered.name == name {
                 registered.rate_hz = Some(rate_hz);
                 registered.last_tick = Some(Instant::now());
                 print_line(&format!("Set node '{}' rate to {:.1} Hz", name, rate_hz));
@@ -1755,7 +1753,7 @@ impl Scheduler {
         // The main loop only needs timers (tokio::time::sleep). Heavy async I/O
         // nodes run on their own dedicated runtime (see AsyncExecutor).
         let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
+            .enable_time()
             .build()
             .map_err(|e| horus_internal!("Failed to create tokio runtime: {}", e))?;
 
@@ -2007,7 +2005,7 @@ impl Scheduler {
     /// Initialize nodes matching the optional filter.
     fn initialize_filtered_nodes(&mut self, node_filter: Option<&[&str]>) {
         for registered in self.nodes.iter_mut() {
-            let node_name = registered.name.as_str();
+            let node_name = registered.name.as_ref();
             let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
 
             if should_run && !registered.initialized {
@@ -2099,7 +2097,7 @@ impl Scheduler {
     fn reinit_pending_nodes(&mut self) {
         for registered in self.nodes.iter_mut() {
             if !registered.is_stopped && !registered.is_paused && !registered.initialized {
-                let node_name = registered.name.as_str();
+                let node_name = registered.name.as_ref();
                 if let Some(ref mut ctx) = registered.context {
                     // Set node context for hlog!() macro
                     set_node_context(node_name, 0);
@@ -2164,8 +2162,10 @@ impl Scheduler {
                 for registered in self.nodes.iter_mut() {
                     if let Some(rt_node) = registered.node.as_rt_mut() {
                         if !rt_node.is_safe_state() {
-                            let name = registered.name.clone();
-                            print_line(&format!(" Entering safe state for RT node '{}'", name));
+                            print_line(&format!(
+                                " Entering safe state for RT node '{}'",
+                                registered.name
+                            ));
                             rt_node.enter_safe_state();
                             if let Some(ref bb) = self.monitor.blackbox {
                                 bb.lock()
@@ -2174,7 +2174,7 @@ impl Scheduler {
                                         category: "safe_state".to_string(),
                                         message: format!(
                                             "Node '{}' transitioned to safe state",
-                                            name
+                                            registered.name
                                         ),
                                     });
                             }
@@ -2210,7 +2210,7 @@ impl Scheduler {
                     }
                     print_line(&format!(
                         "  {} - Policy: {}, State: {}, Failures: {}{}",
-                        registered.name.as_str(),
+                        registered.name.as_ref(),
                         stats.policy,
                         stats.state,
                         stats.failure_count,
@@ -2258,7 +2258,7 @@ impl Scheduler {
                 tm.gauge("nodes_active", self.nodes.len() as f64);
 
                 for registered in &self.nodes {
-                    let node_name = registered.name.as_str();
+                    let node_name = registered.name.as_ref();
                     if let Some(stats) = profiler.node_stats.get(node_name) {
                         let mut labels = std::collections::HashMap::new();
                         labels.insert("node".to_string(), node_name.to_string());
@@ -2309,7 +2309,7 @@ impl Scheduler {
     /// Shutdown nodes matching the optional filter.
     fn shutdown_filtered_nodes(&mut self, node_filter: Option<&[&str]>) {
         for registered in self.nodes.iter_mut() {
-            let node_name = registered.name.as_str();
+            let node_name = registered.name.as_ref();
             let should_run = node_filter.is_none_or(|filter| filter.contains(&node_name));
 
             if should_run && registered.initialized {
@@ -2403,7 +2403,7 @@ impl Scheduler {
     pub fn node_list(&self) -> Vec<String> {
         self.nodes
             .iter()
-            .map(|registered| registered.name.clone())
+            .map(|registered| registered.name.to_string())
             .collect()
     }
 
@@ -2412,7 +2412,7 @@ impl Scheduler {
         self.nodes
             .iter()
             .map(|registered| {
-                let name = registered.name.clone();
+                let name = registered.name.to_string();
                 let order = registered.priority;
 
                 if let Some(ref ctx) = registered.context {
@@ -2451,7 +2451,7 @@ impl Scheduler {
     pub fn rt_stats(&self, node_name: &str) -> Option<&crate::core::RtStats> {
         self.nodes
             .iter()
-            .find(|n| n.name == node_name)
+            .find(|n| &*n.name == node_name)
             .and_then(|n| n.rt_stats.as_ref())
     }
 
@@ -2462,7 +2462,7 @@ impl Scheduler {
 
             // Collect pub/sub info from each node
             let nodes_json: Vec<String> = self.nodes.iter().map(|registered| {
-                let name = registered.name.as_str();
+                let name = registered.name.as_ref();
                 let priority = registered.priority;
 
                 // Get pub/sub from Node trait (macro-declared)
@@ -2550,7 +2550,7 @@ impl Scheduler {
                             // Find and process the node
                             let mut found = false;
                             for registered in &mut self.nodes {
-                                if registered.name.as_str() == node_name {
+                                if registered.name.as_ref() == node_name {
                                     found = true;
                                     match cmd.as_str() {
                                         "stop" => {
@@ -2650,7 +2650,7 @@ impl Scheduler {
 
             // Collect node info including state and health
             let nodes_json: Vec<String> = self.nodes.iter().map(|registered| {
-                let name = registered.name.as_str();
+                let name = registered.name.as_ref();
                 let priority = registered.priority;
 
                 // Get pub/sub from Node trait (macro-declared)
@@ -2732,7 +2732,7 @@ impl Scheduler {
 
         let (should_run, should_tick) = {
             let registered = &self.nodes[i];
-            let name = registered.name.as_str();
+            let name = registered.name.as_ref();
             let should_run = node_filter.is_none_or(|filter| filter.contains(&name));
 
             // Check rate limiting
@@ -2784,7 +2784,7 @@ impl Scheduler {
             // RtNode pre-condition and invariant checks (before tick)
             if let Some(rt_node) = self.nodes[i].node.as_rt() {
                 if !rt_node.pre_condition() {
-                    let name = self.nodes[i].name.as_str();
+                    let name = self.nodes[i].name.as_ref();
                     print_line(&format!(
                         " Pre-condition failed for RT node '{}' — skipping tick",
                         name
@@ -2800,7 +2800,7 @@ impl Scheduler {
                     return false;
                 }
                 if !rt_node.invariant() {
-                    let name = self.nodes[i].name.as_str();
+                    let name = self.nodes[i].name.as_ref();
                     print_line(&format!(
                         " Invariant violated before tick for RT node '{}'",
                         name
@@ -2839,7 +2839,7 @@ impl Scheduler {
             if tick_result.is_ok() {
                 if let Some(rt_node) = self.nodes[i].node.as_rt() {
                     if !rt_node.post_condition() {
-                        let name = self.nodes[i].name.as_str();
+                        let name = self.nodes[i].name.as_ref();
                         print_line(&format!(" Post-condition failed for RT node '{}'", name));
                         if let Some(ref bb) = self.monitor.blackbox {
                             bb.lock()
@@ -2851,7 +2851,7 @@ impl Scheduler {
                         }
                     }
                     if !rt_node.invariant() {
-                        let name = self.nodes[i].name.as_str();
+                        let name = self.nodes[i].name.as_ref();
                         print_line(&format!(
                             " Invariant violated after tick for RT node '{}'",
                             name
@@ -2887,7 +2887,7 @@ impl Scheduler {
     ) -> bool {
         // Profiling and monitoring
         {
-            let node_name = self.nodes[i].name.as_str();
+            let node_name = self.nodes[i].name.as_ref();
             let mut profiler = self.monitor.profiler.lock().unwrap();
             if tick_result.is_err() {
                 profiler.record_node_failure(node_name);
@@ -2938,7 +2938,7 @@ impl Scheduler {
     ) -> bool {
         use super::primitives::{DeadlineAction, TimingEnforcer};
 
-        let node_name = self.nodes[i].name.clone();
+        let node_name = Arc::clone(&self.nodes[i].name);
 
         // Check WCET budget for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
@@ -2967,7 +2967,7 @@ impl Scheduler {
                         bb.lock()
                             .unwrap()
                             .record(super::blackbox::BlackBoxEvent::WCETViolation {
-                                name: node_name.clone(),
+                                name: node_name.to_string(),
                                 budget_us: violation.budget.as_micros() as u64,
                                 actual_us: violation.actual.as_micros() as u64,
                             });
@@ -3015,7 +3015,7 @@ impl Scheduler {
                         bb.lock()
                             .unwrap()
                             .record(super::blackbox::BlackBoxEvent::DeadlineMiss {
-                                name: node_name.clone(),
+                                name: node_name.to_string(),
                                 deadline_us: dm.deadline.as_micros() as u64,
                                 actual_us: dm.elapsed.as_micros() as u64,
                             });
@@ -3059,7 +3059,7 @@ impl Scheduler {
                                 .as_rt_mut()
                                 .and_then(|rt| rt.fallback_node());
                             if let Some(fallback_node) = fallback {
-                                let fallback_name = fallback_node.name().to_string();
+                                let fallback_name: Arc<str> = Arc::from(fallback_node.name());
                                 print_line(&format!(
                                     " Deadline policy: switching '{}' to fallback '{}'",
                                     node_name, fallback_name
@@ -3092,8 +3092,8 @@ impl Scheduler {
             "Node panicked with unknown error".to_string()
         };
 
-        // Clone name for error path (rare — only on node panic)
-        let node_name = self.nodes[i].name.clone();
+        // Arc::clone — cheap atomic increment (only on node panic)
+        let node_name = Arc::clone(&self.nodes[i].name);
         let registered = &mut self.nodes[i];
         if let Some(ref mut context) = registered.context {
             context.record_tick_failure(error_msg.clone());

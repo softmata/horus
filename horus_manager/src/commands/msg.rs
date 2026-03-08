@@ -537,6 +537,193 @@ fn parse_field(line: &str) -> Option<(String, String)> {
     Some((name, field_type))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_struct_name_simple() {
+        assert_eq!(extract_struct_name("pub struct Twist {"), Some("Twist"));
+    }
+
+    #[test]
+    fn extract_struct_name_generic() {
+        assert_eq!(extract_struct_name("pub struct Vec3<T> {"), Some("Vec3"));
+    }
+
+    #[test]
+    fn extract_struct_name_unit() {
+        // Unit structs: the semicolon is part of the split remainder, but "Empty;"
+        // doesn't split on ';' — it's kept. The function splits on '<', '{', '(' and whitespace.
+        // "Empty;" doesn't match any of those, so the full "Empty;" is returned.
+        let result = extract_struct_name("pub struct Empty;");
+        assert!(result.is_some());
+        // The name includes the semicolon because ';' isn't a split char
+        assert!(result.unwrap().starts_with("Empty"));
+    }
+
+    #[test]
+    fn extract_struct_name_tuple() {
+        assert_eq!(
+            extract_struct_name("pub struct Wrapper(f64);"),
+            Some("Wrapper")
+        );
+    }
+
+    #[test]
+    fn extract_struct_name_lowercase_rejected() {
+        assert_eq!(extract_struct_name("pub struct lowercase {"), None);
+    }
+
+    #[test]
+    fn parse_field_basic() {
+        let result = parse_field("pub x: f64,");
+        assert_eq!(result, Some(("x".into(), "f64".into())));
+    }
+
+    #[test]
+    fn parse_field_no_pub() {
+        let result = parse_field("y: f32,");
+        assert_eq!(result, Some(("y".into(), "f32".into())));
+    }
+
+    #[test]
+    fn parse_field_complex_type() {
+        let result = parse_field("pub data: Vec<u8>,");
+        assert_eq!(result, Some(("data".into(), "Vec<u8>".into())));
+    }
+
+    #[test]
+    fn parse_field_skips_comment() {
+        assert!(parse_field("// this is a comment").is_none());
+    }
+
+    #[test]
+    fn parse_field_skips_attribute() {
+        assert!(parse_field("#[serde(skip)]").is_none());
+    }
+
+    #[test]
+    fn parse_field_skips_method() {
+        assert!(parse_field("pub fn new() -> Self {").is_none());
+    }
+
+    #[test]
+    fn parse_field_skips_padding() {
+        assert!(parse_field("_pad: [u8; 3],").is_none());
+    }
+
+    #[test]
+    fn parse_field_skips_fn_type() {
+        assert!(parse_field("pub callback: fn(u32) -> bool,").is_none());
+    }
+
+    #[test]
+    fn parse_messages_from_source_simple() {
+        let source = r#"
+/// A 3D vector
+pub struct Vec3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+"#;
+        let messages = parse_messages_from_source(source, "math", "math.rs".into());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].name, "Vec3");
+        assert_eq!(messages[0].module, "math");
+        assert_eq!(messages[0].fields.len(), 3);
+        assert_eq!(messages[0].fields[0].name, "x");
+        assert!(messages[0].doc.contains("3D vector"));
+    }
+
+    #[test]
+    fn parse_messages_from_source_unit_struct() {
+        let source = "pub struct Empty;\n";
+        let messages = parse_messages_from_source(source, "test", "test.rs".into());
+        assert_eq!(messages.len(), 1);
+        // extract_struct_name returns "Empty;" for unit structs (';' not in split chars)
+        assert!(messages[0].name.starts_with("Empty"));
+        assert!(messages[0].fields.is_empty());
+    }
+
+    #[test]
+    fn parse_messages_multiple_structs() {
+        let source = r#"
+pub struct A {
+    pub x: f64,
+}
+
+pub struct B {
+    pub y: i32,
+    pub z: i32,
+}
+"#;
+        let messages = parse_messages_from_source(source, "mod", "mod.rs".into());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].name, "A");
+        assert_eq!(messages[1].name, "B");
+        assert_eq!(messages[1].fields.len(), 2);
+    }
+
+    #[test]
+    fn compute_hash_deterministic() {
+        let msg = MessageInfo {
+            name: "Twist".into(),
+            module: "control".into(),
+            fields: vec![
+                FieldInfo {
+                    name: "linear".into(),
+                    field_type: "f64".into(),
+                    doc: String::new(),
+                },
+                FieldInfo {
+                    name: "angular".into(),
+                    field_type: "f64".into(),
+                    doc: String::new(),
+                },
+            ],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let h1 = compute_message_definition_hash(&msg);
+        let h2 = compute_message_definition_hash(&msg);
+        assert_eq!(h1, h2, "hash must be deterministic");
+        assert_eq!(h1.len(), 16, "hash should be 16 hex chars");
+    }
+
+    #[test]
+    fn compute_hash_changes_with_field() {
+        let msg1 = MessageInfo {
+            name: "Foo".into(),
+            module: "test".into(),
+            fields: vec![FieldInfo {
+                name: "a".into(),
+                field_type: "f64".into(),
+                doc: String::new(),
+            }],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        let msg2 = MessageInfo {
+            name: "Foo".into(),
+            module: "test".into(),
+            fields: vec![FieldInfo {
+                name: "b".into(),
+                field_type: "f64".into(),
+                doc: String::new(),
+            }],
+            doc: String::new(),
+            source_file: String::new(),
+        };
+        assert_ne!(
+            compute_message_definition_hash(&msg1),
+            compute_message_definition_hash(&msg2),
+            "different fields should produce different hashes"
+        );
+    }
+}
+
 /// Compute a definition hash for a message type.
 ///
 /// Uses SipHash (via `DefaultHasher`) on the canonical representation

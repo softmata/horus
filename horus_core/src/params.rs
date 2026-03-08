@@ -465,6 +465,7 @@ impl Default for RuntimeParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use tempfile::TempDir;
 
     fn create_test_params() -> RuntimeParams {
@@ -784,5 +785,307 @@ mod tests {
 
         // BTreeMap should maintain sorted order
         assert_eq!(keys, vec!["alpha", "beta", "zebra"]);
+    }
+
+    // ── Helper: create params with metadata ──────────────────────────────
+
+    fn create_params_with_rule(key: &str, rule: ValidationRule) -> RuntimeParams {
+        let p = create_test_params();
+        let meta = ParamMetadata {
+            description: None,
+            unit: None,
+            validation: vec![rule],
+            read_only: false,
+        };
+        p.metadata.write().unwrap().insert(key.to_string(), meta);
+        p
+    }
+
+    fn create_readonly_params(key: &str) -> RuntimeParams {
+        let p = create_test_params();
+        let meta = ParamMetadata {
+            description: None,
+            unit: None,
+            validation: vec![],
+            read_only: true,
+        };
+        p.metadata.write().unwrap().insert(key.to_string(), meta);
+        p
+    }
+
+    // ── Arbitrary strategies ─────────────────────────────────────────────
+
+    fn arb_key() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]{0,30}".prop_filter("non-empty key", |s| !s.is_empty())
+    }
+
+    fn arb_finite_f64() -> impl Strategy<Value = f64> {
+        -1e12f64..1e12f64
+    }
+
+    // ── Property tests ───────────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// set/get roundtrip for f64 values
+        #[test]
+        fn prop_set_get_roundtrip_f64(key in arb_key(), val in arb_finite_f64()) {
+            let p = create_test_params();
+            p.set(&key, val).unwrap();
+            let got: f64 = p.get(&key).unwrap();
+            prop_assert!((got - val).abs() < 1e-10,
+                "f64 roundtrip: set {} got {}", val, got);
+        }
+
+        /// set/get roundtrip for i64 values
+        #[test]
+        fn prop_set_get_roundtrip_i64(key in arb_key(), val in any::<i32>()) {
+            let p = create_test_params();
+            p.set(&key, val).unwrap();
+            let got: i32 = p.get(&key).unwrap();
+            prop_assert_eq!(got, val);
+        }
+
+        /// set/get roundtrip for bool values
+        #[test]
+        fn prop_set_get_roundtrip_bool(key in arb_key(), val in any::<bool>()) {
+            let p = create_test_params();
+            p.set(&key, val).unwrap();
+            let got: bool = p.get(&key).unwrap();
+            prop_assert_eq!(got, val);
+        }
+
+        /// set/get roundtrip for string values
+        #[test]
+        fn prop_set_get_roundtrip_string(key in arb_key(), val in "[a-zA-Z0-9_ ]{0,100}") {
+            let p = create_test_params();
+            p.set(&key, &val).unwrap();
+            let got: String = p.get(&key).unwrap();
+            prop_assert_eq!(got, val);
+        }
+
+        /// has() returns true after set, false after remove
+        #[test]
+        fn prop_has_after_set_and_remove(key in arb_key(), val in any::<i32>()) {
+            let p = create_test_params();
+            prop_assert!(!p.has(&key));
+            p.set(&key, val).unwrap();
+            prop_assert!(p.has(&key));
+            p.remove(&key);
+            prop_assert!(!p.has(&key));
+        }
+
+        /// version increments by exactly 1 on each set
+        #[test]
+        fn prop_version_increments(key in arb_key(), vals in proptest::collection::vec(any::<i32>(), 1..20)) {
+            let p = create_test_params();
+            for (i, val) in vals.iter().enumerate() {
+                let v_before = p.get_version(&key);
+                prop_assert_eq!(v_before, i as u64, "version before set #{}", i);
+                p.set(&key, val).unwrap();
+                let v_after = p.get_version(&key);
+                prop_assert_eq!(v_after, (i + 1) as u64, "version after set #{}", i);
+            }
+        }
+
+        /// set_with_version succeeds when version matches, fails when it doesn't
+        #[test]
+        fn prop_optimistic_locking(key in arb_key(), v1 in any::<i32>(), v2 in any::<i32>()) {
+            let p = create_test_params();
+            p.set(&key, v1).unwrap();
+            let ver = p.get_version(&key);
+
+            // Correct version succeeds
+            prop_assert!(p.set_with_version(&key, v2, ver).is_ok());
+
+            // Stale version fails
+            prop_assert!(p.set_with_version(&key, v1, ver).is_err());
+        }
+
+        /// read-only parameters reject all set attempts
+        #[test]
+        fn prop_read_only_rejects_set(key in arb_key(), val in any::<i32>()) {
+            let p = create_readonly_params(&key);
+            let result = p.set(&key, val);
+            prop_assert!(result.is_err(), "read-only param should reject set");
+        }
+
+        /// MinValue: values below min are rejected, values >= min are accepted
+        #[test]
+        fn prop_min_value_enforcement(
+            min in arb_finite_f64(),
+            offset in 0.001f64..1e6f64,
+        ) {
+            let p = create_params_with_rule("v", ValidationRule::MinValue(min));
+
+            // Value below min should fail
+            let below = min - offset;
+            prop_assert!(p.set("v", below).is_err(),
+                "MinValue({}) should reject {}", min, below);
+
+            // Value at min should succeed
+            prop_assert!(p.set("v", min).is_ok(),
+                "MinValue({}) should accept {}", min, min);
+
+            // Value above min should succeed
+            let above = min + offset;
+            prop_assert!(p.set("v", above).is_ok(),
+                "MinValue({}) should accept {}", min, above);
+        }
+
+        /// MaxValue: values above max are rejected, values <= max are accepted
+        #[test]
+        fn prop_max_value_enforcement(
+            max in arb_finite_f64(),
+            offset in 0.001f64..1e6f64,
+        ) {
+            let p = create_params_with_rule("v", ValidationRule::MaxValue(max));
+
+            // Value above max should fail
+            let above = max + offset;
+            prop_assert!(p.set("v", above).is_err(),
+                "MaxValue({}) should reject {}", max, above);
+
+            // Value at max should succeed
+            prop_assert!(p.set("v", max).is_ok(),
+                "MaxValue({}) should accept {}", max, max);
+
+            // Value below max should succeed
+            let below = max - offset;
+            prop_assert!(p.set("v", below).is_ok(),
+                "MaxValue({}) should accept {}", max, below);
+        }
+
+        /// Range: values inside [min,max] accepted, outside rejected
+        #[test]
+        fn prop_range_enforcement(
+            lo in -1e6f64..0.0f64,
+            hi in 0.001f64..1e6f64,
+            offset in 0.001f64..1e3f64,
+        ) {
+            let p = create_params_with_rule("v", ValidationRule::Range(lo, lo + hi));
+            let max = lo + hi;
+
+            // Inside range
+            let mid = lo + hi / 2.0;
+            prop_assert!(p.set("v", mid).is_ok(),
+                "Range([{}, {}]) should accept {}", lo, max, mid);
+
+            // Below range
+            let below = lo - offset;
+            prop_assert!(p.set("v", below).is_err(),
+                "Range([{}, {}]) should reject {}", lo, max, below);
+
+            // Above range
+            let above = max + offset;
+            prop_assert!(p.set("v", above).is_err(),
+                "Range([{}, {}]) should reject {}", lo, max, above);
+        }
+
+        /// Enum: only allowed values accepted
+        #[test]
+        fn prop_enum_enforcement(
+            allowed in proptest::collection::vec("[a-z]{1,10}", 1..5),
+            reject in "[A-Z]{1,10}",
+        ) {
+            let p = create_params_with_rule("v", ValidationRule::Enum(allowed.clone()));
+
+            // Each allowed value should succeed
+            for val in &allowed {
+                prop_assert!(p.set("v", val).is_ok(),
+                    "Enum should accept '{}' from {:?}", val, allowed);
+            }
+
+            // An uppercase value should fail (won't be in lowercase-only allowed list)
+            prop_assert!(p.set("v", &reject).is_err(),
+                "Enum should reject '{}' not in {:?}", reject, allowed);
+        }
+
+        /// MinLength: strings shorter than min are rejected
+        #[test]
+        fn prop_min_length_enforcement(min_len in 1usize..20) {
+            let p = create_params_with_rule("v", ValidationRule::MinLength(min_len));
+
+            // Too short
+            let short: String = "x".repeat(min_len.saturating_sub(1));
+            if short.len() < min_len {
+                prop_assert!(p.set("v", &short).is_err(),
+                    "MinLength({}) should reject len={}", min_len, short.len());
+            }
+
+            // Exact length
+            let exact: String = "x".repeat(min_len);
+            prop_assert!(p.set("v", &exact).is_ok(),
+                "MinLength({}) should accept len={}", min_len, exact.len());
+
+            // Longer
+            let long: String = "x".repeat(min_len + 5);
+            prop_assert!(p.set("v", &long).is_ok(),
+                "MinLength({}) should accept len={}", min_len, long.len());
+        }
+
+        /// MaxLength: strings longer than max are rejected
+        #[test]
+        fn prop_max_length_enforcement(max_len in 1usize..50) {
+            let p = create_params_with_rule("v", ValidationRule::MaxLength(max_len));
+
+            // Too long
+            let long: String = "x".repeat(max_len + 1);
+            prop_assert!(p.set("v", &long).is_err(),
+                "MaxLength({}) should reject len={}", max_len, long.len());
+
+            // Exact length
+            let exact: String = "x".repeat(max_len);
+            prop_assert!(p.set("v", &exact).is_ok(),
+                "MaxLength({}) should accept len={}", max_len, exact.len());
+
+            // Shorter
+            if max_len > 0 {
+                let short: String = "x".repeat(max_len - 1);
+                prop_assert!(p.set("v", &short).is_ok(),
+                    "MaxLength({}) should accept len={}", max_len, short.len());
+            }
+        }
+
+        /// Reset always restores all default keys
+        #[test]
+        fn prop_reset_restores_defaults(
+            keys in proptest::collection::vec(arb_key(), 0..10),
+            vals in proptest::collection::vec(any::<i32>(), 10),
+        ) {
+            let p = create_test_params();
+            // Set some random keys
+            for (k, v) in keys.iter().zip(vals.iter()) {
+                let _ = p.set(k, v);
+            }
+            // Reset
+            p.reset().unwrap();
+            // All default keys must be present
+            let defaults = RuntimeParams::default_params();
+            for key in defaults.keys() {
+                prop_assert!(p.has(key), "After reset, default key '{}' missing", key);
+            }
+        }
+
+        /// get_all returns exactly the keys that have been set
+        #[test]
+        fn prop_get_all_matches_has(
+            entries in proptest::collection::vec((arb_key(), any::<i32>()), 0..20),
+        ) {
+            let p = create_test_params();
+            for (k, v) in &entries {
+                p.set(k, v).unwrap();
+            }
+            let all = p.get_all();
+            // Every key in get_all should be findable via has()
+            for key in all.keys() {
+                prop_assert!(p.has(key), "get_all key '{}' not found by has()", key);
+            }
+            // list_keys should match get_all
+            let keys = p.list_keys();
+            prop_assert_eq!(keys.len(), all.len(),
+                "list_keys len {} != get_all len {}", keys.len(), all.len());
+        }
     }
 }

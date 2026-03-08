@@ -133,6 +133,101 @@ fn level_str(lt: &LogType) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_from_str_valid() {
+        assert_eq!(LogLevel::from_str("trace"), Some(LogLevel::Trace));
+        assert_eq!(LogLevel::from_str("debug"), Some(LogLevel::Debug));
+        assert_eq!(LogLevel::from_str("info"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::from_str("warn"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::from_str("warning"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::from_str("error"), Some(LogLevel::Error));
+        assert_eq!(LogLevel::from_str("err"), Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn log_level_from_str_case_insensitive() {
+        assert_eq!(LogLevel::from_str("INFO"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::from_str("Error"), Some(LogLevel::Error));
+    }
+
+    #[test]
+    fn log_level_from_str_invalid() {
+        assert_eq!(LogLevel::from_str("bogus"), None);
+        assert_eq!(LogLevel::from_str(""), None);
+    }
+
+    #[test]
+    fn log_level_ordering() {
+        assert!(LogLevel::Trace < LogLevel::Debug);
+        assert!(LogLevel::Debug < LogLevel::Info);
+        assert!(LogLevel::Info < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Error);
+    }
+
+    #[test]
+    fn log_level_from_log_type() {
+        assert_eq!(LogLevel::from_log_type(&LogType::Error), LogLevel::Error);
+        assert_eq!(LogLevel::from_log_type(&LogType::Warning), LogLevel::Warn);
+        assert_eq!(LogLevel::from_log_type(&LogType::Info), LogLevel::Info);
+        assert_eq!(LogLevel::from_log_type(&LogType::Debug), LogLevel::Debug);
+        assert_eq!(LogLevel::from_log_type(&LogType::Publish), LogLevel::Trace);
+        assert_eq!(
+            LogLevel::from_log_type(&LogType::Subscribe),
+            LogLevel::Trace
+        );
+    }
+
+    #[test]
+    fn level_str_formatting() {
+        assert_eq!(level_str(&LogType::Info), "INFO ");
+        assert_eq!(level_str(&LogType::Warning), "WARN ");
+        assert_eq!(level_str(&LogType::Error), "ERROR");
+        assert_eq!(level_str(&LogType::Debug), "DEBUG");
+        assert_eq!(level_str(&LogType::Publish), "PUB  ");
+        assert_eq!(level_str(&LogType::Subscribe), "SUB  ");
+    }
+
+    #[test]
+    fn parse_since_none_returns_none() {
+        assert!(parse_since(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_since_valid_formats() {
+        assert!(parse_since(Some("5s")).unwrap().is_some());
+        assert!(parse_since(Some("10m")).unwrap().is_some());
+        assert!(parse_since(Some("2h")).unwrap().is_some());
+        assert!(parse_since(Some("1d")).unwrap().is_some());
+    }
+
+    #[test]
+    fn parse_since_invalid_format() {
+        assert!(parse_since(Some("5x")).is_err());
+        assert!(parse_since(Some("abc")).is_err());
+    }
+
+    #[test]
+    fn parse_since_invalid_number() {
+        assert!(parse_since(Some("abcs")).is_err());
+    }
+
+    #[test]
+    fn parse_entry_time_valid() {
+        let result = parse_entry_time("12:30:45.123");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn parse_entry_time_invalid() {
+        assert!(parse_entry_time("not-a-time").is_none());
+        assert!(parse_entry_time("").is_none());
+    }
+}
+
 fn print_entry(entry: &LogEntry) {
     let level = LogLevel::from_log_type(&entry.log_type);
     let lstr = level_str(&entry.log_type).color(level.color());

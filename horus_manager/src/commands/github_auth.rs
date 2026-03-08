@@ -269,6 +269,44 @@ pub fn whoami() -> HorusResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_config_serde_roundtrip() {
+        let config = AuthConfig {
+            api_key: "horus_key_abc123".to_string(),
+            registry_url: "https://registry.example.com".to_string(),
+            github_username: Some("testuser".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: AuthConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.api_key, "horus_key_abc123");
+        assert_eq!(parsed.registry_url, "https://registry.example.com");
+        assert_eq!(parsed.github_username, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn auth_config_github_username_optional() {
+        let json = r#"{"api_key":"horus_key_x","registry_url":"http://localhost"}"#;
+        let config: AuthConfig = serde_json::from_str(json).unwrap();
+        assert!(config.github_username.is_none());
+    }
+
+    #[test]
+    fn token_format_validation_valid() {
+        assert!("horus_key_abc123".starts_with("horus_key_"));
+    }
+
+    #[test]
+    fn token_format_validation_invalid() {
+        assert!(!"invalid_token".starts_with("horus_key_"));
+        assert!(!"".starts_with("horus_key_"));
+        assert!(!"horus_key".starts_with("horus_key_"));
+    }
+}
+
 /// Get the current auth token (used by other commands)
 pub fn get_auth_token() -> Option<String> {
     // First check environment variable

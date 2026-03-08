@@ -88,7 +88,7 @@ mod execution_class_tests {
     fn make_node(name: &str, class: ExecutionClass) -> RegisteredNode {
         RegisteredNode {
             node: NodeKind::Regular(Box::new(StubNode(name.to_string()))),
-            name: name.to_string(),
+            name: Arc::from(name),
             priority: 0,
             initialized: true,
             context: Some(NodeInfo::new(name.to_string())),
@@ -133,20 +133,20 @@ mod execution_class_tests {
         let groups = group_nodes_by_class(nodes);
 
         assert_eq!(groups.rt_nodes.len(), 2);
-        assert_eq!(groups.rt_nodes[0].name, "rt_ctrl");
-        assert_eq!(groups.rt_nodes[1].name, "rt_sensor");
+        assert_eq!(&*groups.rt_nodes[0].name, "rt_ctrl");
+        assert_eq!(&*groups.rt_nodes[1].name, "rt_sensor");
 
         assert_eq!(groups.compute_nodes.len(), 1);
-        assert_eq!(groups.compute_nodes[0].name, "planner");
+        assert_eq!(&*groups.compute_nodes[0].name, "planner");
 
         assert_eq!(groups.event_nodes.len(), 1);
-        assert_eq!(groups.event_nodes[0].name, "lidar_cb");
+        assert_eq!(&*groups.event_nodes[0].name, "lidar_cb");
 
         assert_eq!(groups.async_io_nodes.len(), 1);
-        assert_eq!(groups.async_io_nodes[0].name, "logger");
+        assert_eq!(&*groups.async_io_nodes[0].name, "logger");
 
         assert_eq!(groups.main_nodes.len(), 1);
-        assert_eq!(groups.main_nodes[0].name, "sensor");
+        assert_eq!(&*groups.main_nodes[0].name, "sensor");
     }
 
     #[test]
@@ -351,7 +351,9 @@ pub(crate) fn group_nodes_by_class(nodes: Vec<RegisteredNode>) -> NodeGroups {
 pub(crate) struct RegisteredNode {
     pub(crate) node: NodeKind,
     /// Cached node name — captured once at registration, used everywhere.
-    pub(crate) name: String,
+    /// Uses `Arc<str>` so clones in the scheduler tick loop are cheap
+    /// (atomic increment instead of heap allocation + memcpy).
+    pub(crate) name: Arc<str>,
     pub(crate) priority: u32,
     pub(crate) initialized: bool,
     pub(crate) context: Option<NodeInfo>,

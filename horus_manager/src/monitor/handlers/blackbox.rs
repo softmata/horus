@@ -217,6 +217,117 @@ fn event_node_name(event: &BlackBoxEvent) -> &str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tick_range_single() {
+        assert_eq!(parse_tick_range("42"), Some((42, 42)));
+    }
+
+    #[test]
+    fn parse_tick_range_range() {
+        assert_eq!(parse_tick_range("10-20"), Some((10, 20)));
+    }
+
+    #[test]
+    fn parse_tick_range_with_spaces() {
+        assert_eq!(parse_tick_range(" 5 - 15 "), Some((5, 15)));
+    }
+
+    #[test]
+    fn parse_tick_range_invalid() {
+        assert_eq!(parse_tick_range("abc"), None);
+        assert_eq!(parse_tick_range("1-2-3"), None);
+    }
+
+    #[test]
+    fn is_anomaly_node_error() {
+        let event = BlackBoxEvent::NodeError {
+            name: "test".into(),
+            error: "fail".into(),
+        };
+        assert!(is_anomaly(&event));
+    }
+
+    #[test]
+    fn is_anomaly_node_tick_is_not() {
+        let event = BlackBoxEvent::NodeTick {
+            name: "test".into(),
+            duration_us: 1000,
+            success: true,
+        };
+        assert!(!is_anomaly(&event));
+    }
+
+    #[test]
+    fn event_node_name_extraction() {
+        let event = BlackBoxEvent::NodeAdded {
+            name: "my_node".into(),
+            order: 1,
+        };
+        assert_eq!(event_node_name(&event), "my_node");
+    }
+
+    #[test]
+    fn event_node_name_empty_for_scheduler_stop() {
+        let event = BlackBoxEvent::SchedulerStop {
+            reason: "done".into(),
+            total_ticks: 0,
+        };
+        assert_eq!(event_node_name(&event), "");
+    }
+
+    #[test]
+    fn filter_records_by_limit() {
+        let records: Vec<BlackBoxRecord> = (0..10)
+            .map(|i| BlackBoxRecord {
+                tick: i,
+                timestamp_us: i * 1000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "n".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            })
+            .collect();
+        let params = BlackboxQuery {
+            limit: Some(3),
+            ..Default::default()
+        };
+        let result = filter_records(records, &params, false);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn filter_records_anomalies_only() {
+        let records = vec![
+            BlackBoxRecord {
+                tick: 1,
+                timestamp_us: 1000,
+                event: BlackBoxEvent::NodeTick {
+                    name: "n".into(),
+                    duration_us: 100,
+                    success: true,
+                },
+            },
+            BlackBoxRecord {
+                tick: 2,
+                timestamp_us: 2000,
+                event: BlackBoxEvent::NodeError {
+                    name: "n".into(),
+                    error: "oops".into(),
+                },
+            },
+        ];
+        let params = BlackboxQuery::default();
+        let result = filter_records(records, &params, true);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].tick, 2);
+    }
+}
+
 fn event_type_name(event: &BlackBoxEvent) -> &'static str {
     match event {
         BlackBoxEvent::SchedulerStart { .. } => "SchedulerStart",

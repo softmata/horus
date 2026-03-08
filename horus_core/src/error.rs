@@ -396,8 +396,7 @@ mod tests {
     /// Communication variant for IPC/topic failures.
     #[test]
     fn variant_communication() {
-        let err =
-            HorusError::communication("Topic 'cmd_vel' has no subscribers");
+        let err = HorusError::communication("Topic 'cmd_vel' has no subscribers");
         let msg = format!("{}", err);
         assert!(msg.contains("Communication error"), "Display: {}", msg);
         assert!(
@@ -413,12 +412,11 @@ mod tests {
         let err = HorusError::Communication(CommunicationError::TopicFull {
             topic: "cmd_vel".into(),
         });
-        match &err {
-            HorusError::Communication(CommunicationError::TopicFull { topic }) => {
-                assert_eq!(topic, "cmd_vel");
-            }
-            _ => panic!("Expected TopicFull, got {:?}", err),
-        }
+        assert!(
+            matches!(&err, HorusError::Communication(CommunicationError::TopicFull { topic }) if topic == "cmd_vel"),
+            "Expected TopicFull, got {:?}",
+            err
+        );
         let msg = format!("{}", err);
         assert!(msg.contains("cmd_vel"), "Display: {}", msg);
     }
@@ -429,12 +427,11 @@ mod tests {
         let err = HorusError::Communication(CommunicationError::TopicNotFound {
             topic: "lidar_scan".into(),
         });
-        match &err {
-            HorusError::Communication(CommunicationError::TopicNotFound { topic }) => {
-                assert_eq!(topic, "lidar_scan");
-            }
-            _ => panic!("Expected TopicNotFound, got {:?}", err),
-        }
+        assert!(
+            matches!(&err, HorusError::Communication(CommunicationError::TopicNotFound { topic }) if topic == "lidar_scan"),
+            "Expected TopicNotFound, got {:?}",
+            err
+        );
     }
 
     /// Node variant includes BOTH node name AND message.
@@ -475,12 +472,11 @@ mod tests {
         let err = HorusError::Memory(MemoryError::PoolExhausted {
             reason: "No free tensor slots in pool 42".into(),
         });
-        match &err {
-            HorusError::Memory(MemoryError::PoolExhausted { reason }) => {
-                assert!(reason.contains("42"));
-            }
-            _ => panic!("Expected PoolExhausted, got {:?}", err),
-        }
+        assert!(
+            matches!(&err, HorusError::Memory(MemoryError::PoolExhausted { reason }) if reason.contains("42")),
+            "Expected PoolExhausted, got {:?}",
+            err
+        );
     }
 
     /// Structured MemoryError::ShmCreateFailed can be pattern-matched.
@@ -495,7 +491,7 @@ mod tests {
                 assert!(path.contains("horus_pool_0"));
                 assert!(reason.contains("Permission denied"));
             }
-            _ => panic!("Expected ShmCreateFailed, got {:?}", err),
+            other => unreachable!("Expected ShmCreateFailed, got {:?}", other),
         }
     }
 
@@ -812,7 +808,7 @@ mod tests {
                 );
                 assert_eq!(*line, call_line, "Line should match call site");
             }
-            _ => panic!("Expected Internal variant, got {:?}", err),
+            other => unreachable!("Expected Internal variant, got {:?}", other),
         }
     }
 
@@ -849,7 +845,7 @@ mod tests {
                 assert_eq!(node, "lidar");
                 assert_eq!(message, "timeout");
             }
-            _ => panic!("Expected Node variant"),
+            other => unreachable!("Expected Node variant, got {:?}", other),
         }
     }
 

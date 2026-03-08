@@ -335,9 +335,74 @@ mod tests {
     }
 
     #[test]
+    fn test_format_value_null() {
+        assert_eq!(format_value(&Value::Null), "null");
+    }
+
+    #[test]
+    fn test_format_value_array() {
+        let arr = Value::Array(vec![Value::Bool(true), Value::Bool(false)]);
+        assert_eq!(format_value(&arr), "[2 items]");
+    }
+
+    #[test]
+    fn test_format_value_object() {
+        let mut map = serde_json::Map::new();
+        map.insert("a".into(), Value::Number(1.into()));
+        let obj = Value::Object(map);
+        assert_eq!(format_value(&obj), "{1} keys");
+    }
+
+    #[test]
+    fn test_format_value_compact_long_string() {
+        let long_str = Value::String("a".repeat(50));
+        let result = format_value_compact(&long_str);
+        // Should be truncated (plus quotes)
+        assert!(result.len() < 50 + 2);
+    }
+
+    #[test]
+    fn test_format_value_compact_short_string() {
+        let short = Value::String("hi".to_string());
+        assert_eq!(format_value_compact(&short), "\"hi\"");
+    }
+
+    #[test]
     fn test_value_type() {
         assert_eq!(value_type(&Value::Bool(true)), "bool");
         assert_eq!(value_type(&Value::Number(42.into())), "int");
         assert_eq!(value_type(&Value::String("test".into())), "string");
+    }
+
+    #[test]
+    fn test_value_type_float() {
+        let float = Value::Number(serde_json::Number::from_f64(3.15).unwrap());
+        assert_eq!(value_type(&float), "float");
+    }
+
+    #[test]
+    fn test_value_type_null() {
+        assert_eq!(value_type(&Value::Null), "null");
+    }
+
+    #[test]
+    fn test_value_type_array() {
+        assert_eq!(value_type(&Value::Array(vec![])), "array");
+    }
+
+    #[test]
+    fn test_value_type_object() {
+        assert_eq!(value_type(&Value::Object(serde_json::Map::new())), "object");
+    }
+
+    #[test]
+    fn test_format_value_compact_array_and_object() {
+        let arr = Value::Array(vec![Value::Null; 3]);
+        assert_eq!(format_value_compact(&arr), "[3]");
+
+        let mut map = serde_json::Map::new();
+        map.insert("x".into(), Value::Null);
+        map.insert("y".into(), Value::Null);
+        assert_eq!(format_value_compact(&Value::Object(map)), "{2}");
     }
 }

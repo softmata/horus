@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::error::HorusResult;
 use crate::horus_internal;
@@ -69,7 +70,7 @@ impl Scheduler {
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
             node: super::super::types::NodeKind::Regular(Box::new(replay_node)),
-            name: node_name.clone(),
+            name: Arc::from(node_name.as_str()),
             priority,
             initialized: false,
             context: None,

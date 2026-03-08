@@ -29,7 +29,10 @@ message! {
 #[test]
 fn message_macro_produces_topic_compatible_types() {
     // message! types must satisfy TopicMessage bounds (Clone + Send + Sync + Serialize + DeserializeOwned)
-    fn assert_bounds<T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static>() {}
+    fn assert_bounds<
+        T: Clone + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    >() {
+    }
     assert_bounds::<TestSensorReading>();
     assert_bounds::<TestMotorCmd>();
 }
@@ -136,12 +139,7 @@ impl Node for CounterNode {
 #[test]
 fn scheduler_runs_node() {
     let mut scheduler = Scheduler::new().tick_hz(100.0);
-    scheduler
-        .add(CounterNode {
-            count: 0,
-        })
-        .order(0)
-        .build();
+    scheduler.add(CounterNode { count: 0 }).order(0).build();
 
     // Run for a short duration
     scheduler.run_for(Duration::from_millis(100)).unwrap();
@@ -156,20 +154,10 @@ fn node_builder_uses_build() {
     let mut scheduler = Scheduler::new();
 
     // .build() is the primary method
-    scheduler
-        .add(CounterNode {
-            count: 0,
-        })
-        .order(0)
-        .build();
+    scheduler.add(CounterNode { count: 0 }).order(0).build();
 
     // .done() also works (backward compat alias)
-    scheduler
-        .add(CounterNode {
-            count: 0,
-        })
-        .order(1)
-        .done();
+    scheduler.add(CounterNode { count: 0 }).order(1).done();
 }
 
 // ============================================================================
@@ -215,23 +203,21 @@ fn structured_errors_pattern_match() {
         topic: "test".to_string(),
     });
 
-    match &err {
-        HorusError::Communication(CommunicationError::TopicFull { topic }) => {
-            assert_eq!(topic, "test");
-        }
-        _ => panic!("Expected TopicFull"),
-    }
+    assert!(
+        matches!(&err, HorusError::Communication(CommunicationError::TopicFull { topic }) if topic == "test"),
+        "Expected TopicFull, got {:?}",
+        err
+    );
 
     let err2 = HorusError::Memory(MemoryError::PoolExhausted {
         reason: "out of slots".to_string(),
     });
 
-    match &err2 {
-        HorusError::Memory(MemoryError::PoolExhausted { reason }) => {
-            assert!(reason.contains("slots"));
-        }
-        _ => panic!("Expected PoolExhausted"),
-    }
+    assert!(
+        matches!(&err2, HorusError::Memory(MemoryError::PoolExhausted { reason }) if reason.contains("slots")),
+        "Expected PoolExhausted, got {:?}",
+        err2
+    );
 }
 
 // ============================================================================
@@ -282,6 +268,6 @@ fn failure_policy_accessible() {
     let restart = FailurePolicy::restart(3, 100);
     match restart {
         FailurePolicy::Restart { max_restarts, .. } => assert_eq!(max_restarts, 3),
-        _ => panic!("Expected Restart"),
+        other => unreachable!("Expected Restart, got {:?}", other),
     }
 }

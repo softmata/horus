@@ -1608,7 +1608,7 @@ mod tests {
                 assert_eq!(*tick, 1);
                 assert_eq!(topic, "out");
             }
-            _ => panic!("Expected OutputDifference"),
+            other => unreachable!("Expected OutputDifference, got {:?}", other),
         }
     }
 

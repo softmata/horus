@@ -512,6 +512,20 @@ impl HapticFeedback {
 }
 
 // =============================================================================
+// softmata-core Trait Implementations
+// =============================================================================
+
+impl softmata_core::sensor::WrenchData for WrenchStamped {
+    fn force(&self) -> [f64; 3] {
+        [self.force.x, self.force.y, self.force.z]
+    }
+
+    fn torque(&self) -> [f64; 3] {
+        [self.torque.x, self.torque.y, self.torque.z]
+    }
+}
+
+// =============================================================================
 // POD (Plain Old Data) Message Support
 // =============================================================================
 

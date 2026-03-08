@@ -210,3 +210,266 @@ impl Default for SchedulerConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ── Arbitrary strategies ────────────────────────────────────────────
+
+    fn arb_timing_config() -> impl Strategy<Value = TimingConfig> {
+        (0.001f64..10_000.0).prop_map(|hz| TimingConfig { global_rate_hz: hz })
+    }
+
+    fn arb_realtime_config() -> impl Strategy<Value = RealTimeConfig> {
+        (
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+            1u64..60_000,
+            any::<bool>(),
+            1u64..10_000,
+            any::<bool>(),
+            any::<bool>(),
+        )
+            .prop_map(
+                |(wcet, deadline, watchdog, timeout, safety, max_miss, memlock, rt_class)| {
+                    RealTimeConfig {
+                        wcet_enforcement: wcet,
+                        deadline_monitoring: deadline,
+                        watchdog_enabled: watchdog,
+                        watchdog_timeout_ms: timeout,
+                        safety_monitor: safety,
+                        max_deadline_misses: max_miss,
+                        memory_locking: memlock,
+                        rt_scheduling_class: rt_class,
+                    }
+                },
+            )
+    }
+
+    fn arb_monitoring_config() -> impl Strategy<Value = MonitoringConfig> {
+        (
+            any::<bool>(),
+            1u64..30_000,
+            any::<bool>(),
+            0usize..1024,
+            1usize..1024,
+            any::<bool>(),
+        )
+            .prop_map(
+                |(prof, interval, bb, bb_size, wal, verbose)| MonitoringConfig {
+                    profiling_enabled: prof,
+                    metrics_interval_ms: interval,
+                    black_box_enabled: bb,
+                    black_box_size_mb: bb_size,
+                    wal_flush_interval: wal,
+                    telemetry_endpoint: None,
+                    verbose,
+                },
+            )
+    }
+
+    fn arb_recording_config() -> impl Strategy<Value = RecordingConfigYaml> {
+        (
+            any::<bool>(),
+            any::<bool>(),
+            1u32..1000,
+            0usize..10_000,
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+        )
+            .prop_map(
+                |(enabled, compress, interval, max_size, inputs, outputs, timing)| {
+                    RecordingConfigYaml {
+                        enabled,
+                        session_name: None,
+                        compress,
+                        interval,
+                        output_dir: None,
+                        max_size_mb: max_size,
+                        include_nodes: vec![],
+                        exclude_nodes: vec![],
+                        record_inputs: inputs,
+                        record_outputs: outputs,
+                        record_timing: timing,
+                    }
+                },
+            )
+    }
+
+    fn arb_scheduler_config() -> impl Strategy<Value = SchedulerConfig> {
+        (
+            arb_timing_config(),
+            any::<bool>(),
+            arb_realtime_config(),
+            arb_monitoring_config(),
+        )
+            .prop_map(|(timing, cb, realtime, monitoring)| SchedulerConfig {
+                timing,
+                circuit_breaker: cb,
+                realtime,
+                resources: ResourceConfig {
+                    cpu_cores: None,
+                    numa_aware: false,
+                },
+                monitoring,
+                recording: None,
+                deterministic: None,
+            })
+    }
+
+    // ── Property tests ──────────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// SchedulerConfig: global tick rate must always be positive
+        #[test]
+        fn scheduler_config_tick_rate_positive(config in arb_scheduler_config()) {
+            prop_assert!(config.timing.global_rate_hz > 0.0,
+                "Tick rate must be positive, got {}", config.timing.global_rate_hz);
+            prop_assert!(config.timing.global_rate_hz.is_finite(),
+                "Tick rate must be finite, got {}", config.timing.global_rate_hz);
+        }
+
+        /// SchedulerConfig: watchdog timeout must be positive
+        #[test]
+        fn scheduler_config_watchdog_timeout_positive(config in arb_scheduler_config()) {
+            prop_assert!(config.realtime.watchdog_timeout_ms > 0,
+                "Watchdog timeout must be > 0, got {}", config.realtime.watchdog_timeout_ms);
+        }
+
+        /// SchedulerConfig: max deadline misses must be positive
+        #[test]
+        fn scheduler_config_max_deadline_misses_positive(config in arb_scheduler_config()) {
+            prop_assert!(config.realtime.max_deadline_misses > 0,
+                "Max deadline misses must be > 0, got {}", config.realtime.max_deadline_misses);
+        }
+
+        /// SchedulerConfig: metrics interval must be positive
+        #[test]
+        fn scheduler_config_metrics_interval_positive(config in arb_scheduler_config()) {
+            prop_assert!(config.monitoring.metrics_interval_ms > 0,
+                "Metrics interval must be > 0, got {}", config.monitoring.metrics_interval_ms);
+        }
+
+        /// SchedulerConfig: WAL flush interval must be positive
+        #[test]
+        fn scheduler_config_wal_flush_positive(config in arb_scheduler_config()) {
+            prop_assert!(config.monitoring.wal_flush_interval > 0,
+                "WAL flush interval must be > 0, got {}", config.monitoring.wal_flush_interval);
+        }
+
+        /// SchedulerConfig: clone produces identical config
+        #[test]
+        fn scheduler_config_clone_preserves_values(config in arb_scheduler_config()) {
+            let cloned = config.clone();
+            // Compare via Debug since no PartialEq
+            prop_assert_eq!(format!("{:?}", config), format!("{:?}", cloned));
+        }
+
+        /// RecordingConfig: interval is always positive
+        #[test]
+        fn recording_config_interval_positive(config in arb_recording_config()) {
+            prop_assert!(config.interval > 0,
+                "Recording interval must be > 0, got {}", config.interval);
+        }
+
+        /// RecordingConfig: clone preserves all fields
+        #[test]
+        fn recording_config_clone_preserves_values(config in arb_recording_config()) {
+            let cloned = config.clone();
+            prop_assert_eq!(format!("{:?}", config), format!("{:?}", cloned));
+        }
+
+        /// TimingConfig: tick period derivation is consistent
+        #[test]
+        fn timing_config_period_consistency(hz in 0.001f64..10_000.0) {
+            let config = TimingConfig { global_rate_hz: hz };
+            let period_secs = 1.0 / config.global_rate_hz;
+            let derived_hz = 1.0 / period_secs;
+            // Allow small floating point error
+            let diff = (derived_hz - hz).abs();
+            prop_assert!(diff < 1e-10 * hz.abs(),
+                "Hz→period→Hz roundtrip: {} → {} → {}, diff={}",
+                hz, period_secs, derived_hz, diff);
+        }
+    }
+
+    // ── Non-proptest unit tests for defaults and factories ──────────────
+
+    #[test]
+    fn scheduler_config_default_has_positive_rate() {
+        let config = SchedulerConfig::default();
+        assert!(config.timing.global_rate_hz > 0.0);
+        assert_eq!(config.timing.global_rate_hz, 60.0);
+    }
+
+    #[test]
+    fn scheduler_config_default_circuit_breaker_off() {
+        let config = SchedulerConfig::default();
+        assert!(!config.circuit_breaker);
+    }
+
+    #[test]
+    fn scheduler_config_default_no_recording() {
+        let config = SchedulerConfig::default();
+        assert!(config.recording.is_none());
+    }
+
+    #[test]
+    fn scheduler_config_default_no_deterministic() {
+        let config = SchedulerConfig::default();
+        assert!(config.deterministic.is_none());
+    }
+
+    #[test]
+    fn recording_config_full_is_enabled() {
+        let config = RecordingConfigYaml::full();
+        assert!(config.enabled);
+        assert!(config.record_inputs);
+        assert!(config.record_outputs);
+        assert!(config.record_timing);
+    }
+
+    #[test]
+    fn recording_config_minimal_skips_inputs_and_timing() {
+        let config = RecordingConfigYaml::minimal();
+        assert!(config.enabled);
+        assert!(!config.record_inputs);
+        assert!(!config.record_timing);
+        assert!(config.record_outputs);
+        assert!(config.compress);
+        assert_eq!(config.interval, 10);
+        assert_eq!(config.max_size_mb, 50);
+    }
+
+    #[test]
+    fn recording_config_default_not_enabled() {
+        let config = RecordingConfigYaml::default();
+        assert!(!config.enabled);
+        assert_eq!(config.interval, 1);
+    }
+
+    #[test]
+    fn monitoring_config_default_values() {
+        let config = SchedulerConfig::default();
+        assert_eq!(config.monitoring.metrics_interval_ms, 1000);
+        assert_eq!(config.monitoring.wal_flush_interval, 64);
+        assert!(config.monitoring.verbose);
+    }
+
+    #[test]
+    fn realtime_config_default_all_disabled() {
+        let config = SchedulerConfig::default();
+        assert!(!config.realtime.wcet_enforcement);
+        assert!(!config.realtime.deadline_monitoring);
+        assert!(!config.realtime.watchdog_enabled);
+        assert!(!config.realtime.safety_monitor);
+        assert!(!config.realtime.memory_locking);
+        assert!(!config.realtime.rt_scheduling_class);
+    }
+}

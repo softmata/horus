@@ -543,6 +543,23 @@ mod tests {
             .with_state(state)
     }
 
+    #[test]
+    fn safe_path_component_rejects_traversal() {
+        assert!(!is_safe_path_component(".."));
+        assert!(!is_safe_path_component("foo/../bar"));
+        assert!(!is_safe_path_component("foo/bar"));
+        assert!(!is_safe_path_component("foo\\bar"));
+        assert!(!is_safe_path_component("foo\0bar"));
+        assert!(!is_safe_path_component(""));
+    }
+
+    #[test]
+    fn safe_path_component_accepts_valid_names() {
+        assert!(is_safe_path_component("session-2026-01-01"));
+        assert!(is_safe_path_component("my_recording"));
+        assert!(is_safe_path_component("test.session"));
+    }
+
     /// Unauthenticated GET /api/debug/sessions must return 401.
     #[tokio::test]
     async fn debug_sessions_list_requires_auth() {
