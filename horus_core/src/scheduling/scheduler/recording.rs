@@ -68,7 +68,7 @@ impl Scheduler {
 
         let replay_tier = NodeTier::default();
         self.nodes.push(RegisteredNode {
-            node: super::super::types::NodeKind::Regular(Box::new(replay_node)),
+            node: super::super::types::NodeKind::new(Box::new(replay_node)),
             name: Arc::from(node_name.as_str()),
             priority,
             initialized: false,

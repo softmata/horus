@@ -296,7 +296,7 @@ mod tests {
             count,
         };
         RegisteredNode {
-            node: super::super::types::NodeKind::Regular(Box::new(node)),
+            node: super::super::types::NodeKind::new(Box::new(node)),
             name: Arc::from(name),
             priority: 0,
             initialized: true,

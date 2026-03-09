@@ -1,5 +1,5 @@
 // Integration test for real-time scheduler features
-use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtPriority};
+use horus_core::core::{DeadlineMissPolicy, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -66,14 +66,6 @@ impl Node for CriticalControlNode {
         Duration::from_millis(1)
     }
 
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Critical
-    }
-
-    fn rt_class(&self) -> RtClass {
-        RtClass::Hard
-    }
-
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         DeadlineMissPolicy::EmergencyStop
     }
@@ -100,7 +92,6 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("motor_control", 50)) // 50μs execution
         .order(0) // Highest priority
-        .rt() // Mark as real-time
         .wcet_us(100) // 100μs WCET budget
         .deadline_ms(1) // 1ms deadline
         .done();
@@ -109,7 +100,6 @@ fn test_scheduler_with_rt_nodes() {
     scheduler
         .add(CriticalControlNode::new("sensor_fusion", 30)) // 30μs execution
         .order(1)
-        .rt()
         .wcet_us(50)
         .deadline_ms(2)
         .done();
@@ -135,7 +125,6 @@ fn test_scheduler_with_safety_critical_config() {
     scheduler
         .add(CriticalControlNode::new("flight_control", 80))
         .order(0)
-        .rt()
         .wcet_us(100)
         .deadline_ms(1)
         .done();
@@ -143,7 +132,6 @@ fn test_scheduler_with_safety_critical_config() {
     scheduler
         .add(CriticalControlNode::new("navigation", 60))
         .order(1)
-        .rt()
         .wcet_us(80)
         .deadline_ms(2)
         .done();
@@ -164,7 +152,6 @@ fn test_wcet_violation_detection() {
     scheduler
         .add(CriticalControlNode::new("violator", 100))
         .order(0)
-        .rt()
         .wcet_us(50) // WCET budget too small
         .deadline_ms(1)
         .done();
@@ -184,7 +171,6 @@ fn test_deadline_miss_detection() {
     scheduler
         .add(CriticalControlNode::new("tight_deadline", 900))
         .order(0)
-        .rt()
         .wcet_us(1000)
         .deadline_us(500) // Deadline smaller than execution time
         .done();
@@ -203,7 +189,6 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_critical", 50))
         .order(0)
-        .rt()
         .wcet_us(100)
         .deadline_ms(1)
         .done();
@@ -216,7 +201,6 @@ fn test_mixed_rt_and_normal_nodes() {
     scheduler
         .add(CriticalControlNode::new("rt_sensor", 30))
         .order(1)
-        .rt()
         .wcet_us(50)
         .deadline_ms(2)
         .done();
@@ -243,7 +227,6 @@ fn test_watchdog_functionality() {
     scheduler
         .add(CriticalControlNode::new("watchdog_monitored", 10))
         .order(0)
-        .rt()
         .wcet_us(50)
         .deadline_ms(1)
         .done();
@@ -263,7 +246,6 @@ fn test_high_performance_rt_config() {
     scheduler
         .add(CriticalControlNode::new("traction_control", 10))
         .order(0)
-        .rt()
         .wcet_us(20)
         .deadline_us(100) // 10kHz control loop
         .done();
@@ -271,7 +253,6 @@ fn test_high_performance_rt_config() {
     scheduler
         .add(CriticalControlNode::new("stability_control", 15))
         .order(1)
-        .rt()
         .wcet_us(25)
         .deadline_us(100)
         .done();

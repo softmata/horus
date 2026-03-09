@@ -101,8 +101,8 @@ impl RtExecutor {
         }
 
         // RT pre-conditions (catch_unwind: user code may panic)
-        if let Some(rt_node) = node.node.as_rt() {
-            let pre_ok = catch_unwind(AssertUnwindSafe(|| rt_node.pre_condition()));
+        {
+            let pre_ok = catch_unwind(AssertUnwindSafe(|| node.node.pre_condition()));
             match pre_ok {
                 Ok(true) => {} // proceed to tick
                 Ok(false) => {
@@ -136,24 +136,22 @@ impl RtExecutor {
 
         // RT post-conditions (only on success, catch_unwind: user code may panic)
         if tr.result.is_ok() {
-            if let Some(rt_node) = node.node.as_rt() {
-                match catch_unwind(AssertUnwindSafe(|| rt_node.post_condition())) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT-thread] Post-condition failed for '{}'",
-                                node.name
-                            ));
-                        }
+            match catch_unwind(AssertUnwindSafe(|| node.node.post_condition())) {
+                Ok(true) => {}
+                Ok(false) => {
+                    if monitors.verbose {
+                        print_line(&format!(
+                            "[RT-thread] Post-condition failed for '{}'",
+                            node.name
+                        ));
                     }
-                    Err(_) => {
-                        if monitors.verbose {
-                            print_line(&format!(
-                                "[RT-thread] Post-condition panicked for '{}'",
-                                node.name
-                            ));
-                        }
+                }
+                Err(_) => {
+                    if monitors.verbose {
+                        print_line(&format!(
+                            "[RT-thread] Post-condition panicked for '{}'",
+                            node.name
+                        ));
                     }
                 }
             }
@@ -189,9 +187,7 @@ impl RtExecutor {
                 if let Some(ref mut stats) = node.rt_stats {
                     stats.wcet_violations += 1;
                 }
-                if let Some(rt_node) = node.node.as_rt_mut() {
-                    rt_node.on_wcet_violation(&wcet_result.violation);
-                }
+                node.node.on_wcet_violation(&wcet_result.violation);
                 // Record to blackbox (try_lock to avoid RT priority inversion)
                 if let Some(ref bb) = monitors.blackbox {
                     if let Ok(mut bb) = bb.try_lock() {
@@ -207,11 +203,7 @@ impl RtExecutor {
 
         // Deadline check via TimingEnforcer
         if let Some(deadline) = node.deadline {
-            let policy = if let Some(rt_node) = node.node.as_rt_mut() {
-                rt_node.deadline_miss_policy()
-            } else {
-                crate::core::DeadlineMissPolicy::Warn
-            };
+            let policy = node.node.deadline_miss_policy();
 
             if let Some(dm) = TimingEnforcer::check_deadline(tr.tick_start, deadline, policy) {
                 if monitors.verbose {
@@ -234,9 +226,7 @@ impl RtExecutor {
                     }
                 }
                 // Invoke RtNode callback
-                if let Some(rt_node) = node.node.as_rt_mut() {
-                    rt_node.on_deadline_miss(dm.elapsed, dm.deadline);
-                }
+                node.node.on_deadline_miss(dm.elapsed, dm.deadline);
 
                 match dm.action {
                     DeadlineAction::Warn => {}
@@ -254,7 +244,7 @@ impl RtExecutor {
                         node.priority = node.priority.saturating_add(10);
                     }
                     DeadlineAction::Fallback => {
-                        let fallback = node.node.as_rt_mut().and_then(|rt| rt.fallback_node());
+                        let fallback = node.node.fallback_node();
                         if let Some(fallback_node) = fallback {
                             let fallback_name: Arc<str> = Arc::from(fallback_node.name());
                             if monitors.verbose {
@@ -263,7 +253,7 @@ impl RtExecutor {
                                     node.name, fallback_name
                                 ));
                             }
-                            node.node = super::types::NodeKind::Rt(fallback_node);
+                            node.node = super::types::NodeKind::new(fallback_node);
                             node.name = fallback_name;
                         }
                     }
@@ -517,7 +507,7 @@ mod tests {
             count,
         };
         RegisteredNode {
-            node: super::super::types::NodeKind::Regular(Box::new(node)),
+            node: super::super::types::NodeKind::new(Box::new(node)),
             name: Arc::from(name),
             priority: 0,
             initialized: true,
@@ -631,7 +621,7 @@ mod tests {
 
         let node = PanicNode;
         let registered = RegisteredNode {
-            node: super::super::types::NodeKind::Regular(Box::new(node)),
+            node: super::super::types::NodeKind::new(Box::new(node)),
             name: Arc::from("panic_rt"),
             priority: 0,
             initialized: true,
@@ -707,7 +697,7 @@ mod tests {
             count: panic_count.clone(),
         };
         let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
+            node: super::super::types::NodeKind::new(Box::new(panic_node)),
             name: Arc::from("panic_pre"),
             priority: 0,
             initialized: true,
@@ -961,7 +951,7 @@ mod tests {
             count: panic_count.clone(),
         };
         let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
+            node: super::super::types::NodeKind::new(Box::new(panic_node)),
             name: Arc::from("panic_post"),
             priority: 0,
             initialized: true,
@@ -1043,7 +1033,7 @@ mod tests {
             count: panic_count.clone(),
         };
         let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::Regular(Box::new(panic_node)),
+            node: super::super::types::NodeKind::new(Box::new(panic_node)),
             name: Arc::from("always_panic"),
             priority: 0,
             initialized: true,
@@ -1148,7 +1138,7 @@ mod tests {
             count: panic_count,
         };
         let panic_registered = RegisteredNode {
-            node: super::super::types::NodeKind::Rt(Box::new(panic_node)),
+            node: super::super::types::NodeKind::new(Box::new(panic_node)),
             name: Arc::from("quiet_panic"),
             priority: 0,
             initialized: true,

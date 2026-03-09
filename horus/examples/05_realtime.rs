@@ -77,12 +77,8 @@ impl Node for PidController {
         Duration::from_millis(1) // 1ms deadline for 1kHz control
     }
 
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::High
-    }
-
-    fn rt_class(&self) -> RtClass {
-        RtClass::Firm // Occasional miss tolerated
+    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+        DeadlineMissPolicy::Skip // Occasional miss tolerated
     }
 }
 
@@ -133,7 +129,7 @@ fn main() -> Result<()> {
 
     // PID controller: RT node on dedicated thread
     scheduler
-        .add_rt(PidController::new()?)
+        .add(PidController::new()?)
         .order(0)
         .rate_hz(100.0)
         .build()?;

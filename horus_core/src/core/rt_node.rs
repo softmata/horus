@@ -1,83 +1,9 @@
 // Real-time types for time-critical applications
 use std::time::Duration;
 
-/// Priority levels for real-time scheduling.
-///
-/// Lower numeric value = higher priority (matches POSIX convention).
-///
-/// # Example
-///
-/// ```rust
-/// use horus_core::core::RtPriority;
-///
-/// // Use predefined levels
-/// let safety = RtPriority::Critical;  // value = 0
-/// let sensor = RtPriority::High;      // value = 10
-/// let planner = RtPriority::Medium;   // value = 50
-/// let logger = RtPriority::Low;       // value = 100
-///
-/// // Or a custom value
-/// let custom = RtPriority::Custom(25);
-/// assert_eq!(custom.value(), 25);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RtPriority {
-    /// Highest priority - critical control loops
-    Critical,
-    /// High priority - important sensors
-    High,
-    /// Medium priority - normal processing
-    Medium,
-    /// Low priority - background tasks
-    Low,
-    /// Custom priority value
-    Custom(u32),
-}
-
-impl RtPriority {
-    pub fn value(&self) -> u32 {
-        match self {
-            RtPriority::Critical => 0,
-            RtPriority::High => 10,
-            RtPriority::Medium => 50,
-            RtPriority::Low => 100,
-            RtPriority::Custom(v) => *v,
-        }
-    }
-}
-
-/// Real-time class for deadline handling.
-///
-/// Determines how strictly deadlines are enforced and what happens on violation.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus::prelude::*;
-/// use std::time::Duration;
-///
-/// impl Node for SafetyMonitor {
-///     fn tick(&mut self) { /* ... */ }
-///     fn wcet_budget(&self) -> Option<Duration> { Some(Duration::from_micros(50)) }
-///
-///     fn rt_class(&self) -> RtClass {
-///         RtClass::Hard  // Emergency stop on deadline miss
-///     }
-/// }
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RtClass {
-    /// Must never miss deadline (safety-critical, surgical robots)
-    Hard,
-    /// Occasional miss tolerated (video streaming, VR)
-    Firm,
-    /// Best effort timing (gaming, UI, monitoring)
-    Soft,
-}
-
 /// Policy for handling deadline misses.
 ///
-/// Chosen automatically based on [`RtClass`], or overridden per-node.
+/// Override `deadline_miss_policy()` on your `Node` impl to choose a policy.
 ///
 /// # Example
 ///
@@ -253,63 +179,11 @@ mod tests {
         assert_eq!(node2.deadline(), Duration::from_micros(2000));
     }
 
-    /// Default priority is Medium — not Critical, which is reserved for
-    /// safety-critical control loops (e.g. e-stop, watchdog).
+    /// Default deadline miss policy is Warn.
     #[test]
-    fn default_priority_is_medium() {
-        let node = TestMotorNode::new(100);
-        assert_eq!(node.rt_priority(), RtPriority::Medium);
-        assert_eq!(node.rt_priority().value(), 50);
-    }
-
-    /// Default RT class is Soft — hard real-time requires explicit opt-in
-    /// because it triggers EmergencyStop on deadline miss.
-    #[test]
-    fn default_class_is_soft() {
-        let node = TestMotorNode::new(100);
-        assert_eq!(node.rt_class(), RtClass::Soft);
-    }
-
-    /// Deadline miss policy follows RT class.
-    /// Hard → EmergencyStop (safety shutdown)
-    /// Firm → Skip (drop this tick, continue)
-    /// Soft → Warn (log and continue)
-    #[test]
-    fn deadline_miss_policy_follows_class() {
-        // Default (Soft) → Warn
+    fn default_deadline_miss_policy_is_warn() {
         let node = TestMotorNode::new(100);
         assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::Warn);
-
-        // Custom Hard node → EmergencyStop
-        struct HardNode;
-        impl Node for HardNode {
-            fn tick(&mut self) {}
-            fn wcet_budget(&self) -> Option<Duration> {
-                Some(Duration::from_micros(50))
-            }
-            fn rt_class(&self) -> RtClass {
-                RtClass::Hard
-            }
-        }
-        let hard = HardNode;
-        assert_eq!(
-            hard.deadline_miss_policy(),
-            DeadlineMissPolicy::EmergencyStop
-        );
-
-        // Custom Firm node → Skip
-        struct FirmNode;
-        impl Node for FirmNode {
-            fn tick(&mut self) {}
-            fn wcet_budget(&self) -> Option<Duration> {
-                Some(Duration::from_micros(50))
-            }
-            fn rt_class(&self) -> RtClass {
-                RtClass::Firm
-            }
-        }
-        let firm = FirmNode;
-        assert_eq!(firm.deadline_miss_policy(), DeadlineMissPolicy::Skip);
     }
 
     /// Formal verification defaults: pre/post conditions and invariants
@@ -339,39 +213,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Section 2: RtPriority ordering and values
-    // =========================================================================
-
-    /// Priority values: Critical(0) < High(10) < Medium(50) < Low(100).
-    /// Lower value = higher priority (matches POSIX convention).
-    #[test]
-    fn priority_values() {
-        assert_eq!(RtPriority::Critical.value(), 0);
-        assert_eq!(RtPriority::High.value(), 10);
-        assert_eq!(RtPriority::Medium.value(), 50);
-        assert_eq!(RtPriority::Low.value(), 100);
-    }
-
-    /// Custom priority carries its exact value.
-    #[test]
-    fn custom_priority_value() {
-        assert_eq!(RtPriority::Custom(42).value(), 42);
-        assert_eq!(RtPriority::Custom(0).value(), 0);
-        assert_eq!(RtPriority::Custom(999).value(), 999);
-    }
-
-    /// RtPriority derives PartialOrd/Ord — Critical < High < Medium < Low
-    /// (enum discriminant order matches priority importance).
-    #[test]
-    fn priority_ordering() {
-        assert!(RtPriority::Critical < RtPriority::High);
-        assert!(RtPriority::High < RtPriority::Medium);
-        assert!(RtPriority::Medium < RtPriority::Low);
-        assert!(RtPriority::Low < RtPriority::Custom(0));
-    }
-
-    // =========================================================================
-    // Section 3: RtStats EMA calculations
+    // RtStats EMA calculations
     // =========================================================================
 
     /// First recording sets avg to the duration, jitter to 0.

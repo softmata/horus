@@ -1,5 +1,5 @@
 // Test real-time node functionality
-use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtPriority};
+use horus_core::core::{DeadlineMissPolicy, Node};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -68,12 +68,8 @@ impl Node for MotorControlNode {
         Duration::from_millis(1)
     }
 
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Critical
-    }
-
-    fn rt_class(&self) -> RtClass {
-        RtClass::Hard
+    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+        DeadlineMissPolicy::EmergencyStop
     }
 
     fn pre_condition(&self) -> bool {
@@ -139,12 +135,8 @@ impl Node for SensorFusionNode {
         Duration::from_millis(10)
     }
 
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::High
-    }
-
-    fn rt_class(&self) -> RtClass {
-        RtClass::Firm
+    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+        DeadlineMissPolicy::Skip
     }
 }
 
@@ -197,13 +189,6 @@ impl Node for LoggingNode {
         Duration::from_millis(100)
     }
 
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Low
-    }
-
-    fn rt_class(&self) -> RtClass {
-        RtClass::Soft
-    }
 }
 
 #[test]
@@ -281,7 +266,7 @@ fn test_rt_node_wcet_budget() {
     let node = MotorControlNode::new("test_motor");
     assert_eq!(node.wcet_budget(), Some(Duration::from_micros(100)));
     assert_eq!(node.deadline(), Duration::from_millis(1));
-    assert_eq!(node.rt_class(), RtClass::Hard);
+    assert_eq!(node.deadline_miss_policy(), DeadlineMissPolicy::EmergencyStop);
 }
 
 #[test]
@@ -302,16 +287,7 @@ fn test_rt_node_formal_verification() {
 }
 
 #[test]
-fn test_rt_priority_values() {
-    assert!(RtPriority::Critical.value() < RtPriority::High.value());
-    assert!(RtPriority::High.value() < RtPriority::Medium.value());
-    assert!(RtPriority::Medium.value() < RtPriority::Low.value());
-    assert_eq!(RtPriority::Custom(42).value(), 42);
-}
-
-#[test]
 fn test_deadline_miss_policies() {
-    // Test different deadline miss policies
     let motor = MotorControlNode::new("motor");
     assert_eq!(
         motor.deadline_miss_policy(),

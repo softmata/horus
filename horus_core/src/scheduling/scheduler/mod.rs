@@ -1414,42 +1414,20 @@ impl Scheduler {
     ///     .order(0)
     ///     .build();
     ///
-    /// // With full RT configuration
+    /// // RT node — auto-detected from wcet_budget() or explicit .wcet_us()
     /// scheduler.add(MotorController::new())
     ///     .order(0)
     ///     .rate_hz(1000.0)  // 1kHz
-    ///     .rt()
-    ///     .wcet_us(500)     // 500μs max execution
+    ///     .wcet_us(500)     // 500μs max → enables RT scheduling
     ///     .build()?;
     ///
     /// // Chain multiple nodes
     /// scheduler.add(SensorNode::new()).order(0).build()?;
-    /// scheduler.add(ControlNode::new()).order(1).rt().build()?;
+    /// scheduler.add(ControlNode::new()).order(1).wcet_us(200).build()?;
     /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
         super::node_builder::NodeBuilder::new(self, Box::new(node))
-    }
-
-    /// Add a node that implements `RtNode` using the fluent builder API.
-    ///
-    /// Unlike `add(node).rt()`, this path stores the full RtNode trait object,
-    /// enabling the scheduler to call RtNode-specific callbacks (pre/post
-    /// conditions, on_wcet_violation, on_deadline_miss, enter_safe_state, etc.).
-    ///
-    /// WCET budget and deadline are auto-populated from the trait implementation.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// scheduler.add_rt(MotorController::new())
-    ///     .order(0)
-    ///     .build();
-    /// ```
-    pub fn add_rt<N: crate::core::Node + 'static>(
-        &mut self,
-        node: N,
-    ) -> super::node_builder::NodeBuilder<'_> {
-        super::node_builder::NodeBuilder::new_rt(self, Box::new(node))
     }
 
     /// Add a node using a pre-built NodeRegistration.
@@ -1463,7 +1441,7 @@ impl Scheduler {
     ///
     /// let config = NodeRegistration::new(Box::new(my_node))
     ///     .order(0)
-    ///     .rt();
+    ///     .wcet_us(500);
     ///
     /// scheduler.add_configured(config);
     /// ```
@@ -2214,24 +2192,22 @@ impl Scheduler {
 
                 // Transition all RT nodes to safe state
                 for registered in self.nodes.iter_mut() {
-                    if let Some(rt_node) = registered.node.as_rt_mut() {
-                        if !rt_node.is_safe_state() {
-                            print_line(&format!(
-                                " Entering safe state for RT node '{}'",
-                                registered.name
-                            ));
-                            rt_node.enter_safe_state();
-                            if let Some(ref bb) = self.monitor.blackbox {
-                                bb.lock()
-                                    .unwrap()
-                                    .record(super::blackbox::BlackBoxEvent::Custom {
-                                        category: "safe_state".to_string(),
-                                        message: format!(
-                                            "Node '{}' transitioned to safe state",
-                                            registered.name
-                                        ),
-                                    });
-                            }
+                    if registered.is_rt_node && !registered.node.is_safe_state() {
+                        print_line(&format!(
+                            " Entering safe state for RT node '{}'",
+                            registered.name
+                        ));
+                        registered.node.enter_safe_state();
+                        if let Some(ref bb) = self.monitor.blackbox {
+                            bb.lock()
+                                .unwrap()
+                                .record(super::blackbox::BlackBoxEvent::Custom {
+                                    category: "safe_state".to_string(),
+                                    message: format!(
+                                        "Node '{}' transitioned to safe state",
+                                        registered.name
+                                    ),
+                                });
                         }
                     }
                 }
@@ -2835,8 +2811,8 @@ impl Scheduler {
             }
 
             // RtNode pre-condition and invariant checks (before tick)
-            if let Some(rt_node) = self.nodes[i].node.as_rt() {
-                if !rt_node.pre_condition() {
+            if self.nodes[i].is_rt_node {
+                if !self.nodes[i].node.pre_condition() {
                     let name = self.nodes[i].name.as_ref();
                     print_line(&format!(
                         " Pre-condition failed for RT node '{}' — skipping tick",
@@ -2852,7 +2828,7 @@ impl Scheduler {
                     }
                     return false;
                 }
-                if !rt_node.invariant() {
+                if !self.nodes[i].node.invariant() {
                     let name = self.nodes[i].name.as_ref();
                     print_line(&format!(
                         " Invariant violated before tick for RT node '{}'",
@@ -2889,37 +2865,35 @@ impl Scheduler {
             };
 
             // RtNode post-condition and invariant checks (after successful tick)
-            if tick_result.is_ok() {
-                if let Some(rt_node) = self.nodes[i].node.as_rt() {
-                    if !rt_node.post_condition() {
-                        let name = self.nodes[i].name.as_ref();
-                        print_line(&format!(" Post-condition failed for RT node '{}'", name));
-                        if let Some(ref bb) = self.monitor.blackbox {
-                            bb.lock()
-                                .unwrap()
-                                .record(super::blackbox::BlackBoxEvent::Custom {
-                                    category: "rt_condition".to_string(),
-                                    message: format!("Post-condition failed for '{}'", name),
-                                });
-                        }
+            if tick_result.is_ok() && self.nodes[i].is_rt_node {
+                if !self.nodes[i].node.post_condition() {
+                    let name = self.nodes[i].name.as_ref();
+                    print_line(&format!(" Post-condition failed for RT node '{}'", name));
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!("Post-condition failed for '{}'", name),
+                            });
                     }
-                    if !rt_node.invariant() {
-                        let name = self.nodes[i].name.as_ref();
-                        print_line(&format!(
-                            " Invariant violated after tick for RT node '{}'",
-                            name
-                        ));
-                        if let Some(ref bb) = self.monitor.blackbox {
-                            bb.lock()
-                                .unwrap()
-                                .record(super::blackbox::BlackBoxEvent::Custom {
-                                    category: "rt_condition".to_string(),
-                                    message: format!(
-                                        "Invariant violated after tick for '{}'",
-                                        name
-                                    ),
-                                });
-                        }
+                }
+                if !self.nodes[i].node.invariant() {
+                    let name = self.nodes[i].name.as_ref();
+                    print_line(&format!(
+                        " Invariant violated after tick for RT node '{}'",
+                        name
+                    ));
+                    if let Some(ref bb) = self.monitor.blackbox {
+                        bb.lock()
+                            .unwrap()
+                            .record(super::blackbox::BlackBoxEvent::Custom {
+                                category: "rt_condition".to_string(),
+                                message: format!(
+                                    "Invariant violated after tick for '{}'",
+                                    name
+                                ),
+                            });
                     }
                 }
             }
@@ -3006,9 +2980,7 @@ impl Scheduler {
                     ));
 
                     // Invoke RtNode callback
-                    if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
-                        rt_node.on_wcet_violation(violation);
-                    }
+                    self.nodes[i].node.on_wcet_violation(violation);
 
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
@@ -3037,12 +3009,8 @@ impl Scheduler {
         // Check deadline for RT nodes via TimingEnforcer
         if self.nodes[i].is_rt_node {
             if let Some(deadline) = self.nodes[i].deadline {
-                // Get policy from RtNode (or default Warn)
-                let policy = if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
-                    rt_node.deadline_miss_policy()
-                } else {
-                    crate::core::DeadlineMissPolicy::Warn
-                };
+                // Get policy from Node trait (defaults to Warn)
+                let policy = self.nodes[i].node.deadline_miss_policy();
 
                 if let Some(dm) = TimingEnforcer::check_deadline(tick_start, deadline, policy) {
                     if let Some(ref monitor) = self.monitor.safety {
@@ -3054,9 +3022,7 @@ impl Scheduler {
                     ));
 
                     // Invoke RtNode callback
-                    if let Some(rt_node) = self.nodes[i].node.as_rt_mut() {
-                        rt_node.on_deadline_miss(dm.elapsed, dm.deadline);
-                    }
+                    self.nodes[i].node.on_deadline_miss(dm.elapsed, dm.deadline);
 
                     // Update RtStats
                     if let Some(ref mut stats) = self.nodes[i].rt_stats {
@@ -3107,17 +3073,14 @@ impl Scheduler {
                             ));
                         }
                         DeadlineAction::Fallback => {
-                            let fallback = self.nodes[i]
-                                .node
-                                .as_rt_mut()
-                                .and_then(|rt| rt.fallback_node());
+                            let fallback = self.nodes[i].node.fallback_node();
                             if let Some(fallback_node) = fallback {
                                 let fallback_name: Arc<str> = Arc::from(fallback_node.name());
                                 print_line(&format!(
                                     " Deadline policy: switching '{}' to fallback '{}'",
                                     node_name, fallback_name
                                 ));
-                                self.nodes[i].node = super::types::NodeKind::Rt(fallback_node);
+                                self.nodes[i].node = super::types::NodeKind::new(fallback_node);
                                 self.nodes[i].name = fallback_name;
                             } else {
                                 print_line(&format!(

@@ -257,7 +257,7 @@ fn test_rt_precondition_false_skips_tick() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add_rt(ConditionalRtNode {
+        .add(ConditionalRtNode {
             name: "pre_false".to_string(),
             tick_count: tick_count.clone(),
             pre_ok,
@@ -283,7 +283,7 @@ fn test_rt_postcondition_false_continues() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add_rt(ConditionalRtNode {
+        .add(ConditionalRtNode {
             name: "post_false".to_string(),
             tick_count: tick_count.clone(),
             pre_ok: Arc::new(AtomicBool::new(true)),
@@ -308,7 +308,7 @@ fn test_deadline_emergency_stop() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add_rt(PolicyRtNode {
+        .add(PolicyRtNode {
             name: "emergency_stop_node".to_string(),
             tick_count: tick_count.clone(),
             sleep_us: 500, // Slow enough to miss 10us deadline
@@ -349,7 +349,7 @@ fn test_deadline_skip_pauses_node() {
     let mut scheduler = Scheduler::new();
     // Slow node with Skip policy — should be paused after deadline miss
     scheduler
-        .add_rt(PolicyRtNode {
+        .add(PolicyRtNode {
             name: "skip_node".to_string(),
             tick_count: tick_count.clone(),
             sleep_us: 500,
@@ -366,7 +366,6 @@ fn test_deadline_skip_pauses_node() {
             tick_count: reference_count.clone(),
         })
         .order(1)
-        .rt()
         .done();
 
     scheduler.run_for(Duration::from_millis(200)).unwrap();
@@ -388,7 +387,7 @@ fn test_deadline_degrade_lowers_priority() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add_rt(PolicyRtNode {
+        .add(PolicyRtNode {
             name: "degrade_node".to_string(),
             tick_count: tick_count.clone(),
             sleep_us: 500,
@@ -416,7 +415,7 @@ fn test_deadline_fallback_swaps_node() {
 
     let mut scheduler = Scheduler::new();
     scheduler
-        .add_rt(FallbackPrimaryNode {
+        .add(FallbackPrimaryNode {
             name: "primary".to_string(),
             tick_count: primary_count.clone(),
             fallback_count: fallback_count.clone(),
@@ -452,7 +451,6 @@ fn test_rt_panic_str_literal() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -479,7 +477,6 @@ fn test_rt_panic_owned_string() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -505,7 +502,6 @@ fn test_rt_panic_unknown_type() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -534,7 +530,6 @@ fn test_rt_on_error_callback() {
             should_panic: AtomicBool::new(true),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::Ignore)
         .done();
 
@@ -567,7 +562,6 @@ fn test_rt_circuit_breaker_rejection() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::skip(2, 5000)) // Opens after 2 failures, 5s cooldown
         .done();
 
@@ -596,7 +590,6 @@ fn test_rt_restart_failure_deinitializes() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .failure_policy(FailurePolicy::restart(3, 10))
         .done();
 

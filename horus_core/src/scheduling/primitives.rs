@@ -115,7 +115,7 @@ impl TimingEnforcer {
     ///
     /// `tick_start` is the `Instant` when the tick began; the elapsed time since
     /// then is compared against `deadline`. The `policy` is the `DeadlineMissPolicy`
-    /// from the node (either from the `RtNode` trait or a default).
+    /// from the node's `deadline_miss_policy()` method.
     ///
     /// Returns `Some(DeadlineMissResult)` if the deadline was missed, `None` otherwise.
     #[inline]
@@ -181,21 +181,21 @@ mod tests {
 
     #[test]
     fn test_run_tick_success() {
-        let mut node = NodeKind::Regular(Box::new(OkNode));
+        let mut node = NodeKind::new(Box::new(OkNode));
         let result = NodeRunner::run_tick(&mut node);
         assert!(result.result.is_ok());
     }
 
     #[test]
     fn test_run_tick_catches_panic() {
-        let mut node = NodeKind::Regular(Box::new(PanicNode));
+        let mut node = NodeKind::new(Box::new(PanicNode));
         let result = NodeRunner::run_tick(&mut node);
         assert!(result.result.is_err());
     }
 
     #[test]
     fn test_run_tick_measures_duration() {
-        let mut node = NodeKind::Regular(Box::new(SlowNode { work_us: 1000 }));
+        let mut node = NodeKind::new(Box::new(SlowNode { work_us: 1000 }));
         let result = NodeRunner::run_tick(&mut node);
         assert!(result.result.is_ok());
         // Should be at least ~1ms (allowing some scheduling jitter)

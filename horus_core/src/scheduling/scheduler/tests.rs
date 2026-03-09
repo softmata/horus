@@ -303,7 +303,6 @@ fn test_scheduler_add_rt_node() {
     scheduler
         .add(CounterNode::new("rt_node"))
         .order(0)
-        .rt()
         .wcet_us(100)
         .deadline_ms(1)
         .done();
@@ -521,7 +520,7 @@ fn test_parallel_rt_nodes_run_sequentially() {
     scheduler
         .add(CounterNode::with_counter("rt_node", rt_counter.clone()))
         .order(0)
-        .rt()
+        .wcet_us(10_000)
         .done();
     scheduler
         .add(CounterNode::with_counter(
@@ -1425,7 +1424,6 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
     scheduler
         .add(CounterNode::with_counter("fast_ctrl", fast_counter.clone()))
         .order(0)
-        .rt()
         .wcet_us(10_000) // 10ms budget (generous)
         .done();
 
@@ -1437,7 +1435,6 @@ fn test_wcet_violation_detected_for_slow_rt_node() {
             slow_counter.clone(),
         ))
         .order(1)
-        .rt()
         .wcet_us(1_000) // 1ms budget — will be violated by 50ms sleep
         .done();
 
@@ -1477,7 +1474,6 @@ fn test_deadline_miss_detected_for_slow_rt_node() {
             slow_counter.clone(),
         ))
         .order(0)
-        .rt()
         .deadline_ms(5) // 5ms deadline — will be missed by 20ms sleep
         .done();
 
@@ -2669,7 +2665,6 @@ fn test_wcet_no_violation_within_budget() {
     scheduler
         .add(CounterNode::with_counter("fast_node", counter.clone()))
         .order(0)
-        .rt()
         .wcet_us(100_000) // 100ms budget — CounterNode takes nanoseconds
         .done();
 
@@ -2705,7 +2700,6 @@ fn test_wcet_multiple_simultaneous_violations() {
             slow_a.clone(),
         ))
         .order(0)
-        .rt()
         .wcet_us(1_000) // 1ms budget — violated by 30ms sleep
         .done();
 
@@ -2716,7 +2710,6 @@ fn test_wcet_multiple_simultaneous_violations() {
             slow_b.clone(),
         ))
         .order(1)
-        .rt()
         .wcet_us(2_000) // 2ms budget — violated by 30ms sleep
         .done();
 
@@ -2761,7 +2754,6 @@ fn test_wcet_mixed_within_and_over_budget() {
     scheduler
         .add(CounterNode::with_counter("fast", fast.clone()))
         .order(0)
-        .rt()
         .wcet_us(50_000) // 50ms — way more than needed
         .done();
 
@@ -2773,7 +2765,6 @@ fn test_wcet_mixed_within_and_over_budget() {
             slow.clone(),
         ))
         .order(1)
-        .rt()
         .wcet_us(1_000) // 1ms budget — violated
         .done();
 
@@ -2796,7 +2787,7 @@ fn test_wcet_mixed_within_and_over_budget() {
     }
 }
 
-/// Non-RT node with WCET — should still track (if registered as RT via .rt()).
+/// Non-RT node with WCET — should still track (if registered as RT via .wcet_us()).
 #[test]
 fn test_wcet_non_rt_node_no_crash() {
     let _guard = lock_scheduler();
@@ -2804,7 +2795,7 @@ fn test_wcet_non_rt_node_no_crash() {
 
     let mut scheduler = Scheduler::new().safety_monitor(true);
 
-    // Regular node (not .rt()) — no wcet tracking
+    // Regular node (no .wcet_us()) — no wcet tracking
     scheduler
         .add(CounterNode::with_counter("regular", counter.clone()))
         .order(0)
@@ -2837,7 +2828,6 @@ fn test_wcet_worst_execution_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .rt()
         .wcet_us(100_000) // generous budget, just tracking
         .done();
 
@@ -2867,7 +2857,6 @@ fn test_deadline_no_miss_within_budget() {
     scheduler
         .add(CounterNode::with_counter("fast_rt", counter.clone()))
         .order(0)
-        .rt()
         .deadline_ms(500) // 500ms — CounterNode takes nanoseconds
         .done();
 
@@ -2902,7 +2891,6 @@ fn test_deadline_multiple_simultaneous_misses() {
             slow_a.clone(),
         ))
         .order(0)
-        .rt()
         .deadline_ms(5) // 5ms deadline — missed by 30ms
         .done();
 
@@ -2913,7 +2901,6 @@ fn test_deadline_multiple_simultaneous_misses() {
             slow_b.clone(),
         ))
         .order(1)
-        .rt()
         .deadline_ms(10) // 10ms deadline — missed by 30ms
         .done();
 
@@ -2948,7 +2935,6 @@ fn test_deadline_mixed_meet_and_miss() {
     scheduler
         .add(CounterNode::with_counter("meets_deadline", fast.clone()))
         .order(0)
-        .rt()
         .deadline_ms(100)
         .done();
 
@@ -2960,7 +2946,6 @@ fn test_deadline_mixed_meet_and_miss() {
             slow.clone(),
         ))
         .order(1)
-        .rt()
         .deadline_ms(5) // 5ms — violated by 25ms sleep
         .done();
 
@@ -2996,7 +2981,6 @@ fn test_deadline_miss_count_accumulates() {
             counter.clone(),
         ))
         .order(0)
-        .rt()
         .deadline_ms(5) // 5ms deadline — each tick misses
         .done();
 
@@ -3030,7 +3014,6 @@ fn test_deadline_miss_and_wcet_violation_both_tracked() {
             counter.clone(),
         ))
         .order(0)
-        .rt()
         .wcet_us(1_000) // 1ms WCET budget — violated by 30ms
         .deadline_ms(5) // 5ms deadline — also violated
         .done();

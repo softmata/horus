@@ -87,7 +87,7 @@ mod execution_class_tests {
 
     fn make_node(name: &str, class: ExecutionClass) -> RegisteredNode {
         RegisteredNode {
-            node: NodeKind::Regular(Box::new(StubNode(name.to_string()))),
+            node: NodeKind::new(Box::new(StubNode(name.to_string()))),
             name: Arc::from(name),
             priority: 0,
             initialized: true,
@@ -182,7 +182,7 @@ mod execution_class_tests {
 /// let mut scheduler = Scheduler::new();
 ///
 /// // Motor control on dedicated RT thread
-/// scheduler.add(motor_node).order(0).rt().build()?;
+/// scheduler.add(motor_node).order(0).wcet_us(200).build()?;
 ///
 /// // Path planning in parallel compute pool
 /// scheduler.add(planner_node).order(5).compute().build()?;
@@ -208,107 +208,36 @@ pub enum ExecutionClass {
     BestEffort,
 }
 
-/// Wrapper that unifies regular nodes and RT nodes under a single dispatch.
-pub(crate) enum NodeKind {
-    /// A regular Node (may still have RT metadata from builder `.rt()`)
-    Regular(Box<dyn Node>),
-    /// A node registered as RT (RT methods are on the Node trait)
-    Rt(Box<dyn Node>),
-}
+/// Thin wrapper around `Box<dyn Node>`.
+///
+/// All RT methods live on the `Node` trait with safe defaults.
+/// The `is_rt_node` field on `RegisteredNode` tracks RT scheduling.
+///
+/// Implements `Deref<Target = dyn Node>` so callers can call any Node
+/// method directly (e.g. `node.tick()`, `node.pre_condition()`).
+pub(crate) struct NodeKind(pub(crate) Box<dyn Node>);
 
 impl NodeKind {
-    // ---- Node trait delegation ----
+    /// Wrap a boxed node.
+    #[inline]
+    pub(crate) fn new(node: Box<dyn Node>) -> Self {
+        Self(node)
+    }
+}
+
+impl std::ops::Deref for NodeKind {
+    type Target = dyn Node;
 
     #[inline]
-    pub(crate) fn tick(&mut self) {
-        match self {
-            NodeKind::Regular(n) => n.tick(),
-            NodeKind::Rt(n) => n.tick(),
-        }
+    fn deref(&self) -> &Self::Target {
+        &*self.0
     }
+}
 
+impl std::ops::DerefMut for NodeKind {
     #[inline]
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            NodeKind::Regular(n) => n.name(),
-            NodeKind::Rt(n) => n.name(),
-        }
-    }
-
-    pub(crate) fn init(&mut self) -> crate::error::HorusResult<()> {
-        match self {
-            NodeKind::Regular(n) => n.init(),
-            NodeKind::Rt(n) => n.init(),
-        }
-    }
-
-    pub(crate) fn shutdown(&mut self) -> crate::error::HorusResult<()> {
-        match self {
-            NodeKind::Regular(n) => n.shutdown(),
-            NodeKind::Rt(n) => n.shutdown(),
-        }
-    }
-
-    pub(crate) fn on_error(&mut self, error: &str) {
-        match self {
-            NodeKind::Regular(n) => n.on_error(error),
-            NodeKind::Rt(n) => n.on_error(error),
-        }
-    }
-
-    pub(crate) fn rate_hz(&self) -> Option<f64> {
-        match self {
-            NodeKind::Regular(n) => n.rate_hz(),
-            NodeKind::Rt(n) => n.rate_hz(),
-        }
-    }
-
-    pub(crate) fn publishers(&self) -> Vec<crate::core::TopicMetadata> {
-        match self {
-            NodeKind::Regular(n) => n.publishers(),
-            NodeKind::Rt(n) => n.publishers(),
-        }
-    }
-
-    pub(crate) fn subscribers(&self) -> Vec<crate::core::TopicMetadata> {
-        match self {
-            NodeKind::Regular(n) => n.subscribers(),
-            NodeKind::Rt(n) => n.subscribers(),
-        }
-    }
-
-    /// Get a mutable reference to the underlying Node.
-    #[inline]
-    pub(crate) fn as_node_mut(&mut self) -> &mut dyn Node {
-        match self {
-            NodeKind::Regular(n) => n.as_mut(),
-            NodeKind::Rt(n) => n.as_mut(),
-        }
-    }
-
-    /// Get a reference to the underlying Node.
-    #[inline]
-    pub(crate) fn as_node(&self) -> &dyn Node {
-        match self {
-            NodeKind::Regular(n) => n.as_ref(),
-            NodeKind::Rt(n) => n.as_ref(),
-        }
-    }
-
-    /// Try to get a reference to the node as an RT-registered Node.
-    pub(crate) fn as_rt(&self) -> Option<&dyn Node> {
-        match self {
-            NodeKind::Rt(n) => Some(n.as_ref()),
-            _ => None,
-        }
-    }
-
-    /// Try to get a mutable reference to the node as an RT-registered Node.
-    pub(crate) fn as_rt_mut(&mut self) -> Option<&mut dyn Node> {
-        match self {
-            NodeKind::Rt(n) => Some(n.as_mut()),
-            _ => None,
-        }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
     }
 }
 

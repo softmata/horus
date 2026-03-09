@@ -119,7 +119,6 @@ fn test_50_nodes_startup_shutdown() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
-            .rt()
             .done();
     }
     for i in 17..34 {
@@ -178,7 +177,6 @@ fn test_50_rt_nodes_priority_order() {
                 tick_count: counts[i].clone(),
             })
             .order(i as u32)
-            .rt()
             .done();
     }
 
@@ -208,7 +206,6 @@ fn test_sustained_high_rate_1_second() {
             tick_count: tick_count.clone(),
         })
         .order(0)
-        .rt()
         .rate_hz(200.0)
         .done();
 
@@ -381,7 +378,6 @@ fn test_all_executors_simultaneously() {
             tick_count: rt_count.clone(),
         })
         .order(0)
-        .rt()
         .done();
 
     // Compute node

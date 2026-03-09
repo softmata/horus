@@ -2,7 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::rt_node::{DeadlineMissPolicy, RtClass, RtPriority, WCETViolation};
+use super::rt_node::{DeadlineMissPolicy, WCETViolation};
 
 /// Compact logging summary for message types.
 ///
@@ -612,72 +612,6 @@ pub trait Node: Send {
         None
     }
 
-    /// Health check (optional override)
-    ///
-    /// **Important:** Override this for production nodes to report actual health status.
-    /// The default always returns `true`, which may mask real issues.
-    /// Consider checking: connection status, last successful tick, resource availability.
-    fn is_healthy(&self) -> bool {
-        true
-    }
-
-    // ==================== Checkpoint/Restore Support ====================
-    // These methods enable automatic state persistence for fault tolerance.
-    // Override these in nodes that have internal state to checkpoint.
-
-    /// Serialize node state for checkpointing.
-    ///
-    /// Override this method to save your node's internal state during checkpoints.
-    /// The returned bytes will be stored by the CheckpointManager and can be
-    /// restored later via `restore_state()`.
-    ///
-    /// # Returns
-    /// - `Some(Vec<u8>)` - Serialized state (e.g., using bincode or serde_json)
-    /// - `None` - This node has no state to checkpoint (default)
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn checkpoint_state(&self) -> Option<Vec<u8>> {
-    ///     // Serialize internal state
-    ///     bincode::serialize(&self.internal_state).ok()
-    /// }
-    /// ```
-    fn checkpoint_state(&self) -> Option<Vec<u8>> {
-        None // Default: no state to checkpoint
-    }
-
-    /// Restore node state from a checkpoint.
-    ///
-    /// Override this method to restore your node's internal state from a checkpoint.
-    /// This is called during recovery after a crash or when loading a saved checkpoint.
-    ///
-    /// # Arguments
-    /// * `data` - The serialized state previously returned by `checkpoint_state()`
-    ///
-    /// # Returns
-    /// - `Ok(())` if state was restored successfully
-    /// - `Err(...)` if restoration failed (e.g., corrupted data, version mismatch)
-    ///
-    /// # Example
-    /// ```ignore
-    /// fn restore_state(&mut self, data: &[u8]) -> HorusResult<()> {
-    ///     self.internal_state = bincode::deserialize(data)
-    ///         .map_err(|e| HorusError::checkpoint(format!("Failed to deserialize: {}", e)))?;
-    ///     Ok(())
-    /// }
-    /// ```
-    fn restore_state(&mut self, _data: &[u8]) -> crate::error::HorusResult<()> {
-        Ok(()) // Default: no state to restore
-    }
-
-    /// Check if this node supports checkpointing.
-    ///
-    /// Returns true if this node has overridden `checkpoint_state()` and `restore_state()`.
-    /// Used by the scheduler to determine which nodes need state persistence.
-    fn supports_checkpointing(&self) -> bool {
-        false // Default: checkpointing not supported
-    }
-
     // ==================== Real-Time Support ====================
     // Override wcet_budget() to return Some(duration) to opt into RT scheduling.
     // Nodes that return None (default) are treated as regular non-RT nodes.
@@ -705,23 +639,11 @@ pub trait Node: Send {
         self.wcet_budget().unwrap_or_default() * 2
     }
 
-    /// Real-time priority (lower value = higher priority).
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Medium
-    }
-
-    /// Real-time class (Hard/Firm/Soft).
-    fn rt_class(&self) -> RtClass {
-        RtClass::Soft
-    }
-
     /// What to do if deadline is missed.
+    ///
+    /// Default: `Warn` (log and continue).
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        match self.rt_class() {
-            RtClass::Hard => DeadlineMissPolicy::EmergencyStop,
-            RtClass::Firm => DeadlineMissPolicy::Skip,
-            RtClass::Soft => DeadlineMissPolicy::Warn,
-        }
+        DeadlineMissPolicy::Warn
     }
 
     /// Pre-condition that must be true before tick (formal verification).

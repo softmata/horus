@@ -198,8 +198,6 @@ fn node_builder_uses_build() {
 #[test]
 fn prelude_exports_rt_types() {
     // These should all be accessible from the prelude
-    let _priority = RtPriority::High;
-    let _class = RtClass::Soft;
     let _policy = DeadlineMissPolicy::Warn;
     let _stats = RtStats::default();
     let _tier = NodeTier::Fast;

@@ -224,7 +224,7 @@ impl CoreNode for PyNodeAdapter {
 /// Fluent builder for adding nodes to the scheduler.
 ///
 /// Example:
-///     scheduler.add(my_node).order(0).rate_hz(100.0).rt().build()
+///     scheduler.add(my_node).order(0).rate_hz(100.0).wcet_us(500).build()
 #[pyclass(module = "horus._horus")]
 pub struct PyNodeBuilder {
     scheduler: Py<PyScheduler>,
@@ -249,12 +249,6 @@ impl PyNodeBuilder {
     /// Set node-specific tick rate in Hz.
     fn rate_hz(mut slf: PyRefMut<'_, Self>, rate: f64) -> PyRefMut<'_, Self> {
         slf.rate_hz = Some(rate);
-        slf
-    }
-
-    /// Mark as a real-time node with deadline monitoring.
-    fn rt(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
-        slf.rt = true;
         slf
     }
 
@@ -400,9 +394,6 @@ impl PyScheduler {
         let mut config = NodeRegistration::new(Box::new(adapter)).order(order);
         if let Some(rate) = node_rate {
             config = config.rate_hz(rate);
-        }
-        if rt {
-            config = config.rt();
         }
         if let Some(ms) = deadline_ms {
             config = config.deadline_ms(ms as u64);

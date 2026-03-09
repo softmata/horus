@@ -3,7 +3,7 @@
 //! Covers: WCET critical violation, non-critical WCET, multiple watchdog expiry,
 //! deadline miss threshold, safety stats accuracy, concurrent WCET checks.
 
-use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtPriority};
+use horus_core::core::{DeadlineMissPolicy, Node};
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,12 +34,6 @@ impl Node for TimedRtNode {
     fn wcet_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(self.sleep_us + 50))
     }
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Critical
-    }
-    fn rt_class(&self) -> RtClass {
-        RtClass::Hard
-    }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         DeadlineMissPolicy::Warn
     }
@@ -63,12 +57,6 @@ impl Node for WcetViolatorNode {
     }
     fn wcet_budget(&self) -> Option<Duration> {
         Some(Duration::from_micros(self.budget_us))
-    }
-    fn rt_priority(&self) -> RtPriority {
-        RtPriority::Critical
-    }
-    fn rt_class(&self) -> RtClass {
-        RtClass::Hard
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         DeadlineMissPolicy::Warn
@@ -108,7 +96,7 @@ fn test_wcet_critical_violation_emergency_stop() {
         .watchdog(Duration::from_millis(100));
 
     scheduler
-        .add_rt(WcetViolatorNode {
+        .add(WcetViolatorNode {
             name: "wcet_critical_violator".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 50,  // 50us budget
@@ -147,7 +135,6 @@ fn test_wcet_non_critical_no_emergency() {
             actual_us: 200,
         })
         .order(0)
-        .rt()
         .wcet_us(50)
         .done();
 
@@ -177,7 +164,7 @@ fn test_multiple_watchdogs_expire_simultaneously() {
     for i in 0..3 {
         let name = format!("watchdog_node_{}", i);
         scheduler
-            .add_rt(TimedRtNode {
+            .add(TimedRtNode {
                 name: name.clone(),
                 tick_count: Arc::new(AtomicU64::new(0)),
                 sleep_us: 10,
@@ -200,7 +187,7 @@ fn test_deadline_miss_threshold_triggers_stop() {
 
     // Node that will miss deadlines
     scheduler
-        .add_rt(WcetViolatorNode {
+        .add(WcetViolatorNode {
             name: "deadline_misser".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 1000,
@@ -234,7 +221,7 @@ fn test_safety_stats_accurate() {
 
     // Node that violates WCET and misses deadlines
     scheduler
-        .add_rt(WcetViolatorNode {
+        .add(WcetViolatorNode {
             name: "stats_node".to_string(),
             tick_count: tick_count.clone(),
             budget_us: 50,
@@ -265,7 +252,7 @@ fn test_concurrent_wcet_check_and_add_critical() {
     for i in 0..5 {
         let name = format!("concurrent_node_{}", i);
         scheduler
-            .add_rt(FastCounterNode {
+            .add(FastCounterNode {
                 name: name.clone(),
                 tick_count: Arc::new(AtomicU64::new(0)),
             })

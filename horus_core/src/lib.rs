@@ -60,7 +60,7 @@ pub use communication::{
 #[doc(hidden)]
 pub use core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
-    RtClass, RtPriority, RtStats, Stopwatch, TopicMetadata,
+    RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]
 pub use error::{

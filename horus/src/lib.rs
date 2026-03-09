@@ -76,7 +76,7 @@
 //! ```rust,ignore
 //! let mut scheduler = Scheduler::new().tick_hz(100.0);
 //! scheduler.add(sensor).order(0).rate_hz(100.0).build()?;
-//! scheduler.add(controller).order(1).rt().build()?;
+//! scheduler.add(controller).order(1).wcet_us(200).build()?;
 //! scheduler.add(planner).order(5).compute().build()?;
 //! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build()?;
 //! scheduler.run()?;
@@ -117,8 +117,7 @@
 //!     fn tick(&mut self) { /* motor control logic */ }
 //!     fn wcet_budget(&self) -> Option<Duration> { Some(Duration::from_micros(200)) }
 //!     fn deadline(&self) -> Duration { Duration::from_millis(1) }
-//!     fn rt_priority(&self) -> RtPriority { RtPriority::High }
-//!     fn rt_class(&self) -> RtClass { RtClass::Firm }
+//!     fn deadline_miss_policy(&self) -> DeadlineMissPolicy { DeadlineMissPolicy::Skip }
 //! }
 //! scheduler.add(MotorCtrl::new()).order(0).build();
 //! ```
@@ -187,7 +186,7 @@ pub mod prelude {
     pub use horus_core::core::{LogSummary, Node};
 
     // === Real-time node ===
-    pub use horus_core::core::{DeadlineMissPolicy, RtClass, RtPriority, RtStats};
+    pub use horus_core::core::{DeadlineMissPolicy, RtStats};
 
     // === Rate / Stopwatch ===
     pub use horus_core::core::timer::{Rate, Stopwatch};
