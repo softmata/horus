@@ -140,10 +140,10 @@ where
                 );
             })
             .map_err(|e| {
-                crate::error::HorusError::Config(format!(
+                crate::error::HorusError::Config(crate::error::ConfigError::Other(format!(
                     "failed to spawn service server thread: {}",
                     e
-                ))
+                )))
             })?;
 
         Ok(ServiceServer {

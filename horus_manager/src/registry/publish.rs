@@ -1,5 +1,185 @@
 use super::helpers::*;
 use super::*;
+use std::io::IsTerminal;
+use walkdir::WalkDir;
+
+/// Build a user-friendly error from an HTTP response status and optional body text.
+/// `action` describes what the user was trying to do (e.g., "publish package", "search drivers").
+fn registry_error(
+    status: reqwest::StatusCode,
+    body: &str,
+    action: &str,
+) -> anyhow::Error {
+    let hint = match status {
+        s if s == reqwest::StatusCode::UNAUTHORIZED => {
+            "Your API key is invalid or expired.\n  Fix: run `horus auth login` to get a new key."
+                .to_string()
+        }
+        s if s == reqwest::StatusCode::FORBIDDEN => {
+            "You don't have permission for this action.\n  Check your API key scope or package ownership."
+                .to_string()
+        }
+        s if s == reqwest::StatusCode::NOT_FOUND => {
+            "The requested resource was not found on the registry.".to_string()
+        }
+        s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            "Rate limit exceeded. Please wait a few minutes and try again.".to_string()
+        }
+        s if s == reqwest::StatusCode::CONFLICT => {
+            "A conflicting version already exists. Bump your version and try again.".to_string()
+        }
+        s if s.is_server_error() => {
+            "The registry server encountered an error. This is likely temporary.\n  Try again in a few minutes. If the problem persists, check https://status.horus.dev"
+                .to_string()
+        }
+        _ => String::new(),
+    };
+
+    let detail = if body.is_empty() || body == "Unknown error" {
+        String::new()
+    } else {
+        format!("\n  Server response: {}", body)
+    };
+
+    if hint.is_empty() {
+        anyhow!("Failed to {}: HTTP {}{}", action, status.as_u16(), detail)
+    } else {
+        anyhow!(
+            "Failed to {}: {}{}\n  (HTTP {})",
+            action,
+            hint,
+            detail,
+            status.as_u16()
+        )
+    }
+}
+
+/// Read the response body text, returning empty string on failure instead of "Unknown error".
+fn read_response_body(response: reqwest::blocking::Response) -> (reqwest::StatusCode, String) {
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    (status, body)
+}
+
+/// Default patterns excluded from published tarballs (security + size)
+const DEFAULT_EXCLUDES: &[&str] = &[
+    ".git",
+    "target",
+    ".horus",
+    "node_modules",
+    "__pycache__",
+    ".env",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+];
+
+/// File patterns that are always excluded (secrets)
+const SECRET_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+    "signing_key",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "credentials.json",
+    ".aws",
+];
+
+/// Check if a path component matches any exclude pattern
+fn should_exclude(path: &std::path::Path, base: &std::path::Path, custom_excludes: &[String]) -> bool {
+    let relative = path.strip_prefix(base).unwrap_or(path);
+
+    for component in relative.components() {
+        let name = component.as_os_str().to_string_lossy();
+
+        // Check default directory excludes
+        for pattern in DEFAULT_EXCLUDES {
+            if name == *pattern {
+                return true;
+            }
+        }
+
+        // Check .env file variants
+        if name.starts_with(".env") {
+            return true;
+        }
+
+        // Check custom excludes from .horusignore
+        for pattern in custom_excludes {
+            if name == *pattern {
+                return true;
+            }
+            // Simple glob: *.ext matching
+            if let Some(ext_pattern) = pattern.strip_prefix("*.") {
+                if let Some(ext) = Path::new(&*name).extension() {
+                    if ext.to_string_lossy() == ext_pattern {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check secret file patterns against the file name
+    if let Some(file_name) = path.file_name() {
+        let name = file_name.to_string_lossy();
+        for pattern in SECRET_PATTERNS {
+            if name == *pattern {
+                return true;
+            }
+        }
+        // Key files
+        if name.ends_with(".pem") || name.ends_with(".key") || name.ends_with(".p12") {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Load .horusignore patterns from the project directory
+fn load_horusignore(dir: &std::path::Path) -> Vec<String> {
+    let ignore_path = dir.join(".horusignore");
+    if !ignore_path.exists() {
+        return vec![];
+    }
+    match fs::read_to_string(&ignore_path) {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
+/// Compute a SHA256 hash of all files in a directory (sorted for determinism)
+fn hash_directory(dir: &std::path::Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut paths: Vec<_> = WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file())
+        .map(|e| e.path().to_path_buf())
+        .collect();
+    paths.sort();
+
+    for path in &paths {
+        let relative = path.strip_prefix(dir).unwrap_or(path);
+        hasher.update(relative.to_string_lossy().as_bytes());
+        let content = fs::read(path)?;
+        hasher.update(&content);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 impl RegistryClient {
     /// Fetch driver metadata for a package from the registry
@@ -15,7 +195,12 @@ impl RegistryClient {
             .map_err(|e| anyhow!("Failed to fetch driver metadata: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Driver '{}' not found in registry", package_name));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("fetch driver metadata for '{}'", package_name),
+            ));
         }
 
         let resp: DriverMetadataResponse = response
@@ -31,17 +216,17 @@ impl RegistryClient {
         self.fetch_driver_metadata(package_name).ok()
     }
 
-    /// Fetch driver metadata by querying the drivers list API
+    /// Fetch driver metadata by querying the drivers search API
     pub fn query_driver_features(&self, driver_name: &str) -> Option<Vec<String>> {
         if let Some(meta) = self.fetch_driver_metadata_opt(driver_name) {
             return meta.required_features;
         }
 
-        let url = format!("{}/api/drivers?search={}", self.base_url, driver_name);
-        if let Ok(response) = self.client.get(&url).send() {
+        let url = format!("{}/api/drivers/search", self.base_url);
+        if let Ok(response) = self.client.get(&url).query(&[("q", driver_name)]).send() {
             if response.status().is_success() {
-                if let Ok(list) = response.json::<DriverListResponse>() {
-                    for driver in list.drivers {
+                if let Ok(resp) = response.json::<DriverSearchResponse>() {
+                    for driver in resp.results {
                         if driver.name.eq_ignore_ascii_case(driver_name) {
                             return driver.driver_metadata.and_then(|m| m.required_features);
                         }
@@ -59,34 +244,30 @@ impl RegistryClient {
         query: &str,
         bus_type: Option<&str>,
     ) -> Result<Vec<DriverListEntry>> {
-        let mut url = format!("{}/api/drivers?search={}", self.base_url, query);
+        let url = format!("{}/api/drivers/search", self.base_url);
+        let mut params: Vec<(&str, &str)> = vec![("q", query)];
         if let Some(bus) = bus_type {
-            url.push_str(&format!("&bus_type={}", bus));
+            params.push(("bus_type", bus));
         }
 
         let response = self
             .client
             .get(&url)
+            .query(&params)
             .send()
             .map_err(|e| anyhow!("Failed to search drivers: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Registry returned error: {}", response.status()));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "search drivers"));
         }
 
-        let text = response
-            .text()
-            .map_err(|e| anyhow!("Failed to read response: {}", e))?;
+        // Server returns { "results": [...], "total": N, "query": "..." }
+        let resp: DriverSearchResponse = response
+            .json()
+            .map_err(|e| anyhow!("Failed to parse driver search response: {}", e))?;
 
-        if let Ok(list) = serde_json::from_str::<DriverListResponse>(&text) {
-            return Ok(list.drivers);
-        }
-
-        if let Ok(drivers) = serde_json::from_str::<Vec<DriverListEntry>>(&text) {
-            return Ok(drivers);
-        }
-
-        Ok(vec![])
+        Ok(resp.results)
     }
 
     pub fn publish(&self, path: Option<&Path>, dry_run: bool, org: Option<&str>) -> Result<()> {
@@ -97,6 +278,9 @@ impl RegistryClient {
         let version = manifest.version;
         let description = manifest.description;
         let license = manifest.license;
+
+        // Validate package name before proceeding
+        validate_package_name(&name)?;
 
         println!(
             " Detected {} manifest",
@@ -224,16 +408,94 @@ impl RegistryClient {
         let safe_name = package_name_to_path(&name);
         let tar_path = std::env::temp_dir().join(format!("{}-{}.tar.gz", safe_name, version));
 
+        let included_files: Vec<(String, u64)>;
         {
+            let custom_excludes = load_horusignore(current_dir);
             let tar_file = fs::File::create(&tar_path)?;
             let encoder = GzEncoder::new(tar_file, Compression::default());
             let mut tar_builder = Builder::new(encoder);
-            tar_builder.append_dir_all(".", current_dir)?;
+            let mut file_count = 0u64;
+            let mut files_list: Vec<(String, u64)> = Vec::new();
+
+            for entry in WalkDir::new(current_dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|e| !should_exclude(e.path(), current_dir, &custom_excludes))
+            {
+                let entry = entry?;
+                let path = entry.path();
+                let relative = path.strip_prefix(current_dir).unwrap_or(path);
+
+                // Skip the root directory itself
+                if relative == Path::new("") {
+                    continue;
+                }
+
+                if path.is_file() {
+                    let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                    files_list.push((relative.to_string_lossy().to_string(), file_size));
+                    tar_builder.append_path_with_name(path, relative)?;
+                    file_count += 1;
+                } else if path.is_dir() {
+                    tar_builder.append_dir(relative, path)?;
+                }
+            }
+
             tar_builder.finish()?;
+            println!(
+                "   Packaged {} files (excluded .git, target, .env, etc.)",
+                file_count
+            );
+            included_files = files_list;
+        }
+
+        // Safety scan: check for accidentally included secrets
+        let secret_files: Vec<&str> = included_files
+            .iter()
+            .filter(|(path, _)| {
+                let p = Path::new(path);
+                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                name.starts_with(".env")
+                    || name.ends_with(".pem")
+                    || name.ends_with(".key")
+                    || name.ends_with(".p12")
+                    || name == "signing_key"
+                    || name == "id_rsa"
+                    || name == "id_ed25519"
+                    || name == "id_ecdsa"
+                    || name == "credentials.json"
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+
+        if !secret_files.is_empty() {
+            println!(
+                "\n{} Potential secrets detected in package!",
+                crate::cli_output::ICON_ERROR.red()
+            );
+            for f in &secret_files {
+                println!("   - {}", f);
+            }
+            println!("\nAdd these to .horusignore or remove them from your project.");
+            return Err(anyhow!(
+                "Publish aborted: {} potential secret file(s) detected. Use .horusignore to exclude them.",
+                secret_files.len()
+            ));
         }
 
         let package_data = fs::read(&tar_path)?;
         fs::remove_file(&tar_path)?;
+
+        let size_mb = package_data.len() as f64 / (1024.0 * 1024.0);
+        println!("   Package size: {:.2} MB", size_mb);
+        if size_mb > 40.0 {
+            println!(
+                "   {} Package is large ({:.1} MB). Registry limit is 50 MB.",
+                crate::cli_output::ICON_WARN.yellow(),
+                size_mb
+            );
+            println!("   Consider adding exclusions to .horusignore");
+        }
 
         let mut form = reqwest::blocking::multipart::Form::new()
             .text("name", name.clone())
@@ -270,6 +532,30 @@ impl RegistryClient {
             println!(
                 " {} Running in dry-run mode (no changes will be made)",
                 crate::cli_output::ICON_INFO.cyan()
+            );
+
+            // Show file listing in dry-run mode
+            println!("\n{}", "   Files to be published:".cyan());
+            let mut sorted_files = included_files.clone();
+            sorted_files.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by size descending
+            let show_count = sorted_files.len().min(20);
+            for (path, size) in &sorted_files[..show_count] {
+                if *size > 1024 * 1024 {
+                    println!("     {:.1} MB  {}", *size as f64 / (1024.0 * 1024.0), path);
+                } else if *size > 1024 {
+                    println!("     {:.1} KB  {}", *size as f64 / 1024.0, path);
+                } else {
+                    println!("     {} B   {}", size, path);
+                }
+            }
+            if sorted_files.len() > 20 {
+                println!("     ... and {} more files", sorted_files.len() - 20);
+            }
+            let total_uncompressed: u64 = included_files.iter().map(|(_, s)| s).sum();
+            println!(
+                "\n   Total uncompressed: {:.2} MB | Compressed: {:.2} MB",
+                total_uncompressed as f64 / (1024.0 * 1024.0),
+                size_mb
             );
         }
 
@@ -318,22 +604,8 @@ impl RegistryClient {
             .send()?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                println!("\n Authentication failed!");
-                println!("\nYour API key may be invalid or expired.");
-                println!("\nTo fix this:");
-                println!("  1. Run: horus auth login");
-                println!("  2. Get a new API key from the registry");
-                println!("  3. Try publishing again");
-                return Err(anyhow!("Unauthorized - invalid or expired API key"));
-            }
-
-            return Err(anyhow!("Failed to publish: {} - {}", status, error_text));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "publish package"));
         }
 
         let response_text = response.text().unwrap_or_default();
@@ -350,29 +622,47 @@ impl RegistryClient {
                 .and_then(|v| v.as_str())
                 .unwrap_or("Package verification failed");
 
-            println!("\n{} Package verification failed!", "Error:".red());
-            println!("   {}", message);
+            match error_type {
+                "duplicate_version" => {
+                    println!(
+                        "\n{} {}",
+                        "Error:".red(),
+                        message
+                    );
+                    println!(
+                        "\n{}",
+                        "Hint: Bump the version in your manifest before publishing again.".yellow()
+                    );
+                    return Err(anyhow!("Version already exists: {}", message));
+                }
+                "verification_failed" => {
+                    println!("\n{} Package verification failed!", "Error:".red());
+                    println!("   {}", message);
+                    println!(
+                        "\n{}",
+                        "The package failed pre-upload verification.".yellow()
+                    );
+                    println!("{}", "Please fix the issues above and try again.".yellow());
 
-            if error_type == "verification_failed" {
-                println!(
-                    "\n{}",
-                    "The package failed pre-upload verification.".yellow()
-                );
-                println!("{}", "Please fix the issues above and try again.".yellow());
-
-                if let Some(warnings) = response_json.get("warnings").and_then(|v| v.as_array()) {
-                    if !warnings.is_empty() {
-                        println!("\n{}", "Warnings:".yellow());
-                        for warning in warnings {
-                            if let Some(w) = warning.as_str() {
-                                println!("   - {}", w);
+                    if let Some(warnings) =
+                        response_json.get("warnings").and_then(|v| v.as_array())
+                    {
+                        if !warnings.is_empty() {
+                            println!("\n{}", "Warnings:".yellow());
+                            for warning in warnings {
+                                if let Some(w) = warning.as_str() {
+                                    println!("   - {}", w);
+                                }
                             }
                         }
                     }
+                    return Err(anyhow!("Package verification failed: {}", message));
+                }
+                _ => {
+                    println!("\n{} {}", "Error:".red(), message);
+                    return Err(anyhow!("Publish failed: {}", message));
                 }
             }
-
-            return Err(anyhow!("Package verification failed: {}", message));
         }
 
         if dry_run {
@@ -462,26 +752,35 @@ impl RegistryClient {
             }
         }
 
-        println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());
-        println!("   Help users discover and use your package by adding:");
+        // Auto-apply manifest metadata without prompting
+        let final_source_url = manifest_source_url;
+        let final_categories = manifest_categories;
+        let final_package_type = manifest_package_type;
 
+        // Only prompt interactively if stdin is a TTY (not CI/CD)
         let (docs_url, docs_type, prompted_source_url, prompted_categories, prompted_package_type) =
-            prompt_package_metadata(current_dir)?;
+            if std::io::stdin().is_terminal() {
+                println!("\n{}", "[#] Package Metadata (optional)".cyan().bold());
+                println!("   Help users discover and use your package by adding:");
+                prompt_package_metadata(current_dir)?
+            } else {
+                (String::new(), String::new(), String::new(), String::new(), String::new())
+            };
 
         let final_source_url = if !prompted_source_url.is_empty() {
             prompted_source_url
         } else {
-            manifest_source_url
+            final_source_url
         };
         let final_categories = if !prompted_categories.is_empty() {
             prompted_categories
         } else {
-            manifest_categories
+            final_categories
         };
         let final_package_type = if !prompted_package_type.is_empty() {
             prompted_package_type
         } else {
-            manifest_package_type
+            final_package_type
         };
 
         if !docs_url.is_empty()
@@ -550,7 +849,8 @@ impl RegistryClient {
             .send()?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Failed to update package metadata"));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "update package metadata"));
         }
 
         Ok(())
@@ -581,26 +881,12 @@ impl RegistryClient {
             .send()?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(anyhow!(
-                    "Authentication failed - invalid or expired API key"
-                ));
-            } else if status == reqwest::StatusCode::FORBIDDEN {
-                return Err(anyhow!("You do not have permission to unpublish this package. Only the package owner can unpublish it."));
-            } else if status == reqwest::StatusCode::NOT_FOUND {
-                return Err(anyhow!(
-                    "Package {} v{} not found in registry",
-                    package_name,
-                    version
-                ));
-            }
-
-            return Err(anyhow!("Failed to unpublish: {} - {}", status, error_text));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
+                status,
+                &body,
+                &format!("unpublish {} v{}", package_name, version),
+            ));
         }
 
         Ok(())
@@ -612,18 +898,20 @@ impl RegistryClient {
         package_type: Option<&str>,
         category: Option<&str>,
     ) -> Result<Vec<Package>> {
-        let mut url = format!("{}/api/packages/search?q={}", self.base_url, query);
+        let url = format!("{}/api/packages/search", self.base_url);
+        let mut params: Vec<(&str, &str)> = vec![("q", query)];
         if let Some(pt) = package_type {
-            url.push_str(&format!("&type={}", pt));
+            params.push(("type", pt));
         }
         if let Some(cat) = category {
-            url.push_str(&format!("&category={}", cat));
+            params.push(("category", cat));
         }
 
-        let response = self.client.get(&url).send()?;
+        let response = self.client.get(&url).query(&params).send()?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Search failed"));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "search packages"));
         }
 
         #[derive(Deserialize)]
@@ -677,10 +965,18 @@ impl RegistryClient {
                     let version = metadata["version"].as_str().unwrap_or("dev").to_string();
                     let path = metadata["source_path"].as_str().unwrap_or("").to_string();
 
+                    // Compute checksum of path dependency source files
+                    let checksum = if !path.is_empty() && Path::new(&path).exists() {
+                        hash_directory(Path::new(&path))
+                            .unwrap_or_else(|_| "unverified:path".to_string())
+                    } else {
+                        "unverified:path".to_string()
+                    };
+
                     locked_packages.push(LockedPackage {
                         name,
                         version,
-                        checksum: String::new(),
+                        checksum,
                         source: PackageSource::Path { path },
                     });
                     continue;
@@ -698,10 +994,13 @@ impl RegistryClient {
                         .unwrap_or("unknown")
                         .to_string();
 
+                    // System packages use version-based sentinel
+                    let checksum = format!("unverified:system:{}", version);
+
                     locked_packages.push(LockedPackage {
                         name,
                         version,
-                        checksum: String::new(),
+                        checksum,
                         source: PackageSource::System,
                     });
                     continue;
@@ -816,7 +1115,7 @@ impl RegistryClient {
         let response = self
             .client
             .post(&url)
-            .header("x-api-key", api_key)
+            .header("Authorization", format!("Bearer {}", api_key))
             .json(&serde_json::json!({
                 "horus_id": manifest.horus_id,
                 "name": manifest.name,
@@ -826,16 +1125,18 @@ impl RegistryClient {
             .send()?;
 
         if !response.status().is_success() {
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!("Failed to publish environment: {}", error_text));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "publish environment"));
         }
 
         println!(" Environment published successfully!");
         println!(
-            "   Anyone can now restore with: horus env restore {}",
+            "   Restore on another machine with: horus env restore {}",
             manifest.horus_id
+        );
+        println!(
+            "   {} Only you (the owner) can restore this environment.",
+            "Note:".dimmed()
         );
         Ok(())
     }
@@ -850,15 +1151,8 @@ impl RegistryClient {
             .send()?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!(
-                "Failed to list environments ({}): {}",
-                status,
-                error_text
-            ));
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(status, &body, "list environments"));
         }
 
         let list_response: EnvironmentListResponse = response.json()?;
@@ -866,21 +1160,20 @@ impl RegistryClient {
     }
 
     pub fn get_environment(&self, horus_id: &str) -> Result<EnvironmentManifest> {
+        let api_key = get_api_key()?;
         let url = format!("{}/api/environments/{}", self.base_url, horus_id);
-        let response = self.client.get(&url).send()?;
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .send()?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            if status == reqwest::StatusCode::NOT_FOUND {
-                return Err(anyhow!("Environment not found: {}", horus_id));
-            }
-            let error_text = response
-                .text()
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(anyhow!(
-                "Failed to get environment ({}): {}",
+            let (status, body) = read_response_body(response);
+            return Err(registry_error(
                 status,
-                error_text
+                &body,
+                &format!("get environment '{}'", horus_id),
             ));
         }
 

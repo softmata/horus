@@ -186,21 +186,20 @@ use spsc_intra::SpscRing;
 // ============================================================================
 
 /// Error returned by [`Topic::send_blocking`] when the message cannot be delivered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SendBlockingError {
     /// The ring buffer remained full for the entire timeout duration.
+    #[error("send_blocking timed out: ring buffer full")]
     Timeout,
 }
 
-impl std::fmt::Display for SendBlockingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Timeout => write!(f, "send_blocking timed out: ring buffer full"),
-        }
+impl From<SendBlockingError> for crate::error::HorusError {
+    fn from(err: SendBlockingError) -> Self {
+        crate::error::HorusError::Communication(crate::error::CommunicationError::TopicFull {
+            topic: err.to_string(),
+        })
     }
 }
-
-impl std::error::Error for SendBlockingError {}
 
 // ============================================================================
 // RingDrain trait — uniform push interface for drain protocol
@@ -406,9 +405,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// Create a new topic with custom capacity and optional slot size
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         if capacity == 0 {
-            return Err(crate::HorusError::InvalidInput(
+            return Err(crate::HorusError::InvalidInput(crate::error::ValidationError::Other(
                 "Topic capacity must be >= 1".to_string(),
-            ));
+            )));
         }
         let is_pod = Self::check_is_pod();
         let type_size = mem::size_of::<T>() as u32;
@@ -2012,6 +2011,22 @@ impl<T: TopicMessage> Topic<T> {
         self.ring.metrics()
     }
 
+    /// Number of messages dropped because the ring buffer was full.
+    ///
+    /// This is the count of `send()` calls where the message was discarded
+    /// after the bounded spin+yield retry failed. Useful for detecting
+    /// backpressure or slow consumers.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if topic.dropped_count() > 0 {
+    ///     eprintln!("WARNING: {} messages dropped on '{}'", topic.dropped_count(), topic.name());
+    /// }
+    /// ```
+    pub fn dropped_count(&self) -> u64 {
+        self.ring.metrics().send_failures
+    }
+
     /// Check if a message is available without consuming it.
     pub fn has_message(&self) -> bool {
         self.ring.has_message()
@@ -2138,24 +2153,6 @@ where
     /// Use this in examples, tests, and simple applications where topic
     /// creation cannot realistically fail (same-process, valid name).
     /// For production code, prefer [`Topic::new()`] which returns `Result`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the underlying shared memory or ring buffer cannot be created.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use horus::prelude::*;
-    ///
-    /// let topic: Topic<CmdVel> = Topic::create("cmd_vel");
-    /// topic.send(CmdVel { linear: 1.0, angular: 0.0 });
-    /// ```
-    pub fn create(name: impl Into<String>) -> Self {
-        let name = name.into();
-        Self::new(&name).unwrap_or_else(|e| panic!("Failed to create topic '{}': {}", name, e))
-    }
-
     /// Create a new topic with custom capacity.
     pub fn with_capacity(name: &str, capacity: u32, slot_size: Option<usize>) -> HorusResult<Self> {
         let ring = RingTopic::with_capacity(name, capacity, slot_size)?;
@@ -2282,6 +2279,12 @@ impl Topic<Image> {
         self.ring.send(wire);
     }
 
+    /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
+    pub fn try_send(&self, img: Image) -> Result<(), Image> {
+        let wire = img.to_wire(&self.pool);
+        self.ring.try_send(wire).map_err(|w| Image::from_wire(w, &self.pool))
+    }
+
     /// Receive the next image.
     pub fn recv(&self) -> Option<Image> {
         let wire = self.ring.recv()?;
@@ -2302,6 +2305,12 @@ impl Topic<PointCloud> {
         self.ring.send(wire);
     }
 
+    /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
+    pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
+        let wire = pc.to_wire(&self.pool);
+        self.ring.try_send(wire).map_err(|w| PointCloud::from_wire(w, &self.pool))
+    }
+
     /// Receive the next point cloud.
     pub fn recv(&self) -> Option<PointCloud> {
         let wire = self.ring.recv()?;
@@ -2320,6 +2329,12 @@ impl Topic<DepthImage> {
     pub fn send(&self, depth: impl Borrow<DepthImage>) {
         let wire = depth.borrow().to_wire(&self.pool);
         self.ring.send(wire);
+    }
+
+    /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
+    pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
+        let wire = depth.to_wire(&self.pool);
+        self.ring.try_send(wire).map_err(|w| DepthImage::from_wire(w, &self.pool))
     }
 
     /// Receive the next depth image.

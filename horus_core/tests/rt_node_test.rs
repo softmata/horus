@@ -1,5 +1,5 @@
 // Test real-time node functionality
-use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtNode, RtPriority};
+use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtPriority};
 use horus_core::error::HorusResult as Result;
 use horus_core::hlog;
 use horus_core::scheduling::Scheduler;
@@ -59,37 +59,32 @@ impl Node for MotorControlNode {
         );
         Ok(())
     }
-}
 
-impl RtNode for MotorControlNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_micros(100) // 100μs budget for motor control
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_micros(100))
     }
 
     fn deadline(&self) -> Duration {
-        Duration::from_millis(1) // 1ms deadline for 1kHz control
+        Duration::from_millis(1)
     }
 
     fn rt_priority(&self) -> RtPriority {
-        RtPriority::Critical // Highest priority
+        RtPriority::Critical
     }
 
     fn rt_class(&self) -> RtClass {
-        RtClass::Hard // Must never miss deadline
+        RtClass::Hard
     }
 
     fn pre_condition(&self) -> bool {
-        // Check system is ready for motor control
         true
     }
 
     fn post_condition(&self) -> bool {
-        // Check motor command was sent successfully
         true
     }
 
     fn invariant(&self) -> bool {
-        // Check system safety invariant
         true
     }
 }
@@ -135,15 +130,13 @@ impl Node for SensorFusionNode {
         );
         Ok(())
     }
-}
 
-impl RtNode for SensorFusionNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_micros(500) // 500μs budget
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_micros(500))
     }
 
     fn deadline(&self) -> Duration {
-        Duration::from_millis(10) // 10ms deadline for 100Hz
+        Duration::from_millis(10)
     }
 
     fn rt_priority(&self) -> RtPriority {
@@ -151,7 +144,7 @@ impl RtNode for SensorFusionNode {
     }
 
     fn rt_class(&self) -> RtClass {
-        RtClass::Firm // Can tolerate occasional misses
+        RtClass::Firm
     }
 }
 
@@ -195,15 +188,13 @@ impl Node for LoggingNode {
         );
         Ok(())
     }
-}
 
-impl RtNode for LoggingNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(5) // 5ms budget
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(5))
     }
 
     fn deadline(&self) -> Duration {
-        Duration::from_millis(100) // 100ms deadline
+        Duration::from_millis(100)
     }
 
     fn rt_priority(&self) -> RtPriority {
@@ -211,7 +202,7 @@ impl RtNode for LoggingNode {
     }
 
     fn rt_class(&self) -> RtClass {
-        RtClass::Soft // Best effort
+        RtClass::Soft
     }
 }
 
@@ -288,7 +279,7 @@ fn test_rt_node_with_safety_critical_config() {
 fn test_rt_node_wcet_budget() {
     // Test that nodes respect their WCET budget
     let node = MotorControlNode::new("test_motor");
-    assert_eq!(node.wcet_budget(), Duration::from_micros(100));
+    assert_eq!(node.wcet_budget(), Some(Duration::from_micros(100)));
     assert_eq!(node.deadline(), Duration::from_millis(1));
     assert_eq!(node.rt_class(), RtClass::Hard);
 }

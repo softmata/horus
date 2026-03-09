@@ -3,7 +3,7 @@
 //! Covers: WCET critical violation, non-critical WCET, multiple watchdog expiry,
 //! deadline miss threshold, safety stats accuracy, concurrent WCET checks.
 
-use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtNode, RtPriority};
+use horus_core::core::{DeadlineMissPolicy, Node, RtClass, RtPriority};
 use horus_core::scheduling::Scheduler;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -31,11 +31,8 @@ impl Node for TimedRtNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.sleep_us));
     }
-}
-
-impl RtNode for TimedRtNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_micros(self.sleep_us + 50)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_micros(self.sleep_us + 50))
     }
     fn rt_priority(&self) -> RtPriority {
         RtPriority::Critical
@@ -64,11 +61,8 @@ impl Node for WcetViolatorNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(Duration::from_micros(self.actual_us));
     }
-}
-
-impl RtNode for WcetViolatorNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_micros(self.budget_us)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_micros(self.budget_us))
     }
     fn rt_priority(&self) -> RtPriority {
         RtPriority::Critical
@@ -94,11 +88,8 @@ impl Node for FastCounterNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for FastCounterNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(10)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(10))
     }
 }
 

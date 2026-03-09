@@ -685,11 +685,8 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-    }
-
-    impl crate::core::RtNode for PanicPreConditionNode {
-        fn wcet_budget(&self) -> Duration {
-            Duration::from_millis(10)
+        fn wcet_budget(&self) -> Option<Duration> {
+            Some(Duration::from_millis(10))
         }
         fn pre_condition(&self) -> bool {
             panic!("pre_condition panic");
@@ -939,11 +936,8 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-    }
-
-    impl crate::core::RtNode for PanicPostConditionNode {
-        fn wcet_budget(&self) -> Duration {
-            Duration::from_millis(10)
+        fn wcet_budget(&self) -> Option<Duration> {
+            Some(Duration::from_millis(10))
         }
         fn post_condition(&self) -> bool {
             panic!("post_condition panic");

@@ -1,7 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::generate;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::io;
 use std::path::PathBuf;
 
@@ -656,6 +656,14 @@ enum Commands {
         #[command(subcommand)]
         command: AuthCommands,
     },
+
+    /// Login to the HORUS registry (alias for `auth login`)
+    #[command(hide = true)]
+    Login,
+
+    /// Logout from the HORUS registry (alias for `auth logout`)
+    #[command(hide = true)]
+    Logout,
 
     /// Cache management (info, clean, purge)
     Cache {
@@ -1357,6 +1365,9 @@ fn main() {
 
     if let Err(e) = run_command(cli.command) {
         eprintln!("{} {}", "Error:".red().bold(), e);
+        if let Some(hint) = e.help() {
+            eprintln!("  {} {}", "hint:".yellow().bold(), hint);
+        }
         std::process::exit(1);
     }
 }
@@ -1512,20 +1523,20 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 );
 
                 tokio::runtime::Runtime::new()
-                    .map_err(|e| HorusError::Config(format!("Failed to create async runtime: {}", e)))?
+                    .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to create async runtime: {}", e))))?
                     .block_on(monitor::run(port, no_auth))
                     .map_err(|e| {
                         let err_str = e.to_string();
                         if err_str.contains("Address already in use") || err_str.contains("os error 98") {
-                            HorusError::Config(format!(
+                            HorusError::Config(ConfigError::Other(format!(
                                 "Port {} is already in use.\n  {} Try a different port: horus monitor <PORT>\n  {} Example: horus monitor {}",
                                 port,
                                 "".cyan(),
                                 "".cyan(),
                                 port + 1
-                            ))
+                            )))
                         } else {
-                            HorusError::Config(err_str)
+                            HorusError::Config(ConfigError::Other(err_str))
                         }
                     })
             }
@@ -1738,9 +1749,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 None => match ver {
                     Some(v) => (package, v),
                     None => {
-                        return Err(HorusError::Config(
+                        return Err(HorusError::Config(ConfigError::Other(
                             "Version required. Use: horus unpublish name@version".to_string(),
-                        ));
+                        )));
                     }
                 },
             };
@@ -1783,6 +1794,10 @@ fn run_command(command: Commands) -> HorusResult<()> {
             },
         },
 
+        // Top-level aliases for common auth commands
+        Commands::Login => commands::github_auth::login(),
+        Commands::Logout => commands::github_auth::logout(),
+
         Commands::Deploy {
             target,
             remote_dir,
@@ -1802,9 +1817,9 @@ fn run_command(command: Commands) -> HorusResult<()> {
                     port, identity, dry_run,
                 )
             } else {
-                Err(HorusError::Config(
+                Err(HorusError::Config(ConfigError::Other(
                     "Target is required for deploy".to_string(),
-                ))
+                )))
             }
         }
 

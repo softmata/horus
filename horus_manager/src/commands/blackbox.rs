@@ -68,7 +68,7 @@ pub fn run_blackbox(
 
     if json_output {
         let json = serde_json::to_string_pretty(&records)
-            .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
         println!("{}", json);
     } else {
         println!(
@@ -90,7 +90,7 @@ fn resolve_blackbox_dir(custom_path: Option<PathBuf>) -> horus_core::error::Horu
     if let Some(p) = custom_path {
         return Ok(p);
     }
-    crate::paths::blackbox_dir().map_err(|e| horus_core::error::HorusError::Config(e.to_string()))
+    crate::paths::blackbox_dir().map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))
 }
 
 /// Load BlackBoxRecords from the WAL file (preferred) or JSON snapshot (fallback).
@@ -227,7 +227,11 @@ fn format_event_detail(event: &BlackBoxEvent) -> String {
             let status = if *success { "ok" } else { "FAIL" };
             format!("{} {}us [{}]", name, duration_us, status)
         }
-        BlackBoxEvent::NodeError { name, error } => format!("{}: {}", name, error),
+        BlackBoxEvent::NodeError {
+            name,
+            error,
+            severity,
+        } => format!("{}: {} [{:?}]", name, error, severity),
         BlackBoxEvent::DeadlineMiss {
             name,
             deadline_us,
@@ -300,16 +304,16 @@ fn blackbox_tail(
     .ok();
 
     let mut file = std::fs::File::open(&wal_path)
-        .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+        .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
     file.seek(SeekFrom::End(0))
-        .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+        .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
 
     let mut buf = String::new();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         let bytes_read = file
             .read_to_string(&mut buf)
-            .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
 
         if bytes_read > 0 {
             for line in buf.lines() {
@@ -367,11 +371,11 @@ fn clear_blackbox(dir: &Path) -> horus_core::error::HorusResult<()> {
 
     if wal_exists {
         std::fs::remove_file(&wal_path)
-            .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
     }
     if json_exists {
         std::fs::remove_file(&json_path)
-            .map_err(|e| horus_core::error::HorusError::Config(e.to_string()))?;
+            .map_err(|e| horus_core::error::HorusError::Config(horus_core::error::ConfigError::Other(e.to_string())))?;
     }
 
     println!("{} Blackbox data cleared.", "OK".green().bold());
@@ -542,7 +546,8 @@ mod tests {
         assert_eq!(
             event_type_name(&BlackBoxEvent::NodeError {
                 name: "n".into(),
-                error: "e".into()
+                error: "e".into(),
+                severity: horus_core::error::Severity::Permanent,
             }),
             "NodeError"
         );
@@ -558,7 +563,8 @@ mod tests {
     fn anomaly_detection() {
         assert!(is_anomaly(&BlackBoxEvent::NodeError {
             name: "n".into(),
-            error: "e".into()
+            error: "e".into(),
+            severity: horus_core::error::Severity::Permanent,
         }));
         assert!(is_anomaly(&BlackBoxEvent::DeadlineMiss {
             name: "n".into(),
@@ -635,6 +641,7 @@ mod tests {
             event: BlackBoxEvent::NodeError {
                 name: "n".into(),
                 error: "crash".into(),
+                severity: horus_core::error::Severity::Fatal,
             },
         };
         assert!(!record_matches(&normal, true, &None, &None, &None));

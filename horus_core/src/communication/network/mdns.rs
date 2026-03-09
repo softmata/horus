@@ -102,7 +102,7 @@ impl Mdns {
     /// and responses in a background thread.
     pub fn new() -> HorusResult<Self> {
         let daemon = ServiceDaemon::new().map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to create mDNS daemon: {}", e))
+            crate::error::HorusError::mdns_failed("create daemon", e.to_string())
         })?;
 
         Ok(Self {
@@ -157,13 +157,13 @@ impl Mdns {
             &properties[..],
         )
         .map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to create service info: {}", e))
+            crate::error::HorusError::mdns_failed("create service info", e.to_string())
         })?
         .enable_addr_auto();
 
         // Register the service
         self.daemon.register(service_info).map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to register service: {}", e))
+            crate::error::HorusError::mdns_failed("register service", e.to_string())
         })?;
 
         // Store registered service name for cleanup
@@ -184,10 +184,7 @@ impl Mdns {
         let mut registered = self.registered_service.lock().unwrap();
         if let Some(full_name) = registered.take() {
             self.daemon.unregister(&full_name).map_err(|e| {
-                crate::error::HorusError::communication(format!(
-                    "Failed to unregister service: {}",
-                    e
-                ))
+                crate::error::HorusError::mdns_failed("unregister service", e.to_string())
             })?;
             log::info!("Unregistered mDNS service: {}", full_name);
         }
@@ -227,7 +224,7 @@ impl Mdns {
 
         // Browse for our service type to find the hostname
         let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+            crate::error::HorusError::mdns_failed("browse", e.to_string())
         })?;
 
         let start = Instant::now();
@@ -282,12 +279,9 @@ impl Mdns {
             }
         }
 
-        Err(crate::error::HorusError::Communication(
-            format!(
-                "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
-                hostname, MDNS_TIMEOUT
-            )
-            .into(),
+        Err(crate::error::HorusError::mdns_failed(
+            "resolve hostname",
+            format!("'{}' not found (timeout after {:?})", hostname, MDNS_TIMEOUT),
         ))
     }
 
@@ -308,7 +302,7 @@ impl Mdns {
         }
 
         let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+            crate::error::HorusError::mdns_failed("browse", e.to_string())
         })?;
 
         let full_hostname = format!("{}.local.", hostname);
@@ -349,12 +343,9 @@ impl Mdns {
             }
         }
 
-        Err(crate::error::HorusError::Communication(
-            format!(
-                "Failed to resolve hostname '{}' via mDNS (timeout after {:?})",
-                hostname, timeout
-            )
-            .into(),
+        Err(crate::error::HorusError::mdns_failed(
+            "resolve hostname",
+            format!("'{}' not found (timeout after {:?})", hostname, timeout),
         ))
     }
 
@@ -378,7 +369,7 @@ impl Mdns {
     /// Browse for services with a custom timeout
     pub fn browse_services_with_timeout(&self, timeout: Duration) -> HorusResult<Vec<ServiceInfo>> {
         let receiver = self.daemon.browse(HORUS_SERVICE_TYPE).map_err(|e| {
-            crate::error::HorusError::communication(format!("Failed to browse mDNS: {}", e))
+            crate::error::HorusError::mdns_failed("browse", e.to_string())
         })?;
 
         let start = Instant::now();
@@ -501,10 +492,7 @@ impl Mdns {
         }
 
         self.daemon.shutdown().map_err(|e| {
-            crate::error::HorusError::communication(format!(
-                "Failed to shutdown mDNS daemon: {}",
-                e
-            ))
+            crate::error::HorusError::mdns_failed("shutdown daemon", e.to_string())
         })?;
 
         Ok(())
@@ -556,8 +544,9 @@ fn get_local_hostname() -> HorusResult<String> {
     let result = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
 
     if result != 0 {
-        return Err(crate::error::HorusError::Communication(
-            "Failed to get hostname".to_string().into(),
+        return Err(crate::error::HorusError::mdns_failed(
+            "get hostname",
+            "gethostname() syscall failed",
         ));
     }
 
@@ -569,7 +558,9 @@ fn get_local_hostname() -> HorusResult<String> {
     let hostname = unsafe { CStr::from_ptr(buf.as_ptr() as *const libc::c_char) };
 
     hostname.to_str().map(|s| s.to_string()).map_err(|e| {
-        crate::error::HorusError::Communication(format!("Invalid hostname: {}", e).into())
+        crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
+            reason: format!("Invalid hostname: {}", e),
+        })
     })
 }
 
@@ -957,13 +948,17 @@ pub fn find_node(name: &str) -> HorusResult<Option<DiscoveredNode>> {
 /// Convert discovery result to JSON string
 pub fn to_json(result: &DiscoveryResult) -> HorusResult<String> {
     serde_json::to_string_pretty(result)
-        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e).into()))
+        .map_err(|e| crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
+            reason: format!("JSON error: {}", e),
+        }))
 }
 
 /// Convert node list to JSON string
 pub fn nodes_to_json(nodes: &[DiscoveredNode]) -> HorusResult<String> {
     serde_json::to_string_pretty(nodes)
-        .map_err(|e| crate::error::HorusError::Communication(format!("JSON error: {}", e).into()))
+        .map_err(|e| crate::error::HorusError::Communication(crate::error::CommunicationError::SerializationFailed {
+            reason: format!("JSON error: {}", e),
+        }))
 }
 
 // ============================================================================

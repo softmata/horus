@@ -4,7 +4,7 @@
 //! (str, String, unknown), on_error callback, circuit breaker rejection,
 //! and restart failure deinit.
 
-use horus_core::core::{DeadlineMissPolicy, Node, RtNode};
+use horus_core::core::{DeadlineMissPolicy, Node};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -32,11 +32,8 @@ impl Node for ConditionalRtNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for ConditionalRtNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
     fn pre_condition(&self) -> bool {
         self.pre_ok.load(Ordering::SeqCst)
@@ -64,14 +61,10 @@ impl Node for PolicyRtNode {
             std::thread::sleep(Duration::from_micros(self.sleep_us));
         }
     }
-}
-
-impl RtNode for PolicyRtNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
     fn deadline(&self) -> Duration {
-        // Very tight deadline that will be missed if sleep_us > 0
         Duration::from_micros(10)
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
@@ -92,8 +85,22 @@ impl Node for FallbackPrimaryNode {
     }
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
-        // Slow enough to miss the tight deadline
         std::thread::sleep(Duration::from_micros(200));
+    }
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
+    }
+    fn deadline(&self) -> Duration {
+        Duration::from_micros(10)
+    }
+    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+        DeadlineMissPolicy::Fallback
+    }
+    fn fallback_node(&self) -> Option<Box<dyn Node>> {
+        Some(Box::new(FallbackSecondaryNode {
+            name: "fallback_secondary".to_string(),
+            tick_count: self.fallback_count.clone(),
+        }))
     }
 }
 
@@ -109,29 +116,8 @@ impl Node for FallbackSecondaryNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for FallbackSecondaryNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
-    }
-}
-
-impl RtNode for FallbackPrimaryNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
-    }
-    fn deadline(&self) -> Duration {
-        Duration::from_micros(10) // Will be missed
-    }
-    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
-        DeadlineMissPolicy::Fallback
-    }
-    fn fallback_node(&self) -> Option<Box<dyn RtNode>> {
-        Some(Box::new(FallbackSecondaryNode {
-            name: "fallback_secondary".to_string(),
-            tick_count: self.fallback_count.clone(),
-        }))
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -149,11 +135,8 @@ impl Node for StrPanicNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("literal str panic");
     }
-}
-
-impl RtNode for StrPanicNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -175,11 +158,8 @@ impl Node for StringPanicNode {
         );
         panic!("{}", msg);
     }
-}
-
-impl RtNode for StringPanicNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -197,11 +177,8 @@ impl Node for UnknownPanicNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         std::panic::panic_any(42i32);
     }
-}
-
-impl RtNode for UnknownPanicNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -226,11 +203,8 @@ impl Node for ErrorTrackingNode {
     fn on_error(&mut self, _error: &str) {
         self.error_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for ErrorTrackingNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -248,11 +222,8 @@ impl Node for AlwaysPanicRtNode {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
         panic!("always panic");
     }
-}
-
-impl RtNode for AlwaysPanicRtNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 
@@ -269,11 +240,8 @@ impl Node for SimpleRtNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for SimpleRtNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(100)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
     }
 }
 

@@ -15,7 +15,7 @@ struct HelloNode {
 }
 
 impl Node for HelloNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "HelloNode"
     }
 
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new().tick_hz(2.0);
 
     // Add the node with execution order 0 (first to run)
-    scheduler.add(HelloNode { count: 0 }).order(0).build();
+    scheduler.add(HelloNode { count: 0 }).order(0).build()?;
 
     // Run for 3 seconds
     scheduler.run_for(Duration::from_secs(3))?;

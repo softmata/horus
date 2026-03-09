@@ -13,6 +13,7 @@
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fmt::Debug;
+use thiserror::Error;
 
 // ─── Service trait ────────────────────────────────────────────────────────────
 
@@ -122,30 +123,43 @@ impl<Res> ServiceResponse<Res> {
 // ─── Error type ───────────────────────────────────────────────────────────────
 
 /// Error returned by service call operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum ServiceError {
     /// The call timed out waiting for a response.
+    #[error("service call timed out")]
     Timeout,
     /// The server processed the request but returned an error.
+    #[error("service returned error: {0}")]
     ServiceFailed(String),
     /// No server has registered for this service.
+    #[error("no server is available for this service")]
     NoServer,
     /// Topic I/O error.
+    #[error("transport error: {0}")]
     Transport(String),
 }
 
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Timeout => write!(f, "service call timed out"),
-            Self::ServiceFailed(msg) => write!(f, "service returned error: {}", msg),
-            Self::NoServer => write!(f, "no server is available for this service"),
-            Self::Transport(msg) => write!(f, "transport error: {}", msg),
-        }
+impl ServiceError {
+    /// Whether this error is transient (retry may succeed).
+    ///
+    /// - `Timeout` → transient (server may be busy)
+    /// - `Transport` → transient (network glitch)
+    /// - `ServiceFailed` → permanent (server explicitly returned error)
+    /// - `NoServer` → permanent (no server registered)
+    pub fn is_transient(&self) -> bool {
+        matches!(self, ServiceError::Timeout | ServiceError::Transport(_))
     }
 }
 
-impl std::error::Error for ServiceError {}
+impl From<ServiceError> for crate::error::HorusError {
+    fn from(err: ServiceError) -> Self {
+        let message = err.to_string();
+        crate::error::HorusError::Contextual {
+            message: format!("Service call failed: {}", message),
+            source: Box::new(err),
+        }
+    }
+}
 
 /// Result type for service calls.
 pub type ServiceResult<T> = Result<T, ServiceError>;

@@ -3841,6 +3841,8 @@ dependencies = [
 [[package]]
 name = "softmata-core"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c46192935441a2dc8c99eec7888a0574765835444b3e68edf0d8d15b5dfd3bc"
 dependencies = [
  "nalgebra",
  "serde",

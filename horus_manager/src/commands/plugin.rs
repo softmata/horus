@@ -2,7 +2,7 @@
 
 use crate::{cli_output, registry, workspace, yaml_utils};
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::path::PathBuf;
 
 /// Search for plugins by query with optional category filter
@@ -18,7 +18,7 @@ pub fn run_search_with_category(
 
     let all = discovery
         .discover_all()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     let query_lower = query.to_lowercase();
     let category_filter = category.as_ref().and_then(|c| parse_category(c));
@@ -186,7 +186,7 @@ pub fn run_available(include_local: bool) -> HorusResult<()> {
 
     let all_plugins = discovery
         .discover_all()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!("{}", "Available HORUS Plugins".cyan().bold());
     println!("{}", "=".repeat(50).dimmed());
@@ -244,7 +244,7 @@ pub fn run_info(name: String) -> HorusResult<()> {
 
     match discovery
         .get_plugin(&name)
-        .map_err(|e| HorusError::Config(e.to_string()))?
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
     {
         Some(plugin) => {
             println!("{}", plugin.name.cyan().bold());
@@ -506,7 +506,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
         workspace::InstallTarget::Global
     } else {
         let target = workspace::detect_or_select_workspace(true)
-            .map_err(|e| HorusError::Config(e.to_string()))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
         match &target {
             workspace::InstallTarget::Local(p) => {
                 println!("  Scope: {}", format!("local ({})", p.display()).dimmed());
@@ -522,7 +522,7 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
     let client = registry::RegistryClient::new();
     let installed_version = client
         .install_to_target(&plugin, ver.as_deref(), install_target.clone())
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     // Register as CLI plugin (symlink + lock file entry)
     let is_global = matches!(install_target, workspace::InstallTarget::Global);

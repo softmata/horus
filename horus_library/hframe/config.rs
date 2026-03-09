@@ -53,7 +53,7 @@ impl Default for HFrameConfig {
 }
 
 impl HFrameConfig {
-    /// Small robot preset (256 frames)
+    /// Small robot preset (256 frames, auto-grows if needed)
     ///
     /// Suitable for:
     /// - Single robots with <100 links
@@ -61,17 +61,23 @@ impl HFrameConfig {
     /// - Embedded systems
     ///
     /// Memory: ~50KB for slots + ~500KB for history = ~550KB
+    /// (up to 4x more if overflow is triggered)
+    ///
+    /// `enable_overflow` is `true` by default: the registry auto-grows
+    /// beyond 256 frames up to the core's physical capacity (1024) instead
+    /// of returning an error. Disable overflow explicitly for hard real-time
+    /// systems where predictable memory usage is required.
     pub fn small() -> Self {
         Self {
             max_frames: 256,
             max_static_frames: 128,
             history_len: 32,
-            enable_overflow: false,
+            enable_overflow: true,
             chain_cache_size: 64,
         }
     }
 
-    /// Medium robot preset (1024 frames)
+    /// Medium robot preset (1024 frames, auto-grows if needed)
     ///
     /// Suitable for:
     /// - Complex robots (humanoids, manipulators)
@@ -84,12 +90,12 @@ impl HFrameConfig {
             max_frames: 1024,
             max_static_frames: 512,
             history_len: 32,
-            enable_overflow: false,
+            enable_overflow: true,
             chain_cache_size: 128,
         }
     }
 
-    /// Large simulation preset (4096 frames)
+    /// Large simulation preset (4096 frames, auto-grows if needed)
     ///
     /// Suitable for:
     /// - Multi-robot simulations (10+ robots)
@@ -102,7 +108,7 @@ impl HFrameConfig {
             max_frames: 4096,
             max_static_frames: 2048,
             history_len: 32,
-            enable_overflow: false,
+            enable_overflow: true,
             chain_cache_size: 256,
         }
     }
@@ -140,6 +146,22 @@ impl HFrameConfig {
             history_len: 32,
             enable_overflow: true, // Key difference
             chain_cache_size: 512,
+        }
+    }
+
+    /// Hard real-time preset (256 frames, no overflow)
+    ///
+    /// Use this when predictable memory usage is required and you know
+    /// the exact number of frames your system will use.
+    ///
+    /// Returns an error instead of growing when the limit is reached.
+    pub fn rt_fixed(max_frames: usize) -> Self {
+        Self {
+            max_frames,
+            max_static_frames: max_frames / 2,
+            history_len: 32,
+            enable_overflow: false,
+            chain_cache_size: 64,
         }
     }
 

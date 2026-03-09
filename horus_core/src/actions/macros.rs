@@ -157,6 +157,14 @@ macro_rules! action {
             // Generate Default impl if all fields have defaults
             $crate::action!(@maybe_default_goal [<$action_name Goal>] { $($goal_field : $goal_type $(= $goal_default)?),* });
 
+            // Generate new() constructor — takes all fields as parameters
+            impl [<$action_name Goal>] {
+                /// Create a new goal with the given field values.
+                pub fn new($($goal_field: $goal_type),*) -> Self {
+                    Self { $($goal_field,)* }
+                }
+            }
+
             // ===== Feedback Type =====
             #[doc = concat!("Feedback type for the `", stringify!($action_name), "` action.")]
             #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -268,36 +276,6 @@ macro_rules! action {
         // Leak to get 'static lifetime (done once per action type)
         Box::leak(to_snake_case($s).into_boxed_str()) as &'static str
     }};
-}
-
-/// Simple action definition macro for common cases.
-///
-/// This is a simpler version of `action!` that uses default types.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use horus_core::simple_action;
-///
-/// simple_action!(MoveForward, target_distance: f64, current_distance: f64, success: bool);
-/// ```
-#[macro_export]
-macro_rules! simple_action {
-    ($name:ident, $goal_field:ident : $goal_type:ty, $feedback_field:ident : $feedback_type:ty, $result_field:ident : $result_type:ty) => {
-        $crate::action! {
-            $name {
-                goal {
-                    $goal_field: $goal_type,
-                }
-                feedback {
-                    $feedback_field: $feedback_type,
-                }
-                result {
-                    $result_field: $result_type,
-                }
-            }
-        }
-    };
 }
 
 /// Macro for implementing common action patterns.

@@ -1523,10 +1523,49 @@ impl PackageProvider for RegistryClient {
     }
 
     fn get_dependencies(&self, package: &str, version: &Version) -> Result<Vec<DependencySpec>> {
-        // Query registry for package dependencies
+        let encoded = url_encode_package_name(package);
+
+        // Try the dedicated dependencies endpoint first (more reliable)
+        let deps_url = format!(
+            "{}/api/packages/{}/{}/dependencies",
+            self.base_url, encoded, version
+        );
+
+        if let Ok(resp) = self.client.get(&deps_url).send() {
+            if resp.status().is_success() {
+                #[derive(Deserialize)]
+                struct DepInfo {
+                    name: String,
+                    version_req: Option<String>,
+                    #[serde(default)]
+                    dep_type: Option<String>,
+                }
+
+                if let Ok(deps) = resp.json::<Vec<DepInfo>>() {
+                    let specs: Vec<DependencySpec> = deps
+                        .into_iter()
+                        .filter(|d| {
+                            // Only include runtime deps by default
+                            d.dep_type.as_deref().unwrap_or("runtime") == "runtime"
+                        })
+                        .filter_map(|dep| {
+                            let spec_str = if let Some(req) = dep.version_req {
+                                format!("{}@{}", dep.name, req)
+                            } else {
+                                dep.name
+                            };
+                            DependencySpec::parse(&spec_str).ok()
+                        })
+                        .collect();
+                    return Ok(specs);
+                }
+            }
+        }
+
+        // Fallback: try metadata endpoint (older registries)
         let url = format!(
             "{}/api/packages/{}/{}/metadata",
-            self.base_url, package, version
+            self.base_url, encoded, version
         );
 
         let response = self.client.get(&url).send();
@@ -1586,6 +1625,142 @@ impl PackageProvider for RegistryClient {
             }
         }
     }
+}
+
+// ============================================================================
+// Server-Side Dependency Resolution
+// ============================================================================
+
+/// A resolved dependency from the server's /resolve endpoint
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerResolvedDep {
+    pub name: String,
+    pub version: String,
+    pub checksum: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<ServerResolvedDep>,
+}
+
+/// A lockfile entry from the server's /lockfile endpoint
+#[derive(Debug, Clone, Deserialize)]
+struct LockfileEntry {
+    name: String,
+    version: String,
+    checksum: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<String>,
+}
+
+/// Server-generated lockfile
+#[derive(Debug, Deserialize)]
+struct ServerLockfile {
+    #[allow(dead_code)]
+    version: u32,
+    packages: Vec<LockfileEntry>,
+}
+
+impl RegistryClient {
+    /// Resolve all transitive dependencies via the server in a single roundtrip.
+    ///
+    /// This is much faster than the client-side BFS approach since it avoids
+    /// N+1 HTTP calls. Falls back to client-side resolution if the server
+    /// endpoint is unavailable (e.g., older registry versions).
+    pub fn resolve_dependencies_server(
+        &self,
+        package: &str,
+        version: &str,
+        include_dev: bool,
+    ) -> Result<Vec<ServerResolvedDep>> {
+        let encoded = url_encode_package_name(package);
+        let url = format!(
+            "{}/api/packages/{}/{}/resolve",
+            self.base_url, encoded, version
+        );
+
+        let mut request = self.client.get(&url);
+        if include_dev {
+            request = request.query(&[("include_dev", "true")]);
+        }
+
+        let response = request.send().map_err(|e| {
+            anyhow!("Failed to reach registry for dependency resolution: {}", e)
+        })?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Server-side dependency resolution not available (HTTP {}). \
+                 Falling back to client-side resolution.",
+                response.status().as_u16()
+            ));
+        }
+
+        let deps: Vec<ServerResolvedDep> = response.json().map_err(|e| {
+            anyhow!("Failed to parse dependency resolution response: {}", e)
+        })?;
+
+        Ok(deps)
+    }
+
+    /// Generate a lockfile via the server in a single roundtrip.
+    ///
+    /// Returns a flat list of all resolved packages with exact versions and checksums.
+    pub fn generate_lockfile_server(
+        &self,
+        package: &str,
+        version: &str,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
+        let encoded = url_encode_package_name(package);
+        let url = format!(
+            "{}/api/packages/{}/{}/lockfile",
+            self.base_url, encoded, version
+        );
+
+        let response = self.client.get(&url).send().map_err(|e| {
+            anyhow!("Failed to reach registry for lockfile generation: {}", e)
+        })?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Server-side lockfile generation not available (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+
+        let lockfile: ServerLockfile = response.json().map_err(|e| {
+            anyhow!("Failed to parse lockfile response: {}", e)
+        })?;
+
+        Ok(lockfile
+            .packages
+            .into_iter()
+            .map(|p| (p.name, p.version, p.checksum))
+            .collect())
+    }
+}
+
+/// Flatten a recursive server resolution tree into a deduplicated list.
+pub fn flatten_resolved_deps(deps: &[ServerResolvedDep]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    fn walk(
+        dep: &ServerResolvedDep,
+        result: &mut Vec<(String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        let key = format!("{}@{}", dep.name, dep.version);
+        if seen.insert(key) {
+            result.push((dep.name.clone(), dep.version.clone()));
+            for child in &dep.dependencies {
+                walk(child, result, seen);
+            }
+        }
+    }
+
+    for dep in deps {
+        walk(dep, &mut result, &mut seen);
+    }
+    result
 }
 
 // ============================================================================

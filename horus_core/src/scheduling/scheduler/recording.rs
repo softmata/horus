@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::error::HorusResult;
-use crate::horus_internal;
+use crate::error::{HorusContext, HorusResult};
 use crate::terminal::print_line;
 
 use super::super::record_replay::{
@@ -38,7 +37,7 @@ impl Scheduler {
     /// ```
     pub fn add_replay(&mut self, recording_path: PathBuf, priority: u32) -> HorusResult<&mut Self> {
         let replayer = NodeReplayer::load(&recording_path)
-            .map_err(|e| horus_internal!("Failed to load recording: {}", e))?;
+            .horus_context_with(|| format!("loading recording from {}", recording_path.display()))?;
 
         let node_name = replayer.recording().node_name.clone();
         let _node_id = replayer.recording().node_id.clone();
@@ -110,7 +109,7 @@ impl Scheduler {
     /// ```
     pub fn replay_from(scheduler_path: PathBuf) -> HorusResult<Self> {
         let scheduler_recording = SchedulerRecording::load(&scheduler_path)
-            .map_err(|e| horus_internal!("Failed to load scheduler recording: {}", e))?;
+            .horus_context_with(|| format!("loading scheduler recording from {}", scheduler_path.display()))?;
 
         let session_dir = scheduler_path.parent().unwrap_or(&scheduler_path);
         let mut scheduler =
@@ -249,7 +248,7 @@ impl Scheduler {
         let manager = RecordingManager::new();
         manager
             .list_sessions()
-            .map_err(|e| horus_internal!("Failed to list recordings: {}", e))
+            .horus_context("listing recording sessions")
     }
 
     /// Delete a recording session.
@@ -257,6 +256,6 @@ impl Scheduler {
         let manager = RecordingManager::new();
         manager
             .delete_session(session_name)
-            .map_err(|e| horus_internal!("Failed to delete recording: {}", e))
+            .horus_context_with(|| format!("deleting recording session '{}'", session_name))
     }
 }

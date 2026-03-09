@@ -9,6 +9,7 @@
 //! - **Ignore**: Failures are swallowed; the node keeps ticking.
 
 use super::circuit_breaker::CircuitBreaker;
+use crate::error::Severity;
 use std::time::{Duration, Instant};
 
 /// How the scheduler should respond when a node fails.
@@ -247,6 +248,40 @@ impl FailureHandler {
                 }
             }
             FailureHandlerState::Ignore => FailureAction::Continue,
+        }
+    }
+
+    /// Record a failure with severity classification from [`HorusError::severity()`].
+    ///
+    /// Severity overrides the configured policy when it provides a stronger signal:
+    ///
+    /// - **Fatal**: always returns `StopScheduler`, regardless of policy.
+    ///   A fatal error (e.g., shared-memory corruption, node panic) means the
+    ///   system is in an unrecoverable state — ignoring or restarting would be unsafe.
+    ///
+    /// - **Transient** + `Fatal` policy: de-escalates to `RestartNode`.
+    ///   A transient error (e.g., topic full, network timeout) on a safety-critical
+    ///   node should still attempt recovery rather than killing the scheduler.
+    ///
+    /// - **Transient** + other policies, or **Permanent**: delegates to the normal
+    ///   [`record_failure()`](Self::record_failure) path.
+    ///
+    /// ## RT-safe: no heap allocation
+    ///
+    /// Same guarantees as `record_failure()` — `Severity` is `Copy`, no allocations.
+    pub fn record_failure_with_severity(&mut self, severity: Severity) -> FailureAction {
+        match severity {
+            // Fatal always stops — even if the policy says Ignore or Restart.
+            Severity::Fatal => FailureAction::StopScheduler,
+
+            // Transient + Fatal policy: de-escalate to restart instead of killing.
+            Severity::Transient => match &self.state {
+                FailureHandlerState::Fatal => FailureAction::RestartNode,
+                _ => self.record_failure(),
+            },
+
+            // Permanent: follow the configured policy.
+            Severity::Permanent => self.record_failure(),
         }
     }
 
@@ -576,5 +611,69 @@ mod tests {
         // Ignore handler is never suppressed
         let handler = FailureHandler::new(FailurePolicy::Ignore);
         assert!(!handler.stats().is_suppressed);
+    }
+
+    // =================================================================
+    // Severity-aware failure handling
+    // =================================================================
+
+    /// Fatal severity always stops, even with Ignore policy.
+    #[test]
+    fn severity_fatal_overrides_ignore_policy() {
+        let mut handler = FailureHandler::new(FailurePolicy::Ignore);
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Fatal),
+            FailureAction::StopScheduler,
+        );
+    }
+
+    /// Fatal severity always stops, even with Restart policy.
+    #[test]
+    fn severity_fatal_overrides_restart_policy() {
+        let mut handler = FailureHandler::new(FailurePolicy::restart(5, 100));
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Fatal),
+            FailureAction::StopScheduler,
+        );
+    }
+
+    /// Transient severity de-escalates Fatal policy to RestartNode.
+    ///
+    /// Robotics scenario: safety-critical motor controller (Fatal policy) gets
+    /// a transient TopicFull error — should attempt recovery, not kill the
+    /// scheduler.
+    #[test]
+    fn severity_transient_deescalates_fatal_policy() {
+        let mut handler = FailureHandler::new(FailurePolicy::Fatal);
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Transient),
+            FailureAction::RestartNode,
+        );
+    }
+
+    /// Transient severity with Restart policy follows normal record_failure().
+    #[test]
+    fn severity_transient_follows_restart_policy() {
+        let mut handler = FailureHandler::new(FailurePolicy::restart(3, 10));
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Transient),
+            FailureAction::RestartNode,
+        );
+    }
+
+    /// Permanent severity follows the configured policy (Fatal → Stop).
+    #[test]
+    fn severity_permanent_follows_configured_policy() {
+        let mut handler = FailureHandler::new(FailurePolicy::Fatal);
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Permanent),
+            FailureAction::StopScheduler,
+        );
+
+        let mut handler = FailureHandler::new(FailurePolicy::Ignore);
+        assert_eq!(
+            handler.record_failure_with_severity(Severity::Permanent),
+            FailureAction::Continue,
+        );
     }
 }

@@ -18,11 +18,12 @@
 //!     .order(0)
 //!     .rate_hz(100.0)
 //!     .rt()
-//!     .build();
+//!     .build()?;
 //! ```
 
 use super::types::{ExecutionClass, NodeKind};
-use crate::core::{Node, RtNode};
+use crate::core::Node;
+use crate::error::{HorusResult, ValidationError};
 use std::time::Duration;
 
 /// Configuration for a node being added to the scheduler.
@@ -74,23 +75,23 @@ impl NodeRegistration {
         }
     }
 
-    /// Create a new node configuration from a full RtNode.
+    /// Create a new node configuration from a Node with RT methods.
     ///
-    /// Automatically populates WCET budget and deadline from the trait,
-    /// and marks the node as RT.
-    pub fn new_rt(node: Box<dyn RtNode>) -> Self {
+    /// Automatically populates WCET budget and deadline from the Node trait,
+    /// and marks the node as RT if wcet_budget() returns Some.
+    pub fn new_rt(node: Box<dyn Node>) -> Self {
         let wcet_budget = node.wcet_budget();
-        let deadline = node.deadline();
+        let deadline_val = if wcet_budget.is_some() { Some(node.deadline()) } else { None };
         Self {
             node: NodeKind::Rt(node),
             order: 100,
             rate_hz: None,
-            is_rt: true,
-            wcet_budget: Some(wcet_budget),
-            deadline: Some(deadline),
+            is_rt: wcet_budget.is_some(),
+            wcet_budget,
+            deadline: deadline_val,
             tier: None,
             failure_policy: None,
-            execution_class: ExecutionClass::Rt,
+            execution_class: if wcet_budget.is_some() { ExecutionClass::Rt } else { ExecutionClass::BestEffort },
         }
     }
 
@@ -280,6 +281,88 @@ impl NodeRegistration {
         self.failure_policy = Some(policy);
         self
     }
+
+    /// Validate the node configuration, catching conflicts and invalid values.
+    ///
+    /// Called automatically by [`NodeBuilder::build()`]. You only need to call
+    /// this manually if you're using `NodeRegistration` directly (e.g. from
+    /// Python bindings).
+    pub fn validate(&self) -> HorusResult<()> {
+        let node_name = self.node.name();
+
+        // Validate rate_hz: must be finite and positive
+        if let Some(rate) = self.rate_hz {
+            if !rate.is_finite() || rate <= 0.0 {
+                return Err(ValidationError::InvalidValue {
+                    field: "rate_hz".into(),
+                    value: format!("{}", rate),
+                    reason: "must be finite and > 0".into(),
+                }
+                .into());
+            }
+        }
+
+        // Validate deadline: must be > 0
+        if let Some(deadline) = self.deadline {
+            if deadline.is_zero() {
+                return Err(ValidationError::InvalidValue {
+                    field: "deadline".into(),
+                    value: "0".into(),
+                    reason: "deadline must be > 0 (a zero deadline is meaningless for RT guarantees)".into(),
+                }
+                .into());
+            }
+        }
+
+        // Validate WCET: must be > 0 if set
+        if let Some(wcet) = self.wcet_budget {
+            if wcet.is_zero() {
+                return Err(ValidationError::InvalidValue {
+                    field: "wcet_us".into(),
+                    value: "0".into(),
+                    reason: "WCET budget must be > 0".into(),
+                }
+                .into());
+            }
+        }
+
+        // Validate execution class vs is_rt flag consistency
+        if self.is_rt && !matches!(self.execution_class, ExecutionClass::Rt | ExecutionClass::BestEffort) {
+            let class_name = match &self.execution_class {
+                ExecutionClass::Compute => "compute",
+                ExecutionClass::AsyncIo => "async_io",
+                ExecutionClass::Event(_) => "event",
+                _ => unreachable!(),
+            };
+            return Err(ValidationError::Conflict {
+                field_a: "is_rt / .rt() / .wcet_us() / .deadline_*()".into(),
+                field_b: format!(".{}()", class_name),
+                reason: format!(
+                    "node '{}' is marked as RT but has execution class '{}' — \
+                     these are contradictory. Use either RT scheduling or {} scheduling, not both.",
+                    node_name, class_name, class_name
+                ),
+            }
+            .into());
+        }
+
+        // Validate RT-specific constraints on non-RT nodes
+        if !self.is_rt && (self.wcet_budget.is_some() || self.deadline.is_some()) {
+            // This shouldn't happen since wcet_us/deadline_* auto-set is_rt,
+            // but guard against manual NodeRegistration construction.
+            return Err(ValidationError::Conflict {
+                field_a: "wcet_budget / deadline".into(),
+                field_b: "is_rt = false".into(),
+                reason: format!(
+                    "node '{}' has WCET/deadline set but is not marked as RT",
+                    node_name
+                ),
+            }
+            .into());
+        }
+
+        Ok(())
+    }
 }
 
 /// Builder for adding a node to the scheduler with fluent configuration.
@@ -292,7 +375,7 @@ impl NodeRegistration {
 ///     .order(0)
 ///     .rate_hz(100.0)
 ///     .rt()
-///     .build();
+///     .build()?;
 /// ```
 #[must_use = "call .build() to register the node — dropping this builder discards the registration"]
 pub struct NodeBuilder<'a> {
@@ -312,7 +395,7 @@ impl<'a> NodeBuilder<'a> {
     /// Create a new NodeBuilder for an RtNode (called by Scheduler::add_rt).
     pub(crate) fn new_rt(
         scheduler: &'a mut super::scheduler::Scheduler,
-        node: Box<dyn RtNode>,
+        node: Box<dyn Node>,
     ) -> Self {
         Self {
             scheduler,
@@ -398,20 +481,23 @@ impl<'a> NodeBuilder<'a> {
 
     /// Finish configuration and add the node to the scheduler.
     ///
-    /// This consumes the builder and registers the node.
+    /// Validates the configuration before registering. Returns an error if
+    /// the configuration is contradictory (e.g. `.rt().compute()`) or contains
+    /// invalid values (e.g. `rate_hz(NaN)`, `deadline_ms(0)`).
     ///
     /// # Example
     /// ```rust,ignore
     /// scheduler.add(my_node)
     ///     .order(0)
-    ///     .build();
+    ///     .build()?;
     /// ```
-    pub fn build(self) -> &'a mut super::scheduler::Scheduler {
-        self.scheduler.add_configured(self.config)
+    pub fn build(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
+        self.config.validate()?;
+        Ok(self.scheduler.add_configured(self.config))
     }
 
     /// Alias for [`build()`](Self::build) — kept for backward compatibility.
-    pub fn done(self) -> &'a mut super::scheduler::Scheduler {
+    pub fn done(self) -> HorusResult<&'a mut super::scheduler::Scheduler> {
         self.build()
     }
 }
@@ -479,26 +565,29 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_hz_zero() {
+    fn test_rate_hz_zero_stored() {
+        // Builder stores the value — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).rate_hz(0.0);
         assert_eq!(reg.rate_hz, Some(0.0));
     }
 
     #[test]
-    fn test_rate_hz_negative() {
-        // Currently accepts negative — documents behavior
+    fn test_rate_hz_negative_stored() {
+        // Builder stores the value — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).rate_hz(-1.0);
         assert_eq!(reg.rate_hz, Some(-1.0));
     }
 
     #[test]
-    fn test_rate_hz_infinity() {
+    fn test_rate_hz_infinity_stored() {
+        // Builder stores the value — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).rate_hz(f64::INFINITY);
         assert_eq!(reg.rate_hz, Some(f64::INFINITY));
     }
 
     #[test]
-    fn test_rate_hz_nan() {
+    fn test_rate_hz_nan_stored() {
+        // Builder stores the value — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NAN);
         assert!(reg.rate_hz.unwrap().is_nan());
     }
@@ -583,7 +672,8 @@ mod tests {
     }
 
     #[test]
-    fn test_wcet_us_zero() {
+    fn test_wcet_us_zero_stored() {
+        // Builder stores zero — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).wcet_us(0);
         assert_eq!(reg.wcet_budget, Some(Duration::from_micros(0)));
         assert!(reg.is_rt);
@@ -605,7 +695,8 @@ mod tests {
     }
 
     #[test]
-    fn test_deadline_us_zero() {
+    fn test_deadline_us_zero_stored() {
+        // Builder stores zero — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).deadline_us(0);
         assert_eq!(reg.deadline, Some(Duration::ZERO));
         assert!(reg.is_rt);
@@ -621,7 +712,8 @@ mod tests {
     }
 
     #[test]
-    fn test_deadline_ms_zero() {
+    fn test_deadline_ms_zero_stored() {
+        // Builder stores zero — validation catches it later in build()
         let reg = NodeRegistration::new(stub("n")).deadline_ms(0);
         assert_eq!(reg.deadline, Some(Duration::ZERO));
     }
@@ -781,18 +873,14 @@ mod tests {
 
     #[test]
     fn test_new_rt_auto_populates() {
-        use crate::core::RtNode;
-
         struct TestRtNode;
         impl Node for TestRtNode {
             fn name(&self) -> &str {
                 "rt_test"
             }
             fn tick(&mut self) {}
-        }
-        impl RtNode for TestRtNode {
-            fn wcet_budget(&self) -> Duration {
-                Duration::from_micros(500)
+            fn wcet_budget(&self) -> Option<Duration> {
+                Some(Duration::from_micros(500))
             }
             fn deadline(&self) -> Duration {
                 Duration::from_millis(1)
@@ -818,7 +906,8 @@ mod tests {
             .add(StubNode("builder_test".to_string()))
             .order(5)
             .rate_hz(50.0)
-            .build();
+            .build()
+            .unwrap();
 
         let names = scheduler.node_list();
         assert!(names.contains(&"builder_test".to_string()));
@@ -832,7 +921,8 @@ mod tests {
         scheduler
             .add(StubNode("done_test".to_string()))
             .order(0)
-            .done();
+            .done()
+            .unwrap();
 
         let names = scheduler.node_list();
         assert!(names.contains(&"done_test".to_string()));
@@ -840,7 +930,6 @@ mod tests {
 
     #[test]
     fn test_builder_rt_node() {
-        use crate::core::RtNode;
         use crate::scheduling::Scheduler;
 
         struct MinimalRt;
@@ -849,10 +938,8 @@ mod tests {
                 "minimal_rt"
             }
             fn tick(&mut self) {}
-        }
-        impl RtNode for MinimalRt {
-            fn wcet_budget(&self) -> Duration {
-                Duration::from_micros(100)
+            fn wcet_budget(&self) -> Option<Duration> {
+                Some(Duration::from_micros(100))
             }
             fn deadline(&self) -> Duration {
                 Duration::from_millis(1)
@@ -860,7 +947,7 @@ mod tests {
         }
 
         let mut scheduler = Scheduler::new();
-        scheduler.add_rt(MinimalRt).order(0).build();
+        scheduler.add_rt(MinimalRt).order(0).build().unwrap();
 
         let names = scheduler.node_list();
         assert!(names.contains(&"minimal_rt".to_string()));
@@ -871,13 +958,12 @@ mod tests {
         use crate::scheduling::Scheduler;
 
         let mut scheduler = Scheduler::new();
-        scheduler.add(StubNode("c".into())).order(20).build();
-        scheduler.add(StubNode("a".into())).order(0).build();
-        scheduler.add(StubNode("b".into())).order(10).build();
+        scheduler.add(StubNode("c".into())).order(20).build().unwrap();
+        scheduler.add(StubNode("a".into())).order(0).build().unwrap();
+        scheduler.add(StubNode("b".into())).order(10).build().unwrap();
 
         let names = scheduler.node_list();
         assert_eq!(names.len(), 3);
-        // Nodes should be sorted by order (priority)
         assert!(names.contains(&"a".to_string()));
         assert!(names.contains(&"b".to_string()));
         assert!(names.contains(&"c".to_string()));
@@ -888,77 +974,51 @@ mod tests {
         use crate::scheduling::Scheduler;
 
         let mut scheduler = Scheduler::new();
-        scheduler.add(StubNode("rt".into())).rt().build();
-        scheduler.add(StubNode("compute".into())).compute().build();
-        scheduler.add(StubNode("event".into())).on("topic").build();
-        scheduler.add(StubNode("async".into())).async_io().build();
-        scheduler.add(StubNode("best_effort".into())).build();
+        scheduler.add(StubNode("rt".into())).rt().build().unwrap();
+        scheduler.add(StubNode("compute".into())).compute().build().unwrap();
+        scheduler.add(StubNode("event".into())).on("topic").build().unwrap();
+        scheduler.add(StubNode("async".into())).async_io().build().unwrap();
+        scheduler.add(StubNode("best_effort".into())).build().unwrap();
 
         assert_eq!(scheduler.node_list().len(), 5);
     }
 
     // ============================================================================
-    // Conflicting configuration detection tests
+    // Validation tests
     // ============================================================================
 
-    // -- Execution class conflicts (all pairwise) --
+    // -- validate() on valid configurations --
 
-    /// .rt().compute() — last class wins, but is_rt flag persists from .rt().
-    /// Behavior: Node is classified as Compute but still has is_rt=true.
-    /// This is a known conflict — the scheduler uses execution_class for
-    /// dispatch, so the node runs in the compute pool despite is_rt=true.
     #[test]
-    fn conflict_rt_then_compute_class_overridden_rt_flag_persists() {
-        let reg = NodeRegistration::new(stub("n")).rt().compute();
-        assert_eq!(
-            reg.execution_class,
-            ExecutionClass::Compute,
-            ".compute() should override .rt() execution class"
-        );
-        assert!(
-            reg.is_rt,
-            "is_rt flag persists from .rt() even after .compute()"
-        );
+    fn validate_default_config_ok() {
+        let reg = NodeRegistration::new(stub("n"));
+        assert!(reg.validate().is_ok());
     }
 
-    /// .compute().rt() — RT takes precedence because it's called last.
     #[test]
-    fn conflict_compute_then_rt_class_and_flag_both_rt() {
-        let reg = NodeRegistration::new(stub("n")).compute().rt();
-        assert_eq!(reg.execution_class, ExecutionClass::Rt);
-        assert!(reg.is_rt);
+    fn validate_rt_only_ok() {
+        let reg = NodeRegistration::new(stub("n")).rt();
+        assert!(reg.validate().is_ok());
     }
 
-    /// .rt().on("topic") — event overrides RT class.
     #[test]
-    fn conflict_rt_then_event_class_overridden() {
-        let reg = NodeRegistration::new(stub("n")).rt().on("sensor");
-        assert_eq!(
-            reg.execution_class,
-            ExecutionClass::Event("sensor".to_string())
-        );
-        assert!(reg.is_rt, "is_rt flag persists");
+    fn validate_compute_only_ok() {
+        let reg = NodeRegistration::new(stub("n")).compute();
+        assert!(reg.validate().is_ok());
     }
 
-    /// .on("topic").rt() — RT overrides event.
     #[test]
-    fn conflict_event_then_rt_class_overridden() {
-        let reg = NodeRegistration::new(stub("n")).on("sensor").rt();
-        assert_eq!(reg.execution_class, ExecutionClass::Rt);
-        assert!(reg.is_rt);
+    fn validate_event_only_ok() {
+        let reg = NodeRegistration::new(stub("n")).on("topic");
+        assert!(reg.validate().is_ok());
     }
 
-    /// .compute().on("topic") — event overrides compute.
     #[test]
-    fn conflict_compute_then_event_class_overridden() {
-        let reg = NodeRegistration::new(stub("n")).compute().on("topic");
-        assert_eq!(
-            reg.execution_class,
-            ExecutionClass::Event("topic".to_string())
-        );
+    fn validate_async_io_only_ok() {
+        let reg = NodeRegistration::new(stub("n")).async_io();
+        assert!(reg.validate().is_ok());
     }
 
-    /// .on("topic").compute() — compute overrides event.
     #[test]
     fn conflict_event_then_compute_class_overridden() {
         let reg = NodeRegistration::new(stub("n")).on("topic").compute();
@@ -1114,35 +1174,265 @@ mod tests {
     /// .on("a").rt().compute().on("b") — ends as Event("b").
     #[test]
     fn conflict_four_class_changes_last_wins() {
-        let reg = NodeRegistration::new(stub("n"))
-            .on("a")
-            .rt()
-            .compute()
-            .on("b");
+        let reg = NodeRegistration::new(stub("n")).on("a").rt().compute().on("b");
         assert_eq!(reg.execution_class, ExecutionClass::Event("b".to_string()));
     }
 
-    // -- Full conflicting configuration via NodeBuilder --
-
-    /// Builder with conflicting configuration still registers the node.
     #[test]
-    fn conflict_builder_conflicting_config_still_registers() {
+    fn validate_rt_with_wcet_and_deadline_ok() {
+        let reg = NodeRegistration::new(stub("n"))
+            .rt()
+            .wcet_us(200)
+            .deadline_ms(1);
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_wcet_alone_ok() {
+        // wcet_us auto-sets is_rt, class stays BestEffort — allowed
+        let reg = NodeRegistration::new(stub("n")).wcet_us(500);
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_deadline_alone_ok() {
+        let reg = NodeRegistration::new(stub("n")).deadline_ms(10);
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_event_with_rate_ok() {
+        // Event + rate_hz is valid (rate used as minimum poll interval)
+        let reg = NodeRegistration::new(stub("n")).on("sensor").rate_hz(100.0);
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_valid_rate_hz() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(100.0);
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_very_small_rate_hz_ok() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(0.001);
+        assert!(reg.validate().is_ok());
+    }
+
+    // -- Execution class conflicts: is_rt + non-RT class → error --
+
+    #[test]
+    fn validate_rt_then_compute_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rt().compute();
+        let err = reg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("compute"), "error should mention compute: {}", msg);
+    }
+
+    #[test]
+    fn validate_rt_then_async_io_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rt().async_io();
+        let err = reg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("async_io"), "error should mention async_io: {}", msg);
+    }
+
+    #[test]
+    fn validate_rt_then_event_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rt().on("sensor");
+        let err = reg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("event"), "error should mention event: {}", msg);
+    }
+
+    #[test]
+    fn validate_wcet_then_compute_rejects() {
+        let reg = NodeRegistration::new(stub("n")).wcet_us(100).compute();
+        assert!(reg.validate().is_err(), "wcet + compute should conflict");
+    }
+
+    #[test]
+    fn validate_deadline_then_async_io_rejects() {
+        let reg = NodeRegistration::new(stub("n")).deadline_ms(1).async_io();
+        assert!(reg.validate().is_err(), "deadline + async_io should conflict");
+    }
+
+    #[test]
+    fn validate_async_io_then_deadline_rejects() {
+        let reg = NodeRegistration::new(stub("n")).async_io().deadline_ms(1);
+        assert!(reg.validate().is_err(), "async_io + deadline should conflict");
+    }
+
+    #[test]
+    fn validate_triple_conflict_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rt().compute().async_io();
+        assert!(reg.validate().is_err(), "rt + compute + async_io should conflict");
+    }
+
+    /// .compute().rt() — RT called last, so class=Rt and is_rt=true — no conflict
+    #[test]
+    fn validate_compute_then_rt_ok() {
+        let reg = NodeRegistration::new(stub("n")).compute().rt();
+        assert!(reg.validate().is_ok(), ".compute().rt() should be valid (RT wins)");
+    }
+
+    /// .on("topic").rt() — RT called last, class=Rt — no conflict
+    #[test]
+    fn validate_event_then_rt_ok() {
+        let reg = NodeRegistration::new(stub("n")).on("sensor").rt();
+        assert!(reg.validate().is_ok());
+    }
+
+    /// Non-RT class changes without is_rt flag are fine
+    #[test]
+    fn validate_compute_then_event_ok() {
+        let reg = NodeRegistration::new(stub("n")).compute().on("topic");
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_async_io_then_compute_ok() {
+        let reg = NodeRegistration::new(stub("n")).async_io().compute();
+        assert!(reg.validate().is_ok());
+    }
+
+    // -- Invalid rate_hz --
+
+    #[test]
+    fn validate_rate_hz_nan_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NAN);
+        let err = reg.validate().unwrap_err();
+        assert!(err.to_string().contains("rate_hz"));
+    }
+
+    #[test]
+    fn validate_rate_hz_negative_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(-1.0);
+        assert!(reg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rate_hz_zero_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(0.0);
+        assert!(reg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rate_hz_infinity_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::INFINITY);
+        assert!(reg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rate_hz_neg_infinity_rejects() {
+        let reg = NodeRegistration::new(stub("n")).rate_hz(f64::NEG_INFINITY);
+        assert!(reg.validate().is_err());
+    }
+
+    // -- Invalid deadlines --
+
+    #[test]
+    fn validate_deadline_us_zero_rejects() {
+        let reg = NodeRegistration::new(stub("n")).deadline_us(0);
+        assert!(reg.validate().is_err(), "zero deadline should be rejected");
+    }
+
+    #[test]
+    fn validate_deadline_ms_zero_rejects() {
+        let reg = NodeRegistration::new(stub("n")).deadline_ms(0);
+        assert!(reg.validate().is_err(), "zero deadline should be rejected");
+    }
+
+    #[test]
+    fn validate_deadline_us_positive_ok() {
+        let reg = NodeRegistration::new(stub("n")).deadline_us(1);
+        assert!(reg.validate().is_ok());
+    }
+
+    // -- Invalid WCET --
+
+    #[test]
+    fn validate_wcet_zero_rejects() {
+        let reg = NodeRegistration::new(stub("n")).wcet_us(0);
+        assert!(reg.validate().is_err(), "zero WCET should be rejected");
+    }
+
+    #[test]
+    fn validate_wcet_positive_ok() {
+        let reg = NodeRegistration::new(stub("n")).wcet_us(1);
+        assert!(reg.validate().is_ok());
+    }
+
+    // -- Builder integration with validation --
+
+    #[test]
+    fn validate_builder_conflict_rejects() {
+        use crate::scheduling::Scheduler;
+
+        let mut scheduler = Scheduler::new();
+        let result = scheduler
+            .add(StubNode("conflict".into()))
+            .rt()
+            .compute()
+            .build();
+
+        assert!(result.is_err(), "conflicting config should fail build()");
+    }
+
+    #[test]
+    fn validate_builder_invalid_rate_rejects() {
+        use crate::scheduling::Scheduler;
+
+        let mut scheduler = Scheduler::new();
+        let result = scheduler
+            .add(StubNode("bad_rate".into()))
+            .rate_hz(-1.0)
+            .build();
+
+        assert!(result.is_err(), "negative rate should fail build()");
+    }
+
+    #[test]
+    fn validate_builder_zero_deadline_rejects() {
+        use crate::scheduling::Scheduler;
+
+        let mut scheduler = Scheduler::new();
+        let result = scheduler
+            .add(StubNode("bad_deadline".into()))
+            .deadline_ms(0)
+            .build();
+
+        assert!(result.is_err(), "zero deadline should fail build()");
+    }
+
+    // -- Valid full chains still pass --
+
+    #[test]
+    fn validate_full_rt_chain_ok() {
+        let reg = NodeRegistration::new(stub("n"))
+            .order(5)
+            .rate_hz(100.0)
+            .rt()
+            .wcet_us(200)
+            .deadline_ms(1)
+            .tier(NodeTier::UltraFast)
+            .failure_policy(FailurePolicy::Fatal);
+
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_builder_valid_config_registers() {
         use crate::scheduling::Scheduler;
 
         let mut scheduler = Scheduler::new();
         scheduler
-            .add(StubNode("conflict".into()))
-            .rt()
-            .compute()
-            .deadline_ms(5)
-            .async_io()
-            .wcet_us(100)
-            .build();
+            .add(StubNode("valid".into()))
+            .order(0)
+            .rate_hz(50.0)
+            .build()
+            .unwrap();
 
-        let names = scheduler.node_list();
-        assert!(
-            names.contains(&"conflict".to_string()),
-            "Node should be registered despite conflicting config"
-        );
+        assert!(scheduler.node_list().contains(&"valid".to_string()));
     }
 }

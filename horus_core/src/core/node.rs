@@ -1,16 +1,49 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-/// Trait for providing lightweight logging summaries of message types
+use super::rt_node::{DeadlineMissPolicy, RtClass, RtPriority, WCETViolation};
+
+/// Compact logging summary for message types.
 ///
-/// This trait allows large data structures (images, point clouds) to provide
-/// compact string representations for logging without cloning the entire data.
+/// Used by `Topic::with_logging()` and `hlog!` to produce one-line summaries
+/// without cloning large data structures.
 ///
-/// For small types: implementation can use Debug formatting
-/// For large types: implementation should only include metadata
+/// # Three ways to get `LogSummary`
+///
+/// **1. `message!` macro** — auto-generated, field-by-field formatting:
+/// ```rust,ignore
+/// message! {
+///     SensorReading { temperature: f64, humidity: f64 }
+/// }
+/// // Produces: "SensorReading(temperature=23.5, humidity=0.65)"
+/// ```
+///
+/// **2. `#[derive(LogSummary)]`** — uses `Debug` output (needs `#[derive(Debug)]`):
+/// ```rust,ignore
+/// #[derive(Debug, LogSummary)]
+/// pub struct MyType { pub x: f64 }
+/// // Produces: "MyType { x: 23.5 }"
+/// ```
+///
+/// **3. Manual `impl`** — for custom compact summaries (large/zero-copy types):
+/// ```rust,ignore
+/// impl LogSummary for Image {
+///     fn log_summary(&self) -> String {
+///         format!("Image({}x{}, {:?})", self.width(), self.height(), self.encoding())
+///     }
+/// }
+/// ```
+///
+/// # When to use which
+///
+/// | Approach | Use when |
+/// |----------|----------|
+/// | `message!` | Defining new message types (default) |
+/// | `#[derive(LogSummary)]` | Existing `#[repr(C)]` types with `Debug` |
+/// | Manual `impl` | Large types where `Debug` would be too verbose |
 pub trait LogSummary {
-    /// Return a compact string representation suitable for logging
+    /// Return a compact one-line string suitable for logging.
     fn log_summary(&self) -> String;
 }
 
@@ -643,6 +676,100 @@ pub trait Node: Send {
     /// Used by the scheduler to determine which nodes need state persistence.
     fn supports_checkpointing(&self) -> bool {
         false // Default: checkpointing not supported
+    }
+
+    // ==================== Real-Time Support ====================
+    // Override wcet_budget() to return Some(duration) to opt into RT scheduling.
+    // Nodes that return None (default) are treated as regular non-RT nodes.
+
+    /// Worst-case execution time budget.
+    ///
+    /// Return `Some(duration)` to opt this node into real-time scheduling
+    /// with WCET enforcement, deadline monitoring, and priority-based preemption.
+    /// Return `None` (default) for a regular non-RT node.
+    ///
+    /// # Example
+    /// ```ignore
+    /// fn wcet_budget(&self) -> Option<Duration> {
+    ///     Some(Duration::from_micros(100)) // 100µs max execution
+    /// }
+    /// ```
+    fn wcet_budget(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Deadline for completion (from start of tick).
+    ///
+    /// Default: 2x WCET budget. Only meaningful when `wcet_budget()` returns `Some`.
+    fn deadline(&self) -> Duration {
+        self.wcet_budget().unwrap_or_default() * 2
+    }
+
+    /// Real-time priority (lower value = higher priority).
+    fn rt_priority(&self) -> RtPriority {
+        RtPriority::Medium
+    }
+
+    /// Real-time class (Hard/Firm/Soft).
+    fn rt_class(&self) -> RtClass {
+        RtClass::Soft
+    }
+
+    /// What to do if deadline is missed.
+    fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
+        match self.rt_class() {
+            RtClass::Hard => DeadlineMissPolicy::EmergencyStop,
+            RtClass::Firm => DeadlineMissPolicy::Skip,
+            RtClass::Soft => DeadlineMissPolicy::Warn,
+        }
+    }
+
+    /// Pre-condition that must be true before tick (formal verification).
+    fn pre_condition(&self) -> bool {
+        true
+    }
+
+    /// Post-condition that must be true after tick (formal verification).
+    fn post_condition(&self) -> bool {
+        true
+    }
+
+    /// System invariant that must always hold (formal verification).
+    fn invariant(&self) -> bool {
+        true
+    }
+
+    /// Called when WCET budget is exceeded.
+    fn on_wcet_violation(&mut self, violation: &WCETViolation) {
+        eprintln!(
+            "WCET violation in {}: budget={:?}, actual={:?}, overrun={:?}",
+            violation.node_name, violation.budget, violation.actual, violation.overrun
+        );
+    }
+
+    /// Called when deadline is missed.
+    fn on_deadline_miss(&mut self, elapsed: Duration, deadline: Duration) {
+        eprintln!(
+            "Deadline miss in {}: deadline={:?}, elapsed={:?}",
+            self.name(),
+            deadline,
+            elapsed
+        );
+    }
+
+    /// Get fallback node for redundancy (N-version programming).
+    fn fallback_node(&self) -> Option<Box<dyn Node>> {
+        None
+    }
+
+    /// Check if node is in safe state (for safety monitor).
+    fn is_safe_state(&self) -> bool {
+        true
+    }
+
+    /// Transition to safe state (for emergency stop).
+    fn enter_safe_state(&mut self) {
+        // Default: no-op
     }
 }
 

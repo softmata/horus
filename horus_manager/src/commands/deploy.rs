@@ -5,7 +5,7 @@
 use crate::cli_output;
 use crate::config::CARGO_TOML;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -346,10 +346,10 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
                         .status();
 
                     if install.map(|s| !s.success()).unwrap_or(true) {
-                        return Err(HorusError::Config(format!(
+                        return Err(HorusError::Config(ConfigError::Other(format!(
                             "Failed to install target {}. Run: rustup target add {}",
                             target, target
-                        )));
+                        ))));
                     }
                     println!("  {} Target installed", cli_output::ICON_SUCCESS.green());
                 } else {
@@ -385,10 +385,10 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
 
     let status = cmd
         .status()
-        .map_err(|e| HorusError::Config(format!("Failed to run cargo: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run cargo: {}", e))))?;
 
     if !status.success() {
-        return Err(HorusError::Config("Build failed".to_string()));
+        return Err(HorusError::Config(ConfigError::Other("Build failed".to_string())));
     }
 
     println!("  {} Build complete", cli_output::ICON_SUCCESS.green());
@@ -399,9 +399,9 @@ fn build_for_target(config: &DeployConfig) -> HorusResult<()> {
 fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
     // Check if rsync is available
     if Command::new("rsync").arg("--version").output().is_err() {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "rsync not found. Please install rsync.".to_string(),
-        ));
+        )));
     }
 
     // Safety check: show what directory will be synced and confirm
@@ -460,10 +460,10 @@ fn sync_to_target(config: &DeployConfig) -> HorusResult<()> {
 
     let status = cmd
         .status()
-        .map_err(|e| HorusError::Config(format!("Failed to run rsync: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run rsync: {}", e))))?;
 
     if !status.success() {
-        return Err(HorusError::Config("rsync failed".to_string()));
+        return Err(HorusError::Config(ConfigError::Other("rsync failed".to_string())));
     }
 
     println!("  {} Files synced", cli_output::ICON_SUCCESS.green());
@@ -515,17 +515,17 @@ fn run_on_target(config: &DeployConfig) -> HorusResult<()> {
 
     let status = cmd
         .status()
-        .map_err(|e| HorusError::Config(format!("Failed to run SSH: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to run SSH: {}", e))))?;
 
     if !status.success() {
         // Don't treat interrupt as error
         let code = status.code().unwrap_or(0);
         if code != 130 && code != 0 {
             // 130 = Ctrl+C
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Remote execution failed with code {}",
                 code
-            )));
+            ))));
         }
     }
 

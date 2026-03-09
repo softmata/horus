@@ -3,7 +3,7 @@
 //! Launches multiple HORUS nodes from a configuration file.
 
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -95,17 +95,17 @@ pub fn run_launch(
 
     // Check if file exists
     if !file.exists() {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Launch file not found: {}",
             file.display()
-        )));
+        ))));
     }
 
     // Read and parse the launch file
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
     let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(format!("failed to parse launch file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse launch file: {}", e))))?;
 
     if config.nodes.is_empty() {
         println!("{}", "No nodes defined in launch file.".yellow());
@@ -159,10 +159,10 @@ pub fn run_launch(
         // Check dependencies
         for dep in &node.depends_on {
             if !started_nodes.contains(dep) {
-                return Err(HorusError::Config(format!(
+                return Err(HorusError::Config(ConfigError::Other(format!(
                     "Dependency '{}' for node '{}' not found or not started",
                     dep, node.name
-                )));
+                ))));
             }
         }
 
@@ -372,10 +372,10 @@ fn sort_by_dependencies(nodes: &[LaunchNode]) -> HorusResult<Vec<LaunchNode>> {
         result: &mut Vec<LaunchNode>,
     ) -> HorusResult<()> {
         if temp_visited.contains(&node.name) {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Circular dependency detected involving node '{}'",
                 node.name
-            )));
+            ))));
         }
         if visited.contains(&node.name) {
             return Ok(());
@@ -420,10 +420,10 @@ fn launch_node(
         // Custom command
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.is_empty() {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Empty command for node '{}'",
                 node.name
-            )));
+            ))));
         }
         let mut c = Command::new(parts[0]);
         if parts.len() > 1 {
@@ -437,10 +437,10 @@ fn launch_node(
         c.args(["run", package]);
         c
     } else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' must specify either 'command' or 'package'",
             node.name
-        )));
+        ))));
     };
 
     // Add arguments
@@ -485,22 +485,22 @@ fn launch_node(
 
     // Spawn the process
     cmd.spawn()
-        .map_err(|e| HorusError::Config(format!("Failed to launch node '{}': {}", node.name, e)))
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to launch node '{}': {}", node.name, e))))
 }
 
 /// List nodes in a launch file
 pub fn list_launch_nodes(file: &Path) -> HorusResult<()> {
     if !file.exists() {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Launch file not found: {}",
             file.display()
-        )));
+        ))));
     }
 
     let content = std::fs::read_to_string(file).map_err(HorusError::Io)?;
 
     let config: LaunchConfig = serde_yaml::from_str(&content)
-        .map_err(|e| HorusError::Config(format!("failed to parse launch file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse launch file: {}", e))))?;
 
     println!("{}", "Launch File Contents".green().bold());
     println!();

@@ -1,9 +1,10 @@
 use anyhow::Result;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read as _, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,34 +28,52 @@ fn auth_config_path() -> Result<PathBuf> {
 
 /// Load auth config from disk. Returns error if not logged in.
 fn load_auth_config() -> HorusResult<AuthConfig> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "not authenticated. Please run: horus auth login".to_string(),
-        ));
+        )));
     }
 
     let content = fs::read_to_string(&config_path)
-        .map_err(|e| HorusError::Config(format!("failed to read auth config: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to read auth config: {}", e))))?;
 
     serde_json::from_str(&content)
-        .map_err(|e| HorusError::Config(format!("failed to parse auth config: {}", e)))
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse auth config: {}", e))))
 }
 
-/// Login to the HORUS registry with GitHub
+/// Login to the HORUS registry with GitHub.
+///
+/// Starts a local callback server, opens the browser for GitHub OAuth,
+/// and automatically saves the API key after authentication completes.
 pub fn login() -> HorusResult<()> {
     let registry_url = get_registry_url();
 
-    // GitHub OAuth flow
+    // Start local callback server on a random port
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| {
+        HorusError::Config(ConfigError::Other(format!(
+            "Failed to start local auth server: {}",
+            e
+        )))
+    })?;
+    let port = listener.local_addr().unwrap().port();
+
+    // Set a timeout so we don't hang forever if the user closes the browser
+    listener
+        .set_nonblocking(false)
+        .ok();
+
     println!("Logging in to HORUS registry with GitHub...");
     println!();
-    println!("{} Opening browser for GitHub authentication...", "".cyan());
-    println!("  {} {}/auth/github", "URL:".dimmed(), registry_url);
-    println!();
 
-    // Open browser for GitHub OAuth
-    let auth_url = format!("{}/auth/github", registry_url);
+    // Open browser with CLI port so the server redirects back to us
+    let auth_url = format!("{}/auth/github?cli_port={}", registry_url, port);
+    println!(
+        "{} Opening browser for GitHub authentication...",
+        "".cyan()
+    );
+
     if open::that(&auth_url).is_err() {
         println!(
             "{} Could not open browser automatically.",
@@ -64,15 +83,201 @@ pub fn login() -> HorusResult<()> {
     }
 
     println!();
+    println!("Waiting for authentication...");
     println!(
-        "{} After authenticating with GitHub:",
-        "Next steps:".green()
+        "  {} Press Ctrl+C to cancel",
+        "Tip:".dimmed()
     );
-    println!("  1. You'll be redirected back to the registry");
-    println!("  2. Copy the displayed instructions");
-    println!("  3. Run: {}", "horus auth generate-key".cyan());
-    println!();
-    println!("GitHub authentication initiated!");
+
+    // Wait for the OAuth callback (with timeout)
+    let result = wait_for_oauth_callback(&listener, &registry_url);
+
+    match result {
+        Ok((api_key, username)) => {
+            // Save auth config
+            save_auth_config(&api_key, &registry_url, Some(&username))?;
+
+            println!();
+            println!(
+                "{} Logged in as @{}",
+                crate::cli_output::ICON_SUCCESS.green(),
+                username.green().bold()
+            );
+            println!("  {} API key saved automatically", "".dimmed());
+            println!();
+            println!(
+                "{} You can now publish packages with: {}",
+                "Tip:".yellow(),
+                "horus publish".cyan()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            println!();
+            println!(
+                "{} Automatic login failed: {}",
+                crate::cli_output::ICON_WARN.yellow(),
+                e
+            );
+            println!();
+            println!("You can complete login manually:");
+            println!("  1. Visit: {}/dashboard/keys", registry_url.cyan());
+            println!("  2. Generate an API key");
+            println!("  3. Run: {}", "horus auth generate-key".cyan());
+            Ok(())
+        }
+    }
+}
+
+/// Wait for the OAuth callback on the local server, exchange the auth code for an API key.
+fn wait_for_oauth_callback(
+    listener: &TcpListener,
+    registry_url: &str,
+) -> std::result::Result<(String, String), String> {
+    // Set a 5-minute timeout for the OAuth flow
+    listener
+        .set_nonblocking(false)
+        .ok();
+
+    // Accept one connection (the browser redirect)
+    // Use a timeout via polling to avoid hanging indefinitely
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(300);
+
+    listener.set_nonblocking(true).ok();
+
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if start.elapsed() > timeout {
+                    return Err("Timed out waiting for authentication (5 minutes)".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            Err(e) => return Err(format!("Failed to accept connection: {}", e)),
+        }
+    };
+
+    // Read the HTTP request
+    let mut buf = [0u8; 4096];
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+    let n = stream
+        .read(&mut buf)
+        .map_err(|e| format!("Failed to read request: {}", e))?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    // Parse the request line to extract query params
+    // Expected: GET /callback?code=xxx&user=yyy HTTP/1.1
+    let first_line = request.lines().next().unwrap_or("");
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
+
+    let auth_code = extract_query_param(path, "code");
+    let username = extract_query_param(path, "user").unwrap_or_default();
+
+    // Send a response to the browser
+    let html_body = if auth_code.is_some() {
+        "<html><body style='font-family:system-ui;text-align:center;padding:60px'>\
+         <h1 style='color:#22c55e'>Authentication successful!</h1>\
+         <p>You can close this window and return to the terminal.</p>\
+         </body></html>"
+    } else {
+        "<html><body style='font-family:system-ui;text-align:center;padding:60px'>\
+         <h1 style='color:#ef4444'>Authentication failed</h1>\
+         <p>No auth code received. Please try again with <code>horus auth login</code></p>\
+         </body></html>"
+    };
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html_body.len(),
+        html_body
+    );
+    let _ = stream.write_all(response.as_bytes());
+    drop(stream);
+
+    let auth_code = auth_code.ok_or("No auth code in callback")?;
+
+    // Exchange the auth code for an API key
+    let client = reqwest::blocking::Client::new();
+    let exchange_resp = client
+        .post(format!("{}/api/auth/exchange", registry_url))
+        .json(&serde_json::json!({ "code": auth_code }))
+        .send()
+        .map_err(|e| format!("Failed to exchange auth code: {}", e))?;
+
+    if !exchange_resp.status().is_success() {
+        return Err(format!(
+            "Auth code exchange failed (HTTP {}). The code may have expired.",
+            exchange_resp.status().as_u16()
+        ));
+    }
+
+    let body: serde_json::Value = exchange_resp
+        .json()
+        .map_err(|e| format!("Failed to parse exchange response: {}", e))?;
+
+    let api_key = body
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .ok_or("No API key in exchange response")?
+        .to_string();
+
+    let user = body
+        .get("user")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or(username);
+
+    Ok((api_key, user))
+}
+
+/// Extract a query parameter value from a URL path
+fn extract_query_param(path: &str, key: &str) -> Option<String> {
+    let query = path.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next() == Some(key) {
+            return parts.next().map(|v| {
+                // Basic URL decode
+                v.replace("%20", " ")
+                    .replace("%2F", "/")
+                    .replace("%40", "@")
+                    .replace("+", " ")
+            });
+        }
+    }
+    None
+}
+
+/// Save authentication config to disk
+fn save_auth_config(
+    api_key: &str,
+    registry_url: &str,
+    username: Option<&str>,
+) -> HorusResult<()> {
+    let config = AuthConfig {
+        api_key: api_key.to_string(),
+        registry_url: registry_url.to_string(),
+        github_username: username.map(|s| s.to_string()),
+    };
+
+    let config_path = auth_config_path()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+
+    let config_json = serde_json::to_string_pretty(&config)
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to serialize config: {}", e))))?;
+
+    fs::write(&config_path, config_json)
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to save auth config: {}", e))))?;
+
+    // Restrict permissions to owner-only (contains API token)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
+    }
 
     Ok(())
 }
@@ -118,38 +323,21 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
     let mut api_key = String::new();
     io::stdin()
         .read_line(&mut api_key)
-        .map_err(|e| HorusError::Config(format!("Failed to read input: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read input: {}", e))))?;
 
     let api_key = api_key.trim().to_string();
 
     // Validate token format
     if !api_key.starts_with("horus_key_") {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "Invalid token format. Token should start with 'horus_key_'".to_string(),
-        ));
+        )));
     }
 
-    // Save auth config
-    let config = AuthConfig {
-        api_key: api_key.clone(),
-        registry_url: registry_url.clone(),
-        github_username: None, // Will be populated on first API call
-    };
+    save_auth_config(&api_key, &registry_url, None)?;
 
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
-
-    let config_json = serde_json::to_string_pretty(&config)
-        .map_err(|e| HorusError::Config(format!("Failed to serialize config: {}", e)))?;
-
-    fs::write(&config_path, config_json)
-        .map_err(|e| HorusError::Config(format!("Failed to save auth config: {}", e)))?;
-
-    // Restrict permissions to owner-only (contains API token)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600));
-    }
+    let config_path = auth_config_path()
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!();
     println!("API key saved successfully!");
@@ -173,11 +361,11 @@ pub fn generate_key(name: Option<String>, environment: Option<String>) -> HorusR
 pub fn logout() -> HorusResult<()> {
     println!("Logging out from HORUS registry...");
 
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if config_path.exists() {
         fs::remove_file(&config_path)
-            .map_err(|e| HorusError::Config(format!("Failed to remove auth config: {}", e)))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to remove auth config: {}", e))))?;
 
         println!("Successfully logged out!");
         println!("  {} API key removed from local storage", "•".dimmed());
@@ -193,7 +381,7 @@ pub fn logout() -> HorusResult<()> {
 
 /// Show current authenticated user
 pub fn whoami() -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());
@@ -305,6 +493,35 @@ mod tests {
         assert!(!"".starts_with("horus_key_"));
         assert!(!"horus_key".starts_with("horus_key_"));
     }
+
+    #[test]
+    fn extract_query_param_basic() {
+        assert_eq!(
+            extract_query_param("/callback?code=abc123&user=testuser", "code"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            extract_query_param("/callback?code=abc123&user=testuser", "user"),
+            Some("testuser".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_query_param_missing() {
+        assert_eq!(
+            extract_query_param("/callback?code=abc123", "user"),
+            None
+        );
+        assert_eq!(extract_query_param("/callback", "code"), None);
+    }
+
+    #[test]
+    fn extract_query_param_url_decode() {
+        assert_eq!(
+            extract_query_param("/callback?name=hello%20world", "name"),
+            Some("hello world".to_string())
+        );
+    }
 }
 
 /// Get the current auth token (used by other commands)
@@ -336,7 +553,7 @@ pub fn get_registry_url() -> String {
 
 /// List API keys
 pub fn keys_list() -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());
@@ -414,7 +631,7 @@ pub fn keys_list() -> HorusResult<()> {
 
 /// Revoke an API key
 pub fn keys_revoke(key_id: &str) -> HorusResult<()> {
-    let config_path = auth_config_path().map_err(|e| HorusError::Config(e.to_string()))?;
+    let config_path = auth_config_path().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !config_path.exists() {
         println!("{} Not logged in", crate::cli_output::ICON_WARN.yellow());

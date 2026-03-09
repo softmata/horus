@@ -6,7 +6,7 @@
 //! at runtime using these commands.
 
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::params::RuntimeParams;
 use horus_core::serde_json::{self, Value};
 use horus_core::serde_yaml;
@@ -112,10 +112,10 @@ pub fn get_param(key: &str, json: bool) -> HorusResult<()> {
         }
         Ok(())
     } else {
-        Err(HorusError::Config(format!(
+        Err(HorusError::Config(ConfigError::Other(format!(
             "Parameter '{}' not found. Use 'horus param list' to see available parameters.",
             key
-        )))
+        ))))
     }
 }
 
@@ -189,10 +189,10 @@ pub fn delete_param(key: &str) -> HorusResult<()> {
         }
         Ok(())
     } else {
-        Err(HorusError::Config(format!(
+        Err(HorusError::Config(ConfigError::Other(format!(
             "Parameter '{}' not found.",
             key
-        )))
+        ))))
     }
 }
 
@@ -215,10 +215,10 @@ pub fn reset_params(force: bool) -> HorusResult<()> {
 /// Load parameters from a YAML file
 pub fn load_params(file: &Path) -> HorusResult<()> {
     if !file.exists() {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "File not found: {}",
             file.display()
-        )));
+        ))));
     }
 
     let params = RuntimeParams::init()?;

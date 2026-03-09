@@ -6,7 +6,7 @@ use crate::commands::check::{
 };
 use crate::{registry, workspace, yaml_utils};
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::fs;
 use std::path::PathBuf;
 
@@ -20,12 +20,12 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     let manifest = client
         .freeze()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     // Save to local file
     let freeze_file = output.unwrap_or_else(|| PathBuf::from("horus-freeze.yaml"));
-    let yaml = serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(e.to_string()))?;
-    fs::write(&freeze_file, yaml).map_err(|e| HorusError::Config(e.to_string()))?;
+    let yaml = serde_yaml::to_string(&manifest).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+    fs::write(&freeze_file, yaml).map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!("  Environment frozen to {}", freeze_file.display());
     println!("   ID: {}", manifest.horus_id);
@@ -59,15 +59,15 @@ pub fn run_freeze(output: Option<PathBuf>, publish: bool) -> HorusResult<()> {
                 "{}",
                 "You can still save locally with: horus env freeze".yellow()
             );
-            return Err(HorusError::Config(
+            return Err(HorusError::Config(ConfigError::Other(
                 "Cannot publish environment with path dependencies".to_string(),
-            ));
+            )));
         }
 
         println!();
         client
             .upload_environment(&manifest)
-            .map_err(|e| HorusError::Config(e.to_string()))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
     } else {
         println!("\n{} To share this environment:", "Tip:".dimmed());
         println!("   1. File: horus env restore {}", freeze_file.display());
@@ -91,10 +91,10 @@ pub fn run_restore(source: String) -> HorusResult<()> {
     if source.ends_with(".yaml") || source.ends_with(".yml") || PathBuf::from(&source).exists() {
         // It's a file path
         let content = fs::read_to_string(&source)
-            .map_err(|e| HorusError::Config(format!("Failed to read freeze file: {}", e)))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to read freeze file: {}", e))))?;
 
         let manifest: registry::EnvironmentManifest = serde_yaml::from_str(&content)
-            .map_err(|e| HorusError::Config(format!("failed to parse freeze file: {}", e)))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(format!("failed to parse freeze file: {}", e))))?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
@@ -117,18 +117,18 @@ pub fn run_restore(source: String) -> HorusResult<()> {
             .http_client()
             .get(&url)
             .send()
-            .map_err(|e| HorusError::Config(e.to_string()))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         if !response.status().is_success() {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Environment not found: {}",
                 source
-            )));
+            ))));
         }
 
         let manifest: registry::EnvironmentManifest = response
             .json()
-            .map_err(|e| HorusError::Config(e.to_string()))?;
+            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
         println!("  Found {} packages to restore", manifest.packages.len());
 
@@ -186,7 +186,7 @@ fn restore_packages(
                                     Some(&pkg.version),
                                     workspace::InstallTarget::Global,
                                 )
-                                .map_err(|e| HorusError::Config(e.to_string()))?;
+                                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                         }
                         MissingSystemChoice::InstallLocal => {
                             println!(
@@ -195,7 +195,7 @@ fn restore_packages(
                             );
                             client
                                 .install(&pkg.name, Some(&pkg.version))
-                                .map_err(|e| HorusError::Config(e.to_string()))?;
+                                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
                         }
                         MissingSystemChoice::Skip => {
                             println!("  {} Skipped {}", cli_output::ICON_WARN.yellow(), pkg.name);
@@ -227,7 +227,7 @@ fn restore_packages(
                 println!("  Installing {} v{}...", pkg.name, pkg.version);
                 client
                     .install(&pkg.name, Some(&pkg.version))
-                    .map_err(|e| HorusError::Config(e.to_string()))?;
+                    .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
             }
         }
 
@@ -258,7 +258,7 @@ pub fn run_list(json: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     let environments = client
         .list_environments()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if json {
         let env_list: Vec<_> = environments
@@ -336,7 +336,7 @@ pub fn run_show(id: String, json: bool) -> HorusResult<()> {
     let client = registry::RegistryClient::new();
     let manifest = client
         .get_environment(&id)
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if json {
         let pkgs: Vec<_> = manifest

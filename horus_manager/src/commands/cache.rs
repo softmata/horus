@@ -3,7 +3,7 @@
 use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::fs;
 use std::path::Path;
 
@@ -33,7 +33,7 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Show cache information (directory, size, package count)
 pub fn run_info(json: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     // Count packages and calculate size
     let mut total_size: u64 = 0;
@@ -86,7 +86,7 @@ pub fn run_info(json: bool) -> HorusResult<()> {
 
 /// List all cached packages
 pub fn run_list(json: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !cache_dir.exists() {
         if json {
@@ -104,7 +104,7 @@ pub fn run_list(json: bool) -> HorusResult<()> {
     }
 
     let mut packages: Vec<_> = fs::read_dir(&cache_dir)
-        .map_err(|e| HorusError::Config(e.to_string()))?
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
         .collect();
@@ -150,7 +150,7 @@ pub fn run_list(json: bool) -> HorusResult<()> {
 
 /// Clean unused packages from cache
 pub fn run_clean(dry_run: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     println!(
         "{} Scanning for unused packages...",
@@ -164,7 +164,7 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
 
     // Find all workspaces and their dependencies
     let registry =
-        workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(e.to_string()))?;
+        workspace::WorkspaceRegistry::load().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     let mut used_packages: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -244,7 +244,7 @@ pub fn run_clean(dry_run: bool) -> HorusResult<()> {
 
 /// Purge the entire cache
 pub fn run_purge(yes: bool) -> HorusResult<()> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if !cache_dir.exists() {
         println!("Cache is already empty.");
@@ -277,7 +277,7 @@ pub fn run_purge(yes: bool) -> HorusResult<()> {
     }
 
     fs::remove_dir_all(&cache_dir)
-        .map_err(|e| HorusError::Config(format!("Failed to purge cache: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to purge cache: {}", e))))?;
 
     println!(
         "{} Cache purged. Freed {}.",

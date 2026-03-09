@@ -31,6 +31,8 @@ pub enum DependencySource {
         // PyPI package
         package_name: String, // The actual PyPI package name (e.g., "horus-robotics")
     },
+    CratesIO, // Explicitly pinned to crates.io
+    System,   // System package (apt, brew, etc.)
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +56,11 @@ impl DependencySpec {
         // Check for pip: prefix (e.g., "pip:horus-robotics" or "pip:numpy@^1.20")
         if let Some(pip_spec) = spec.strip_prefix("pip:") {
             return Self::parse_pip_spec(pip_spec);
+        }
+
+        // Check for cargo: prefix (e.g., "cargo:serde@1.0")
+        if let Some(cargo_spec) = spec.strip_prefix("cargo:") {
+            return Self::parse_cargo_spec(cargo_spec);
         }
 
         // Special case: horus_py always maps to pip:horus-robotics
@@ -126,6 +133,41 @@ impl DependencySpec {
                 source: DependencySource::Pip {
                     package_name: spec.to_string(),
                 },
+                target: None,
+            })
+        }
+    }
+
+    /// Parse a crates.io dependency spec (after stripping "cargo:" prefix)
+    fn parse_cargo_spec(spec: &str) -> Result<Self> {
+        // Strip optional :features=... suffix (e.g., "serde@1.0:features=derive")
+        let (spec_part, _features) = if let Some(pos) = spec.find(":features=") {
+            (&spec[..pos], Some(&spec[pos + 10..]))
+        } else {
+            (spec, None)
+        };
+
+        if let Some(pos) = spec_part.find('@') {
+            let name = spec_part[..pos].to_string();
+            let constraint = &spec_part[pos + 1..];
+            let requirement = if constraint == "latest" || constraint == "*" {
+                VersionReq::STAR
+            } else {
+                VersionReq::parse(constraint).map_err(|e| {
+                    anyhow!("Invalid cargo version constraint '{}': {}", constraint, e)
+                })?
+            };
+            Ok(Self {
+                name,
+                requirement,
+                source: DependencySource::CratesIO,
+                target: None,
+            })
+        } else {
+            Ok(Self {
+                name: spec_part.to_string(),
+                requirement: VersionReq::STAR,
+                source: DependencySource::CratesIO,
                 target: None,
             })
         }
@@ -228,20 +270,59 @@ impl DependencySpec {
                         target: dep_target,
                     })
                 }
-                // Registry with explicit version
-                else if let Some(Value::String(version_str)) =
-                    map.get(Value::String("version".to_string()))
-                {
-                    let requirement = VersionReq::parse(version_str)
-                        .map_err(|e| anyhow!("Invalid version '{}': {}", version_str, e))?;
+                // Registry/pinned source with optional version
+                else {
+                    let requirement = if let Some(Value::String(version_str)) =
+                        map.get(Value::String("version".to_string()))
+                    {
+                        VersionReq::parse(version_str)
+                            .map_err(|e| anyhow!("Invalid version '{}': {}", version_str, e))?
+                    } else {
+                        VersionReq::STAR
+                    };
+
+                    // Parse optional `source` pin: registry, pypi, crates-io, system
+                    let source = if let Some(Value::String(source_str)) =
+                        map.get(Value::String("source".to_string()))
+                    {
+                        match source_str.as_str() {
+                            "registry" | "horus" => DependencySource::Registry,
+                            "pypi" | "pip" => DependencySource::Pip {
+                                package_name: name.clone(),
+                            },
+                            "crates-io" | "crates.io" | "cargo" => DependencySource::CratesIO,
+                            "system" | "apt" | "brew" => DependencySource::System,
+                            other => {
+                                return Err(anyhow!(
+                                    "Unknown source '{}' for dependency '{}'. \
+                                     Valid sources: registry, pypi, crates-io, system",
+                                    other,
+                                    name
+                                ));
+                            }
+                        }
+                    } else {
+                        DependencySource::Registry
+                    };
+
+                    // Must have either a version or a source pin (or both)
+                    if requirement == VersionReq::STAR
+                        && source == DependencySource::Registry
+                        && dep_target.is_none()
+                    {
+                        return Err(anyhow!(
+                            "Invalid dependency specification for '{}': \
+                             map format requires at least a version, source, path, git, or pip key",
+                            name
+                        ));
+                    }
+
                     Ok(Self {
                         name,
                         requirement,
-                        source: DependencySource::Registry,
+                        source,
                         target: dep_target,
                     })
-                } else {
-                    Err(anyhow!("Invalid dependency specification for '{}'", name))
                 }
             }
 
@@ -921,5 +1002,105 @@ mod tests {
         let cloned = src.clone();
         assert_eq!(src, cloned);
         let _ = format!("{:?}", src); // should not panic
+    }
+
+    // ========================================================================
+    // Source pinning tests
+    // ========================================================================
+
+    #[test]
+    fn parse_cargo_prefix_name_only() {
+        let spec = DependencySpec::parse("cargo:serde").unwrap();
+        assert_eq!(spec.name, "serde");
+        assert_eq!(spec.requirement, VersionReq::STAR);
+        assert_eq!(spec.source, DependencySource::CratesIO);
+    }
+
+    #[test]
+    fn parse_cargo_prefix_with_version() {
+        let spec = DependencySpec::parse("cargo:tokio@^1.0").unwrap();
+        assert_eq!(spec.name, "tokio");
+        assert!(spec.requirement.matches(&Version::new(1, 35, 0)));
+        assert!(!spec.requirement.matches(&Version::new(2, 0, 0)));
+        assert_eq!(spec.source, DependencySource::CratesIO);
+    }
+
+    #[test]
+    fn parse_cargo_prefix_with_features() {
+        let spec = DependencySpec::parse("cargo:serde@1.0:features=derive").unwrap();
+        assert_eq!(spec.name, "serde");
+        assert_eq!(spec.source, DependencySource::CratesIO);
+    }
+
+    #[test]
+    fn from_yaml_source_pin_pypi() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: pypi\nversion: \"^1.0\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("numpy".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::Pip {
+            package_name: "numpy".to_string()
+        });
+        assert!(spec.requirement.matches(&Version::new(1, 25, 0)));
+    }
+
+    #[test]
+    fn from_yaml_source_pin_crates_io() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: crates-io\nversion: \"^1.0\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("serde".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::CratesIO);
+    }
+
+    #[test]
+    fn from_yaml_source_pin_system() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: system\nversion: \"*\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("libudev-dev".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::System);
+    }
+
+    #[test]
+    fn from_yaml_source_pin_registry_explicit() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: registry\nversion: \"^2.0\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("my-node".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::Registry);
+    }
+
+    #[test]
+    fn from_yaml_source_pin_aliases() {
+        // pip alias
+        let yaml: serde_yaml::Value = serde_yaml::from_str("source: pip\nversion: \"*\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("pkg".to_string(), &yaml).unwrap();
+        assert!(matches!(spec.source, DependencySource::Pip { .. }));
+
+        // cargo alias
+        let yaml: serde_yaml::Value = serde_yaml::from_str("source: cargo\nversion: \"*\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("pkg".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::CratesIO);
+
+        // horus alias
+        let yaml: serde_yaml::Value = serde_yaml::from_str("source: horus\nversion: \"*\"\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("pkg".to_string(), &yaml).unwrap();
+        assert_eq!(spec.source, DependencySource::Registry);
+    }
+
+    #[test]
+    fn from_yaml_source_pin_invalid() {
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: npm\nversion: \"*\"\n").unwrap();
+        let result = DependencySpec::from_yaml_value("bad".to_string(), &yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown source"));
+    }
+
+    #[test]
+    fn from_yaml_source_pin_without_version() {
+        // source: pypi with no version should work (star)
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("source: pypi\n").unwrap();
+        let spec = DependencySpec::from_yaml_value("numpy".to_string(), &yaml).unwrap();
+        assert_eq!(spec.requirement, VersionReq::STAR);
+        assert!(matches!(spec.source, DependencySource::Pip { .. }));
     }
 }

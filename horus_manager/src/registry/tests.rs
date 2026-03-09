@@ -15,12 +15,93 @@ fn test_url_encode_simple_name() {
 
 #[test]
 fn test_url_encode_scoped_name() {
-    assert_eq!(url_encode_package_name("@org/pkg"), "@org/pkg");
+    assert_eq!(url_encode_package_name("@org/pkg"), "%40org%2Fpkg");
+}
+
+#[test]
+fn test_url_encode_special_chars() {
+    assert_eq!(url_encode_package_name("a b"), "a%20b");
+    assert_eq!(url_encode_package_name("a#b"), "a%23b");
+    assert_eq!(url_encode_package_name("a?b"), "a%3Fb");
+}
+
+#[test]
+fn test_url_encode_percent_itself() {
+    // % must be encoded first to avoid double-encoding
+    assert_eq!(url_encode_package_name("a%b"), "a%25b");
 }
 
 #[test]
 fn test_package_name_to_path_simple() {
     assert_eq!(package_name_to_path("lidar-driver"), "lidar-driver");
+}
+
+#[test]
+fn test_package_name_to_path_scoped() {
+    assert_eq!(package_name_to_path("@org/pkg"), "org__pkg");
+}
+
+#[test]
+fn test_package_name_to_path_nested_scope() {
+    assert_eq!(package_name_to_path("@org/sub/pkg"), "org__sub__pkg");
+}
+
+// ============================================================================
+// validate_package_name tests
+// ============================================================================
+
+#[test]
+fn test_validate_name_valid() {
+    assert!(validate_package_name("lidar-driver").is_ok());
+    assert!(validate_package_name("my_package").is_ok());
+    assert!(validate_package_name("nav2").is_ok());
+    assert!(validate_package_name("ab").is_ok()); // min length
+}
+
+#[test]
+fn test_validate_name_scoped_ok() {
+    assert!(validate_package_name("@org/pkg").is_ok());
+    assert!(validate_package_name("@my-team/sensor-driver").is_ok());
+}
+
+#[test]
+fn test_validate_name_scoped_missing_slash() {
+    assert!(validate_package_name("@orgpkg").is_err());
+}
+
+#[test]
+fn test_validate_name_too_short() {
+    assert!(validate_package_name("a").is_err());
+}
+
+#[test]
+fn test_validate_name_too_long() {
+    let long_name: String = std::iter::repeat('a').take(65).collect();
+    assert!(validate_package_name(&long_name).is_err());
+}
+
+#[test]
+fn test_validate_name_uppercase_rejected() {
+    assert!(validate_package_name("MyPackage").is_err());
+}
+
+#[test]
+fn test_validate_name_starts_with_digit() {
+    assert!(validate_package_name("1package").is_err());
+}
+
+#[test]
+fn test_validate_name_reserved() {
+    assert!(validate_package_name("horus").is_err());
+    assert!(validate_package_name("core").is_err());
+    assert!(validate_package_name("admin").is_err());
+}
+
+#[test]
+fn test_validate_name_special_chars_rejected() {
+    assert!(validate_package_name("my package").is_err());
+    assert!(validate_package_name("my.package").is_err());
+    assert!(validate_package_name("my+package").is_err());
 }
 
 // ============================================================================

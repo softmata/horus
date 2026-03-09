@@ -119,6 +119,37 @@ fn action_macro_generates_types() {
 }
 
 // ============================================================================
+// 3b. action! Goal::new() constructor
+// ============================================================================
+
+action! {
+    TestNavigate {
+        goal {
+            target_x: f64,
+            target_y: f64,
+        }
+        feedback {
+            distance: f64,
+        }
+        result {
+            success: bool,
+        }
+    }
+}
+
+#[test]
+fn action_goal_new_constructor() {
+    // new() takes all fields — no struct literal boilerplate
+    let goal = TestNavigateGoal::new(5.0, 3.0);
+    assert_eq!(goal.target_x, 5.0);
+    assert_eq!(goal.target_y, 3.0);
+
+    // Single-field goal
+    let goal2 = TestMoveGoal::new(10.0);
+    assert_eq!(goal2.distance, 10.0);
+}
+
+// ============================================================================
 // 4. Node + Scheduler workflow
 // ============================================================================
 
@@ -139,7 +170,7 @@ impl Node for CounterNode {
 #[test]
 fn scheduler_runs_node() {
     let mut scheduler = Scheduler::new().tick_hz(100.0);
-    scheduler.add(CounterNode { count: 0 }).order(0).build();
+    scheduler.add(CounterNode { count: 0 }).order(0).build().unwrap();
 
     // Run for a short duration
     scheduler.run_for(Duration::from_millis(100)).unwrap();
@@ -153,11 +184,11 @@ fn scheduler_runs_node() {
 fn node_builder_uses_build() {
     let mut scheduler = Scheduler::new();
 
-    // .build() is the primary method
-    scheduler.add(CounterNode { count: 0 }).order(0).build();
+    // .build() is the primary method (returns HorusResult)
+    scheduler.add(CounterNode { count: 0 }).order(0).build().unwrap();
 
     // .done() also works (backward compat alias)
-    scheduler.add(CounterNode { count: 0 }).order(1).done();
+    scheduler.add(CounterNode { count: 0 }).order(1).done().unwrap();
 }
 
 // ============================================================================
@@ -237,13 +268,33 @@ fn cmdvel_twist_conversions() {
 }
 
 // ============================================================================
-// 10. Topic::create() convenience constructor
+// 10. Topic::new() returns Result (no panicking create())
 // ============================================================================
 
 #[test]
-fn topic_create_convenience() {
-    let _topic: Topic<String> = Topic::create("test_dx_topic");
-    // Should not panic — that's the convenience guarantee
+fn topic_new_returns_result() {
+    let topic: Topic<String> = Topic::new("test_dx_topic").unwrap();
+    // Topic::new() returns HorusResult — no panicking create() shortcut
+    drop(topic);
+}
+
+// ============================================================================
+// 10b. Topic::try_send() and dropped_count()
+// ============================================================================
+
+#[test]
+fn topic_try_send_and_dropped_count() {
+    let topic: Topic<u64> = Topic::with_capacity("test_dx_try_send", 2, None).unwrap();
+    // Fill the ring
+    topic.send(1);
+    topic.send(2);
+    // try_send should fail when full
+    assert!(topic.try_send(3).is_err());
+    // dropped_count reflects send() failures (not try_send — try_send returns the msg)
+    assert_eq!(topic.dropped_count(), 0);
+    // Force a dropped send via the lossy path
+    topic.send(4); // this will spin+yield then drop
+    assert!(topic.dropped_count() > 0 || topic.metrics().send_failures > 0);
 }
 
 // ============================================================================
@@ -252,10 +303,51 @@ fn topic_create_convenience() {
 
 #[test]
 fn runtime_params_from_prelude() {
-    let params = RuntimeParams::init().unwrap();
+    let params = RuntimeParams::new().unwrap();
     params.set("test_key", 42_i64).unwrap();
     let val: i64 = params.get("test_key").unwrap();
     assert_eq!(val, 42);
+}
+
+// ============================================================================
+// 11b. RuntimeParams::get_typed() returns explicit errors
+// ============================================================================
+
+#[test]
+fn runtime_params_get_typed() {
+    let params = RuntimeParams::new().unwrap();
+    params.set("speed", 1.5_f64).unwrap();
+
+    // get_typed succeeds with correct type
+    let speed: f64 = params.get_typed("speed").unwrap();
+    assert_eq!(speed, 1.5);
+
+    // get_typed fails on missing key
+    let missing = params.get_typed::<f64>("nonexistent");
+    assert!(missing.is_err());
+
+    // get_typed fails on type mismatch
+    let wrong_type = params.get_typed::<Vec<i32>>("speed");
+    assert!(wrong_type.is_err());
+}
+
+// ============================================================================
+// 11c. Scheduler tick_hz() is deferred (applies at run time, not at build time)
+// ============================================================================
+
+#[test]
+fn scheduler_tick_hz_deferred() {
+    // tick_hz() should work as a builder — applied when run() is called
+    let mut scheduler = Scheduler::new().tick_hz(500.0);
+    scheduler
+        .add(CounterNode { count: 0 })
+        .order(0)
+        .rate_hz(100.0)
+        .build()
+        .unwrap();
+
+    // Runs without panic — proves tick_hz config is applied at run() time
+    scheduler.run_for(Duration::from_millis(50)).unwrap();
 }
 
 // ============================================================================

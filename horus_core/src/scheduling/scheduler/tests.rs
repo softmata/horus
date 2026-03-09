@@ -1746,7 +1746,7 @@ fn test_empty_scheduler_metrics() {
 fn test_tick_hz_zero() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new().tick_hz(0.0);
-    scheduler.add(CounterNode::new("zero_hz")).build();
+    scheduler.add(CounterNode::new("zero_hz")).build().unwrap();
     // Should handle 0hz gracefully (no infinite loop, no division by zero)
     let result = scheduler.run_for(Duration::from_millis(50));
     assert!(result.is_ok());
@@ -1756,7 +1756,7 @@ fn test_tick_hz_zero() {
 fn test_tick_hz_negative() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new().tick_hz(-100.0);
-    scheduler.add(CounterNode::new("neg_hz")).build();
+    scheduler.add(CounterNode::new("neg_hz")).build().unwrap();
     let result = scheduler.run_for(Duration::from_millis(50));
     assert!(result.is_ok());
 }
@@ -1768,7 +1768,8 @@ fn test_tick_hz_very_large() {
     let mut scheduler = Scheduler::new().tick_hz(1_000_000.0);
     scheduler
         .add(CounterNode::with_counter("fast", counter.clone()))
-        .build();
+        .build()
+        .unwrap();
     let result = scheduler.run_for(Duration::from_millis(10));
     assert!(result.is_ok());
     assert!(counter.load(Ordering::SeqCst) > 0);
@@ -1786,7 +1787,7 @@ fn test_set_node_rate_nonexistent() {
 fn test_set_node_rate_zero() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("rate_zero")).build();
+    scheduler.add(CounterNode::new("rate_zero")).build().unwrap();
     scheduler.set_node_rate("rate_zero", 0.0);
 }
 
@@ -1794,7 +1795,7 @@ fn test_set_node_rate_zero() {
 fn test_set_node_rate_negative() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("rate_neg")).build();
+    scheduler.add(CounterNode::new("rate_neg")).build().unwrap();
     scheduler.set_node_rate("rate_neg", -50.0);
 }
 
@@ -1802,7 +1803,7 @@ fn test_set_node_rate_negative() {
 fn test_tick_empty_node_names() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("tick_test")).build();
+    scheduler.add(CounterNode::new("tick_test")).build().unwrap();
     // Tick with empty names should succeed (tick nothing)
     let result = scheduler.tick(&[]);
     assert!(result.is_ok());
@@ -1812,7 +1813,7 @@ fn test_tick_empty_node_names() {
 fn test_tick_nonexistent_node_names() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("real_node")).build();
+    scheduler.add(CounterNode::new("real_node")).build().unwrap();
     // Tick with non-existent names should not panic
     let result = scheduler.tick(&["fake_node_1", "fake_node_2"]);
     assert!(result.is_ok());
@@ -1852,7 +1853,7 @@ fn test_stop_before_run() {
 fn test_double_stop() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("double_stop")).build();
+    scheduler.add(CounterNode::new("double_stop")).build().unwrap();
     let _ = scheduler.run_for(Duration::from_millis(10));
     scheduler.stop();
     scheduler.stop(); // Double stop should not panic
@@ -1882,7 +1883,7 @@ fn test_with_blackbox_zero_size() {
 fn test_max_deadline_misses_zero() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new().max_deadline_misses(0);
-    scheduler.add(CounterNode::new("zero_miss")).build();
+    scheduler.add(CounterNode::new("zero_miss")).build().unwrap();
     let result = scheduler.run_for(Duration::from_millis(10));
     assert!(result.is_ok());
 }
@@ -1891,7 +1892,7 @@ fn test_max_deadline_misses_zero() {
 fn test_run_for_zero_duration() {
     let _lock = lock_scheduler();
     let mut scheduler = Scheduler::new();
-    scheduler.add(CounterNode::new("zero_dur")).build();
+    scheduler.add(CounterNode::new("zero_dur")).build().unwrap();
     let result = scheduler.run_for(Duration::ZERO);
     assert!(result.is_ok());
 }
@@ -2203,10 +2204,10 @@ fn test_shutdown_error_does_not_prevent_other_shutdowns() {
         }
         fn tick(&mut self) {}
         fn shutdown(&mut self) -> crate::error::HorusResult<()> {
-            Err(crate::HorusError::Node {
+            Err(crate::HorusError::Node(crate::error::NodeError::Other {
                 node: "err_shutdown".to_string(),
                 message: "intentional shutdown error".to_string(),
-            })
+            }))
         }
     }
 

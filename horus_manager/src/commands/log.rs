@@ -7,7 +7,7 @@
 use crate::cli_output;
 use colored::*;
 use horus_core::core::log_buffer::{LogEntry, LogType, GLOBAL_LOG_BUFFER};
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_logs_path;
 use std::time::{Duration, SystemTime};
 
@@ -76,15 +76,15 @@ fn parse_since(since: Option<&str>) -> HorusResult<Option<SystemTime>> {
     } else if let Some(s) = since.strip_suffix('d') {
         (s, "d")
     } else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Invalid time format: {}. Use '5m', '1h', '30s', '2d'",
             since
-        )));
+        ))));
     };
 
     let num: u64 = num_str
         .parse()
-        .map_err(|_| HorusError::Config(format!("Invalid number in time: {}", since)))?;
+        .map_err(|_| HorusError::Config(ConfigError::Other(format!("Invalid number in time: {}", since))))?;
 
     let secs = match unit {
         "s" => num,
@@ -92,10 +92,10 @@ fn parse_since(since: Option<&str>) -> HorusResult<Option<SystemTime>> {
         "h" => num * 3600,
         "d" => num * 86400,
         _ => {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Unknown time unit in: {}",
                 since
-            )))
+            ))))
         }
     };
 

@@ -228,6 +228,26 @@ macro_rules! hlog {
     };
 }
 
+/// Log a [`HorusError`] with its remediation hint (if any).
+///
+/// Logs the error at ERROR level, then appends the `help()` hint on a
+/// second line if one exists. Use this instead of `hlog!(error, "{}", e)`
+/// when you want the user to see actionable remediation.
+///
+/// ```ignore
+/// if let Err(e) = topic.send(&msg) {
+///     horus_core::core::hlog::log_horus_error(&e);
+/// }
+/// ```
+pub fn log_horus_error(err: &crate::error::HorusError) {
+    let msg = if let Some(hint) = err.help() {
+        format!("{}\n  hint: {}", err, hint)
+    } else {
+        format!("{}", err)
+    };
+    log_with_context(LogType::Error, msg);
+}
+
 /// Log a message at most once per `$interval_ms` milliseconds (throttled).
 ///
 /// Equivalent to ROS2's `RCLCPP_INFO_THROTTLE` / `RCLCPP_WARN_THROTTLE`.

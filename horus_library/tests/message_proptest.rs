@@ -176,7 +176,7 @@ roundtrip_test!(
 
 fn arb_cmd_vel() -> impl Strategy<Value = CmdVel> {
     (any::<u64>(), finite_f32(), finite_f32()).prop_map(|(ts, lin, ang)| CmdVel {
-        stamp_nanos: ts,
+        timestamp_ns: ts,
         linear: lin,
         angular: ang,
     })

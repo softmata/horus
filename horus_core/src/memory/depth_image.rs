@@ -29,7 +29,7 @@ use crate::types::{DepthImageDescriptor, Device, TensorDtype};
 
 use super::tensor_pool::TensorPool;
 use crate::communication::topic::pool_registry::global_pool;
-use crate::error::{HorusError, HorusResult};
+use crate::error::{HorusError, HorusResult, ValidationError};
 
 /// Depth image with zero-copy shared memory backing.
 ///
@@ -132,10 +132,10 @@ impl DepthImage {
             // so callers can distinguish a valid 65535mm reading from an overflow.
             let mm_f32 = value * 1000.0 / self.descriptor.depth_scale();
             if !mm_f32.is_finite() || mm_f32 < 0.0 || mm_f32 > u16::MAX as f32 {
-                return Err(HorusError::OutOfRange(format!(
+                return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                     "Depth {:.4}m maps to {:.1}mm, which is outside u16 range [0, 65535]",
                     value, mm_f32
-                )));
+                ))));
             }
             let mm = mm_f32 as u16;
             let data = self.data_mut();
@@ -264,7 +264,7 @@ mod tests {
         let mut depth = DepthImage::new(4, 4, TensorDtype::U16).unwrap();
         let result = depth.set_depth(0, 0, 70.0);
         assert!(
-            matches!(result, Err(HorusError::OutOfRange(_))),
+            matches!(result, Err(HorusError::InvalidInput(ValidationError::Other(_)))),
             "Expected OutOfRange for 70m on U16 depth image, got {:?}",
             result
         );
@@ -302,7 +302,7 @@ mod tests {
         let mut depth = DepthImage::new(2, 2, TensorDtype::U16).unwrap();
         let result = depth.set_depth(0, 0, -1.0);
         assert!(
-            matches!(result, Err(HorusError::OutOfRange(_))),
+            matches!(result, Err(HorusError::InvalidInput(ValidationError::Other(_)))),
             "Negative depth should return OutOfRange, got {:?}",
             result
         );

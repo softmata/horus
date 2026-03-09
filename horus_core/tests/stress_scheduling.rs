@@ -3,7 +3,7 @@
 //! Tests scale, sustained operation, cascading failures, and
 //! resource management under load.
 
-use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo, RtNode};
+use horus_core::core::{DeadlineMissPolicy, Node, NodeInfo};
 use horus_core::scheduling::{FailurePolicy, Scheduler};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -44,11 +44,8 @@ impl Node for RtCounterNode {
     fn tick(&mut self) {
         self.tick_count.fetch_add(1, Ordering::SeqCst);
     }
-}
-
-impl RtNode for RtCounterNode {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_millis(10)
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_millis(10))
     }
     fn deadline_miss_policy(&self) -> DeadlineMissPolicy {
         DeadlineMissPolicy::Warn

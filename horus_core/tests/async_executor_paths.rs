@@ -60,7 +60,7 @@ impl Node for AsyncFailInitNode {
     }
     fn init(&mut self) -> HorusResult<()> {
         Err(horus_core::error::HorusError::Config(
-            "async init fail".to_string(),
+            horus_core::error::ConfigError::Other("async init fail".to_string()),
         ))
     }
     fn tick(&mut self) {

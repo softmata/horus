@@ -161,7 +161,7 @@ fn extract_odometry(py: Python<'_>, obj: &Py<PyAny>) -> PyResult<Odometry> {
 fn cmdvel_to_python(py: Python<'_>, cmd: &CmdVel) -> PyResult<Py<PyAny>> {
     let cls = get_cmdvel_class(py)?;
     Ok(cls
-        .call1((cmd.linear, cmd.angular, cmd.stamp_nanos))?
+        .call1((cmd.linear, cmd.angular, cmd.timestamp_ns))?
         .into())
 }
 

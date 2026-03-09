@@ -31,40 +31,41 @@ use std::collections::HashMap;
 pub type RuntimeResult<T> = Result<T, RuntimeError>;
 
 /// Errors from runtime operations
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     /// Failed to set CPU affinity
+    #[error("CPU affinity error: {0}")]
     AffinityError(String),
     /// Failed to lock memory
+    #[error("Memory lock error: {0}")]
     MemoryLockError(String),
     /// Failed to set RT scheduling
+    #[error("Scheduling error: {0}")]
     SchedulingError(String),
     /// Feature not supported on this platform
+    #[error("Not supported: {0}")]
     NotSupported(String),
     /// Permission denied
+    #[error("Permission denied: {0}")]
     PermissionDenied(String),
 }
-
-impl std::fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RuntimeError::AffinityError(msg) => write!(f, "CPU affinity error: {}", msg),
-            RuntimeError::MemoryLockError(msg) => write!(f, "Memory lock error: {}", msg),
-            RuntimeError::SchedulingError(msg) => write!(f, "Scheduling error: {}", msg),
-            RuntimeError::NotSupported(msg) => write!(f, "Not supported: {}", msg),
-            RuntimeError::PermissionDenied(msg) => write!(f, "Permission denied: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for RuntimeError {}
 
 impl From<RuntimeError> for crate::error::HorusError {
     fn from(err: RuntimeError) -> Self {
         match err {
-            RuntimeError::PermissionDenied(msg) => crate::error::HorusError::PermissionDenied(msg),
-            RuntimeError::NotSupported(msg) => crate::error::HorusError::Unsupported(msg),
-            other => crate::error::HorusError::Config(other.to_string()),
+            RuntimeError::PermissionDenied(msg) => crate::error::HorusError::Resource(
+                crate::error::ResourceError::PermissionDenied {
+                    resource: "RT scheduling".to_string(),
+                    required_permission: msg,
+                },
+            ),
+            RuntimeError::NotSupported(msg) => crate::error::HorusError::Resource(
+                crate::error::ResourceError::Unsupported {
+                    feature: "RT scheduling".to_string(),
+                    reason: msg,
+                },
+            ),
+            other => crate::error::HorusError::Config(crate::error::ConfigError::Other(other.to_string())),
         }
     }
 }

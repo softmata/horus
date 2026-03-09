@@ -6,7 +6,7 @@
 use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 
 // ─── Action discovery ─────────────────────────────────────────────────────────
 
@@ -247,10 +247,10 @@ pub fn action_info(name: &str) -> HorusResult<()> {
     });
 
     let Some(action) = action else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Action '{}' not found. Use 'horus action list' to see available actions.",
             name
-        )));
+        ))));
     };
 
     println!("{}", "Action Information".green().bold());
@@ -321,10 +321,10 @@ pub fn send_goal(
     // Validate JSON
     let goal_value: serde_json::Value =
         serde_json::from_str(goal_json).map_err(|e| {
-            HorusError::Config(format!(
+            HorusError::Config(ConfigError::Other(format!(
                 "Invalid goal JSON: {}\n  Example: horus action send_goal {} '{{\"x\": 1.0, \"y\": 2.0}}'",
                 e, name
-            ))
+            )))
         })?;
 
     // Action topics use a wrapper: GoalRequest<G> which has uuid + priority + payload
@@ -357,10 +357,10 @@ pub fn send_goal(
     println!();
 
     let goal_topic: Topic<serde_json::Value> = Topic::new(&goal_topic_name).map_err(|e| {
-        HorusError::Config(format!(
+        HorusError::Config(ConfigError::Other(format!(
             "Cannot open goal topic '{}': {}\n  Is an action server running for '{}'?",
             goal_topic_name, e, name
-        ))
+        )))
     })?;
 
     goal_topic.send(goal_request);
@@ -629,10 +629,10 @@ pub fn cancel_goal(name: &str, goal_id: Option<&str>) -> HorusResult<()> {
     });
 
     let cancel_topic: Topic<serde_json::Value> = Topic::new(&cancel_topic_name).map_err(|e| {
-        HorusError::Config(format!(
+        HorusError::Config(ConfigError::Other(format!(
             "Cannot open cancel topic '{}': {}",
             cancel_topic_name, e
-        ))
+        )))
     })?;
 
     cancel_topic.send(cancel_request);

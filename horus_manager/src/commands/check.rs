@@ -5,7 +5,7 @@ use crate::commands::run::{check_hardware_requirements, parse_horus_yaml_depende
 use crate::config::{CARGO_TOML, HORUS_YAML};
 use crate::dependency_resolver::DependencySource;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::has_native_shm;
 #[cfg(not(target_os = "linux"))]
 use horus_core::memory::shm_base_dir;
@@ -37,7 +37,7 @@ pub fn run_check(path: Option<PathBuf>, quiet: bool, json: bool) -> HorusResult<
             cli_output::ICON_ERROR.red(),
             target_path.display()
         );
-        return Err(HorusError::Config("Path not found".to_string()));
+        return Err(HorusError::Config(ConfigError::Other("Path not found".to_string())));
     }
 
     // For JSON mode, capture check result and output as JSON only
@@ -420,10 +420,10 @@ except ImportError as e:
     println!();
 
     if total_errors > 0 {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "{} error(s) found",
             total_errors
-        )));
+        ))));
     }
     Ok(())
 }
@@ -462,7 +462,7 @@ fn check_rust_file(path: &Path) -> HorusResult<()> {
             println!("{}", cli_output::ICON_ERROR.red());
             println!("\n{} Syntax error:", cli_output::ICON_ERROR.red().bold());
             println!("  {}", e);
-            return Err(HorusError::Config(format!("Rust syntax error: {}", e)));
+            return Err(HorusError::Config(ConfigError::Other(format!("Rust syntax error: {}", e))));
         }
     }
 
@@ -503,10 +503,10 @@ fn check_python_file(path: &Path) -> HorusResult<()> {
             let error = String::from_utf8_lossy(&result.stderr);
             println!("\n{} Syntax error:", cli_output::ICON_ERROR.red().bold());
             println!("  {}", error);
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Python syntax error: {}",
                 error
-            )));
+            ))));
         }
         Err(e) => {
             println!("{}", "[WARNING]".yellow());
@@ -907,6 +907,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
                     DependencySource::Pip { package_name } => {
                         let _ = package_name;
                     }
+                    DependencySource::CratesIO | DependencySource::System => {}
                 }
             }
 
@@ -1334,7 +1335,7 @@ fn check_yaml_file(horus_yaml_path: &Path, quiet: bool) -> HorusResult<()> {
             println!("  {}. {}", i + 1, err);
         }
         println!();
-        Err(HorusError::Config("Validation failed".to_string()))
+        Err(HorusError::Config(ConfigError::Other("Validation failed".to_string())))
     }
 }
 
@@ -1866,12 +1867,12 @@ pub fn prompt_missing_system_package(
     print!("\n  Choice [1-3]: ");
     io::stdout()
         .flush()
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
-        .map_err(|e| HorusError::Config(e.to_string()))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     match input.trim() {
         "1" => Ok(MissingSystemChoice::InstallGlobal),

@@ -379,9 +379,9 @@ fn regression_recording_manager_missing_session_returns_empty() {
 /// Fix: init() creates the file if missing, returning empty params.
 #[test]
 fn regression_runtime_params_init_without_file() {
-    // This test runs in whatever directory — RuntimeParams::init should not panic
-    let result = horus_core::params::RuntimeParams::init();
-    assert!(result.is_ok(), "RuntimeParams::init must not panic");
+    // This test runs in whatever directory — RuntimeParams::new should not panic
+    let result = horus_core::params::RuntimeParams::new();
+    assert!(result.is_ok(), "RuntimeParams::new must not panic");
     let params = result.unwrap();
     // Should be able to query without error
     let all = params.get_all();

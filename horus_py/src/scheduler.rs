@@ -435,6 +435,9 @@ impl PyScheduler {
             PyRuntimeError::new_err("Cannot add nodes while scheduler is running")
         })?;
 
+        config
+            .validate()
+            .map_err(|e| PyRuntimeError::new_err(format!("Invalid node configuration: {}", e)))?;
         inner.add_configured(config);
 
         println!(

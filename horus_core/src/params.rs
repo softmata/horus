@@ -2,7 +2,7 @@
 //!
 //! Provides a straightforward key-value store for runtime configuration
 
-use crate::error::{HorusError, HorusResult};
+use crate::error::{HorusError, HorusResult, ValidationError};
 use regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,7 +54,7 @@ pub struct ParamMetadata {
 /// ```rust
 /// use horus_core::params::RuntimeParams;
 ///
-/// let params = RuntimeParams::init().unwrap();
+/// let params = RuntimeParams::new().unwrap();
 ///
 /// // Set and get typed parameters
 /// params.set("max_speed", 1.5_f64).unwrap();
@@ -104,8 +104,11 @@ impl RuntimeParams {
         params
     }
 
-    /// Create new parameter store with defaults
-    pub fn init() -> HorusResult<Self> {
+    /// Create a new parameter store with defaults.
+    ///
+    /// Loads parameters from `.horus/config/params.yaml` if present,
+    /// otherwise uses built-in defaults.
+    pub fn new() -> HorusResult<Self> {
         let mut initial_params = BTreeMap::new();
 
         // Try to load from .horus/config/params.yaml in current project
@@ -131,6 +134,14 @@ impl RuntimeParams {
         })
     }
 
+    /// Create new parameter store with defaults.
+    ///
+    /// Use [`new()`](Self::new) instead — follows Rust naming conventions.
+    #[deprecated(since = "0.2.0", note = "Use RuntimeParams::new() instead")]
+    pub fn init() -> HorusResult<Self> {
+        Self::new()
+    }
+
     /// Set default parameters
     fn set_defaults(&self) -> Result<(), HorusError> {
         for (key, value) in Self::default_params() {
@@ -139,11 +150,40 @@ impl RuntimeParams {
         Ok(())
     }
 
-    /// Get a parameter value
+    /// Get a parameter value, returning `None` if missing or on any error.
+    ///
+    /// For explicit error handling, use [`get_typed()`](Self::get_typed).
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
         let params = self.params.read().ok()?;
         let value = params.get(key)?;
         serde_json::from_value(value.clone()).ok()
+    }
+
+    /// Get a parameter value with explicit error reporting.
+    ///
+    /// Unlike [`get()`](Self::get) which silently returns `None` on errors,
+    /// this method distinguishes between missing keys, type mismatches, and
+    /// lock poisoning.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let speed: f64 = params.get_typed("max_speed")?;
+    /// ```
+    pub fn get_typed<T: for<'de> Deserialize<'de>>(&self, key: &str) -> HorusResult<T> {
+        let params = self.params.read()?;
+        let value = params.get(key).ok_or_else(|| {
+            HorusError::InvalidInput(ValidationError::Other(format!(
+                "Parameter '{}' not found",
+                key
+            )))
+        })?;
+        serde_json::from_value(value.clone()).map_err(|e| {
+            HorusError::InvalidInput(ValidationError::Other(format!(
+                "Parameter '{}' type mismatch: {}",
+                key, e
+            )))
+        })
     }
 
     /// Get parameter with default
@@ -158,10 +198,10 @@ impl RuntimeParams {
         // Check if parameter is read-only
         if let Some(meta) = self.get_metadata(key) {
             if meta.read_only {
-                return Err(HorusError::InvalidInput(format!(
+                return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                     "Parameter '{}' is read-only",
                     key
-                )));
+                ))));
             }
 
             // Validate against rules
@@ -251,10 +291,10 @@ impl RuntimeParams {
         // First, check the version
         let current_version = self.get_version(key);
         if current_version != expected_version {
-            return Err(HorusError::InvalidInput(format!(
+            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                 "Version mismatch for '{}': expected {}, current {}. The parameter was modified by another user.",
                 key, expected_version, current_version
-            )));
+            ))));
         }
 
         // If version matches, proceed with normal set operation
@@ -306,53 +346,53 @@ impl RuntimeParams {
                 ValidationRule::MinValue(min) => {
                     if let Some(num) = value.as_f64() {
                         if num < *min {
-                            return Err(HorusError::InvalidInput(format!(
+                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                 "Parameter '{}' value {} is below minimum {}",
                                 key, num, min
-                            )));
+                            ))));
                         }
                     }
                 }
                 ValidationRule::MaxValue(max) => {
                     if let Some(num) = value.as_f64() {
                         if num > *max {
-                            return Err(HorusError::InvalidInput(format!(
+                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                 "Parameter '{}' value {} exceeds maximum {}",
                                 key, num, max
-                            )));
+                            ))));
                         }
                     }
                 }
                 ValidationRule::Range(min, max) => {
                     if let Some(num) = value.as_f64() {
                         if num < *min || num > *max {
-                            return Err(HorusError::InvalidInput(format!(
+                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                 "Parameter '{}' value {} is outside range [{}, {}]",
                                 key, num, min, max
-                            )));
+                            ))));
                         }
                     }
                 }
                 ValidationRule::RegexPattern(pattern) => {
                     if let Some(s) = value.as_str() {
                         let re = regex::Regex::new(pattern).map_err(|e| {
-                            HorusError::InvalidInput(format!("Invalid regex: {}", e))
+                            HorusError::InvalidInput(ValidationError::Other(format!("Invalid regex: {}", e)))
                         })?;
                         if !re.is_match(s) {
-                            return Err(HorusError::InvalidInput(format!(
+                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                 "Parameter '{}' value '{}' does not match pattern '{}'",
                                 key, s, pattern
-                            )));
+                            ))));
                         }
                     }
                 }
                 ValidationRule::Enum(allowed) => {
                     if let Some(s) = value.as_str() {
                         if !allowed.contains(&s.to_string()) {
-                            return Err(HorusError::InvalidInput(format!(
+                            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                 "Parameter '{}' value '{}' not in allowed values: {:?}",
                                 key, s, allowed
-                            )));
+                            ))));
                         }
                     }
                 }
@@ -365,10 +405,10 @@ impl RuntimeParams {
                         0
                     };
                     if len < *min_len {
-                        return Err(HorusError::InvalidInput(format!(
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                             "Parameter '{}' length {} is below minimum {}",
                             key, len, min_len
-                        )));
+                        ))));
                     }
                 }
                 ValidationRule::MaxLength(max_len) => {
@@ -380,20 +420,20 @@ impl RuntimeParams {
                         0
                     };
                     if len > *max_len {
-                        return Err(HorusError::InvalidInput(format!(
+                        return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                             "Parameter '{}' length {} exceeds maximum {}",
                             key, len, max_len
-                        )));
+                        ))));
                     }
                 }
                 ValidationRule::RequiredKeys(required) => {
                     if let Some(obj) = value.as_object() {
                         for req_key in required {
                             if !obj.contains_key(req_key) {
-                                return Err(HorusError::InvalidInput(format!(
+                                return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                                     "Parameter '{}' missing required key '{}'",
                                     key, req_key
-                                )));
+                                ))));
                             }
                         }
                     }
@@ -447,7 +487,7 @@ impl Clone for RuntimeParams {
 
 impl Default for RuntimeParams {
     fn default() -> Self {
-        Self::init().unwrap_or_else(|e| {
+        Self::new().unwrap_or_else(|e| {
             eprintln!(
                 "Failed to initialize RuntimeParams: {}. Using empty params.",
                 e

@@ -11,7 +11,7 @@
 
 use colored::*;
 use horus_core::communication::Topic;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_library::hframe::{HFMessage, HFrame, Transform, TransformStamped};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -479,9 +479,9 @@ pub fn echo_transform(
 
     let rate_hz = rate.unwrap_or(10.0);
     if rate_hz <= 0.0 {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "Rate must be greater than 0.0".to_string(),
-        ));
+        )));
     }
     let interval = Duration::from_secs_f64(1.0 / rate_hz);
     let mut messages_received = 0;

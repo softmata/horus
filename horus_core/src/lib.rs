@@ -60,10 +60,14 @@ pub use communication::{
 #[doc(hidden)]
 pub use core::{
     DeadlineMissPolicy, HealthStatus, LogSummary, Node, NodeMetrics, NodePresence, NodeState, Rate,
-    RtClass, RtNode, RtPriority, RtStats, Stopwatch, TopicMetadata,
+    RtClass, RtPriority, RtStats, Stopwatch, TopicMetadata,
 };
 #[doc(hidden)]
-pub use error::{CommunicationError, HorusError, HorusResult, MemoryError, Result};
+pub use error::{
+    CommunicationError, ConfigError, HorusContext, HorusError, HorusResult, MemoryError, NodeError,
+    NotFoundError, ParseError, ResourceError, Result, RetryConfig, SerializationError, Severity,
+    TimeoutError, TransformError, ValidationError, retry_transient,
+};
 #[doc(hidden)]
 pub use params::RuntimeParams;
 #[doc(hidden)]

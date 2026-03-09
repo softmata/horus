@@ -3,7 +3,7 @@
 //! These tests mirror common ROS2 TF2 usage patterns to verify HFrame
 //! provides equivalent functionality.
 
-use horus_core::error::HorusError;
+use horus_core::error::{HorusError, NotFoundError, TransformError};
 use horus_library::hframe::{HFrame, Transform};
 
 // ==========================================================================
@@ -19,7 +19,7 @@ fn tf2_parity_extrapolation_past() {
         .unwrap();
 
     let result = hf.tf_at_strict("sensor", "world", 1000);
-    assert!(matches!(result, Err(HorusError::Extrapolation(_))));
+    assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
 }
 
 #[test]
@@ -31,7 +31,7 @@ fn tf2_parity_extrapolation_future() {
         .unwrap();
 
     let result = hf.tf_at_strict("sensor", "world", 99999);
-    assert!(matches!(result, Err(HorusError::Extrapolation(_))));
+    assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn tf2_parity_extrapolation_chain_any_hop() {
 
     // ts=3000 in b's range but outside a's → Extrapolation
     let result = hf.tf_at_strict("b", "world", 3000);
-    assert!(matches!(result, Err(HorusError::Extrapolation(_))));
+    assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn tf2_parity_tolerance_exceeded() {
 
     // Gap=4000, tolerance=1000 → Extrapolation
     let result = hf.tf_at_with_tolerance("a", "world", 5000, 1000);
-    assert!(matches!(result, Err(HorusError::Extrapolation(_))));
+    assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
 }
 
 #[test]
@@ -345,9 +345,8 @@ fn tf2_parity_error_frame_not_registered() {
 
     let err = hf.tf("nonexistent", "world").unwrap_err();
     match err {
-        HorusError::NotFound(msg) => {
-            assert!(msg.contains("nonexistent"));
-            assert!(msg.contains("not registered"));
+        HorusError::NotFound(NotFoundError::Frame { ref name }) => {
+            assert_eq!(name, "nonexistent");
         }
         other => unreachable!("Expected NotFound, got: {:?}", other),
     }
@@ -483,7 +482,7 @@ fn tf2_parity_query_builder_can_at() {
 fn tf2_parity_frame_builder_dynamic() {
     let hf = HFrame::new();
     hf.add_frame("world").build().unwrap();
-    hf.add_frame("base").parent("world").unwrap();
+    hf.add_frame("base").parent("world").build().unwrap();
 
     assert!(hf.has_frame("world"));
     assert!(hf.has_frame("base"));
@@ -494,9 +493,10 @@ fn tf2_parity_frame_builder_dynamic() {
 fn tf2_parity_frame_builder_static() {
     let hf = HFrame::new();
     hf.add_frame("world").build().unwrap();
-    hf.add_static("cam")
+    hf.add_frame("cam")
         .parent("world")
-        .transform(&Transform::xyz(0.0, 0.0, 0.5))
+        .static_transform(&Transform::xyz(0.0, 0.0, 0.5))
+        .build()
         .unwrap();
 
     let tf = hf.tf("cam", "world").unwrap();
@@ -549,16 +549,17 @@ fn tf2_parity_pr2_arm_chain() {
 
     // PR2-like chain: world -> base_link -> shoulder -> upper_arm -> forearm -> gripper
     hf.add_frame("world").build().unwrap();
-    hf.add_frame("base_link").parent("world").unwrap();
-    hf.add_frame("shoulder").parent("base_link").unwrap();
-    hf.add_frame("upper_arm").parent("shoulder").unwrap();
-    hf.add_frame("forearm").parent("upper_arm").unwrap();
-    hf.add_frame("gripper").parent("forearm").unwrap();
+    hf.add_frame("base_link").parent("world").build().unwrap();
+    hf.add_frame("shoulder").parent("base_link").build().unwrap();
+    hf.add_frame("upper_arm").parent("shoulder").build().unwrap();
+    hf.add_frame("forearm").parent("upper_arm").build().unwrap();
+    hf.add_frame("gripper").parent("forearm").build().unwrap();
 
     // Static sensor mount
-    hf.add_static("camera")
+    hf.add_frame("camera")
         .parent("gripper")
-        .transform(&Transform::xyz(0.0, 0.0, 0.05))
+        .static_transform(&Transform::xyz(0.0, 0.0, 0.05))
+        .build()
         .unwrap();
 
     // Set transforms (identity rotation, translation only)

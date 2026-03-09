@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::communication::Topic;
-use crate::error::HorusResult;
+use crate::error::{HorusResult, RetryConfig};
 use crate::services::types::{
     Service, ServiceError, ServiceRequest, ServiceResponse, ServiceResult,
 };
@@ -111,6 +111,70 @@ where
 
             std::thread::sleep(self.poll_interval);
         }
+    }
+
+    /// Call the service with automatic retry on transient errors.
+    ///
+    /// Uses default retry config (3 retries, 10ms initial backoff, 2x multiplier).
+    /// Only retries on transient errors (`Timeout`, `Transport`).
+    /// Permanent errors (`ServiceFailed`, `NoServer`) propagate immediately.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let resp = client.call_resilient(
+    ///     AddTwoIntsRequest { a: 3, b: 4 },
+    ///     Duration::from_secs(1),
+    /// )?;
+    /// ```
+    pub fn call_resilient(
+        &mut self,
+        request: S::Request,
+        timeout: Duration,
+    ) -> ServiceResult<S::Response> {
+        self.call_resilient_with(request, timeout, RetryConfig::default())
+    }
+
+    /// Call the service with automatic retry using a custom retry config.
+    ///
+    /// Only retries on transient errors (`Timeout`, `Transport`).
+    /// Permanent errors (`ServiceFailed`, `NoServer`) propagate immediately.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let config = RetryConfig::new(5, Duration::from_millis(50));
+    /// let resp = client.call_resilient_with(
+    ///     AddTwoIntsRequest { a: 3, b: 4 },
+    ///     Duration::from_secs(1),
+    ///     config,
+    /// )?;
+    /// ```
+    pub fn call_resilient_with(
+        &mut self,
+        request: S::Request,
+        timeout: Duration,
+        config: RetryConfig,
+    ) -> ServiceResult<S::Response> {
+        let mut backoff = config.initial_backoff;
+
+        for attempt in 0..=config.max_retries {
+            match self.call(request.clone(), timeout) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt == config.max_retries || !e.is_transient() {
+                        return Err(e);
+                    }
+                    std::thread::sleep(backoff);
+                    backoff = Duration::from_secs_f64(
+                        (backoff.as_secs_f64() * config.backoff_multiplier)
+                            .min(config.max_backoff.as_secs_f64()),
+                    );
+                }
+            }
+        }
+
+        unreachable!()
     }
 
     /// Call the service and return `Ok(None)` on timeout instead of `Err`.

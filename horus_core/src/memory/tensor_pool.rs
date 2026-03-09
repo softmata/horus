@@ -57,7 +57,7 @@
 //! // Reference counting handles cleanup automatically
 //! ```
 
-use crate::error::{HorusError, HorusResult};
+use crate::error::{ConfigError, HorusError, HorusResult};
 use crate::memory::platform::shm_base_dir;
 use memmap2::{MmapMut, MmapOptions};
 use std::fs::{File, OpenOptions};
@@ -206,6 +206,11 @@ pub struct TensorPool {
     slot_available: std::sync::Condvar,
     slot_mutex: std::sync::Mutex<()>,
     slot_return_count: AtomicU64,
+
+    /// Allocation counter for periodic utilization checks.
+    alloc_count: AtomicU64,
+    /// Whether the utilization warning has been emitted.
+    warned_pressure: std::sync::atomic::AtomicBool,
 }
 
 impl TensorPool {
@@ -265,6 +270,8 @@ impl TensorPool {
             slot_available: std::sync::Condvar::new(),
             slot_mutex: std::sync::Mutex::new(()),
             slot_return_count: AtomicU64::new(0),
+            alloc_count: AtomicU64::new(0),
+            warned_pressure: std::sync::atomic::AtomicBool::new(false),
         };
 
         if is_owner {
@@ -282,10 +289,10 @@ impl TensorPool {
         let shm_path = shm_dir.join(format!("tensor_pool_{}", pool_id));
 
         if !shm_path.exists() {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Tensor pool {} does not exist",
                 pool_id
-            )));
+            ))));
         }
 
         let file = OpenOptions::new().read(true).write(true).open(&shm_path)?;
@@ -301,7 +308,7 @@ impl TensorPool {
         let header = unsafe { &*(mmap.as_ptr() as *const PoolHeader) };
 
         if header.magic != POOL_MAGIC {
-            return Err(HorusError::Config("Invalid tensor pool magic".to_string()));
+            return Err(HorusError::Config(ConfigError::Other("Invalid tensor pool magic".to_string())));
         }
 
         let config = TensorPoolConfig {
@@ -328,6 +335,8 @@ impl TensorPool {
             slot_available: std::sync::Condvar::new(),
             slot_mutex: std::sync::Mutex::new(()),
             slot_return_count: AtomicU64::new(0),
+            alloc_count: AtomicU64::new(0),
+            warned_pressure: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -378,24 +387,47 @@ impl TensorPool {
         let header = self.header();
 
         if header.magic != POOL_MAGIC {
-            return Err(HorusError::Config("Invalid tensor pool magic".to_string()));
+            return Err(HorusError::Config(ConfigError::Other("Invalid tensor pool magic".to_string())));
         }
 
         if header.version != POOL_VERSION {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Tensor pool version mismatch: expected {}, got {}",
                 POOL_VERSION, header.version
-            )));
+            ))));
         }
 
         if header.pool_id != self.pool_id {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Tensor pool ID mismatch: expected {}, got {}",
                 self.pool_id, header.pool_id
-            )));
+            ))));
         }
 
         Ok(())
+    }
+
+    /// Check pool utilization and emit a warning if under pressure.
+    ///
+    /// Called periodically (every 64 allocations) to avoid per-alloc overhead.
+    fn check_utilization(&self) {
+        let count = self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        // Check every 64 allocations
+        if count % 64 != 0 {
+            return;
+        }
+
+        let stats = self.stats();
+        if stats.is_under_pressure()
+            && !self.warned_pressure.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!(
+                "[horus::tensor_pool] WARNING: {}\n  \
+                 hint: Ensure tensors are dropped promptly. Consider increasing \
+                 pool_size or max_slots in TensorPoolConfig.",
+                stats.summary(),
+            );
+        }
     }
 
     /// Allocate a tensor slot
@@ -404,6 +436,8 @@ impl TensorPool {
     /// The device field on the descriptor is set automatically when the pool
     /// uses a managed memory allocator, otherwise it uses the caller-supplied device.
     pub fn alloc(&self, shape: &[u64], dtype: TensorDtype, device: Device) -> HorusResult<Tensor> {
+        self.check_utilization();
+
         // Calculate required size — use checked arithmetic to prevent overflow.
         // A crafted shape like [u32::MAX, u32::MAX] would overflow u64 without this check,
         // causing the pool to allocate a near-zero-size region and subsequent writes to
@@ -501,9 +535,11 @@ impl TensorPool {
                     // Transient exhaustion — wait for a slot to be returned.
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
-                        return Err(HorusError::Timeout(
-                            "Tensor pool exhausted: timed out waiting for a free slot".to_string(),
-                        ));
+                        return Err(HorusError::Timeout(crate::error::TimeoutError {
+                            resource: "tensor_pool".to_string(),
+                            elapsed: timeout,
+                            deadline: Some(timeout),
+                        }));
                     }
 
                     // Take the mutex before re-reading the counter.  If return_slot()
@@ -1250,7 +1286,7 @@ impl TensorPool {
             let aligned_current = Self::align_up(current, self.config.slot_alignment);
             // Checked add prevents offset overflow on pathological concurrent allocations.
             let new_offset = aligned_current.checked_add(size).ok_or_else(|| {
-                HorusError::Memory("Tensor pool: allocation offset overflow".to_string().into())
+                HorusError::Memory(crate::error::MemoryError::OffsetOverflow)
             })?;
 
             if new_offset > self.config.pool_size {
@@ -1308,6 +1344,55 @@ pub struct TensorPoolStats {
     pub total_refcount: u32,
     pub used_bytes: usize,
     pub free_bytes: usize,
+}
+
+impl TensorPoolStats {
+    /// Slot utilization as a fraction (0.0 to 1.0).
+    pub fn slot_utilization(&self) -> f64 {
+        if self.max_slots == 0 {
+            return 0.0;
+        }
+        self.allocated_slots as f64 / self.max_slots as f64
+    }
+
+    /// Data region utilization as a fraction (0.0 to 1.0).
+    pub fn data_utilization(&self) -> f64 {
+        if self.pool_size == 0 {
+            return 0.0;
+        }
+        self.used_bytes as f64 / self.pool_size as f64
+    }
+
+    /// Whether the pool is under memory pressure (>80% utilization on either axis).
+    pub fn is_under_pressure(&self) -> bool {
+        self.slot_utilization() > 0.8 || self.data_utilization() > 0.8
+    }
+
+    /// Human-readable summary.
+    pub fn summary(&self) -> String {
+        format!(
+            "TensorPool(id={}, slots={}/{} ({:.0}%), data={}/{} ({:.0}%))",
+            self.pool_id,
+            self.allocated_slots,
+            self.max_slots,
+            self.slot_utilization() * 100.0,
+            format_bytes(self.used_bytes),
+            format_bytes(self.pool_size),
+            self.data_utilization() * 100.0,
+        )
+    }
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 // Re-export tensor types from types module

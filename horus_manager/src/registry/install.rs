@@ -1,6 +1,39 @@
 use super::helpers::*;
 use super::*;
 
+/// Verify an Ed25519 signature against a local public key file.
+/// Returns Ok(true) if valid, Ok(false) if invalid, Err on format/IO errors.
+fn verify_package_signature(
+    package_data: &[u8],
+    signature_hex: &str,
+    public_key_path: &Path,
+) -> Result<bool> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let sig_bytes = hex::decode(signature_hex)
+        .map_err(|_| anyhow!("Invalid signature hex encoding"))?;
+    let signature = Signature::from_bytes(
+        sig_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("Invalid signature length"))?,
+    );
+
+    let pub_hex = fs::read_to_string(public_key_path)
+        .map_err(|e| anyhow!("Failed to read public key: {}", e))?;
+    let pub_bytes = hex::decode(pub_hex.trim())
+        .map_err(|_| anyhow!("Invalid public key hex encoding"))?;
+    let verifying_key = VerifyingKey::from_bytes(
+        pub_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("Invalid public key length"))?,
+    )
+    .map_err(|_| anyhow!("Invalid Ed25519 public key"))?;
+
+    Ok(verifying_key.verify(package_data, &signature).is_ok())
+}
+
 impl RegistryClient {
     // Install a package to a specific target (used by install_to_target)
     // Returns the actual installed version
@@ -82,8 +115,21 @@ impl RegistryClient {
             return Ok(PackageSource::CratesIO);
         }
 
-        // Package only in PyPI or not found (default to PyPI)
-        Ok(PackageSource::PyPI)
+        // Package only in PyPI
+        if in_pypi {
+            return Ok(PackageSource::PyPI);
+        }
+
+        // Not found in any registry
+        Err(anyhow!(
+            "Package '{}' not found in any registry.\n\
+             Checked: HORUS registry, PyPI, crates.io\n\n\
+             Suggestions:\n\
+             - Check the spelling of the package name\n\
+             - Search available packages: horus search {}",
+            package_name,
+            package_name
+        ))
     }
 
     fn check_pypi_exists(&self, package_name: &str) -> bool {
@@ -202,6 +248,24 @@ impl RegistryClient {
                 self.install_from_pypi(package_name, version_str.as_deref(), target)
                     .map(|_| ()) // Ignore version for dependency spec
             }
+            DependencySource::CratesIO => {
+                // Install from crates.io (source pinned in horus.yaml)
+                let version_str = if spec.requirement.to_string() != "*" {
+                    Some(spec.requirement.to_string())
+                } else {
+                    None
+                };
+                self.install_from_cratesio(&spec.name, version_str.as_deref(), target)
+                    .map(|_| ())
+            }
+            DependencySource::System => {
+                eprintln!(
+                    "  {} System dependency '{}' - install with your system package manager",
+                    crate::cli_output::ICON_INFO.cyan(),
+                    spec.name,
+                );
+                Ok(())
+            }
         }
     }
 
@@ -233,22 +297,50 @@ impl RegistryClient {
         let response = self.client.get(&url).send()?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+
             // Check if the package was yanked (410 Gone)
-            if response.status() == reqwest::StatusCode::GONE {
-                let body = response.text().unwrap_or_default();
+            if status == reqwest::StatusCode::GONE {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
                     let reason = json
                         .get("reason")
                         .and_then(|v| v.as_str())
                         .unwrap_or("No reason given");
                     return Err(anyhow!(
-                        "Package {} has been yanked: {}",
+                        "Package {}@{} has been yanked: {}\n\n\
+                         The maintainer has withdrawn this version.\n\
+                         Try installing a different version:\n\
+                         - horus install {}          (latest non-yanked)\n\
+                         - horus search {}           (see available versions)",
                         package_name,
-                        reason
+                        version_str,
+                        reason,
+                        package_name,
+                        package_name
                     ));
                 }
             }
-            return Err(anyhow!("Package not found: {}", package_name));
+
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(anyhow!(
+                    "Package '{}' v{} not found in registry.\n\
+                     Check the name and version, or run `horus search {}` to find available packages.",
+                    package_name, version_str, package_name
+                ));
+            } else if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(anyhow!(
+                    "Authentication required to download '{}'.\n\
+                     Run `horus auth login` to authenticate.",
+                    package_name
+                ));
+            } else {
+                return Err(anyhow!(
+                    "Failed to download '{}' v{}: HTTP {}\n\
+                     The registry may be temporarily unavailable. Try again in a few minutes.",
+                    package_name, version_str, status.as_u16()
+                ));
+            }
         }
 
         // Check for package signature header
@@ -258,7 +350,72 @@ impl RegistryClient {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
-        let bytes = response.bytes()?;
+        // Download with progress bar for large packages (>512KB)
+        let content_length = response.content_length();
+        let bytes = if let Some(total) = content_length.filter(|&s| s > 512 * 1024) {
+            // Replace spinner with progress bar for large downloads
+            spinner.finish_and_clear();
+            println!(
+                "  {} Downloading {} ({})...",
+                crate::cli_output::ICON_INFO.cyan(),
+                package_name,
+                progress::format_bytes(total)
+            );
+            use indicatif::{ProgressBar as DlBar, ProgressStyle as DlStyle};
+            use std::io::Read;
+            let pb = DlBar::new(total);
+            pb.set_style(
+                DlStyle::default_bar()
+                    .template("   {bar:30.cyan/dim} {bytes}/{total_bytes} ({eta})")
+                    .unwrap_or_else(|_| DlStyle::default_bar())
+                    .progress_chars("##-"),
+            );
+            let mut downloaded = Vec::with_capacity(total as usize);
+            let mut stream = response;
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        downloaded.extend_from_slice(&buf[..n]);
+                        pb.set_position(downloaded.len() as u64);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(anyhow::anyhow!("Download interrupted: {}", e)),
+                }
+            }
+            pb.finish_and_clear();
+            downloaded
+        } else {
+            response.bytes()?.to_vec()
+        };
+
+        // Verify Ed25519 signature if present
+        if let Some(ref sig_hex) = pkg_signature {
+            let pub_key_path = crate::paths::keys_dir()
+                .ok()
+                .map(|d| d.join("signing_key.pub"));
+            if let Some(pub_path) = pub_key_path.filter(|p| p.exists()) {
+                match verify_package_signature(&bytes, sig_hex, &pub_path) {
+                    Ok(true) => {
+                        log::info!("Package signature verified for {}", package_name);
+                    }
+                    Ok(false) => {
+                        return Err(anyhow!(
+                            "Package signature verification FAILED for {}. \
+                             The package may have been tampered with. \
+                             If you trust this package, remove your local public key.",
+                            package_name
+                        ));
+                    }
+                    Err(e) => {
+                        log::warn!("Could not verify signature for {}: {}", package_name, e);
+                    }
+                }
+            } else {
+                log::debug!("Package {} is signed but no local public key to verify against", package_name);
+            }
+        }
 
         // Calculate checksum
         let mut hasher = Sha256::new();

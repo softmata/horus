@@ -11,7 +11,7 @@ use super::transform::Transform;
 
 use super::config::HFrameConfig;
 use super::slot::{FrameSlot, TransformEntry};
-use horus_core::error::HorusError;
+use horus_core::error::{HorusError, TransformError, ValidationError};
 use horus_core::HorusResult;
 
 use super::types::{FrameId, FrameType, NO_PARENT};
@@ -112,13 +112,24 @@ impl ChainCache {
 }
 
 impl HFrameCore {
-    /// Create a new HFrame core with the given configuration
+    /// Create a new HFrame core with the given configuration.
+    ///
+    /// When `enable_overflow` is true, pre-allocates up to 4x the configured
+    /// `max_frames` (capped at [`MAX_SUPPORTED_FRAMES`]). This allows the
+    /// registry to grow beyond the initial limit without reallocating the
+    /// lock-free slot storage.
     pub fn new(config: &HFrameConfig) -> Self {
-        let mut slots = Vec::with_capacity(config.max_frames);
-        let mut parents = Vec::with_capacity(config.max_frames);
-        let children = vec![Vec::new(); config.max_frames];
+        let physical_capacity = if config.enable_overflow {
+            (config.max_frames * 4).min(super::types::MAX_SUPPORTED_FRAMES)
+        } else {
+            config.max_frames
+        };
 
-        for _ in 0..config.max_frames {
+        let mut slots = Vec::with_capacity(physical_capacity);
+        let mut parents = Vec::with_capacity(physical_capacity);
+        let children = vec![Vec::new(); physical_capacity];
+
+        for _ in 0..physical_capacity {
             slots.push(FrameSlot::new(config.history_len));
             parents.push(AtomicU32::new(NO_PARENT));
         }
@@ -133,6 +144,12 @@ impl HFrameCore {
             config: config.clone(),
             global_generation: AtomicU64::new(0),
         }
+    }
+
+    /// The actual number of pre-allocated slots (may be larger than `config.max_frames`
+    /// when `enable_overflow` is true).
+    pub fn physical_capacity(&self) -> usize {
+        self.slots.len()
     }
 
     // ========================================================================
@@ -310,17 +327,17 @@ impl HFrameCore {
     pub fn update(&self, id: FrameId, transform: &Transform, timestamp_ns: u64) -> HorusResult<()> {
         let idx = id as usize;
         if idx >= self.slots.len() {
-            return Err(HorusError::InvalidInput(format!(
+            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                 "Frame ID {} out of range (max {})",
                 id,
                 self.slots.len()
-            )));
+            ))));
         }
 
         // Validate and auto-normalize the transform
         let validated = transform
             .validated()
-            .map_err(|e| HorusError::InvalidInput(format!("Transform: {}", e)))?;
+            .map_err(|e| HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e))))?;
 
         self.slots[idx].update(&validated, timestamp_ns);
         // Increment AFTER the slot write so the Release fence publishes
@@ -333,17 +350,17 @@ impl HFrameCore {
     pub fn set_static_transform(&self, id: FrameId, transform: &Transform) -> HorusResult<()> {
         let idx = id as usize;
         if idx >= self.slots.len() {
-            return Err(HorusError::InvalidInput(format!(
+            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                 "Frame ID {} out of range (max {})",
                 id,
                 self.slots.len()
-            )));
+            ))));
         }
 
         // Validate and auto-normalize the transform
         let validated = transform
             .validated()
-            .map_err(|e| HorusError::InvalidInput(format!("Transform: {}", e)))?;
+            .map_err(|e| HorusError::InvalidInput(ValidationError::Other(format!("Transform: {}", e))))?;
 
         self.slots[idx].set_static_transform(&validated);
         self.global_generation.fetch_add(1, Ordering::Release);
@@ -419,22 +436,20 @@ impl HFrameCore {
                     continue; // No data yet — resolve_at will handle this
                 }
                 if timestamp_ns < oldest {
-                    return Err(HorusError::Extrapolation(format!(
-                        "Frame {}: requested {}ns, oldest buffered {}ns ({}ns into past)",
-                        frame_id,
-                        timestamp_ns,
-                        oldest,
-                        oldest - timestamp_ns
-                    )));
+                    return Err(HorusError::Transform(TransformError::Extrapolation {
+                        frame: format!("{}", frame_id),
+                        requested_ns: timestamp_ns,
+                        oldest_ns: oldest,
+                        newest_ns: newest,
+                    }));
                 }
                 if timestamp_ns > newest {
-                    return Err(HorusError::Extrapolation(format!(
-                        "Frame {}: requested {}ns, newest buffered {}ns ({}ns into future)",
-                        frame_id,
-                        timestamp_ns,
-                        newest,
-                        timestamp_ns - newest
-                    )));
+                    return Err(HorusError::Transform(TransformError::Extrapolation {
+                        frame: format!("{}", frame_id),
+                        requested_ns: timestamp_ns,
+                        oldest_ns: oldest,
+                        newest_ns: newest,
+                    }));
                 }
             }
         }
@@ -493,18 +508,20 @@ impl HFrameCore {
                         continue;
                     }
                     if timestamp_ns < oldest && oldest.saturating_sub(timestamp_ns) > tolerance_ns {
-                        return Err(HorusError::Extrapolation(format!(
-                            "Frame {}: requested {}ns, oldest buffered {}ns, gap {}ns exceeds tolerance {}ns",
-                            frame_id, timestamp_ns, oldest,
-                            oldest - timestamp_ns, tolerance_ns
-                        )));
+                        return Err(HorusError::Transform(TransformError::Extrapolation {
+                            frame: format!("{}", frame_id),
+                            requested_ns: timestamp_ns,
+                            oldest_ns: oldest,
+                            newest_ns: newest,
+                        }));
                     }
                     if timestamp_ns > newest && timestamp_ns.saturating_sub(newest) > tolerance_ns {
-                        return Err(HorusError::Extrapolation(format!(
-                            "Frame {}: requested {}ns, newest buffered {}ns, gap {}ns exceeds tolerance {}ns",
-                            frame_id, timestamp_ns, newest,
-                            timestamp_ns - newest, tolerance_ns
-                        )));
+                        return Err(HorusError::Transform(TransformError::Extrapolation {
+                            frame: format!("{}", frame_id),
+                            requested_ns: timestamp_ns,
+                            oldest_ns: oldest,
+                            newest_ns: newest,
+                        }));
                     }
                 }
             }
@@ -577,9 +594,9 @@ impl HFrameCore {
 
             while current != NO_PARENT {
                 if !visited.insert(current) {
-                    return Err(HorusError::InvalidInput(
+                    return Err(HorusError::InvalidInput(ValidationError::Other(
                         "Cycle detected in frame tree".to_string(),
-                    ));
+                    )));
                 }
                 if (current as usize) >= self.parents.len() {
                     break;

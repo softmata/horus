@@ -6,7 +6,7 @@ use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use crate::progress::format_bytes;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_topics_dir;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -143,10 +143,10 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
     });
 
     let Some(topic) = topic else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
-        )));
+        ))));
     };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
 
@@ -163,9 +163,9 @@ pub fn echo_topic(name: &str, count: Option<usize>, rate: Option<f64>) -> HorusR
 
     let sleep_duration = match rate {
         Some(r) if r <= 0.0 => {
-            return Err(HorusError::Config(
+            return Err(HorusError::Config(ConfigError::Other(
                 "Rate must be greater than 0.0".to_string(),
-            ));
+            )));
         }
         Some(r) => Duration::from_secs_f64(1.0 / r),
         None => Duration::from_millis(100),
@@ -305,10 +305,10 @@ pub fn topic_info(name: &str) -> HorusResult<()> {
     });
 
     let Some(topic) = topic else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
-        )));
+        ))));
     };
 
     println!("{}", "Topic Information".green().bold());
@@ -382,17 +382,17 @@ pub fn topic_hz(name: &str, window: Option<usize>) -> HorusResult<()> {
     });
 
     let Some(topic) = topic else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
-        )));
+        ))));
     };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
     let window_size = window.unwrap_or(10);
     if window_size == 0 {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "--window must be at least 1".to_string(),
-        ));
+        )));
     }
 
     println!(
@@ -486,17 +486,17 @@ pub fn topic_bw(name: &str, window: Option<usize>) -> HorusResult<()> {
     });
 
     let Some(topic) = topic else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Topic '{}' not found. Use 'horus topic list' to see available topics.",
             name
-        )));
+        ))));
     };
     let topic_path = shm_topics_dir().join(&topic.topic_name);
     let window_size = window.unwrap_or(100);
     if window_size == 0 {
-        return Err(HorusError::Config(
+        return Err(HorusError::Config(ConfigError::Other(
             "--window must be at least 1".to_string(),
-        ));
+        )));
     }
 
     println!(
@@ -632,22 +632,25 @@ pub fn publish_topic(
 
     // Parse JSON message
     let value: serde_json::Value = serde_json::from_str(message).map_err(|e| {
-        HorusError::Config(format!(
+        HorusError::Config(ConfigError::Other(format!(
             "Invalid JSON message: {}. Example: '{{\"linear\": 1.0}}'",
             e
-        ))
+        )))
     })?;
 
     // Create topic using the proper ring buffer protocol
     let topic: Topic<serde_json::Value> = Topic::new(name).map_err(|e| {
-        HorusError::Communication(format!("Failed to create topic '{}': {}", name, e).into())
+        HorusError::Communication(horus_core::error::CommunicationError::TopicCreationFailed {
+            topic: name.to_string(),
+            reason: e.to_string(),
+        })
     })?;
 
     let sleep_duration = match rate {
         Some(r) if r <= 0.0 => {
-            return Err(HorusError::Config(
+            return Err(HorusError::Config(ConfigError::Other(
                 "Rate must be greater than 0.0".to_string(),
-            ));
+            )));
         }
         Some(r) => Some(Duration::from_secs_f64(1.0 / r)),
         None => None,

@@ -6,7 +6,7 @@ use crate::cli_output;
 use crate::discovery::{discover_nodes, ProcessCategory};
 use crate::progress::format_bytes;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::shm_control_dir;
 use std::fs;
 use std::process::Command;
@@ -22,10 +22,10 @@ pub fn list_nodes(verbose: bool, json: bool, category: Option<String>) -> HorusR
             "tool" | "tools" => ProcessCategory::Tool,
             "cli" => ProcessCategory::CLI,
             _ => {
-                return Err(HorusError::Config(format!(
+                return Err(HorusError::Config(ConfigError::Other(format!(
                     "Unknown category '{}'. Valid options: node, tool, cli",
                     cat
-                )));
+                ))));
             }
         };
         nodes
@@ -176,10 +176,10 @@ pub fn node_info(name: &str) -> HorusResult<()> {
         .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
-        )));
+        ))));
     };
 
     println!("{}", "Node Information".green().bold());
@@ -268,10 +268,10 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
         .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
-        )));
+        ))));
     };
 
     println!(
@@ -283,11 +283,11 @@ pub fn kill_node(name: &str, force: bool) -> HorusResult<()> {
     // Write control file to stop the specific node
     let control_dir = shm_control_dir();
     fs::create_dir_all(&control_dir)
-        .map_err(|e| HorusError::Config(format!("Failed to create control directory: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to create control directory: {}", e))))?;
 
     let control_file = control_dir.join(format!("{}.cmd", node.name));
     fs::write(&control_file, "stop")
-        .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to write control file: {}", e))))?;
 
     println!(
         "{} Node stop command sent",
@@ -323,10 +323,10 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
         .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
-        )));
+        ))));
     };
 
     println!(
@@ -338,11 +338,11 @@ pub fn restart_node(name: &str) -> HorusResult<()> {
     // Write control file to restart the specific node
     let control_dir = shm_control_dir();
     fs::create_dir_all(&control_dir)
-        .map_err(|e| HorusError::Config(format!("Failed to create control directory: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to create control directory: {}", e))))?;
 
     let control_file = control_dir.join(format!("{}.cmd", node.name));
     fs::write(&control_file, "restart")
-        .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to write control file: {}", e))))?;
 
     println!(
         "{} Node restart command sent",
@@ -365,10 +365,10 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
         .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
-        )));
+        ))));
     };
 
     println!(
@@ -380,11 +380,11 @@ pub fn pause_node(name: &str) -> HorusResult<()> {
     // Write control file to pause the specific node
     let control_dir = shm_control_dir();
     fs::create_dir_all(&control_dir)
-        .map_err(|e| HorusError::Config(format!("Failed to create control directory: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to create control directory: {}", e))))?;
 
     let control_file = control_dir.join(format!("{}.cmd", node.name));
     fs::write(&control_file, "pause")
-        .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to write control file: {}", e))))?;
 
     println!("{} Node paused", cli_output::ICON_SUCCESS.green());
     println!(
@@ -405,10 +405,10 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
         .find(|n| n.name == name || n.name.ends_with(&format!("/{}", name)));
 
     let Some(node) = node else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Node '{}' not found. Use 'horus node list' to see running nodes.",
             name
-        )));
+        ))));
     };
 
     println!(
@@ -420,11 +420,11 @@ pub fn resume_node(name: &str) -> HorusResult<()> {
     // Write control file to resume the specific node
     let control_dir = shm_control_dir();
     fs::create_dir_all(&control_dir)
-        .map_err(|e| HorusError::Config(format!("Failed to create control directory: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to create control directory: {}", e))))?;
 
     let control_file = control_dir.join(format!("{}.cmd", node.name));
     fs::write(&control_file, "resume")
-        .map_err(|e| HorusError::Config(format!("Failed to write control file: {}", e)))?;
+        .map_err(|e| HorusError::Config(ConfigError::Other(format!("Failed to write control file: {}", e))))?;
 
     println!("{} Node resumed", cli_output::ICON_SUCCESS.green());
 

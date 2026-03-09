@@ -105,9 +105,11 @@
 //! ```rust,ignore
 //! // Register frames fluently
 //! hf.add_frame("world").build()?;
-//! hf.add_frame("base_link").parent("world")?;
-//! hf.add_static("camera").parent("base_link")
-//!     .transform(&Transform::xyz(0.1, 0.0, 0.5))?;
+//! hf.add_frame("base_link").parent("world").build()?;
+//! hf.add_frame("camera")
+//!     .parent("base_link")
+//!     .static_transform(&Transform::xyz(0.1, 0.0, 0.5))
+//!     .build()?;
 //!
 //! // Query transforms fluently
 //! let tf = hf.query("camera").to("world").lookup()?;
@@ -152,6 +154,7 @@ mod transform;
 mod types;
 
 // Re-export public API
+#[allow(deprecated)]
 pub use builder::{FrameBuilder, StaticFrameBuilder, StaticFrameBuilderWithParent};
 pub use config::HFrameConfig;
 pub use core::HFrameCore;
@@ -167,7 +170,7 @@ pub use messages::{
 };
 pub use transform::Transform;
 
-use horus_core::error::HorusError;
+use horus_core::error::{HorusError, NotFoundError, TimeoutError, TransformError};
 use horus_core::HorusResult;
 use std::sync::Arc;
 
@@ -263,7 +266,11 @@ impl HFrame {
     /// Create with custom configuration
     pub fn with_config(config: HFrameConfig) -> Self {
         let core = Arc::new(HFrameCore::new(&config));
-        let registry = Arc::new(FrameRegistry::new(core.clone(), config.max_frames));
+        let registry = Arc::new(FrameRegistry::with_overflow(
+            core.clone(),
+            config.max_frames,
+            config.enable_overflow,
+        ));
 
         Self {
             core,
@@ -352,11 +359,15 @@ impl HFrame {
         Ok(id)
     }
 
-    /// Start building a dynamic frame registration.
+    /// Start building a frame registration (dynamic or static).
     ///
     /// ```rust,ignore
-    /// hf.add_frame("world").build()?;               // root frame
-    /// hf.add_frame("base_link").parent("world")?;   // child frame
+    /// hf.add_frame("world").build()?;                              // root
+    /// hf.add_frame("base_link").parent("world").build()?;          // child
+    /// hf.add_frame("camera")                                       // static
+    ///     .parent("base_link")
+    ///     .static_transform(&Transform::xyz(0.1, 0.0, 0.5))
+    ///     .build()?;
     /// ```
     #[inline]
     pub fn add_frame<'a>(&'a self, name: &'a str) -> FrameBuilder<'a> {
@@ -365,13 +376,13 @@ impl HFrame {
 
     /// Start building a static frame registration.
     ///
-    /// Static frames require a parent and a transform:
-    /// ```rust,ignore
-    /// hf.add_static("camera")
-    ///     .parent("base_link")
-    ///     .transform(&Transform::from_translation([0.1, 0.0, 0.5]))?;
-    /// ```
+    /// Prefer `add_frame(name).parent(p).static_transform(&tf).build()?` instead.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use add_frame(name).parent(p).static_transform(&tf).build()? instead"
+    )]
     #[inline]
+    #[allow(deprecated)]
     pub fn add_static<'a>(&'a self, name: &'a str) -> StaticFrameBuilder<'a> {
         StaticFrameBuilder::new(self, name)
     }
@@ -478,7 +489,7 @@ impl HFrame {
         let id = self
             .registry
             .lookup(name)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", name)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: name.to_string() }))?;
         self.core.update(id, transform, timestamp_ns)?;
         #[cfg(feature = "wait")]
         self.notifier.notify();
@@ -494,7 +505,7 @@ impl HFrame {
         let id = self
             .registry
             .lookup(name)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", name)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: name.to_string() }))?;
         self.core.set_static_transform(id, transform)
     }
 
@@ -516,11 +527,11 @@ impl HFrame {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", src)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", dst)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
 
         self.core.resolve(src_id, dst_id).ok_or_else(|| {
             HorusError::Communication(
@@ -539,11 +550,11 @@ impl HFrame {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", src)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}' not registered", dst)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
 
         self.core
             .resolve_at(src_id, dst_id, timestamp_ns)
@@ -566,7 +577,7 @@ impl HFrame {
     /// ```rust,ignore
     /// match hf.tf_at_strict("camera", "world", timestamp) {
     ///     Ok(tf) => use_transform(tf),
-    ///     Err(HorusError::Extrapolation(msg)) => log::warn!("Stale data: {}", msg),
+    ///     Err(HorusError::Transform(TransformError::Extrapolation { frame, .. })) => log::warn!("Stale: {}", frame),
     ///     Err(e) => return Err(e),
     /// }
     /// ```
@@ -574,11 +585,11 @@ impl HFrame {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
 
         self.core.resolve_at_strict(src_id, dst_id, timestamp_ns)
     }
@@ -605,11 +616,11 @@ impl HFrame {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
 
         self.core
             .resolve_at_with_tolerance(src_id, dst_id, timestamp_ns, tolerance_ns)
@@ -733,11 +744,11 @@ impl HFrame {
         let src_id = self
             .registry
             .lookup(src)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", src)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: src.to_string() }))?;
         let dst_id = self
             .registry
             .lookup(dst)
-            .ok_or_else(|| HorusError::NotFound(format!("Frame '{}'", dst)))?;
+            .ok_or_else(|| HorusError::NotFound(NotFoundError::Frame { name: dst.to_string() }))?;
 
         let chain = self
             .core
@@ -796,10 +807,11 @@ impl HFrame {
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(HorusError::Timeout(format!(
-                    "Timed out waiting for transform '{}' -> '{}' after {:?}",
-                    src, dst, timeout
-                )));
+                return Err(HorusError::Timeout(TimeoutError {
+                    resource: format!("transform '{}' -> '{}'", src, dst),
+                    elapsed: timeout,
+                    deadline: Some(timeout),
+                }));
             }
 
             // Wait for a notification (update or registration)
@@ -837,10 +849,11 @@ impl HFrame {
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err(HorusError::Timeout(format!(
-                    "Timed out waiting for transform '{}' -> '{}' at ts={}ns after {:?}",
-                    src, dst, timestamp_ns, timeout
-                )));
+                return Err(HorusError::Timeout(TimeoutError {
+                    resource: format!("transform '{}' -> '{}' at ts={}ns", src, dst, timestamp_ns),
+                    elapsed: timeout,
+                    deadline: Some(timeout),
+                }));
             }
 
             self.notifier.wait_timeout(remaining);
@@ -885,10 +898,11 @@ impl HFrame {
         loop {
             tokio::select! {
                 _ = &mut sleep => {
-                    return Err(HorusError::Timeout(format!(
-                        "Timed out waiting for transform '{}' -> '{}' after {:?}",
-                        src, dst, timeout
-                    )));
+                    return Err(HorusError::Timeout(TimeoutError {
+                        resource: format!("transform '{}' -> '{}'", src, dst),
+                        elapsed: timeout,
+                        deadline: Some(timeout),
+                    }));
                 }
                 _ = self.async_notifier.notified() => {
                     if let Ok(tf) = self.tf(src, dst) {
@@ -925,10 +939,11 @@ impl HFrame {
         loop {
             tokio::select! {
                 _ = &mut sleep => {
-                    return Err(HorusError::Timeout(format!(
-                        "Timed out waiting for transform '{}' -> '{}' at ts={}ns after {:?}",
-                        src, dst, timestamp_ns, timeout
-                    )));
+                    return Err(HorusError::Timeout(TimeoutError {
+                        resource: format!("transform '{}' -> '{}' at ts={}ns", src, dst, timestamp_ns),
+                        elapsed: timeout,
+                        deadline: Some(timeout),
+                    }));
                 }
                 _ = self.async_notifier.notified() => {
                     if let Ok(tf) = self.tf_at_strict(src, dst, timestamp_ns) {
@@ -1649,7 +1664,7 @@ mod tests {
     fn test_add_frame_with_parent() {
         let hf = HFrame::new();
         hf.add_frame("world").build().unwrap();
-        let id = hf.add_frame("base").parent("world").unwrap();
+        let id = hf.add_frame("base").parent("world").build().unwrap();
         assert_eq!(id, 1);
         assert_eq!(hf.parent("base"), Some("world".to_string()));
     }
@@ -1659,9 +1674,10 @@ mod tests {
         let hf = HFrame::new();
         hf.add_frame("world").build().unwrap();
         let id = hf
-            .add_static("camera")
+            .add_frame("camera")
             .parent("world")
-            .transform(&Transform::from_translation([0.1, 0.0, 0.5]))
+            .static_transform(&Transform::from_translation([0.1, 0.0, 0.5]))
+            .build()
             .unwrap();
 
         assert!(hf.has_frame("camera"));
@@ -1685,7 +1701,7 @@ mod tests {
 
         let hf2 = HFrame::new();
         hf2.add_frame("world").build().unwrap();
-        hf2.add_frame("arm").parent("world").unwrap();
+        hf2.add_frame("arm").parent("world").build().unwrap();
 
         assert_eq!(hf1.all_frames().len(), hf2.all_frames().len());
         assert_eq!(hf1.parent("arm"), hf2.parent("arm"));
@@ -1721,7 +1737,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, HorusError::Extrapolation(_)),
+            matches!(err, HorusError::Transform(TransformError::Extrapolation { .. })),
             "Expected Extrapolation, got: {:?}",
             err
         );
@@ -1741,7 +1757,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, HorusError::Extrapolation(_)),
+            matches!(err, HorusError::Transform(TransformError::Extrapolation { .. })),
             "Expected Extrapolation, got: {:?}",
             err
         );
@@ -1785,7 +1801,7 @@ mod tests {
         // ts=3000 is within b's range but outside a's range → Extrapolation
         let result = hf.tf_at_strict("b", "world", 3000);
         assert!(
-            matches!(result, Err(HorusError::Extrapolation(_))),
+            matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))),
             "Expected Extrapolation because frame 'a' can't reach ts=3000, got: {:?}",
             result
         );
@@ -1967,7 +1983,7 @@ mod tests {
         // Query at ts=5000, data at 1000, gap=4000, tolerance=1000 → Extrapolation
         let result = hf.tf_at_with_tolerance("a", "world", 5000, 1000);
         assert!(
-            matches!(result, Err(HorusError::Extrapolation(_))),
+            matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))),
             "Expected Extrapolation, got: {:?}",
             result
         );
@@ -1998,7 +2014,7 @@ mod tests {
 
         // Query at ts=1000, data starts at 5000, gap=4000, tolerance=1000
         let result = hf.tf_at_with_tolerance("a", "world", 1000, 1000);
-        assert!(matches!(result, Err(HorusError::Extrapolation(_))));
+        assert!(matches!(result, Err(HorusError::Transform(TransformError::Extrapolation { .. }))));
 
         // Same but tolerance=5000 → ok
         let result = hf.tf_at_with_tolerance("a", "world", 1000, 5000);
@@ -2163,16 +2179,11 @@ mod tests {
 
         let err = hf.tf("nonexistent", "world").unwrap_err();
         match err {
-            HorusError::NotFound(msg) => {
-                assert!(
-                    msg.contains("nonexistent"),
+            HorusError::NotFound(NotFoundError::Frame { ref name }) => {
+                assert_eq!(
+                    name, "nonexistent",
                     "Error should name the missing frame: {}",
-                    msg
-                );
-                assert!(
-                    msg.contains("not registered"),
-                    "Error should say 'not registered': {}",
-                    msg
+                    name
                 );
             }
             other => unreachable!("Expected NotFound, got: {:?}", other),
@@ -2220,11 +2231,11 @@ mod tests {
         // This test verifies that NotFound messages are clear.
         let err = hf.tf("sensor", "ghost").unwrap_err();
         match err {
-            HorusError::NotFound(msg) => {
-                assert!(
-                    msg.contains("ghost"),
+            HorusError::NotFound(NotFoundError::Frame { ref name }) => {
+                assert_eq!(
+                    name, "ghost",
                     "Error should name the missing frame: {}",
-                    msg
+                    name
                 );
             }
             other => unreachable!("Expected NotFound, got: {:?}", other),

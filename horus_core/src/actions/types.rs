@@ -404,49 +404,44 @@ impl ActionServerConfig {
 }
 
 /// Error types specific to actions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ActionError {
     /// Goal was rejected by the server.
+    #[error("Goal rejected: {0}")]
     GoalRejected(String),
     /// Goal was canceled.
+    #[error("Goal was canceled")]
     GoalCanceled,
     /// Goal was preempted.
+    #[error("Goal was preempted")]
     GoalPreempted,
     /// Goal timed out.
+    #[error("Goal timed out")]
     GoalTimeout,
     /// Action server not available.
+    #[error("Action server unavailable")]
     ServerUnavailable,
     /// Communication error.
+    #[error("Communication error: {0}")]
     CommunicationError(String),
     /// Execution error.
+    #[error("Execution error: {0}")]
     ExecutionError(String),
     /// Invalid goal.
+    #[error("Invalid goal: {0}")]
     InvalidGoal(String),
     /// Goal not found.
+    #[error("Goal not found: {0}")]
     GoalNotFound(GoalId),
 }
 
-impl fmt::Display for ActionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ActionError::GoalRejected(reason) => write!(f, "Goal rejected: {}", reason),
-            ActionError::GoalCanceled => write!(f, "Goal was canceled"),
-            ActionError::GoalPreempted => write!(f, "Goal was preempted"),
-            ActionError::GoalTimeout => write!(f, "Goal timed out"),
-            ActionError::ServerUnavailable => write!(f, "Action server unavailable"),
-            ActionError::CommunicationError(msg) => write!(f, "Communication error: {}", msg),
-            ActionError::ExecutionError(msg) => write!(f, "Execution error: {}", msg),
-            ActionError::InvalidGoal(msg) => write!(f, "Invalid goal: {}", msg),
-            ActionError::GoalNotFound(id) => write!(f, "Goal not found: {}", id),
-        }
-    }
-}
-
-impl std::error::Error for ActionError {}
-
 impl From<ActionError> for crate::HorusError {
     fn from(err: ActionError) -> Self {
-        crate::HorusError::Communication(err.to_string().into())
+        let message = err.to_string();
+        crate::HorusError::Contextual {
+            message: format!("Action failed: {}", message),
+            source: Box::new(err),
+        }
     }
 }
 

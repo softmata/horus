@@ -332,10 +332,13 @@ impl ShmRegion {
                     unsafe { libc::close(fd) };
                     // SAFETY: c_name is a valid null-terminated CString
                     unsafe { libc::shm_unlink(c_name.as_ptr()) };
-                    return Err(HorusError::Memory(format!(
-                        "Failed to set shm '{}' to {} bytes: {} (macOS: check available memory with 'vm_stat')",
-                        shm_name, size, std::io::Error::last_os_error()
-                    ).into()));
+                    return Err(HorusError::Memory(crate::error::MemoryError::ShmCreateFailed {
+                        path: shm_name.to_string(),
+                        reason: format!(
+                            "Failed to set size to {} bytes: {} (macOS: check available memory with 'vm_stat')",
+                            size, std::io::Error::last_os_error()
+                        ),
+                    }));
                 }
                 (fd, true)
             }
@@ -361,9 +364,9 @@ impl ShmRegion {
                 // SAFETY: c_name is a valid null-terminated CString
                 unsafe { libc::shm_unlink(c_name.as_ptr()) };
             }
-            return Err(HorusError::Memory(
-                format!("Failed to mmap shm: {}", std::io::Error::last_os_error()).into(),
-            ));
+            return Err(HorusError::Memory(crate::error::MemoryError::MmapFailed {
+                reason: format!("shm mmap: {}", std::io::Error::last_os_error()),
+            }));
         }
 
         // Initialize to zero if owner

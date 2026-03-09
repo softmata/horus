@@ -4,7 +4,7 @@
 
 use crate::cli_output;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -161,10 +161,10 @@ pub fn show_message(name: &str, json: bool) -> HorusResult<()> {
     });
 
     let Some(msg) = msg else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Message type '{}' not found. Use 'horus msg list' to see available types.",
             name
-        )));
+        ))));
     };
 
     if json {
@@ -244,10 +244,10 @@ pub fn message_hash(name: &str, json: bool) -> HorusResult<()> {
     });
 
     let Some(msg) = msg else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Message type '{}' not found.",
             name
-        )));
+        ))));
     };
     let hash = compute_message_definition_hash(msg);
 
@@ -323,12 +323,12 @@ fn discover_messages() -> HorusResult<Vec<MessageInfo>> {
     }
 
     let messages_dir = messages_dir.ok_or_else(|| {
-        HorusError::Config(
+        HorusError::Config(ConfigError::Other(
             "Could not find horus_library/messages directory.\n  \
              Set HORUS_SOURCE_DIR to the root of your HORUS source tree,\n  \
              e.g.: export HORUS_SOURCE_DIR=/path/to/horus"
                 .to_string(),
-        )
+        ))
     })?;
 
     // Parse each .rs file in the messages directory

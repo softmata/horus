@@ -30,8 +30,12 @@ pub enum BlackBoxEvent {
         duration_us: u64,
         success: bool,
     },
-    /// Node error
-    NodeError { name: String, error: String },
+    /// Node error (includes severity for post-mortem triage)
+    NodeError {
+        name: String,
+        error: String,
+        severity: crate::error::Severity,
+    },
     /// Deadline miss
     DeadlineMiss {
         name: String,
@@ -531,6 +535,7 @@ mod tests {
         bb.record(BlackBoxEvent::NodeError {
             name: "bad".to_string(),
             error: "panic".to_string(),
+            severity: crate::error::Severity::Fatal,
         });
 
         bb.record(BlackBoxEvent::DeadlineMiss {

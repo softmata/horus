@@ -111,7 +111,7 @@ impl Node for FailInitNode {
     }
     fn init(&mut self) -> HorusResult<()> {
         Err(horus_core::error::HorusError::Config(
-            "init failure".to_string(),
+            horus_core::error::ConfigError::Other("init failure".to_string()),
         ))
     }
     fn tick(&mut self) {

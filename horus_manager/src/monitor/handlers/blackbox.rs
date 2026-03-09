@@ -247,6 +247,7 @@ mod tests {
         let event = BlackBoxEvent::NodeError {
             name: "test".into(),
             error: "fail".into(),
+            severity: horus_core::error::Severity::Permanent,
         };
         assert!(is_anomaly(&event));
     }
@@ -318,6 +319,7 @@ mod tests {
                 event: BlackBoxEvent::NodeError {
                     name: "n".into(),
                     error: "oops".into(),
+                    severity: horus_core::error::Severity::Permanent,
                 },
             },
         ];
@@ -354,6 +356,7 @@ mod tests {
                 event: BlackBoxEvent::NodeError {
                     name: "lidar_node".into(),
                     error: "timeout".into(),
+                    severity: horus_core::error::Severity::Transient,
                 },
             },
         ];
@@ -386,6 +389,7 @@ mod tests {
                 event: BlackBoxEvent::NodeError {
                     name: "n".into(),
                     error: "fail".into(),
+                    severity: horus_core::error::Severity::Permanent,
                 },
             },
         ];
@@ -439,6 +443,7 @@ mod tests {
                 event: BlackBoxEvent::NodeError {
                     name: "sensor".into(),
                     error: "fail".into(),
+                    severity: horus_core::error::Severity::Permanent,
                 },
             },
             BlackBoxRecord {
@@ -447,6 +452,7 @@ mod tests {
                 event: BlackBoxEvent::NodeError {
                     name: "motor".into(),
                     error: "stall".into(),
+                    severity: horus_core::error::Severity::Permanent,
                 },
             },
         ];
@@ -489,6 +495,7 @@ mod tests {
             event_type_name(&BlackBoxEvent::NodeError {
                 name: "n".into(),
                 error: "e".into(),
+                severity: horus_core::error::Severity::Permanent,
             }),
             "NodeError"
         );

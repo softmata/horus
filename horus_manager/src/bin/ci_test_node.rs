@@ -99,7 +99,8 @@ fn main() {
         .add(CiTestNode::new())
         .order(0)
         .rate_hz(10.0)
-        .done();
+        .done()
+        .expect("invalid node configuration");
 
     eprintln!("[ci_test_node] Running for {}ms", duration_ms);
 

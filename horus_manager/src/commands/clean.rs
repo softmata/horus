@@ -5,7 +5,7 @@
 use crate::cli_output;
 use crate::progress::format_bytes;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 use horus_core::memory::{list_all_horus_namespaces, shm_namespace, NamespaceInfo};
 use horus_core::NodePresence;
 use std::path::Path;
@@ -308,7 +308,7 @@ fn clean_shared_memory(dry_run: bool, force: bool) -> HorusResult<bool> {
 
 /// Clean HORUS cache directory
 fn clean_horus_cache(dry_run: bool) -> HorusResult<bool> {
-    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(e.to_string()))?;
+    let cache_dir = crate::paths::cache_dir().map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
 
     if cache_dir.exists() {
         let size = get_dir_size(&cache_dir);

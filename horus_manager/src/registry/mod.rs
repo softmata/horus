@@ -133,10 +133,16 @@ pub(crate) struct DriverMetadataResponse {
     pub driver_metadata: Option<DriverMetadata>,
 }
 
-/// Response from the driver list API endpoint
+/// Response from the driver list API endpoint (GET /api/drivers)
 #[derive(Debug, Deserialize)]
 pub(crate) struct DriverListResponse {
     pub drivers: Vec<DriverListEntry>,
+}
+
+/// Response from the driver search API endpoint (GET /api/drivers/search)
+#[derive(Debug, Deserialize)]
+pub(crate) struct DriverSearchResponse {
+    pub results: Vec<DriverListEntry>,
 }
 
 /// Entry in the driver list response
@@ -150,15 +156,79 @@ pub struct DriverListEntry {
     pub driver_metadata: Option<DriverMetadata>,
 }
 
+/// Validate a package name against registry rules (mirrors server-side validation).
+/// Scoped packages (@org/name) bypass normal validation.
+pub fn validate_package_name(name: &str) -> Result<()> {
+    // Scoped packages have their own format
+    if name.starts_with('@') {
+        if !name.contains('/') {
+            return Err(anyhow!("Scoped package name must be in @org/name format"));
+        }
+        return Ok(());
+    }
+
+    // Length check
+    if name.len() < 2 || name.len() > 64 {
+        return Err(anyhow!(
+            "Package name must be between 2 and 64 characters (got {})",
+            name.len()
+        ));
+    }
+
+    // Format check: must start with lowercase letter, only lowercase/digits/hyphens/underscores
+    let mut chars = name.chars();
+    if let Some(first) = chars.next() {
+        if !first.is_ascii_lowercase() {
+            return Err(anyhow!(
+                "Package name must start with a lowercase letter, got '{}'",
+                first
+            ));
+        }
+    }
+    for ch in name.chars() {
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '_' {
+            return Err(anyhow!(
+                "Package name contains invalid character '{}'. Only lowercase letters, digits, hyphens, and underscores are allowed",
+                ch
+            ));
+        }
+    }
+
+    // Path traversal check
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(anyhow!("Package name contains invalid path characters"));
+    }
+
+    // Reserved names
+    const RESERVED: &[&str] = &[
+        "horus", "core", "std", "lib", "test", "main", "mod", "pub", "use",
+        "crate", "self", "super", "extern", "fn", "let", "const", "static",
+        "mut", "ref", "type", "impl", "trait", "struct", "enum", "union",
+        "admin", "api", "www", "mail", "ftp", "localhost", "root", "system",
+    ];
+    if RESERVED.contains(&name) {
+        return Err(anyhow!("Package name '{}' is reserved", name));
+    }
+
+    Ok(())
+}
+
 /// URL-encode a package name for API calls
-/// Kept for safety but package names should be simple alphanumeric now
+/// Encodes characters unsafe in URL path segments (@ and / for scoped packages)
 pub fn url_encode_package_name(name: &str) -> String {
-    name.to_string()
+    name.replace('%', "%25")
+        .replace('@', "%40")
+        .replace('/', "%2F")
+        .replace(' ', "%20")
+        .replace('#', "%23")
+        .replace('?', "%3F")
 }
 
 /// Convert a package name to a safe filesystem path component
+/// Scoped names like @org/package become org__package
 pub fn package_name_to_path(name: &str) -> String {
-    name.to_string()
+    name.replace('@', "")
+        .replace('/', "__")
 }
 
 pub struct RegistryClient {
@@ -176,8 +246,15 @@ impl RegistryClient {
     pub fn new() -> Self {
         let base_url = crate::config::registry_url();
 
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(120))
+            .user_agent("horus-pkg-manager")
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
-            client: Client::new(),
+            client,
             base_url,
         }
     }

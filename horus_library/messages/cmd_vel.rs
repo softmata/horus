@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[repr(C)]
 pub struct CmdVel {
-    pub stamp_nanos: u64,
+    pub timestamp_ns: u64,
     pub linear: f32,  // m/s forward velocity
     pub angular: f32, // rad/s turning velocity
 }
@@ -37,7 +37,7 @@ impl CmdVel {
     /// Create a new CmdVel message with current timestamp
     pub fn new(linear: f32, angular: f32) -> Self {
         Self {
-            stamp_nanos: crate::hframe::timestamp_now(),
+            timestamp_ns: crate::hframe::timestamp_now(),
             linear,
             angular,
         }
@@ -49,9 +49,9 @@ impl CmdVel {
     }
 
     /// Create a CmdVel with explicit timestamp
-    pub fn with_timestamp(linear: f32, angular: f32, stamp_nanos: u64) -> Self {
+    pub fn with_timestamp(linear: f32, angular: f32, timestamp_ns: u64) -> Self {
         Self {
-            stamp_nanos,
+            timestamp_ns,
             linear,
             angular,
         }
@@ -71,7 +71,7 @@ impl Default for CmdVel {
 impl From<crate::messages::geometry::Twist> for CmdVel {
     fn from(twist: crate::messages::geometry::Twist) -> Self {
         Self {
-            stamp_nanos: twist.timestamp_ns,
+            timestamp_ns: twist.timestamp_ns,
             linear: twist.linear[0] as f32,
             angular: twist.angular[2] as f32,
         }
@@ -87,7 +87,7 @@ impl From<CmdVel> for crate::messages::geometry::Twist {
         Self {
             linear: [cmd.linear as f64, 0.0, 0.0],
             angular: [0.0, 0.0, cmd.angular as f64],
-            timestamp_ns: cmd.stamp_nanos,
+            timestamp_ns: cmd.timestamp_ns,
         }
     }
 }
@@ -118,7 +118,7 @@ mod tests {
         let cmd: CmdVel = twist.into();
         assert!((cmd.linear - 1.5).abs() < 1e-6);
         assert!((cmd.angular - 0.8).abs() < 1e-6);
-        assert_eq!(cmd.stamp_nanos, 12345);
+        assert_eq!(cmd.timestamp_ns, 12345);
     }
 
     #[test]
@@ -141,6 +141,6 @@ mod tests {
         let roundtripped: CmdVel = twist.into();
         assert!((roundtripped.linear - original.linear).abs() < 1e-6);
         assert!((roundtripped.angular - original.angular).abs() < 1e-6);
-        assert_eq!(roundtripped.stamp_nanos, original.stamp_nanos);
+        assert_eq!(roundtripped.timestamp_ns, original.timestamp_ns);
     }
 }

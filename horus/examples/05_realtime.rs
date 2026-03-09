@@ -1,6 +1,6 @@
 //! # Example 5: Real-Time Nodes
 //!
-//! Shows how to use `RtNode` for time-critical applications like
+//! Shows how to use real-time Node methods for time-critical applications like
 //! motor control, with WCET budgets and deadline monitoring.
 //!
 //! ```bash
@@ -30,19 +30,19 @@ struct PidController {
 }
 
 impl PidController {
-    fn new() -> Self {
-        Self {
-            publisher: Topic::create("motor_cmd"),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            publisher: Topic::new("motor_cmd")?,
             setpoint: 1.0,
             current: 0.0,
             kp: 0.5,
             ticks: 0,
-        }
+        })
     }
 }
 
 impl Node for PidController {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "PidController"
     }
 
@@ -68,11 +68,9 @@ impl Node for PidController {
 
         self.publisher.send(cmd);
     }
-}
 
-impl RtNode for PidController {
-    fn wcet_budget(&self) -> Duration {
-        Duration::from_micros(200) // 200μs max execution time
+    fn wcet_budget(&self) -> Option<Duration> {
+        Some(Duration::from_micros(200)) // 200μs max execution time
     }
 
     fn deadline(&self) -> Duration {
@@ -96,17 +94,17 @@ struct SafetyMonitor {
 }
 
 impl SafetyMonitor {
-    fn new() -> Self {
-        Self {
-            subscriber: Topic::create("motor_cmd"),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            subscriber: Topic::new("motor_cmd")?,
             max_velocity: 2.0,
             ticks: 0,
-        }
+        })
     }
 }
 
 impl Node for SafetyMonitor {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "SafetyMonitor"
     }
 
@@ -135,17 +133,17 @@ fn main() -> Result<()> {
 
     // PID controller: RT node on dedicated thread
     scheduler
-        .add_rt(PidController::new())
+        .add_rt(PidController::new()?)
         .order(0)
         .rate_hz(100.0)
-        .build();
+        .build()?;
 
     // Safety monitor: best-effort at 10 Hz
     scheduler
-        .add(SafetyMonitor::new())
+        .add(SafetyMonitor::new()?)
         .order(10)
         .rate_hz(10.0)
-        .build();
+        .build()?;
 
     // Use NodeTier for explicit classification
     println!("Node tiers:");

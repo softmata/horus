@@ -13,7 +13,7 @@
 //! }
 //!
 //! impl Node for MyNode {
-//!     fn name(&self) -> &'static str { "MyNode" }
+//!     fn name(&self) -> &str { "MyNode" }
 //!
 //!     fn tick(&mut self) {
 //!         // Node logic here
@@ -60,16 +60,13 @@
 //! ### Node
 //! ```rust,ignore
 //! impl Node for MyNode {
-//!     fn name(&self) -> &'static str { "MyNode" }
+//!     fn name(&self) -> &str { "MyNode" }
 //!     fn tick(&mut self) { /* called each cycle */ }
-//!     fn init(&mut self) { /* once at startup */ }
-//!     fn shutdown(&mut self) { /* once at teardown */ }
 //! }
 //! ```
 //!
 //! ### Topic (pub/sub IPC)
 //! ```rust,ignore
-//! let topic: Topic<CmdVel> = Topic::create("cmd_vel");  // panics on error
 //! let topic: Topic<CmdVel> = Topic::new("cmd_vel")?;    // returns Result
 //! topic.send(CmdVel::new(1.0, 0.0));
 //! if let Some(msg) = topic.recv() { /* ... */ }
@@ -78,10 +75,10 @@
 //! ### Scheduler
 //! ```rust,ignore
 //! let mut scheduler = Scheduler::new().tick_hz(100.0);
-//! scheduler.add(sensor).order(0).rate_hz(100.0).build();
-//! scheduler.add(controller).order(1).rt().build();
-//! scheduler.add(planner).order(5).compute().build();
-//! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build();
+//! scheduler.add(sensor).order(0).rate_hz(100.0).build()?;
+//! scheduler.add(controller).order(1).rt().build()?;
+//! scheduler.add(planner).order(5).compute().build()?;
+//! scheduler.add(logger).order(10).async_io().rate_hz(1.0).build()?;
 //! scheduler.run()?;
 //! ```
 //!
@@ -116,13 +113,14 @@
 //!
 //! ### Real-Time Nodes
 //! ```rust,ignore
-//! impl RtNode for MotorCtrl {
-//!     fn wcet_budget(&self) -> Duration { Duration::from_micros(200) }
+//! impl Node for MotorCtrl {
+//!     fn tick(&mut self) { /* motor control logic */ }
+//!     fn wcet_budget(&self) -> Option<Duration> { Some(Duration::from_micros(200)) }
 //!     fn deadline(&self) -> Duration { Duration::from_millis(1) }
 //!     fn rt_priority(&self) -> RtPriority { RtPriority::High }
 //!     fn rt_class(&self) -> RtClass { RtClass::Firm }
 //! }
-//! scheduler.add_rt(MotorCtrl::new()).order(0).build();
+//! scheduler.add(MotorCtrl::new()).order(0).build();
 //! ```
 //!
 //! ### Key Message Types
@@ -189,7 +187,7 @@ pub mod prelude {
     pub use horus_core::core::{LogSummary, Node};
 
     // === Real-time node ===
-    pub use horus_core::core::{DeadlineMissPolicy, RtClass, RtNode, RtPriority, RtStats};
+    pub use horus_core::core::{DeadlineMissPolicy, RtClass, RtPriority, RtStats};
 
     // === Rate / Stopwatch ===
     pub use horus_core::core::timer::{Rate, Stopwatch};
@@ -210,6 +208,7 @@ pub mod prelude {
     pub use horus_core::memory::{DepthImage, Image, PointCloud};
 
     // === HFrame (coordinate transforms) ===
+    #[allow(deprecated)]
     pub use horus_library::hframe::{
         timestamp_now, FrameBuilder, FrameInfo, HFrame, HFrameConfig, HFrameStats,
         StaticFrameBuilder, StaticFrameBuilderWithParent, Transform, TransformQuery,
@@ -241,7 +240,11 @@ pub mod prelude {
     // `HorusError` is also exported so callers can pattern-match exhaustively:
     //   `use horus::prelude::*;`
     //   `if let Err(HorusError::InvalidDescriptor(msg)) = result { ... }`
-    pub use horus_core::error::{CommunicationError, Error, HorusError, MemoryError, Result};
+    pub use horus_core::error::{
+        CommunicationError, ConfigError, Error, HorusContext, HorusError, MemoryError, NodeError,
+        NotFoundError, ParseError, ResourceError, Result, RetryConfig, SerializationError,
+        Severity, TimeoutError, TransformError, ValidationError, retry_transient,
+    };
 
     // === Macros ===
     pub use horus_core::action;
@@ -250,7 +253,6 @@ pub mod prelude {
     pub use horus_core::hlog_once;
     pub use horus_core::message;
     pub use horus_core::service;
-    pub use horus_core::simple_action;
     pub use horus_core::standard_action;
     #[cfg(feature = "macros")]
     pub use horus_macros::*;

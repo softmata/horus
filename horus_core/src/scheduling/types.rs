@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::fault_tolerance::FailureHandler;
 use super::profiler::RuntimeProfiler;
 use super::record_replay::NodeRecorder;
-use crate::core::{Node, NodeInfo, RtNode, RtStats};
+use crate::core::{Node, NodeInfo, RtStats};
 
 /// Node tier for explicit annotation by developers
 ///
@@ -182,16 +182,16 @@ mod execution_class_tests {
 /// let mut scheduler = Scheduler::new();
 ///
 /// // Motor control on dedicated RT thread
-/// scheduler.add(motor_node).order(0).rt().build();
+/// scheduler.add(motor_node).order(0).rt().build()?;
 ///
 /// // Path planning in parallel compute pool
-/// scheduler.add(planner_node).order(5).compute().build();
+/// scheduler.add(planner_node).order(5).compute().build()?;
 ///
 /// // React to LiDAR scans when they arrive
-/// scheduler.add(obstacle_node).on("lidar_scan").build();
+/// scheduler.add(obstacle_node).on("lidar_scan").build()?;
 ///
 /// // Telemetry upload on async I/O pool
-/// scheduler.add(telemetry_node).async_io().rate_hz(1.0).build();
+/// scheduler.add(telemetry_node).async_io().rate_hz(1.0).build()?;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExecutionClass {
@@ -212,8 +212,8 @@ pub enum ExecutionClass {
 pub(crate) enum NodeKind {
     /// A regular Node (may still have RT metadata from builder `.rt()`)
     Regular(Box<dyn Node>),
-    /// A node implementing the full RtNode trait
-    Rt(Box<dyn RtNode>),
+    /// A node registered as RT (RT methods are on the Node trait)
+    Rt(Box<dyn Node>),
 }
 
 impl NodeKind {
@@ -277,23 +277,37 @@ impl NodeKind {
         }
     }
 
-    // ---- RtNode-specific access ----
-
-    /// Get a mutable reference to the RtNode, if this is an Rt variant.
+    /// Get a mutable reference to the underlying Node.
     #[inline]
-    pub(crate) fn as_rt_mut(&mut self) -> Option<&mut dyn RtNode> {
+    pub(crate) fn as_node_mut(&mut self) -> &mut dyn Node {
         match self {
-            NodeKind::Rt(n) => Some(n.as_mut()),
-            NodeKind::Regular(_) => None,
+            NodeKind::Regular(n) => n.as_mut(),
+            NodeKind::Rt(n) => n.as_mut(),
         }
     }
 
-    /// Get a reference to the RtNode, if this is an Rt variant.
+    /// Get a reference to the underlying Node.
     #[inline]
-    pub(crate) fn as_rt(&self) -> Option<&dyn RtNode> {
+    pub(crate) fn as_node(&self) -> &dyn Node {
+        match self {
+            NodeKind::Regular(n) => n.as_ref(),
+            NodeKind::Rt(n) => n.as_ref(),
+        }
+    }
+
+    /// Try to get a reference to the node as an RT-registered Node.
+    pub(crate) fn as_rt(&self) -> Option<&dyn Node> {
         match self {
             NodeKind::Rt(n) => Some(n.as_ref()),
-            NodeKind::Regular(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Try to get a mutable reference to the node as an RT-registered Node.
+    pub(crate) fn as_rt_mut(&mut self) -> Option<&mut dyn Node> {
+        match self {
+            NodeKind::Rt(n) => Some(n.as_mut()),
+            _ => None,
         }
     }
 }

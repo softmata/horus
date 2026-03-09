@@ -25,7 +25,7 @@ struct SensorNode {
 }
 
 impl Node for SensorNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "SensorNode"
     }
 
@@ -44,16 +44,16 @@ struct ControlNode {
 }
 
 impl ControlNode {
-    fn new() -> Self {
-        Self {
-            publisher: Topic::create("cmd_vel"),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            publisher: Topic::new("cmd_vel")?,
             ticks: 0,
-        }
+        })
     }
 }
 
 impl Node for ControlNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "ControlNode"
     }
 
@@ -78,16 +78,16 @@ struct LoggerNode {
 }
 
 impl LoggerNode {
-    fn new() -> Self {
-        Self {
-            subscriber: Topic::create("cmd_vel"),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            subscriber: Topic::new("cmd_vel")?,
             ticks: 0,
-        }
+        })
     }
 }
 
 impl Node for LoggerNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "LoggerNode"
     }
 
@@ -112,19 +112,19 @@ fn main() -> Result<()> {
         .add(SensorNode { ticks: 0 })
         .order(0)
         .rate_hz(10.0)
-        .build();
+        .build()?;
 
     scheduler
-        .add(ControlNode::new())
+        .add(ControlNode::new()?)
         .order(1)
         .rate_hz(5.0)
-        .build();
+        .build()?;
 
     scheduler
-        .add(LoggerNode::new())
+        .add(LoggerNode::new()?)
         .order(2)
         .rate_hz(1.0)
-        .build();
+        .build()?;
 
     scheduler.run_for(Duration::from_secs(3))?;
 

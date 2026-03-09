@@ -15,7 +15,7 @@
 //! // errors or None, never panic.
 //! ```
 
-use crate::error::{HorusError, HorusResult};
+use crate::error::{HorusError, HorusResult, ValidationError};
 use crate::memory::platform::shm_topics_dir;
 use crate::memory::shm_region::ShmRegion;
 use std::path::PathBuf;
@@ -156,12 +156,12 @@ impl ShmFaultInjector {
     /// Write raw bytes to the SHM region.
     pub fn write_bytes(&self, offset: usize, data: &[u8]) -> HorusResult<()> {
         if offset + data.len() > self.size {
-            return Err(HorusError::InvalidInput(format!(
+            return Err(HorusError::InvalidInput(ValidationError::Other(format!(
                 "write at offset {} + len {} exceeds region size {}",
                 offset,
                 data.len(),
                 self.size
-            )));
+            ))));
         }
         let ptr = self.region.as_ptr() as *mut u8;
         // SAFETY: Bounds checked above. Write access to owned region.
@@ -245,22 +245,23 @@ impl MockNetworkEndpoint {
 
         match &self.fault {
             None => Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
-            Some(NetworkFault::Timeout) => Err(HorusError::Timeout(format!(
-                "mDNS resolution timeout for {}",
-                self.hostname
-            ))),
-            Some(NetworkFault::Unreachable) => Err(HorusError::communication(format!(
-                "peer {} unreachable",
-                self.hostname
-            ))),
-            Some(NetworkFault::DnsFailure(reason)) => Err(HorusError::communication(format!(
-                "DNS resolution failed for {}: {}",
-                self.hostname, reason
-            ))),
-            Some(NetworkFault::CorruptResponse) => Err(HorusError::communication(format!(
-                "corrupt mDNS response from {}",
-                self.hostname
-            ))),
+            Some(NetworkFault::Timeout) => Err(HorusError::Timeout(crate::error::TimeoutError {
+                resource: format!("mDNS resolution for {}", self.hostname),
+                elapsed: std::time::Duration::from_secs(0),
+                deadline: None,
+            })),
+            Some(NetworkFault::Unreachable) => Err(HorusError::network_fault(
+                &self.hostname,
+                "peer unreachable",
+            )),
+            Some(NetworkFault::DnsFailure(reason)) => Err(HorusError::network_fault(
+                &self.hostname,
+                format!("DNS resolution failed: {}", reason),
+            )),
+            Some(NetworkFault::CorruptResponse) => Err(HorusError::network_fault(
+                &self.hostname,
+                "corrupt mDNS response",
+            )),
         }
     }
 
@@ -273,22 +274,23 @@ impl MockNetworkEndpoint {
 
         match &self.fault {
             None => Ok(()),
-            Some(NetworkFault::Timeout) => Err(HorusError::Timeout(format!(
-                "connection timeout to {}",
-                self.hostname
-            ))),
-            Some(NetworkFault::Unreachable) => Err(HorusError::communication(format!(
-                "connection refused by {}",
-                self.hostname
-            ))),
-            Some(NetworkFault::DnsFailure(reason)) => Err(HorusError::communication(format!(
-                "cannot connect to {}: DNS failure ({})",
-                self.hostname, reason
-            ))),
-            Some(NetworkFault::CorruptResponse) => Err(HorusError::communication(format!(
-                "received corrupt handshake from {}",
-                self.hostname
-            ))),
+            Some(NetworkFault::Timeout) => Err(HorusError::Timeout(crate::error::TimeoutError {
+                resource: format!("connection to {}", self.hostname),
+                elapsed: std::time::Duration::from_secs(0),
+                deadline: None,
+            })),
+            Some(NetworkFault::Unreachable) => Err(HorusError::network_fault(
+                &self.hostname,
+                "connection refused",
+            )),
+            Some(NetworkFault::DnsFailure(reason)) => Err(HorusError::network_fault(
+                &self.hostname,
+                format!("DNS failure: {}", reason),
+            )),
+            Some(NetworkFault::CorruptResponse) => Err(HorusError::network_fault(
+                &self.hostname,
+                "corrupt handshake",
+            )),
         }
     }
 

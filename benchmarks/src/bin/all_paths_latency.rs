@@ -9,7 +9,7 @@
 //! - Producer and consumer in same process, consumer on separate core
 //!
 //! **Cross-process** (SpscShm, MpscShm, SpmcShm, PodShm):
-//! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.stamp_nanos`
+//! - One-way latency via RDTSC cycle timestamps embedded in `CmdVel.timestamp_ns`
 //! - Producer writes `rdtsc()` → `send()`, consumer reads `recv()` → `rdtscp()`
 //! - Requires `constant_tsc` for cross-core TSC synchronization
 //! - No `yield_now()` or `sleep()` in measurement hot loops
@@ -1270,7 +1270,7 @@ fn collect_cross_proc(
         }
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
-            let send_cycles = msg.stamp_nanos;
+            let send_cycles = msg.timestamp_ns;
             let delta = recv_cycles
                 .wrapping_sub(send_cycles)
                 .saturating_sub(overhead);
@@ -1355,7 +1355,7 @@ fn collect_pod_shm(
         }
         if let Some(msg) = consumer.recv() {
             let recv_cycles = rdtscp();
-            let send_cycles = msg.stamp_nanos;
+            let send_cycles = msg.timestamp_ns;
             let delta = recv_cycles
                 .wrapping_sub(send_cycles)
                 .saturating_sub(overhead);
@@ -1953,7 +1953,7 @@ fn print_methodology(cal: &RdtscCalibration) {
     println!();
     println!("  Measurement types:");
     println!("    send      = producer-side send() latency (RDTSC, overhead subtracted)");
-    println!("    one-way   = producer-to-consumer via RDTSC timestamp in CmdVel.stamp_nanos");
+    println!("    one-way   = producer-to-consumer via RDTSC timestamp in CmdVel.timestamp_ns");
     println!("    broadcast = like one-way, but tracks freshness/skip-aheads (PodShm)");
     println!();
     println!("  Statistical processing:");

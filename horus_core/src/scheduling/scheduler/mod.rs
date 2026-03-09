@@ -1,7 +1,6 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
 use crate::core::{announce_started, announce_stopped, Node, NodeInfo, NodePresence};
-use crate::error::HorusResult;
-use crate::horus_internal;
+use crate::error::{HorusContext, HorusResult};
 use crate::memory::platform::shm_control_dir;
 use crate::terminal::print_line;
 use colored::Colorize;
@@ -265,7 +264,6 @@ impl Scheduler {
     /// ```
     pub fn tick_hz(mut self, hz: f64) -> Self {
         if hz.is_finite() && hz > 0.0 {
-            self.tick.period = Duration::from_micros((1_000_000.0 / hz) as u64);
             self.pending_config.timing.global_rate_hz = hz;
         }
         self
@@ -573,7 +571,7 @@ impl Scheduler {
     /// use horus_core::scheduling::CircuitState;
     ///
     /// let mut scheduler = Scheduler::new();
-    /// scheduler.add(my_node).order(10).build();
+    /// scheduler.add(my_node).order(10).build()?;
     ///
     /// if let Some(state) = scheduler.circuit_state("my_node") {
     ///     match state {
@@ -1271,8 +1269,8 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
-                    .to_string(),
+                crate::error::ConfigError::Other("Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
+                    .to_string()),
             ))
         }
     }
@@ -1306,8 +1304,8 @@ impl Scheduler {
             Ok(self)
         } else {
             Err(crate::error::HorusError::Config(
-                "Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
-                    .to_string(),
+                crate::error::ConfigError::Other("Safety monitor not enabled. Call .safety_monitor(true) on the Scheduler builder."
+                    .to_string()),
             ))
         }
     }
@@ -1422,12 +1420,12 @@ impl Scheduler {
     ///     .rate_hz(1000.0)  // 1kHz
     ///     .rt()
     ///     .wcet_us(500)     // 500μs max execution
-    ///     .build();
+    ///     .build()?;
     ///
     /// // Chain multiple nodes
-    /// scheduler.add(SensorNode::new()).order(0).build();
-    /// scheduler.add(ControlNode::new()).order(1).rt().build();
-    /// scheduler.add(LoggerNode::new()).order(100).build();
+    /// scheduler.add(SensorNode::new()).order(0).build()?;
+    /// scheduler.add(ControlNode::new()).order(1).rt().build()?;
+    /// scheduler.add(LoggerNode::new()).order(100).build()?;
     /// ```
     pub fn add<N: Node + 'static>(&mut self, node: N) -> super::node_builder::NodeBuilder<'_> {
         super::node_builder::NodeBuilder::new(self, Box::new(node))
@@ -1447,7 +1445,7 @@ impl Scheduler {
     ///     .order(0)
     ///     .build();
     /// ```
-    pub fn add_rt<N: crate::core::RtNode + 'static>(
+    pub fn add_rt<N: crate::core::Node + 'static>(
         &mut self,
         node: N,
     ) -> super::node_builder::NodeBuilder<'_> {
@@ -1681,7 +1679,7 @@ impl Scheduler {
     fn finalize_config(&mut self) {
         let config = self.pending_config.clone();
 
-        // Tick period (may already be set by tick_hz builder, but re-apply for consistency)
+        // Apply tick period from deferred config
         if config.timing.global_rate_hz.is_finite() && config.timing.global_rate_hz > 0.0 {
             self.tick.period =
                 Duration::from_micros((1_000_000.0 / config.timing.global_rate_hz) as u64);
@@ -1755,7 +1753,7 @@ impl Scheduler {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
-            .map_err(|e| horus_internal!("Failed to create tokio runtime: {}", e))?;
+            .horus_context("creating scheduler tokio runtime")?;
 
         rt.block_on(async {
             let start_time = Instant::now();
@@ -2021,10 +2019,9 @@ impl Scheduler {
                     // Convert panic to error
                     let init_result = match init_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node {
+                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::InitPanic {
                             node: node_name.to_string(),
-                            message: "panicked during init".to_string(),
-                        }),
+                        })),
                     };
 
                     match init_result {
@@ -2054,11 +2051,43 @@ impl Scheduler {
                             print_line(&format!("Initialized node '{}'", node_name));
                         }
                         Err(e) => {
-                            print_line(&format!(
-                                "Failed to initialize node '{}': {}",
-                                node_name, e
-                            ));
-                            ctx.transition_to_error(format!("Initialization failed: {}", e));
+                            // Use severity to decide how to handle the init failure.
+                            let severity = e.severity();
+                            let action = registered
+                                .failure_handler
+                                .record_failure_with_severity(severity);
+
+                            if let Some(hint) = e.help() {
+                                print_line(&format!(
+                                    "Failed to initialize node '{}': {}\n  hint: {}",
+                                    node_name, e, hint
+                                ));
+                            } else {
+                                print_line(&format!(
+                                    "Failed to initialize node '{}': {}",
+                                    node_name, e
+                                ));
+                            }
+
+                            match action {
+                                FailureAction::StopScheduler => {
+                                    print_line(&format!(
+                                        " FATAL: Node '{}' init failed with fatal severity — stopping",
+                                        node_name
+                                    ));
+                                    ctx.transition_to_crashed(format!("Fatal init: {}", e));
+                                    self.stop();
+                                    return;
+                                }
+                                FailureAction::RestartNode => {
+                                    // Transient error: leave initialized=false so reinit_pending
+                                    // picks it up next cycle.
+                                    ctx.transition_to_error(format!("Init failed (transient, will retry): {}", e));
+                                }
+                                _ => {
+                                    ctx.transition_to_error(format!("Initialization failed: {}", e));
+                                }
+                            }
                         }
                     }
                 }
@@ -2110,10 +2139,9 @@ impl Scheduler {
                     // Convert panic to error
                     let init_result = match init_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node {
+                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::ReInitPanic {
                             node: node_name.to_string(),
-                            message: "panicked during re-init".to_string(),
-                        }),
+                        })),
                     };
 
                     match init_result {
@@ -2122,13 +2150,39 @@ impl Scheduler {
                             print_line(&format!("[CONTROL] Node '{}' re-initialized", node_name));
                         }
                         Err(e) => {
-                            // Mark as stopped to prevent infinite re-init loops
-                            registered.is_stopped = true;
-                            print_line(&format!(
-                                "[CONTROL] Failed to re-initialize node '{}': {} — node stopped",
-                                node_name, e
-                            ));
-                            ctx.transition_to_error(format!("Re-initialization failed: {}", e));
+                            let severity = e.severity();
+                            let action = registered
+                                .failure_handler
+                                .record_failure_with_severity(severity);
+
+                            if let Some(hint) = e.help() {
+                                print_line(&format!(
+                                    "[CONTROL] Failed to re-initialize node '{}': {}\n  hint: {}",
+                                    node_name, e, hint
+                                ));
+                            } else {
+                                print_line(&format!(
+                                    "[CONTROL] Failed to re-initialize node '{}': {}",
+                                    node_name, e
+                                ));
+                            }
+
+                            match action {
+                                FailureAction::StopScheduler => {
+                                    // Fatal: stop node permanently.
+                                    registered.is_stopped = true;
+                                    ctx.transition_to_crashed(format!("Fatal re-init: {}", e));
+                                }
+                                FailureAction::RestartNode => {
+                                    // Transient: leave initialized=false for retry next cycle.
+                                    ctx.transition_to_error(format!("Re-init failed (transient, will retry): {}", e));
+                                }
+                                _ => {
+                                    // Permanent or exhausted: stop to prevent infinite loops.
+                                    registered.is_stopped = true;
+                                    ctx.transition_to_error(format!("Re-initialization failed: {}", e));
+                                }
+                            }
                         }
                     }
                 }
@@ -2327,10 +2381,9 @@ impl Scheduler {
                     // Convert panic to error
                     let shutdown_result = match shutdown_result {
                         Ok(result) => result,
-                        Err(_) => Err(crate::HorusError::Node {
+                        Err(_) => Err(crate::HorusError::Node(crate::error::NodeError::ShutdownPanic {
                             node: node_name.to_string(),
-                            message: "panicked during shutdown".to_string(),
-                        }),
+                        })),
                     };
 
                     match shutdown_result {

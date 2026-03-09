@@ -6,7 +6,7 @@
 use crate::cli_output;
 use crate::discovery::discover_shared_memory;
 use colored::*;
-use horus_core::error::{HorusError, HorusResult};
+use horus_core::error::{ConfigError, HorusError, HorusResult};
 
 // ─── Service discovery helpers ────────────────────────────────────────────────
 
@@ -184,10 +184,10 @@ pub fn service_type(name: &str) -> HorusResult<()> {
     });
 
     let Some(svc) = svc else {
-        return Err(HorusError::Config(format!(
+        return Err(HorusError::Config(ConfigError::Other(format!(
             "Service '{}' not found. Use 'horus service list' to see available services.",
             name
-        )));
+        ))));
     };
 
     println!("{}", "Service Type Information".green().bold());
@@ -238,10 +238,10 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
 
     // Parse the request JSON to validate it's valid JSON.
     let request_value: serde_json::Value = serde_json::from_str(request_json).map_err(|e| {
-        HorusError::Config(format!(
+        HorusError::Config(ConfigError::Other(format!(
             "Invalid request JSON: {}\n  Example: horus service call {} '{{\"a\": 3, \"b\": 4}}'",
             e, name
-        ))
+        )))
     })?;
 
     // We use serde_json::Value as the payload type — the topics are JSON-encoded.
@@ -270,18 +270,18 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
 
     let req_topic: Topic<ServiceRequest<serde_json::Value>> =
         Topic::new(&req_topic_name).map_err(|e| {
-            HorusError::Config(format!(
+            HorusError::Config(ConfigError::Other(format!(
                 "Cannot open request topic '{}': {}\n  Is a HORUS server running for service '{}'?",
                 req_topic_name, e, name
-            ))
+            )))
         })?;
 
     let res_topic: Topic<ServiceResponse<serde_json::Value>> = Topic::new(&res_topic_name)
         .map_err(|e| {
-            HorusError::Config(format!(
+            HorusError::Config(ConfigError::Other(format!(
                 "Cannot open response topic '{}': {}",
                 res_topic_name, e
-            ))
+            )))
         })?;
 
     // Send the request.
@@ -310,10 +310,10 @@ pub fn call_service(name: &str, request_json: &str, timeout_secs: f64) -> HorusR
         }
 
         if Instant::now() >= deadline {
-            return Err(HorusError::Config(format!(
+            return Err(HorusError::Config(ConfigError::Other(format!(
                 "Service call timed out after {:.1}s.\n  Is a server registered for '{}'?",
                 timeout_secs, name
-            )));
+            ))));
         }
 
         if let Some(resp) = res_topic.recv() {

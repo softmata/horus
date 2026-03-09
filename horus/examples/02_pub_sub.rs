@@ -27,16 +27,16 @@ struct SensorNode {
 }
 
 impl SensorNode {
-    fn new() -> Self {
-        Self {
-            publisher: Topic::create("temperature"),
+    fn new() -> Result<Self> {
+        Ok(Self {
+            publisher: Topic::new("temperature")?,
             tick_count: 0,
-        }
+        })
     }
 }
 
 impl Node for SensorNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "SensorNode"
     }
 
@@ -57,15 +57,15 @@ struct MonitorNode {
 }
 
 impl MonitorNode {
-    fn new() -> Self {
-        Self {
-            subscriber: Topic::create("temperature"),
-        }
+    fn new() -> Result<Self> {
+        Ok(Self {
+            subscriber: Topic::new("temperature")?,
+        })
     }
 }
 
 impl Node for MonitorNode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "MonitorNode"
     }
 
@@ -92,8 +92,8 @@ fn main() -> Result<()> {
     let mut scheduler = Scheduler::new().tick_hz(2.0);
 
     // Sensor publishes first (order 0), monitor reads after (order 1)
-    scheduler.add(SensorNode::new()).order(0).build();
-    scheduler.add(MonitorNode::new()).order(1).build();
+    scheduler.add(SensorNode::new()?).order(0).build()?;
+    scheduler.add(MonitorNode::new()?).order(1).build()?;
 
     scheduler.run_for(Duration::from_secs(4))?;
 

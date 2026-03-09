@@ -347,7 +347,7 @@ impl Controller {
 }
 
 impl Node for Controller {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "controller"
     }
 
